@@ -1,3 +1,4 @@
+import { errorMessage } from './errors';
 import { exchangeBootstrapToken, setCsrfToken } from './api';
 import { appApi } from './domain-api';
 import type {
@@ -17,8 +18,16 @@ import {
 import { ResourceState } from './resource-state.svelte';
 
 const EVENT_TYPES = [
-  'job.queued', 'job.started', 'job.reclaimed', 'job.waiting_for_resource', 'job.progress',
-  'job.succeeded', 'job.failed', 'job.retry_scheduled', 'job.cancel_requested', 'job.canceled'
+  'job.queued',
+  'job.started',
+  'job.reclaimed',
+  'job.waiting_for_resource',
+  'job.progress',
+  'job.succeeded',
+  'job.failed',
+  'job.retry_scheduled',
+  'job.cancel_requested',
+  'job.canceled'
 ];
 
 const KNOWN_INVALIDATIONS = new Set<string>(INVALIDATION_RESOURCES);
@@ -42,8 +51,8 @@ class AppState {
   private unhealthyTimer?: number;
   private fallbackTimer?: number;
   private resyncing = false;
-  private invalidations = new InvalidationCoordinator(
-    (batch) => this.flushInvalidations(batch)
+  private invalidations = new InvalidationCoordinator((batch) =>
+    this.flushInvalidations(batch)
   );
 
   get sessions() {
@@ -90,7 +99,7 @@ class AppState {
         this.connectEvents(this.eventCursor);
       }
     } catch (caught) {
-      this.error = caught instanceof Error ? caught.message : String(caught);
+      this.error = errorMessage(caught);
     } finally {
       this.loading = false;
       this.initialized = true;
@@ -133,22 +142,23 @@ class AppState {
   }
 
   async refreshJobs() {
-    await this.jobsResource.load(
-      async () => (await appApi.jobs()).items,
-      { force: true, empty: (items) => items.length === 0 }
-    );
+    await this.jobsResource.load(async () => (await appApi.jobs()).items, {
+      force: true,
+      empty: (items) => items.length === 0
+    });
   }
 
   async refreshCapabilities() {
-    await this.capabilitiesResource.load(
-      () => appApi.capabilities(true),
-      { force: true }
-    );
+    await this.capabilitiesResource.load(() => appApi.capabilities(true), {
+      force: true
+    });
   }
 
   upsertSession(record: SessionRecord) {
-    const sessions = [record, ...this.sessions.filter((item) => item.id !== record.id)]
-      .sort((left, right) => right.updated_at.localeCompare(left.updated_at));
+    const sessions = [
+      record,
+      ...this.sessions.filter((item) => item.id !== record.id)
+    ].sort((left, right) => right.updated_at.localeCompare(left.updated_at));
     this.sessionsResource.replace(sessions);
   }
 
@@ -163,7 +173,10 @@ class AppState {
       snapshot.sessions.items,
       snapshot.sessions.items.length === 0
     );
-    this.jobsResource.replace(snapshot.jobs.items, snapshot.jobs.items.length === 0);
+    this.jobsResource.replace(
+      snapshot.jobs.items,
+      snapshot.jobs.items.length === 0
+    );
     this.capabilitiesResource.replace(snapshot.capabilities);
     this.eventCursor = Number(snapshot.cursor || 0);
   }
@@ -182,20 +195,30 @@ class AppState {
         created_at: String(event.created_at ?? new Date().toISOString())
       }),
       ...(event.job_kind ? { kind: String(event.job_kind) } : {}),
-      ...(event.session_id !== undefined ? { session_id: event.session_id } : {}),
+      ...(event.session_id !== undefined
+        ? { session_id: event.session_id }
+        : {}),
       ...(event.status ? { status: String(event.status) } : {}),
-      ...(event.progress !== undefined ? { progress: Number(event.progress) } : {}),
+      ...(event.progress !== undefined
+        ? { progress: Number(event.progress) }
+        : {}),
       ...(event.detail !== undefined ? { progress_detail: event.detail } : {})
     };
-    const jobs = index >= 0
-      ? this.jobs.map((job, jobIndex) => jobIndex === index ? next : job)
-      : [next, ...this.jobs].slice(0, 40);
+    const jobs =
+      index >= 0
+        ? this.jobs.map((job, jobIndex) => (jobIndex === index ? next : job))
+        : [next, ...this.jobs].slice(0, 40);
     this.jobsResource.replace(jobs, jobs.length === 0);
   }
 
   private flushInvalidations(batch: InvalidationBatch) {
     const terminal = batch.events.some((event) =>
-      ['job.succeeded', 'job.failed', 'job.retry_scheduled', 'job.canceled'].includes(event.type)
+      [
+        'job.succeeded',
+        'job.failed',
+        'job.retry_scheduled',
+        'job.canceled'
+      ].includes(event.type)
     );
     if (terminal && batch.resources.includes('jobs')) {
       this.refreshJobs().catch(() => undefined);
@@ -264,7 +287,9 @@ class AppState {
 
   private connectEvents(cursor: number) {
     this.events?.close();
-    const source = new EventSource(`/api/v1/events?after=${encodeURIComponent(cursor)}`);
+    const source = new EventSource(
+      `/api/v1/events?after=${encodeURIComponent(cursor)}`
+    );
     this.events = source;
     source.onopen = () => this.markEventsHealthy();
     source.onerror = () => this.deferEventsUnhealthy(source);
@@ -279,11 +304,12 @@ class AppState {
         if (Number.isFinite(parsedCursor) && parsedCursor > this.eventCursor) {
           this.eventCursor = parsedCursor;
         }
-        let detail: PandratorServerEvent = { type };
+        const detail: PandratorServerEvent = { type };
         try {
           const parsed = JSON.parse(message.data || '{}') as unknown;
           if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-            for (const [key, value] of Object.entries(parsed)) detail[key] = value;
+            for (const [key, value] of Object.entries(parsed))
+              detail[key] = value;
             if (Array.isArray(detail.changed_entities)) {
               detail.changed_entities = detail.changed_entities.filter(
                 (value): value is InvalidationResource =>
@@ -293,7 +319,9 @@ class AppState {
               delete detail.changed_entities;
             }
           }
-        } catch { /* retain the event type if an older server sent no JSON */ }
+        } catch {
+          /* retain the event type if an older server sent no JSON */
+        }
         this.patchJob(detail);
         this.invalidations.enqueue(detail);
       });

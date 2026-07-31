@@ -1,5 +1,13 @@
 <script lang="ts">
-  import { CaseSensitive, ChevronDown, ChevronUp, LoaderCircle, Search, WholeWord } from '@lucide/svelte';
+  import { errorMessage } from './errors';
+  import {
+    CaseSensitive,
+    ChevronDown,
+    ChevronUp,
+    LoaderCircle,
+    Search,
+    WholeWord
+  } from '@lucide/svelte';
   import { tick } from 'svelte';
   import {
     findTextMatches,
@@ -32,8 +40,12 @@
   let replacing = $state(false);
   let error = $state('');
 
-  const matches = $derived(findTextMatches(texts, query, { matchCase, wholeWord }));
-  const currentIndex = $derived(matches.length ? Math.min(activeIndex, matches.length - 1) : 0);
+  const matches = $derived(
+    findTextMatches(texts, query, { matchCase, wholeWord })
+  );
+  const currentIndex = $derived(
+    matches.length ? Math.min(activeIndex, matches.length - 1) : 0
+  );
   const currentMatch = $derived(matches[currentIndex]);
 
   function resetSearchPosition() {
@@ -71,7 +83,7 @@
         activeIndex = 0;
       }
     } catch (caught) {
-      error = caught instanceof Error ? caught.message : String(caught);
+      error = errorMessage(caught);
     } finally {
       replacing = false;
     }
@@ -89,32 +101,153 @@
 
 <div class="search-replace" aria-label={`Search and replace ${label}`}>
   <div class="find-field">
-    <Search class="search-icon" size={15}/>
+    <Search class="search-icon" size={15} />
     <input
       value={query}
       onfocus={activate}
-      oninput={(event) => { query = event.currentTarget.value; resetSearchPosition(); }}
+      oninput={(event) => {
+        query = event.currentTarget.value;
+        resetSearchPosition();
+      }}
       onkeydown={searchKeydown}
       placeholder="Find"
       aria-label={`Find in ${label}`}
     />
-    <span class="count" aria-live="polite">{query ? (matches.length ? `${currentIndex + 1} / ${matches.length}` : 'No matches') : ''}</span>
-    <button onclick={() => navigate(-1)} disabled={!matches.length} title="Previous match" aria-label="Previous match"><ChevronUp size={15}/></button>
-    <button onclick={() => navigate(1)} disabled={!matches.length} title="Next match" aria-label="Next match"><ChevronDown size={15}/></button>
+    <span class="count" aria-live="polite"
+      >{query
+        ? matches.length
+          ? `${currentIndex + 1} / ${matches.length}`
+          : 'No matches'
+        : ''}</span
+    >
+    <button
+      onclick={() => navigate(-1)}
+      disabled={!matches.length}
+      title="Previous match"
+      aria-label="Previous match"><ChevronUp size={15} /></button
+    >
+    <button
+      onclick={() => navigate(1)}
+      disabled={!matches.length}
+      title="Next match"
+      aria-label="Next match"><ChevronDown size={15} /></button
+    >
   </div>
   <div class="replace-field">
-    <input bind:value={replacement} onfocus={activate} placeholder="Replace with" aria-label={`Replace in ${label}`}/>
-    <button onclick={replaceCurrent} disabled={disabled || replacing || !currentMatch}>Replace</button>
-    <button onclick={replaceAll} disabled={disabled || replacing || !matches.length}>Replace all</button>
+    <input
+      bind:value={replacement}
+      onfocus={activate}
+      placeholder="Replace with"
+      aria-label={`Replace in ${label}`}
+    />
+    <button
+      onclick={replaceCurrent}
+      disabled={disabled || replacing || !currentMatch}>Replace</button
+    >
+    <button
+      onclick={replaceAll}
+      disabled={disabled || replacing || !matches.length}>Replace all</button
+    >
   </div>
   <div class="options">
-    <button onclick={() => { matchCase = !matchCase; resetSearchPosition(); }} class:active={matchCase} title="Match case" aria-label="Match case" aria-pressed={matchCase}><CaseSensitive size={16}/></button>
-    <button onclick={() => { wholeWord = !wholeWord; resetSearchPosition(); }} class:active={wholeWord} title="Match whole word" aria-label="Match whole word" aria-pressed={wholeWord}><WholeWord size={16}/></button>
-    {#if replacing}<LoaderCircle class="animate-spin" size={15}/>{/if}
+    <button
+      onclick={() => {
+        matchCase = !matchCase;
+        resetSearchPosition();
+      }}
+      class:active={matchCase}
+      title="Match case"
+      aria-label="Match case"
+      aria-pressed={matchCase}><CaseSensitive size={16} /></button
+    >
+    <button
+      onclick={() => {
+        wholeWord = !wholeWord;
+        resetSearchPosition();
+      }}
+      class:active={wholeWord}
+      title="Match whole word"
+      aria-label="Match whole word"
+      aria-pressed={wholeWord}><WholeWord size={16} /></button
+    >
+    {#if replacing}<LoaderCircle class="animate-spin" size={15} />{/if}
   </div>
   {#if error}<p role="alert">{error}</p>{/if}
 </div>
 
 <style>
-  .search-replace{display:flex;flex-wrap:wrap;align-items:center;gap:.45rem;border:1px solid var(--line);border-radius:.85rem;background:var(--paper);padding:.45rem}.find-field,.replace-field{display:flex;min-width:15rem;flex:1;align-items:center;gap:.25rem;border:1px solid var(--line);border-radius:.6rem;background:var(--paper-strong);padding:.25rem .35rem}:global(.search-icon){flex:none;color:var(--muted)}input{min-width:4rem;flex:1;background:transparent;padding:.3rem .25rem;font-size:.75rem;outline:none}.count{min-width:4.5rem;text-align:right;font-size:.62rem;color:var(--muted);white-space:nowrap}button{display:flex;align-items:center;justify-content:center;border-radius:.45rem;padding:.35rem .5rem;font-size:.68rem;font-weight:700;white-space:nowrap}button:hover:not(:disabled),button.active{background:var(--accent-soft);color:var(--accent)}button:disabled{opacity:.35}.replace-field button{border:1px solid var(--line)}.options{display:flex;align-items:center;gap:.15rem;color:var(--muted)}p{flex-basis:100%;padding:.1rem .35rem;font-size:.68rem;color:#ef4444}
+  .search-replace {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.45rem;
+    border: 1px solid var(--line);
+    border-radius: 0.85rem;
+    background: var(--paper);
+    padding: 0.45rem;
+  }
+  .find-field,
+  .replace-field {
+    display: flex;
+    min-width: 15rem;
+    flex: 1;
+    align-items: center;
+    gap: 0.25rem;
+    border: 1px solid var(--line);
+    border-radius: 0.6rem;
+    background: var(--paper-strong);
+    padding: 0.25rem 0.35rem;
+  }
+  :global(.search-icon) {
+    flex: none;
+    color: var(--muted);
+  }
+  input {
+    min-width: 4rem;
+    flex: 1;
+    background: transparent;
+    padding: 0.3rem 0.25rem;
+    font-size: 0.75rem;
+    outline: none;
+  }
+  .count {
+    min-width: 4.5rem;
+    text-align: right;
+    font-size: 0.62rem;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+  button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 0.45rem;
+    padding: 0.35rem 0.5rem;
+    font-size: 0.68rem;
+    font-weight: 700;
+    white-space: nowrap;
+  }
+  button:hover:not(:disabled),
+  button.active {
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+  button:disabled {
+    opacity: 0.35;
+  }
+  .replace-field button {
+    border: 1px solid var(--line);
+  }
+  .options {
+    display: flex;
+    align-items: center;
+    gap: 0.15rem;
+    color: var(--muted);
+  }
+  p {
+    flex-basis: 100%;
+    padding: 0.1rem 0.35rem;
+    font-size: 0.68rem;
+    color: #ef4444;
+  }
 </style>

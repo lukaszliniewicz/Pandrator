@@ -1,42 +1,47 @@
 import type { components, paths } from './api.generated';
 
-export type { JobRecord, SessionRecord } from './api-models';
-
 type ApiPath = keyof paths;
 type HttpMethod = 'get' | 'put' | 'post' | 'delete' | 'patch';
 type ApiMethod<P extends ApiPath> = {
-  [M in HttpMethod]: paths[P][M] extends never | undefined ? never : M
+  [M in HttpMethod]: paths[P][M] extends never | undefined ? never : M;
 }[HttpMethod];
-type ApiOperation<P extends ApiPath, M extends ApiMethod<P>> = NonNullable<paths[P][M]>;
+type ApiOperation<P extends ApiPath, M extends ApiMethod<P>> = NonNullable<
+  paths[P][M]
+>;
 type OperationParameters<
   P extends ApiPath,
   M extends ApiMethod<P>,
   K extends 'path' | 'query' | 'header'
-> = ApiOperation<P, M> extends { parameters: infer Parameters }
-  ? K extends keyof Parameters
-    ? Parameters[K]
-    : never
-  : never;
+> =
+  ApiOperation<P, M> extends { parameters: infer Parameters }
+    ? K extends keyof Parameters
+      ? Parameters[K]
+      : never
+    : never;
 type OperationBody<P extends ApiPath, M extends ApiMethod<P>> =
   ApiOperation<P, M> extends {
-    requestBody: { content: { 'application/json': infer Body } }
+    requestBody: { content: { 'application/json': infer Body } };
   }
     ? Body
     : never;
-type RequestBody<P extends ApiPath, M extends ApiMethod<P>> =
-  [OperationBody<P, M>] extends [never]
-    ? Record<string, unknown>
-    : OperationBody<P, M>;
+type RequestBody<P extends ApiPath, M extends ApiMethod<P>> = [
+  OperationBody<P, M>
+] extends [never]
+  ? Record<string, unknown>
+  : OperationBody<P, M>;
 
-export type ApiSchema<Name extends keyof components['schemas']> = components['schemas'][Name];
+export type ApiSchema<Name extends keyof components['schemas']> =
+  components['schemas'][Name];
 
-export type TypedApiOptions<P extends ApiPath, M extends ApiMethod<P>> =
-  Omit<RequestInit, 'method' | 'body' | 'headers'> & {
-    path?: OperationParameters<P, M, 'path'>;
-    query?: OperationParameters<P, M, 'query'> | URLSearchParams;
-    headers?: HeadersInit;
-    body?: RequestBody<P, M> | FormData | Blob | ArrayBuffer;
-  };
+export type TypedApiOptions<P extends ApiPath, M extends ApiMethod<P>> = Omit<
+  RequestInit,
+  'method' | 'body' | 'headers'
+> & {
+  path?: OperationParameters<P, M, 'path'>;
+  query?: OperationParameters<P, M, 'query'> | URLSearchParams;
+  headers?: HeadersInit;
+  body?: RequestBody<P, M> | FormData | Blob | ArrayBuffer;
+};
 
 let csrfToken = '';
 
@@ -71,7 +76,9 @@ function createIdempotencyKey() {
     return globalThis.crypto.randomUUID();
   }
   const bytes = globalThis.crypto.getRandomValues(new Uint8Array(16));
-  return Array.from(bytes, (value) => value.toString(16).padStart(2, '0')).join('');
+  return Array.from(bytes, (value) => value.toString(16).padStart(2, '0')).join(
+    ''
+  );
 }
 
 function interpolatePath(
@@ -93,7 +100,8 @@ function appendQuery(
   query?: Record<string, unknown> | URLSearchParams
 ) {
   if (!query) return path;
-  const values = query instanceof URLSearchParams ? query : new URLSearchParams();
+  const values =
+    query instanceof URLSearchParams ? query : new URLSearchParams();
   if (!(query instanceof URLSearchParams)) {
     for (const [key, value] of Object.entries(query)) {
       if (value === undefined || value === null) continue;
@@ -111,30 +119,33 @@ function appendQuery(
 function serializeBody(body: unknown, headers: Headers) {
   if (body === undefined || body === null) return undefined;
   if (
-    body instanceof FormData
-    || body instanceof Blob
-    || body instanceof ArrayBuffer
-    || typeof body === 'string'
+    body instanceof FormData ||
+    body instanceof Blob ||
+    body instanceof ArrayBuffer ||
+    typeof body === 'string'
   ) {
     return body;
   }
-  if (!headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
+  if (!headers.has('Content-Type'))
+    headers.set('Content-Type', 'application/json');
   return JSON.stringify(body);
 }
 
 async function errorFromResponse(response: Response) {
   const payload: unknown = await response.json().catch(() => undefined);
-  const envelope = payload && typeof payload === 'object'
-    ? (payload as { error?: unknown }).error
-    : undefined;
-  const error = envelope && typeof envelope === 'object'
-    ? envelope as {
-        code?: unknown;
-        message?: unknown;
-        details?: unknown;
-        request_id?: unknown;
-      }
-    : {};
+  const envelope =
+    payload && typeof payload === 'object'
+      ? (payload as { error?: unknown }).error
+      : undefined;
+  const error =
+    envelope && typeof envelope === 'object'
+      ? (envelope as {
+          code?: unknown;
+          message?: unknown;
+          details?: unknown;
+          request_id?: unknown;
+        })
+      : {};
   return new ApiError(
     response.status,
     String(error.code ?? 'request_failed'),
@@ -175,7 +186,7 @@ export async function apiJson<T>(
 ): Promise<T> {
   const response = await apiResponse(path, init);
   if (response.status === 204) return undefined as T;
-  return await response.json() as T;
+  return (await response.json()) as T;
 }
 
 export async function typedApiJson<
@@ -187,13 +198,7 @@ export async function typedApiJson<
   method: M,
   options: TypedApiOptions<P, M> = {} as TypedApiOptions<P, M>
 ): Promise<Response> {
-  const {
-    path: pathParameters,
-    query,
-    headers,
-    body,
-    ...init
-  } = options;
+  const { path: pathParameters, query, headers, body, ...init } = options;
   const resolvedPath = appendQuery(
     interpolatePath(
       path,
@@ -254,7 +259,10 @@ export async function uploadManagedFile(
   for (let index = 0; index < upload.chunk_count; index += 1) {
     if (received.has(index)) continue;
     const start = index * upload.chunk_size;
-    const body = file.slice(start, Math.min(file.size, start + upload.chunk_size));
+    const body = file.slice(
+      start,
+      Math.min(file.size, start + upload.chunk_size)
+    );
     await typedApiJson<
       '/api/v1/uploads/{uploadId}/chunks/{index}',
       'put',

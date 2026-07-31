@@ -1,10 +1,6 @@
 import { artifactRoleLabel } from './artifact-display';
 import { sessionApi } from './domain-api';
-import type {
-  LoadState,
-  WorkflowSnapshot,
-  WorkflowStage
-} from './api-models';
+import type { LoadState, WorkflowSnapshot, WorkflowStage } from './api-models';
 import {
   invalidates,
   invalidationBus,
@@ -67,7 +63,9 @@ export class WorkflowStore {
 
   connect() {
     if (this.unsubscribe) return this.unsubscribe;
-    this.unsubscribe = invalidationBus.subscribe((batch) => this.invalidate(batch));
+    this.unsubscribe = invalidationBus.subscribe((batch) =>
+      this.invalidate(batch)
+    );
     return () => {
       this.unsubscribe?.();
       this.unsubscribe = undefined;
@@ -87,18 +85,23 @@ export class WorkflowStore {
     if (!snapshot) return;
     let changed = false;
     const stages = snapshot.stages.map((stage): WorkflowStage => {
-      const update = batch.events.find((event) =>
-        event.session_id === this.sessionId
-        && event.job_id
-        && event.job_id === stage.job_id
+      const update = batch.events.find(
+        (event) =>
+          event.session_id === this.sessionId &&
+          event.job_id &&
+          event.job_id === stage.job_id
       );
       if (!update) return stage;
       changed = true;
       return {
         ...stage,
-        ...(update.progress !== undefined ? { progress: Number(update.progress) } : {}),
+        ...(update.progress !== undefined
+          ? { progress: Number(update.progress) }
+          : {}),
         ...(update.detail !== undefined ? { detail: update.detail } : {}),
-        ...(['queued', 'running', 'cancel_requested'].includes(String(update.status ?? ''))
+        ...(['queued', 'running', 'cancel_requested'].includes(
+          String(update.status ?? '')
+        )
           ? { status: 'running' as const }
           : {})
       };

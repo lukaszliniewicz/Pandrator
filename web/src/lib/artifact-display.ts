@@ -40,7 +40,7 @@ const ROLE_LABELS: Record<string, string> = {
   pdf_edit: 'Edited PDF'
 };
 
-export function humanizeIdentifier(value?: string | null) {
+function humanizeIdentifier(value?: string | null) {
   if (!value) return 'Artifact';
   return value
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
@@ -51,14 +51,19 @@ export function humanizeIdentifier(value?: string | null) {
 }
 
 export function artifactRoleLabel(role?: string | null) {
-  return ROLE_LABELS[String(role ?? '').toLowerCase()] ?? humanizeIdentifier(role);
+  return (
+    ROLE_LABELS[String(role ?? '').toLowerCase()] ?? humanizeIdentifier(role)
+  );
 }
 
 export function artifactFilename(artifact: PreviewableArtifact) {
   const original = artifact.metadata_json?.original_filename;
   if (typeof original === 'string' && original.trim()) return original;
   const path = artifact.relative_path ?? artifact.path ?? '';
-  return path.split(/[\\/]/).filter(Boolean).at(-1) ?? artifactRoleLabel(artifact.role);
+  return (
+    path.split(/[\\/]/).filter(Boolean).at(-1) ??
+    artifactRoleLabel(artifact.role)
+  );
 }
 
 export function formatBytes(value?: number | null) {

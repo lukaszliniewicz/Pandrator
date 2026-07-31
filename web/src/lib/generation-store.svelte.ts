@@ -1,3 +1,4 @@
+import { errorMessage } from './errors';
 import { generationApi, type GenerationSegmentChanges } from './domain-api';
 import type {
   GenerationRun,
@@ -76,20 +77,21 @@ export class GenerationStore {
   }
 
   async load(options: GenerationLoadOptions): Promise<GenerationLoadResult> {
-    const {
-      filter,
-      reset = true,
-      preserveLoaded = reset
-    } = options;
+    const { filter, reset = true, preserveLoaded = reset } = options;
     this.controller?.abort();
     const controller = new AbortController();
     this.controller = controller;
     this.status = this.payload.total ? 'stale' : 'loading';
     this.error = '';
     try {
-      const query = new URLSearchParams({ limit: '100' });
+      const requestedLimit =
+        reset && preserveLoaded
+          ? Math.min(250, Math.max(100, this.loadedThroughOrdinal + 1))
+          : 100;
+      const query = new URLSearchParams({ limit: String(requestedLimit) });
       if (filter === 'marked') query.set('marked', 'true');
-      else if (filter === 'verification_issues') query.set('verification', 'issues');
+      else if (filter === 'verification_issues')
+        query.set('verification', 'issues');
       else if (filter !== 'all') query.set('status', filter);
       if (!reset && this.payload.next_cursor != null) {
         query.set('cursor', String(this.payload.next_cursor));
@@ -107,14 +109,24 @@ export class GenerationStore {
         };
       }
       const runs = runPayload.items;
-      const activeRun = runs.find((item) =>
-        ['queued', 'running', 'pausing', 'pause_requested', 'cancel_requested', 'paused']
-          .includes(item.status)
-      ) ?? runs[0] ?? null;
-      const selectedRunId = options.selectedRunId
-        && runs.some((item) => item.id === options.selectedRunId)
-        ? options.selectedRunId
-        : activeRun?.id ?? '';
+      const activeRun =
+        runs.find((item) =>
+          [
+            'queued',
+            'running',
+            'pausing',
+            'pause_requested',
+            'cancel_requested',
+            'paused'
+          ].includes(item.status)
+        ) ??
+        runs[0] ??
+        null;
+      const selectedRunId =
+        options.selectedRunId &&
+        runs.some((item) => item.id === options.selectedRunId)
+          ? options.selectedRunId
+          : (activeRun?.id ?? '');
       if (selectedRunId) query.set('generation_run_id', selectedRunId);
       const next = await generationApi.segments(
         this.sessionId,
@@ -135,19 +147,19 @@ export class GenerationStore {
           ]
         };
       } else if (
-        preserveLoaded
-        && this.loadedFilter === filter
-        && this.loadedRunId === selectedRunId
-        && this.payload.plan_revision_id === next.plan_revision_id
-        && this.loadedThroughOrdinal > (next.items.at(-1)?.ordinal ?? -1)
+        preserveLoaded &&
+        this.loadedFilter === filter &&
+        this.loadedRunId === selectedRunId &&
+        this.payload.plan_revision_id === next.plan_revision_id &&
+        this.loadedThroughOrdinal > (next.items.at(-1)?.ordinal ?? -1)
       ) {
         const items = [...next.items];
         const known = new Set(items.map((item) => item.id));
         const lastLoadedOrdinal = this.loadedThroughOrdinal;
         let nextCursor = next.next_cursor;
         while (
-          nextCursor != null
-          && (items.at(-1)?.ordinal ?? -1) < lastLoadedOrdinal
+          nextCursor != null &&
+          (items.at(-1)?.ordinal ?? -1) < lastLoadedOrdinal
         ) {
           const pageQuery = new URLSearchParams(query);
           pageQuery.set('cursor', String(nextCursor));
@@ -173,25 +185,25 @@ export class GenerationStore {
       this.runs = runs;
       this.activeRun = activeRun;
       this.assembly = latestAssembly.item;
-      const sameLoadedScope = (
-        this.loadedFilter === filter
-        && this.loadedRunId === selectedRunId
-        && this.loadedPlanRevisionId === payload.plan_revision_id
-      );
+      const sameLoadedScope =
+        this.loadedFilter === filter &&
+        this.loadedRunId === selectedRunId &&
+        this.loadedPlanRevisionId === payload.plan_revision_id;
       this.loadedFilter = filter;
       this.loadedRunId = selectedRunId;
       this.loadedPlanRevisionId = payload.plan_revision_id;
       this.loadedThroughOrdinal = sameLoadedScope
-        ? Math.max(this.loadedThroughOrdinal, payload.items.at(-1)?.ordinal ?? -1)
-        : payload.items.at(-1)?.ordinal ?? -1;
-      const shouldExpand = this.initialized && (
-        (previousTotal === 0 && payload.total > 0)
-        || (
-          activeRun?.id
-          && activeRun.id !== previousRunId
-          && ['queued', 'running', 'pausing'].includes(activeRun.status)
-        )
-      );
+        ? Math.max(
+            this.loadedThroughOrdinal,
+            payload.items.at(-1)?.ordinal ?? -1
+          )
+        : (payload.items.at(-1)?.ordinal ?? -1);
+      const shouldExpand =
+        this.initialized &&
+        ((previousTotal === 0 && payload.total > 0) ||
+          (activeRun?.id &&
+            activeRun.id !== previousRunId &&
+            ['queued', 'running', 'pausing'].includes(activeRun.status)));
       this.initialized = true;
       this.status = payload.total ? 'ready' : 'empty';
       return { selectedRunId, shouldExpand: Boolean(shouldExpand) };
@@ -202,7 +214,7 @@ export class GenerationStore {
           shouldExpand: false
         };
       }
-      this.error = caught instanceof Error ? caught.message : String(caught);
+      this.error = errorMessage(caught);
       this.status = 'failed';
       throw caught;
     } finally {
@@ -249,10 +261,9 @@ export class GenerationStore {
   }
 
   upsertRun(run: GenerationRun) {
-    this.runs = [
-      run,
-      ...this.runs.filter((item) => item.id !== run.id)
-    ].sort((left, right) => right.sequence_number - left.sequence_number);
+    this.runs = [run, ...this.runs.filter((item) => item.id !== run.id)].sort(
+      (left, right) => right.sequence_number - left.sequence_number
+    );
     this.activeRun = run;
   }
 
@@ -275,14 +286,16 @@ export class GenerationStore {
     this.unsubscribe = invalidationBus.subscribe((batch) => {
       this.patchLiveProgress(batch);
       if (
-        invalidates(batch, 'generation', this.sessionId)
-        || invalidates(batch, 'output', this.sessionId)
+        invalidates(batch, 'generation', this.sessionId) ||
+        invalidates(batch, 'output', this.sessionId)
       ) {
         this.load({
           ...getOptions(),
           reset: true,
           preserveLoaded: true
-        }).then(onLoaded).catch(() => undefined);
+        })
+          .then(onLoaded)
+          .catch(() => undefined);
       }
     });
     return () => {
@@ -302,9 +315,13 @@ export class GenerationStore {
       event: PandratorServerEvent
     ): T => ({
       ...item,
-      ...(event.progress !== undefined ? { progress: Number(event.progress) } : {}),
+      ...(event.progress !== undefined
+        ? { progress: Number(event.progress) }
+        : {}),
       ...(event.detail !== undefined ? { progress_detail: event.detail } : {}),
-      ...(['queued', 'running', 'cancel_requested'].includes(String(event.status ?? ''))
+      ...(['queued', 'running', 'cancel_requested'].includes(
+        String(event.status ?? '')
+      )
         ? { status: String(event.status) }
         : {})
     });
@@ -314,37 +331,31 @@ export class GenerationStore {
       this.runs = this.runs.map((item) => {
         let next = item;
         if (
-          (generationRunId && item.id === generationRunId)
-          || (event.job_id && item.job_id === event.job_id)
+          (generationRunId && item.id === generationRunId) ||
+          (event.job_id && item.job_id === event.job_id)
         ) {
           next = patch(next, event);
         }
         if (
-          next.assembly
-          && (
-            (assemblyId && next.assembly.id === assemblyId)
-            || (event.job_id && next.assembly.job_id === event.job_id)
-          )
+          next.assembly &&
+          ((assemblyId && next.assembly.id === assemblyId) ||
+            (event.job_id && next.assembly.job_id === event.job_id))
         ) {
           next = { ...next, assembly: patch(next.assembly, event) };
         }
         return next;
       });
       if (
-        this.activeRun
-        && (
-          (generationRunId && this.activeRun.id === generationRunId)
-          || (event.job_id && this.activeRun.job_id === event.job_id)
-        )
+        this.activeRun &&
+        ((generationRunId && this.activeRun.id === generationRunId) ||
+          (event.job_id && this.activeRun.job_id === event.job_id))
       ) {
         this.activeRun = patch(this.activeRun, event);
       }
       if (
-        this.assembly
-        && (
-          (assemblyId && this.assembly.id === assemblyId)
-          || (event.job_id && this.assembly.job_id === event.job_id)
-        )
+        this.assembly &&
+        ((assemblyId && this.assembly.id === assemblyId) ||
+          (event.job_id && this.assembly.job_id === event.job_id))
       ) {
         this.assembly = patch(this.assembly, event);
       }

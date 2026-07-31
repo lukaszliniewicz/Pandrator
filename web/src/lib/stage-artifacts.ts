@@ -22,7 +22,10 @@ const dateFormatter = new Intl.DateTimeFormat(undefined, {
 });
 
 const languageLabels = new Map(
-  LANGUAGE_OPTIONS.map((option) => [String(option.value).toLowerCase(), option.label])
+  LANGUAGE_OPTIONS.map((option) => [
+    String(option.value).toLowerCase(),
+    option.label
+  ])
 );
 
 const engineLabels: Record<string, string> = {
@@ -62,15 +65,28 @@ export function formatArtifactDate(value: string) {
 
 export function artifactOptionLabel(artifact: StageArtifact) {
   const details = artifact.metadata_json ?? {};
-  const rawDescriptor = metadataText(details, 'model', 'model_name', 'engine', 'backend');
-  const descriptor = engineLabels[rawDescriptor.toLowerCase()] ?? backendLabels[rawDescriptor.toLowerCase()] ?? rawDescriptor;
+  const rawDescriptor = metadataText(
+    details,
+    'model',
+    'model_name',
+    'engine',
+    'backend'
+  );
+  const descriptor =
+    engineLabels[rawDescriptor.toLowerCase()] ??
+    backendLabels[rawDescriptor.toLowerCase()] ??
+    rawDescriptor;
   return `v${artifact.version} · ${descriptor ? `${descriptor} · ` : ''}${formatArtifactDate(artifact.created_at)}`;
 }
 
 export function artifactDetails(artifact: StageArtifact): ArtifactDetail[] {
   const metadata = artifact.metadata_json ?? {};
   const engine = metadataText(metadata, 'engine', 'stt_engine').toLowerCase();
-  const quantization = metadataText(metadata, 'model_quantization', 'quantization').toUpperCase();
+  const quantization = metadataText(
+    metadata,
+    'model_quantization',
+    'quantization'
+  ).toUpperCase();
   const rawModel = metadataText(
     metadata,
     'model',
@@ -81,19 +97,47 @@ export function artifactDetails(artifact: StageArtifact): ArtifactDetail[] {
     'llm_model'
   );
   const model = rawModel || engineLabels[engine] || engine;
-  const language = metadataText(metadata, 'language', 'target_language', 'source_language');
-  const backend = metadataText(metadata, 'backend', 'translation_backend').toLowerCase();
-  const compute = metadataText(metadata, 'compute_backend', 'stt_compute_backend').toLowerCase();
+  const language = metadataText(
+    metadata,
+    'language',
+    'target_language',
+    'source_language'
+  );
+  const backend = metadataText(
+    metadata,
+    'backend',
+    'translation_backend'
+  ).toLowerCase();
+  const compute = metadataText(
+    metadata,
+    'compute_backend',
+    'stt_compute_backend'
+  ).toLowerCase();
   const revision = metadataText(metadata, 'revision');
 
   const details: ArtifactDetail[] = [];
   if (model) {
     const displayModel = engineLabels[model.toLowerCase()] ?? model;
-    details.push({ label: 'Model', value: quantization ? `${displayModel} · ${quantization}` : displayModel });
+    details.push({
+      label: 'Model',
+      value: quantization ? `${displayModel} · ${quantization}` : displayModel
+    });
   }
-  if (backend) details.push({ label: 'Backend', value: backendLabels[backend] ?? titleCase(backend) });
-  if (language) details.push({ label: 'Language', value: languageLabels.get(language.toLowerCase()) ?? language });
-  if (compute) details.push({ label: 'Compute', value: backendLabels[compute] ?? titleCase(compute) });
+  if (backend)
+    details.push({
+      label: 'Backend',
+      value: backendLabels[backend] ?? titleCase(backend)
+    });
+  if (language)
+    details.push({
+      label: 'Language',
+      value: languageLabels.get(language.toLowerCase()) ?? language
+    });
+  if (compute)
+    details.push({
+      label: 'Compute',
+      value: backendLabels[compute] ?? titleCase(compute)
+    });
   const research = metadata.research as Record<string, unknown> | undefined;
   if (research) {
     const count = Number(research.evidence_count ?? 0);
@@ -102,6 +146,10 @@ export function artifactDetails(artifact: StageArtifact): ArtifactDetail[] {
       value: `${count} verified ${count === 1 ? 'source' : 'sources'}`
     });
   }
-  if (metadata.reviewed === true) details.push({ label: 'Edit', value: revision ? `Reviewed revision ${revision}` : 'Manually reviewed' });
+  if (metadata.reviewed === true)
+    details.push({
+      label: 'Edit',
+      value: revision ? `Reviewed revision ${revision}` : 'Manually reviewed'
+    });
   return details;
 }

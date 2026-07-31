@@ -19,7 +19,11 @@ function isWordCharacter(value: string | undefined) {
   return Boolean(value && /[\p{L}\p{N}_]/u.test(value));
 }
 
-export function findTextMatches(texts: string[], query: string, options: TextSearchOptions = {}): TextSearchMatch[] {
+export function findTextMatches(
+  texts: string[],
+  query: string,
+  options: TextSearchOptions = {}
+): TextSearchMatch[] {
   if (!query) return [];
   const needle = options.matchCase ? query : query.toLocaleLowerCase();
   const matches: TextSearchMatch[] = [];
@@ -31,8 +35,9 @@ export function findTextMatches(texts: string[], query: string, options: TextSea
       const start = haystack.indexOf(needle, offset);
       if (start < 0) break;
       const end = start + needle.length;
-      const wholeWordMatch = !options.wholeWord
-        || (!isWordCharacter(text[start - 1]) && !isWordCharacter(text[end]));
+      const wholeWordMatch =
+        !options.wholeWord ||
+        (!isWordCharacter(text[start - 1]) && !isWordCharacter(text[end]));
       if (wholeWordMatch) matches.push({ itemIndex, start, end });
       offset = Math.max(end, start + 1);
     }
@@ -53,11 +58,15 @@ export function replacementsForMatches(
     grouped.set(match.itemIndex, existing);
   }
 
-  return [...grouped.entries()].map(([index, itemMatches]) => {
-    let text = texts[index] ?? '';
-    for (const match of itemMatches.slice().sort((left, right) => right.start - left.start)) {
-      text = `${text.slice(0, match.start)}${replacement}${text.slice(match.end)}`;
-    }
-    return { index, text, matchCount: itemMatches.length };
-  }).sort((left, right) => left.index - right.index);
+  return [...grouped.entries()]
+    .map(([index, itemMatches]) => {
+      let text = texts[index] ?? '';
+      for (const match of itemMatches
+        .slice()
+        .sort((left, right) => right.start - left.start)) {
+        text = `${text.slice(0, match.start)}${replacement}${text.slice(match.end)}`;
+      }
+      return { index, text, matchCount: itemMatches.length };
+    })
+    .sort((left, right) => left.index - right.index);
 }

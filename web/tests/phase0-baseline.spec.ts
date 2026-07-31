@@ -5,7 +5,10 @@ declare global {
     __pandratorEventSources?: Array<{
       emit: (type: string, payload: Record<string, unknown>) => void;
     }>;
-    __emitPandratorEvent?: (type: string, payload: Record<string, unknown>) => number;
+    __emitPandratorEvent?: (
+      type: string,
+      payload: Record<string, unknown>
+    ) => number;
   }
 }
 
@@ -15,9 +18,11 @@ type RequestSummary = {
 };
 
 const phase0BaselineEnabled = Boolean(
-  (globalThis as typeof globalThis & {
-    process?: { env?: Record<string, string | undefined> };
-  }).process?.env?.PANDRATOR_PHASE0_BASELINE
+  (
+    globalThis as typeof globalThis & {
+      process?: { env?: Record<string, string | undefined> };
+    }
+  ).process?.env?.PANDRATOR_PHASE0_BASELINE
 );
 
 function summarize(requests: Request[]): RequestSummary {
@@ -30,13 +35,22 @@ function summarize(requests: Request[]): RequestSummary {
   return { total: requests.length, byPath };
 }
 
-function difference(observed: RequestSummary, baseline: RequestSummary): RequestSummary {
-  const paths = new Set([...Object.keys(observed.byPath), ...Object.keys(baseline.byPath)]);
+function difference(
+  observed: RequestSummary,
+  baseline: RequestSummary
+): RequestSummary {
+  const paths = new Set([
+    ...Object.keys(observed.byPath),
+    ...Object.keys(baseline.byPath)
+  ]);
   return {
     total: observed.total - baseline.total,
     byPath: Object.fromEntries(
       [...paths]
-        .map((path) => [path, (observed.byPath[path] ?? 0) - (baseline.byPath[path] ?? 0)])
+        .map((path) => [
+          path,
+          (observed.byPath[path] ?? 0) - (baseline.byPath[path] ?? 0)
+        ])
         .filter(([, count]) => count !== 0)
     )
   };
@@ -45,17 +59,24 @@ function difference(observed: RequestSummary, baseline: RequestSummary): Request
 async function installControllableEventSource(page: Page) {
   await page.addInitScript(() => {
     class BaselineEventSource {
-      private listeners = new Map<string, Array<(event: MessageEvent) => void>>();
+      private listeners = new Map<
+        string,
+        Array<(event: MessageEvent) => void>
+      >();
 
       constructor(_url: string) {
         window.__pandratorEventSources = window.__pandratorEventSources ?? [];
         window.__pandratorEventSources.push(this);
       }
 
-      addEventListener(type: string, listener: EventListenerOrEventListenerObject) {
-        const callback = typeof listener === 'function'
-          ? listener
-          : (event: Event) => listener.handleEvent(event);
+      addEventListener(
+        type: string,
+        listener: EventListenerOrEventListenerObject
+      ) {
+        const callback =
+          typeof listener === 'function'
+            ? listener
+            : (event: Event) => listener.handleEvent(event);
         const listeners = this.listeners.get(type) ?? [];
         listeners.push(callback as (event: MessageEvent) => void);
         this.listeners.set(type, listeners);
@@ -90,12 +111,18 @@ async function signIn(page: Page) {
   if (await closeTour.isVisible()) await closeTour.click();
 }
 
-test('records API request fan-out caused by one job event', async ({ page, browserName }) => {
+test('records API request fan-out caused by one job event', async ({
+  page,
+  browserName
+}) => {
   test.skip(
     !phase0BaselineEnabled,
     'Run through scripts/phase0_baseline.py --include-browser.'
   );
-  test.skip(browserName !== 'chromium', 'One browser is sufficient for this diagnostic.');
+  test.skip(
+    browserName !== 'chromium',
+    'One browser is sufficient for this diagnostic.'
+  );
 
   await installControllableEventSource(page);
   await signIn(page);
@@ -104,9 +131,9 @@ test('records API request fan-out caused by one job event', async ({ page, brows
   page.on('request', (request) => {
     const url = new URL(request.url());
     if (
-      request.method() === 'GET'
-      && url.pathname.startsWith('/api/v1/')
-      && url.pathname !== '/api/v1/events'
+      request.method() === 'GET' &&
+      url.pathname.startsWith('/api/v1/') &&
+      url.pathname !== '/api/v1/events'
     ) {
       requests.push(request);
     }
@@ -114,13 +141,14 @@ test('records API request fan-out caused by one job event', async ({ page, brows
 
   await page.waitForTimeout(800);
   requests.length = 0;
-  const globallyDelivered = await page.evaluate(() => (
-    window.__emitPandratorEvent?.('job.progress', {
-      job_id: 'phase0-global-event-job',
-      job_kind: 'noop',
-      progress: 0.5
-    }) ?? 0
-  ));
+  const globallyDelivered = await page.evaluate(
+    () =>
+      window.__emitPandratorEvent?.('job.progress', {
+        job_id: 'phase0-global-event-job',
+        job_kind: 'noop',
+        progress: 0.5
+      }) ?? 0
+  );
   expect(globallyDelivered).toBeGreaterThan(0);
   await page.waitForTimeout(800);
   const globalEventWindow = summarize(requests);
@@ -145,25 +173,29 @@ test('records API request fan-out caused by one job event', async ({ page, brows
   const ambient = summarize(requests);
   requests.length = 0;
 
-  const delivered = await page.evaluate((sessionId) => (
-    window.__emitPandratorEvent?.('job.progress', {
-      job_id: 'phase0-event-job',
-      job_kind: 'audiobook.generate_audio',
-      session_id: sessionId,
-      progress: 0.5
-    }) ?? 0
-  ), session.id);
+  const delivered = await page.evaluate(
+    (sessionId) =>
+      window.__emitPandratorEvent?.('job.progress', {
+        job_id: 'phase0-event-job',
+        job_kind: 'audiobook.generate_audio',
+        session_id: sessionId,
+        progress: 0.5
+      }) ?? 0,
+    session.id
+  );
   expect(delivered).toBeGreaterThan(0);
 
   await page.waitForTimeout(800);
   const eventWindow = summarize(requests);
-  console.log(`PHASE0_EVENT_FANOUT=${JSON.stringify({
-    windowMs: 800,
-    globalEventWindow,
-    sessionAmbient: ambient,
-    sessionAmbientRequestsPerSecond: ambient.total / 0.8,
-    sessionEventWindow: eventWindow,
-    sessionEventDelta: difference(eventWindow, ambient),
-    sessionEventRequestsPerSecond: eventWindow.total / 0.8
-  })}`);
+  console.log(
+    `PHASE0_EVENT_FANOUT=${JSON.stringify({
+      windowMs: 800,
+      globalEventWindow,
+      sessionAmbient: ambient,
+      sessionAmbientRequestsPerSecond: ambient.total / 0.8,
+      sessionEventWindow: eventWindow,
+      sessionEventDelta: difference(eventWindow, ambient),
+      sessionEventRequestsPerSecond: eventWindow.total / 0.8
+    })}`
+  );
 });

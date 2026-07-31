@@ -1,7 +1,4 @@
-import {
-  typedApiJson,
-  type ApiSchema
-} from './api';
+import { typedApiJson, type ApiSchema } from './api';
 import type {
   AgentRun,
   AgentStep,
@@ -138,31 +135,33 @@ export const sessionApi = {
       path: { sessionId }
     }),
   outcome: (sessionId: string) =>
-    typedApiJson<'/api/v1/sessions/{sessionId}/outcome-plan', 'get', OutcomePlan>(
+    typedApiJson<
       '/api/v1/sessions/{sessionId}/outcome-plan',
       'get',
-      { path: { sessionId } }
-    ),
+      OutcomePlan
+    >('/api/v1/sessions/{sessionId}/outcome-plan', 'get', {
+      path: { sessionId }
+    }),
   updateOutcome: (
     sessionId: string,
     revision: number,
     value: OutcomePlan['value']
   ) =>
-    typedApiJson<'/api/v1/sessions/{sessionId}/outcome-plan', 'put', OutcomePlan>(
+    typedApiJson<
       '/api/v1/sessions/{sessionId}/outcome-plan',
       'put',
-      {
-        path: { sessionId },
-        headers: { 'If-Match': `"${revision}"` },
-        body: { value }
-      }
-    ),
+      OutcomePlan
+    >('/api/v1/sessions/{sessionId}/outcome-plan', 'put', {
+      path: { sessionId },
+      headers: { 'If-Match': `"${revision}"` },
+      body: { value }
+    }),
   workflow: (sessionId: string) =>
-    typedApiJson<'/api/v1/sessions/{sessionId}/workflow', 'get', WorkflowSnapshot>(
+    typedApiJson<
       '/api/v1/sessions/{sessionId}/workflow',
       'get',
-      { path: { sessionId } }
-    ),
+      WorkflowSnapshot
+    >('/api/v1/sessions/{sessionId}/workflow', 'get', { path: { sessionId } }),
   settings: (sessionId: string, section: string) =>
     typedApiJson<
       '/api/v1/sessions/{sessionId}/settings/{section}',
@@ -232,9 +231,13 @@ export const sessionApi = {
       '/api/v1/sessions/{sessionId}/stages/{stageKey}/settings-mismatches',
       'get',
       StageSettingsMismatch
-    >('/api/v1/sessions/{sessionId}/stages/{stageKey}/settings-mismatches', 'get', {
-      path: { sessionId, stageKey }
-    }),
+    >(
+      '/api/v1/sessions/{sessionId}/stages/{stageKey}/settings-mismatches',
+      'get',
+      {
+        path: { sessionId, stageKey }
+      }
+    ),
   runStage: (
     sessionId: string,
     stageKey: string,
@@ -269,7 +272,8 @@ export const sessionApi = {
     beforeVersion?: number | null
   ) => {
     const query = new URLSearchParams({ limit: '50' });
-    if (beforeVersion != null) query.set('before_version', String(beforeVersion));
+    if (beforeVersion != null)
+      query.set('before_version', String(beforeVersion));
     return typedApiJson<
       '/api/v1/sessions/{sessionId}/stages/{stageKey}/artifacts',
       'get',
@@ -329,11 +333,7 @@ export const sessionApi = {
     >('/api/v1/sessions/{sessionId}/sources', 'get', {
       path: { sessionId }
     }),
-  attachSource: (
-    sessionId: string,
-    sourceAssetId: string,
-    role = 'primary'
-  ) =>
+  attachSource: (sessionId: string, sourceAssetId: string, role = 'primary') =>
     typedApiJson<
       '/api/v1/sessions/{sessionId}/sources',
       'post',
@@ -349,11 +349,7 @@ export const sessionApi = {
       path: { sessionId },
       body: { source_asset_id: sourceAssetId, role }
     }),
-  detachSource: (
-    sessionId: string,
-    attachmentId: string,
-    revision: number
-  ) =>
+  detachSource: (sessionId: string, attachmentId: string, revision: number) =>
     typedApiJson<
       '/api/v1/sessions/{sessionId}/sources/{attachmentId}',
       'delete',
@@ -363,14 +359,14 @@ export const sessionApi = {
       headers: { 'If-Match': `"${revision}"` }
     }),
   downloadSourceUrl: (sessionId: string, url: string) =>
-    typedApiJson<
+    typedApiJson<'/api/v1/sessions/{sessionId}/sources/url', 'post', JobRecord>(
       '/api/v1/sessions/{sessionId}/sources/url',
       'post',
-      JobRecord
-    >('/api/v1/sessions/{sessionId}/sources/url', 'post', {
-      path: { sessionId },
-      body: { url }
-    }),
+      {
+        path: { sessionId },
+        body: { url }
+      }
+    ),
   documents: (sessionId: string) =>
     typedApiJson<
       '/api/v1/sessions/{sessionId}/documents',
@@ -396,14 +392,14 @@ export const sessionApi = {
     sourceArtifactId: string,
     settings: Record<string, unknown>
   ) =>
-    typedApiJson<
+    typedApiJson<'/api/v1/sessions/{sessionId}/agent-runs', 'post', AgentRun>(
       '/api/v1/sessions/{sessionId}/agent-runs',
       'post',
-      AgentRun
-    >('/api/v1/sessions/{sessionId}/agent-runs', 'post', {
-      path: { sessionId },
-      body: { source_artifact_id: sourceArtifactId, settings }
-    }),
+      {
+        path: { sessionId },
+        body: { source_artifact_id: sourceArtifactId, settings }
+      }
+    ),
   agentSteps: (runId: string) =>
     typedApiJson<
       '/api/v1/agent-runs/{runId}/steps',
@@ -499,11 +495,11 @@ export const artifactApi = {
     if (sessionId) body.set('session_id', sessionId);
     if (purpose) body.set('purpose', purpose);
     body.set('file', file);
-    return typedApiJson<
+    return typedApiJson<'/api/v1/uploads', 'post', { artifact_id: string }>(
       '/api/v1/uploads',
       'post',
-      { artifact_id: string }
-    >('/api/v1/uploads', 'post', { body });
+      { body }
+    );
   },
   list: (
     options: {
@@ -516,11 +512,11 @@ export const artifactApi = {
     if (options.sessionId) query.set('session_id', options.sessionId);
     if (options.limit) query.set('limit', String(options.limit));
     if (options.includeDeleted) query.set('include_deleted', 'true');
-    return typedApiJson<
+    return typedApiJson<'/api/v1/artifacts', 'get', ItemPage<ArtifactRecord>>(
       '/api/v1/artifacts',
       'get',
-      ItemPage<ArtifactRecord>
-    >('/api/v1/artifacts', 'get', { query });
+      { query }
+    );
   },
   context: (artifactId: string) =>
     typedApiJson<
@@ -563,14 +559,14 @@ export const jobApi = {
     ),
   cancel: (jobId: string) => sessionApi.cancelJob(jobId),
   logs: (jobId: string, limit = 2000) =>
-    typedApiJson<
+    typedApiJson<'/api/v1/jobs/{jobId}/logs', 'get', ItemPage<JobLogRecord>>(
       '/api/v1/jobs/{jobId}/logs',
       'get',
-      ItemPage<JobLogRecord>
-    >('/api/v1/jobs/{jobId}/logs', 'get', {
-      path: { jobId },
-      query: new URLSearchParams({ limit: String(limit) })
-    })
+      {
+        path: { jobId },
+        query: new URLSearchParams({ limit: String(limit) })
+      }
+    )
 };
 
 export type GenerationSegmentChanges = Partial<
@@ -587,11 +583,7 @@ export const generationApi = {
       path: { sessionId },
       signal
     }),
-  segments: (
-    sessionId: string,
-    query: URLSearchParams,
-    signal?: AbortSignal
-  ) =>
+  segments: (sessionId: string, query: URLSearchParams, signal?: AbortSignal) =>
     typedApiJson<
       '/api/v1/sessions/{sessionId}/generation-segments',
       'get',
@@ -623,10 +615,7 @@ export const generationApi = {
       headers: { 'If-Match': `"${segment.revision}"` },
       body: changes
     }),
-  selectTake: (
-    segment: GenerationSegment,
-    takeId: string
-  ) =>
+  selectTake: (segment: GenerationSegment, takeId: string) =>
     typedApiJson<
       '/api/v1/generation-segments/{segmentId}/takes/{takeId}/select',
       'post',
@@ -660,10 +649,7 @@ export const generationApi = {
       '/api/v1/rvc/models',
       'get'
     ),
-  runAction: (
-    runId: string,
-    action: 'pause' | 'resume' | 'cancel'
-  ) => {
+  runAction: (runId: string, action: 'pause' | 'resume' | 'cancel') => {
     if (action === 'pause') {
       return typedApiJson<
         '/api/v1/generation-runs/{runId}/pause',

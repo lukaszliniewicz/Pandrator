@@ -47,7 +47,9 @@
 
   const progressPercent = (value: number | null | undefined) => {
     const numeric = Number(value ?? 0);
-    return Math.round(Math.max(0, Math.min(1, Number.isFinite(numeric) ? numeric : 0)) * 100);
+    return Math.round(
+      Math.max(0, Math.min(1, Number.isFinite(numeric) ? numeric : 0)) * 100
+    );
   };
 
   const formatCost = (cost: number | null) => {
@@ -59,10 +61,15 @@
   const StatusIcon = $derived(statusIcon(stage.status));
 </script>
 
-<article class:stage-locked={stage.status === 'unavailable'} class="surface rounded-[1.4rem] p-5 sm:p-6">
+<article
+  class:stage-locked={stage.status === 'unavailable'}
+  class="surface rounded-[1.4rem] p-5 sm:p-6"
+>
   <div class="flex flex-col gap-5 lg:flex-row lg:items-center">
     <div class="flex min-w-0 flex-1 items-start gap-4">
-      <div class="grid size-11 shrink-0 place-items-center rounded-2xl bg-[var(--accent-soft)] text-sm font-bold text-[var(--accent)]">
+      <div
+        class="grid size-11 shrink-0 place-items-center rounded-2xl bg-[var(--accent-soft)] text-sm font-bold text-[var(--accent)]"
+      >
         {stage.number}
       </div>
       <div class="min-w-0">
@@ -71,20 +78,32 @@
           <span
             class:running={stage.status === 'running'}
             class:done={stage.status === 'completed'}
-            class:warning={stage.status === 'stale' || stage.status === 'failed'}
+            class:warning={stage.status === 'stale' ||
+              stage.status === 'failed'}
             class="status-chip inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[.68rem] font-bold uppercase tracking-wider"
           >
-            <StatusIcon class={stage.status === 'running' ? 'animate-spin' : ''} size={12}/>
-            {stage.toggle ? (stage.enabled ? 'enabled' : 'disabled') : stage.status}
+            <StatusIcon
+              class={stage.status === 'running' ? 'animate-spin' : ''}
+              size={12}
+            />
+            {stage.toggle
+              ? stage.enabled
+                ? 'enabled'
+                : 'disabled'
+              : stage.status}
           </span>
         </div>
-        <p class="muted mt-1.5 max-w-2xl text-sm leading-relaxed">{stage.explanation}</p>
+        <p class="muted mt-1.5 max-w-2xl text-sm leading-relaxed">
+          {stage.explanation}
+        </p>
 
         {#if stage.status === 'running' && stage.progress != null}
           {@const percent = progressPercent(stage.progress)}
           <div class="mt-3 max-w-md">
             <div class="flex items-center justify-between gap-3 text-xs">
-              <span class="muted min-w-0 truncate" title={stage.detail ?? ''}>{stage.detail ?? 'Working…'}</span>
+              <span class="muted min-w-0 truncate" title={stage.detail ?? ''}
+                >{stage.detail ?? 'Working…'}</span
+              >
               <span class="muted shrink-0 tabular-nums">{percent}%</span>
             </div>
             <div
@@ -95,7 +114,10 @@
               aria-valuemax="100"
               aria-valuenow={percent}
             >
-              <div class="h-full bg-[var(--accent)] transition-[width]" style={`width:${percent}%`}></div>
+              <div
+                class="h-full bg-[var(--accent)] transition-[width]"
+                style={`width:${percent}%`}
+              ></div>
             </div>
           </div>
         {/if}
@@ -107,12 +129,13 @@
         {#if stage.key === 'optimize_tts' && stage.usage}
           <p class="muted mt-2 text-xs">
             <strong class="text-[var(--ink)]">Latest usage:</strong>
-            {stage.usage.total_tokens.toLocaleString()} tokens
-            ({stage.usage.input_tokens.toLocaleString()} input,
-            {stage.usage.output_tokens.toLocaleString()} output{stage.usage.cached_input_tokens
+            {stage.usage.total_tokens.toLocaleString()} tokens ({stage.usage.input_tokens.toLocaleString()}
+            input,
+            {stage.usage.output_tokens.toLocaleString()} output{stage.usage
+              .cached_input_tokens
               ? `, ${stage.usage.cached_input_tokens.toLocaleString()} cached`
-              : ''})
-            · {formatCost(stage.usage.cost_usd)} · {stage.usage.model_id}
+              : ''}) · {formatCost(stage.usage.cost_usd)} · {stage.usage
+              .model_id}
           </p>
         {/if}
 
@@ -130,8 +153,11 @@
             {onloadmore}
           />
         {:else if stage.artifact}
-          <button onclick={onpreview} class="mt-2 flex items-center gap-1 text-xs font-semibold text-[var(--accent)]">
-            Preview latest: {stage.artifact.role}<ChevronRight size={13}/>
+          <button
+            onclick={onpreview}
+            class="mt-2 flex items-center gap-1 text-xs font-semibold text-[var(--accent)]"
+          >
+            Preview latest: {stage.artifact.role}<ChevronRight size={13} />
           </button>
         {/if}
       </div>
@@ -139,10 +165,15 @@
 
     <div class="flex flex-wrap items-center gap-2 lg:justify-end">
       {#if stage.toggle}
-        <button onclick={onsettings} class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3.5 py-2.5 text-sm font-semibold">
-          <Settings2 size={16}/> Timing &amp; settings
+        <button
+          onclick={onsettings}
+          class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3.5 py-2.5 text-sm font-semibold"
+        >
+          <Settings2 size={16} /> Timing &amp; settings
         </button>
-        <label class="flex cursor-pointer items-center gap-3 rounded-xl border border-[var(--line)] px-3.5 py-2.5 text-sm font-semibold">
+        <label
+          class="flex cursor-pointer items-center gap-3 rounded-xl border border-[var(--line)] px-3.5 py-2.5 text-sm font-semibold"
+        >
           <input
             type="checkbox"
             checked={Boolean(stage.enabled)}
@@ -153,29 +184,57 @@
         </label>
         {#if !stage.toggle_only && stage.enabled}
           {#if stage.status === 'running'}
-            <button onclick={oncancel} class="rounded-xl border border-red-400/50 px-4 py-2.5 text-sm font-semibold text-red-500">Cancel</button>
+            <button
+              onclick={oncancel}
+              class="rounded-xl border border-red-400/50 px-4 py-2.5 text-sm font-semibold text-red-500"
+              >Cancel</button
+            >
           {:else}
-            <button onclick={onrun} disabled={stage.status === 'unavailable'} class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-35">
-              <Play size={16}/> Run optimization
+            <button
+              onclick={onrun}
+              disabled={stage.status === 'unavailable'}
+              class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-35"
+            >
+              <Play size={16} /> Run optimization
             </button>
           {/if}
         {/if}
       {:else if stage.executable}
-        <button onclick={onsettings} class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3.5 py-2.5 text-sm font-semibold">
-          <Settings2 size={16}/> Settings
+        <button
+          onclick={onsettings}
+          class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3.5 py-2.5 text-sm font-semibold"
+        >
+          <Settings2 size={16} /> Settings
         </button>
         {#if workspaceMode === 'review' || stage.key === 'export'}
           {#if stage.status === 'running'}
-            <button onclick={oncancel} class="rounded-xl border border-red-400/50 px-4 py-2.5 text-sm font-semibold text-red-500">Cancel</button>
+            <button
+              onclick={oncancel}
+              class="rounded-xl border border-red-400/50 px-4 py-2.5 text-sm font-semibold text-red-500"
+              >Cancel</button
+            >
           {:else}
-            <button onclick={onrun} disabled={stage.status === 'unavailable'} class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-35">
-              <Play size={16}/> {stage.key === 'export' ? 'Open export' : stage.artifact ? 'Run again' : 'Run now'}
+            <button
+              onclick={onrun}
+              disabled={stage.status === 'unavailable'}
+              class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-35"
+            >
+              <Play size={16} />
+              {stage.key === 'export'
+                ? 'Open export'
+                : stage.artifact
+                  ? 'Run again'
+                  : 'Run now'}
             </button>
           {/if}
         {/if}
       {:else}
-        <button onclick={onrun} disabled={stage.status === 'unavailable'} class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-35">
-          <Sparkles size={16}/> Open comparison
+        <button
+          onclick={onrun}
+          disabled={stage.status === 'unavailable'}
+          class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-35"
+        >
+          <Sparkles size={16} /> Open comparison
         </button>
       {/if}
     </div>
@@ -183,9 +242,23 @@
 </article>
 
 <style>
-  .status-chip { color: var(--muted); background: color-mix(in srgb, var(--muted) 10%, transparent); }
-  .status-chip.done { color: var(--success); background: color-mix(in srgb, var(--success) 12%, transparent); }
-  .status-chip.running { color: var(--accent); background: var(--accent-soft); }
-  .status-chip.warning { color: var(--warning); background: color-mix(in srgb, var(--warning) 12%, transparent); }
-  .stage-locked { opacity: .58; }
+  .status-chip {
+    color: var(--muted);
+    background: color-mix(in srgb, var(--muted) 10%, transparent);
+  }
+  .status-chip.done {
+    color: var(--success);
+    background: color-mix(in srgb, var(--success) 12%, transparent);
+  }
+  .status-chip.running {
+    color: var(--accent);
+    background: var(--accent-soft);
+  }
+  .status-chip.warning {
+    color: var(--warning);
+    background: color-mix(in srgb, var(--warning) 12%, transparent);
+  }
+  .stage-locked {
+    opacity: 0.58;
+  }
 </style>

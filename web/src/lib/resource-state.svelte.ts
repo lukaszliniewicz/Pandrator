@@ -1,3 +1,4 @@
+import { errorMessage } from './errors';
 import type { LoadState } from './api-models';
 
 export class ResourceState<T> {
@@ -27,7 +28,7 @@ export class ResourceState<T> {
   }
 
   fail(caught: unknown) {
-    this.error = caught instanceof Error ? caught.message : String(caught);
+    this.error = errorMessage(caught);
     this.status = 'failed';
   }
 
@@ -36,19 +37,18 @@ export class ResourceState<T> {
     options: { force?: boolean; empty?: (value: T) => boolean } = {}
   ) {
     if (
-      !options.force
-      && (this.status === 'ready' || this.status === 'empty')
+      !options.force &&
+      (this.status === 'ready' || this.status === 'empty')
     ) {
       return this.value;
     }
     if (this.pending) return this.pending;
-    this.status = (
-      this.status === 'ready'
-      || this.status === 'empty'
-      || this.status === 'stale'
-    )
-      ? 'stale'
-      : 'loading';
+    this.status =
+      this.status === 'ready' ||
+      this.status === 'empty' ||
+      this.status === 'stale'
+        ? 'stale'
+        : 'loading';
     this.error = '';
     const request = loader()
       .then((value) => {

@@ -13,4 +13,5 @@ export type SessionContext = {
   reload: () => Promise<void>;
   customize: () => void;
 };
-export const useSessionContext = () => getContext<SessionContext>(SESSION_CONTEXT);
+export const useSessionContext = () =>
+  getContext<SessionContext>(SESSION_CONTEXT);

@@ -6,7 +6,10 @@ declare global {
     __pandratorEventSources?: Array<{
       emit: (type: string, payload: Record<string, unknown>) => void;
     }>;
-    __emitPandratorEvent?: (type: string, payload: Record<string, unknown>) => number;
+    __emitPandratorEvent?: (
+      type: string,
+      payload: Record<string, unknown>
+    ) => number;
   }
 }
 
@@ -15,21 +18,29 @@ async function installControllableEventSource(page: Page) {
     class Phase2EventSource {
       onopen: ((event: Event) => void) | null = null;
       onerror: ((event: Event) => void) | null = null;
-      private listeners = new Map<string, Array<(event: MessageEvent) => void>>();
+      private listeners = new Map<
+        string,
+        Array<(event: MessageEvent) => void>
+      >();
       private cursor = 0;
 
       constructor(url: string) {
-        window.__pandratorEventSourceUrls = window.__pandratorEventSourceUrls ?? [];
+        window.__pandratorEventSourceUrls =
+          window.__pandratorEventSourceUrls ?? [];
         window.__pandratorEventSourceUrls.push(String(url));
         window.__pandratorEventSources = window.__pandratorEventSources ?? [];
         window.__pandratorEventSources.push(this);
         queueMicrotask(() => this.onopen?.(new Event('open')));
       }
 
-      addEventListener(type: string, listener: EventListenerOrEventListenerObject) {
-        const callback = typeof listener === 'function'
-          ? listener
-          : (event: Event) => listener.handleEvent(event);
+      addEventListener(
+        type: string,
+        listener: EventListenerOrEventListenerObject
+      ) {
+        const callback =
+          typeof listener === 'function'
+            ? listener
+            : (event: Event) => listener.handleEvent(event);
         const listeners = this.listeners.get(type) ?? [];
         listeners.push(callback as (event: MessageEvent) => void);
         this.listeners.set(type, listeners);
@@ -69,43 +80,56 @@ async function signIn(page: Page) {
 }
 
 function countRequests(requests: Request[], predicate: (url: URL) => boolean) {
-  return requests.filter((request) => (
-    request.method() === 'GET' && predicate(new URL(request.url()))
-  )).length;
+  return requests.filter(
+    (request) => request.method() === 'GET' && predicate(new URL(request.url()))
+  ).length;
 }
 
-test('event cursor and batched invalidation avoid progress fan-out', async ({ page, browserName }) => {
-  test.skip(browserName !== 'chromium', 'One browser covers the event fan-out contract.');
+test('event cursor and batched invalidation avoid progress fan-out', async ({
+  page,
+  browserName
+}) => {
+  test.skip(
+    browserName !== 'chromium',
+    'One browser covers the event fan-out contract.'
+  );
   await installControllableEventSource(page);
   await signIn(page);
 
-  await expect.poll(() => page.evaluate(
-    () => window.__pandratorEventSourceUrls?.at(-1) ?? ''
-  )).toContain('/api/v1/events?after=');
+  await expect
+    .poll(() =>
+      page.evaluate(() => window.__pandratorEventSourceUrls?.at(-1) ?? '')
+    )
+    .toContain('/api/v1/events?after=');
   const eventSourceUrl = await page.evaluate(
     () => window.__pandratorEventSourceUrls?.at(-1) ?? ''
   );
-  expect(new URL(eventSourceUrl, 'http://127.0.0.1').searchParams.get('after')).toMatch(/^\d+$/);
+  expect(
+    new URL(eventSourceUrl, 'http://127.0.0.1').searchParams.get('after')
+  ).toMatch(/^\d+$/);
 
   const requests: Request[] = [];
   page.on('request', (request) => requests.push(request));
   requests.length = 0;
-  const globalDeliveryCount = await page.evaluate(() => (
-    window.__emitPandratorEvent?.('job.progress', {
-      job_id: 'phase2-global-progress',
-      job_kind: 'noop',
-      status: 'running',
-      progress: 0.5,
-      changed_entities: ['jobs']
-    }) ?? 0
-  ));
+  const globalDeliveryCount = await page.evaluate(
+    () =>
+      window.__emitPandratorEvent?.('job.progress', {
+        job_id: 'phase2-global-progress',
+        job_kind: 'noop',
+        status: 'running',
+        progress: 0.5,
+        changed_entities: ['jobs']
+      }) ?? 0
+  );
   expect(globalDeliveryCount).toBeGreaterThan(0);
   await page.waitForTimeout(400);
-  expect(countRequests(requests, (url) => [
-    '/api/v1/sessions',
-    '/api/v1/jobs',
-    '/api/v1/capabilities'
-  ].includes(url.pathname))).toBe(0);
+  expect(
+    countRequests(requests, (url) =>
+      ['/api/v1/sessions', '/api/v1/jobs', '/api/v1/capabilities'].includes(
+        url.pathname
+      )
+    )
+  ).toBe(0);
 
   const authStatus = await page.request.get('/api/v1/auth/status');
   const csrfToken = (await authStatus.json()).csrf_token;
@@ -138,19 +162,37 @@ test('event cursor and batched invalidation avoid progress fan-out', async ({ pa
   }, session.id);
   await page.waitForTimeout(1200);
 
-  const exactPath = (path: string) => countRequests(requests, (url) => url.pathname === path);
+  const exactPath = (path: string) =>
+    countRequests(requests, (url) => url.pathname === path);
   expect(exactPath('/api/v1/jobs')).toBeLessThanOrEqual(1);
   expect(exactPath('/api/v1/sessions')).toBeLessThanOrEqual(1);
-  expect(exactPath(`/api/v1/sessions/${session.id}/workflow`)).toBeLessThanOrEqual(1);
-  expect(exactPath(`/api/v1/sessions/${session.id}/outcome-plan`)).toBeLessThanOrEqual(1);
-  expect(exactPath(`/api/v1/sessions/${session.id}/generation-runs`)).toBeLessThanOrEqual(1);
-  expect(exactPath(`/api/v1/sessions/${session.id}/output-assemblies/latest`)).toBeLessThanOrEqual(1);
-  expect(exactPath(`/api/v1/sessions/${session.id}/generation-segments`)).toBeLessThanOrEqual(1);
+  expect(
+    exactPath(`/api/v1/sessions/${session.id}/workflow`)
+  ).toBeLessThanOrEqual(1);
+  expect(
+    exactPath(`/api/v1/sessions/${session.id}/outcome-plan`)
+  ).toBeLessThanOrEqual(1);
+  expect(
+    exactPath(`/api/v1/sessions/${session.id}/generation-runs`)
+  ).toBeLessThanOrEqual(1);
+  expect(
+    exactPath(`/api/v1/sessions/${session.id}/output-assemblies/latest`)
+  ).toBeLessThanOrEqual(1);
+  expect(
+    exactPath(`/api/v1/sessions/${session.id}/generation-segments`)
+  ).toBeLessThanOrEqual(1);
   expect(exactPath('/api/v1/capabilities')).toBe(0);
 });
 
-test('four live event-stream tabs leave request capacity available', async ({ page, context, browserName }) => {
-  test.skip(browserName !== 'chromium', 'One browser covers the multi-tab server-capacity contract.');
+test('four live event-stream tabs leave request capacity available', async ({
+  page,
+  context,
+  browserName
+}) => {
+  test.skip(
+    browserName !== 'chromium',
+    'One browser covers the multi-tab server-capacity contract.'
+  );
   await signIn(page);
   const tabs = [page];
   for (let index = 0; index < 3; index += 1) {

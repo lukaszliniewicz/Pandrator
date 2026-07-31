@@ -1,6 +1,5 @@
 import { apiJson, typedApiJson, type ApiSchema } from './api';
 import type {
-  ArtifactRecord,
   ItemPage,
   JobRecord,
   RuntimeCapabilities,
@@ -20,27 +19,23 @@ export type RevisionedValue<T> = {
 
 export const settingApi = {
   get: <T>(settingKey: string) =>
-    typedApiJson<
+    typedApiJson<'/api/v1/settings/{settingKey}', 'get', RevisionedValue<T>>(
       '/api/v1/settings/{settingKey}',
       'get',
-      RevisionedValue<T>
-    >('/api/v1/settings/{settingKey}', 'get', {
-      path: { settingKey }
-    }),
-  put: <T>(
-    settingKey: string,
-    revision: number,
-    value: T
-  ) =>
-    typedApiJson<
+      {
+        path: { settingKey }
+      }
+    ),
+  put: <T>(settingKey: string, revision: number, value: T) =>
+    typedApiJson<'/api/v1/settings/{settingKey}', 'put', RevisionedValue<T>>(
       '/api/v1/settings/{settingKey}',
       'put',
-      RevisionedValue<T>
-    >('/api/v1/settings/{settingKey}', 'put', {
-      path: { settingKey },
-      headers: { 'If-Match': `"${revision}"` },
-      body: { value }
-    })
+      {
+        path: { settingKey },
+        headers: { 'If-Match': `"${revision}"` },
+        body: { value }
+      }
+    )
 };
 
 export const credentialApi = {
@@ -54,18 +49,15 @@ export const credentialApi = {
       '/api/v1/credential-backends',
       'get'
     ),
-  update: <T>(
-    credentialId: string,
-    body: ApiSchema<'CredentialUpdate'>
-  ) =>
-    typedApiJson<
+  update: <T>(credentialId: string, body: ApiSchema<'CredentialUpdate'>) =>
+    typedApiJson<'/api/v1/credentials/{credentialId}', 'put', T>(
       '/api/v1/credentials/{credentialId}',
       'put',
-      T
-    >('/api/v1/credentials/{credentialId}', 'put', {
-      path: { credentialId },
-      body
-    })
+      {
+        path: { credentialId },
+        body
+      }
+    )
 };
 
 export const providerApi = {
@@ -80,19 +72,17 @@ export const providerApi = {
       'get'
     ),
   models: <T>(providerId: string) =>
-    typedApiJson<
+    typedApiJson<'/api/v1/providers/{providerId}/models', 'get', ItemPage<T>>(
       '/api/v1/providers/{providerId}/models',
       'get',
-      ItemPage<T>
-    >('/api/v1/providers/{providerId}/models', 'get', {
-      path: { providerId }
-    }),
-  create: <T>(body: ApiSchema<'ProviderCreate'>) =>
-    typedApiJson<'/api/v1/providers', 'post', T>(
-      '/api/v1/providers',
-      'post',
-      { body }
+      {
+        path: { providerId }
+      }
     ),
+  create: <T>(body: ApiSchema<'ProviderCreate'>) =>
+    typedApiJson<'/api/v1/providers', 'post', T>('/api/v1/providers', 'post', {
+      body
+    }),
   update: <T>(
     providerId: string,
     revision: number,
@@ -107,10 +97,7 @@ export const providerApi = {
         body
       }
     ),
-  remove: (
-    providerId: string,
-    replacementModelRecordId: string | null
-  ) =>
+  remove: (providerId: string, replacementModelRecordId: string | null) =>
     typedApiJson<'/api/v1/providers/{providerId}', 'delete', void>(
       '/api/v1/providers/{providerId}',
       'delete',
@@ -119,33 +106,30 @@ export const providerApi = {
         body: { replacement_model_record_id: replacementModelRecordId }
       }
     ),
-  createModel: <T>(
-    providerId: string,
-    body: ApiSchema<'ModelCreate'>
-  ) =>
-    typedApiJson<
+  createModel: <T>(providerId: string, body: ApiSchema<'ModelCreate'>) =>
+    typedApiJson<'/api/v1/providers/{providerId}/models', 'post', T>(
       '/api/v1/providers/{providerId}/models',
       'post',
-      T
-    >('/api/v1/providers/{providerId}/models', 'post', {
-      path: { providerId },
-      body
-    }),
+      {
+        path: { providerId },
+        body
+      }
+    ),
   updateModel: <T>(
     providerId: string,
     modelId: string,
     revision: number,
     body: ApiSchema<'ModelUpdate'>
   ) =>
-    typedApiJson<
+    typedApiJson<'/api/v1/providers/{providerId}/models/{modelId}', 'patch', T>(
       '/api/v1/providers/{providerId}/models/{modelId}',
       'patch',
-      T
-    >('/api/v1/providers/{providerId}/models/{modelId}', 'patch', {
-      path: { providerId, modelId },
-      headers: { 'If-Match': `"${revision}"` },
-      body
-    }),
+      {
+        path: { providerId, modelId },
+        headers: { 'If-Match': `"${revision}"` },
+        body
+      }
+    ),
   removeModel: (
     providerId: string,
     modelId: string,
@@ -160,17 +144,14 @@ export const providerApi = {
       body: { replacement_model_record_id: replacementModelRecordId }
     }),
   refreshModels: <T>(providerId: string) =>
-    typedApiJson<
+    typedApiJson<'/api/v1/providers/{providerId}/models/refresh', 'post', T>(
       '/api/v1/providers/{providerId}/models/refresh',
       'post',
-      T
-    >('/api/v1/providers/{providerId}/models/refresh', 'post', {
-      path: { providerId }
-    }),
-  test: <T>(
-    providerId: string,
-    body: ApiSchema<'ProviderTestRequest'>
-  ) =>
+      {
+        path: { providerId }
+      }
+    ),
+  test: <T>(providerId: string, body: ApiSchema<'ProviderTestRequest'>) =>
     typedApiJson<'/api/v1/providers/{providerId}/test', 'post', T>(
       '/api/v1/providers/{providerId}/test',
       'post',
@@ -248,11 +229,7 @@ export const managerApi = {
       { path: { operationId } }
     ),
   operationTasks: <T>(operationId: string) =>
-    typedApiJson<
-      '/api/v1/manager/operations/{operationId}/tasks',
-      'get',
-      T
-    >(
+    typedApiJson<'/api/v1/manager/operations/{operationId}/tasks', 'get', T>(
       '/api/v1/manager/operations/{operationId}/tasks',
       'get',
       { path: { operationId } }
@@ -262,8 +239,8 @@ export const managerApi = {
       '/api/v1/manager/plans',
       'post',
       {
-      headers: { 'Idempotency-Key': crypto.randomUUID() },
-      body
+        headers: { 'Idempotency-Key': crypto.randomUUID() },
+        body
       }
     ),
   submit: <T>(body: ApiSchema<'ManagerOperationRequest'>) =>
@@ -276,11 +253,7 @@ export const managerApi = {
       }
     ),
   cancel: <T>(operationId: string) =>
-    typedApiJson<
-      '/api/v1/manager/operations/{operationId}/cancel',
-      'post',
-      T
-    >(
+    typedApiJson<'/api/v1/manager/operations/{operationId}/cancel', 'post', T>(
       '/api/v1/manager/operations/{operationId}/cancel',
       'post',
       {
@@ -288,10 +261,7 @@ export const managerApi = {
         path: { operationId }
       }
     ),
-  runtime: <T>(
-    action: 'start' | 'stop' | 'restart',
-    serviceIds: string[]
-  ) =>
+  runtime: <T>(action: 'start' | 'stop' | 'restart', serviceIds: string[]) =>
     typedApiJson<'/api/v1/manager/runtime/{action}', 'post', T>(
       '/api/v1/manager/runtime/{action}',
       'post',
@@ -315,80 +285,61 @@ export const speechServiceApi = {
     typedApiJson<'/api/v1/services/tts', 'get', TtsCatalogue>(
       '/api/v1/services/tts',
       'get',
-      refresh
-        ? { query: new URLSearchParams({ refresh: 'true' }) }
-        : {}
+      refresh ? { query: new URLSearchParams({ refresh: 'true' }) } : {}
     ),
   catalogueAs: <T>(refresh = false) =>
     typedApiJson<'/api/v1/services/tts', 'get', T>(
       '/api/v1/services/tts',
       'get',
-      refresh
-        ? { query: new URLSearchParams({ refresh: 'true' }) }
-        : {}
+      refresh ? { query: new URLSearchParams({ refresh: 'true' }) } : {}
     ),
-  discover: (
-    body: ApiSchema<'TtsEndpointDiscoveryRequest'>
-  ) =>
-    typedApiJson<
+  discover: (body: ApiSchema<'TtsEndpointDiscoveryRequest'>) =>
+    typedApiJson<'/api/v1/services/tts/discover', 'post', TtsDiscovery>(
       '/api/v1/services/tts/discover',
       'post',
-      TtsDiscovery
-    >('/api/v1/services/tts/discover', 'post', { body }),
-  discoverAs: <T>(
-    body: ApiSchema<'TtsEndpointDiscoveryRequest'>
-  ) =>
-    typedApiJson<
+      { body }
+    ),
+  discoverAs: <T>(body: ApiSchema<'TtsEndpointDiscoveryRequest'>) =>
+    typedApiJson<'/api/v1/services/tts/discover', 'post', T>(
       '/api/v1/services/tts/discover',
       'post',
-      T
-    >('/api/v1/services/tts/discover', 'post', { body }),
-  preview: (
-    serviceId: string,
-    body: ApiSchema<'TtsVoicePreviewRequest'>
-  ) =>
-    typedApiJson<
+      { body }
+    ),
+  preview: (serviceId: string, body: ApiSchema<'TtsVoicePreviewRequest'>) =>
+    typedApiJson<'/api/v1/services/tts/{serviceId}/preview', 'post', JobRecord>(
       '/api/v1/services/tts/{serviceId}/preview',
       'post',
-      JobRecord
-    >('/api/v1/services/tts/{serviceId}/preview', 'post', {
-      path: { serviceId },
-      body
-    })
+      {
+        path: { serviceId },
+        body
+      }
+    )
 };
 
 export const voiceApi = {
   list: <T>() =>
-    typedApiJson<'/api/v1/voices', 'get', ItemPage<T>>(
-      '/api/v1/voices',
-      'get'
-    ),
+    typedApiJson<'/api/v1/voices', 'get', ItemPage<T>>('/api/v1/voices', 'get'),
   create: <T>(body: ApiSchema<'VoiceCreate'>) =>
-    typedApiJson<'/api/v1/voices', 'post', T>(
-      '/api/v1/voices',
-      'post',
-      { body }
-    ),
-  samples: <T>(voiceId: string) =>
-    typedApiJson<
-      '/api/v1/voices/{voiceId}/samples',
-      'get',
-      ItemPage<T>
-    >('/api/v1/voices/{voiceId}/samples', 'get', {
-      path: { voiceId }
-    }),
-  uploadSample: (
-    voiceId: string,
-    body: FormData
-  ) =>
-    typedApiJson<
-      '/api/v1/voices/{voiceId}/samples',
-      'post',
-      JobRecord
-    >('/api/v1/voices/{voiceId}/samples', 'post', {
-      path: { voiceId },
+    typedApiJson<'/api/v1/voices', 'post', T>('/api/v1/voices', 'post', {
       body
     }),
+  samples: <T>(voiceId: string) =>
+    typedApiJson<'/api/v1/voices/{voiceId}/samples', 'get', ItemPage<T>>(
+      '/api/v1/voices/{voiceId}/samples',
+      'get',
+      {
+        path: { voiceId }
+      }
+    ),
+  uploadSample: (voiceId: string, body: FormData) =>
+    typedApiJson<'/api/v1/voices/{voiceId}/samples', 'post', JobRecord>(
+      '/api/v1/voices/{voiceId}/samples',
+      'post',
+      {
+        path: { voiceId },
+        body
+      }
+    ),
   transcribeSample: (
     voiceId: string,
     sampleId: string,
@@ -415,10 +366,7 @@ export const voiceApi = {
       path: { voiceId, sampleId },
       body
     }),
-  publish: (
-    voiceId: string,
-    serviceId: string
-  ) =>
+  publish: (voiceId: string, serviceId: string) =>
     typedApiJson<
       '/api/v1/voices/{voiceId}/providers/{serviceId}',
       'post',
@@ -454,43 +402,38 @@ export const toolApi = {
       { body }
     ),
   createTraining: <T>(body: ApiSchema<'TrainingCreateRequest'>) =>
-    typedApiJson<'/api/v1/training', 'post', T>(
-      '/api/v1/training',
-      'post',
-      { body }
-    ),
+    typedApiJson<'/api/v1/training', 'post', T>('/api/v1/training', 'post', {
+      body
+    }),
   cancelTraining: (trainingId: string) =>
-    typedApiJson<
+    typedApiJson<'/api/v1/training/{trainingId}/cancel', 'post', JobRecord>(
       '/api/v1/training/{trainingId}/cancel',
       'post',
-      JobRecord
-    >('/api/v1/training/{trainingId}/cancel', 'post', {
-      path: { trainingId }
-    }),
+      {
+        path: { trainingId }
+      }
+    ),
   retryTraining: <T>(trainingId: string) =>
-    typedApiJson<
+    typedApiJson<'/api/v1/training/{trainingId}/retry', 'post', T>(
       '/api/v1/training/{trainingId}/retry',
       'post',
-      T
-    >('/api/v1/training/{trainingId}/retry', 'post', {
-      path: { trainingId }
-    })
+      {
+        path: { trainingId }
+      }
+    )
 };
 
 export const pdfApi = {
   inspect: <T>(artifactId: string, firstPageSide: string) =>
-    typedApiJson<
+    typedApiJson<'/api/v1/artifacts/{artifactId}/pdf', 'get', T>(
       '/api/v1/artifacts/{artifactId}/pdf',
       'get',
-      T
-    >('/api/v1/artifacts/{artifactId}/pdf', 'get', {
-      path: { artifactId },
-      query: new URLSearchParams({ first_page_side: firstPageSide })
-    }),
-  apply: (
-    sessionId: string,
-    body: ApiSchema<'PdfEditRequest'>
-  ) =>
+      {
+        path: { artifactId },
+        query: new URLSearchParams({ first_page_side: firstPageSide })
+      }
+    ),
+  apply: (sessionId: string, body: ApiSchema<'PdfEditRequest'>) =>
     typedApiJson<
       '/api/v1/sessions/{sessionId}/pdf/apply',
       'post',
@@ -503,11 +446,11 @@ export const pdfApi = {
 
 export const pronunciationApi = {
   list: <T>(query: URLSearchParams) =>
-    typedApiJson<
+    typedApiJson<'/api/v1/pronunciations', 'get', ItemPage<T>>(
       '/api/v1/pronunciations',
       'get',
-      ItemPage<T>
-    >('/api/v1/pronunciations', 'get', { query }),
+      { query }
+    ),
   create: <T>(body: ApiSchema<'PronunciationCreate'>) =>
     typedApiJson<'/api/v1/pronunciations', 'post', T>(
       '/api/v1/pronunciations',
@@ -519,32 +462,31 @@ export const pronunciationApi = {
     revision: number,
     body: ApiSchema<'PronunciationUpdate'>
   ) =>
-    typedApiJson<
+    typedApiJson<'/api/v1/pronunciations/{entryId}', 'patch', T>(
       '/api/v1/pronunciations/{entryId}',
       'patch',
-      T
-    >('/api/v1/pronunciations/{entryId}', 'patch', {
-      path: { entryId },
-      headers: { 'If-Match': `"${revision}"` },
-      body
-    }),
+      {
+        path: { entryId },
+        headers: { 'If-Match': `"${revision}"` },
+        body
+      }
+    ),
   remove: (entryId: string, revision: number) =>
-    typedApiJson<
+    typedApiJson<'/api/v1/pronunciations/{entryId}', 'delete', void>(
       '/api/v1/pronunciations/{entryId}',
       'delete',
-      void
-    >('/api/v1/pronunciations/{entryId}', 'delete', {
-      path: { entryId },
-      headers: { 'If-Match': `"${revision}"` }
-    })
+      {
+        path: { entryId },
+        headers: { 'If-Match': `"${revision}"` }
+      }
+    )
 };
 
 export const diagnosticsApi = {
   capabilities: () =>
-    typedApiJson<
+    typedApiJson<'/api/v1/capabilities', 'get', RuntimeCapabilities>(
       '/api/v1/capabilities',
-      'get',
-      RuntimeCapabilities
-    >('/api/v1/capabilities', 'get'),
+      'get'
+    ),
   job: jobApi.get
 };

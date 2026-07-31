@@ -18,16 +18,13 @@ const managerStatic = resolve(
   'static'
 );
 
-const definition = (
-  id: string,
-  label: string,
-  serviceKey: string | null
-) => ({
+const definition = (id: string, label: string, serviceKey: string | null) => ({
   id,
   label,
-  description: id === 'pandrator'
-    ? 'The Pandrator browser application.'
-    : 'Fast local text to speech.',
+  description:
+    id === 'pandrator'
+      ? 'The Pandrator browser application.'
+      : 'Fast local text to speech.',
   guidance: '',
   section: id === 'pandrator' ? 'core' : 'text_to_speech',
   service_key: serviceKey,
@@ -161,19 +158,20 @@ async function installManagerFixture(page: Page) {
         action,
         idempotencyKey: request.headers()['idempotency-key']
       });
-      service = action === 'stop'
-        ? {
-            ...service,
-            desired_running: false,
-            process: null,
-            health: { ...service.health, state: 'stopped' }
-          }
-        : {
-            ...service,
-            desired_running: true,
-            process: { pid: 8456 },
-            health: { ...service.health, state: 'healthy' }
-          };
+      service =
+        action === 'stop'
+          ? {
+              ...service,
+              desired_running: false,
+              process: null,
+              health: { ...service.health, state: 'stopped' }
+            }
+          : {
+              ...service,
+              desired_running: true,
+              process: { pid: 8456 },
+              health: { ...service.health, state: 'healthy' }
+            };
       await fulfillJson(route, { items: [service] });
     } else {
       await fulfillJson(route, {});
@@ -192,7 +190,9 @@ async function signIn(page: Page) {
   if (await closeTour.isVisible()) await closeTour.click();
 }
 
-test('manager shows and controls a running optional engine', async ({ page }) => {
+test('manager shows and controls a running optional engine', async ({
+  page
+}) => {
   const fixture = await installManagerFixture(page);
   await page.goto('/recovery');
 
@@ -202,7 +202,9 @@ test('manager shows and controls a running optional engine', async ({ page }) =>
   await card.getByRole('button', { name: 'Stop Kokoro' }).click();
 
   await expect(card.getByText('Stopped', { exact: true })).toBeVisible();
-  await expect(card.getByRole('button', { name: 'Start Kokoro' })).toBeVisible();
+  await expect(
+    card.getByRole('button', { name: 'Start Kokoro' })
+  ).toBeVisible();
   expect(fixture.runtimeRequests).toHaveLength(1);
   expect(fixture.runtimeRequests[0].action).toBe('stop');
   expect(fixture.runtimeRequests[0].idempotencyKey).toMatch(
@@ -212,10 +214,14 @@ test('manager shows and controls a running optional engine', async ({ page }) =>
   await page.getByRole('tab', { name: 'Activity' }).click();
   const serviceRow = page.locator('.service-row').filter({ hasText: 'Kokoro' });
   await expect(serviceRow.getByText('Stopped', { exact: true })).toBeVisible();
-  await expect(serviceRow.getByRole('button', { name: 'Start Kokoro' })).toBeVisible();
+  await expect(
+    serviceRow.getByRole('button', { name: 'Start Kokoro' })
+  ).toBeVisible();
 });
 
-test('Pandrator refreshes and controls the same engine state', async ({ page }) => {
+test('Pandrator refreshes and controls the same engine state', async ({
+  page
+}) => {
   let service: RuntimeService = {
     id: 'tts.kokoro',
     component_id: 'kokoro',

@@ -1,5 +1,15 @@
 <script lang="ts">
-  import { Columns3, Filter, Merge, Play, Save, Scissors, Trash2, X } from '@lucide/svelte';
+  import { errorMessage } from './errors';
+  import {
+    Columns3,
+    Filter,
+    Merge,
+    Play,
+    Save,
+    Scissors,
+    Trash2,
+    X
+  } from '@lucide/svelte';
   import { sessionApi } from './domain-api';
   import type {
     SubtitleComparisonRow as Row,
@@ -12,33 +22,80 @@
   import TextDiff from './TextDiff.svelte';
   import SearchReplaceBar from './SearchReplaceBar.svelte';
   import type { TextReplacement, TextSearchMatch } from './search-replace';
+  import { modalFocus } from './modal-focus';
 
-  let { sessionId, sourceArtifactId, onclose, onsaved }: { sessionId: string; sourceArtifactId?: string; onclose: () => void; onsaved: () => void } = $props();
+  let {
+    sessionId,
+    sourceArtifactId,
+    onclose,
+    onsaved
+  }: {
+    sessionId: string;
+    sourceArtifactId?: string;
+    onclose: () => void;
+    onsaved: () => void;
+  } = $props();
   let payload = $state<Payload | null>(null);
   let error = $state('');
   let loading = $state(true);
   let changedOnly = $state(false);
   let diffView = $state(false);
-  type ReviewStage = 'transcription' | 'correction' | 'translation' | 'tts_optimization';
+  type ReviewStage =
+    'transcription' | 'correction' | 'translation' | 'tts_optimization';
   let editStage = $state<ReviewStage>('translation');
   let saving = $state(false);
   let audioPreview = $state<HTMLAudioElement>();
   let cuePreviewFrame: number | null = null;
   let cuePreviewEnd = 0;
   let tourOpen = $state(false);
-  const tourSteps = [{section:'Review',title:'Lineage keeps changes together',body:'Rows group transcription, correction, and translation through split/merge lineage, with temporal overlap for legacy artifacts.'},{section:'Review',title:'Edit the selected revision',body:'Change text and boundaries, split a segment, or merge it with the next while comparison columns remain visible.'},{section:'Review',title:'Saving creates history',body:'A save creates a reviewed immutable revision and invalidates only affected descendants.'}];
-  const availableStages = $derived((['transcription', 'correction', 'translation', 'tts_optimization'] as const).filter((stage) => payload?.stages[stage]));
-  const visibleRows = $derived((payload?.rows ?? []).filter((row) => !changedOnly || row.changed));
-  const editableTexts = $derived(payload?.stages[editStage]?.segments.map((segment) => segment.text) ?? []);
+  const tourSteps = [
+    {
+      section: 'Review',
+      title: 'Lineage keeps changes together',
+      body: 'Rows group transcription, correction, and translation through split/merge lineage, with temporal overlap for legacy artifacts.'
+    },
+    {
+      section: 'Review',
+      title: 'Edit the selected revision',
+      body: 'Change text and boundaries, split a segment, or merge it with the next while comparison columns remain visible.'
+    },
+    {
+      section: 'Review',
+      title: 'Saving creates history',
+      body: 'A save creates a reviewed immutable revision and invalidates only affected descendants.'
+    }
+  ];
+  const availableStages = $derived(
+    (
+      [
+        'transcription',
+        'correction',
+        'translation',
+        'tts_optimization'
+      ] as const
+    ).filter((stage) => payload?.stages[stage])
+  );
+  const visibleRows = $derived(
+    (payload?.rows ?? []).filter((row) => !changedOnly || row.changed)
+  );
+  const editableTexts = $derived(
+    payload?.stages[editStage]?.segments.map((segment) => segment.text) ?? []
+  );
 
   function stageText(row: Row, stage: ReviewStage) {
     return (row[stage] ?? [])
-      .map((segment) => (stage === editStage ? canonicalSegment(segment) : segment).text)
+      .map(
+        (segment) =>
+          (stage === editStage ? canonicalSegment(segment) : segment).text
+      )
       .join('\n');
   }
 
   function speakerLabel(value?: string | null) {
-    const raw = String(value ?? '').trim().replace(/^[[(]/, '').replace(/[\]):]+$/, '');
+    const raw = String(value ?? '')
+      .trim()
+      .replace(/^[[(]/, '')
+      .replace(/[\]):]+$/, '');
     if (!raw) return '';
     const prefixed = raw.match(/^speaker[\s_-]*(.+)$/i);
     if (prefixed) return `Speaker ${prefixed[1].replaceAll('_', ' ')}`;
@@ -49,23 +106,31 @@
   }
 
   function sameSegment(left: Segment, right: Segment) {
-    return left === right || Boolean(left.id && right.id && left.id === right.id);
+    return (
+      left === right || Boolean(left.id && right.id && left.id === right.id)
+    );
   }
 
   function canonicalSegment(segment: Segment) {
     const records = payload?.stages[editStage]?.segments;
-    return records?.find((candidate) => sameSegment(candidate, segment)) ?? segment;
+    return (
+      records?.find((candidate) => sameSegment(candidate, segment)) ?? segment
+    );
   }
 
   function stageIndex(segment: Segment) {
     const records = payload?.stages[editStage]?.segments;
-    return records?.findIndex((candidate) => sameSegment(candidate, segment)) ?? -1;
+    return (
+      records?.findIndex((candidate) => sameSegment(candidate, segment)) ?? -1
+    );
   }
 
   function replaceInRows(segment: Segment, replacements: Segment[]) {
     for (const row of payload?.rows ?? []) {
       const records = row[editStage];
-      const index = records?.findIndex((candidate) => sameSegment(candidate, segment)) ?? -1;
+      const index =
+        records?.findIndex((candidate) => sameSegment(candidate, segment)) ??
+        -1;
       if (records && index >= 0) records.splice(index, 1, ...replacements);
     }
   }
@@ -78,12 +143,18 @@
 
   function canMergeNext(segment: Segment) {
     const next = nextSegment(segment);
-    return Boolean(next) && speakerLabel(segment.speaker).toLocaleLowerCase() === speakerLabel(next?.speaker).toLocaleLowerCase();
+    return (
+      Boolean(next) &&
+      speakerLabel(segment.speaker).toLocaleLowerCase() ===
+        speakerLabel(next?.speaker).toLocaleLowerCase()
+    );
   }
 
   function mergeTitle(segment: Segment) {
     if (!nextSegment(segment)) return 'There is no following cue';
-    return canMergeNext(segment) ? 'Merge with the next cue' : 'Cues from different speakers cannot be merged';
+    return canMergeNext(segment)
+      ? 'Merge with the next cue'
+      : 'Cues from different speakers cannot be merged';
   }
 
   function previousStageText(row: Row) {
@@ -104,9 +175,14 @@
     loading = true;
     try {
       payload = await sessionApi.subtitles(sessionId);
-      if (!payload.stages[editStage]) editStage = (availableStages.at(-1) ?? 'transcription') as typeof editStage;
-    } catch (caught) { error = caught instanceof Error ? caught.message : String(caught); }
-    finally { loading = false; }
+      if (!payload.stages[editStage])
+        editStage = (availableStages.at(-1) ??
+          'transcription') as typeof editStage;
+    } catch (caught) {
+      error = errorMessage(caught);
+    } finally {
+      loading = false;
+    }
   }
 
   function split(segment: Segment) {
@@ -118,8 +194,18 @@
     const space = segment.text.lastIndexOf(' ', midpoint);
     const boundary = space > 0 ? space : midpoint;
     const time = Math.floor((segment.start_ms + segment.end_ms) / 2);
-    const first = { ...segment, id: undefined, text: segment.text.slice(0, boundary).trim(), end_ms: time };
-    const second = { ...segment, id: undefined, text: segment.text.slice(boundary).trim(), start_ms: time };
+    const first = {
+      ...segment,
+      id: undefined,
+      text: segment.text.slice(0, boundary).trim(),
+      end_ms: time
+    };
+    const second = {
+      ...segment,
+      id: undefined,
+      text: segment.text.slice(boundary).trim(),
+      start_ms: time
+    };
     if (first.text && second.text) {
       records.splice(index, 1, first, second);
       replaceInRows(segment, [first, second]);
@@ -133,7 +219,12 @@
     if (index < 0) return;
     const next = records[index + 1];
     if (next && canMergeNext(segment)) {
-      const merged = { ...segment, id: undefined, end_ms: next.end_ms, text: `${segment.text} ${next.text}`.trim() };
+      const merged = {
+        ...segment,
+        id: undefined,
+        end_ms: next.end_ms,
+        text: `${segment.text} ${next.text}`.trim()
+      };
       records.splice(index, 2, merged);
       replaceInRows(segment, [merged]);
       replaceInRows(next, []);
@@ -148,7 +239,9 @@
       replaceInRows(segment, []);
     }
   }
-  function searchIndex(segment: Segment) { return stageIndex(segment); }
+  function searchIndex(segment: Segment) {
+    return stageIndex(segment);
+  }
 
   function applySearchReplacements(updates: TextReplacement[]) {
     const records = payload?.stages[editStage]?.segments;
@@ -162,7 +255,9 @@
     if (diffView) diffView = false;
     if (changedOnly) changedOnly = false;
     await tick();
-    const field = document.querySelector<HTMLTextAreaElement>(`[data-subtitle-search-index="${match.itemIndex}"]`);
+    const field = document.querySelector<HTMLTextAreaElement>(
+      `[data-subtitle-search-index="${match.itemIndex}"]`
+    );
     field?.scrollIntoView({ block: 'center', behavior: 'smooth' });
     field?.focus({ preventScroll: true });
     field?.setSelectionRange(match.start, match.end);
@@ -174,7 +269,10 @@
   }
 
   function watchCueBoundary() {
-    if (!audioPreview || audioPreview.paused) { cuePreviewFrame = null; return; }
+    if (!audioPreview || audioPreview.paused) {
+      cuePreviewFrame = null;
+      return;
+    }
     if (audioPreview.currentTime >= cuePreviewEnd - 0.01) {
       audioPreview.pause();
       audioPreview.currentTime = cuePreviewEnd;
@@ -202,56 +300,242 @@
   async function save() {
     const stage = payload?.stages[editStage];
     if (!stage) return;
-    saving = true; error = '';
+    saving = true;
+    error = '';
     try {
-      await sessionApi.saveSubtitleReview(sessionId,editStage,{
+      await sessionApi.saveSubtitleReview(sessionId, editStage, {
         expected_revision: stage.revision,
-        segments: stage.segments.map(({ start_ms, end_ms, text, speaker }) => ({ start_ms, end_ms, text, speaker }))
+        segments: stage.segments.map(({ start_ms, end_ms, text, speaker }) => ({
+          start_ms,
+          end_ms,
+          text,
+          speaker
+        }))
       });
-      await load(); onsaved();
-    } catch (caught) { error = caught instanceof Error ? caught.message : String(caught); }
-    finally { saving = false; }
+      await load();
+      onsaved();
+    } catch (caught) {
+      error = errorMessage(caught);
+    } finally {
+      saving = false;
+    }
   }
   onMount(load);
 </script>
 
-<div class="fixed inset-0 z-50 bg-black/45 p-3 backdrop-blur-sm sm:p-6" role="presentation">
-  <button onclick={()=>tourOpen=true} class="surface fixed right-7 bottom-7 z-[70] rounded-full px-4 py-2 text-sm font-semibold">Review tour</button>
-  <div class="surface mx-auto flex h-full max-w-[96rem] flex-col overflow-hidden rounded-[1.5rem]" role="dialog" aria-modal="true" aria-labelledby="review-title">
-    <header class="flex flex-wrap items-center justify-between gap-4 border-b border-[var(--line)] px-5 py-4 sm:px-7">
-      <div><div class="eyebrow">Subtitle review</div><h2 id="review-title" class="mt-1 flex items-center gap-2 text-xl font-semibold"><Columns3 size={20}/> Compare and refine</h2></div>
+<div
+  class="fixed inset-0 z-50 bg-black/45 p-3 backdrop-blur-sm sm:p-6"
+  role="presentation"
+>
+  <button
+    onclick={() => (tourOpen = true)}
+    class="surface fixed right-7 bottom-7 z-[70] rounded-full px-4 py-2 text-sm font-semibold"
+    >Review tour</button
+  >
+  <div
+    use:modalFocus={{ onclose }}
+    class="surface mx-auto flex h-full max-w-[96rem] flex-col overflow-hidden rounded-[1.5rem]"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="review-title"
+  >
+    <header
+      class="flex flex-wrap items-center justify-between gap-4 border-b border-[var(--line)] px-5 py-4 sm:px-7"
+    >
+      <div>
+        <div class="eyebrow">Subtitle review</div>
+        <h2
+          id="review-title"
+          class="mt-1 flex items-center gap-2 text-xl font-semibold"
+        >
+          <Columns3 size={20} /> Compare and refine
+        </h2>
+      </div>
       <div class="flex flex-wrap items-center gap-2">
-        <button onclick={() => changedOnly = !changedOnly} class:active={changedOnly} class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3 py-2 text-sm font-semibold"><Filter size={16}/> Changed only</button>
-        <button onclick={() => diffView = !diffView} class:active={diffView} class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3 py-2 text-sm font-semibold">Diff view</button>
-        <select bind:value={editStage} class="rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-sm" aria-label="Stage to edit">{#each availableStages as stage}<option value={stage}>{stage}</option>{/each}</select>
-        <button onclick={save} disabled={saving || !payload?.stages[editStage]} class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2 text-sm font-semibold text-white disabled:opacity-40"><Save size={16}/> {saving ? 'Saving…' : 'Save reviewed revision'}</button>
-        <button onclick={onclose} aria-label="Close subtitle review" class="rounded-xl border border-[var(--line)] p-2"><X size={18}/></button>
+        <button
+          onclick={() => (changedOnly = !changedOnly)}
+          class:active={changedOnly}
+          class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3 py-2 text-sm font-semibold"
+          ><Filter size={16} /> Changed only</button
+        >
+        <button
+          onclick={() => (diffView = !diffView)}
+          class:active={diffView}
+          class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3 py-2 text-sm font-semibold"
+          >Diff view</button
+        >
+        <select
+          bind:value={editStage}
+          class="rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-sm"
+          aria-label="Stage to edit"
+          >{#each availableStages as stage}<option value={stage}>{stage}</option
+            >{/each}</select
+        >
+        <button
+          onclick={save}
+          disabled={saving || !payload?.stages[editStage]}
+          class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2 text-sm font-semibold text-white disabled:opacity-40"
+          ><Save size={16} />
+          {saving ? 'Saving…' : 'Save reviewed revision'}</button
+        >
+        <button
+          onclick={onclose}
+          aria-label="Close subtitle review"
+          class="rounded-xl border border-[var(--line)] p-2"
+          ><X size={18} /></button
+        >
       </div>
     </header>
-    {#if sourceArtifactId}<div class="border-b border-[var(--line)] px-5 py-3 sm:px-7"><AudioPlayer bind:element={audioPreview} src={`/api/v1/artifacts/${sourceArtifactId}/content`} label="Source audio preview"/></div>{/if}
-    {#if payload?.stages[editStage]}<div class="border-b border-[var(--line)] px-5 py-2 sm:px-7"><SearchReplaceBar texts={editableTexts} onreplace={applySearchReplacements} onnavigate={navigateSearchMatch} label={`${editStage.replaceAll('_', ' ')} segments`}/></div>{/if}
-    {#if error}<div class="mx-5 mt-4 rounded-xl border border-red-400/40 bg-red-500/10 px-4 py-3 text-sm sm:mx-7">{error}</div>{/if}
-    {#if diffView}<div class="border-b border-[var(--line)] bg-[var(--accent-soft)] px-5 py-2 text-xs sm:px-7">Side-by-side diff is read-only. Turn off <strong>Diff view</strong> to edit cue text or timing.</div>{/if}
+    {#if sourceArtifactId}<div
+        class="border-b border-[var(--line)] px-5 py-3 sm:px-7"
+      >
+        <AudioPlayer
+          bind:element={audioPreview}
+          src={`/api/v1/artifacts/${sourceArtifactId}/content`}
+          label="Source audio preview"
+        />
+      </div>{/if}
+    {#if payload?.stages[editStage]}<div
+        class="border-b border-[var(--line)] px-5 py-2 sm:px-7"
+      >
+        <SearchReplaceBar
+          texts={editableTexts}
+          onreplace={applySearchReplacements}
+          onnavigate={navigateSearchMatch}
+          label={`${editStage.replaceAll('_', ' ')} segments`}
+        />
+      </div>{/if}
+    {#if error}<div
+        class="mx-5 mt-4 rounded-xl border border-red-400/40 bg-red-500/10 px-4 py-3 text-sm sm:mx-7"
+      >
+        {error}
+      </div>{/if}
+    {#if diffView}<div
+        class="border-b border-[var(--line)] bg-[var(--accent-soft)] px-5 py-2 text-xs sm:px-7"
+      >
+        Side-by-side diff is read-only. Turn off <strong>Diff view</strong> to edit
+        cue text or timing.
+      </div>{/if}
     <div class="min-h-0 flex-1 overflow-auto">
-      {#if loading}<div class="grid h-full place-items-center"><div class="eyebrow animate-pulse">Aligning subtitle lineage…</div></div>
-      {:else if !visibleRows.length}<div class="grid h-full place-items-center"><p class="muted">No comparable subtitle rows are available.</p></div>
+      {#if loading}<div class="grid h-full place-items-center">
+          <div class="eyebrow animate-pulse">Aligning subtitle lineage…</div>
+        </div>
+      {:else if !visibleRows.length}<div class="grid h-full place-items-center">
+          <p class="muted">No comparable subtitle rows are available.</p>
+        </div>
       {:else}
         <table class="w-full min-w-[66rem] border-collapse text-sm">
-          <thead class="sticky top-0 z-10 bg-[var(--paper-strong)]"><tr><th class="w-32 border-b border-r border-[var(--line)] p-3 text-left">Timing</th>{#each availableStages as stage}<th class="border-b border-r border-[var(--line)] p-3 text-left capitalize last:border-r-0">{stage}</th>{/each}</tr></thead>
-          <tbody>{#each visibleRows as row}<tr class:changed={row.changed} class="align-top"><td class="muted border-b border-r border-[var(--line)] p-3 font-mono text-xs">{(row.start_ms/1000).toFixed(2)}<br/>→ {(row.end_ms/1000).toFixed(2)}</td>
-            {#each availableStages as stage}<td class="border-b border-r border-[var(--line)] p-3 last:border-r-0">{#if diffView && stage === previousStage(row)}<TextDiff before={previousStageText(row)} after={stageText(row, editStage)} view="before"/>{:else if diffView && stage === editStage}<TextDiff before={previousStageText(row)} after={stageText(row, editStage)} view="after"/>{:else}<div class="space-y-3">{#each row[stage] ?? [] as segment}{@const item = stage === editStage ? canonicalSegment(segment) : segment}<div class="rounded-xl border border-[var(--line)] bg-[var(--paper)] p-2.5">
-              {#if speakerLabel(item.speaker)}<div class="mb-2"><span class="inline-flex rounded-full bg-[var(--accent-soft)] px-2 py-0.5 text-[.65rem] font-semibold text-[var(--muted)]">{speakerLabel(item.speaker)}</span></div>{/if}
-              {#if stage === editStage}<div class="mb-2 grid grid-cols-2 gap-2"><label class="muted text-[.68rem]">Start ms<input type="number" bind:value={item.start_ms} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-transparent px-2 py-1"/></label><label class="muted text-[.68rem]">End ms<input type="number" bind:value={item.end_ms} class="mt-1 w-full rounded-lg border border-[var(--line)] bg-transparent px-2 py-1"/></label></div><textarea bind:value={item.text} data-subtitle-search-index={searchIndex(item)} rows="3" class="w-full resize-y rounded-lg border border-[var(--line)] bg-transparent p-2 leading-relaxed"></textarea><div class="mt-2 flex flex-wrap gap-2"><button onclick={() => previewSegment(item)} class="flex items-center gap-1 rounded-lg border border-[var(--line)] px-2 py-1 text-xs"><Play size={13}/> Play</button><button onclick={() => split(item)} class="flex items-center gap-1 rounded-lg border border-[var(--line)] px-2 py-1 text-xs"><Scissors size={13}/> Split</button><button onclick={() => mergeNext(item)} disabled={!canMergeNext(item)} title={mergeTitle(item)} class="flex items-center gap-1 rounded-lg border border-[var(--line)] px-2 py-1 text-xs disabled:cursor-not-allowed disabled:opacity-40"><Merge size={13}/> Merge next</button><button onclick={() => removeSegment(item)} class="flex items-center gap-1 rounded-lg border border-red-400/40 px-2 py-1 text-xs text-red-500"><Trash2 size={13}/> Delete</button></div>{:else}<p class="whitespace-pre-wrap leading-relaxed">{item.text}</p>{/if}
-            </div>{/each}</div>{/if}</td>{/each}
-          </tr>{/each}</tbody>
+          <thead class="sticky top-0 z-10 bg-[var(--paper-strong)]"
+            ><tr
+              ><th
+                class="w-32 border-b border-r border-[var(--line)] p-3 text-left"
+                >Timing</th
+              >{#each availableStages as stage}<th
+                  class="border-b border-r border-[var(--line)] p-3 text-left capitalize last:border-r-0"
+                  >{stage}</th
+                >{/each}</tr
+            ></thead
+          >
+          <tbody
+            >{#each visibleRows as row}<tr
+                class:changed={row.changed}
+                class="align-top"
+                ><td
+                  class="muted border-b border-r border-[var(--line)] p-3 font-mono text-xs"
+                  >{(row.start_ms / 1000).toFixed(2)}<br />→ {(
+                    row.end_ms / 1000
+                  ).toFixed(2)}</td
+                >
+                {#each availableStages as stage}<td
+                    class="border-b border-r border-[var(--line)] p-3 last:border-r-0"
+                    >{#if diffView && stage === previousStage(row)}<TextDiff
+                        before={previousStageText(row)}
+                        after={stageText(row, editStage)}
+                        view="before"
+                      />{:else if diffView && stage === editStage}<TextDiff
+                        before={previousStageText(row)}
+                        after={stageText(row, editStage)}
+                        view="after"
+                      />{:else}<div class="space-y-3">
+                        {#each row[stage] ?? [] as segment}{@const item =
+                            stage === editStage
+                              ? canonicalSegment(segment)
+                              : segment}
+                          <div
+                            class="rounded-xl border border-[var(--line)] bg-[var(--paper)] p-2.5"
+                          >
+                            {#if speakerLabel(item.speaker)}<div class="mb-2">
+                                <span
+                                  class="inline-flex rounded-full bg-[var(--accent-soft)] px-2 py-0.5 text-[.65rem] font-semibold text-[var(--muted)]"
+                                  >{speakerLabel(item.speaker)}</span
+                                >
+                              </div>{/if}
+                            {#if stage === editStage}<div
+                                class="mb-2 grid grid-cols-2 gap-2"
+                              >
+                                <label class="muted text-[.68rem]"
+                                  >Start ms<input
+                                    type="number"
+                                    bind:value={item.start_ms}
+                                    class="mt-1 w-full rounded-lg border border-[var(--line)] bg-transparent px-2 py-1"
+                                  /></label
+                                ><label class="muted text-[.68rem]"
+                                  >End ms<input
+                                    type="number"
+                                    bind:value={item.end_ms}
+                                    class="mt-1 w-full rounded-lg border border-[var(--line)] bg-transparent px-2 py-1"
+                                  /></label
+                                >
+                              </div>
+                              <textarea
+                                bind:value={item.text}
+                                data-subtitle-search-index={searchIndex(item)}
+                                rows="3"
+                                class="w-full resize-y rounded-lg border border-[var(--line)] bg-transparent p-2 leading-relaxed"
+                              ></textarea>
+                              <div class="mt-2 flex flex-wrap gap-2">
+                                <button
+                                  onclick={() => previewSegment(item)}
+                                  class="flex items-center gap-1 rounded-lg border border-[var(--line)] px-2 py-1 text-xs"
+                                  ><Play size={13} /> Play</button
+                                ><button
+                                  onclick={() => split(item)}
+                                  class="flex items-center gap-1 rounded-lg border border-[var(--line)] px-2 py-1 text-xs"
+                                  ><Scissors size={13} /> Split</button
+                                ><button
+                                  onclick={() => mergeNext(item)}
+                                  disabled={!canMergeNext(item)}
+                                  title={mergeTitle(item)}
+                                  class="flex items-center gap-1 rounded-lg border border-[var(--line)] px-2 py-1 text-xs disabled:cursor-not-allowed disabled:opacity-40"
+                                  ><Merge size={13} /> Merge next</button
+                                ><button
+                                  onclick={() => removeSegment(item)}
+                                  class="flex items-center gap-1 rounded-lg border border-red-400/40 px-2 py-1 text-xs text-red-500"
+                                  ><Trash2 size={13} /> Delete</button
+                                >
+                              </div>{:else}<p
+                                class="whitespace-pre-wrap leading-relaxed"
+                              >
+                                {item.text}
+                              </p>{/if}
+                          </div>{/each}
+                      </div>{/if}</td
+                  >{/each}
+              </tr>{/each}</tbody
+          >
         </table>
       {/if}
     </div>
   </div>
 </div>
-<GuidedTour tourId="subtitle-review" steps={tourSteps} bind:open={tourOpen}/>
+<GuidedTour tourId="subtitle-review" steps={tourSteps} bind:open={tourOpen} />
 
 <style>
-  tr.changed > td { background: color-mix(in srgb, var(--accent-soft) 22%, transparent); }
-  button.active { color: var(--accent); background: var(--accent-soft); }
+  tr.changed > td {
+    background: color-mix(in srgb, var(--accent-soft) 22%, transparent);
+  }
+  button.active {
+    color: var(--accent);
+    background: var(--accent-soft);
+  }
 </style>

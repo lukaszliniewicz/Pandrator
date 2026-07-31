@@ -1,4 +1,5 @@
-export type LoadState = 'idle' | 'loading' | 'ready' | 'empty' | 'stale' | 'failed';
+export type LoadState =
+  'idle' | 'loading' | 'ready' | 'empty' | 'stale' | 'failed';
 
 export type ItemPage<T> = {
   items: T[];
@@ -62,12 +63,15 @@ export type RuntimeCapabilities = {
     compute_backends?: string[];
     default_engine?: string;
     default_model_quantization?: string;
-    models?: Record<string, {
-      default?: boolean;
-      installed?: boolean;
-      precision?: string;
-      [key: string]: unknown;
-    }>;
+    models?: Record<
+      string,
+      {
+        default?: boolean;
+        installed?: boolean;
+        precision?: string;
+        [key: string]: unknown;
+      }
+    >;
   };
   gpu?: {
     available?: boolean;
@@ -97,7 +101,7 @@ export type EventSnapshot = {
   capabilities: RuntimeCapabilities;
 };
 
-export type OutcomePlanValue = {
+type OutcomePlanValue = {
   workflow_kind?: SessionRecord['workflow_kind'];
   focus?: string;
   transformations?: Record<string, boolean>;
@@ -118,7 +122,7 @@ export type OutcomePlan = {
   [key: string]: unknown;
 };
 
-export type WorkflowUsage = {
+type WorkflowUsage = {
   input_tokens: number;
   cached_input_tokens: number;
   output_tokens: number;
@@ -171,7 +175,7 @@ export type SessionSource = SourceAsset & {
   };
 };
 
-export type DocumentRevisionRecord = {
+type DocumentRevisionRecord = {
   id: string;
   revision_number: number;
   parent_revision_id?: string | null;
@@ -256,7 +260,7 @@ export type SubtitleSegment = {
   speaker?: string | null;
 };
 
-export type SubtitleStage = {
+type SubtitleStage = {
   revision: number;
   segments: SubtitleSegment[];
 };
@@ -276,7 +280,7 @@ export type SubtitleReviewPayload = {
   rows: SubtitleComparisonRow[];
 };
 
-export type WorkflowStageArtifact = ArtifactRecord & {
+type WorkflowStageArtifact = ArtifactRecord & {
   version: number;
   created_at: string;
   is_selected: boolean;
@@ -289,7 +293,8 @@ export type WorkflowStage = {
   key: string;
   title: string;
   explanation: string;
-  status: 'unavailable' | 'ready' | 'running' | 'completed' | 'stale' | 'failed';
+  status:
+    'unavailable' | 'ready' | 'running' | 'completed' | 'stale' | 'failed';
   executable: boolean;
   toggle?: boolean;
   toggle_only?: boolean;
@@ -340,7 +345,7 @@ export type GlobalDefaultsPayload = {
   [key: string]: unknown;
 };
 
-export type VoiceProviderRegistration = {
+type VoiceProviderRegistration = {
   status?: string;
   voice_id?: string;
   [key: string]: unknown;
@@ -358,14 +363,14 @@ export type VoiceRecord = {
   revision?: number;
 };
 
-export type TtsLanguage = {
+type TtsLanguage = {
   id?: string;
   name?: string;
   code?: string;
   [key: string]: unknown;
 };
 
-export type TtsModel = {
+type TtsModel = {
   id: string;
   label?: string;
   display_name?: string;
@@ -527,14 +532,14 @@ export type StageArtifactPage = {
   [key: string]: unknown;
 };
 
-export type SpeechPlanDecision = {
+type SpeechPlanDecision = {
   span_id?: string;
   action?: string;
   confidence?: string | number;
   [key: string]: unknown;
 };
 
-export type SpeechPlanCandidate = {
+type SpeechPlanCandidate = {
   id: string;
   text: string;
   task?: string;
@@ -542,7 +547,7 @@ export type SpeechPlanCandidate = {
   [key: string]: unknown;
 };
 
-export type SpeechPlanDiscovery = {
+type SpeechPlanDiscovery = {
   source_text?: string;
   [key: string]: unknown;
 };
@@ -566,7 +571,7 @@ export type SpeechPlan = {
   [key: string]: unknown;
 };
 
-export type AudioVerification = {
+type AudioVerification = {
   status?: string;
   metrics?: {
     rms_dbfs?: number;

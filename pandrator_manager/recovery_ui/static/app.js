@@ -14,7 +14,8 @@ let snapshot = {
 let selectedPlan = null;
 let selectedPlanTitle = "";
 let activeOperation = null;
-let refreshInFlight = false;
+let refreshInFlight = null;
+let refreshQueued = false;
 let refreshTimer = null;
 let pollingStopped = false;
 let catalogueSignature = "";
@@ -1770,66 +1771,72 @@ function renderReleaseStatus() {
 }
 
 async function refresh() {
-  if (refreshInFlight) return;
-  refreshInFlight = true;
-  try {
-    const [
-      status,
-      application,
-      network,
-      components,
-      services,
-      operations,
-      activity,
-      releases,
-    ] = await Promise.all([
-      requestJson("/v1/status"),
-      requestJson("/v1/application"),
-      requestJson("/v1/network"),
-      requestJson("/v1/components"),
-      requestJson("/v1/services"),
-      requestJson("/v1/operations"),
-      requestJson("/v1/activity?limit=80"),
-      requestJson("/v1/releases"),
-    ]);
-    snapshot = {
-      status,
-      application,
-      network,
-      components: components.items || [],
-      services: services.items || [],
-      operations: operations.items || [],
-      activity: activity.items || [],
-      releases,
-    };
-    activeOperation =
-      snapshot.operations.find(
-        (operation) => !terminalStates.has(operation.state),
-      ) || null;
-    await updateFailureContext();
-    byId("status").textContent = JSON.stringify(status, null, 2);
-    setManagerHealth("ready", "Manager ready");
-    renderApplication();
-    renderNetwork();
-    renderCatalogue();
-    renderServices();
-    renderActivity();
-    renderReleaseStatus();
-    renderActiveOperation();
-    renderOperationFailure();
-    await finishPendingInstall();
-  } catch (error) {
-    showMessage(error.message, true);
-    if (error.code === "authentication_required") {
-      pollingStopped = true;
-      if (refreshTimer) window.clearTimeout(refreshTimer);
-      setManagerHealth("error", "Browser authorization expired");
-    } else {
-      setManagerHealth("error", "Manager unavailable");
+  refreshQueued = true;
+  if (refreshInFlight) return refreshInFlight;
+  refreshInFlight = (async () => {
+    try {
+      while (refreshQueued) {
+        refreshQueued = false;
+        const [
+          status,
+          application,
+          network,
+          components,
+          services,
+          operations,
+          activity,
+          releases,
+        ] = await Promise.all([
+          requestJson("/v1/status"),
+          requestJson("/v1/application"),
+          requestJson("/v1/network"),
+          requestJson("/v1/components"),
+          requestJson("/v1/services"),
+          requestJson("/v1/operations"),
+          requestJson("/v1/activity?limit=80"),
+          requestJson("/v1/releases"),
+        ]);
+        snapshot = {
+          status,
+          application,
+          network,
+          components: components.items || [],
+          services: services.items || [],
+          operations: operations.items || [],
+          activity: activity.items || [],
+          releases,
+        };
+        activeOperation =
+          snapshot.operations.find(
+            (operation) => !terminalStates.has(operation.state),
+          ) || null;
+        await updateFailureContext();
+        byId("status").textContent = JSON.stringify(status, null, 2);
+        setManagerHealth("ready", "Manager ready");
+        renderApplication();
+        renderNetwork();
+        renderCatalogue();
+        renderServices();
+        renderActivity();
+        renderReleaseStatus();
+        renderActiveOperation();
+        renderOperationFailure();
+        await finishPendingInstall();
+      }
+    } catch (error) {
+      showMessage(error.message, true);
+      if (error.code === "authentication_required") {
+        pollingStopped = true;
+        if (refreshTimer) window.clearTimeout(refreshTimer);
+        setManagerHealth("error", "Browser authorization expired");
+      } else {
+        setManagerHealth("error", "Manager unavailable");
+      }
+    } finally {
+      refreshInFlight = null;
     }
-  } finally {
-    refreshInFlight = false;
-  }
+  })();
+  return refreshInFlight;
 }
 
 async function poll() {

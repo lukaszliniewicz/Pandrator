@@ -10,7 +10,7 @@ export const INVALIDATION_RESOURCES = [
   'capabilities'
 ] as const;
 
-export type InvalidationResource = typeof INVALIDATION_RESOURCES[number];
+export type InvalidationResource = (typeof INVALIDATION_RESOURCES)[number];
 
 export type PandratorServerEvent = {
   type: string;
@@ -53,8 +53,8 @@ export const invalidationBus = new InvalidationBus();
 
 function resourcesFor(event: PandratorServerEvent): InvalidationResource[] {
   const supplied = Array.isArray(event.changed_entities)
-    ? event.changed_entities.filter(
-        (item): item is InvalidationResource => KNOWN_RESOURCES.has(item)
+    ? event.changed_entities.filter((item): item is InvalidationResource =>
+        KNOWN_RESOURCES.has(item)
       )
     : [];
   return supplied.length ? Array.from(new Set(supplied)) : ['jobs'];
@@ -116,5 +116,7 @@ export function invalidates(
 ) {
   if (!batch.resources.includes(resource)) return false;
   if (!sessionId) return true;
-  return batch.session_ids.length === 0 || batch.session_ids.includes(sessionId);
+  return (
+    batch.session_ids.length === 0 || batch.session_ids.includes(sessionId)
+  );
 }

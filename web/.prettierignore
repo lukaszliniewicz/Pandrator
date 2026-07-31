@@ -1,0 +1,7 @@
+.svelte-kit
+build
+graphify-out
+node_modules
+playwright-report
+src/lib/api.generated.ts
+test-results

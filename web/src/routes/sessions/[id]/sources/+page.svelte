@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { errorMessage } from '$lib/errors';
   import { FileAudio, FileText, History, Plus, Trash2 } from '@lucide/svelte';
   import { page } from '$app/state';
   import { onMount } from 'svelte';
@@ -8,58 +9,209 @@
   import AddSourceDialog from '$lib/AddSourceDialog.svelte';
   import PdfEditor from '$lib/PdfEditor.svelte';
   import ArtifactPreview from '$lib/ArtifactPreview.svelte';
-  import { invalidates, invalidationBus, type InvalidationBatch } from '$lib/invalidation';
+  import {
+    invalidates,
+    invalidationBus,
+    type InvalidationBatch
+  } from '$lib/invalidation';
 
-  const sessionId=String(page.params.id);
-  let sources=$state<SessionSource[]>([]);
-  let error=$state('');
-  let message=$state('');
-  let pdf=$state<{id:string;filename:string}|null>(null);
-  let preview=$state<PreviewableArtifact|null>(null);
-  let sourceDialog=$state(false);
+  const sessionId = String(page.params.id);
+  let sources = $state<SessionSource[]>([]);
+  let error = $state('');
+  let message = $state('');
+  let pdf = $state<{ id: string; filename: string } | null>(null);
+  let preview = $state<PreviewableArtifact | null>(null);
+  let sourceDialog = $state(false);
 
-  async function load(){
-    sources=(await sessionApi.sources(sessionId)).items;
+  async function load() {
+    sources = (await sessionApi.sources(sessionId)).items;
   }
-  async function makeCurrent(source:SessionSource){
-    error='';
-    try{
-      await sessionApi.attachSource(sessionId,source.id,source.attachment.role);
-      message=`${source.display_name} is now the current ${source.attachment.role} source.`;
+  async function makeCurrent(source: SessionSource) {
+    error = '';
+    try {
+      await sessionApi.attachSource(
+        sessionId,
+        source.id,
+        source.attachment.role
+      );
+      message = `${source.display_name} is now the current ${source.attachment.role} source.`;
       await load();
-    }catch(caught){error=caught instanceof Error?caught.message:String(caught)}
+    } catch (caught) {
+      error = errorMessage(caught);
+    }
   }
-  async function detach(source:SessionSource){
-    if(!confirm(`Detach ${source.display_name} from this session? The library source and managed file will be preserved.`))return;
-    error='';
-    try{
-      await sessionApi.detachSource(sessionId,source.attachment.id,source.attachment.revision);
-      message='Source detached. Its library record and file were preserved.';
+  async function detach(source: SessionSource) {
+    if (
+      !confirm(
+        `Detach ${source.display_name} from this session? The library source and managed file will be preserved.`
+      )
+    )
+      return;
+    error = '';
+    try {
+      await sessionApi.detachSource(
+        sessionId,
+        source.attachment.id,
+        source.attachment.revision
+      );
+      message = 'Source detached. Its library record and file were preserved.';
       await load();
-    }catch(caught){error=caught instanceof Error?caught.message:String(caught)}
+    } catch (caught) {
+      error = errorMessage(caught);
+    }
   }
-  async function sourceAdded(value:string){message=value;await load()}
+  async function sourceAdded(value: string) {
+    message = value;
+    await load();
+  }
 
-  onMount(()=>{
-    load().catch((caught)=>error=caught instanceof Error?caught.message:String(caught));
-    const refresh=(batch:InvalidationBatch)=>{
-      if(invalidates(batch,'sources',sessionId))load().catch(()=>undefined);
+  onMount(() => {
+    load().catch((caught) => (error = errorMessage(caught)));
+    const refresh = (batch: InvalidationBatch) => {
+      if (invalidates(batch, 'sources', sessionId))
+        load().catch(() => undefined);
     };
-    const unsubscribe=invalidationBus.subscribe(refresh);
+    const unsubscribe = invalidationBus.subscribe(refresh);
     return unsubscribe;
   });
 </script>
 
 <div>
-  <div class="flex flex-wrap items-end justify-between gap-4"><div><h2 class="text-2xl font-semibold">Sources and versions</h2><p class="muted mt-2">Every attachment remains inspectable. Selecting an earlier source changes the current input without overwriting or deleting later files.</p></div><button onclick={()=>sourceDialog=true} class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white"><Plus size={16}/> Add source</button></div>
-  {#if error}<p class="mt-4 rounded-xl bg-red-500/10 p-3 text-sm text-red-500">{error}</p>{/if}{#if message}<p class="mt-4 rounded-xl bg-[var(--accent-soft)] p-3 text-sm">{message}</p>{/if}
+  <div class="flex flex-wrap items-end justify-between gap-4">
+    <div>
+      <h2 class="text-2xl font-semibold">Sources and versions</h2>
+      <p class="muted mt-2">
+        Every attachment remains inspectable. Selecting an earlier source
+        changes the current input without overwriting or deleting later files.
+      </p>
+    </div>
+    <button
+      onclick={() => (sourceDialog = true)}
+      class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white"
+      ><Plus size={16} /> Add source</button
+    >
+  </div>
+  {#if error}<p class="mt-4 rounded-xl bg-red-500/10 p-3 text-sm text-red-500">
+      {error}
+    </p>{/if}{#if message}<p
+      class="mt-4 rounded-xl bg-[var(--accent-soft)] p-3 text-sm"
+    >
+      {message}
+    </p>{/if}
   <div class="mt-6 grid gap-4 md:grid-cols-2">
     {#each sources as source}
-      <article class:stale={!source.attachment.is_current} class="surface rounded-2xl p-5"><div class="flex items-start gap-3"><div class="grid size-10 place-items-center rounded-xl bg-[var(--accent-soft)] text-[var(--accent)]">{#if source.kind.match(/mp3|wav|flac|mp4|mkv/)}<FileAudio size={18}/>{:else}<FileText size={18}/>{/if}</div><div class="min-w-0 flex-1"><h3 class="truncate font-semibold">{source.display_name}</h3><div class="muted mt-1 text-xs uppercase">{source.kind} · {source.attachment.role}</div><div class="mt-2 flex flex-wrap gap-2 text-[.68rem] font-semibold"><span class:current={source.attachment.is_current} class="badge">{source.attachment.is_current?'Current input':'Previous version'}</span><span class="badge">Record revision {source.revision}</span><span class="badge">{source.reference_count} session reference{source.reference_count===1?'':'s'}</span></div></div><History size={16}/></div><div class="mt-4 flex flex-wrap gap-2">{#if source.artifact_id}<button onclick={()=>preview={...source,id:source.artifact_id,role:'source',relative_path:source.display_name}} class="action">Preview</button>{/if}{#if !source.attachment.is_current}<button onclick={()=>makeCurrent(source)} class="action primary">Make current</button>{/if}{#if source.kind==='pdf'}<button onclick={()=>pdf={id:source.artifact_id,filename:source.display_name}} class="action">Preprocess PDF</button>{/if}<button onclick={()=>detach(source)} class="action danger"><Trash2 size={14}/> Detach</button></div></article>
-    {:else}<button onclick={()=>sourceDialog=true} class="muted col-span-full rounded-2xl border border-dashed border-[var(--line)] p-10 text-center"><Plus class="mx-auto mb-2"/>Add the first source for this session.</button>{/each}
+      <article
+        class:stale={!source.attachment.is_current}
+        class="surface rounded-2xl p-5"
+      >
+        <div class="flex items-start gap-3">
+          <div
+            class="grid size-10 place-items-center rounded-xl bg-[var(--accent-soft)] text-[var(--accent)]"
+          >
+            {#if source.kind.match(/mp3|wav|flac|mp4|mkv/)}<FileAudio
+                size={18}
+              />{:else}<FileText size={18} />{/if}
+          </div>
+          <div class="min-w-0 flex-1">
+            <h3 class="truncate font-semibold">{source.display_name}</h3>
+            <div class="muted mt-1 text-xs uppercase">
+              {source.kind} · {source.attachment.role}
+            </div>
+            <div class="mt-2 flex flex-wrap gap-2 text-[.68rem] font-semibold">
+              <span class:current={source.attachment.is_current} class="badge"
+                >{source.attachment.is_current
+                  ? 'Current input'
+                  : 'Previous version'}</span
+              ><span class="badge">Record revision {source.revision}</span><span
+                class="badge"
+                >{source.reference_count} session reference{source.reference_count ===
+                1
+                  ? ''
+                  : 's'}</span
+              >
+            </div>
+          </div>
+          <History size={16} />
+        </div>
+        <div class="mt-4 flex flex-wrap gap-2">
+          {#if source.artifact_id}<button
+              onclick={() =>
+                (preview = {
+                  ...source,
+                  id: source.artifact_id,
+                  role: 'source',
+                  relative_path: source.display_name
+                })}
+              class="action">Preview</button
+            >{/if}{#if !source.attachment.is_current}<button
+              onclick={() => makeCurrent(source)}
+              class="action primary">Make current</button
+            >{/if}{#if source.kind === 'pdf'}<button
+              onclick={() =>
+                (pdf = {
+                  id: source.artifact_id,
+                  filename: source.display_name
+                })}
+              class="action">Preprocess PDF</button
+            >{/if}<button onclick={() => detach(source)} class="action danger"
+            ><Trash2 size={14} /> Detach</button
+          >
+        </div>
+      </article>
+    {:else}<button
+        onclick={() => (sourceDialog = true)}
+        class="muted col-span-full rounded-2xl border border-dashed border-[var(--line)] p-10 text-center"
+        ><Plus class="mx-auto mb-2" />Add the first source for this session.</button
+      >{/each}
   </div>
 </div>
-{#if sourceDialog}<AddSourceDialog {sessionId} onclose={()=>sourceDialog=false} onadded={sourceAdded}/>{/if}
-{#if pdf}<PdfEditor {sessionId} source={pdf} onclose={()=>pdf=null}/>{/if}
-{#if preview}<ArtifactPreview artifact={preview} onclose={()=>preview=null}/>{/if}
-<style>.stale{opacity:.7}.action{display:flex;align-items:center;gap:.35rem;border:1px solid var(--line);border-radius:.65rem;padding:.5rem .7rem;font-size:.72rem;font-weight:650}.action.primary{background:var(--action-bg);color:white}.action.primary:hover{background:var(--action-hover)}.action.danger{color:#dc4b4b}.badge{border-radius:999px;background:var(--paper);padding:.25rem .5rem;color:var(--muted)}.badge.current{background:var(--accent-soft);color:var(--accent)}</style>
+{#if sourceDialog}<AddSourceDialog
+    {sessionId}
+    onclose={() => (sourceDialog = false)}
+    onadded={sourceAdded}
+  />{/if}
+{#if pdf}<PdfEditor
+    {sessionId}
+    source={pdf}
+    onclose={() => (pdf = null)}
+  />{/if}
+{#if preview}<ArtifactPreview
+    artifact={preview}
+    onclose={() => (preview = null)}
+  />{/if}
+
+<style>
+  .stale {
+    opacity: 0.7;
+  }
+  .action {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    border: 1px solid var(--line);
+    border-radius: 0.65rem;
+    padding: 0.5rem 0.7rem;
+    font-size: 0.72rem;
+    font-weight: 650;
+  }
+  .action.primary {
+    background: var(--action-bg);
+    color: white;
+  }
+  .action.primary:hover {
+    background: var(--action-hover);
+  }
+  .action.danger {
+    color: #dc4b4b;
+  }
+  .badge {
+    border-radius: 999px;
+    background: var(--paper);
+    padding: 0.25rem 0.5rem;
+    color: var(--muted);
+  }
+  .badge.current {
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+</style>

@@ -1,9 +1,29 @@
 <script lang="ts">
-  import { Check, CircleAlert, Library, Play, Plus, RefreshCw, Save, Trash2, Volume2 } from '@lucide/svelte';
+  import { errorMessage } from './errors';
+  import {
+    Check,
+    CircleAlert,
+    Library,
+    Play,
+    Plus,
+    RefreshCw,
+    Save,
+    Trash2,
+    Volume2
+  } from '@lucide/svelte';
   import { settingApi, speechServiceApi } from './admin-api';
-  import type { JobRecord, TtsCatalogue, TtsPreviewRecord, TtsService, TtsSettingsValue } from './api-models';
+  import type {
+    TtsCatalogue,
+    TtsPreviewRecord,
+    TtsService,
+    TtsSettingsValue
+  } from './api-models';
   import { jobApi } from './domain-api';
-  import { describeVoice, languagesForService, type VoiceDescriptor } from './voice-catalog';
+  import {
+    describeVoice,
+    languagesForService,
+    type VoiceDescriptor
+  } from './voice-catalog';
   import AudioPlayer from './AudioPlayer.svelte';
 
   let { initialService = '' }: { initialService?: string } = $props();
@@ -13,12 +33,19 @@
     revision: number;
     previews: TtsPreviewRecord[];
   };
-  let payload = $state<VoiceLibraryPayload>({ services: [], value: {}, revision: 0, previews: [] });
+  let payload = $state<VoiceLibraryPayload>({
+    services: [],
+    value: {},
+    revision: 0,
+    previews: []
+  });
   let serviceId = $state('');
   let model = $state('');
   let language = $state('');
   let previewText = $state('The quick brown fox jumps over the lazy dog.');
-  let previews = $state<Record<string, { status: string; artifactId?: string; error?: string }>>({});
+  let previews = $state<
+    Record<string, { status: string; artifactId?: string; error?: string }>
+  >({});
   let error = $state('');
   let notice = $state('');
   let generatingAll = $state(false);
@@ -26,59 +53,138 @@
   let generatedCount = $state(0);
   let newVoice = $state('');
 
-  const isString = (value: string | undefined): value is string => Boolean(value);
-  const services = $derived((payload.services ?? []).filter((service) => service.supports_prebuilt_voices));
-  const service = $derived(services.find((item) => item.id === serviceId) ?? services.find((item) => item.available !== false) ?? services[0]);
-  const qwenPrebuiltModel = $derived(service?.id === 'kobold_qwen'
-    ? (service?.models ?? []).find((item: string) => ['prebuilt voices', 'qwen3-tts-customvoice'].includes(item.toLowerCase())) || 'Prebuilt Voices'
-    : '');
-  const models = $derived(service?.id === 'kobold_qwen'
-    ? [qwenPrebuiltModel]
-    : Array.from(new Set([...(service?.models ?? []), service?.default_model].filter(isString))));
-  const rawVoices = $derived(Array.from(new Set([
-    ...(service?.voice_catalogues?.[model] ?? (service?.id === 'kobold_qwen' ? [] : service?.voices ?? [])),
-    service?.default_voices?.[model],
-    model === service?.default_model ? service?.default_voice : ''
-  ].filter(Boolean))) as string[]);
-  const descriptors = $derived(rawVoices.map((voice) => describeVoice(
-    service?.id ?? '',
-    voice,
-    service?.voice_metadata?.[`${model}:${voice}`]
-  )));
-  const languages = $derived(languagesForService(service?.id ?? '', descriptors));
-  const visibleVoices = $derived(descriptors.filter((voice) => !language || !voice.languageCode || voice.languageCode === language));
-  const languageDefault = $derived(String(service?.default_voices_by_language?.[model]?.[language] ?? service?.default_voices?.[model] ?? service?.default_voice ?? ''));
-  const modelInfo = $derived((service?.model_catalog ?? []).find((item) => item.id === model));
-  const modelLanguageNames = $derived((modelInfo?.languages ?? []).map((item) => typeof item === 'string' ? item : item.name).filter(Boolean));
+  const isString = (value: string | undefined): value is string =>
+    Boolean(value);
+  const services = $derived(
+    (payload.services ?? []).filter(
+      (service) => service.supports_prebuilt_voices
+    )
+  );
+  const service = $derived(
+    services.find((item) => item.id === serviceId) ??
+      services.find((item) => item.available !== false) ??
+      services[0]
+  );
+  const qwenPrebuiltModel = $derived(
+    service?.id === 'kobold_qwen'
+      ? (service?.models ?? []).find((item: string) =>
+          ['prebuilt voices', 'qwen3-tts-customvoice'].includes(
+            item.toLowerCase()
+          )
+        ) || 'Prebuilt Voices'
+      : ''
+  );
+  const models = $derived(
+    service?.id === 'kobold_qwen'
+      ? [qwenPrebuiltModel]
+      : Array.from(
+          new Set(
+            [...(service?.models ?? []), service?.default_model].filter(
+              isString
+            )
+          )
+        )
+  );
+  const rawVoices = $derived(
+    Array.from(
+      new Set(
+        [
+          ...(service?.voice_catalogues?.[model] ??
+            (service?.id === 'kobold_qwen' ? [] : (service?.voices ?? []))),
+          service?.default_voices?.[model],
+          model === service?.default_model ? service?.default_voice : ''
+        ].filter(Boolean)
+      )
+    ) as string[]
+  );
+  const descriptors = $derived(
+    rawVoices.map((voice) =>
+      describeVoice(
+        service?.id ?? '',
+        voice,
+        service?.voice_metadata?.[`${model}:${voice}`]
+      )
+    )
+  );
+  const languages = $derived(
+    languagesForService(service?.id ?? '', descriptors)
+  );
+  const visibleVoices = $derived(
+    descriptors.filter(
+      (voice) =>
+        !language || !voice.languageCode || voice.languageCode === language
+    )
+  );
+  const languageDefault = $derived(
+    String(
+      service?.default_voices_by_language?.[model]?.[language] ??
+        service?.default_voices?.[model] ??
+        service?.default_voice ??
+        ''
+    )
+  );
+  const modelInfo = $derived(
+    (service?.model_catalog ?? []).find((item) => item.id === model)
+  );
+  const modelLanguageNames = $derived(
+    (modelInfo?.languages ?? [])
+      .map((item) => (typeof item === 'string' ? item : item.name))
+      .filter(Boolean)
+  );
 
   function modelLabel(modelId: string) {
-    const info = (service?.model_catalog ?? []).find((item) => item.id === modelId);
+    const info = (service?.model_catalog ?? []).find(
+      (item) => item.id === modelId
+    );
     const friendly = String(info?.display_name ?? info?.name ?? '').trim();
     return friendly ? `${friendly} · ${modelId}` : modelId;
   }
 
   $effect(() => {
     if (service && serviceId !== service.id) serviceId = service.id;
-    if (service && (!model || !models.includes(model))) model = service.default_model || models[0] || '';
+    if (service && (!model || !models.includes(model)))
+      model = service.default_model || models[0] || '';
   });
   $effect(() => {
-    if (languages.length && !languages.some((item) => item.value === language)) language = languages[0].value;
+    if (languages.length && !languages.some((item) => item.value === language))
+      language = languages[0].value;
     if (!languages.length) language = '';
   });
 
   function configuredRecord(candidate: TtsService) {
-    return (payload.value.provider_configs ?? []).find((item) => item.id === candidate.id || item.api_base === candidate.api_base);
+    return (payload.value.provider_configs ?? []).find(
+      (item) => item.id === candidate.id || item.api_base === candidate.api_base
+    );
   }
 
-  function previewKey(serviceValue: string, modelValue: string, languageValue: string, voiceValue: string) {
-    return [serviceValue, modelValue, languageValue, voiceValue].map((item) => encodeURIComponent(String(item ?? ''))).join('|');
+  function previewKey(
+    serviceValue: string,
+    modelValue: string,
+    languageValue: string,
+    voiceValue: string
+  ) {
+    return [serviceValue, modelValue, languageValue, voiceValue]
+      .map((item) => encodeURIComponent(String(item ?? '')))
+      .join('|');
   }
 
   function restorePreviews(items: TtsPreviewRecord[]) {
-    const restored: Record<string, { status: string; artifactId?: string; error?: string }> = {};
+    const restored: Record<
+      string,
+      { status: string; artifactId?: string; error?: string }
+    > = {};
     for (const item of items ?? []) {
-      const key = previewKey(item.service_id, item.model, item.language, item.voice);
-      if (!restored[key]) restored[key] = { status: 'ready', artifactId: String(item.artifact_id ?? '') };
+      const key = previewKey(
+        item.service_id,
+        item.model,
+        item.language,
+        item.voice
+      );
+      if (!restored[key])
+        restored[key] = {
+          status: 'ready',
+          artifactId: String(item.artifact_id ?? '')
+        };
     }
     for (const [key, state] of Object.entries(previews)) {
       if (state.status === 'generating') restored[key] = state;
@@ -100,9 +206,13 @@
       voices: candidate.voices ?? existing.voices ?? [],
       default_model: candidate.default_model ?? existing.default_model,
       default_voice: candidate.default_voice ?? existing.default_voice,
-      voice_catalogues: candidate.voice_catalogues ?? existing.voice_catalogues ?? {},
+      voice_catalogues:
+        candidate.voice_catalogues ?? existing.voice_catalogues ?? {},
       default_voices: candidate.default_voices ?? existing.default_voices ?? {},
-      default_voices_by_language: candidate.default_voices_by_language ?? existing.default_voices_by_language ?? {},
+      default_voices_by_language:
+        candidate.default_voices_by_language ??
+        existing.default_voices_by_language ??
+        {},
       settings: existing.settings ?? candidate.settings ?? {},
       supports_prebuilt_voices: candidate.supports_prebuilt_voices
     };
@@ -111,36 +221,71 @@
   async function load() {
     payload = await speechServiceApi.catalogueAs<VoiceLibraryPayload>(true);
     restorePreviews(payload.previews ?? []);
-    if (initialService && services.some((item) => item.id === initialService)) serviceId = initialService;
+    if (initialService && services.some((item) => item.id === initialService))
+      serviceId = initialService;
   }
 
   async function saveRecord(record: TtsService) {
-    const value = { ...payload.value, provider_configs: [...(payload.value.provider_configs ?? []).filter((item) => item.id !== record.id && item.api_base !== record.api_base), record] };
-    await settingApi.put<TtsSettingsValue>('services.tts', payload.revision, value);
+    const value = {
+      ...payload.value,
+      provider_configs: [
+        ...(payload.value.provider_configs ?? []).filter(
+          (item) => item.id !== record.id && item.api_base !== record.api_base
+        ),
+        record
+      ]
+    };
+    await settingApi.put<TtsSettingsValue>(
+      'services.tts',
+      payload.revision,
+      value
+    );
     await load();
   }
 
   async function refreshCatalogue() {
     if (!service || refreshing) return;
-    refreshing = true; error = ''; notice = '';
+    refreshing = true;
+    error = '';
+    notice = '';
     try {
-      const found = await speechServiceApi.discover({ base_url: service.api_base ?? '' });
+      const found = await speechServiceApi.discover({
+        base_url: service.api_base ?? ''
+      });
       const record = editableRecord(service);
       const discoveredModels = (found.models ?? []).filter(Boolean);
       const discoveredVoices = (found.voices ?? []).filter(Boolean);
-      record.models = Array.from(new Set([...(record.models ?? []), ...discoveredModels]));
-      record.voices = Array.from(new Set([...(record.voices ?? []), ...discoveredVoices]));
+      record.models = Array.from(
+        new Set([...(record.models ?? []), ...discoveredModels])
+      );
+      record.voices = Array.from(
+        new Set([...(record.voices ?? []), ...discoveredVoices])
+      );
       record.default_model ||= found.default_model || record.models[0] || '';
       record.default_voice ||= found.default_voice || '';
-      for (const key of ['adapter', 'speech_path', 'models_path', 'voices_path', 'request_fields', 'request_defaults']) {
+      for (const key of [
+        'adapter',
+        'speech_path',
+        'models_path',
+        'voices_path',
+        'request_fields',
+        'request_defaults'
+      ]) {
         if (found[key] != null && found[key] !== '') record[key] = found[key];
       }
       if (discoveredVoices.length) {
         const catalogues = { ...(record.voice_catalogues ?? {}) };
         if (service.id !== 'kobold_qwen') {
-          const catalogueModels = discoveredModels.length ? discoveredModels : [model || record.default_model].filter(Boolean);
+          const catalogueModels = discoveredModels.length
+            ? discoveredModels
+            : [model || record.default_model].filter(Boolean);
           for (const catalogueModel of catalogueModels) {
-            catalogues[catalogueModel] = Array.from(new Set([...(catalogues[catalogueModel] ?? []), ...discoveredVoices]));
+            catalogues[catalogueModel] = Array.from(
+              new Set([
+                ...(catalogues[catalogueModel] ?? []),
+                ...discoveredVoices
+              ])
+            );
           }
         }
         record.voice_catalogues = catalogues;
@@ -148,24 +293,35 @@
       await saveRecord(record);
       notice = `Catalogue refreshed: ${discoveredModels.length} model${discoveredModels.length === 1 ? '' : 's'} and ${discoveredVoices.length} voice${discoveredVoices.length === 1 ? '' : 's'} discovered. Manual entries and defaults were preserved.`;
     } catch (caught) {
-      error = caught instanceof Error ? caught.message : String(caught);
+      error = errorMessage(caught);
     } finally {
       refreshing = false;
     }
   }
 
   async function saveDefault(voice: VoiceDescriptor) {
-    error = ''; notice = '';
+    error = '';
+    notice = '';
     try {
       const record = editableRecord(service);
       const byLanguage = { ...(record.default_voices_by_language ?? {}) };
-      byLanguage[model] = { ...(byLanguage[model] ?? {}), ...(language ? { [language]: voice.id } : {}) };
+      byLanguage[model] = {
+        ...(byLanguage[model] ?? {}),
+        ...(language ? { [language]: voice.id } : {})
+      };
       record.default_voices_by_language = byLanguage;
-      if (!language) record.default_voices = { ...(record.default_voices ?? {}), [model]: voice.id };
-      if (!language && model === record.default_model) record.default_voice = voice.id;
+      if (!language)
+        record.default_voices = {
+          ...(record.default_voices ?? {}),
+          [model]: voice.id
+        };
+      if (!language && model === record.default_model)
+        record.default_voice = voice.id;
       await saveRecord(record);
       notice = `${voice.name} is now the default${language ? ` for ${languages.find((item) => item.value === language)?.label}` : ''}.`;
-    } catch (caught) { error = caught instanceof Error ? caught.message : String(caught); }
+    } catch (caught) {
+      error = errorMessage(caught);
+    }
   }
 
   async function addCatalogueVoice() {
@@ -173,23 +329,44 @@
     if (!id || !service || !model) return;
     try {
       const record = editableRecord(service);
-      const catalogue = Array.from(new Set([...(record.voice_catalogues?.[model] ?? record.voices ?? []), id]));
-      record.voice_catalogues = { ...(record.voice_catalogues ?? {}), [model]: catalogue };
+      const catalogue = Array.from(
+        new Set([
+          ...(record.voice_catalogues?.[model] ?? record.voices ?? []),
+          id
+        ])
+      );
+      record.voice_catalogues = {
+        ...(record.voice_catalogues ?? {}),
+        [model]: catalogue
+      };
       record.voices = Array.from(new Set([...(record.voices ?? []), id]));
       await saveRecord(record);
       newVoice = '';
       notice = 'Voice catalogue entry added.';
-    } catch (caught) { error = caught instanceof Error ? caught.message : String(caught); }
+    } catch (caught) {
+      error = errorMessage(caught);
+    }
   }
 
   async function removeCatalogueVoice(voice: VoiceDescriptor) {
     try {
       const record = editableRecord(service);
-      record.voice_catalogues = { ...(record.voice_catalogues ?? {}), [model]: (record.voice_catalogues?.[model] ?? record.voices ?? []).filter((item: string) => item !== voice.id) };
-      record.voices = (record.voices ?? []).filter((item: string) => item !== voice.id);
+      record.voice_catalogues = {
+        ...(record.voice_catalogues ?? {}),
+        [model]: (
+          record.voice_catalogues?.[model] ??
+          record.voices ??
+          []
+        ).filter((item: string) => item !== voice.id)
+      };
+      record.voices = (record.voices ?? []).filter(
+        (item: string) => item !== voice.id
+      );
       await saveRecord(record);
       notice = `${voice.name} removed from the saved catalogue.`;
-    } catch (caught) { error = caught instanceof Error ? caught.message : String(caught); }
+    } catch (caught) {
+      error = errorMessage(caught);
+    }
   }
 
   async function waitJob(id: string) {
@@ -199,36 +376,67 @@
     for (let attempt = 0; attempt < 4000; attempt += 1) {
       const job = await jobApi.get(id);
       if (job.status === 'succeeded') return job;
-      if (['failed', 'canceled', 'interrupted'].includes(job.status)) throw new Error(job.error_message || `Preview ${job.status}.`);
+      if (['failed', 'canceled', 'interrupted'].includes(job.status))
+        throw new Error(job.error_message || `Preview ${job.status}.`);
       await new Promise((resolve) => setTimeout(resolve, 500));
     }
     throw new Error('Preview is still running. Check Activity & logs.');
   }
 
   async function preview(voice: VoiceDescriptor, quiet = false) {
-    if (!previewText.trim()) { error = 'Enter preview text first.'; return false; }
-    if (!service || service.available === false) { error = service?.availability_reason || 'Start or configure this service first.'; return false; }
+    if (!previewText.trim()) {
+      error = 'Enter preview text first.';
+      return false;
+    }
+    if (!service || service.available === false) {
+      error =
+        service?.availability_reason ||
+        'Start or configure this service first.';
+      return false;
+    }
     const key = previewKey(service.id, model, language, voice.id);
     // Keep the last successful sample playable while a replacement is being
     // generated. A failed regeneration must not erase a known-good preview.
     const previousArtifactId = previews[key]?.artifactId;
-    previews = { ...previews, [key]: { status: 'generating', ...(previousArtifactId ? { artifactId: previousArtifactId } : {}) } };
+    previews = {
+      ...previews,
+      [key]: {
+        status: 'generating',
+        ...(previousArtifactId ? { artifactId: previousArtifactId } : {})
+      }
+    };
     if (!quiet) {
       error = '';
-      notice = service.id === 'kobold_qwen'
-        ? 'Using the Qwen CustomVoice model. If it was not installed initially, the first preview downloads it automatically and may take several minutes.'
-        : '';
+      notice =
+        service.id === 'kobold_qwen'
+          ? 'Using the Qwen CustomVoice model. If it was not installed initially, the first preview downloads it automatically and may take several minutes.'
+          : '';
     }
     try {
-      const queued = await speechServiceApi.preview(service.id, { text: previewText.trim(), model: service.id === 'kobold_qwen' ? qwenPrebuiltModel : model, voice: voice.id, language });
+      const queued = await speechServiceApi.preview(service.id, {
+        text: previewText.trim(),
+        model: service.id === 'kobold_qwen' ? qwenPrebuiltModel : model,
+        voice: voice.id,
+        language
+      });
       const complete = await waitJob(queued.id);
       const artifactId = String(complete.result_json?.artifact_id ?? '');
-      if (!artifactId) throw new Error('The preview completed without a playable audio artifact.');
+      if (!artifactId)
+        throw new Error(
+          'The preview completed without a playable audio artifact.'
+        );
       previews = { ...previews, [key]: { status: 'ready', artifactId } };
       return true;
     } catch (caught) {
-      const message = caught instanceof Error ? caught.message : String(caught);
-      previews = { ...previews, [key]: { status: 'failed', error: message, ...(previousArtifactId ? { artifactId: previousArtifactId } : {}) } };
+      const message = errorMessage(caught);
+      previews = {
+        ...previews,
+        [key]: {
+          status: 'failed',
+          error: message,
+          ...(previousArtifactId ? { artifactId: previousArtifactId } : {})
+        }
+      };
       if (!quiet) error = message;
       return false;
     }
@@ -236,7 +444,10 @@
 
   async function generateVisible() {
     if (!visibleVoices.length || generatingAll) return;
-    generatingAll = true; generatedCount = 0; error = ''; notice = '';
+    generatingAll = true;
+    generatedCount = 0;
+    error = '';
+    notice = '';
     let failures = 0;
     for (const voice of visibleVoices) {
       if (!(await preview(voice, true))) failures += 1;
@@ -246,68 +457,341 @@
     notice = `Generated ${visibleVoices.length - failures} of ${visibleVoices.length} previews${failures ? `; ${failures} failed` : ''}.`;
   }
 
-  load().catch((caught) => error = caught instanceof Error ? caught.message : String(caught));
+  load().catch((caught) => (error = errorMessage(caught)));
 </script>
 
 <section>
   <div class="flex flex-wrap items-end justify-between gap-4">
-    <div><div class="eyebrow">Pre-built catalogue</div><h2 class="mt-1 text-2xl font-semibold">Browse voices</h2><p class="muted mt-2 max-w-2xl text-sm">Compare provider voices with the same text, grouped by language, without leaving the Voice Library.</p></div>
-    <button onclick={refreshCatalogue} disabled={!service || refreshing || service?.available === false} class="btn btn-secondary"><RefreshCw class={refreshing ? 'animate-spin' : ''} size={15}/> {refreshing ? 'Refreshing…' : 'Refresh service catalogue'}</button>
+    <div>
+      <div class="eyebrow">Pre-built catalogue</div>
+      <h2 class="mt-1 text-2xl font-semibold">Browse voices</h2>
+      <p class="muted mt-2 max-w-2xl text-sm">
+        Compare provider voices with the same text, grouped by language, without
+        leaving the Voice Library.
+      </p>
+    </div>
+    <button
+      onclick={refreshCatalogue}
+      disabled={!service || refreshing || service?.available === false}
+      class="btn btn-secondary"
+      ><RefreshCw class={refreshing ? 'animate-spin' : ''} size={15} />
+      {refreshing ? 'Refreshing…' : 'Refresh service catalogue'}</button
+    >
   </div>
-  {#if error}<div role="alert" class="mt-4 flex items-start gap-2 rounded-xl border border-red-400/40 bg-red-500/10 px-4 py-3 text-sm"><CircleAlert class="mt-0.5 shrink-0" size={16}/><span>{error}</span></div>{/if}
-  {#if notice}<div role="status" class="mt-4 rounded-xl bg-[var(--accent-soft)] px-4 py-3 text-sm">{notice}</div>{/if}
+  {#if error}<div
+      role="alert"
+      class="mt-4 flex items-start gap-2 rounded-xl border border-red-400/40 bg-red-500/10 px-4 py-3 text-sm"
+    >
+      <CircleAlert class="mt-0.5 shrink-0" size={16} /><span>{error}</span>
+    </div>{/if}
+  {#if notice}<div
+      role="status"
+      class="mt-4 rounded-xl bg-[var(--accent-soft)] px-4 py-3 text-sm"
+    >
+      {notice}
+    </div>{/if}
 
   <div class="surface mt-5 rounded-3xl p-4 sm:p-6">
     <div class="catalogue-controls">
-      <label class="control-label">Service<select bind:value={serviceId} class="field"><option value="">Choose a service</option>{#each services as item}<option value={item.id} disabled={item.available === false}>{item.name}{item.available === false ? ` · ${item.availability_reason || 'unavailable'}` : ' · ready'}</option>{/each}</select></label>
-      <label class="control-label">Model<select bind:value={model} class="field">{#each models as item}<option value={item}>{modelLabel(item)}</option>{/each}</select></label>
-      <label class="control-label">Language<select bind:value={language} class="field" disabled={!languages.length}>{#if !languages.length}<option value="">Multilingual</option>{/if}{#each languages as item}<option value={item.value}>{item.label}</option>{/each}</select></label>
+      <label class="control-label"
+        >Service<select bind:value={serviceId} class="field"
+          ><option value="">Choose a service</option
+          >{#each services as item}<option
+              value={item.id}
+              disabled={item.available === false}
+              >{item.name}{item.available === false
+                ? ` · ${item.availability_reason || 'unavailable'}`
+                : ' · ready'}</option
+            >{/each}</select
+        ></label
+      >
+      <label class="control-label"
+        >Model<select bind:value={model} class="field"
+          >{#each models as item}<option value={item}>{modelLabel(item)}</option
+            >{/each}</select
+        ></label
+      >
+      <label class="control-label"
+        >Language<select
+          bind:value={language}
+          class="field"
+          disabled={!languages.length}
+          >{#if !languages.length}<option value="">Multilingual</option
+            >{/if}{#each languages as item}<option value={item.value}
+              >{item.label}</option
+            >{/each}</select
+        ></label
+      >
     </div>
     {#if service?.id === 'silero' && modelInfo}
       <div class="model-summary mt-4">
         <div class="min-w-0">
           <div class="flex flex-wrap items-center gap-2">
             <strong>{modelInfo.display_name ?? modelInfo.name ?? model}</strong>
-            {#if modelInfo.recommended}<span class="model-badge">Recommended</span>{/if}
-            {#if modelInfo.legacy}<span class="model-badge model-badge-muted">Legacy</span>{/if}
+            {#if modelInfo.recommended}<span class="model-badge"
+                >Recommended</span
+              >{/if}
+            {#if modelInfo.legacy}<span class="model-badge model-badge-muted"
+                >Legacy</span
+              >{/if}
           </div>
-          <p class="muted mt-1 text-xs">{modelLanguageNames.join(', ')} · {rawVoices.length} pre-built voice{rawVoices.length === 1 ? '' : 's'}</p>
+          <p class="muted mt-1 text-xs">
+            {modelLanguageNames.join(', ')} · {rawVoices.length} pre-built voice{rawVoices.length ===
+            1
+              ? ''
+              : 's'}
+          </p>
         </div>
         {#if modelInfo.license}
-          <a class="license-link" href={modelInfo.license.url} target="_blank" rel="noreferrer" title="Open model licence">{modelInfo.license.name ?? modelInfo.license.id}</a>
+          <a
+            class="license-link"
+            href={modelInfo.license.url}
+            target="_blank"
+            rel="noreferrer"
+            title="Open model licence"
+            >{modelInfo.license.name ?? modelInfo.license.id}</a
+          >
         {/if}
       </div>
     {/if}
-    <label class="mt-5 block text-sm font-semibold">Preview text<textarea bind:value={previewText} rows="2" maxlength="1000" class="field resize-y"></textarea></label>
-    {#if service?.available === false}<p class="mt-3 text-xs text-[var(--warning)]">{service.availability_reason}. Start the local service or add the required credentials in Providers & services.</p>{/if}
-    <div class="mt-4 flex flex-wrap items-center justify-between gap-3"><p class="muted text-xs">{visibleVoices.length} voice{visibleVoices.length === 1 ? '' : 's'} in this view. Preview generation runs sequentially so the speech service is not overloaded.</p><button onclick={generateVisible} disabled={!visibleVoices.length || generatingAll || service?.available === false} class="btn btn-primary"><Volume2 size={15}/>{generatingAll ? `Generating ${generatedCount + 1} of ${visibleVoices.length}…` : `Generate all ${languages.length ? 'for this language' : 'visible voices'}`}</button></div>
+    <label class="mt-5 block text-sm font-semibold"
+      >Preview text<textarea
+        bind:value={previewText}
+        rows="2"
+        maxlength="1000"
+        class="field resize-y"></textarea></label
+    >
+    {#if service?.available === false}<p
+        class="mt-3 text-xs text-[var(--warning)]"
+      >
+        {service.availability_reason}. Start the local service or add the
+        required credentials in Providers & services.
+      </p>{/if}
+    <div class="mt-4 flex flex-wrap items-center justify-between gap-3">
+      <p class="muted text-xs">
+        {visibleVoices.length} voice{visibleVoices.length === 1 ? '' : 's'} in this
+        view. Preview generation runs sequentially so the speech service is not overloaded.
+      </p>
+      <button
+        onclick={generateVisible}
+        disabled={!visibleVoices.length ||
+          generatingAll ||
+          service?.available === false}
+        class="btn btn-primary"
+        ><Volume2 size={15} />{generatingAll
+          ? `Generating ${generatedCount + 1} of ${visibleVoices.length}…`
+          : `Generate all ${languages.length ? 'for this language' : 'visible voices'}`}</button
+      >
+    </div>
   </div>
 
   <div class="mt-5 grid gap-3">
     {#each visibleVoices as voice}
-      {@const state = previews[previewKey(service?.id ?? '', model, language, voice.id)]}
-      <article class="voice-row rounded-2xl border border-[var(--line)] bg-[var(--paper-strong)] p-4">
-        <div class="min-w-0"><div class="flex flex-wrap items-center gap-2"><h3 class="font-semibold">{voice.name}</h3>{#if voice.id === languageDefault}<span class="inline-flex items-center gap-1 rounded-full bg-[var(--accent-soft)] px-2 py-0.5 text-[.65rem] font-bold uppercase text-[var(--accent)]"><Check size={10}/> Default</span>{/if}</div><p class="muted mt-1 break-all text-xs">{voice.id}</p></div>
-        <div class="voice-meta"><span>{voice.language}</span>{#if voice.gender}<span>{voice.gender}</span>{/if}</div>
-        <div class="flex flex-wrap justify-end gap-2"><button onclick={() => preview(voice)} disabled={state?.status === 'generating' || generatingAll || service?.available === false} class="btn btn-sm btn-secondary"><Play size={13}/>{state?.status === 'generating' ? 'Generating…' : state?.status === 'ready' ? 'Regenerate' : 'Preview'}</button><button onclick={() => saveDefault(voice)} disabled={voice.id === languageDefault} class="btn btn-sm btn-secondary"><Save size={13}/> Use by default</button></div>
-        {#if state?.artifactId}<div class="col-span-full"><AudioPlayer src={`/api/v1/artifacts/${state.artifactId}/content`} label={`${voice.name} preview`}/></div>{/if}
-        {#if state?.error}<p class="col-span-full text-xs text-red-600">{state.error}</p>{/if}
+      {@const state =
+        previews[previewKey(service?.id ?? '', model, language, voice.id)]}
+      <article
+        class="voice-row rounded-2xl border border-[var(--line)] bg-[var(--paper-strong)] p-4"
+      >
+        <div class="min-w-0">
+          <div class="flex flex-wrap items-center gap-2">
+            <h3 class="font-semibold">{voice.name}</h3>
+            {#if voice.id === languageDefault}<span
+                class="inline-flex items-center gap-1 rounded-full bg-[var(--accent-soft)] px-2 py-0.5 text-[.65rem] font-bold uppercase text-[var(--accent)]"
+                ><Check size={10} /> Default</span
+              >{/if}
+          </div>
+          <p class="muted mt-1 break-all text-xs">{voice.id}</p>
+        </div>
+        <div class="voice-meta">
+          <span>{voice.language}</span>{#if voice.gender}<span
+              >{voice.gender}</span
+            >{/if}
+        </div>
+        <div class="flex flex-wrap justify-end gap-2">
+          <button
+            onclick={() => preview(voice)}
+            disabled={state?.status === 'generating' ||
+              generatingAll ||
+              service?.available === false}
+            class="btn btn-sm btn-secondary"
+            ><Play size={13} />{state?.status === 'generating'
+              ? 'Generating…'
+              : state?.status === 'ready'
+                ? 'Regenerate'
+                : 'Preview'}</button
+          ><button
+            onclick={() => saveDefault(voice)}
+            disabled={voice.id === languageDefault}
+            class="btn btn-sm btn-secondary"
+            ><Save size={13} /> Use by default</button
+          >
+        </div>
+        {#if state?.artifactId}<div class="col-span-full">
+            <AudioPlayer
+              src={`/api/v1/artifacts/${state.artifactId}/content`}
+              label={`${voice.name} preview`}
+            />
+          </div>{/if}
+        {#if state?.error}<p class="col-span-full text-xs text-red-600">
+            {state.error}
+          </p>{/if}
       </article>
     {:else}
-      <div class="muted rounded-2xl border border-dashed border-[var(--line)] p-10 text-center"><Library class="mx-auto mb-2" size={22}/> This model does not expose pre-built voices.</div>
+      <div
+        class="muted rounded-2xl border border-dashed border-[var(--line)] p-10 text-center"
+      >
+        <Library class="mx-auto mb-2" size={22} /> This model does not expose pre-built
+        voices.
+      </div>
     {/each}
   </div>
 
   {#if service}
-    <details class="mt-5 rounded-2xl border border-[var(--line)] p-4"><summary class="cursor-pointer text-sm font-semibold">Manage custom catalogue entries</summary><p class="muted mt-2 text-xs">Add an ID exposed by this endpoint. Built-in entries reappear when the service catalogue is refreshed.</p><div class="mt-3 flex gap-2"><input bind:value={newVoice} onkeydown={(event) => { if (event.key === 'Enter') { event.preventDefault(); addCatalogueVoice(); } }} placeholder="Voice ID" class="field mt-0 min-w-0 flex-1"/><button onclick={addCatalogueVoice} class="btn btn-secondary"><Plus size={14}/> Add</button></div>{#if rawVoices.length}<div class="mt-3 flex flex-wrap gap-2">{#each rawVoices as voice}<span class="inline-flex items-center gap-1 rounded-full bg-[var(--accent-soft)] px-2.5 py-1 text-xs">{describeVoice(service.id, voice).name}<button onclick={() => removeCatalogueVoice(describeVoice(service.id, voice))} aria-label={`Remove ${voice}`}><Trash2 size={11}/></button></span>{/each}</div>{/if}</details>
+    <details class="mt-5 rounded-2xl border border-[var(--line)] p-4">
+      <summary class="cursor-pointer text-sm font-semibold"
+        >Manage custom catalogue entries</summary
+      >
+      <p class="muted mt-2 text-xs">
+        Add an ID exposed by this endpoint. Built-in entries reappear when the
+        service catalogue is refreshed.
+      </p>
+      <div class="mt-3 flex gap-2">
+        <input
+          bind:value={newVoice}
+          onkeydown={(event) => {
+            if (event.key === 'Enter') {
+              event.preventDefault();
+              addCatalogueVoice();
+            }
+          }}
+          placeholder="Voice ID"
+          class="field mt-0 min-w-0 flex-1"
+        /><button onclick={addCatalogueVoice} class="btn btn-secondary"
+          ><Plus size={14} /> Add</button
+        >
+      </div>
+      {#if rawVoices.length}<div class="mt-3 flex flex-wrap gap-2">
+          {#each rawVoices as voice}<span
+              class="inline-flex items-center gap-1 rounded-full bg-[var(--accent-soft)] px-2.5 py-1 text-xs"
+              >{describeVoice(service.id, voice).name}<button
+                onclick={() =>
+                  removeCatalogueVoice(describeVoice(service.id, voice))}
+                aria-label={`Remove ${voice}`}><Trash2 size={11} /></button
+              ></span
+            >{/each}
+        </div>{/if}
+    </details>
   {/if}
 </section>
 
 <style>
-  .field{margin-top:.4rem;width:100%;min-width:0;border:1px solid var(--line);border-radius:.75rem;background:var(--paper);padding:.68rem .78rem;font-weight:400;color:var(--ink)}
-  .control-label{min-width:0;font-size:.78rem;font-weight:700}.catalogue-controls{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.8rem}
-  .model-summary{display:flex;align-items:center;justify-content:space-between;gap:1rem;border:1px solid var(--line);border-radius:1rem;background:var(--paper);padding:.75rem .9rem}.model-badge{border-radius:999px;background:var(--accent-soft);padding:.2rem .5rem;color:var(--accent);font-size:.62rem;font-weight:800;text-transform:uppercase;letter-spacing:.04em}.model-badge-muted{background:var(--paper-strong);color:var(--muted)}.license-link{flex:none;border-radius:999px;border:1px solid var(--line);padding:.35rem .65rem;color:var(--accent);font-size:.72rem;font-weight:700;text-decoration:none}.license-link:hover{background:var(--accent-soft)}
-  .voice-row{display:grid;grid-template-columns:minmax(12rem,1fr) minmax(9rem,.45fr) auto;align-items:center;gap:1rem}.voice-meta{display:flex;flex-wrap:wrap;gap:.4rem;color:var(--muted);font-size:.75rem}.voice-meta span{border-radius:999px;background:var(--accent-soft);padding:.25rem .55rem}
-  @media(max-width:800px){.voice-row{grid-template-columns:minmax(0,1fr) auto}.voice-meta{grid-column:1}.voice-row>div:nth-of-type(3){grid-column:2;grid-row:1/3}.catalogue-controls{grid-template-columns:1fr 1fr}.catalogue-controls label:last-child{grid-column:1/-1}}
-  @media(max-width:560px){.catalogue-controls,.voice-row{grid-template-columns:minmax(0,1fr)}.catalogue-controls label:last-child,.voice-meta,.voice-row>div:nth-of-type(3){grid-column:1;grid-row:auto}.voice-row>div:nth-of-type(3){justify-content:flex-start}}
+  .field {
+    margin-top: 0.4rem;
+    width: 100%;
+    min-width: 0;
+    border: 1px solid var(--line);
+    border-radius: 0.75rem;
+    background: var(--paper);
+    padding: 0.68rem 0.78rem;
+    font-weight: 400;
+    color: var(--ink);
+  }
+  .control-label {
+    min-width: 0;
+    font-size: 0.78rem;
+    font-weight: 700;
+  }
+  .catalogue-controls {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.8rem;
+  }
+  .model-summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    border: 1px solid var(--line);
+    border-radius: 1rem;
+    background: var(--paper);
+    padding: 0.75rem 0.9rem;
+  }
+  .model-badge {
+    border-radius: 999px;
+    background: var(--accent-soft);
+    padding: 0.2rem 0.5rem;
+    color: var(--accent);
+    font-size: 0.62rem;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .model-badge-muted {
+    background: var(--paper-strong);
+    color: var(--muted);
+  }
+  .license-link {
+    flex: none;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    padding: 0.35rem 0.65rem;
+    color: var(--accent);
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-decoration: none;
+  }
+  .license-link:hover {
+    background: var(--accent-soft);
+  }
+  .voice-row {
+    display: grid;
+    grid-template-columns: minmax(12rem, 1fr) minmax(9rem, 0.45fr) auto;
+    align-items: center;
+    gap: 1rem;
+  }
+  .voice-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    color: var(--muted);
+    font-size: 0.75rem;
+  }
+  .voice-meta span {
+    border-radius: 999px;
+    background: var(--accent-soft);
+    padding: 0.25rem 0.55rem;
+  }
+  @media (max-width: 800px) {
+    .voice-row {
+      grid-template-columns: minmax(0, 1fr) auto;
+    }
+    .voice-meta {
+      grid-column: 1;
+    }
+    .voice-row > div:nth-of-type(3) {
+      grid-column: 2;
+      grid-row: 1/3;
+    }
+    .catalogue-controls {
+      grid-template-columns: 1fr 1fr;
+    }
+    .catalogue-controls label:last-child {
+      grid-column: 1/-1;
+    }
+  }
+  @media (max-width: 560px) {
+    .catalogue-controls,
+    .voice-row {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .catalogue-controls label:last-child,
+    .voice-meta,
+    .voice-row > div:nth-of-type(3) {
+      grid-column: 1;
+      grid-row: auto;
+    }
+    .voice-row > div:nth-of-type(3) {
+      justify-content: flex-start;
+    }
+  }
 </style>

@@ -1,9 +1,5 @@
 import { sessionApi } from './domain-api';
-import type {
-  LoadState,
-  OutcomePlan,
-  SessionRecord
-} from './api-models';
+import type { LoadState, OutcomePlan, SessionRecord } from './api-models';
 import {
   invalidates,
   invalidationBus,
@@ -61,7 +57,9 @@ export class SessionStore {
 
   connect() {
     if (this.unsubscribe) return this.unsubscribe;
-    this.unsubscribe = invalidationBus.subscribe((batch) => this.invalidate(batch));
+    this.unsubscribe = invalidationBus.subscribe((batch) =>
+      this.invalidate(batch)
+    );
     return () => {
       this.unsubscribe?.();
       this.unsubscribe = undefined;
@@ -70,8 +68,8 @@ export class SessionStore {
 
   private invalidate(batch: InvalidationBatch) {
     if (
-      invalidates(batch, 'sessions', this.sessionId)
-      || invalidates(batch, 'workflow', this.sessionId)
+      invalidates(batch, 'sessions', this.sessionId) ||
+      invalidates(batch, 'workflow', this.sessionId)
     ) {
       this.resource.markStale();
       this.load().catch(() => undefined);

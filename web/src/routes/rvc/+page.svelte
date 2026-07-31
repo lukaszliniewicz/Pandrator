@@ -1,2 +1,7 @@
-<script lang="ts">import AdvancedTools from '$lib/AdvancedTools.svelte';</script>
-<div class="mx-auto max-w-7xl"><AdvancedTools mode="rvc" onback={()=>history.back()}/></div>
+<script lang="ts">
+  import AdvancedTools from '$lib/AdvancedTools.svelte';
+</script>
+
+<div class="mx-auto max-w-7xl">
+  <AdvancedTools mode="rvc" onback={() => history.back()} />
+</div>
