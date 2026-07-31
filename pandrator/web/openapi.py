@@ -191,7 +191,23 @@ def build_openapi_document() -> dict:
             "/api/v1/sessions/{sessionId}/workflow-plans": {"post": {"operationId": "createWorkflowPlan", "requestBody": {"required": True, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/WorkflowPlanCreateRequest"}}}}, "responses": {"201": {"description": "Immutable workflow execution preview"}}}},
             "/api/v1/workflow-plans/{planId}": {"get": {"operationId": "getWorkflowPlan", "responses": {"200": {"description": "Immutable workflow execution preview"}}}},
             "/api/v1/workflow-plans/{planId}/execute": {"post": {"operationId": "executeWorkflowPlan", "parameters": [{"name": "Idempotency-Key", "in": "header", "required": True, "schema": {"type": "string", "minLength": 8, "maxLength": 200}}], "requestBody": {"required": True, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/WorkflowPlanExecuteRequest"}}}}, "responses": {"202": {"description": "Exact plan consumed and queued"}, "409": {"description": "Plan stale, consumed, expired, or confirmation missing"}}}},
-            "/api/v1/sessions/{sessionId}/stages/{stageKey}/run": {"post": {"operationId": "runWorkflowStage", "responses": {"202": {"description": "Queued"}}}},
+            "/api/v1/sessions/{sessionId}/stages/{stageKey}/run": {
+                "post": {
+                    "operationId": "runWorkflowStage",
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "additionalProperties": True,
+                                }
+                            }
+                        },
+                    },
+                    "responses": {"202": {"description": "Queued"}},
+                }
+            },
             "/api/v1/sessions/{sessionId}/stages/{stageKey}/artifacts": {
                 "get": {
                     "operationId": "listStageArtifacts",

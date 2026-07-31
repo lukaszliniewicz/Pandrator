@@ -248,7 +248,7 @@ parallel supported Python and create a dedicated data root:
 ```bash
 sudo dnf install python3.12 python3.12-devel
 python3.12 -m venv ~/.local/share/pandrator/venv
-~/.local/share/pandrator/venv/bin/pip install /path/to/pandrator-0.6.8-py3-none-any.whl
+~/.local/share/pandrator/venv/bin/pip install /path/to/pandrator-0.6.9-py3-none-any.whl
 ffmpeg -version
 
 export PANDRATOR_DATA_DIR="$HOME/.local/share/pandrator/data"

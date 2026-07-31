@@ -1461,6 +1461,16 @@ A single reviewed cue.
             session_id=voiceover.id,
         )
 
+        with self.assertRaisesRegex(ValueError, "require an explicit audio mode"):
+            self.handlers.export(
+                {
+                    "session_id": voiceover.id,
+                    "settings": {"export_mode": "media"},
+                },
+                self.progress,
+                threading.Event(),
+            )
+
         for audio_mode in ("mixed", "dubbing_only"):
             with self.subTest(audio_mode=audio_mode):
                 with self.assertRaisesRegex(ValueError, "requires assembled generated audio"):
@@ -1606,8 +1616,73 @@ A single reviewed cue.
                 threading.Event(),
             )
 
+    def test_no_source_export_contract_cannot_pick_up_a_legacy_video(self):
+        voiceover = self.sessions.create(
+            "Pinned no-source voiceover",
+            workflow_kind="voiceover",
+        )
+        session_dir = self.paths.sessions / voiceover.storage_key
+        session_dir.mkdir()
+        media_path = session_dir / "detached.mp4"
+        media_path.write_bytes(b"legacy media must not be selected")
+        self.artifacts.register(
+            media_path,
+            kind="source",
+            role="upload",
+            session_id=voiceover.id,
+            metadata={"original_filename": media_path.name},
+        )
+        dubbing_path = session_dir / "voiceover.wav"
+        AudioSegment.silent(duration=40).export(
+            dubbing_path,
+            format="wav",
+        ).close()
+        dubbing = self.artifacts.register(
+            dubbing_path,
+            kind="audio",
+            role="assembled_audio",
+            session_id=voiceover.id,
+        )
+
+        result = self.handlers.export(
+            {
+                "session_id": voiceover.id,
+                "settings": {
+                    "export_mode": "media",
+                    "audio_mode": "dubbing_only",
+                    "format": "wav",
+                },
+                "export_contract": {
+                    "version": 1,
+                    "workflow_kind": "voiceover",
+                    "export_mode": "media",
+                    "audio_mode": "dubbing_only",
+                    "source_artifact_id": None,
+                    "source_content_hash": None,
+                    "source_profile": "none",
+                    "source_resolution": "none",
+                },
+            },
+            self.progress,
+            threading.Event(),
+        )
+
+        exported, output = self.artifacts.resolve(result["artifact_ids"][-1])
+        self.assertEqual(".wav", output.suffix)
+        self.assertEqual(f"export_{dubbing.role}", exported.role)
+        with self.database.session() as session:
+            parent_ids = {
+                edge.parent_artifact_id
+                for edge in session.scalars(
+                    select(ArtifactEdge).where(
+                        ArtifactEdge.child_artifact_id == exported.id
+                    )
+                ).all()
+            }
+        self.assertEqual({dubbing.id}, parent_ids)
+
     @unittest.skipUnless(shutil.which("ffmpeg"), "FFmpeg qualification requires ffmpeg")
-    def test_audio_source_voiceover_defaults_to_a_duration_bounded_controlled_mix(self):
+    def test_audio_source_voiceover_uses_an_explicit_duration_bounded_controlled_mix(self):
         voiceover = self.sessions.create("Audio source mix", workflow_kind="voiceover")
         session_dir = self.paths.sessions / voiceover.storage_key
         session_dir.mkdir()
@@ -1619,7 +1694,14 @@ A single reviewed cue.
         dubbed = self.artifacts.register(dubbed_path, kind="audio", role="assembled_audio", session_id=voiceover.id)
 
         result = self.handlers.export(
-            {"session_id": voiceover.id, "settings": {"export_mode": "media", "format": "wav"}},
+            {
+                "session_id": voiceover.id,
+                "settings": {
+                    "export_mode": "media",
+                    "audio_mode": "mixed",
+                    "format": "wav",
+                },
+            },
             self.progress,
             threading.Event(),
         )
@@ -1941,7 +2023,7 @@ A single reviewed cue.
                     self.assertEqual("strong", exported.metadata_json.get("mix", {}).get("ducking"))
 
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg qualification requires ffmpeg and ffprobe")
-    def test_mixed_video_without_source_soundtrack_falls_back_to_voiceover_only(self):
+    def test_mixed_video_without_source_soundtrack_fails_closed(self):
         voiceover = self.sessions.create("Silent video", workflow_kind="voiceover")
         session_dir = self.paths.sessions / voiceover.storage_key
         session_dir.mkdir()
@@ -1959,24 +2041,29 @@ A single reviewed cue.
         Sine(660).to_audio_segment(duration=800).apply_gain(-12).export(dubbing_path, format="wav").close()
         self.artifacts.register(dubbing_path, kind="audio", role="assembled_audio", session_id=voiceover.id)
 
-        result = self.handlers.export(
-            {"session_id": voiceover.id, "settings": {"export_mode": "media", "audio_mode": "mixed"}},
-            self.progress,
-            threading.Event(),
-        )
-        exported, output = self.artifacts.resolve(result["artifact_ids"][-1])
+        with self.assertRaisesRegex(ValueError, "no audio stream to mix"):
+            self.handlers.export(
+                {
+                    "session_id": voiceover.id,
+                    "settings": {
+                        "export_mode": "media",
+                        "audio_mode": "mixed",
+                    },
+                },
+                self.progress,
+                threading.Event(),
+            )
 
-        self.assertEqual("dubbed", exported.metadata_json.get("audio_mode"))
-        probe = json.loads(
-            subprocess.run(
-                ["ffprobe", "-v", "error", "-show_streams", "-of", "json", str(output)],
-                check=True,
-                capture_output=True,
-                text=True,
-            ).stdout
-        )
-        self.assertEqual(1, sum(stream["codec_type"] == "video" for stream in probe["streams"]))
-        self.assertEqual(1, sum(stream["codec_type"] == "audio" for stream in probe["streams"]))
+        with self.database.session() as session:
+            exported = session.scalar(
+                select(func.count())
+                .select_from(Artifact)
+                .where(
+                    Artifact.session_id == voiceover.id,
+                    Artifact.kind == "export",
+                )
+            )
+        self.assertEqual(0, exported)
 
 
 if __name__ == "__main__":

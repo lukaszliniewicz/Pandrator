@@ -110,6 +110,7 @@ test('Create export saves the visible burned-subtitle selection before submittin
   expect(uploaded.ok()).toBeTruthy();
 
   const requests: string[] = [];
+  let exportPayload: Record<string, unknown> | null = null;
   page.on('request', (request) => {
     if (
       request.method() === 'PUT' &&
@@ -121,6 +122,7 @@ test('Create export saves the visible burned-subtitle selection before submittin
     `**/api/v1/sessions/${session.id}/stages/export/run`,
     async (route) => {
       requests.push('export');
+      exportPayload = route.request().postDataJSON() as Record<string, unknown>;
       await route.fulfill({
         contentType: 'application/json',
         body: JSON.stringify({
@@ -153,6 +155,12 @@ test('Create export saves the visible burned-subtitle selection before submittin
   const savedSettings = await saved.json();
   expect(savedSettings.override.subtitle_mode).toBe('burned');
   expect(savedSettings.override.burn_video_resolution).toBe('720p');
+  expect(exportPayload).toEqual({
+    output: {
+      export_mode: 'media',
+      audio_mode: 'preserve'
+    }
+  });
 });
 
 test('Create export keeps the selected audio version when saved effective defaults are omitted', async ({
@@ -253,7 +261,97 @@ test('Create export keeps the selected audio version when saved effective defaul
   await expect(page.getByText(/Export selected was submitted/)).toBeVisible();
 
   expect(exportPayload).toEqual({
+    output: {
+      export_mode: 'media',
+      audio_mode: 'mixed'
+    },
     generation_run_id: 'selected-completed-run'
+  });
+});
+
+test('Create export sends an explicit voiceover-only contract when no source is attached', async ({
+  page
+}) => {
+  await signIn(page);
+  const { session } = await createSession(page, 'voiceover');
+
+  await page.route(
+    `**/api/v1/sessions/${session.id}/generation-runs`,
+    async (route) => {
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          items: [
+            {
+              id: 'voiceover-only-run',
+              status: 'completed',
+              label: 'Run 1: Voiceover only',
+              assembly: {
+                id: 'voiceover-only-assembly',
+                status: 'completed',
+                settings_hash: 'voiceover-only-settings'
+              }
+            }
+          ]
+        })
+      });
+    }
+  );
+  await page.route(
+    `**/api/v1/sessions/${session.id}/settings/output`,
+    async (route) => {
+      if (route.request().method() !== 'PUT') {
+        await route.fallback();
+        return;
+      }
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ revision: 1, effective: {}, override: {} })
+      });
+    }
+  );
+  await page.route(
+    `**/api/v1/sessions/${session.id}/settings/resolve`,
+    async (route) => {
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          value: {},
+          settings_hash: 'voiceover-only-settings'
+        })
+      });
+    }
+  );
+  let exportPayload: Record<string, unknown> | null = null;
+  await page.route(
+    `**/api/v1/sessions/${session.id}/stages/export/run`,
+    async (route) => {
+      exportPayload = route.request().postDataJSON() as Record<string, unknown>;
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          id: 'voiceover-only-export-job',
+          kind: 'export.create',
+          session_id: session.id,
+          status: 'queued',
+          progress: 0,
+          created_at: new Date().toISOString()
+        })
+      });
+    }
+  );
+
+  await page.goto(`/sessions/${session.id}/output`);
+  await expect(page.getByText('This source has no soundtrack')).toBeVisible();
+  await page.getByRole('button', { name: 'Create export' }).click();
+  await expect(page.getByText(/Export voiceove was submitted/)).toBeVisible();
+
+  expect(exportPayload).toEqual({
+    output: {
+      export_mode: 'media',
+      audio_mode: 'dubbing_only'
+    },
+    generation_run_id: 'voiceover-only-run'
   });
 });
 
@@ -277,6 +375,7 @@ test('Create export rebuilds a completed assembly when synchronization settings 
   expect(uploaded.ok()).toBeTruthy();
 
   let assemblyRequested = false;
+  let assemblyPayload: Record<string, unknown> | null = null;
   const requests: string[] = [];
   await page.route(
     `**/api/v1/sessions/${session.id}/generation-runs`,
@@ -304,6 +403,10 @@ test('Create export rebuilds a completed assembly when synchronization settings 
     `**/api/v1/sessions/${session.id}/output-assemblies`,
     async (route) => {
       assemblyRequested = true;
+      assemblyPayload = route.request().postDataJSON() as Record<
+        string,
+        unknown
+      >;
       requests.push('assembly');
       await route.fulfill({
         status: 202,
@@ -350,5 +453,14 @@ test('Create export rebuilds a completed assembly when synchronization settings 
   });
 
   expect(assemblyRequested).toBeTruthy();
+  expect(assemblyPayload).toEqual({
+    generation_run_id: 'completed-run',
+    run_override: {
+      output: {
+        export_mode: 'media',
+        audio_mode: 'mixed'
+      }
+    }
+  });
   expect(requests).toEqual(['resolve', 'assembly', 'export']);
 });

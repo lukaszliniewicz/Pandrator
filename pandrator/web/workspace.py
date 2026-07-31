@@ -37,6 +37,7 @@ from .models import (
     UsageEvent,
     utcnow,
 )
+from .source_resolution import resolve_primary_source
 from .tts_optimization import (
     DEFAULT_FIRST_PROMPT,
     DEFAULT_PROMPT,
@@ -475,36 +476,10 @@ class WorkspaceSettingsService:
 
     @staticmethod
     def _output_context(session, session_record: SessionRecord) -> dict[str, Any]:
-        row = session.execute(
-            select(SessionSource, SourceAsset)
-            .join(SourceAsset, SourceAsset.id == SessionSource.source_asset_id)
-            .where(
-                SessionSource.session_id == session_record.id,
-                SessionSource.role == "primary",
-                SessionSource.is_current.is_(True),
-            )
-            .order_by(SessionSource.updated_at.desc())
-        ).first()
-        asset = row[1] if row else None
-        source_name = str(asset.display_name if asset else "")
-        extension = Path(source_name).suffix.lower()
-        mime_type = str(asset.mime_type if asset and asset.mime_type else "").lower()
-        kind = str(asset.kind if asset else "").lower().lstrip(".")
-        video_extensions = {".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v", ".mpeg", ".mpg"}
-        audio_extensions = {".wav", ".mp3", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".wma"}
-        subtitle_extensions = {".srt", ".vtt", ".ass", ".ssa"}
-        if mime_type.startswith("video/") or extension in video_extensions or f".{kind}" in video_extensions:
-            source_profile = "video"
-        elif mime_type.startswith("audio/") or extension in audio_extensions or f".{kind}" in audio_extensions:
-            source_profile = "audio"
-        elif extension in subtitle_extensions or f".{kind}" in subtitle_extensions:
-            source_profile = "subtitles"
-        elif source_name:
-            source_profile = "document"
-        else:
-            source_profile = "none"
-        has_source_video = source_profile == "video"
-        has_source_audio = source_profile in {"video", "audio"}
+        source = resolve_primary_source(session, session_record.id)
+        source_profile = source.profile
+        has_source_video = source.has_video
+        has_source_audio = source.has_audio
         workflow_kind = session_record.workflow_kind
         if workflow_kind == "audiobook":
             applicable_groups = ["audiobook_audio", "audiobook_metadata", "cover"]
@@ -521,9 +496,11 @@ class WorkspaceSettingsService:
         return {
             "workflow_kind": workflow_kind,
             "source_profile": source_profile,
-            "source_name": source_name,
-            "source_kind": kind,
-            "source_mime_type": mime_type,
+            "source_name": source.name,
+            "source_kind": source.kind,
+            "source_mime_type": source.mime_type,
+            "source_artifact_id": source.artifact.id if source.artifact else None,
+            "source_resolution": source.resolution,
             "has_source_video": has_source_video,
             "has_source_audio": has_source_audio,
             "applicable_groups": applicable_groups,

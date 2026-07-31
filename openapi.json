@@ -30,7 +30,7 @@
             "type": "string"
           },
           "application_version": {
-            "default": "0.6.8",
+            "default": "0.6.9",
             "title": "Application Version",
             "type": "string"
           },
@@ -5584,6 +5584,17 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "202": {
             "description": "Queued"

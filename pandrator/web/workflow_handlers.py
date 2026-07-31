@@ -34,6 +34,7 @@ from .credentials import (
     tts_service_credential_key,
 )
 from .database import Database
+from .export_contract import ExportContract, normalize_audio_mode
 from .models import (
     AgentRun,
     AgentStep,
@@ -53,8 +54,6 @@ from .models import (
     Segment,
     SegmentLineage,
     SessionRecord,
-    SessionSource,
-    SourceAsset,
     SourceRecord,
     TrainingRun,
     TimedWord,
@@ -64,6 +63,7 @@ from .models import (
     new_id,
     utcnow,
 )
+from .source_resolution import resolve_primary_source
 
 if TYPE_CHECKING:
     from .manager_proxy import LocalManagerProxy
@@ -655,23 +655,11 @@ class WorkflowHandlers:
             for item in selected.values():
                 if item.role in prerequisite_roles:
                     by_role.setdefault(item.role, item)
-            attached = list(
-                session.scalars(
-                    select(Artifact)
-                    .join(SourceAsset, SourceAsset.artifact_id == Artifact.id)
-                    .join(SessionSource, SessionSource.source_asset_id == SourceAsset.id)
-                    .where(
-                        SessionSource.session_id == session_id,
-                        SessionSource.is_current.is_(True),
-                        Artifact.role.in_(prerequisite_roles),
-                    )
-                    .order_by(SessionSource.updated_at.desc())
-                ).all()
-            )
-            for item in attached:
-                by_role.setdefault(item.role, item)
+            primary_source = resolve_primary_source(session, session_id).artifact
+            if primary_source and primary_source.role in prerequisite_roles:
+                by_role.setdefault(primary_source.role, primary_source)
             for item in candidates:
-                if item.state == "current":
+                if item.state == "current" and item.role != "upload":
                     by_role.setdefault(item.role, item)
             result = next((by_role[role] for role in prerequisite_roles if role in by_role), None)
             if result is not None:
@@ -836,6 +824,11 @@ class WorkflowHandlers:
                 "settings": settings,
                 "_job_id": str(payload.get("_job_id") or "") or None,
             }
+            if definition.key == "export":
+                handler_payload["export_contract"] = payload.get("export_contract")
+                handler_payload["resolved_settings_snapshot"] = payload.get(
+                    "resolved_settings_snapshot"
+                )
             if definition.key == "generate_audio":
                 result = self._run_reviewable_generation(
                     handler_payload,
@@ -5267,6 +5260,9 @@ class WorkflowHandlers:
 
         session_id = str(payload.get("session_id") or "")
         settings = dict(payload.get("settings") or {})
+        raw_export_contract = payload.get("export_contract")
+        if raw_export_contract is not None and not isinstance(raw_export_contract, dict):
+            raise ValueError("The queued export contract is malformed; submit the export again.")
         resolved_settings_snapshot = payload.get("resolved_settings_snapshot")
         expected_assembly_settings_hash = None
         if isinstance(resolved_settings_snapshot, dict):
@@ -5282,15 +5278,33 @@ class WorkflowHandlers:
         with self.database.session() as session:
             current = list(session.scalars(select(Artifact).where(Artifact.session_id == session_id, Artifact.state == "current")).all())
             selected_text = selected_artifacts(session, session_id)
-            attached_sources = list(
-                session.scalars(
-                    select(Artifact)
-                    .join(SourceAsset, SourceAsset.artifact_id == Artifact.id)
-                    .join(SessionSource, SessionSource.source_asset_id == SourceAsset.id)
-                    .where(SessionSource.session_id == session_id, SessionSource.is_current.is_(True))
-                    .order_by(SessionSource.updated_at.desc())
-                ).all()
+            contract_source_id = (
+                str(raw_export_contract.get("source_artifact_id") or "")
+                if isinstance(raw_export_contract, dict)
+                else ""
             )
+            if contract_source_id:
+                contract_source = session.get(Artifact, contract_source_id)
+                if contract_source is None:
+                    raise ValueError(
+                        "The source captured by this export contract is no longer available. "
+                        "Submit the export again."
+                    )
+                expected_source_hash = str(
+                    raw_export_contract.get("source_content_hash") or ""
+                )
+                if expected_source_hash and contract_source.content_hash != expected_source_hash:
+                    raise ValueError(
+                        "The source captured by this export contract changed. Submit the export again."
+                    )
+                attached_sources = [contract_source]
+            elif isinstance(raw_export_contract, dict):
+                # An explicit no-source contract must stay no-source even if the
+                # session is edited before the queued worker starts.
+                attached_sources = []
+            else:
+                compatibility_source = resolve_primary_source(session, session_id).artifact
+                attached_sources = [compatibility_source] if compatibility_source else []
             known_ids = {item.id for item in current}
             current.extend(item for item in attached_sources if item.id not in known_ids)
             selected_assembly = None
@@ -5350,15 +5364,53 @@ class WorkflowHandlers:
             progress(0.9, "Registering audiobook export")
             produced.append(self.artifacts.register(destination, kind="export", role="export", session_id=session_id, parent_ids=[audio.id], settings=settings))
         else:
-            upload_media = next((item for item in attached_sources if Path(item.relative_path).suffix.lower() in {".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v"}), None) or next((item for item in reversed(current) if item.role == "upload" and Path(item.relative_path).suffix.lower() in {".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v"}), None)
-            upload_audio = next((item for item in attached_sources if Path(item.relative_path).suffix.lower() in {".wav", ".mp3", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".wma"}), None) or next((item for item in reversed(current) if item.role == "upload" and Path(item.relative_path).suffix.lower() in {".wav", ".mp3", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".wma"}), None)
+            upload_media = next(
+                (
+                    item
+                    for item in attached_sources
+                    if Path(item.relative_path).suffix.lower()
+                    in {".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v", ".mpeg", ".mpg"}
+                ),
+                None,
+            )
+            upload_audio = next(
+                (
+                    item
+                    for item in attached_sources
+                    if Path(item.relative_path).suffix.lower()
+                    in {".wav", ".mp3", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".wma"}
+                ),
+                None,
+            )
             translated = by_role.get("translation")
-            source_subtitle = by_role.get("correction") or by_role.get("transcription") or next((item for item in attached_sources if Path(item.relative_path).suffix.lower() == ".srt"), None) or next((item for item in current if item.role == "upload" and Path(item.relative_path).suffix.lower() == ".srt"), None)
+            source_subtitle = (
+                by_role.get("correction")
+                or by_role.get("transcription")
+                or next(
+                    (
+                        item
+                        for item in attached_sources
+                        if Path(item.relative_path).suffix.lower() == ".srt"
+                    ),
+                    None,
+                )
+            )
             export_mode = str(settings.get("export_mode") or ("subtitles" if record.workflow_kind == "subtitles" else "media")).lower()
             if record.workflow_kind == "subtitles" and export_mode not in {"subtitles", "text"}:
                 export_mode = "subtitles"
             if export_mode not in {"media", "subtitles", "text"}:
                 export_mode = "media"
+            contract = (
+                ExportContract.verify(
+                    raw_export_contract,
+                    workflow_kind=record.workflow_kind,
+                    settings=settings,
+                )
+                if isinstance(raw_export_contract, dict)
+                else None
+            )
+            if contract is not None:
+                export_mode = contract.export_mode
             subtitle_format = str(settings.get("subtitle_format") or "srt").lower()
             if subtitle_format not in {"srt", "vtt"}:
                 subtitle_format = "srt"
@@ -5375,13 +5427,61 @@ class WorkflowHandlers:
             # subtitle/text-only request still uses the selected document.
             selected_subtitles = [item for item in selected_subtitles if item] if export_mode != "media" or subtitle_mode != "none" or upload_media is None else []
             dubbing_audio = selected_audio if selected_assembly is not None else by_role.get("assembled_audio") or by_role.get("dubbing_audio")
-            default_audio_mode = "mixed" if record.workflow_kind == "voiceover" and (upload_media or upload_audio) else "dubbed" if record.workflow_kind == "voiceover" else "source"
-            audio_mode = str(settings.get("audio_mode") or default_audio_mode).lower()
-            audio_mode = {"preserve": "source", "dubbing_only": "dubbed"}.get(audio_mode, audio_mode)
+            if record.workflow_kind == "voiceover" and export_mode == "media":
+                canonical_audio_mode = (
+                    contract.audio_mode
+                    if contract is not None
+                    else normalize_audio_mode(settings.get("audio_mode"))
+                )
+                if canonical_audio_mode in {"preserve", "mixed"} and not (
+                    upload_media or upload_audio
+                ):
+                    raise ValueError(
+                        "The requested source-audio export has no attached source. "
+                        "Attach the intended source or choose Voiceover only."
+                    )
+                audio_mode = {
+                    "preserve": "source",
+                    "dubbing_only": "dubbed",
+                    "mixed": "mixed",
+                }[canonical_audio_mode]
+            else:
+                audio_mode = "source"
             if export_mode == "media" and audio_mode in {"dubbed", "mixed"} and dubbing_audio is None:
                 raise ValueError(
                     "This media export requires assembled generated audio. Select a completed audio version and assemble it before exporting."
                 )
+            if (
+                export_mode == "media"
+                and upload_media
+                and audio_mode in {"source", "mixed"}
+            ):
+                _source_record, source_media_path = self._resolve_input(upload_media.id)
+                ffprobe_executable = str(
+                    os.environ.get("PANDRATOR_FFPROBE_EXE")
+                    or shutil.which("ffprobe")
+                    or ""
+                )
+                if not ffprobe_executable:
+                    raise RuntimeError(
+                        "FFprobe is required to verify the requested source soundtrack."
+                    )
+                try:
+                    source_has_audio = media_has_audio_stream(
+                        source_media_path,
+                        ffprobe_executable=ffprobe_executable,
+                    )
+                except subprocess.CalledProcessError as error:
+                    raise ValueError(
+                        "The source video soundtrack could not be inspected. "
+                        "Verify the source file and submit the export again."
+                    ) from error
+                if not source_has_audio:
+                    action = "preserve" if audio_mode == "source" else "mix"
+                    raise ValueError(
+                        f"The source video has no audio stream to {action}. "
+                        "Choose Voiceover only and submit the export again."
+                    )
             finalized_subtitles: list[Artifact] = []
             progress(
                 0.12,
@@ -5481,11 +5581,6 @@ class WorkflowHandlers:
                 if dubbing_audio and audio_mode in {"dubbed", "mixed"}:
                     _audio_record, audio_path = self._resolve_input(dubbing_audio.id)
                     audio_video = output_dir / f".{record.storage_key}-audio-{new_id()}.mp4"
-                    if audio_mode == "mixed":
-                        ffprobe_executable = str(os.environ.get("PANDRATOR_FFPROBE_EXE") or shutil.which("ffprobe") or "")
-                        if ffprobe_executable and not media_has_audio_stream(media_path, ffprobe_executable=ffprobe_executable):
-                            logger.warning("Source media has no audio stream; exporting voiceover-only audio for %s", media_path)
-                            audio_mode = "dubbed"
                     if audio_mode == "dubbed":
                         command = build_replace_video_audio_command(str(media_path), str(audio_path), str(audio_video), ffmpeg_executable=ffmpeg_executable)
                         progress(0.4, "Replacing source audio with generated speech")

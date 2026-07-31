@@ -2030,7 +2030,7 @@ export interface components {
             api_version?: string;
             /**
              * Application Version
-             * @default 0.6.8
+             * @default 0.6.9
              */
             application_version?: string;
             /** Canonical Origin */
@@ -5679,7 +5679,13 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": {
+                    [key: string]: unknown;
+                };
+            };
+        };
         responses: {
             /** @description Queued */
             202: {

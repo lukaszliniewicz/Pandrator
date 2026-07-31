@@ -14,6 +14,7 @@ from .artifact_selection import (
     stage_histories,
 )
 from .database import Database
+from .export_contract import build_export_contract
 from .jobs import JobQueue
 from .models import (
     Artifact,
@@ -26,21 +27,28 @@ from .models import (
     SourceAsset,
     UsageEvent,
 )
+from .source_resolution import resolve_primary_source
 
 WORKFLOW_HISTORY_PREVIEW_LIMIT = 10
 
 
 def _attached_source_artifacts(db_session, session_id: str, *, current_only: bool = True) -> list[Artifact]:
-    statement = (
-        select(Artifact)
-        .join(SourceAsset, SourceAsset.artifact_id == Artifact.id)
-        .join(SessionSource, SessionSource.source_asset_id == SourceAsset.id)
-        .where(SessionSource.session_id == session_id)
-        .order_by(SessionSource.is_current.desc(), SessionSource.updated_at.desc(), Artifact.created_at.desc())
-    )
-    if current_only:
-        statement = statement.where(SessionSource.is_current.is_(True))
-    return list(db_session.scalars(statement).all())
+    if not current_only:
+        return list(
+            db_session.scalars(
+                select(Artifact)
+                .join(SourceAsset, SourceAsset.artifact_id == Artifact.id)
+                .join(SessionSource, SessionSource.source_asset_id == SourceAsset.id)
+                .where(SessionSource.session_id == session_id)
+                .order_by(
+                    SessionSource.is_current.desc(),
+                    SessionSource.updated_at.desc(),
+                    Artifact.created_at.desc(),
+                )
+            ).all()
+        )
+    source = resolve_primary_source(db_session, session_id)
+    return [source.artifact] if source.artifact else []
 
 
 def _latest_current_artifacts_by_role(
@@ -479,6 +487,9 @@ class WorkflowService:
         }
         requested_sections = sorted(pipeline_sections) if stage_key == "generate_audio" else list(section_map.get(stage_key, ()))
         run_values = dict(settings or {})
+        # The server owns this immutable snapshot. Never accept a caller-supplied
+        # contract and accidentally make it authoritative.
+        run_values.pop("export_contract", None)
         requested_source_artifact_id = str(run_values.pop("source_artifact_id", "") or "")
         provided_stage_settings = run_values.pop("stage_settings", {})
         reuse_stages = [str(value) for value in (run_values.pop("reuse_stages", []) or []) if str(value)]
@@ -518,7 +529,8 @@ class WorkflowService:
             if record is None:
                 raise KeyError(session_id)
             all_artifacts = list(session.scalars(select(Artifact).where(Artifact.session_id == session_id).order_by(Artifact.created_at.desc())).all())
-            attached_sources = _attached_source_artifacts(session, session_id)
+            primary_source = resolve_primary_source(session, session_id)
+            attached_sources = [primary_source.artifact] if primary_source.artifact else []
             attached_ids = {artifact.id for artifact in attached_sources}
             all_artifacts = [
                 *attached_sources,
@@ -589,6 +601,12 @@ class WorkflowService:
                 "resolved_settings_snapshot": resolved,
                 "settings_hash": settings_hash,
             }
+            if stage_key == "export":
+                payload["export_contract"] = build_export_contract(
+                    workflow_kind=record.workflow_kind,
+                    settings=flattened,
+                    source=primary_source,
+                )
         if stage_key == "generate_audio" or continuation:
             payload.update({"target_stage": stage_key, "stage_settings": resolved_stage_settings})
             if reuse_stages:

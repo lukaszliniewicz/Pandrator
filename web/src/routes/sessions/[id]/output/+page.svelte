@@ -145,6 +145,17 @@
       const audioMode = String(
         effective.audio_mode ?? (hasSourceAudio ? 'mixed' : 'dubbing_only')
       );
+      // Carry the displayed choice across every async boundary. Persisted
+      // settings remain the profile, while this override is the immutable
+      // contract for this particular assembly and export request.
+      const runOverride = {
+        output: {
+          export_mode: exportMode,
+          ...(session?.workflow_kind === 'voiceover'
+            ? { audio_mode: audioMode }
+            : {})
+        }
+      };
       const usesGeneratedAudio =
         session?.workflow_kind === 'audiobook' ||
         (exportMode === 'media' && audioMode !== 'preserve');
@@ -154,7 +165,11 @@
         );
       const needsAssembly = usesGeneratedAudio && Boolean(selectedRunId);
       const resolvedAssemblySettings = needsAssembly
-        ? await sessionApi.resolveSettings(sessionId, ['audio', 'output'])
+        ? await sessionApi.resolveSettings(
+            sessionId,
+            ['audio', 'output'],
+            runOverride
+          )
         : null;
       const assemblyMatchesSettings =
         selected?.assembly?.settings_hash ===
@@ -170,14 +185,17 @@
           !assemblyMatchesSettings ||
           !['queued', 'running'].includes(selected?.assembly?.status ?? '')
         )
-          await generationApi.createAssembly(sessionId, selectedRunId);
+          await generationApi.createAssembly(
+            sessionId,
+            selectedRunId,
+            runOverride
+          );
         await waitForAssembly(selectedRunId);
       }
-      const job = await sessionApi.runStage(
-        sessionId,
-        'export',
-        needsAssembly ? { generation_run_id: selectedRunId } : {}
-      );
+      const job = await sessionApi.runStage(sessionId, 'export', {
+        ...runOverride,
+        ...(needsAssembly ? { generation_run_id: selectedRunId } : {})
+      });
       exportJobs = [
         job,
         ...exportJobs.filter((item) => item.id !== job.id)

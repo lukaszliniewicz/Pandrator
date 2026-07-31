@@ -676,7 +676,11 @@ export const generationApi = {
       path: { runId }
     });
   },
-  createAssembly: (sessionId: string, generationRunId: string | null) =>
+  createAssembly: (
+    sessionId: string,
+    generationRunId: string | null,
+    runOverride: Record<string, unknown> = {}
+  ) =>
     typedApiJson<
       '/api/v1/sessions/{sessionId}/output-assemblies',
       'post',
@@ -685,7 +689,7 @@ export const generationApi = {
       path: { sessionId },
       body: {
         generation_run_id: generationRunId,
-        run_override: {}
+        run_override: runOverride
       }
     }),
   deleteRun: (runId: string) =>

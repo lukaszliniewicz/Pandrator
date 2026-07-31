@@ -177,6 +177,135 @@ class WebParityWorkspaceTests(unittest.TestCase):
         self.assertEqual(2000, audio["effective"]["synchronization_delay_ms"])
         self.assertEqual(1.15, audio["effective"]["synchronization_speed"])
 
+    def test_export_contract_does_not_resurrect_a_detached_managed_source(self):
+        voiceover = self.create_session(
+            kind="voiceover",
+            name="Detached source contract",
+        )
+        uploaded = self.client.post(
+            "/api/v1/uploads",
+            data={
+                "session_id": voiceover["id"],
+                "purpose": "source",
+                "file": (io.BytesIO(b"managed video fixture"), "managed.mp4"),
+            },
+            headers=self.headers,
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(201, uploaded.status_code, uploaded.get_json())
+        attachment = uploaded.get_json()["attachment"]
+
+        detached = self.client.delete(
+            f"/api/v1/sessions/{voiceover['id']}/sources/{attachment['id']}",
+            headers={
+                **self.headers,
+                "If-Match": f'"{attachment["revision"]}"',
+            },
+        )
+        self.assertEqual(204, detached.status_code, detached.get_json())
+
+        extension = self.app.extensions["pandrator"]
+        assembly_path = Path(self.temporary.name) / "detached-assembly.wav"
+        assembly_path.write_bytes(b"generated audio fixture")
+        ArtifactService(extension["database"], extension["paths"]).register(
+            assembly_path,
+            kind="audio",
+            role="assembled_audio",
+            session_id=voiceover["id"],
+        )
+
+        output = self.client.get(
+            f"/api/v1/sessions/{voiceover['id']}/settings/output"
+        ).get_json()
+        self.assertEqual("none", output["context"]["source_profile"])
+        self.assertEqual("none", output["context"]["source_resolution"])
+
+        rejected = self.client.post(
+            f"/api/v1/sessions/{voiceover['id']}/stages/export/run",
+            json={
+                "output": {
+                    "export_mode": "media",
+                    "audio_mode": "mixed",
+                }
+            },
+            headers=self.headers,
+        )
+        self.assertEqual(409, rejected.status_code, rejected.get_json())
+        self.assertIn(
+            "requires an attached audio or video source",
+            rejected.get_json()["error"]["message"],
+        )
+
+        queued = self.client.post(
+            f"/api/v1/sessions/{voiceover['id']}/stages/export/run",
+            json={
+                "output": {
+                    "export_mode": "media",
+                    "audio_mode": "dubbing_only",
+                }
+            },
+            headers=self.headers,
+        )
+        self.assertEqual(202, queued.status_code, queued.get_json())
+        payload = queued.get_json()["payload_json"]
+        self.assertEqual("dubbing_only", payload["settings"]["audio_mode"])
+        self.assertEqual(
+            {
+                "version": 1,
+                "workflow_kind": "voiceover",
+                "export_mode": "media",
+                "audio_mode": "dubbing_only",
+                "source_artifact_id": None,
+                "source_content_hash": None,
+                "source_profile": "none",
+                "source_resolution": "none",
+            },
+            payload["export_contract"],
+        )
+
+    def test_unpromoted_legacy_upload_uses_the_shared_source_resolution(self):
+        voiceover = self.create_session(
+            kind="voiceover",
+            name="Legacy source contract",
+        )
+        extension = self.app.extensions["pandrator"]
+        source_path = Path(self.temporary.name) / "legacy-source.mp4"
+        source_path.write_bytes(b"legacy video fixture")
+        artifact = ArtifactService(
+            extension["database"],
+            extension["paths"],
+        ).register(
+            source_path,
+            kind="source",
+            role="upload",
+            session_id=voiceover["id"],
+            metadata={"original_filename": source_path.name},
+        )
+
+        output = self.client.get(
+            f"/api/v1/sessions/{voiceover['id']}/settings/output"
+        ).get_json()
+
+        self.assertEqual("video", output["context"]["source_profile"])
+        self.assertEqual("legacy", output["context"]["source_resolution"])
+        self.assertEqual(artifact.id, output["context"]["source_artifact_id"])
+
+        queued = self.client.post(
+            f"/api/v1/sessions/{voiceover['id']}/stages/export/run",
+            json={
+                "output": {
+                    "export_mode": "media",
+                    "audio_mode": "preserve",
+                }
+            },
+            headers=self.headers,
+        )
+        self.assertEqual(202, queued.status_code, queued.get_json())
+        contract = queued.get_json()["payload_json"]["export_contract"]
+        self.assertEqual(artifact.id, contract["source_artifact_id"])
+        self.assertEqual(artifact.content_hash, contract["source_content_hash"])
+        self.assertEqual("legacy", contract["source_resolution"])
+
     def test_tts_provider_defaults_fit_between_global_and_session_overrides(self):
         record = self.create_session()
         database = self.app.extensions["pandrator"]["database"]
