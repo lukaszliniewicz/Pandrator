@@ -155,6 +155,108 @@ test('Create export saves the visible burned-subtitle selection before submittin
   expect(savedSettings.override.burn_video_resolution).toBe('720p');
 });
 
+test('Create export keeps the selected audio version when saved effective defaults are omitted', async ({
+  page
+}) => {
+  await signIn(page);
+  const { session, headers } = await createSession(page, 'voiceover');
+  const uploaded = await page.request.post('/api/v1/uploads', {
+    headers,
+    multipart: {
+      session_id: session.id,
+      purpose: 'source',
+      file: {
+        name: 'source-video.mp4',
+        mimeType: 'video/mp4',
+        buffer: Buffer.from('media fixture')
+      }
+    }
+  });
+  expect(uploaded.ok()).toBeTruthy();
+
+  await page.route(
+    `**/api/v1/sessions/${session.id}/generation-runs`,
+    async (route) => {
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          items: [
+            {
+              id: 'selected-completed-run',
+              status: 'completed',
+              label: 'Run 1: Selected voice',
+              assembly: {
+                id: 'selected-assembly',
+                status: 'completed',
+                settings_hash: 'current-settings'
+              }
+            }
+          ]
+        })
+      });
+    }
+  );
+  await page.route(
+    `**/api/v1/sessions/${session.id}/settings/output`,
+    async (route) => {
+      if (route.request().method() !== 'PUT') {
+        await route.fallback();
+        return;
+      }
+      const submitted = route.request().postDataJSON() as {
+        value: Record<string, unknown>;
+      };
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          revision: 2,
+          effective: {},
+          override: submitted.value
+        })
+      });
+    }
+  );
+  await page.route(
+    `**/api/v1/sessions/${session.id}/settings/resolve`,
+    async (route) => {
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ value: {}, settings_hash: 'current-settings' })
+      });
+    }
+  );
+  let exportPayload: Record<string, unknown> | null = null;
+  await page.route(
+    `**/api/v1/sessions/${session.id}/stages/export/run`,
+    async (route) => {
+      exportPayload = route.request().postDataJSON() as Record<string, unknown>;
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          id: 'selected-version-export-job',
+          kind: 'export.create',
+          session_id: session.id,
+          status: 'queued',
+          progress: 0,
+          created_at: new Date().toISOString()
+        })
+      });
+    }
+  );
+
+  await page.goto(`/sessions/${session.id}/output`);
+  await expect(page.getByLabel('Audio version')).toHaveValue(
+    'selected-completed-run'
+  );
+  await page.getByLabel('Audio result').selectOption('mixed');
+  await page.getByRole('button', { name: 'Create export' }).click();
+  await expect(page.getByText(/Export selected was submitted/)).toBeVisible();
+
+  expect(exportPayload).toEqual({
+    generation_run_id: 'selected-completed-run'
+  });
+});
+
 test('Create export rebuilds a completed assembly when synchronization settings changed', async ({
   page
 }) => {

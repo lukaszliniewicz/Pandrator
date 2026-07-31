@@ -1,0 +1,48 @@
+name: Generated web API contract
+
+on:
+  push:
+    branches: [main]
+    tags: ["v.*"]
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/web-contract.yml"
+      - "pandrator/web/**"
+      - "scripts/generate_web_contract.py"
+      - "openapi.json"
+      - "pyproject.toml"
+      - "web/package.json"
+      - "web/package-lock.json"
+      - "web/src/lib/api.generated.ts"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Regenerate and compare
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install contract generators
+        run: |
+          python -m pip install --disable-pip-version-check -e .
+          npm ci --prefix web
+      - name: Verify committed API contract
+        run: |
+          python scripts/generate_web_contract.py
+          npm --prefix web run generate-api
+          git diff --exit-code -- openapi.json web/src/lib/api.generated.ts

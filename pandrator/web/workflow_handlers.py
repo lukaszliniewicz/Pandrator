@@ -5249,7 +5249,7 @@ class WorkflowHandlers:
         }
 
     def export(self, payload, progress, cancel_event):
-        """Create immutable, managed exports without requiring generated audio."""
+        """Create immutable, managed exports from the explicitly selected inputs."""
         from werkzeug.utils import secure_filename
 
         from pandrator.logic.dubbing.bilingual_ass import write_bilingual_ass
@@ -5294,6 +5294,7 @@ class WorkflowHandlers:
             known_ids = {item.id for item in current}
             current.extend(item for item in attached_sources if item.id not in known_ids)
             selected_assembly = None
+            selected_audio = None
             selected_run_id = str(settings.get("generation_run_id") or "").strip()
             if selected_run_id:
                 assembly_query = select(OutputAssembly).where(
@@ -5373,6 +5374,14 @@ class WorkflowHandlers:
             # "No subtitles" only suppresses tracks on a media render. A
             # subtitle/text-only request still uses the selected document.
             selected_subtitles = [item for item in selected_subtitles if item] if export_mode != "media" or subtitle_mode != "none" or upload_media is None else []
+            dubbing_audio = selected_audio if selected_assembly is not None else by_role.get("assembled_audio") or by_role.get("dubbing_audio")
+            default_audio_mode = "mixed" if record.workflow_kind == "voiceover" and (upload_media or upload_audio) else "dubbed" if record.workflow_kind == "voiceover" else "source"
+            audio_mode = str(settings.get("audio_mode") or default_audio_mode).lower()
+            audio_mode = {"preserve": "source", "dubbing_only": "dubbed"}.get(audio_mode, audio_mode)
+            if export_mode == "media" and audio_mode in {"dubbed", "mixed"} and dubbing_audio is None:
+                raise ValueError(
+                    "This media export requires assembled generated audio. Select a completed audio version and assemble it before exporting."
+                )
             finalized_subtitles: list[Artifact] = []
             progress(
                 0.12,
@@ -5406,10 +5415,6 @@ class WorkflowHandlers:
                     f"Prepared subtitle track {index} of {len(selected_subtitles)}",
                 )
             selected_subtitles = finalized_subtitles
-            dubbing_audio = selected_audio if selected_assembly is not None else by_role.get("assembled_audio") or by_role.get("dubbing_audio")
-            default_audio_mode = "mixed" if record.workflow_kind == "voiceover" and (upload_media or upload_audio) else "dubbed" if record.workflow_kind == "voiceover" else "source"
-            audio_mode = str(settings.get("audio_mode") or default_audio_mode).lower()
-            audio_mode = {"preserve": "source", "dubbing_only": "dubbed"}.get(audio_mode, audio_mode)
 
             def is_translation_track(item: Artifact) -> bool:
                 return str((item.metadata_json or {}).get("source_role") or item.role) == "translation"

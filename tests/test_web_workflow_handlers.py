@@ -1448,6 +1448,45 @@ A single reviewed cue.
         self.assertTrue(second_path.is_file())
         self.assertTrue(second_path.stem.endswith("-2"))
 
+    def test_media_export_rejects_generated_audio_modes_without_an_assembly(self):
+        voiceover = self.sessions.create("Missing generated audio", workflow_kind="voiceover")
+        session_dir = self.paths.sessions / voiceover.storage_key
+        session_dir.mkdir()
+        media_path = session_dir / "source.mp4"
+        media_path.write_bytes(b"media fixture")
+        self.artifacts.register(
+            media_path,
+            kind="source",
+            role="upload",
+            session_id=voiceover.id,
+        )
+
+        for audio_mode in ("mixed", "dubbing_only"):
+            with self.subTest(audio_mode=audio_mode):
+                with self.assertRaisesRegex(ValueError, "requires assembled generated audio"):
+                    self.handlers.export(
+                        {
+                            "session_id": voiceover.id,
+                            "settings": {
+                                "export_mode": "media",
+                                "audio_mode": audio_mode,
+                            },
+                        },
+                        self.progress,
+                        threading.Event(),
+                    )
+
+        with self.database.session() as session:
+            exported = session.scalar(
+                select(func.count())
+                .select_from(Artifact)
+                .where(
+                    Artifact.session_id == voiceover.id,
+                    Artifact.kind == "export",
+                )
+            )
+        self.assertEqual(0, exported)
+
     def test_audiobook_export_prefers_assembled_audio_and_preserves_container(self):
         audiobook = self.sessions.create("Finished Book", workflow_kind="audiobook")
         session_dir = self.paths.sessions / audiobook.storage_key
