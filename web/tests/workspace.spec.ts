@@ -532,7 +532,19 @@ test('generated segments return to the current filtered page after repeated rege
           ? {
               ...item,
               text: `Regenerated segment 101 · revision ${regeneratedRevision}.`,
-              revision: item.revision + regeneratedRevision
+              revision: item.revision + regeneratedRevision,
+              takes: [
+                {
+                  id: `take-${regeneratedRevision}`,
+                  generation_run_id: runId,
+                  artifact_id: `artifact-${regeneratedRevision}`,
+                  kind: 'tts',
+                  status: 'completed',
+                  is_active: true,
+                  revision: regeneratedRevision,
+                  created_at: `2026-01-01T00:00:0${regeneratedRevision}Z`
+                }
+              ]
             }
           : item
       );
@@ -579,10 +591,22 @@ test('generated segments return to the current filtered page after repeated rege
   };
   await page.getByRole('button', { name: 'Load more' }).click();
   await waitForRegeneratedSegment();
+  await expect(
+    regeneratedRow.getByRole('button', { name: 'Play' })
+  ).toHaveCount(0);
   await regenerateSegment101.click();
   await waitForRegeneratedSegment();
   await expect(filter).toHaveValue('all');
+  regeneratedRevision += 1;
   phase = 'completed';
+  await expect(regeneratedRow.locator('textarea')).toHaveValue(
+    `Regenerated segment 101 · revision ${regeneratedRevision}.`,
+    { timeout: 30_000 }
+  );
+  await expect(
+    regeneratedRow.getByRole('button', { name: 'Play' })
+  ).toBeVisible();
+  await expect(filter).toHaveValue('all');
 
   const completedRefreshesBeforeFilter = generatedRefreshes;
   await filter.selectOption('completed');

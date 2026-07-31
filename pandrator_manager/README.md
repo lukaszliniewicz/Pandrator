@@ -7,9 +7,9 @@ authenticated loopback API plus a standalone setup/recovery WebUI. Explicit
 private-network and HTTPS-ingress profiles support headless servers and GPU
 pods without changing the loopback-only default.
 
-The current release is 0.9.6. For most users, the easiest installation is the
+The current release is 0.9.7. For most users, the easiest installation is the
 Windows executable or Linux AppImage on the
-[Pandrator 0.6.6 release page](https://github.com/lukaszliniewicz/Pandrator/releases/tag/v.0.6.6).
+[Pandrator 0.6.7 release page](https://github.com/lukaszliniewicz/Pandrator/releases/tag/v.0.6.7).
 These packages include their own runtime and do not require a suitable system
 Python.
 
@@ -39,9 +39,9 @@ single `SHA256SUMS` file when you download it.
 The native packages are the recommended installation:
 
 - Windows:
-  [PandratorManager-0.9.6-windows-x86_64.exe](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.6.6/PandratorManager-0.9.6-windows-x86_64.exe)
+  [PandratorManager-0.9.7-windows-x86_64.exe](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.6.7/PandratorManager-0.9.7-windows-x86_64.exe)
 - Linux:
-  [PandratorManager-0.9.6-x86_64.AppImage](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.6.6/PandratorManager-0.9.6-x86_64.AppImage)
+  [PandratorManager-0.9.7-x86_64.AppImage](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.6.7/PandratorManager-0.9.7-x86_64.AppImage)
 
 If you already have Python 3.11 or 3.12, install the Manager as an isolated
 command-line tool:
@@ -84,7 +84,7 @@ non-interactively:
 
 ```bash
 PandratorManager-x86_64.AppImage setup --workspace /path/to/parent
-PandratorManager-0.9.6-windows-x86_64.exe setup --workspace D:\path\to\parent
+PandratorManager-0.9.7-windows-x86_64.exe setup --workspace D:\path\to\parent
 ```
 
 `--workspace` takes precedence over `PANDRATOR_WORKSPACE`, which takes

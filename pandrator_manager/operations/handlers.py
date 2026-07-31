@@ -1676,6 +1676,19 @@ class FilesystemTaskHandler:
                 exposure=exposure,
                 preferences=preferences,
             )
+            running = {
+                service.id
+                for service in execution.supervisor.snapshot()
+                if service.process is not None
+            }
+            # A component update activates a new application slot before this
+            # task refreshes the launch contracts. ProcessSupervisor correctly
+            # refuses to replace a running contract, so quiesce the worker and
+            # API first. Starting the worker below also starts its API
+            # dependency.
+            for service_id in ("pandrator.worker", "pandrator.api"):
+                if service_id in running:
+                    execution.supervisor.stop(service_id)
             for specification in specifications:
                 execution.supervisor.replace_spec(specification)
             service = execution.supervisor.start("pandrator.worker")

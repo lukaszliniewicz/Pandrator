@@ -159,6 +159,59 @@ class OperationEngineTests(unittest.TestCase):
             active_component_path(self.application.context.layout, "fixture")
         )
 
+    def test_application_autostart_replaces_running_specs_before_restart(self):
+        handler = FilesystemTaskHandler()
+        supervisor = mock.Mock()
+        supervisor.snapshot.return_value = [
+            mock.Mock(id="pandrator.api", process=object()),
+            mock.Mock(id="pandrator.worker", process=object()),
+        ]
+        api_spec = mock.Mock(service_id="pandrator.api")
+        worker_spec = mock.Mock(service_id="pandrator.worker")
+        supervisor.start.return_value = mock.Mock(
+            id="pandrator.worker",
+            health=None,
+        )
+        execution = mock.Mock()
+        execution.supervisor = supervisor
+        execution.plan.desired = {}
+        execution.context.layout = self.application.context.layout
+        execution.context.environment = {}
+        network = mock.Mock(application=mock.sentinel.exposure)
+
+        with (
+            mock.patch(
+                "pandrator_manager.operations.handlers.load_network_configuration",
+                return_value=network,
+            ),
+            mock.patch(
+                "pandrator_manager.operations.handlers.pandrator_runtime_specs",
+                return_value=(api_spec, worker_spec),
+            ),
+        ):
+            result = handler._execute_start_application(
+                execution,
+                mock.Mock(),
+            )
+
+        self.assertTrue(result["started"])
+        lifecycle_calls = [
+            call
+            for call in supervisor.mock_calls
+            if call[0] in {"snapshot", "stop", "replace_spec", "start"}
+        ]
+        self.assertEqual(
+            lifecycle_calls,
+            [
+                mock.call.snapshot(),
+                mock.call.stop("pandrator.worker"),
+                mock.call.stop("pandrator.api"),
+                mock.call.replace_spec(api_spec),
+                mock.call.replace_spec(worker_spec),
+                mock.call.start("pandrator.worker"),
+            ],
+        )
+
     def test_update_activation_failure_restores_previous_slot(self):
         first_engine = OperationEngine(
             self.application.context,

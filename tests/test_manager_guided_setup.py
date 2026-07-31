@@ -381,7 +381,9 @@ class ManagedApplicationLaunchTests(unittest.TestCase):
             str(layout.data / "models" / "kokoro"),
             kokoro.arguments[model_argument],
         )
-        self.assertEqual({"status": "healthy"}, kokoro.readiness.expected_json)
+        self.assertEqual("tcp", kokoro.readiness.kind)
+        self.assertEqual("127.0.0.1", kokoro.readiness.host)
+        self.assertEqual(8880, kokoro.readiness.port)
         self.assertIsNotNone(voxcpm)
         self.assertEqual((8021,), voxcpm.ports)
         self.assertIn("pandrator-manager-run.py", voxcpm.arguments)

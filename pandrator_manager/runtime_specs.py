@@ -611,10 +611,15 @@ def component_runtime_spec(
                 ),
             },
             ports=(8880,),
+            # Kokoro performs CPU-bound synthesis in the API process. During a
+            # sustained generation run the event loop can legitimately delay
+            # `/health`, which must not be mistaken for a crashed service.
+            # The listening socket remains an accurate liveness signal while
+            # inference is in progress.
             readiness=HealthProbeSpec(
-                kind="http",
-                url="http://127.0.0.1:8880/health",
-                expected_json={"status": "healthy"},
+                kind="tcp",
+                host="127.0.0.1",
+                port=8880,
             ),
             startup_timeout_seconds=30 * 60,
             restart=RestartPolicy(maximum_restarts=3),
