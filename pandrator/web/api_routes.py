@@ -10,8 +10,6 @@ import shutil
 import time
 import uuid
 from datetime import timedelta
-from importlib.metadata import PackageNotFoundError
-from importlib.metadata import version as package_version
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +18,7 @@ from sqlalchemy import func, select
 from werkzeug.utils import secure_filename
 
 from pandrator.runtime import DataPaths
+from pandrator.version import PANDRATOR_VERSION
 
 from .artifact_selection import choose_artifact, clear_selection, rerun_impact, stage_history
 from .artifacts import sha256_file
@@ -130,12 +129,6 @@ from .voice_library import ensure_bundled_voice
 from .workflow_plan_routes import register_workflow_plan_routes
 from .workspace import BUILTIN_DEFAULTS, SETTING_SECTIONS
 from .workspace import RevisionConflict as WorkspaceRevisionConflict
-
-try:
-    PANDRATOR_VERSION = package_version("pandrator")
-except PackageNotFoundError:
-    PANDRATOR_VERSION = "0+unknown"
-
 
 def _is_loopback_address(value: object) -> bool:
     candidate = str(value or "").split("%", 1)[0]

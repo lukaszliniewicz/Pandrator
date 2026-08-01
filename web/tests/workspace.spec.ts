@@ -300,7 +300,7 @@ test('voiceover output settings follow the video source and default to a control
   await expect(page.getByLabel('Audio result')).toHaveValue('mixed');
   await expect(page.getByText('Soundtrack mix')).toBeVisible();
   await expect(page.getByLabel('Source level (dB)')).toHaveValue('0');
-  await expect(page.getByLabel('Maximum start delay (ms)')).toHaveValue('2000');
+  await expect(page.getByLabel('Maximum start delay (ms)')).toHaveValue('800');
   await expect(page.getByLabel('Album / series')).toHaveCount(0);
   await expect(page.getByLabel('Genre')).toHaveCount(0);
   await expect(page.getByText('Cover artwork')).toHaveCount(0);

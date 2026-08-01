@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import os
 import uuid
-from importlib.metadata import PackageNotFoundError
-from importlib.metadata import version as package_version
 from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import BaseModel, ConfigDict
+
+from pandrator.version import PANDRATOR_VERSION
 
 from .database import Database
 from .models import AppSetting
@@ -16,12 +16,6 @@ from .models import AppSetting
 IDENTITY_SETTING_KEY = "system.identity"
 IDENTITY_SCHEMA_VERSION = "1"
 API_VERSION = "v1"
-
-
-try:
-    PANDRATOR_VERSION = package_version("pandrator")
-except PackageNotFoundError:
-    PANDRATOR_VERSION = "0+unknown"
 
 
 def canonical_origin(value: str) -> str:
