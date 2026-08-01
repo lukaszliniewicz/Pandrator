@@ -220,6 +220,8 @@
         {},
       settings: candidate.settings ?? existing.settings ?? {},
       supports_prebuilt_voices: candidate.supports_prebuilt_voices,
+      credential_required:
+        candidate.credential_required ?? existing.credential_required ?? false,
       secret_ref: existing.secret_ref ?? candidate.secret_ref,
       api_key_env: candidate.api_key_env ?? existing.api_key_env,
       credential_configured:
@@ -246,8 +248,31 @@
   const isManaged = (service: TtsService) =>
     service.connection_mode === 'managed_local';
   const externalServices = $derived(
-    (payload.services ?? []).filter((service) => !isManaged(service))
+    (payload.services ?? []).filter(
+      (service) =>
+        !isManaged(service) &&
+        (service.kind !== 'local' || Boolean(configuredRecord(service)))
+    )
   );
+  const serviceGroups = $derived([
+    {
+      label: 'Unconfigured',
+      description: 'Services that still need credentials before they can run.',
+      items: externalServices.filter(
+        (service) =>
+          service.credential_required && !service.credential_configured
+      )
+    },
+    {
+      label: 'Connected endpoints',
+      description:
+        'Configured cloud services and independently hosted speech endpoints.',
+      items: externalServices.filter(
+        (service) =>
+          !service.credential_required || service.credential_configured
+      )
+    }
+  ]);
   const managedHealth = (service: TtsService) =>
     service.manager_service?.health?.state ?? 'stopped';
 
@@ -349,6 +374,7 @@
     delete baseRecord.manager_supported_actions;
     delete baseRecord.manager_endpoint_read_only;
     delete baseRecord.manager_service;
+    delete baseRecord.credential_required;
     const credential = removeEditingApiKey
       ? { clear_api_key: true }
       : {
@@ -518,7 +544,7 @@
   <div class="flex flex-wrap items-end justify-between gap-4">
     <div>
       <div class="eyebrow">External speech services</div>
-      <h2 class="mt-1 text-2xl font-semibold">Connected endpoints</h2>
+      <h2 class="mt-1 text-2xl font-semibold">External connections</h2>
       <p class="muted mt-2 max-w-2xl text-sm">
         Manage remote or independently hosted endpoints, API keys, defaults, and
         model catalogues here. Local installations live in the Local tab.
@@ -544,129 +570,164 @@
     >
       {error}
     </p>{/if}
-  <div class="mt-5 grid gap-3 md:grid-cols-2">
-    {#each externalServices as service}
-      <article class="rounded-2xl border border-[var(--line)] p-4">
-        <div class="flex items-center gap-3">
-          <div
-            class="grid size-9 place-items-center rounded-xl bg-[var(--accent-soft)] text-[var(--accent)]"
-          >
-            <Server size={17} />
-          </div>
-          <div class="min-w-0 flex-1">
-            <div class="flex flex-wrap items-center gap-2">
-              <div class="truncate font-semibold">{service.name}</div>
-              <span
-                class="rounded-full border border-[var(--line)] px-2 py-0.5 text-[.62rem] font-bold uppercase"
-                >{service.credential_configured
-                  ? `Key: ${service.credential_source}`
-                  : 'No key'}</span
-              >
-              {#if service.manager_component_id}
+  <div class="mt-6 space-y-7">
+    {#each serviceGroups as group}
+      {#if group.items.length}<section>
+          <div class="mb-3 flex flex-wrap items-end justify-between gap-2">
+            <div>
+              <div class="flex items-center gap-2">
+                <h3 class="text-sm font-semibold">{group.label}</h3>
                 <span
-                  class="rounded-full bg-[var(--accent-soft)] px-2 py-0.5 text-[.62rem] font-bold uppercase text-[var(--accent)]"
-                  >{isManaged(service) ? 'Managed local' : 'External'}</span
+                  class="muted rounded-full border border-[var(--line)] px-2 py-0.5 text-[.65rem] font-bold"
+                  >{group.items.length}</span
                 >
-              {/if}
+              </div>
+              <p class="muted mt-1 text-xs">{group.description}</p>
             </div>
-            <div class="muted truncate text-xs">{service.api_base}</div>
           </div>
-          {#if service.models?.length}<CheckCircle2
-              class="text-[var(--success)]"
-              size={17}
-            />{/if}
-        </div>
-        <div class="muted mt-3 text-xs">
-          {service.models?.length ?? 0} models · {service.voices?.length ?? 0} voices{service.default_model
-            ? ` · default ${service.default_model}`
-            : ''}
-          {#if service.manager_component_id}
-            · local {service.manager_component_state ??
-              'unknown'}{service.manager_service
-              ? ` / ${managedHealth(service)}`
-              : ''}
-          {/if}
-        </div>
-        <div class="mt-3 flex flex-wrap gap-2">
-          <button
-            class="btn btn-sm btn-secondary"
-            onclick={() => openSettings(service)}
-            ><Settings2 size={13} /> Service settings</button
-          >
-          {#if service.supports_prebuilt_voices}<a
-              href={`/voices?view=prebuilt&service=${encodeURIComponent(service.id)}`}
-              class="btn btn-sm btn-secondary"
-              ><Library size={13} /> Preview voices</a
-            >{/if}
-          <button
-            class="btn btn-sm btn-secondary"
-            onclick={() => setDefault(service)}
-            disabled={isDefault(service)}
-            >{isDefault(service) ? 'Default' : 'Make default'}</button
-          >
-          {#if !service.direct_http && normalizedId(service) !== 'vertex_ai'}<button
-              class="btn btn-sm btn-secondary"
-              onclick={() => refreshService(service)}
-              disabled={refreshing === service.id}
-              ><RefreshCw size={13} />{refreshing === service.id
-                ? 'Testing…'
-                : 'Test & refresh'}</button
-            >{/if}
-          {#if service.manager_available && service.manager_component_id}
-            {#if ['absent', 'unknown'].includes(service.manager_component_state ?? '') && service.manager_supported_actions?.includes('install')}
-              <a
-                class="btn btn-sm btn-primary"
-                data-sveltekit-reload
-                href={`/providers?tab=speech&speech=local#component-${service.manager_component_id}`}
-                >Install locally</a
-              >
-            {:else if service.manager_component_state === 'degraded' && service.manager_supported_actions?.includes('repair')}
-              <a
-                class="btn btn-sm btn-primary"
-                data-sveltekit-reload
-                href={`/providers?tab=speech&speech=local#component-${service.manager_component_id}`}
-                >Repair local service</a
-              >
-            {:else if service.manager_component_state === 'present'}
-              {#if !service.manager_service?.process}
-                <button
-                  class="btn btn-sm btn-secondary"
-                  disabled={managerBusy === service.id}
-                  onclick={() => managedRuntime(service, 'start')}
-                  >Start local service</button
-                >
-              {:else}
-                <button
-                  class="btn btn-sm btn-secondary"
-                  disabled={managerBusy === service.id}
-                  onclick={() => managedRuntime(service, 'stop')}
-                  >Stop local service</button
-                >
-              {/if}
-              {#if isManaged(service)}
-                <button
-                  class="btn btn-sm btn-secondary"
-                  disabled={managerBusy === service.id}
-                  onclick={() => setConnectionMode(service, 'external')}
-                  >Use external endpoint</button
-                >
-              {:else if managedHealth(service) === 'healthy'}
-                <button
-                  class="btn btn-sm btn-primary"
-                  disabled={managerBusy === service.id}
-                  onclick={() => setConnectionMode(service, 'managed_local')}
-                  >Use managed local</button
-                >
-              {/if}
-            {/if}
-          {/if}
-          {#if configuredRecord(service)}<button
-              class="btn btn-sm btn-secondary text-red-500"
-              onclick={() => removeService(service)}>Remove</button
-            >{/if}
-        </div>
-      </article>
+          <div class="grid gap-3 md:grid-cols-2">
+            {#each group.items as service}
+              <article class="rounded-2xl border border-[var(--line)] p-4">
+                <div class="flex items-center gap-3">
+                  <div
+                    class="grid size-9 place-items-center rounded-xl bg-[var(--accent-soft)] text-[var(--accent)]"
+                  >
+                    <Server size={17} />
+                  </div>
+                  <div class="min-w-0 flex-1">
+                    <div class="flex flex-wrap items-center gap-2">
+                      <div class="truncate font-semibold">{service.name}</div>
+                      {#if service.credential_configured}<span
+                          class="rounded-full border border-[var(--line)] px-2 py-0.5 text-[.62rem] font-bold uppercase"
+                          >Credentials: {service.credential_source}</span
+                        >{:else if service.credential_required}<span
+                          class="rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[.62rem] font-bold uppercase text-amber-700"
+                          >Credentials required</span
+                        >{:else}<span
+                          class="muted rounded-full border border-[var(--line)] px-2 py-0.5 text-[.62rem] font-bold uppercase"
+                          >No key required</span
+                        >{/if}
+                      {#if service.manager_component_id}
+                        <span
+                          class="rounded-full bg-[var(--accent-soft)] px-2 py-0.5 text-[.62rem] font-bold uppercase text-[var(--accent)]"
+                          >{isManaged(service)
+                            ? 'Managed local'
+                            : 'External'}</span
+                        >
+                      {/if}
+                    </div>
+                    <div class="muted truncate text-xs">{service.api_base}</div>
+                  </div>
+                  {#if service.models?.length}<CheckCircle2
+                      class="text-[var(--success)]"
+                      size={17}
+                    />{/if}
+                </div>
+                <div class="muted mt-3 text-xs">
+                  {service.models?.length ?? 0} models · {service.voices
+                    ?.length ?? 0} voices{service.default_model
+                    ? ` · default ${service.default_model}`
+                    : ''}
+                  {#if service.manager_component_id}
+                    · local {service.manager_component_state ??
+                      'unknown'}{service.manager_service
+                      ? ` / ${managedHealth(service)}`
+                      : ''}
+                  {/if}
+                </div>
+                <div class="mt-3 flex flex-wrap gap-2">
+                  <button
+                    class="btn btn-sm btn-secondary"
+                    onclick={() => openSettings(service)}
+                    ><Settings2 size={13} /> Service settings</button
+                  >
+                  {#if service.supports_prebuilt_voices}<a
+                      href={`/voices?view=prebuilt&service=${encodeURIComponent(service.id)}`}
+                      class="btn btn-sm btn-secondary"
+                      ><Library size={13} /> Preview voices</a
+                    >{/if}
+                  <button
+                    class="btn btn-sm btn-secondary"
+                    onclick={() => setDefault(service)}
+                    disabled={isDefault(service)}
+                    >{isDefault(service) ? 'Default' : 'Make default'}</button
+                  >
+                  {#if !service.direct_http && normalizedId(service) !== 'vertex_ai'}<button
+                      class="btn btn-sm btn-secondary"
+                      onclick={() => refreshService(service)}
+                      disabled={refreshing === service.id}
+                      ><RefreshCw size={13} />{refreshing === service.id
+                        ? 'Testing…'
+                        : 'Test & refresh'}</button
+                    >{/if}
+                  {#if service.manager_available && service.manager_component_id}
+                    {#if ['absent', 'unknown'].includes(service.manager_component_state ?? '') && service.manager_supported_actions?.includes('install')}
+                      <a
+                        class="btn btn-sm btn-primary"
+                        data-sveltekit-reload
+                        href={`/providers?tab=speech&speech=local#component-${service.manager_component_id}`}
+                        >Install locally</a
+                      >
+                    {:else if service.manager_component_state === 'degraded' && service.manager_supported_actions?.includes('repair')}
+                      <a
+                        class="btn btn-sm btn-primary"
+                        data-sveltekit-reload
+                        href={`/providers?tab=speech&speech=local#component-${service.manager_component_id}`}
+                        >Repair local service</a
+                      >
+                    {:else if service.manager_component_state === 'present'}
+                      {#if !service.manager_service?.process}
+                        <button
+                          class="btn btn-sm btn-secondary"
+                          disabled={managerBusy === service.id}
+                          onclick={() => managedRuntime(service, 'start')}
+                          >Start local service</button
+                        >
+                      {:else}
+                        <button
+                          class="btn btn-sm btn-secondary"
+                          disabled={managerBusy === service.id}
+                          onclick={() => managedRuntime(service, 'stop')}
+                          >Stop local service</button
+                        >
+                      {/if}
+                      {#if isManaged(service)}
+                        <button
+                          class="btn btn-sm btn-secondary"
+                          disabled={managerBusy === service.id}
+                          onclick={() => setConnectionMode(service, 'external')}
+                          >Use external endpoint</button
+                        >
+                      {:else if managedHealth(service) === 'healthy'}
+                        <button
+                          class="btn btn-sm btn-primary"
+                          disabled={managerBusy === service.id}
+                          onclick={() =>
+                            setConnectionMode(service, 'managed_local')}
+                          >Use managed local</button
+                        >
+                      {/if}
+                    {/if}
+                  {/if}
+                  {#if configuredRecord(service)}<button
+                      class="btn btn-sm btn-secondary text-red-500"
+                      onclick={() => removeService(service)}>Remove</button
+                    >{/if}
+                </div>
+              </article>
+            {/each}
+          </div>
+        </section>{/if}
     {/each}
+    {#if externalServices.length === 0}<div
+        class="rounded-2xl border border-dashed border-[var(--line)] p-5 text-sm"
+      >
+        <div class="font-semibold">No external connections yet</div>
+        <p class="muted mt-1">
+          Connect a hosted endpoint or configure a cloud speech service to see
+          it here. Local engines remain available in the Local tab.
+        </p>
+      </div>{/if}
   </div>
   <details class="mt-6 rounded-2xl border border-[var(--line)] p-4">
     <summary class="cursor-pointer font-semibold"

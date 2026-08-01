@@ -24,12 +24,28 @@
 
   type ComputeVariant =
     'auto' | 'cpu' | 'cuda' | 'vulkan' | 'metal' | 'rocm' | 'wgpu';
+  type InstallOptionChoice = {
+    value: string;
+    label: string;
+    description?: string;
+    requires?: Record<string, string[]>;
+  };
+  type InstallOption = {
+    key: string;
+    label: string;
+    description?: string;
+    state_field: 'options' | 'quantization';
+    default: string;
+    choices: InstallOptionChoice[];
+  };
   type Definition = {
     id: string;
     label: string;
     description: string;
+    guidance?: string;
     service_key?: string | null;
     compute_variants: ComputeVariant[];
+    install_options?: InstallOption[];
     supported_actions: string[];
     default_port?: number | null;
   };
@@ -37,7 +53,11 @@
     state: 'absent' | 'present' | 'degraded' | 'unknown' | 'unsupported';
     installed_version?: string | null;
     installed_revision?: string | null;
-    resolved?: { compute?: string; quantization?: string | null } | null;
+    resolved?: {
+      compute?: string;
+      quantization?: string | null;
+      options?: Record<string, unknown>;
+    } | null;
     problems: string[];
   };
   type Component = {
@@ -105,6 +125,7 @@
   let components = $state<Component[]>([]);
   let services = $state<Service[]>([]);
   let compute = $state<Record<string, ComputeVariant>>({});
+  let installOptionValues = $state<Record<string, Record<string, string>>>({});
   let pendingPlan = $state<ManagerPlan | null>(null);
   const operation = $derived(managerOperationStore.operation);
   let error = $state('');
@@ -128,13 +149,13 @@
   let pollStopped = false;
   const componentGroups = $derived([
     {
-      label: 'Installed and configured',
+      label: 'Installed',
       items: components.filter((component) =>
         ['present', 'degraded'].includes(component.inspection.state)
       )
     },
     {
-      label: 'Available to install',
+      label: 'Not installed',
       items: components.filter(
         (component) =>
           !['present', 'degraded'].includes(component.inspection.state)
@@ -154,11 +175,124 @@
     return `${amount >= 10 || unit === 0 ? amount.toFixed(0) : amount.toFixed(1)} ${units[unit]}`;
   };
 
-  const selectedCompute = (component: Component) =>
-    compute[component.definition.id] ??
+  const configuredCompute = (component: Component) =>
     component.desired?.compute ??
-    component.inspection.resolved?.compute ??
+    (component.inspection.resolved?.compute as ComputeVariant | undefined) ??
     'auto';
+
+  const selectedCompute = (component: Component) =>
+    compute[component.definition.id] ?? configuredCompute(component);
+
+  const normalizeInstallOptionValue = (
+    component: Component,
+    option: InstallOption,
+    rawValue: unknown
+  ) => {
+    let value = String(rawValue ?? option.default).trim();
+    if (
+      component.definition.id === 'qwen_tts' &&
+      option.key === 'initial_model'
+    ) {
+      const legacyAliases: Record<string, string> = {
+        custom_voice: 'customvoice',
+        both: 'base'
+      };
+      value = legacyAliases[value.toLowerCase()] ?? value.toLowerCase();
+    }
+    return option.choices.some((choice) => choice.value === value)
+      ? value
+      : option.default;
+  };
+
+  const configuredInstallOption = (
+    component: Component,
+    option: InstallOption
+  ) => {
+    const rawValue =
+      option.state_field === 'quantization'
+        ? (component.desired?.quantization ??
+          component.inspection.resolved?.quantization)
+        : (component.desired?.options?.[option.key] ??
+          component.inspection.resolved?.options?.[option.key]);
+    return normalizeInstallOptionValue(component, option, rawValue);
+  };
+
+  const selectedInstallOption = (component: Component, option: InstallOption) =>
+    installOptionValues[component.definition.id]?.[option.key] ??
+    configuredInstallOption(component, option);
+
+  const installChoiceAllowed = (
+    component: Component,
+    choice: InstallOptionChoice,
+    values: Record<string, string> = installOptionValues[
+      component.definition.id
+    ] ?? {}
+  ) =>
+    Object.entries(choice.requires ?? {}).every(([dependency, allowed]) => {
+      const dependencyOption = component.definition.install_options?.find(
+        (option) => option.key === dependency
+      );
+      const selected =
+        values[dependency] ??
+        (dependencyOption
+          ? configuredInstallOption(component, dependencyOption)
+          : '');
+      return allowed.includes(selected);
+    });
+
+  function selectInstallOption(
+    component: Component,
+    option: InstallOption,
+    value: string
+  ) {
+    const values = {
+      ...(installOptionValues[component.definition.id] ?? {}),
+      [option.key]: value
+    };
+    const options = component.definition.install_options ?? [];
+    for (let pass = 0; pass < options.length; pass += 1) {
+      let changed = false;
+      for (const candidateOption of options) {
+        const selected =
+          values[candidateOption.key] ??
+          configuredInstallOption(component, candidateOption);
+        const selectedChoice = candidateOption.choices.find(
+          (choice) => choice.value === selected
+        );
+        if (
+          selectedChoice &&
+          installChoiceAllowed(component, selectedChoice, values)
+        )
+          continue;
+        const replacement =
+          candidateOption.choices.find(
+            (choice) =>
+              choice.value === candidateOption.default &&
+              installChoiceAllowed(component, choice, values)
+          ) ??
+          candidateOption.choices.find((choice) =>
+            installChoiceAllowed(component, choice, values)
+          );
+        if (replacement && replacement.value !== selected) {
+          values[candidateOption.key] = replacement.value;
+          changed = true;
+        }
+      }
+      if (!changed) break;
+    }
+    installOptionValues = {
+      ...installOptionValues,
+      [component.definition.id]: values
+    };
+  }
+
+  const configurationChanged = (component: Component) =>
+    selectedCompute(component) !== configuredCompute(component) ||
+    (component.definition.install_options ?? []).some(
+      (option) =>
+        selectedInstallOption(component, option) !==
+        configuredInstallOption(component, option)
+    );
 
   const serviceFor = (component: Component) =>
     services.find(
@@ -243,9 +377,22 @@
       );
       services = servicePayload.items;
       releases = releasePayload;
+      const nextCompute: Record<string, ComputeVariant> = {};
+      const nextInstallOptionValues: Record<
+        string,
+        Record<string, string>
+      > = {};
       for (const component of components) {
-        compute[component.definition.id] = selectedCompute(component);
+        nextCompute[component.definition.id] = configuredCompute(component);
+        nextInstallOptionValues[component.definition.id] = Object.fromEntries(
+          (component.definition.install_options ?? []).map((option) => [
+            option.key,
+            configuredInstallOption(component, option)
+          ])
+        );
       }
+      compute = nextCompute;
+      installOptionValues = nextInstallOptionValues;
       error = '';
     } catch (caught) {
       report(caught);
@@ -298,15 +445,29 @@
     error = '';
     notice = '';
     try {
+      const requestedOptions = {
+        ...(component.inspection.resolved?.options ?? {}),
+        ...(component.desired?.options ?? {})
+      };
+      let requestedQuantization =
+        component.desired?.quantization ??
+        component.inspection.resolved?.quantization ??
+        null;
+      for (const option of component.definition.install_options ?? []) {
+        const value = selectedInstallOption(component, option);
+        if (option.state_field === 'quantization')
+          requestedQuantization = value;
+        else requestedOptions[option.key] = value;
+      }
       pendingPlan = await managerApi.plan<ManagerPlan>({
         kind,
         desired: {
           [component.definition.id]: {
             present: kind !== 'remove',
             compute: selectedCompute(component),
-            quantization: component.desired?.quantization ?? null,
+            quantization: requestedQuantization,
             options: {
-              ...(component.desired?.options ?? {}),
+              ...requestedOptions,
               start_after_install: kind !== 'remove'
             }
           }
@@ -667,6 +828,12 @@
                     </p>
                   {/if}
 
+                  {#if component.definition.description}
+                    <p class="muted mt-3 text-xs leading-relaxed">
+                      {component.definition.description}
+                    </p>
+                  {/if}
+
                   {#if component.definition.compute_variants.length > 1}
                     <label class="mt-4 block text-xs font-semibold">
                       Compute backend
@@ -686,6 +853,44 @@
                         {/each}
                       </select>
                     </label>
+                  {/if}
+
+                  {#if component.definition.install_options?.length}
+                    <div class="mt-4 grid gap-3 sm:grid-cols-2">
+                      {#each component.definition.install_options as option}
+                        <label class="block text-xs font-semibold">
+                          {option.label}
+                          <select
+                            class="field"
+                            value={selectedInstallOption(component, option)}
+                            disabled={busy}
+                            onchange={(event) =>
+                              selectInstallOption(
+                                component,
+                                option,
+                                event.currentTarget.value
+                              )}
+                          >
+                            {#each option.choices as choice}
+                              <option
+                                value={choice.value}
+                                disabled={!installChoiceAllowed(
+                                  component,
+                                  choice
+                                )}>{choice.label}</option
+                              >
+                            {/each}
+                          </select>
+                          {#if option.description}
+                            <span
+                              class="muted mt-1 block font-normal leading-relaxed"
+                            >
+                              {option.description}
+                            </span>
+                          {/if}
+                        </label>
+                      {/each}
+                    </div>
                   {/if}
 
                   <div class="mt-4 flex flex-wrap gap-2">
@@ -713,7 +918,10 @@
                         disabled={busy}
                         onclick={() => createPlan(component, 'update')}
                       >
-                        <RefreshCw size={13} /> Check/update
+                        <RefreshCw size={13} />
+                        {configurationChanged(component)
+                          ? 'Apply configuration'
+                          : 'Check/update'}
                       </button>
                     {/if}
                     {#if runtimeState.action === 'start'}
@@ -734,13 +942,13 @@
                         <Square size={13} /> Stop
                       </button>
                     {/if}
-                    {#if installed && component.definition.supported_actions.includes('remove')}
+                    {#if (installed || degraded) && component.definition.supported_actions.includes('remove')}
                       <button
                         class="btn btn-sm btn-secondary text-red-500"
                         disabled={busy}
                         onclick={() => createPlan(component, 'remove')}
                       >
-                        <Trash2 size={13} /> Remove
+                        <Trash2 size={13} /> Uninstall
                       </button>
                     {/if}
                   </div>

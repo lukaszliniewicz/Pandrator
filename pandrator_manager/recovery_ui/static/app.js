@@ -21,6 +21,7 @@ let pollingStopped = false;
 let catalogueSignature = "";
 let selectionInitialized = false;
 let applicationBusy = false;
+let managerUpdateBusy = false;
 let networkBusy = false;
 let networkDirty = false;
 let networkInitialized = false;
@@ -122,6 +123,13 @@ function openNetworkSettings() {
   const details = byId("network-details");
   details.open = true;
   details.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function openSoftwareMaintenance() {
+  activateManagerTab("maintenance");
+  const panel = byId("software-maintenance");
+  panel.focus({ preventScroll: true });
+  panel.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 function makeButton(label, action, className = "button secondary") {
@@ -1074,7 +1082,10 @@ function renderApplicationMaintenance() {
   const component = pandratorComponent();
   const detail = byId("application-maintenance-detail");
   const actions = byId("application-maintenance-actions");
+  const managerUpdate = byId("check-manager-update");
   clear(actions);
+  managerUpdate.disabled = managerUpdateBusy || Boolean(activeOperation);
+  managerUpdate.classList.toggle("busy", managerUpdateBusy);
   if (!component) {
     detail.textContent = "Checking the Pandrator installation…";
     return;
@@ -2527,10 +2538,10 @@ async function reviewRelease() {
 }
 
 async function checkManagerUpdate() {
-  const button = byId("check-manager-update");
   const status = byId("manager-update-status");
-  button.disabled = true;
-  button.classList.add("busy");
+  if (managerUpdateBusy || activeOperation) return;
+  managerUpdateBusy = true;
+  renderApplicationMaintenance();
   status.textContent = "Checking the signed release channel…";
   try {
     const update = await requestJson("/v1/releases/manager-update");
@@ -2554,8 +2565,8 @@ async function checkManagerUpdate() {
     status.textContent = "The update check did not complete.";
     showMessage(error.message, true);
   } finally {
-    button.disabled = false;
-    button.classList.remove("busy");
+    managerUpdateBusy = false;
+    renderApplicationMaintenance();
   }
 }
 
@@ -2613,6 +2624,10 @@ document.addEventListener("DOMContentLoaded", async () => {
   byId("open-network-settings").addEventListener(
     "click",
     openNetworkSettings,
+  );
+  byId("open-software-maintenance").addEventListener(
+    "click",
+    openSoftwareMaintenance,
   );
   byId("review-selection").addEventListener("click", planSelection);
   byId("application-primary").addEventListener("click", applicationPrimary);

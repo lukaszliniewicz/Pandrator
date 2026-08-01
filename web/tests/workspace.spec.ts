@@ -353,6 +353,82 @@ test('reading mode flows segments together and separates only saved paragraphs',
   );
 });
 
+test('running generation controls stay on one drawer header row', async ({
+  page
+}) => {
+  await page.setViewportSize({ width: 1186, height: 698 });
+  await signIn(page);
+  const sessionId = await createGenerationPlan(page, [
+    { text: 'A queued generation segment.' }
+  ]);
+  const run = {
+    id: 'running-generation',
+    session_id: sessionId,
+    plan_revision_id: 'generation-plan',
+    sequence_number: 1,
+    operation: 'generate',
+    label: 'Run 1: Chatterbox · chatterbox-multilingual',
+    job_id: 'generation-job',
+    status: 'running',
+    progress: 0.4
+  };
+  await page.route(`**/api/v1/sessions/${sessionId}/generation-runs`, (route) =>
+    route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({ items: [run] })
+    })
+  );
+  await page.route(
+    `**/api/v1/sessions/${sessionId}/generation-segments?*`,
+    (route) =>
+      route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          items: [
+            {
+              id: 'queued-segment',
+              ordinal: 0,
+              node_kind: 'paragraph',
+              paragraph_break_after: true,
+              text: 'A queued generation segment.',
+              optimized_text: null,
+              speech_plan: {},
+              optimization_status: 'not_requested',
+              optimization_reviewed: false,
+              marked: false,
+              removed: false,
+              status: 'queued',
+              revision: 1,
+              takes: []
+            }
+          ],
+          total: 1,
+          next_cursor: null,
+          plan_revision_id: 'generation-plan'
+        })
+      })
+  );
+
+  await page.goto(`/sessions/${sessionId}`);
+  await page.getByRole('button', { name: 'Generation', exact: true }).click();
+  await expect(
+    page.getByRole('button', {
+      name: 'Stop safely after the current segment'
+    })
+  ).toHaveText(/Stop$/);
+  await expect(page.getByText('Stop safely', { exact: true })).toHaveCount(0);
+
+  const rowCenters = await page
+    .locator('aside.generation-drawer > header')
+    .evaluate((header) =>
+      Array.from(header.children, (element) => {
+        const bounds = element.getBoundingClientRect();
+        return bounds.top + bounds.height / 2;
+      })
+    );
+  expect(Math.max(...rowCenters) - Math.min(...rowCenters)).toBeLessThan(2);
+});
+
 test('generation segments support Ctrl and Shift multi-selection in both review views', async ({
   page
 }) => {

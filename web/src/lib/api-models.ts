@@ -441,6 +441,7 @@ export type TtsService = {
   supports_voice_cloning?: boolean;
   supports_prebuilt_voices?: boolean;
   settings?: Record<string, unknown>;
+  credential_required?: boolean;
   credential_configured?: boolean;
   credential_source?: string;
   credential_backend?: 'database' | 'environment' | 'keyring' | 'file';

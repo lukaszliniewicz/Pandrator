@@ -144,6 +144,7 @@ test('Create export saves the visible burned-subtitle selection before submittin
     .filter({ hasText: /^Subtitles/ })
     .locator('select')
     .selectOption('burned');
+  await page.getByText('Advanced video encoding').click();
   await page.getByLabel('Output resolution').selectOption('720p');
   await page.getByRole('button', { name: 'Create export' }).click();
   await expect(page.getByText(/Export burned-e was submitted/)).toBeVisible();
@@ -161,6 +162,59 @@ test('Create export saves the visible burned-subtitle selection before submittin
       audio_mode: 'preserve'
     }
   });
+});
+
+test('advanced video encoding can be enabled without subtitles', async ({
+  page
+}) => {
+  await signIn(page);
+  const { session, headers } = await createSession(page, 'voiceover');
+  const uploaded = await page.request.post('/api/v1/uploads', {
+    headers,
+    multipart: {
+      session_id: session.id,
+      purpose: 'source',
+      file: {
+        name: 'source-video.mp4',
+        mimeType: 'video/mp4',
+        buffer: Buffer.from('media fixture')
+      }
+    }
+  });
+  expect(uploaded.ok()).toBeTruthy();
+  await page.route(
+    `**/api/v1/sessions/${session.id}/stages/export/run`,
+    async (route) => {
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          id: 'advanced-video-export-job',
+          kind: 'export.create',
+          session_id: session.id,
+          status: 'queued',
+          progress: 0,
+          created_at: new Date().toISOString()
+        })
+      });
+    }
+  );
+
+  await page.goto(`/sessions/${session.id}/output`);
+  await page.getByLabel('Audio result').selectOption('preserve');
+  await page.getByText('Advanced video encoding').click();
+  await expect(page.getByLabel('Output resolution')).toBeDisabled();
+  await page.getByLabel('Transcode the video stream').check();
+  await page.getByLabel('Output resolution').selectOption('1080p');
+  await page.getByRole('button', { name: 'Create export' }).click();
+  await expect(page.getByText(/Export advanced was submitted/)).toBeVisible();
+
+  const saved = await page.request.get(
+    `/api/v1/sessions/${session.id}/settings/output`
+  );
+  const savedSettings = await saved.json();
+  expect(savedSettings.override.video_transcode).toBe(true);
+  expect(savedSettings.override.subtitle_mode).toBeUndefined();
+  expect(savedSettings.override.burn_video_resolution).toBe('1080p');
 });
 
 test('Create export keeps the selected audio version when saved effective defaults are omitted', async ({

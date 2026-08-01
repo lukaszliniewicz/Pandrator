@@ -1089,7 +1089,52 @@ input[type="file"]::file-selector-button {
 }
 
 .maintenance-overview {
-  padding-block: 1rem;
+  padding-block: 1.05rem;
+}
+
+.maintenance-overview:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--accent) 52%, transparent);
+  outline-offset: 3px;
+}
+
+.maintenance-overview-heading {
+  max-width: 720px;
+}
+
+.maintenance-overview-heading p:last-child {
+  margin-bottom: 0;
+  font-size: 0.82rem;
+}
+
+.maintenance-product-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 1rem;
+  border-top: 1px solid var(--line);
+}
+
+.maintenance-product {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  padding: 1rem 1rem 0 0;
+}
+
+.maintenance-product + .maintenance-product {
+  border-left: 1px solid var(--line);
+  padding-right: 0;
+  padding-left: 1rem;
+}
+
+.maintenance-product > .muted {
+  flex: 1 1 auto;
+  margin-bottom: 0.85rem;
+  font-size: 0.78rem;
+}
+
+.maintenance-product-actions {
+  align-items: flex-start;
 }
 
 .maintenance-grid {
@@ -1592,9 +1637,20 @@ body.operation-running [data-panel="install"] {
 
 @media (max-width: 820px) {
   .network-grid,
+  .maintenance-product-grid,
   .maintenance-grid,
   .diagnostics {
     grid-template-columns: 1fr;
+  }
+
+  .maintenance-product {
+    padding-right: 0;
+  }
+
+  .maintenance-product + .maintenance-product {
+    border-top: 1px solid var(--line);
+    border-left: 0;
+    padding-left: 0;
   }
 
   .diagnostics > div:last-child {

@@ -250,6 +250,14 @@
             >
               Please wait…
             </button>
+            <button
+              id="open-software-maintenance"
+              class="button secondary"
+              type="button"
+              aria-controls="software-maintenance"
+            >
+              Updates &amp; repair
+            </button>
             <details id="application-more" class="action-menu hidden">
               <summary class="button secondary">More</summary>
               <div class="action-menu-popover">
@@ -327,38 +335,53 @@
         data-panel="maintenance"
         hidden
       >
-        <section class="panel maintenance-overview">
-          <p class="eyebrow">Pandrator application</p>
-          <div class="row">
-            <div>
-              <h2>Updates and repair</h2>
+        <section
+          id="software-maintenance"
+          class="panel maintenance-overview"
+          aria-labelledby="software-maintenance-title"
+          tabindex="-1"
+        >
+          <div class="maintenance-overview-heading">
+            <p class="eyebrow">Software maintenance</p>
+            <h2 id="software-maintenance-title">Updates and repair</h2>
+            <p class="muted">
+              Keep Pandrator and its setup manager current, or repair the
+              application without touching projects and generated media.
+            </p>
+          </div>
+          <div class="maintenance-product-grid">
+            <section
+              class="maintenance-product"
+              aria-labelledby="pandrator-maintenance-title"
+            >
+              <h3 id="pandrator-maintenance-title">Pandrator</h3>
               <p id="application-maintenance-detail" class="muted">
                 Checking the Pandrator installation…
               </p>
-            </div>
-            <div
-              id="application-maintenance-actions"
-              class="actions"
-            ></div>
-          </div>
-        </section>
-
-        <section class="panel manager-update-panel">
-          <div class="row">
-            <div>
-              <p class="eyebrow">Pandrator Manager</p>
-              <h2>Keep setup and recovery current</h2>
-              <p id="manager-update-status" class="muted">
-                Check the project-signed release channel for a newer Manager.
-              </p>
-            </div>
-            <button
-              id="check-manager-update"
-              class="button secondary"
-              type="button"
+              <div
+                id="application-maintenance-actions"
+                class="actions maintenance-product-actions"
+              ></div>
+            </section>
+            <section
+              class="maintenance-product"
+              aria-labelledby="manager-maintenance-title"
             >
-              Check for update
-            </button>
+              <h3 id="manager-maintenance-title">Pandrator Manager</h3>
+              <p id="manager-update-status" class="muted">
+                Check the signed release channel for a newer setup and
+                recovery manager.
+              </p>
+              <div class="actions maintenance-product-actions">
+                <button
+                  id="check-manager-update"
+                  class="button secondary"
+                  type="button"
+                >
+                  Check for update
+                </button>
+              </div>
+            </section>
           </div>
         </section>
 

@@ -895,6 +895,15 @@
   const selectedTtsServiceId = $derived(
     String(selectedTtsService?.id ?? ttsService).toLowerCase()
   );
+  const ttsModelAcquisitionHint = $derived(
+    selectedTtsServiceId === 'kobold_qwen'
+      ? 'A Qwen voice family that was not prepared initially downloads automatically on first use. Model size and precision are configured in Speech services → Local.'
+      : selectedTtsServiceId === 'chatterbox'
+        ? 'Chatterbox downloads the selected model automatically on first use. The first generation can therefore take several minutes.'
+        : selectedTtsServiceId === 'fishs2'
+          ? 'Fish uses one S2 Pro model. Choose its quantization in Speech services → Local; the selected file is downloaded automatically when that configuration is applied.'
+          : ''
+  );
   const generationPromptModels = $derived(
     Array.from(selectedTtsService?.generation_prompt_models ?? []).map(
       (model) => String(model).toLowerCase()
@@ -1609,6 +1618,11 @@
               installer-selected model is the default.</span
             ></label
           >
+          {#if ttsModelAcquisitionHint}
+            <p class="muted -mt-2 text-xs leading-relaxed">
+              {ttsModelAcquisitionHint}
+            </p>
+          {/if}
           <label class="text-sm font-semibold"
             >Model precision<select
               bind:value={sttQuantization}

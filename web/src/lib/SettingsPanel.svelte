@@ -155,6 +155,7 @@
       'subtitle_mode',
       'subtitle_selection',
       'subtitle_format',
+      'video_transcode',
       'burn_video_encoder',
       'burn_video_resolution',
       'burn_video_quality',

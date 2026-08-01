@@ -973,7 +973,7 @@
     class="generation-drawer fixed inset-x-3 bottom-3 z-50 overflow-hidden rounded-2xl md:left-[calc(var(--sidebar-offset,5rem)+.35rem)] md:right-[.35rem]"
   >
     <header
-      class="flex flex-wrap items-center gap-3 border-b border-[var(--line)] px-4 py-3"
+      class="generation-header flex flex-wrap items-center gap-3 border-b border-[var(--line)] px-4 py-3 lg:flex-nowrap"
     >
       <button
         onclick={() => (mode = mode === 'collapsed' ? 'half' : 'collapsed')}
@@ -984,7 +984,9 @@
           />{/if}
         Generation
       </button>
-      <span class="muted text-xs"
+      <span
+        class="muted min-w-0 text-xs lg:flex-1 lg:truncate"
+        title={`${payload.total} segments · ${selectedRun?.label ?? 'No run selected'}${selectedAssembly ? ` · output ${selectedAssembly.status}` : ''}`}
         >{payload.total} segments · {selectedRun?.label ??
           'No run selected'}{#if selectedAssembly}
           · output {selectedAssembly.status}{/if}</span
@@ -1009,14 +1011,13 @@
         <span class="muted text-[.65rem] tabular-nums"
           >{progressPercent(run.progress)}%</span
         >
-        <span
-          class="muted max-w-64 truncate text-[.65rem]"
-          title={run.progress_detail ?? ''}
-          >{run.progress_detail ??
-            (run.status === 'queued'
-              ? 'Waiting for an available worker'
-              : '')}</span
-        >
+        {#if run.progress_detail || run.status === 'queued'}
+          <span
+            class="muted max-w-64 truncate text-[.65rem]"
+            title={run.progress_detail ?? ''}
+            >{run.progress_detail ?? 'Waiting for an available worker'}</span
+          >
+        {/if}
       {/if}
       {#if selectedAssembly && ['queued', 'running'].includes(selectedAssembly.status)}
         <div
@@ -1033,14 +1034,14 @@
         <span class="muted text-[.65rem] tabular-nums"
           >{progressPercent(selectedAssembly.progress)}%</span
         >
-        <span
-          class="muted max-w-64 truncate text-[.65rem]"
-          title={selectedAssembly.progress_detail ?? ''}
-          >{selectedAssembly.progress_detail ??
-            (selectedAssembly.status === 'queued'
-              ? 'Waiting for an available worker'
-              : '')}</span
-        >
+        {#if selectedAssembly.progress_detail || selectedAssembly.status === 'queued'}
+          <span
+            class="muted max-w-64 truncate text-[.65rem]"
+            title={selectedAssembly.progress_detail ?? ''}
+            >{selectedAssembly.progress_detail ??
+              'Waiting for an available worker'}</span
+          >
+        {/if}
       {/if}
       <div class="header-playback flex items-center gap-1">
         <button
@@ -1104,8 +1105,12 @@
             ><Play size={14} /> Resume</button
           >
         {:else if ['queued', 'running'].includes(run.status)}
-          <button onclick={() => action('pause')} class="action"
-            ><Pause size={14} /> Stop safely</button
+          <button
+            onclick={() => action('pause')}
+            class="action"
+            title="Stop after the current segment"
+            aria-label="Stop safely after the current segment"
+            ><Pause size={14} /> Stop</button
           >
           <button onclick={() => action('cancel')} class="action text-red-500"
             ><Square size={14} /> Cancel</button
@@ -1499,7 +1504,7 @@
       transition: none;
     }
   }
-  @media (max-width: 720px) {
+  @media (max-width: 1200px) {
     .view-label {
       display: none;
     }

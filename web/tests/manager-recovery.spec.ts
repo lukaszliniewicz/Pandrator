@@ -286,3 +286,137 @@ test('Pandrator refreshes and controls the same engine state', async ({
     /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
   );
 });
+
+test('Pandrator sends selected Qwen and Fish install options to the manager', async ({
+  page
+}) => {
+  const qwen = component('qwen3_tts', 'Qwen3-TTS', 'tts.qwen3');
+  qwen.definition.install_options = [
+    {
+      key: 'initial_model',
+      label: 'Initial voice mode',
+      state_field: 'options',
+      default: 'base',
+      choices: [
+        { value: 'base', label: 'Prebuilt voices' },
+        { value: 'customvoice', label: 'Voice cloning' }
+      ]
+    },
+    {
+      key: 'model_size',
+      label: 'Model size',
+      state_field: 'options',
+      default: '0.6b',
+      choices: [
+        { value: '0.6b', label: '0.6B' },
+        { value: '1.7b', label: '1.7B' }
+      ]
+    },
+    {
+      key: 'precision',
+      label: 'Precision',
+      state_field: 'quantization',
+      default: 'q8_0',
+      choices: [
+        { value: 'q8_0', label: 'Q8' },
+        { value: 'f16', label: 'F16' }
+      ]
+    }
+  ];
+  qwen.desired.options = { initial_model: 'base', model_size: '0.6b' };
+  qwen.desired.quantization = 'q8_0';
+  qwen.inspection.resolved.options = {
+    initial_model: 'base',
+    model_size: '0.6b'
+  };
+  qwen.inspection.resolved.quantization = 'q8_0';
+
+  const fish = component('fish_s2', 'Fish Speech S2 Pro', 'tts.fish_s2');
+  fish.definition.install_options = [
+    {
+      key: 'precision',
+      label: 'Model quantization',
+      state_field: 'quantization',
+      default: 'q8_0',
+      choices: [
+        { value: 'q8_0', label: 'Q8' },
+        { value: 'q4_k_m', label: 'Q4 K M' }
+      ]
+    }
+  ];
+  fish.desired.present = false;
+  fish.inspection.state = 'absent';
+
+  const planRequests: Array<Record<string, unknown>> = [];
+  await page.route('**/api/v1/manager/**', async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path === '/api/v1/manager/status') {
+      await fulfillJson(route, {
+        available: true,
+        configured: true,
+        status: { configuration_revision: 7, active_operation_id: null }
+      });
+    } else if (path === '/api/v1/manager/components') {
+      await fulfillJson(route, { items: [qwen, fish] });
+    } else if (path === '/api/v1/manager/services') {
+      await fulfillJson(route, { items: [] });
+    } else if (path === '/api/v1/manager/releases') {
+      await fulfillJson(route, { current: {}, items: [] });
+    } else if (path === '/api/v1/manager/plans') {
+      planRequests.push(request.postDataJSON() as Record<string, unknown>);
+      await fulfillJson(route, {
+        id: `plan-${planRequests.length}`,
+        digest: `digest-${planRequests.length}`,
+        kind: planRequests.length === 1 ? 'update' : 'install',
+        tasks: [],
+        warnings: [],
+        confirmations: [],
+        estimated_download_bytes: 0,
+        estimated_disk_bytes: 0
+      });
+    } else {
+      await fulfillJson(route, {});
+    }
+  });
+
+  await signIn(page);
+  await page.goto('/providers?tab=local');
+
+  const qwenCard = page.locator('#component-qwen3_tts');
+  await qwenCard.getByLabel('Initial voice mode').selectOption('customvoice');
+  await qwenCard.getByLabel('Model size').selectOption('1.7b');
+  await qwenCard.getByLabel('Precision').selectOption('f16');
+  await qwenCard.getByRole('button', { name: 'Apply configuration' }).click();
+  await expect.poll(() => planRequests.length).toBe(1);
+  expect(planRequests[0]).toMatchObject({
+    kind: 'update',
+    desired: {
+      qwen3_tts: {
+        present: true,
+        compute: 'cpu',
+        quantization: 'f16',
+        options: { initial_model: 'customvoice', model_size: '1.7b' }
+      }
+    },
+    expected_revision: 7
+  });
+  await page.getByRole('button', { name: 'Close plan' }).click();
+
+  const fishCard = page.locator('#component-fish_s2');
+  await fishCard.getByLabel('Model quantization').selectOption('q4_k_m');
+  await fishCard.getByRole('button', { name: 'Install locally' }).click();
+  await expect.poll(() => planRequests.length).toBe(2);
+  expect(planRequests[1]).toMatchObject({
+    kind: 'install',
+    desired: {
+      fish_s2: {
+        present: true,
+        compute: 'cpu',
+        quantization: 'q4_k_m',
+        options: {}
+      }
+    },
+    expected_revision: 7
+  });
+});

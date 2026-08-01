@@ -82,6 +82,7 @@
     String(value('audio_mode', hasSourceAudio ? 'mixed' : 'dubbing_only'))
   );
   const subtitleMode = $derived(String(value('subtitle_mode', 'none')));
+  const videoTranscode = $derived(Boolean(value('video_transcode', false)));
   const outputFormat = $derived(String(value('format', 'wav')).toLowerCase());
   const formatUsesBitrate = (format: unknown) =>
     ['aac', 'm4b', 'mp3', 'opus'].includes(String(format ?? '').toLowerCase());
@@ -95,6 +96,7 @@
   const videoKeys = [
     'audio_mode',
     'subtitle_mode',
+    'video_transcode',
     'burn_video_encoder',
     'burn_video_resolution',
     'burn_video_quality',
@@ -584,15 +586,18 @@
                     value="soft">Soft / selectable tracks</option
                   ><option value="burned">Burned into video</option></select
                 ></label
-              >{#if audioMode !== 'preserve'}<div
-                  class="rounded-xl bg-[var(--accent-soft)] p-3 text-xs"
-                >
-                  <strong>Video audio: AAC</strong>
-                  <p class="muted mt-1">
-                    New voiceover and mixed soundtracks are encoded as AAC for
-                    the final MP4.
-                  </p>
-                </div>{/if}
+              >{#if audioMode !== 'preserve'}<label
+                  >AAC audio bitrate<input
+                    value={String(value('burn_audio_bitrate', '192k'))}
+                    oninput={(event) =>
+                      set('burn_audio_bitrate', event.currentTarget.value)}
+                    class="field"
+                    placeholder="192k"
+                    inputmode="text"
+                  /><span class="muted mt-1 block text-[.68rem] font-normal"
+                    >Used for the new voiceover or mixed MP4 soundtrack.</span
+                  ></label
+                >{/if}
             {:else}<label
                 >Audio format<select
                   value={String(value('format', 'wav'))}
@@ -783,14 +788,48 @@
           </fieldset>
         {/if}
 
-        {#if exportMode === 'media' && hasSourceVideo && subtitleMode === 'burned'}
-          <div class="rounded-2xl border border-[var(--line)] p-5">
-            <div class="text-sm font-semibold">Burned-subtitle transcoding</div>
-            <p class="muted mt-1 text-xs">
-              Output height preserves the source aspect ratio. Scaling runs
-              before subtitles are rendered so upscaled text stays sharp.
+        {#if exportMode === 'media' && hasSourceVideo}
+          <details class="rounded-2xl border border-[var(--line)] p-5">
+            <summary class="cursor-pointer text-sm font-semibold">
+              Advanced video encoding
+              <span class="muted ml-1 font-normal"
+                >· {subtitleMode === 'burned' || videoTranscode
+                  ? 'transcoding enabled'
+                  : 'source video preserved'}</span
+              >
+            </summary>
+            <p class="muted mt-2 text-xs">
+              Change the output resolution, encoder, quality, or source-audio
+              codec. Soft subtitles and videos without subtitles can retain the
+              source video stream unless transcoding is enabled.
             </p>
-            <div class="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {#if subtitleMode === 'burned'}<div
+                class="mt-4 rounded-xl bg-[var(--accent-soft)] p-3 text-xs"
+              >
+                Burned subtitles require video transcoding. Scaling runs before
+                the text is rendered so it remains sharp.
+              </div>{:else}<label
+                class="mt-4 flex items-start gap-2 rounded-xl border border-[var(--line)] p-3 text-sm"
+              >
+                <input
+                  type="checkbox"
+                  checked={videoTranscode}
+                  onchange={(event) =>
+                    set('video_transcode', event.currentTarget.checked)}
+                  class="mt-0.5"
+                />
+                <span
+                  ><strong>Transcode the video stream</strong><span
+                    class="muted mt-1 block text-xs"
+                    >Enable this to apply the resolution and encoder settings
+                    below.</span
+                  ></span
+                >
+              </label>{/if}
+            <fieldset
+              class="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3"
+              disabled={subtitleMode !== 'burned' && !videoTranscode}
+            >
               <label
                 >Output resolution<select
                   value={String(value('burn_video_resolution', 'source'))}
@@ -843,17 +882,16 @@
                     >Balanced</option
                   ><option value="quality">Quality</option></select
                 ></label
-              ><label
-                >Audio<select
-                  value={String(value('burn_audio_codec', 'copy'))}
-                  onchange={(event) =>
-                    set('burn_audio_codec', event.currentTarget.value)}
-                  class="field"
-                  ><option value="copy">Copy without transcoding</option><option
-                    value="aac">Transcode to AAC</option
-                  ></select
-                ></label
-              >{#if value('burn_audio_codec', 'copy') === 'aac'}<label
+              >{#if audioMode === 'preserve'}<label
+                  >Source audio<select
+                    value={String(value('burn_audio_codec', 'copy'))}
+                    onchange={(event) =>
+                      set('burn_audio_codec', event.currentTarget.value)}
+                    class="field"
+                    ><option value="copy">Copy without transcoding</option
+                    ><option value="aac">Transcode to AAC</option></select
+                  ></label
+                >{/if}{#if audioMode === 'preserve' && value('burn_audio_codec', 'copy') === 'aac'}<label
                   >AAC bitrate<input
                     value={String(value('burn_audio_bitrate', '192k'))}
                     oninput={(event) =>
@@ -861,8 +899,8 @@
                     class="field"
                   /></label
                 >{/if}
-            </div>
-          </div>
+            </fieldset>
+          </details>
         {/if}
       </div>
     {/if}
