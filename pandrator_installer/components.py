@@ -951,7 +951,7 @@ class ComponentOperationsMixin:
         use_cpu=False,
         pixi_path=None,
         backend=None,
-        model_size="0.6b",
+        model_size="1.7b",
         quantization="f16",
         initial_model="base",
     ):
@@ -1457,7 +1457,7 @@ class ComponentOperationsMixin:
         use_cpu=False,
         pixi_path=None,
         backend=None,
-        model_size="0.6b",
+        model_size="1.7b",
         quantization="f16",
         initial_model="base",
     ):

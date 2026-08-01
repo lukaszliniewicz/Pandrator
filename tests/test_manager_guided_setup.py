@@ -338,6 +338,29 @@ class ManagedApplicationLaunchTests(unittest.TestCase):
         self.assertIn("run.py", spec.arguments)
         self.assertIn("1.7b", spec.arguments)
 
+    def test_qwen_runtime_spec_keeps_an_explicit_model_size(self):
+        from pandrator_manager.models import ResolvedComponentState
+        from pandrator_manager.runtime_specs import component_runtime_spec
+
+        with tempfile.TemporaryDirectory() as directory:
+            layout = WorkspaceLayout.from_value(directory)
+            layout.ensure_base_directories()
+            self._activate_fixture(layout, "qwen_tts")
+            spec = component_runtime_spec(
+                layout,
+                "qwen_tts",
+                ResolvedComponentState(
+                    compute=ComputeVariant.CUDA,
+                    platform="test",
+                    quantization="f16",
+                    options={"initial_model": "base", "model_size": "1.7b"},
+                ),
+            )
+
+        self.assertIsNotNone(spec)
+        model_size_index = spec.arguments.index("--model-size")
+        self.assertEqual("1.7b", spec.arguments[model_size_index + 1])
+
     def test_kokoro_and_voxcpm_have_manager_owned_runtime_contracts(self):
         from pandrator_manager.models import ResolvedComponentState
         from pandrator_manager.runtime_specs import component_runtime_spec

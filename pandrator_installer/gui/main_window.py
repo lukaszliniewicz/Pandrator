@@ -115,7 +115,7 @@ class PandratorInstaller(
         self.kobold_qwen_var = False
         self.kobold_qwen_cpu_var = False
         self.kobold_qwen_backend = "auto"
-        self.kobold_qwen_model_size = "0.6b"
+        self.kobold_qwen_model_size = "1.7b"
         self.kobold_qwen_quantization = "f16"
         self.kobold_qwen_initial_model = "base"
         self.kobold_qwen_settings_manually_set = False
@@ -1227,7 +1227,7 @@ class PandratorInstaller(
         self.kobold_qwen_initial_model = stored_qwen_selection
         self.kobold_qwen_model_size = qwen_effective_model_size(
             stored_qwen_selection,
-            config.get('kobold_qwen_model_size', '0.6b'),
+            config.get('kobold_qwen_model_size', '1.7b'),
         )
         self.kobold_qwen_quantization = config.get('kobold_qwen_quantization', 'f16')
         set_widget_state(self.kobold_qwen_checkbox, not kobold_qwen_support, False)
@@ -1530,7 +1530,7 @@ class PandratorInstaller(
         self.crispasr_engine = getattr(selection, "crispasr_engine", "whisper-large-v3")
         self.crispasr_model_quantization = getattr(selection, "crispasr_model_quantization", "f16")
         self.kobold_qwen_backend = getattr(selection, "kobold_qwen_backend", "auto")
-        self.kobold_qwen_model_size = getattr(selection, "kobold_qwen_model_size", "0.6b")
+        self.kobold_qwen_model_size = getattr(selection, "kobold_qwen_model_size", "1.7b")
         self.kobold_qwen_quantization = getattr(selection, "kobold_qwen_quantization", "f16")
         self.kobold_qwen_initial_model = getattr(selection, "kobold_qwen_initial_model", "base")
 
@@ -1914,7 +1914,7 @@ class QwenConfigDialog(QDialog):
         self.model_size_combo = QComboBox()
         self.model_size_combo.addItem("0.6B — lower memory, Base only", "0.6b")
         self.model_size_combo.addItem("1.7B — higher capacity", "1.7b")
-        self.model_size_combo.setCurrentIndex(max(0, self.model_size_combo.findData(getattr(parent, "kobold_qwen_model_size", "0.6b"))))
+        self.model_size_combo.setCurrentIndex(max(0, self.model_size_combo.findData(getattr(parent, "kobold_qwen_model_size", "1.7b"))))
         self.quantization_combo = QComboBox()
         self.quantization_combo.addItem("FP16 — full precision (default)", "f16")
         self.quantization_combo.addItem("Q8_0 — lower memory", "q8_0")
@@ -1956,7 +1956,7 @@ class QwenConfigDialog(QDialog):
         return str(self.backend_combo.currentData() or "auto")
 
     def get_selected_model_size(self):
-        return str(self.model_size_combo.currentData() or "0.6b")
+        return str(self.model_size_combo.currentData() or "1.7b")
 
     def get_selected_quantization(self):
         return str(self.quantization_combo.currentData() or "f16")

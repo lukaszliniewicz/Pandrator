@@ -44,7 +44,7 @@ class TestInstallerLauncherChatterbox(unittest.TestCase):
         selection = installer.snapshot_install_selection()
         self.assertFalse(selection.kobold_qwen)
         self.assertTrue(selection.kobold_qwen_cpu)
-        self.assertEqual(selection.kobold_qwen_model_size, "0.6b")
+        self.assertEqual(selection.kobold_qwen_model_size, "1.7b")
         self.assertEqual(selection.kobold_qwen_quantization, "f16")
 
         installer.launch_kobold_qwen_checkbox.setChecked(True)
@@ -157,6 +157,39 @@ class TestInstallerLauncherChatterbox(unittest.TestCase):
 
         self.assertEqual(selection.kobold_qwen_initial_model, "both")
         self.assertEqual(selection.kobold_qwen_model_size, "1.7b")
+
+    def test_qwen_model_size_survives_repeated_legacy_configuration_refreshes(self):
+        installer = PandratorInstaller(headless=True)
+        config = {
+            "kobold_qwen_support": True,
+            "kobold_qwen_gpu_support": True,
+            "kobold_qwen_backend": "cuda",
+            "kobold_qwen_model_size": "1.7b",
+            "kobold_qwen_quantization": "f16",
+            "kobold_qwen_initial_model": "base",
+        }
+        with patch.object(installer, "load_install_config", return_value=config):
+            installer.refresh_ui_state()
+            first = installer.snapshot_install_selection()
+            installer.refresh_ui_state()
+            second = installer.snapshot_install_selection()
+
+        self.assertEqual(first.kobold_qwen_model_size, "1.7b")
+        self.assertEqual(second.kobold_qwen_model_size, "1.7b")
+
+    def test_qwen_missing_legacy_model_size_uses_the_manager_default(self):
+        installer = PandratorInstaller(headless=True)
+        with patch.object(
+            installer,
+            "load_install_config",
+            return_value={"kobold_qwen_support": True},
+        ):
+            installer.refresh_ui_state()
+
+        self.assertEqual(
+            installer.snapshot_install_selection().kobold_qwen_model_size,
+            "1.7b",
+        )
 
     def test_rvc_cpu_option_maps_to_cpu_install_and_launch_variants(self):
         installer = PandratorInstaller(headless=True)
