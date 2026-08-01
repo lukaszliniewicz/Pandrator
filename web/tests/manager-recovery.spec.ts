@@ -10,6 +10,62 @@ type RuntimeService = {
   health: { state: string; service_id: string };
 };
 
+type InstallOption = {
+  key: string;
+  label: string;
+  state_field: 'options' | 'quantization';
+  default: string;
+  choices: Array<{
+    value: string;
+    label: string;
+    requires?: Record<string, string[]>;
+  }>;
+};
+
+type ManagerComponent = {
+  definition: {
+    id: string;
+    label: string;
+    description: string;
+    guidance: string;
+    section: string;
+    service_key: string | null;
+    supported_actions: string[];
+    compute_variants: string[];
+    install_options: InstallOption[];
+    capabilities: string[];
+    models: string[];
+    languages: string[];
+    estimated_download_bytes: number;
+    estimated_installed_bytes: number;
+    size_provenance: string;
+    size_note: string;
+  };
+  desired: {
+    present: boolean;
+    compute: string;
+    quantization?: string;
+    options: Record<string, unknown>;
+  };
+  inspection: {
+    component_id: string;
+    state: string;
+    problems: string[];
+    evidence: string[];
+    resolved: {
+      compute: string;
+      platform: string;
+      quantization?: string;
+      options: Record<string, unknown>;
+    };
+  };
+  compute_choices: Array<{
+    value: string;
+    label: string;
+    available: boolean;
+  }>;
+};
+
 const managerStatic = resolve(
   process.cwd(),
   '..',
@@ -18,7 +74,11 @@ const managerStatic = resolve(
   'static'
 );
 
-const definition = (id: string, label: string, serviceKey: string | null) => ({
+const definition = (
+  id: string,
+  label: string,
+  serviceKey: string | null
+): ManagerComponent['definition'] => ({
   id,
   label,
   description:
@@ -40,7 +100,11 @@ const definition = (id: string, label: string, serviceKey: string | null) => ({
   size_note: ''
 });
 
-const component = (id: string, label: string, serviceKey: string | null) => ({
+const component = (
+  id: string,
+  label: string,
+  serviceKey: string | null
+): ManagerComponent => ({
   definition: definition(id, label, serviceKey),
   desired: { present: true, compute: 'cpu', options: {} },
   inspection: {
