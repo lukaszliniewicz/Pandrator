@@ -1,7 +1,9 @@
 """Qt workers, logging adapters, and small dialogs used by the installer GUI."""
 
 import logging
+import sys
 import traceback
+from pathlib import Path
 
 from PyQt6.QtCore import QByteArray, QObject, QSize, QThread, Qt, QUrl, pyqtSignal
 from PyQt6.QtGui import QColor, QDesktopServices, QIcon, QPainter, QPen, QPixmap
@@ -24,6 +26,34 @@ GITHUB_MARK_SVG = b"""
 </svg>
 """
 
+
+def load_launcher_icon():
+    """Load the packaged or source-tree Pandrator application icon."""
+    candidate_roots = []
+
+    bundle_root = str(getattr(sys, "_MEIPASS", "") or "")
+    if bundle_root:
+        candidate_roots.append(Path(bundle_root))
+
+    candidate_roots.append(Path(__file__).resolve().parents[2])
+
+    seen = set()
+    for root in candidate_roots:
+        normalized_root = root.resolve()
+        if normalized_root in seen:
+            continue
+        seen.add(normalized_root)
+
+        for filename in ("pandrator.ico", "pandrator.png"):
+            icon_path = normalized_root / filename
+            if not icon_path.is_file():
+                continue
+
+            icon = QIcon(str(icon_path))
+            if not icon.isNull():
+                return icon
+
+    return QIcon()
 
 def create_github_icon(size=18):
     renderer = QSvgRenderer(QByteArray(GITHUB_MARK_SVG))

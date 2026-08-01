@@ -63,6 +63,7 @@ from .support import (
     QtLogEmitter,
     QtLogHandler,
     ToggleSwitch,
+    load_launcher_icon,
 )
 
 
@@ -166,6 +167,11 @@ class PandratorInstaller(
 
         # Set up the main window
         self.setWindowTitle("Pandrator Installer & Launcher")
+        launcher_icon = load_launcher_icon()
+        if not launcher_icon.isNull():
+            self.setWindowIcon(launcher_icon)
+        else:
+            logging.warning("Pandrator launcher icon could not be loaded.")
 
         # Full-width backend cards remain readable at ordinary laptop resolutions.
         screen_size = QApplication.primaryScreen().availableGeometry().size()
@@ -266,7 +272,15 @@ class PandratorInstaller(
             logging.info("System tray is unavailable; browser and launcher controls remain active.")
             return
 
-        self.tray_icon = QSystemTrayIcon(self.windowIcon(), self)
+        tray_icon = self.windowIcon()
+        if tray_icon.isNull():
+            self.tray_icon = None
+            logging.warning(
+                "System tray integration is disabled because no launcher icon is available."
+            )
+            return
+
+        self.tray_icon = QSystemTrayIcon(tray_icon, self)
         menu = QMenu(self)
         show_action = QAction("Show Pandrator Launcher", self)
         show_action.triggered.connect(self.restore_from_tray)
