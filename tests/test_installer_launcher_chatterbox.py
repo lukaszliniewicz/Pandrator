@@ -2,12 +2,15 @@ import unittest
 from unittest.mock import MagicMock, patch
 import json
 import os
+import shutil
+import sys
 import tempfile
+from pathlib import Path
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QApplication, QCheckBox, QDialog, QLabel, QScrollArea, QSizePolicy
 from pandrator_installer_launcher import PandratorInstaller
 from pandrator_installer.gui.main_window import OwnerPasswordDialog, QwenConfigDialog
-from pandrator_installer.gui.support import ToggleSwitch
+from pandrator_installer.gui.support import ToggleSwitch, load_launcher_icon
 
 
 class TestInstallerLauncherChatterbox(unittest.TestCase):
@@ -357,6 +360,31 @@ class TestInstallerLauncherChatterbox(unittest.TestCase):
             # Since GPU support is True, use_cpu should be False
             self.assertFalse(called_kwargs["use_cpu"])
 
+
+    def test_launcher_window_uses_pandrator_icon(self):
+        installer = PandratorInstaller(headless=True)
+
+        self.assertFalse(installer.windowIcon().isNull())
+
+    def test_launcher_icon_loads_from_pyinstaller_bundle(self):
+        repo_root = Path(__file__).resolve().parents[1]
+
+        with tempfile.TemporaryDirectory() as bundle_root:
+            bundled_icon = Path(bundle_root) / "pandrator.png"
+            shutil.copy2(repo_root / "pandrator.png", bundled_icon)
+
+            with patch.object(sys, "_MEIPASS", bundle_root, create=True):
+                icon = load_launcher_icon()
+
+        self.assertFalse(icon.isNull())
+
+    def test_windows_installer_spec_bundles_runtime_icon(self):
+        repo_root = Path(__file__).resolve().parents[1]
+        spec_text = (repo_root / "pandrator_installer_launcher.spec").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("('pandrator.ico', '.')", spec_text)
 
 if __name__ == "__main__":
     unittest.main()

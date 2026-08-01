@@ -18,7 +18,9 @@ a = Analysis(
     ['pandrator_installer_launcher.py'],
     pathex=[],
     binaries=[(str(library), '.') for library in runtime_libraries],
-    datas=[],
+    datas=[
+        ('pandrator.ico', '.'),
+    ],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
