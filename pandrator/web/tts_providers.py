@@ -630,6 +630,10 @@ class TtsCatalogueService:
         service: dict[str, Any],
     ) -> None:
         service_id, key_env, secret_reference = self._credential_details(service)
+        service["credential_required"] = bool(
+            service.get("credential_required")
+            or str(service.get("kind") or "").casefold() == "commercial"
+        )
         service.update(
             provider_credential_status(
                 self.database,

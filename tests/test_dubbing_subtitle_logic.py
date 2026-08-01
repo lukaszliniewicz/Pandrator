@@ -403,6 +403,7 @@ Alice: hello
             audio_path="dub.wav",
             temp_output_path="out.mp4",
             ffmpeg_executable="ffmpeg-custom",
+            audio_bitrate="128k",
         )
 
         self.assertEqual(command[0], "ffmpeg-custom")
@@ -410,8 +411,52 @@ Alice: hello
         self.assertIn("1:a:0", command)
         self.assertEqual(command[command.index("-c:v") + 1], "copy")
         self.assertEqual(command[command.index("-c:a") + 1], "aac")
+        self.assertEqual(command[command.index("-b:a") + 1], "128k")
         self.assertIn("-shortest", command)
         self.assertEqual(command[-1], "out.mp4")
+
+    def test_video_transcode_controls_work_without_burned_subtitles(self):
+        command = video_muxing.build_video_transcode_command(
+            "video.mp4",
+            "out.mp4",
+            video_encoder="libx264",
+            video_resolution="720p",
+            video_quality=21,
+            video_speed="quality",
+            audio_codec="aac",
+            audio_bitrate="160k",
+        )
+
+        self.assertEqual("libx264", command[command.index("-c:v") + 1])
+        self.assertEqual(
+            "scale=-2:720:flags=lanczos",
+            command[command.index("-vf") + 1],
+        )
+        self.assertEqual("slow", command[command.index("-preset") + 1])
+        self.assertEqual("160k", command[command.index("-b:a") + 1])
+
+    def test_soft_subtitle_command_can_transcode_video(self):
+        command = video_muxing.build_multi_soft_subtitle_command(
+            "video.mp4",
+            [
+                {
+                    "path": "subs.srt",
+                    "language": "en",
+                    "title": "English",
+                    "default": True,
+                }
+            ],
+            "out.mp4",
+            transcode_video=True,
+            video_resolution="480p",
+        )
+
+        self.assertEqual("libx264", command[command.index("-c:v") + 1])
+        self.assertEqual(
+            "scale=-2:480:flags=lanczos",
+            command[command.index("-vf") + 1],
+        )
+        self.assertIn("mov_text", command)
 
 
 if __name__ == "__main__":

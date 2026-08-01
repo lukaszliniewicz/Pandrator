@@ -1955,6 +1955,25 @@ A single reviewed cue.
                             "burn_audio_bitrate": "128k",
                         }
                     )
+                elif subtitle_mode == "soft":
+                    export_settings.update(
+                        {
+                            "video_transcode": True,
+                            "burn_video_encoder": "libx264",
+                            "burn_video_resolution": "720p",
+                        }
+                    )
+                elif audio_mode == "dubbing_only":
+                    export_settings.update(
+                        {
+                            "video_transcode": True,
+                            "burn_video_encoder": "libx264",
+                            "burn_video_resolution": "480p",
+                            "burn_audio_bitrate": "128k",
+                        }
+                    )
+                elif audio_mode == "mixed":
+                    export_settings["burn_audio_bitrate"] = "96k"
                 result = self.handlers.export(
                     {
                         "session_id": voiceover.id,
@@ -1980,11 +1999,15 @@ A single reviewed cue.
                 subtitle_streams = [stream for stream in streams if stream["codec_type"] == "subtitle"]
                 self.assertEqual(expected_subtitles, len(subtitle_streams))
                 if subtitle_mode == "soft":
+                    video_stream = next(stream for stream in streams if stream["codec_type"] == "video")
+                    self.assertEqual(720, video_stream["height"])
                     self.assertEqual(["eng", "pol"], [stream.get("tags", {}).get("language") for stream in subtitle_streams])
                     self.assertEqual(1, subtitle_streams[1].get("disposition", {}).get("default"))
                     self.assertTrue(output.name.endswith("_soft.mp4"))
                     self.assertEqual(2, len(exported.metadata_json.get("subtitle_tracks", [])))
                     self.assertTrue(all(item.get("artifact_id") for item in exported.metadata_json["subtitle_tracks"]))
+                    self.assertTrue(exported.metadata_json.get("video_transcoded"))
+                    self.assertEqual("720p", exported.metadata_json.get("video_resolution"))
                 if subtitle_mode == "burned":
                     video_stream = next(stream for stream in streams if stream["codec_type"] == "video")
                     self.assertEqual((1280, 720), (video_stream["width"], video_stream["height"]))
@@ -2021,6 +2044,13 @@ A single reviewed cue.
                 if audio_mode == "mixed":
                     self.assertEqual("mixed", exported.metadata_json.get("audio_mode"))
                     self.assertEqual("strong", exported.metadata_json.get("mix", {}).get("ducking"))
+                    self.assertEqual("96k", exported.metadata_json.get("audio_bitrate"))
+                if audio_mode == "dubbing_only" and subtitle_mode == "none":
+                    video_stream = next(stream for stream in streams if stream["codec_type"] == "video")
+                    audio_stream = next(stream for stream in streams if stream["codec_type"] == "audio")
+                    self.assertEqual(480, video_stream["height"])
+                    self.assertEqual("aac", audio_stream["codec_name"])
+                    self.assertEqual("128k", exported.metadata_json.get("audio_bitrate"))
 
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg qualification requires ffmpeg and ffprobe")
     def test_mixed_video_without_source_soundtrack_fails_closed(self):

@@ -72,6 +72,20 @@ class SettingsApiTests(unittest.TestCase):
 
         self.assertEqual("", payload["generation_prompt"])
 
+    def test_tts_catalogue_distinguishes_required_and_keyless_credentials(self):
+        catalogue = self.client.get("/api/v1/services/tts").get_json()
+        services = {item["id"]: item for item in catalogue["services"]}
+        profiles = {item["id"]: item for item in catalogue["profiles"]}
+
+        self.assertFalse(services["xtts"]["credential_required"])
+        self.assertFalse(services["voxcpm"]["credential_required"])
+        self.assertTrue(services["openai"]["credential_required"])
+        self.assertFalse(services["openai"]["credential_configured"])
+        self.assertTrue(profiles["azure-openai-v1"]["credential_required"])
+        self.assertFalse(
+            profiles["pandrator-xtts2-api"]["credential_required"]
+        )
+
     def test_tts_api_key_is_extracted_from_settings_and_never_returned(self):
         secret = "speech-secret-value"
         response = self.client.put(

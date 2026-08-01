@@ -520,6 +520,26 @@ class TTSHandlerTests(unittest.TestCase):
         self.assertEqual(payload["speed"], 2.0)
         self.assertEqual(payload["prosody"]["volume"], -20.0)
 
+    def test_fishs2_model_catalog_collapses_compatibility_aliases(self):
+        response = Mock(status_code=200)
+        response.json.return_value = {
+            "data": [
+                {"id": "fishs2"},
+                {"id": "fish-s2"},
+                {"id": "s2-pro"},
+                {"id": "fishaudio/s2-pro"},
+            ]
+        }
+        response.raise_for_status.return_value = None
+
+        with patch(
+            "pandrator.logic.tts_handler.requests.get",
+            return_value=response,
+        ):
+            models = tts_handler.get_fishs2_models("http://localhost:8022")
+
+        self.assertEqual(["fishaudio/s2-pro"], models)
+
     def test_chatterbox_payload_construction(self):
         from unittest.mock import patch
         with patch("requests.post") as mock_post:
@@ -588,6 +608,19 @@ class TTSHandlerTests(unittest.TestCase):
             self.assertEqual(payload["top_p"], 0.95)
             self.assertEqual(payload["top_k"], 1000)
             self.assertTrue(payload["norm_loudness"])
+
+        with patch("requests.post") as mock_post:
+            mock_post.return_value.status_code = 200
+            tts_handler._request_chatterbox_audio(
+                "Hello",
+                {"xtts_model": "chatterbox-en", "language": "en"},
+                "http://localhost:8040",
+            )
+
+        self.assertEqual(
+            "chatterbox-en",
+            mock_post.call_args.kwargs["json"]["model"],
+        )
 
     def test_chatterbox_language_normalization_preserves_only_supported_base_codes(self):
         self.assertEqual(tts_handler.normalize_chatterbox_language_code("pt_br"), "pt")

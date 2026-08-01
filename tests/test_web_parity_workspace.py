@@ -89,6 +89,11 @@ class WebParityWorkspaceTests(unittest.TestCase):
         services = self.client.get("/api/v1/services/tts").get_json()
         self.assertEqual("XTTS", services["default_service"])
         self.assertEqual(5, services["builtin_defaults"]["max_attempts"])
+        fish = next(
+            service for service in services["services"]
+            if service["id"] == "fishs2"
+        )
+        self.assertEqual(["fishaudio/s2-pro"], fish["models"])
         defaults = self.client.get("/api/v1/defaults/subtitles")
         self.assertEqual(200, defaults.status_code, defaults.get_json())
         self.assertEqual(2, defaults.get_json()["builtin"]["max_lines"])
@@ -101,6 +106,35 @@ class WebParityWorkspaceTests(unittest.TestCase):
         effective = self.client.get("/api/v1/defaults/subtitles").get_json()
         self.assertEqual(52, effective["effective"]["max_chars_per_line"])
         self.assertEqual(2, effective["effective"]["max_lines"])
+
+    def test_fish_discovery_projects_one_canonical_model(self):
+        with patch(
+            "pandrator.logic.tts_endpoint_discovery.discover_tts_endpoint",
+            return_value={
+                "success": True,
+                "models": [
+                    "fishs2",
+                    "fish-s2",
+                    "s2-pro",
+                    "fishaudio/s2-pro",
+                ],
+                "voices": ["default"],
+            },
+        ):
+            response = self.client.post(
+                "/api/v1/services/tts/discover",
+                json={
+                    "base_url": "http://localhost:8022",
+                    "service_id": "fishs2",
+                },
+                headers=self.headers,
+            )
+
+        self.assertEqual(200, response.status_code, response.get_json())
+        self.assertEqual(
+            ["fishaudio/s2-pro"],
+            response.get_json()["models"],
+        )
 
     def test_subtitle_workspace_inherits_document_export_defaults(self):
         subtitle = self.create_session(kind="subtitles")

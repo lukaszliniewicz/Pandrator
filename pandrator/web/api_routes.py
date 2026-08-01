@@ -725,6 +725,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     @app.post("/api/v1/services/tts/discover")
     @require_auth
     def tts_service_discover():
+        from pandrator.logic import tts_handler
         from pandrator.logic.tts_endpoint_discovery import discover_tts_endpoint
 
         payload = TtsEndpointDiscoveryRequest.model_validate(request.get_json(silent=True) or {})
@@ -733,6 +734,10 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             or tts_catalogue.discovery_api_key(payload.service_id)
         )
         result = discover_tts_endpoint(payload.base_url, api_key=api_key)
+        result["models"] = tts_handler.normalize_tts_model_catalog(
+            payload.service_id,
+            result.get("models") or [],
+        )
         return jsonify(result), 200 if result.get("success") else 422
 
     @app.post("/api/v1/services/tts/<service_id>/preview")

@@ -175,10 +175,10 @@ PRESENTATIONS: dict[str, ComponentPresentation] = {
             "named built-in speakers."
         ),
         guidance=(
-            "Choose Base for voice cloning. Choose CustomVoice for named "
-            "speakers, or install both families. The 1.7B model is the "
-            "recommended default; 0.6B remains available for constrained "
-            "systems."
+            "Choose which family is prepared when the service starts. The "
+            "other family downloads automatically when it is first selected "
+            "in Pandrator. The 1.7B model is recommended; 0.6B Base remains "
+            "available for constrained systems."
         ),
         languages=(
             "Chinese",
@@ -237,8 +237,7 @@ PRESENTATIONS: dict[str, ComponentPresentation] = {
                 default="base",
                 choices=(
                     choice("base", "Base — clone a reference voice"),
-                    choice("custom_voice", "CustomVoice — named speakers"),
-                    choice("both", "Both model families"),
+                    choice("customvoice", "CustomVoice — named speakers"),
                 ),
             ),
             ComponentInstallOption(
@@ -428,6 +427,7 @@ PRESENTATIONS: dict[str, ComponentPresentation] = {
                         ("q6_k", "Q6_K — recommended"),
                         ("q5_k_m", "Q5_K_M"),
                         ("q4_k_m", "Q4_K_M"),
+                        ("q3_k", "Q3_K"),
                         ("q2_k", "Q2_K — smallest"),
                     )
                 ),
@@ -577,6 +577,16 @@ PRESENTATIONS: dict[str, ComponentPresentation] = {
                 license_url="https://huggingface.co/ResembleAI/chatterbox",
                 usage_note=COMMERCIAL_MIT,
                 capabilities=("voice_cloning", "multilingual"),
+                estimated_download_bytes=3 * GiB,
+            ),
+            model(
+                "chatterbox-en",
+                "Chatterbox English",
+                description="The original English-only Chatterbox model.",
+                license_name="MIT",
+                license_url="https://huggingface.co/ResembleAI/chatterbox",
+                usage_note=COMMERCIAL_MIT,
+                capabilities=("voice_cloning",),
                 estimated_download_bytes=3 * GiB,
             ),
         ),

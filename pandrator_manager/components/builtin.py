@@ -21,7 +21,7 @@ from ..models import (
 )
 from .catalog import presentation_for
 from .crispasr import resolve_asset
-from .host import resolve_auto_compute
+from .host import resolve_auto_compute, vulkan_requires_quantized_models
 from .registry import ComponentRegistry
 from .slots import active_component_path
 
@@ -130,7 +130,18 @@ class MarkerComponentDriver:
                 if option.state_field == "quantization"
                 else options.get(option.key)
             )
-            selected_values[option.key] = str(value or option.default)
+            selected_value = str(value or option.default)
+            if definition.id == "qwen_tts" and option.key == "initial_model":
+                # The original Manager catalogue used ``custom_voice`` and
+                # exposed ``both`` even though the service CLI accepts only
+                # ``base`` or ``customvoice``. Existing persisted selections
+                # must remain loadable; the second family is now acquired
+                # lazily by the service when Pandrator first requests it.
+                selected_value = {
+                    "custom_voice": "customvoice",
+                    "both": "base",
+                }.get(selected_value.casefold(), selected_value.casefold())
+            selected_values[option.key] = selected_value
         for option in definition.install_options:
             value = selected_values[option.key]
             selected = next(
@@ -152,6 +163,18 @@ class MarkerComponentDriver:
                 quantization = value
             else:
                 options[option.key] = value
+        if (
+            definition.id == "qwen_tts"
+            and requested == ComputeVariant.AUTO
+            and compute == ComputeVariant.VULKAN
+            and str(quantization or "").casefold() == "f16"
+            and vulkan_requires_quantized_models(context)
+        ):
+            # Polaris-class cards can run Q8 Qwen models through Vulkan, but
+            # advertise no native FP16 support and have been observed exiting
+            # inside KoboldCpp on the first F16 synthesis request.  Preserve
+            # explicit expert selections while making Automatic fail safe.
+            compute = ComputeVariant.CPU
         return ResolvedComponentState(
             compute=compute,
             quantization=quantization,

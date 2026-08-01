@@ -19,6 +19,7 @@ def _openai_profile(
     speech_path: str = "/v1/audio/speech",
     supports_prebuilt_voices: bool = True,
     models_are_manual: bool = False,
+    credential_required: bool = False,
 ) -> dict:
     return {
         "id": profile_id,
@@ -45,6 +46,7 @@ def _openai_profile(
         "auth_mode": auth_mode,
         "direct_http": direct_http,
         "models_are_manual": models_are_manual,
+        "credential_required": credential_required,
         "notes": notes,
     }
 
@@ -61,6 +63,7 @@ def _generic_profile(
     voices: list[str] | None = None,
     supports_prebuilt_voices: bool = False,
     notes: str = "",
+    credential_required: bool = False,
 ) -> dict:
     return {
         "id": profile_id,
@@ -81,6 +84,7 @@ def _generic_profile(
         "models": models or [],
         "voices": voices or [],
         "supports_prebuilt_voices": supports_prebuilt_voices,
+        "credential_required": credential_required,
         "notes": notes,
     }
 
@@ -123,6 +127,7 @@ TTS_PROVIDER_PROFILES = [
         speech_path="/openai/v1/audio/speech?api-version=preview",
         supports_prebuilt_voices=False,
         models_are_manual=True,
+        credential_required=True,
     ),
     _openai_profile(
         "pandrator-xtts2-api",

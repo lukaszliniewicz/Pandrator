@@ -288,6 +288,7 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "subtitle_mode": "none",
         "subtitle_selection": "translation",
         "subtitle_format": "srt",
+        "video_transcode": False,
         "burn_video_encoder": "libx264",
         "burn_video_resolution": "source",
         "burn_video_quality": 18,
@@ -729,6 +730,7 @@ class WorkspaceSettingsService:
                 else:
                     for key in (
                         "subtitle_mode",
+                        "video_transcode",
                         "burn_video_encoder",
                         "burn_video_resolution",
                         "burn_video_quality",

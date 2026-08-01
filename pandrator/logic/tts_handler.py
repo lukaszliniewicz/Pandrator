@@ -641,7 +641,10 @@ def _default_service_configs() -> list[dict[str, object]]:
     local_catalogues: dict[str, tuple[list[str], str, list[str], str, bool]] = {
         "xtts": ([XTTS_DEFAULT_MODEL], XTTS_DEFAULT_MODEL, [], "", False),
         "voxcpm": (list(VOXCPM_TTS_MODELS), VOXCPM_DEFAULT_MODEL, [VOXCPM_DEFAULT_VOICE], VOXCPM_DEFAULT_VOICE, False),
-        "fishs2": ([FISHS2_DEFAULT_MODEL, *FISHS2_MODEL_ALIASES], FISHS2_DEFAULT_MODEL, [FISHS2_DEFAULT_VOICE], FISHS2_DEFAULT_VOICE, False),
+        # Fish's API advertises several compatibility aliases, but all of
+        # them address the same S2 Pro model. Quantization is a service
+        # configuration choice, not a per-request model.
+        "fishs2": ([FISHS2_DEFAULT_MODEL], FISHS2_DEFAULT_MODEL, [FISHS2_DEFAULT_VOICE], FISHS2_DEFAULT_VOICE, False),
         "voxtral": (list(VOXTRAL_TTS_MODELS), VOXTRAL_DEFAULT_MODEL, [VOXTRAL_DEFAULT_VOICE], VOXTRAL_DEFAULT_VOICE, True),
         "kokoro": (list(KOKORO_TTS_MODELS), KOKORO_DEFAULT_MODEL, list(KOKORO_TTS_VOICES), KOKORO_DEFAULT_VOICE, True),
         "magpie": (list(MAGPIE_TTS_MODELS), MAGPIE_TTS_MODELS[0], magpie_voice_catalog(), magpie_voice_catalog()[0], True),
@@ -793,6 +796,11 @@ def _merge_service_config(
             record[key] = str(raw_record[key]).strip()
     if "direct_http" in raw_record:
         record["direct_http"] = _coerce_bool(raw_record.get("direct_http"), False)
+    if "credential_required" in raw_record:
+        record["credential_required"] = _coerce_bool(
+            raw_record.get("credential_required"),
+            False,
+        )
     for key in ("request_fields", "request_defaults"):
         if isinstance(raw_record.get(key), dict):
             record[key] = copy.deepcopy(raw_record[key])
@@ -1582,6 +1590,28 @@ def _normalize_fishs2_model(model_name: str, fallback: str = FISHS2_DEFAULT_MODE
     if lowered in {"fishs2", "fish-s2", "s2-pro", "fishaudio/s2-pro"}:
         return FISHS2_DEFAULT_MODEL
     return normalized
+
+
+def normalize_tts_model_catalog(
+    service_id: str | None,
+    models: list[str] | tuple[str, ...],
+) -> list[str]:
+    """Canonicalize live model catalogues without inventing distinct models.
+
+    Fish S2 exposes OpenAI-compatible aliases for the same S2 Pro model. If
+    those aliases are projected as separate choices, every selection produces
+    identical audio and users can reasonably mistake them for quantizations.
+    """
+
+    normalized_service = _normalize_service_id(service_id)
+    if normalized_service == "fishs2":
+        return _dedupe_ordered(
+            [
+                _normalize_fishs2_model(str(model), fallback="")
+                for model in models
+            ]
+        )
+    return _dedupe_ordered([str(model) for model in models])
 
 
 def _build_voxcpm_options(tts_settings: dict) -> dict[str, object]:
@@ -2743,8 +2773,10 @@ def get_fishs2_models(base_url: str = FISHS2_API_BASE_URL) -> list[str]:
             logging.error("Failed to list FishS2 models from %s: %s", models_url, e)
             continue
 
-    preferred_models = [FISHS2_DEFAULT_MODEL] + FISHS2_MODEL_ALIASES
-    return _merge_catalog_with_discovered(preferred_models, discovered_models)
+    return normalize_tts_model_catalog(
+        "fishs2",
+        [FISHS2_DEFAULT_MODEL, *discovered_models],
+    )
 
 
 def get_fishs2_voices(base_url: str = FISHS2_API_BASE_URL) -> list[str]:

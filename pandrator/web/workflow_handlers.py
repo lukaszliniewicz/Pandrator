@@ -5253,6 +5253,7 @@ class WorkflowHandlers:
             build_add_subtitles_command,
             build_multi_soft_subtitle_command,
             build_replace_video_audio_command,
+            build_video_transcode_command,
             normalize_video_resolution,
         )
         from pandrator.logic.dubbing_handler import resolve_ffmpeg_for_burned_subtitles
@@ -5578,11 +5579,31 @@ class WorkflowHandlers:
                 audio_parent_ids: list[str] = [upload_media.id]
                 temporary_video: Path | None = None
                 ffmpeg_executable = str(os.environ.get("PANDRATOR_FFMPEG_EXE") or shutil.which("ffmpeg") or "ffmpeg")
+                video_audio_bitrate = str(
+                    settings.get("burn_audio_bitrate") or "192k"
+                ).strip()
+                video_audio_codec = str(
+                    settings.get("burn_audio_codec") or "copy"
+                ).strip().lower()
+                if (
+                    audio_mode in {"dubbed", "mixed"}
+                    or video_audio_codec == "aac"
+                ) and not re.fullmatch(
+                    r"[1-9][0-9]*(?:[kKmM])?",
+                    video_audio_bitrate,
+                ):
+                    raise ValueError("Video AAC bitrate must look like 192k or 2M.")
                 if dubbing_audio and audio_mode in {"dubbed", "mixed"}:
                     _audio_record, audio_path = self._resolve_input(dubbing_audio.id)
                     audio_video = output_dir / f".{record.storage_key}-audio-{new_id()}.mp4"
                     if audio_mode == "dubbed":
-                        command = build_replace_video_audio_command(str(media_path), str(audio_path), str(audio_video), ffmpeg_executable=ffmpeg_executable)
+                        command = build_replace_video_audio_command(
+                            str(media_path),
+                            str(audio_path),
+                            str(audio_video),
+                            ffmpeg_executable=ffmpeg_executable,
+                            audio_bitrate=video_audio_bitrate,
+                        )
                         progress(0.4, "Replacing source audio with generated speech")
                     else:
                         command = build_mix_video_audio_command(
@@ -5595,7 +5616,7 @@ class WorkflowHandlers:
                             ducking=str(settings.get("mix_ducking") or "strong"),
                             attack_ms=settings.get("mix_attack_ms", 25),
                             release_ms=settings.get("mix_release_ms", 350),
-                            audio_bitrate=str(settings.get("mix_audio_bitrate") or "192k"),
+                            audio_bitrate=video_audio_bitrate,
                             ffmpeg_executable=ffmpeg_executable,
                         )
                         progress(0.4, "Mixing source audio with generated speech")
@@ -5604,11 +5625,29 @@ class WorkflowHandlers:
                     working_video = audio_video
                     temporary_video = audio_video
                     audio_parent_ids.append(dubbing_audio.id)
+                video_transcode = bool(settings.get("video_transcode")) or (
+                    subtitle_mode == "burned" and bool(selected_subtitles)
+                )
+                video_encoder = str(
+                    settings.get("burn_video_encoder") or "libx264"
+                ).strip().lower()
+                output_video_resolution = (
+                    normalize_video_resolution(
+                        settings.get("burn_video_resolution", "source")
+                    )
+                    if video_transcode
+                    else "source"
+                )
+                # Replacement and mixed soundtracks were encoded to AAC in the
+                # preparation step above. Copy them during the video render so
+                # the user's chosen bitrate is not lost to a second encode.
+                render_audio_codec = (
+                    video_audio_codec if audio_mode == "source" else "copy"
+                )
                 variant = f"_{subtitle_mode}" if subtitle_mode in {"soft", "burned"} and selected_subtitles else ""
                 destination = _next_available_path(output_dir / f"{export_name}{variant}.mp4")
                 render_destination = output_dir / f".{record.storage_key}-render-{new_id()}.mp4"
                 video_track_artifacts: list[Artifact] = []
-                output_video_resolution = "source"
                 try:
                     if subtitle_mode == "soft" and selected_subtitles:
                         tracks = []
@@ -5633,8 +5672,29 @@ class WorkflowHandlers:
                                 0.58 + 0.06 * (index / len(selected_subtitles)),
                                 f"Prepared selectable subtitle track {index} of {len(selected_subtitles)}",
                             )
-                        command = build_multi_soft_subtitle_command(str(working_video), tracks, str(render_destination), ffmpeg_executable=ffmpeg_executable)
-                        progress(0.65, "Rendering media with selectable subtitles")
+                        if video_transcode and video_encoder not in ffmpeg_video_encoder_ids(ffmpeg_executable):
+                            raise RuntimeError(
+                                f"The selected FFmpeg build does not provide the {video_encoder} video encoder."
+                            )
+                        command = build_multi_soft_subtitle_command(
+                            str(working_video),
+                            tracks,
+                            str(render_destination),
+                            ffmpeg_executable=ffmpeg_executable,
+                            transcode_video=video_transcode,
+                            video_encoder=video_encoder,
+                            video_resolution=output_video_resolution,
+                            video_quality=settings.get("burn_video_quality", 18),
+                            video_speed=str(settings.get("burn_video_speed") or "balanced"),
+                            audio_codec=render_audio_codec,
+                            audio_bitrate=video_audio_bitrate,
+                        )
+                        progress(
+                            0.65,
+                            "Transcoding media with selectable subtitles"
+                            if video_transcode
+                            else "Rendering media with selectable subtitles",
+                        )
                         subprocess.run(command, check=True, capture_output=True, text=True)
                     elif subtitle_mode == "burned" and selected_subtitles:
                         subtitle_paths = [self._resolve_input(item.id)[1] for item in selected_subtitles]
@@ -5658,16 +5718,8 @@ class WorkflowHandlers:
                         burn_ffmpeg = resolve_ffmpeg_for_burned_subtitles()
                         if not burn_ffmpeg:
                             raise RuntimeError("Burned subtitles require an FFmpeg build with the subtitles/libass filter. Install or select Pandrator's bundled FFmpeg, or use soft subtitles.")
-                        burn_video_encoder = str(settings.get("burn_video_encoder") or "libx264").strip().lower()
-                        if burn_video_encoder not in ffmpeg_video_encoder_ids(burn_ffmpeg):
-                            raise RuntimeError(f"The selected FFmpeg build does not provide the {burn_video_encoder} video encoder.")
-                        burn_audio_codec = str(settings.get("burn_audio_codec") or "copy").strip().lower()
-                        burn_audio_bitrate = str(settings.get("burn_audio_bitrate") or "192k").strip()
-                        if burn_audio_codec == "aac" and not re.fullmatch(r"[1-9][0-9]*(?:[kKmM])?", burn_audio_bitrate):
-                            raise ValueError("Burned-subtitle AAC bitrate must look like 192k or 2M.")
-                        output_video_resolution = normalize_video_resolution(
-                            settings.get("burn_video_resolution", "source")
-                        )
+                        if video_encoder not in ffmpeg_video_encoder_ids(burn_ffmpeg):
+                            raise RuntimeError(f"The selected FFmpeg build does not provide the {video_encoder} video encoder.")
                         command = build_add_subtitles_command(
                             str(working_video),
                             str(burn_path),
@@ -5675,12 +5727,12 @@ class WorkflowHandlers:
                             subtitle_mode="burned",
                             subtitle_language=str(settings.get("target_language") or "und"),
                             ffmpeg_executable=burn_ffmpeg,
-                            video_encoder=burn_video_encoder,
+                            video_encoder=video_encoder,
                             video_resolution=output_video_resolution,
                             video_quality=settings.get("burn_video_quality", 18),
                             video_speed=str(settings.get("burn_video_speed") or "balanced"),
-                            audio_codec=burn_audio_codec,
-                            audio_bitrate=burn_audio_bitrate,
+                            audio_codec=render_audio_codec,
+                            audio_bitrate=video_audio_bitrate,
                         )
                         progress(0.65, "Rendering burned subtitles into video")
                         try:
@@ -5688,7 +5740,32 @@ class WorkflowHandlers:
                         except subprocess.CalledProcessError as error:
                             detail = str(error.stderr or error.stdout or "").strip().splitlines()
                             reason = detail[-1] if detail else "FFmpeg returned a non-zero exit status."
-                            raise RuntimeError(f"Burned-subtitle transcoding with {burn_video_encoder} failed: {reason}") from error
+                            raise RuntimeError(f"Burned-subtitle transcoding with {video_encoder} failed: {reason}") from error
+                    elif video_transcode:
+                        if video_encoder not in ffmpeg_video_encoder_ids(ffmpeg_executable):
+                            raise RuntimeError(
+                                f"The selected FFmpeg build does not provide the {video_encoder} video encoder."
+                            )
+                        command = build_video_transcode_command(
+                            str(working_video),
+                            str(render_destination),
+                            ffmpeg_executable=ffmpeg_executable,
+                            video_encoder=video_encoder,
+                            video_resolution=output_video_resolution,
+                            video_quality=settings.get("burn_video_quality", 18),
+                            video_speed=str(settings.get("burn_video_speed") or "balanced"),
+                            audio_codec=render_audio_codec,
+                            audio_bitrate=video_audio_bitrate,
+                        )
+                        progress(0.65, "Transcoding video output")
+                        try:
+                            subprocess.run(command, check=True, capture_output=True, text=True)
+                        except subprocess.CalledProcessError as error:
+                            detail = str(error.stderr or error.stdout or "").strip().splitlines()
+                            reason = detail[-1] if detail else "FFmpeg returned a non-zero exit status."
+                            raise RuntimeError(
+                                f"Video transcoding with {video_encoder} failed: {reason}"
+                            ) from error
                     else:
                         progress(0.65, "Copying prepared media output")
                         shutil.copy2(working_video, render_destination)
@@ -5722,6 +5799,14 @@ class WorkflowHandlers:
                             "audio_mode": audio_mode,
                             "subtitle_mode": subtitle_mode,
                             "video_resolution": output_video_resolution,
+                            "video_transcoded": video_transcode,
+                            "video_encoder": video_encoder if video_transcode else None,
+                            "audio_bitrate": (
+                                video_audio_bitrate
+                                if audio_mode in {"dubbed", "mixed"}
+                                or render_audio_codec == "aac"
+                                else None
+                            ),
                             "subtitle_tracks": subtitle_track_metadata,
                             "mix": {
                                 "source_gain_db": settings.get("mix_source_gain_db", 0.0),

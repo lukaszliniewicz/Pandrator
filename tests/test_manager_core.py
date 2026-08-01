@@ -246,6 +246,185 @@ class RegistryAndPlanningTests(unittest.TestCase):
 
         self.assertEqual(ComputeVariant.VULKAN, resolved)
 
+    def test_qwen_auto_uses_q8_vulkan_but_avoids_f16_on_polaris(self):
+        registry = builtin_registry()
+        definition = registry.definition("qwen_tts")
+        driver = registry.driver("qwen_tts")
+        context = ManagerContext(
+            layout=WorkspaceLayout.from_value("fixture"),
+            system="Linux",
+            architecture="x86_64",
+            environment={},
+        )
+        descriptions = (
+            (
+                "03:00.0 VGA compatible controller: Advanced Micro Devices, Inc. "
+                "[AMD/ATI] Ellesmere [Radeon RX 470/480/570/570X/580/580X/590]"
+            ),
+            (
+                "03:00.1 Audio device: Advanced Micro Devices, Inc. [AMD/ATI] "
+                "Ellesmere HDMI Audio"
+            ),
+        )
+        with mock.patch(
+            "pandrator_manager.components.host._graphics_descriptions",
+            return_value=descriptions,
+        ), mock.patch(
+            "pandrator_manager.components.host.shutil.which",
+            return_value=None,
+        ), mock.patch(
+            "pandrator_manager.components.host.ctypes.util.find_library",
+            return_value="libvulkan.so.1",
+        ):
+            q8 = driver.resolve(
+                context,
+                definition,
+                DesiredComponentState(
+                    compute=ComputeVariant.AUTO,
+                    quantization="q8_0",
+                ),
+            )
+            f16 = driver.resolve(
+                context,
+                definition,
+                DesiredComponentState(
+                    compute=ComputeVariant.AUTO,
+                    quantization="f16",
+                ),
+            )
+
+        self.assertEqual(ComputeVariant.VULKAN, q8.compute)
+        self.assertEqual(ComputeVariant.CPU, f16.compute)
+
+    def test_local_speech_catalogue_matches_runtime_model_contracts(self):
+        registry = builtin_registry()
+        qwen = registry.definition("qwen_tts")
+        qwen_initial = next(
+            option for option in qwen.install_options
+            if option.key == "initial_model"
+        )
+        self.assertEqual(
+            ["base", "customvoice"],
+            [choice.value for choice in qwen_initial.choices],
+        )
+
+        fish = registry.definition("fish_speech")
+        fish_quantization = next(
+            option for option in fish.install_options
+            if option.key == "quantization"
+        )
+        self.assertIn(
+            "q3_k",
+            {choice.value for choice in fish_quantization.choices},
+        )
+
+        chatterbox = registry.definition("chatterbox")
+        self.assertEqual(
+            {
+                "chatterbox-turbo",
+                "chatterbox-multilingual",
+                "chatterbox-en",
+            },
+            {model.id for model in chatterbox.models},
+        )
+
+    def test_qwen_legacy_model_choices_resolve_to_service_cli_values(self):
+        registry = builtin_registry()
+        definition = registry.definition("qwen_tts")
+        driver = registry.driver("qwen_tts")
+        context = ManagerContext(
+            layout=WorkspaceLayout.from_value("fixture"),
+            system="Linux",
+            architecture="x86_64",
+            environment={},
+        )
+
+        customvoice = driver.resolve(
+            context,
+            definition,
+            DesiredComponentState(
+                compute=ComputeVariant.CPU,
+                quantization="q8_0",
+                options={
+                    "initial_model": "custom_voice",
+                    "model_size": "1.7b",
+                },
+            ),
+        )
+        both = driver.resolve(
+            context,
+            definition,
+            DesiredComponentState(
+                compute=ComputeVariant.CPU,
+                quantization="q8_0",
+                options={
+                    "initial_model": "both",
+                    "model_size": "1.7b",
+                },
+            ),
+        )
+
+        self.assertEqual("customvoice", customvoice.options["initial_model"])
+        self.assertEqual("base", both.options["initial_model"])
+
+    def test_model_configuration_reaches_qwen_and_fish_bootstraps(self):
+        with tempfile.TemporaryDirectory() as directory:
+            layout = WorkspaceLayout.from_value(directory)
+            layout.ensure_base_directories()
+            for component_id in ("qwen_tts", "fish_speech"):
+                slot = (
+                    layout.services
+                    / component_id
+                    / "versions"
+                    / "fixture"
+                )
+                slot.mkdir(parents=True)
+                (slot / "pyproject.toml").write_text("", encoding="utf-8")
+                (layout.services / component_id / "current.json").write_text(
+                    json.dumps({"path": str(slot)}),
+                    encoding="utf-8",
+                )
+
+            qwen = component_runtime_spec(
+                layout,
+                "qwen_tts",
+                ResolvedComponentState(
+                    compute=ComputeVariant.CPU,
+                    quantization="f16",
+                    platform="test",
+                    options={
+                        "initial_model": "customvoice",
+                        "model_size": "1.7b",
+                    },
+                ),
+            )
+            fish = component_runtime_spec(
+                layout,
+                "fish_speech",
+                ResolvedComponentState(
+                    compute=ComputeVariant.VULKAN,
+                    quantization="q3_k",
+                    platform="test",
+                ),
+            )
+
+        self.assertIsNotNone(qwen)
+        self.assertEqual(
+            "customvoice",
+            qwen.arguments[qwen.arguments.index("--initial-model") + 1],
+        )
+        self.assertEqual(
+            "1.7b",
+            qwen.arguments[qwen.arguments.index("--model-size") + 1],
+        )
+        self.assertEqual(
+            "f16",
+            qwen.arguments[qwen.arguments.index("--quantization") + 1],
+        )
+        self.assertIsNotNone(fish)
+        self.assertEqual("q3_k", fish.environment["FISHS2_MODEL_QUANT"])
+        self.assertEqual("vulkan", fish.environment["FISHS2_BACKEND"])
+
     def test_rocm_requires_a_supported_gpu_agent_and_polaris_falls_back_to_cpu(self):
         definition = builtin_registry().definition("kokoro")
         context = ManagerContext(

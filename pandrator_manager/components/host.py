@@ -20,6 +20,14 @@ _LEGACY_AMD_PATTERNS = (
     re.compile(r"\bradeon\s+(?:r[579]|hd)\b", re.IGNORECASE),
     re.compile(r"\bdev_15dd\b", re.IGNORECASE),
 )
+_AMD_WITHOUT_NATIVE_FP16_PATTERNS = (
+    re.compile(r"\b(?:ellesmere|baffin|lexa)\b", re.IGNORECASE),
+    re.compile(r"\bpolaris(?:\s*1[012])?\b", re.IGNORECASE),
+    re.compile(
+        r"\bradeon\s+rx\s+(?:4[567]0|5[456789]0)(?:x)?\b",
+        re.IGNORECASE,
+    ),
+)
 _LINUX_DISPLAY_CLASSES = (
     "vga compatible controller",
     "3d controller",
@@ -186,6 +194,51 @@ def _legacy_amd_only(descriptions: tuple[str, ...]) -> bool:
         for token in ("nvidia", "intel arc")
     )
     return bool(legacy) and not modern_amd and not other_accelerator
+
+
+def vulkan_requires_quantized_models(context: ManagerContext) -> bool:
+    """Return whether the sole Vulkan GPU is an AMD card without native FP16.
+
+    KoboldCpp can run quantized Qwen models on Polaris-class cards, but its
+    F16 path may terminate during the first synthesis request.  Keep Vulkan
+    available for Q8 while allowing component resolution to avoid that one
+    unsafe automatic combination.
+    """
+
+    descriptions = _graphics_descriptions(
+        context.system.strip().lower(),
+        str(context.environment.get("SystemRoot") or r"C:\Windows"),
+    )
+    display_descriptions = tuple(
+        description
+        for description in descriptions
+        if any(
+            device_class in description.casefold()
+            for device_class in _LINUX_DISPLAY_CLASSES
+        )
+    )
+    candidates = display_descriptions or descriptions
+    if not candidates:
+        return False
+    affected = tuple(
+        description
+        for description in candidates
+        if any(
+            pattern.search(description)
+            for pattern in _AMD_WITHOUT_NATIVE_FP16_PATTERNS
+        )
+    )
+    if not affected:
+        return False
+    other_accelerator = any(
+        description not in affected
+        and any(
+            token in description.casefold()
+            for token in ("amd", "ati", "radeon", "nvidia", "intel arc")
+        )
+        for description in candidates
+    )
+    return not other_accelerator
 
 
 def normalized_architecture(value: str) -> str:
