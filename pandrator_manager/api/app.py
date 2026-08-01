@@ -1159,10 +1159,20 @@ def create_api(
             session.trust_env = False
             try:
                 response = session.post(
-                    f"{endpoint}/api/v1/auth/manager-bootstrap",
+                    f"{endpoint}/api/v1/auth/manager-browser-bootstrap",
                     headers={"Authorization": f"Bearer {client_secret}"},
                     timeout=(3, 10),
                 )
+                if response.status_code in {404, 405}:
+                    # Pandrator versions before 0.7.0 used the scoped
+                    # automation handoff for browser launches as well.
+                    response = session.post(
+                        f"{endpoint}/api/v1/auth/manager-bootstrap",
+                        headers={
+                            "Authorization": f"Bearer {client_secret}"
+                        },
+                        timeout=(3, 10),
+                    )
             except requests.RequestException as error:
                 emit_application_event(
                     "application.action_failed",

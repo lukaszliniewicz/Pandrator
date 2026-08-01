@@ -454,13 +454,9 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             session["principal_client_id"] = grant.client_id
         return jsonify({"authenticated": True, "csrf_token": session["csrf_token"]})
 
-    @app.post("/api/v1/auth/manager-bootstrap")
-    def auth_manager_bootstrap():
-        """Mint a browser token for the authenticated loopback manager only."""
+    def manager_authentication_error():
+        """Validate the Manager's loopback-only launch credential."""
 
-        payload = ManagerBootstrapRequest.model_validate(
-            request.get_json(silent=True) or {}
-        )
         if not _is_loopback_address(request.remote_addr):
             return error_response(
                 "manager_authentication_failed",
@@ -505,6 +501,38 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 "The manager launch credential is invalid.",
                 401,
             )
+        return None
+
+    @app.post("/api/v1/auth/manager-browser-bootstrap")
+    def auth_manager_browser_bootstrap():
+        """Mint a full local-owner browser token for the trusted Manager."""
+
+        authentication_error = manager_authentication_error()
+        if authentication_error is not None:
+            return authentication_error
+        return jsonify(
+            {
+                "token": bootstrap.issue(
+                    subject="owner",
+                    kind="owner_session",
+                    scopes=ALL_SCOPES,
+                    client_id="pandrator-manager-browser",
+                ),
+                "expires_in_seconds": 120,
+                "scopes": sorted(ALL_SCOPES),
+            }
+        )
+
+    @app.post("/api/v1/auth/manager-bootstrap")
+    def auth_manager_bootstrap():
+        """Mint a least-privilege automation token for the loopback Manager."""
+
+        payload = ManagerBootstrapRequest.model_validate(
+            request.get_json(silent=True) or {}
+        )
+        authentication_error = manager_authentication_error()
+        if authentication_error is not None:
+            return authentication_error
         extra_policy = normalize_scopes(
             os.environ.get("PANDRATOR_MCP_BOOTSTRAP_EXTRA_SCOPES", ""),
             allow_empty=True,

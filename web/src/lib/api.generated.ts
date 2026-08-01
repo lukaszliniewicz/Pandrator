@@ -277,6 +277,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/manager-browser-bootstrap": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["createManagerBrowserBootstrapGrant"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/status": {
         parameters: {
             query?: never;
@@ -2030,7 +2046,7 @@ export interface components {
             api_version?: string;
             /**
              * Application Version
-             * @default 0.6.9
+             * @default 0.7.0
              */
             application_version?: string;
             /** Canonical Origin */
@@ -3611,7 +3627,25 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Scoped one-use bootstrap grant */
+            /** @description Scoped one-use automation bootstrap grant */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createManagerBrowserBootstrapGrant: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Full-authority one-use browser bootstrap grant */
             200: {
                 headers: {
                     [name: string]: unknown;

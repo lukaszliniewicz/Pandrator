@@ -533,6 +533,66 @@ class ApiContractTests(unittest.TestCase):
             "https://pandrator.example/#bootstrap=one-use-token",
         )
 
+    def test_application_launch_uses_the_browser_bootstrap_endpoint(self):
+        api_service = mock.Mock(
+            id="pandrator.api",
+            process=mock.Mock(),
+            endpoint="http://127.0.0.1:8097",
+        )
+        api_service.health.state.value = "healthy"
+        api_service.model_dump.return_value = {"id": "pandrator.api"}
+        worker_service = mock.Mock(
+            id="pandrator.worker",
+            process=mock.Mock(),
+        )
+        worker_service.model_dump.return_value = {
+            "id": "pandrator.worker"
+        }
+        handoff = mock.Mock(status_code=200)
+        handoff.json.return_value = {"token": "browser-token"}
+
+        with (
+            mock.patch.object(
+                self.application,
+                "list_components",
+                return_value=[
+                    {
+                        "definition": {"id": "pandrator"},
+                        "inspection": {"state": "present"},
+                    }
+                ],
+            ),
+            mock.patch.object(
+                self.supervisor,
+                "snapshot",
+                return_value=[api_service, worker_service],
+            ),
+            mock.patch(
+                "pandrator_manager.api.app.requests.Session"
+            ) as session_factory,
+        ):
+            outbound = session_factory.return_value.__enter__.return_value
+            outbound.post.return_value = handoff
+            response = self.client.post(
+                "/v1/application/launch",
+                headers={
+                    **self.auth,
+                    "Idempotency-Key": "browser-bootstrap-endpoint",
+                },
+                json={},
+            )
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(
+            "http://127.0.0.1:8097/#bootstrap=browser-token",
+            response.get_json()["launch_url"],
+        )
+        outbound.post.assert_called_once_with(
+            "http://127.0.0.1:8097/api/v1/auth/manager-browser-bootstrap",
+            headers={"Authorization": f"Bearer {self.secret}"},
+            timeout=(3, 10),
+        )
+
     def test_event_retention_reports_when_a_snapshot_is_required(self):
         self.application.store.event_retention = 100
         for index in range(105):

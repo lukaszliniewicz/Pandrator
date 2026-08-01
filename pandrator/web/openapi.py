@@ -170,7 +170,8 @@ def build_openapi_document() -> dict:
             "/api/v1/events/snapshot": {"get": {"operationId": "getEventSnapshot", "responses": {"200": {"description": "Initial event-stream resource snapshot and cursor"}}}},
             "/api/v1/auth/status": {"get": {"operationId": "getAuthStatus", "responses": {"200": {"description": "Authentication status"}}}},
             "/api/v1/auth/bootstrap": {"post": {"operationId": "exchangeBootstrapToken", "requestBody": {"required": True, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/BootstrapRequest"}}}}, "responses": {"200": {"description": "Authenticated"}}}},
-            "/api/v1/auth/manager-bootstrap": {"post": {"operationId": "createManagerBootstrapGrant", "requestBody": {"required": True, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ManagerBootstrapRequest"}}}}, "responses": {"200": {"description": "Scoped one-use bootstrap grant"}}}},
+            "/api/v1/auth/manager-browser-bootstrap": {"post": {"operationId": "createManagerBrowserBootstrapGrant", "responses": {"200": {"description": "Full-authority one-use browser bootstrap grant"}}}},
+            "/api/v1/auth/manager-bootstrap": {"post": {"operationId": "createManagerBootstrapGrant", "requestBody": {"required": True, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ManagerBootstrapRequest"}}}}, "responses": {"200": {"description": "Scoped one-use automation bootstrap grant"}}}},
             "/api/v1/auth/login": {"post": {"operationId": "login", "requestBody": {"required": True, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/LoginRequest"}}}}, "responses": {"200": {"description": "Authenticated"}}}},
             "/api/v1/auth/logout": {"post": {"operationId": "logout", "responses": {"204": {"description": "Signed out"}}}},
             "/api/v1/auth/tokens": {"get": {"operationId": "listApiTokens", "responses": {"200": {"description": "Tokens"}}}, "post": {"operationId": "createApiToken", "requestBody": {"required": True, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TokenCreateRequest"}}}}, "responses": {"201": {"description": "Created"}}}},
@@ -594,4 +595,3 @@ def build_openapi_document() -> dict:
                     }
                 )
     return document
-

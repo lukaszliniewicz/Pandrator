@@ -30,7 +30,7 @@
             "type": "string"
           },
           "application_version": {
-            "default": "0.6.9",
+            "default": "0.7.0",
             "title": "Application Version",
             "type": "string"
           },
@@ -3255,7 +3255,17 @@
         },
         "responses": {
           "200": {
-            "description": "Scoped one-use bootstrap grant"
+            "description": "Scoped one-use automation bootstrap grant"
+          }
+        }
+      }
+    },
+    "/api/v1/auth/manager-browser-bootstrap": {
+      "post": {
+        "operationId": "createManagerBrowserBootstrapGrant",
+        "responses": {
+          "200": {
+            "description": "Full-authority one-use browser bootstrap grant"
           }
         }
       }

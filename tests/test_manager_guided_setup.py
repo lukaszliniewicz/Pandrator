@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest import mock
 
 from pandrator.web.api import create_app as create_web_app
-from pandrator.web.auth import BootstrapTokenStore
+from pandrator.web.auth import ALL_SCOPES, BootstrapTokenStore
 from pandrator_manager.api import create_api
 from pandrator_manager.application import create_application
 from pandrator_manager.components.runtime_bootstrap import generated_runtime_files
@@ -391,7 +391,7 @@ class ManagedApplicationLaunchTests(unittest.TestCase):
 
 
 class ManagerBootstrapSecurityTests(unittest.TestCase):
-    def test_only_the_loopback_manager_credential_can_mint_browser_tokens(self):
+    def test_browser_and_automation_bootstraps_have_distinct_authority(self):
         with tempfile.TemporaryDirectory() as directory:
             prepare_web_test_data_root(directory)
             credential = Path(directory) / "manager.secret"
@@ -399,7 +399,10 @@ class ManagerBootstrapSecurityTests(unittest.TestCase):
             bootstrap = BootstrapTokenStore()
             with mock.patch.dict(
                 os.environ,
-                {"PANDRATOR_MANAGER_CREDENTIAL": str(credential)},
+                {
+                    "PANDRATOR_MANAGER_CREDENTIAL": str(credential),
+                    "PANDRATOR_MCP_BOOTSTRAP_EXTRA_SCOPES": "",
+                },
                 clear=False,
             ):
                 app = create_web_app(
@@ -414,6 +417,23 @@ class ManagerBootstrapSecurityTests(unittest.TestCase):
                         client.post(
                             "/api/v1/auth/manager-bootstrap",
                             headers={"Authorization": "Bearer wrong"},
+                        ).status_code,
+                    )
+                    self.assertEqual(
+                        401,
+                        client.post(
+                            "/api/v1/auth/manager-browser-bootstrap",
+                            headers={"Authorization": "Bearer wrong"},
+                        ).status_code,
+                    )
+                    self.assertEqual(
+                        401,
+                        client.post(
+                            "/api/v1/auth/manager-browser-bootstrap",
+                            headers={
+                                "Authorization": "Bearer manager-secret"
+                            },
+                            environ_overrides={"REMOTE_ADDR": "192.0.2.20"},
                         ).status_code,
                     )
                     self.assertEqual(
@@ -469,12 +489,62 @@ class ManagerBootstrapSecurityTests(unittest.TestCase):
                     )
                     self.assertEqual(["app.read"], principal["scopes"])
                     self.assertEqual(
+                        403,
+                        client.get("/api/v1/credentials").status_code,
+                    )
+                    self.assertEqual(
                         401,
                         client.post(
                             "/api/v1/auth/bootstrap",
                             json={"token": token},
                         ).status_code,
                     )
+
+                    browser_client = app.test_client()
+                    browser_grant = browser_client.post(
+                        "/api/v1/auth/manager-browser-bootstrap",
+                        headers={"Authorization": "Bearer manager-secret"},
+                    )
+                    self.assertEqual(200, browser_grant.status_code)
+                    self.assertEqual(
+                        sorted(ALL_SCOPES),
+                        browser_grant.get_json()["scopes"],
+                    )
+                    browser_exchange = browser_client.post(
+                        "/api/v1/auth/bootstrap",
+                        json={"token": browser_grant.get_json()["token"]},
+                    )
+                    self.assertEqual(200, browser_exchange.status_code)
+                    browser_principal = browser_client.get(
+                        "/api/v1/auth/status"
+                    ).get_json()["principal"]
+                    self.assertEqual("owner_session", browser_principal["kind"])
+                    self.assertEqual("owner", browser_principal["subject"])
+                    self.assertEqual(
+                        "pandrator-manager-browser",
+                        browser_principal["client_id"],
+                    )
+                    self.assertEqual(
+                        sorted(ALL_SCOPES),
+                        browser_principal["scopes"],
+                    )
+                    self.assertEqual(
+                        200,
+                        browser_client.get("/api/v1/credentials").status_code,
+                    )
+                    created = browser_client.post(
+                        "/api/v1/providers",
+                        headers={
+                            "X-CSRF-Token": browser_exchange.get_json()[
+                                "csrf_token"
+                            ]
+                        },
+                        json={
+                            "provider_key": "openai",
+                            "label": "Browser-owned provider",
+                        },
+                    )
+                    self.assertEqual(201, created.status_code)
                 finally:
                     app.extensions["pandrator"]["database"].dispose()
 
