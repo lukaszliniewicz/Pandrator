@@ -5,6 +5,7 @@ on:
     branches: [codex/webui-migration, codex/webui-**]
   pull_request:
     branches: [codex/webui-migration, main]
+  workflow_dispatch:
 
 permissions:
   contents: read
