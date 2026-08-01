@@ -23,7 +23,8 @@ class InstallerRVCServiceTests(unittest.TestCase):
         self.assertIn("rvc-python", command)
         self.assertIn("fairseq", command)
 
-    def test_rvc_launcher_command_uses_auto_backend_and_shared_paths(self):
+    @patch("pandrator_installer.components.is_windows", return_value=True)
+    def test_rvc_launcher_command_uses_auto_backend_and_shared_paths(self, _is_windows):
         installer = HeadlessInstaller(working_dir="workspace")
 
         command = installer.build_rvc_launcher_command(

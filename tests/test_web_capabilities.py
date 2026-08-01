@@ -92,9 +92,7 @@ GPU1:
         render_node = Path("/dev/dri/renderD128")
         with mock.patch.object(capabilities, "ffmpeg_video_encoder_ids", return_value=supported), mock.patch.object(
             capabilities.sys, "platform", "linux"
-        ), mock.patch.object(capabilities.os, "name", "posix"), mock.patch.object(
-            capabilities.Path, "glob", return_value=iter([render_node])
-        ):
+        ), mock.patch.object(capabilities.Path, "glob", return_value=iter([render_node])):
             profiles = capabilities.probe_burn_video_encoders("ffmpeg", gpu)
 
         self.assertEqual(["libx264", "libx265", "h264_vaapi"], [item["id"] for item in profiles])

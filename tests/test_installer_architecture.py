@@ -384,8 +384,8 @@ class InstallerArchitectureTests(unittest.TestCase):
 
             ssl_library, crypto_library = resolve_openssl_runtime_pair((lib, lib64))
 
-            self.assertEqual(ssl_library.parent, lib64)
-            self.assertEqual(crypto_library.parent, lib64)
+            self.assertTrue(os.path.samefile(ssl_library.parent, lib64))
+            self.assertTrue(os.path.samefile(crypto_library.parent, lib64))
 
             (lib64 / "libcrypto.so.3").unlink()
             (lib / "libcrypto.so.3").write_bytes(b"different-runtime")
@@ -400,9 +400,11 @@ class InstallerArchitectureTests(unittest.TestCase):
             unversioned.write_bytes(b"unversioned")
             versioned.write_bytes(b"versioned")
 
-            self.assertEqual(
-                resolve_linux_expat_runtime_library((runtime,)),
-                versioned,
+            self.assertTrue(
+                os.path.samefile(
+                    resolve_linux_expat_runtime_library((runtime,)),
+                    versioned,
+                )
             )
 
     def test_windows_ctypes_runtime_resolves_conda_and_cpython_libffi_names(self):
@@ -410,17 +412,21 @@ class InstallerArchitectureTests(unittest.TestCase):
             runtime = Path(directory)
             conda_libffi = runtime / "ffi-8.dll"
             conda_libffi.write_bytes(b"ffi")
-            self.assertEqual(
-                resolve_windows_ctypes_runtime_library((runtime,)),
-                conda_libffi,
+            self.assertTrue(
+                os.path.samefile(
+                    resolve_windows_ctypes_runtime_library((runtime,)),
+                    conda_libffi,
+                )
             )
 
             conda_libffi.unlink()
             cpython_libffi = runtime / "libffi-8.dll"
             cpython_libffi.write_bytes(b"libffi")
-            self.assertEqual(
-                resolve_windows_ctypes_runtime_library((runtime,)),
-                cpython_libffi,
+            self.assertTrue(
+                os.path.samefile(
+                    resolve_windows_ctypes_runtime_library((runtime,)),
+                    cpython_libffi,
+                )
             )
 
     def test_windows_runtime_libraries_resolve_from_one_python_prefix(self):
@@ -625,7 +631,10 @@ class InstallerArchitectureTests(unittest.TestCase):
                 ["msiexec"],
                 900,
             )
-            with patch.object(
+            with patch(
+                "pandrator_installer.operations.os.name",
+                "nt",
+            ), patch.object(
                 installer,
                 "download_verified_file",
             ), patch(
@@ -646,7 +655,10 @@ class InstallerArchitectureTests(unittest.TestCase):
                 ["winget"],
                 600,
             )
-            with patch.object(
+            with patch(
+                "pandrator_installer.operations.os.name",
+                "nt",
+            ), patch.object(
                 installer,
                 "check_calibre_available",
                 return_value=False,
@@ -680,7 +692,10 @@ class InstallerArchitectureTests(unittest.TestCase):
                 ["msiexec"],
                 600,
             )
-            with patch.object(
+            with patch(
+                "pandrator_installer.operations.os.name",
+                "nt",
+            ), patch.object(
                 installer,
                 "resolve_espeak_paths",
                 return_value=("", ""),

@@ -425,7 +425,7 @@ def probe_burn_video_encoders(executable: str | None, gpu: dict[str, Any]) -> li
             continue
         if source.get("platform") == "linux" and not vaapi_ready:
             continue
-        if source.get("platform") == "windows" and os.name != "nt":
+        if source.get("platform") == "windows" and not sys.platform.startswith("win"):
             continue
         profiles.append({key: value for key, value in source.items() if key not in {"vendors", "platform"}})
     return profiles
