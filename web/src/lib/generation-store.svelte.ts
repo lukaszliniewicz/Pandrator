@@ -69,6 +69,9 @@ export class GenerationStore {
   private initialized = false;
   private controller?: AbortController;
   private unsubscribe?: () => void;
+  private refreshTimer?: number;
+  private refreshInFlight = false;
+  private refreshQueued = false;
 
   constructor(readonly sessionId: string) {}
 
@@ -289,20 +292,62 @@ export class GenerationStore {
         invalidates(batch, 'generation', this.sessionId) ||
         invalidates(batch, 'output', this.sessionId)
       ) {
-        this.load({
-          ...getOptions(),
-          reset: true,
-          preserveLoaded: true
-        })
-          .then(onLoaded)
-          .catch(() => undefined);
+        const terminal = batch.events.some(
+          (event) =>
+            event.session_id === this.sessionId &&
+            ['job.succeeded', 'job.failed', 'job.canceled'].includes(event.type)
+        );
+        this.scheduleRefresh(getOptions, onLoaded, terminal ? 0 : 600);
       }
     });
     return () => {
       this.unsubscribe?.();
       this.unsubscribe = undefined;
       this.controller?.abort();
+      if (this.refreshTimer !== undefined)
+        window.clearTimeout(this.refreshTimer);
+      this.refreshTimer = undefined;
+      this.refreshQueued = false;
     };
+  }
+
+  private scheduleRefresh(
+    getOptions: () => GenerationLoadOptions,
+    onLoaded: (result: GenerationLoadResult) => void,
+    delayMs: number
+  ) {
+    if (this.refreshTimer !== undefined) window.clearTimeout(this.refreshTimer);
+    this.refreshTimer = window.setTimeout(() => {
+      this.refreshTimer = undefined;
+      void this.runRefresh(getOptions, onLoaded);
+    }, delayMs);
+  }
+
+  private async runRefresh(
+    getOptions: () => GenerationLoadOptions,
+    onLoaded: (result: GenerationLoadResult) => void
+  ) {
+    if (this.refreshInFlight) {
+      this.refreshQueued = true;
+      return;
+    }
+    this.refreshInFlight = true;
+    try {
+      const result = await this.load({
+        ...getOptions(),
+        reset: true,
+        preserveLoaded: true
+      });
+      onLoaded(result);
+    } catch {
+      // The store exposes load failures; event callbacks remain non-throwing.
+    } finally {
+      this.refreshInFlight = false;
+      if (this.refreshQueued) {
+        this.refreshQueued = false;
+        this.scheduleRefresh(getOptions, onLoaded, 0);
+      }
+    }
   }
 
   private patchLiveProgress(batch: InvalidationBatch) {

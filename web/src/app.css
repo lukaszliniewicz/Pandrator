@@ -107,6 +107,27 @@ body::-webkit-scrollbar-thumb:hover,
   border-color: transparent;
   background-clip: padding-box;
 }
+.scrollbar-on-demand {
+  scrollbar-color: transparent transparent;
+}
+.scrollbar-on-demand::-webkit-scrollbar-track,
+.scrollbar-on-demand::-webkit-scrollbar-thumb {
+  background-color: transparent;
+  border-color: transparent;
+}
+.scrollbar-on-demand:hover,
+.scrollbar-on-demand:focus,
+.scrollbar-on-demand:focus-within {
+  scrollbar-color: color-mix(in srgb, var(--accent) 45%, var(--line))
+    transparent;
+}
+.scrollbar-on-demand:hover::-webkit-scrollbar-thumb,
+.scrollbar-on-demand:focus::-webkit-scrollbar-thumb,
+.scrollbar-on-demand:focus-within::-webkit-scrollbar-thumb {
+  border-color: transparent;
+  background-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+  background-clip: padding-box;
+}
 @layer base {
   button,
   input,
@@ -229,5 +250,17 @@ body::-webkit-scrollbar-thumb:hover,
   .modal-panel {
     max-height: calc(100dvh - 1rem);
     border-radius: 1.1rem;
+  }
+}
+
+@media (hover: none), (pointer: coarse) {
+  .scrollbar-on-demand {
+    scrollbar-color: color-mix(in srgb, var(--accent) 45%, var(--line))
+      transparent;
+  }
+  .scrollbar-on-demand::-webkit-scrollbar-thumb {
+    border-color: transparent;
+    background-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+    background-clip: padding-box;
   }
 }

@@ -334,6 +334,13 @@ export type SettingsPayload = {
   effective: Record<string, unknown>;
   override: Record<string, unknown>;
   global?: Record<string, unknown>;
+  context?: {
+    source_profile?: string;
+    has_source_audio?: boolean;
+    has_source_video?: boolean;
+    applicable_groups?: string[];
+    [key: string]: unknown;
+  };
   [key: string]: unknown;
 };
 

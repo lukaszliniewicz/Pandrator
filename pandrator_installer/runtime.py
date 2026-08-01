@@ -33,6 +33,7 @@ from .constants import (
     VOXTRAL_API_REPO_DIRNAME,
     XTTS_API_REPO_DIRNAME,
 )
+from .models import DEFAULT_QWEN_MODEL_SIZE
 from .platforms import is_windows
 
 
@@ -690,7 +691,10 @@ class RuntimeMixin:
                     self.kobold_qwen_process = self.run_kobold_qwen_api_server(
                         kobold_qwen_server_path,
                         backend=configured_backend,
-                        model_size=install_config.get('kobold_qwen_model_size', '0.6b'),
+                        model_size=install_config.get(
+                            'kobold_qwen_model_size',
+                            DEFAULT_QWEN_MODEL_SIZE,
+                        ),
                         quantization=install_config.get('kobold_qwen_quantization', 'f16'),
                         initial_model=install_config.get('kobold_qwen_initial_model', 'base'),
                         pixi_path=shared_pixi_path,
@@ -1232,7 +1236,7 @@ class RuntimeMixin:
         use_cpu=False,
         pixi_path=None,
         backend=None,
-        model_size="0.6b",
+        model_size=DEFAULT_QWEN_MODEL_SIZE,
         quantization="f16",
         initial_model="base",
     ):

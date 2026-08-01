@@ -103,7 +103,7 @@
               if (text !== item.text) onpatch(item, { text });
             }}
             rows="2"
-            class="w-full resize-y rounded-lg border border-transparent bg-transparent p-2 focus:border-[var(--line)]"
+            class="scrollbar-on-demand w-full resize-y rounded-lg border border-transparent bg-transparent p-2 focus:border-[var(--line)]"
           ></textarea>
           {#if item.optimized_text || selectedTake?.llm_optimized}
             <button

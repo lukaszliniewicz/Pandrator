@@ -17,12 +17,16 @@
     sessionId,
     section,
     title,
-    description = ''
+    description = '',
+    collapsible = false,
+    initiallyOpen = false
   }: {
     sessionId: string;
     section: string;
     title: string;
     description?: string;
+    collapsible?: boolean;
+    initiallyOpen?: boolean;
   } = $props();
   let payload = $state<SettingsPayload | null>(null);
   let override = $state<Record<string, unknown>>({});
@@ -431,53 +435,85 @@
   load();
 </script>
 
-<section class="surface rounded-2xl p-5">
-  <div class="flex flex-wrap items-start justify-between gap-4">
-    <div>
-      <div class="eyebrow">{sectionName(section)}</div>
-      <h2 class="mt-1 text-xl font-semibold">{title}</h2>
-      {#if description}<p class="muted mt-2 max-w-2xl text-sm">
-          {description}
-        </p>{/if}
+{#snippet panelActions()}
+  {#if section === 'tts'}<a
+      href="/providers?tab=speech&speech=external"
+      class="tool"><ExternalLink size={14} /> Speech services</a
+    >{/if}<button
+    onclick={reset}
+    disabled={saving || !Object.keys(override).length}
+    class="tool"><RotateCcw size={14} /> Revert to defaults</button
+  ><button
+    onclick={saveAsDefaults}
+    disabled={saving || deepLResearchConflict || !Object.keys(override).length}
+    title={deepLResearchConflict
+      ? 'Resolve the translation backend and web research conflict first.'
+      : ''}
+    class="tool"><Save size={14} /> Save as defaults</button
+  ><button
+    onclick={save}
+    disabled={saving || deepLResearchConflict}
+    title={deepLResearchConflict
+      ? 'Resolve the translation backend and web research conflict first.'
+      : ''}
+    class="tool bg-[var(--accent)] text-white"
+    ><Save size={14} /> {saving ? 'Saving…' : 'Save'}</button
+  >
+{/snippet}
+
+<svelte:element
+  this={collapsible ? 'details' : 'section'}
+  class="surface settings-panel rounded-2xl p-5"
+  open={collapsible && initiallyOpen ? true : undefined}
+>
+  {#if collapsible}
+    <summary class="flex cursor-pointer list-none items-start gap-4">
+      <span class="min-w-0 flex-1">
+        <span class="eyebrow block">{sectionName(section)}</span>
+        <span class="mt-1 block text-xl font-semibold">{title}</span>
+        {#if description}<span class="muted mt-2 block max-w-2xl text-sm">
+            {description}
+          </span>{/if}
+      </span>
+      <ChevronDown class="settings-chevron muted mt-1" size={18} />
+    </summary>
+    <div
+      class="mt-5 flex flex-wrap justify-end gap-2 border-t border-[var(--line)] pt-5"
+    >
+      {@render panelActions()}
     </div>
-    <div class="flex flex-wrap gap-2">
-      {#if section === 'tts'}<a href="/providers?tab=tts" class="tool"
-          ><ExternalLink size={14} /> TTS services</a
-        >{/if}<button
-        onclick={reset}
-        disabled={saving || !Object.keys(override).length}
-        class="tool"><RotateCcw size={14} /> Revert to defaults</button
-      ><button
-        onclick={saveAsDefaults}
-        disabled={saving ||
-          deepLResearchConflict ||
-          !Object.keys(override).length}
-        title={deepLResearchConflict
-          ? 'Resolve the translation backend and web research conflict first.'
-          : ''}
-        class="tool"><Save size={14} /> Save as defaults</button
-      ><button
-        onclick={save}
-        disabled={saving || deepLResearchConflict}
-        title={deepLResearchConflict
-          ? 'Resolve the translation backend and web research conflict first.'
-          : ''}
-        class="tool bg-[var(--accent)] text-white"
-        ><Save size={14} /> {saving ? 'Saving…' : 'Save'}</button
-      >
+  {:else}
+    <div class="flex flex-wrap items-start justify-between gap-4">
+      <div>
+        <div class="eyebrow">{sectionName(section)}</div>
+        <h2 class="mt-1 text-xl font-semibold">{title}</h2>
+        {#if description}<p class="muted mt-2 max-w-2xl text-sm">
+            {description}
+          </p>{/if}
+      </div>
+      <div class="flex flex-wrap gap-2">
+        {@render panelActions()}
+      </div>
     </div>
-  </div>
+  {/if}
   {#if payload}
     {#if section === 'text'}
       <div class="mt-5 grid gap-5 xl:grid-cols-2">
-        <section class="rounded-2xl border border-[var(--line)] p-4">
-          <div class="text-sm font-semibold">
-            Segmentation and deterministic processing
-          </div>
-          <p class="muted mt-1 text-xs leading-relaxed">
-            Creates generation units, paragraph boundaries, and predictable text
-            normalization without an LLM or provider cost.
-          </p>
+        <details
+          class="settings-group rounded-2xl border border-[var(--line)] p-4"
+        >
+          <summary class="flex cursor-pointer list-none items-start gap-3">
+            <span class="min-w-0 flex-1">
+              <span class="block text-sm font-semibold">
+                Segmentation and deterministic processing
+              </span>
+              <span class="muted mt-1 block text-xs leading-relaxed">
+                Creates generation units, paragraph boundaries, and predictable
+                text normalization without an LLM or provider cost.
+              </span>
+            </span>
+            <ChevronDown class="settings-chevron muted mt-0.5" size={16} />
+          </summary>
           <div class="mt-4 grid gap-4 sm:grid-cols-2">
             {#each deterministicText as [key, fallback]}<div>
                 <SettingField
@@ -494,19 +530,24 @@
                   >{/if}
               </div>{/each}
           </div>
-        </section>
-        <section
+        </details>
+        <details
           class="rounded-2xl border border-[var(--line)] bg-[var(--accent-soft)] p-4"
         >
-          <div class="flex items-center gap-2 text-sm font-semibold">
-            <ShieldCheck size={16} /> Optional LLM speech planning
-          </div>
-          <p class="muted mt-1 text-xs leading-relaxed">
-            Guarded mode asks for typed decisions over stable spans; flexible
-            mode may revise the complete speech sentence behind protected
-            placeholders. Both preserve display text and validate the result
-            before synthesis.
-          </p>
+          <summary class="flex cursor-pointer list-none items-start gap-3">
+            <span class="min-w-0 flex-1">
+              <span class="flex items-center gap-2 text-sm font-semibold">
+                <ShieldCheck size={16} /> Optional LLM speech planning
+              </span>
+              <span class="muted mt-1 block text-xs leading-relaxed">
+                Guarded mode asks for typed decisions over stable spans;
+                flexible mode may revise the complete speech sentence behind
+                protected placeholders. Both preserve display text and validate
+                the result before synthesis.
+              </span>
+            </span>
+            <ChevronDown class="settings-chevron muted mt-0.5" size={16} />
+          </summary>
           <div class="mt-4 grid gap-4">
             {#each llmText as [key, fallback]}<div>
                 <SettingField
@@ -531,7 +572,7 @@
               Web research settings belong to correction and translation; speech
               planning uses only the reviewed pronunciation library.
             </p>{/if}
-        </section>
+        </details>
       </div>
       <button
         onclick={() => (advanced = !advanced)}
@@ -678,7 +719,7 @@
     >
       {message}
     </p>{/if}
-</section>
+</svelte:element>
 
 <style>
   .tool {
@@ -701,5 +742,15 @@
     border-color: color-mix(in srgb, var(--accent) 38%, var(--line));
     box-shadow: inset 0 0 0 1px
       color-mix(in srgb, var(--accent) 7%, transparent);
+  }
+  details > summary::-webkit-details-marker {
+    display: none;
+  }
+  :global(.settings-chevron) {
+    flex: 0 0 auto;
+    transition: transform 0.15s ease;
+  }
+  details[open] > summary :global(.settings-chevron) {
+    transform: rotate(180deg);
   }
 </style>

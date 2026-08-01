@@ -13,6 +13,8 @@
     WandSparkles
   } from '@lucide/svelte';
   import { appState } from '$lib/app-state.svelte';
+  import { sessionApi } from '$lib/domain-api';
+  import { invalidates, invalidationBus } from '$lib/invalidation';
   import { SESSION_CONTEXT, type SessionContext } from '$lib/session-context';
   import { SessionStore } from '$lib/session-store.svelte';
   import { WorkflowStore } from '$lib/workflow-store.svelte';
@@ -20,6 +22,7 @@
   import GenerationDrawer from '$lib/GenerationDrawer.svelte';
   let { children }: { children: Snippet } = $props();
   let customizeOpen = $state(false);
+  let sourceProfile = $state('none');
   const sessionStore = new SessionStore(page.params.id ?? '', (session) =>
     appState.upsertSession(session)
   );
@@ -41,20 +44,41 @@
       return sessionStore.error;
     },
     workflow: workflowStore,
-    reload: () => sessionStore.load(true),
+    reload: async () => {
+      await Promise.all([sessionStore.load(true), loadSourceProfile()]);
+    },
     customize: () => (customizeOpen = true)
   };
   setContext(SESSION_CONTEXT, contextState);
   reload();
+  async function loadSourceProfile() {
+    try {
+      const settings = await sessionApi.settings(
+        page.params.id ?? '',
+        'output'
+      );
+      sourceProfile = String(settings.context?.source_profile ?? 'none');
+    } catch {
+      sourceProfile = 'none';
+    }
+  }
   function reload() {
     return contextState.reload();
   }
   onMount(() => {
     const disconnectSession = sessionStore.connect();
     const disconnectWorkflow = workflowStore.connect();
+    const disconnectSourceProfile = invalidationBus.subscribe((batch) => {
+      if (
+        invalidates(batch, 'sources', page.params.id ?? '') ||
+        invalidates(batch, 'workflow', page.params.id ?? '')
+      )
+        void loadSourceProfile();
+    });
     return () => {
       disconnectSession();
       disconnectWorkflow();
+      disconnectSourceProfile();
     };
   });
   const tabs = $derived(
@@ -68,8 +92,9 @@
       { href: '/cleaning', label: 'Cleaning', icon: WandSparkles }
     ].filter(
       (tab) =>
-        tab.href !== '/voice' ||
-        contextState.session?.workflow_kind !== 'subtitles'
+        (tab.href !== '/voice' ||
+          contextState.session?.workflow_kind !== 'subtitles') &&
+        (tab.href !== '/cleaning' || sourceProfile === 'document')
     )
   );
   const active = (suffix: string) =>
@@ -117,7 +142,9 @@
         ><Settings2 size={16} /> Customize workflow</button
       >
     </header>
-    <nav class="mt-7 flex gap-1 overflow-x-auto border-b border-[var(--line)]">
+    <nav
+      class="scrollbar-on-demand mt-7 flex gap-1 overflow-x-auto border-b border-[var(--line)]"
+    >
       {#each tabs as tab}{@const Icon = tab.icon}<a
           href={`/sessions/${page.params.id}${tab.href}`}
           class:active={active(tab.href)}

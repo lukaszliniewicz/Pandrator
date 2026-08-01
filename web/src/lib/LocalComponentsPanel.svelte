@@ -126,6 +126,21 @@
   let uninstallBusy = $state(false);
   let pollTimer: ReturnType<typeof setTimeout> | null = null;
   let pollStopped = false;
+  const componentGroups = $derived([
+    {
+      label: 'Installed and configured',
+      items: components.filter((component) =>
+        ['present', 'degraded'].includes(component.inspection.state)
+      )
+    },
+    {
+      label: 'Available to install',
+      items: components.filter(
+        (component) =>
+          !['present', 'degraded'].includes(component.inspection.state)
+      )
+    }
+  ]);
 
   const formatBytes = (value: number) => {
     if (!value) return 'No estimate';
@@ -518,9 +533,9 @@
 <section>
   <div class="flex flex-wrap items-end justify-between gap-4">
     <div>
-      <div class="eyebrow">Local components</div>
+      <div class="eyebrow">Local speech services</div>
       <h2 class="mt-1 text-2xl font-semibold">
-        Install and run local providers
+        Install and run speech providers
       </h2>
       <p class="muted mt-2 max-w-3xl text-sm">
         Pandrator shows the controls here; the independent local manager
@@ -602,118 +617,137 @@
       </div>
     {/if}
 
-    <div class="mt-5 grid gap-3 lg:grid-cols-2">
-      {#each components as component}
-        {@const service = serviceFor(component)}
-        {@const runtimeState = runtimeStateFor(component, service)}
-        {@const installed = component.inspection.state === 'present'}
-        {@const degraded = component.inspection.state === 'degraded'}
-        {@const busy =
-          planning === component.definition.id ||
-          runtimeBusy === component.definition.id ||
-          Boolean(operation && !MANAGER_TERMINAL_STATES.has(operation.state))}
-        <article
-          id={`component-${component.definition.id}`}
-          class="scroll-mt-24 rounded-2xl border border-[var(--line)] p-4"
-        >
-          <div class="flex items-start justify-between gap-3">
-            <div>
-              <div class="font-semibold">{component.definition.label}</div>
-              <div class="muted mt-1 text-xs">
-                {runtimeState.label}
-                {component.definition.default_port
-                  ? ` · port ${component.definition.default_port}`
-                  : ''}
-              </div>
+    <div class="mt-6 space-y-7">
+      {#each componentGroups as group}
+        {#if group.items.length}<section>
+            <div class="mb-3 flex items-center gap-2">
+              <h3 class="text-sm font-semibold">{group.label}</h3>
+              <span
+                class="muted rounded-full border border-[var(--line)] px-2 py-0.5 text-[.65rem] font-bold"
+                >{group.items.length}</span
+              >
             </div>
-            <span
-              class={`status-dot ${runtimeState.state}`}
-              title={runtimeState.label}
-            ></span>
-          </div>
+            <div class="grid gap-3 lg:grid-cols-2">
+              {#each group.items as component}
+                {@const service = serviceFor(component)}
+                {@const runtimeState = runtimeStateFor(component, service)}
+                {@const installed = component.inspection.state === 'present'}
+                {@const degraded = component.inspection.state === 'degraded'}
+                {@const busy =
+                  planning === component.definition.id ||
+                  runtimeBusy === component.definition.id ||
+                  Boolean(
+                    operation && !MANAGER_TERMINAL_STATES.has(operation.state)
+                  )}
+                <article
+                  id={`component-${component.definition.id}`}
+                  class="scroll-mt-24 rounded-2xl border border-[var(--line)] p-4"
+                >
+                  <div class="flex items-start justify-between gap-3">
+                    <div>
+                      <div class="font-semibold">
+                        {component.definition.label}
+                      </div>
+                      <div class="muted mt-1 text-xs">
+                        {runtimeState.label}
+                        {component.definition.default_port
+                          ? ` · port ${component.definition.default_port}`
+                          : ''}
+                      </div>
+                    </div>
+                    <span
+                      class={`status-dot ${runtimeState.state}`}
+                      title={runtimeState.label}
+                    ></span>
+                  </div>
 
-          {#if component.inspection.problems?.length}
-            <p class="mt-3 text-xs text-amber-600">
-              {component.inspection.problems.join(' ')}
-            </p>
-          {/if}
+                  {#if component.inspection.problems?.length}
+                    <p class="mt-3 text-xs text-amber-600">
+                      {component.inspection.problems.join(' ')}
+                    </p>
+                  {/if}
 
-          {#if component.definition.compute_variants.length > 1}
-            <label class="mt-4 block text-xs font-semibold">
-              Compute backend
-              <select
-                class="field"
-                value={selectedCompute(component)}
-                disabled={busy}
-                onchange={(event) =>
-                  (compute[component.definition.id] = event.currentTarget
-                    .value as ComputeVariant)}
-              >
-                <option value="auto">Automatic</option>
-                {#each component.definition.compute_variants as variant}
-                  <option value={variant}>{variant.toUpperCase()}</option>
-                {/each}
-              </select>
-            </label>
-          {/if}
+                  {#if component.definition.compute_variants.length > 1}
+                    <label class="mt-4 block text-xs font-semibold">
+                      Compute backend
+                      <select
+                        class="field"
+                        value={selectedCompute(component)}
+                        disabled={busy}
+                        onchange={(event) =>
+                          (compute[component.definition.id] = event
+                            .currentTarget.value as ComputeVariant)}
+                      >
+                        <option value="auto">Automatic</option>
+                        {#each component.definition.compute_variants as variant}
+                          <option value={variant}
+                            >{variant.toUpperCase()}</option
+                          >
+                        {/each}
+                      </select>
+                    </label>
+                  {/if}
 
-          <div class="mt-4 flex flex-wrap gap-2">
-            {#if !installed && !degraded && component.definition.supported_actions.includes('install')}
-              <button
-                class="btn btn-sm btn-primary"
-                disabled={busy}
-                onclick={() => createPlan(component, 'install')}
-              >
-                <Download size={13} /> Install locally
-              </button>
-            {/if}
-            {#if degraded && component.definition.supported_actions.includes('repair')}
-              <button
-                class="btn btn-sm btn-primary"
-                disabled={busy}
-                onclick={() => createPlan(component, 'repair')}
-              >
-                <RotateCcw size={13} /> Repair
-              </button>
-            {/if}
-            {#if installed && component.definition.supported_actions.includes('update')}
-              <button
-                class="btn btn-sm btn-secondary"
-                disabled={busy}
-                onclick={() => createPlan(component, 'update')}
-              >
-                <RefreshCw size={13} /> Check/update
-              </button>
-            {/if}
-            {#if runtimeState.action === 'start'}
-              <button
-                class="btn btn-sm btn-secondary"
-                disabled={busy}
-                onclick={() => runtime(component, 'start')}
-              >
-                <Play size={13} /> Start
-              </button>
-            {/if}
-            {#if runtimeState.action === 'stop'}
-              <button
-                class="btn btn-sm btn-secondary"
-                disabled={busy}
-                onclick={() => runtime(component, 'stop')}
-              >
-                <Square size={13} /> Stop
-              </button>
-            {/if}
-            {#if installed && component.definition.supported_actions.includes('remove')}
-              <button
-                class="btn btn-sm btn-secondary text-red-500"
-                disabled={busy}
-                onclick={() => createPlan(component, 'remove')}
-              >
-                <Trash2 size={13} /> Remove
-              </button>
-            {/if}
-          </div>
-        </article>
+                  <div class="mt-4 flex flex-wrap gap-2">
+                    {#if !installed && !degraded && component.definition.supported_actions.includes('install')}
+                      <button
+                        class="btn btn-sm btn-primary"
+                        disabled={busy}
+                        onclick={() => createPlan(component, 'install')}
+                      >
+                        <Download size={13} /> Install locally
+                      </button>
+                    {/if}
+                    {#if degraded && component.definition.supported_actions.includes('repair')}
+                      <button
+                        class="btn btn-sm btn-primary"
+                        disabled={busy}
+                        onclick={() => createPlan(component, 'repair')}
+                      >
+                        <RotateCcw size={13} /> Repair
+                      </button>
+                    {/if}
+                    {#if installed && component.definition.supported_actions.includes('update')}
+                      <button
+                        class="btn btn-sm btn-secondary"
+                        disabled={busy}
+                        onclick={() => createPlan(component, 'update')}
+                      >
+                        <RefreshCw size={13} /> Check/update
+                      </button>
+                    {/if}
+                    {#if runtimeState.action === 'start'}
+                      <button
+                        class="btn btn-sm btn-secondary"
+                        disabled={busy}
+                        onclick={() => runtime(component, 'start')}
+                      >
+                        <Play size={13} /> Start
+                      </button>
+                    {/if}
+                    {#if runtimeState.action === 'stop'}
+                      <button
+                        class="btn btn-sm btn-secondary"
+                        disabled={busy}
+                        onclick={() => runtime(component, 'stop')}
+                      >
+                        <Square size={13} /> Stop
+                      </button>
+                    {/if}
+                    {#if installed && component.definition.supported_actions.includes('remove')}
+                      <button
+                        class="btn btn-sm btn-secondary text-red-500"
+                        disabled={busy}
+                        onclick={() => createPlan(component, 'remove')}
+                      >
+                        <Trash2 size={13} /> Remove
+                      </button>
+                    {/if}
+                  </div>
+                </article>
+              {/each}
+            </div>
+          </section>{/if}
       {/each}
     </div>
 

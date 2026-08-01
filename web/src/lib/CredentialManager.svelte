@@ -34,13 +34,26 @@
         credentialApi.list<CredentialProfile>(),
         credentialApi.backends<CredentialBackendProfile>()
       ]);
-      items = credentialPayload.items;
-      credentialBackends = backendPayload.items;
-      for (const item of items) {
-        selectedBackends[item.id] ??= item.credential_backend || 'database';
-        references[item.id] ??= item.credential_reference || '';
-        deletePrevious[item.id] ??= false;
+      const nextItems = credentialPayload.items;
+      const nextValues = { ...values };
+      const nextBackends = { ...selectedBackends };
+      const nextReferences = { ...references };
+      const nextDeletePrevious = { ...deletePrevious };
+      for (const item of nextItems) {
+        nextValues[item.id] ??= '';
+        nextBackends[item.id] ??= item.credential_backend || 'database';
+        nextReferences[item.id] ??= item.credential_reference || '';
+        nextDeletePrevious[item.id] ??= false;
       }
+      // Every child binding must have a concrete value before the cards mount.
+      // Svelte rejects an undefined parent binding when a $bindable prop has a
+      // fallback, which previously left this tab blank after its heading.
+      values = nextValues;
+      selectedBackends = nextBackends;
+      references = nextReferences;
+      deletePrevious = nextDeletePrevious;
+      credentialBackends = backendPayload.items;
+      items = nextItems;
       error = '';
     } catch (caught) {
       error = errorMessage(caught);

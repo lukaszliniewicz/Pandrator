@@ -3,8 +3,10 @@
   import { page } from '$app/state';
   import { onMount } from 'svelte';
   import {
+    Check,
     CheckCircle2,
     CircleAlert,
+    Copy,
     Download,
     Eye,
     FileAudio,
@@ -52,6 +54,7 @@
   let error = $state('');
   let preview = $state<ArtifactRecord | null>(null);
   let deleting = $state<Record<string, boolean>>({});
+  let copiedPath = $state('');
   const outputContext = $derived(
     outputProfile?.context && typeof outputProfile.context === 'object'
       ? (outputProfile.context as Record<string, unknown>)
@@ -59,6 +62,20 @@
   );
   const hasSourceVideo = $derived(Boolean(outputContext.has_source_video));
   const hasSourceAudio = $derived(Boolean(outputContext.has_source_audio));
+  const outputGroups = $derived([
+    {
+      label: 'Audio and video',
+      items: artifacts.filter((item) =>
+        /^(audio|video)\//.test(String(item.mime_type ?? ''))
+      )
+    },
+    {
+      label: 'Subtitles and documents',
+      items: artifacts.filter(
+        (item) => !/^(audio|video)\//.test(String(item.mime_type ?? ''))
+      )
+    }
+  ]);
   type SaveOutputProfile = () => Promise<{
     output: Record<string, unknown>;
     audio: Record<string, unknown>;
@@ -214,6 +231,48 @@
       artifact.role === 'export' ||
       artifact.role.startsWith('export_')
     );
+  }
+  function outputName(artifact: ArtifactRecord) {
+    const extension = artifactFilename(artifact).match(/\.[^.]+$/)?.[0] ?? '';
+    if (
+      [
+        'assembled_audio',
+        'audiobook_audio',
+        'dubbing_audio',
+        'output_assembly',
+        'rvc_audio'
+      ].includes(artifact.role)
+    )
+      return `${session?.name ?? 'Session'} — assembled audio${extension}`;
+    if (artifact.role.startsWith('export_subtitle_'))
+      return `${session?.name ?? 'Session'} — ${artifactRoleLabel(artifact.role).toLowerCase()}${extension}`;
+    if (artifact.role.startsWith('export_text_'))
+      return `${session?.name ?? 'Session'} — ${artifactRoleLabel(artifact.role).toLowerCase()}${extension}`;
+    return artifactFilename(artifact);
+  }
+  async function copyAbsolutePath(artifact: ArtifactRecord) {
+    const path = String(artifact.path ?? '').trim();
+    if (!path) return;
+    try {
+      if (navigator.clipboard?.writeText)
+        await navigator.clipboard.writeText(path);
+      else {
+        const field = document.createElement('textarea');
+        field.value = path;
+        field.style.position = 'fixed';
+        field.style.opacity = '0';
+        document.body.append(field);
+        field.select();
+        document.execCommand('copy');
+        field.remove();
+      }
+      copiedPath = artifact.id;
+      window.setTimeout(() => {
+        if (copiedPath === artifact.id) copiedPath = '';
+      }, 1800);
+    } catch (caught) {
+      error = errorMessage(caught);
+    }
   }
   async function removeExport(artifact: ArtifactRecord) {
     if (
@@ -450,73 +509,97 @@
   />
   <section class="surface rounded-2xl p-5">
     <div class="eyebrow">Completed outputs</div>
-    <div class="mt-4 space-y-2">
-      {#each artifacts as artifact}<article
-          class="flex w-full flex-wrap items-center gap-3 rounded-xl border border-[var(--line)] px-4 py-3"
-        >
-          <div
-            class="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[var(--accent-soft)] text-[var(--accent)]"
-          >
-            {#if String(artifact.mime_type ?? '').startsWith('video/') || String(artifact.relative_path ?? '').endsWith('.mp4')}<FileVideo
-                size={19}
-              />{:else if String(artifact.mime_type ?? '').startsWith('audio/')}<FileAudio
-                size={19}
-              />{:else}<FileText size={19} />{/if}
-          </div>
-          <button
-            onclick={() => {
-              preview = artifact;
-            }}
-            class="min-w-0 flex-1 text-left"
-            ><div class="flex min-w-0 flex-wrap items-baseline gap-x-2">
-              <strong class="truncate">{artifactFilename(artifact)}</strong
-              ><span class="muted text-xs"
-                >{artifactRoleLabel(artifact.role)}</span
+    {#if artifacts.length}<div class="mt-4 space-y-5">
+        {#each outputGroups as group}
+          {#if group.items.length}<div>
+              <h3
+                class="muted mb-2 text-xs font-semibold uppercase tracking-wide"
               >
-            </div>
-            <div class="muted mt-1 flex flex-wrap gap-x-2 gap-y-1 text-xs">
-              <time datetime={artifact.created_at}
-                >{new Date(artifact.created_at).toLocaleString()}</time
-              ><span>· {artifact.mime_type || artifact.kind || 'File'}</span
-              >{#if artifact.size_bytes != null}<span
-                  >· {formatBytes(artifact.size_bytes)}</span
-                >{/if}<span class="max-w-full truncate"
-                >· {artifact.relative_path}</span
-              >
-            </div></button
-          >
-          <div class="ml-auto flex items-center gap-1">
-            <button
-              onclick={() => {
-                preview = artifact;
-              }}
-              class="rounded-lg p-2 hover:bg-[var(--accent-soft)]"
-              title="Preview output"
-              aria-label={`Preview ${artifactFilename(artifact)}`}
-              ><Eye size={16} /></button
-            ><a
-              href={`/api/v1/artifacts/${artifact.id}/content`}
-              download={artifactFilename(artifact)}
-              class="rounded-lg p-2 hover:bg-[var(--accent-soft)]"
-              title="Download output"
-              aria-label={`Download ${artifactFilename(artifact)}`}
-              ><Download size={16} /></a
-            >{#if canRemove(artifact)}<button
-                onclick={() => removeExport(artifact)}
-                disabled={deleting[artifact.id]}
-                aria-label={`Remove export ${artifactFilename(artifact)}`}
-                title="Remove export"
-                class="rounded-lg p-2 text-red-500 hover:bg-red-500/10 disabled:opacity-50"
-                >{#if deleting[artifact.id]}<LoaderCircle
-                    class="animate-spin"
-                    size={16}
-                  />{:else}<Trash2 size={16} />{/if}</button
-              >{/if}
-          </div>
-        </article>{:else}<p class="muted text-sm">
-          No completed outputs yet.
-        </p>{/each}
-    </div>
+                {group.label}
+              </h3>
+              <div class="space-y-2">
+                {#each group.items as artifact}<article
+                    class="flex w-full flex-wrap items-center gap-3 rounded-xl border border-[var(--line)] px-4 py-3"
+                  >
+                    <div
+                      class="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[var(--accent-soft)] text-[var(--accent)]"
+                    >
+                      {#if String(artifact.mime_type ?? '').startsWith('video/')}<FileVideo
+                          size={19}
+                        />{:else if String(artifact.mime_type ?? '').startsWith('audio/')}<FileAudio
+                          size={19}
+                        />{:else}<FileText size={19} />{/if}
+                    </div>
+                    <button
+                      onclick={() => (preview = artifact)}
+                      class="min-w-0 flex-1 text-left"
+                    >
+                      <div
+                        class="flex min-w-0 flex-wrap items-baseline gap-x-2"
+                      >
+                        <strong class="truncate">{outputName(artifact)}</strong>
+                        <span class="muted text-xs"
+                          >{artifactRoleLabel(artifact.role)}</span
+                        >
+                      </div>
+                      <div
+                        class="muted mt-1 flex flex-wrap gap-x-2 gap-y-1 text-xs"
+                      >
+                        <time datetime={artifact.created_at}
+                          >{new Date(
+                            artifact.created_at
+                          ).toLocaleString()}</time
+                        ><span
+                          >· {artifact.mime_type ||
+                            artifact.kind ||
+                            'File'}</span
+                        >{#if artifact.size_bytes != null}<span
+                            >· {formatBytes(artifact.size_bytes)}</span
+                          >{/if}
+                      </div>
+                    </button>
+                    <div class="ml-auto flex items-center gap-1">
+                      <button
+                        onclick={() => (preview = artifact)}
+                        class="rounded-lg p-2 hover:bg-[var(--accent-soft)]"
+                        title="Preview output"
+                        aria-label={`Preview ${outputName(artifact)}`}
+                        ><Eye size={16} /></button
+                      >{#if artifact.path}<button
+                          onclick={() => copyAbsolutePath(artifact)}
+                          class="rounded-lg p-2 hover:bg-[var(--accent-soft)]"
+                          title="Copy absolute server path"
+                          aria-label={`Copy absolute path for ${outputName(artifact)}`}
+                          >{#if copiedPath === artifact.id}<Check
+                              class="text-[var(--success)]"
+                              size={16}
+                            />{:else}<Copy size={16} />{/if}</button
+                        >{/if}<a
+                        href={`/api/v1/artifacts/${artifact.id}/content`}
+                        download={artifactFilename(artifact)}
+                        class="rounded-lg p-2 hover:bg-[var(--accent-soft)]"
+                        title="Download output"
+                        aria-label={`Download ${outputName(artifact)}`}
+                        ><Download size={16} /></a
+                      >{#if canRemove(artifact)}<button
+                          onclick={() => removeExport(artifact)}
+                          disabled={deleting[artifact.id]}
+                          aria-label={`Remove export ${outputName(artifact)}`}
+                          title="Remove export"
+                          class="rounded-lg p-2 text-red-500 hover:bg-red-500/10 disabled:opacity-50"
+                          >{#if deleting[artifact.id]}<LoaderCircle
+                              class="animate-spin"
+                              size={16}
+                            />{:else}<Trash2 size={16} />{/if}</button
+                        >{/if}
+                    </div>
+                  </article>{/each}
+              </div>
+            </div>{/if}
+        {/each}
+      </div>{:else}<p class="muted mt-4 text-sm">
+        No completed outputs yet.
+      </p>{/if}
   </section>
 </div>
 {#if preview}<ArtifactPreview

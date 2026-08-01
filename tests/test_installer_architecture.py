@@ -271,6 +271,7 @@ class InstallerArchitectureTests(unittest.TestCase):
         )
 
         self.assertEqual(default_selection.kobold_qwen_quantization, "f16")
+        self.assertEqual(default_selection.kobold_qwen_model_size, "1.7b")
         self.assertEqual(
             qwen_model_variants(both_selection.kobold_qwen_initial_model),
             ("base", "customvoice"),
@@ -290,6 +291,7 @@ class InstallerArchitectureTests(unittest.TestCase):
             ["--qwen-model-size", "1.7b", "--qwen-initial-model", "both"]
         )
         self.assertEqual(cli_defaults.qwen_quantization, "f16")
+        self.assertEqual(cli_defaults.qwen_model_size, "1.7b")
         self.assertEqual(cli_both.qwen_initial_model, "both")
 
     def test_external_subprocess_environment_restores_pre_bundle_library_path(self):
@@ -1159,7 +1161,7 @@ class InstallerArchitectureTests(unittest.TestCase):
                 "--port",
                 "8042",
                 "--model-size",
-                "0.6b",
+                "1.7b",
                 "--quantization",
                 "f16",
                 "--initial-model",

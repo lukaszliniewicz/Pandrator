@@ -154,6 +154,14 @@ class WebParityWorkspaceTests(unittest.TestCase):
         )
         extension["source_library"].attach(voiceover["id"], asset.id)
 
+        cleaning = self.client.post(
+            f"/api/v1/sessions/{voiceover['id']}/agent-runs",
+            json={"source_artifact_id": artifact.id, "settings": {}},
+            headers=self.headers,
+        )
+        self.assertEqual(422, cleaning.status_code, cleaning.get_json())
+        self.assertEqual("unsupported_source", cleaning.get_json()["error"]["code"])
+
         video_output = self.client.get(f"/api/v1/sessions/{voiceover['id']}/settings/output").get_json()
         self.assertEqual("video", video_output["context"]["source_profile"])
         self.assertTrue(video_output["context"]["has_source_video"])
@@ -166,16 +174,22 @@ class WebParityWorkspaceTests(unittest.TestCase):
         coerced = self.client.put(
             f"/api/v1/sessions/{voiceover['id']}/settings/output",
             json={"value": {"format": "m4b", "album": "Not applicable", "genre": "Audiobook"}},
-            headers={**self.headers, "If-Match": '"0"'},
+            headers={
+                **self.headers,
+                "If-Match": '"0"',
+                "Idempotency-Key": "video-output-profile",
+            },
         ).get_json()
         self.assertEqual("wav", coerced["effective"]["format"])
+        self.assertEqual("video", coerced["context"]["source_profile"])
+        self.assertTrue(coerced["context"]["has_source_video"])
         self.assertNotIn("album", coerced["override"])
         self.assertNotIn("genre", coerced["override"])
         self.assertNotIn("format", coerced["override"])
 
         audio = self.client.get(f"/api/v1/sessions/{voiceover['id']}/settings/audio").get_json()
-        self.assertEqual(2000, audio["effective"]["synchronization_delay_ms"])
-        self.assertEqual(1.15, audio["effective"]["synchronization_speed"])
+        self.assertEqual(800, audio["effective"]["synchronization_delay_ms"])
+        self.assertEqual(1.2, audio["effective"]["synchronization_speed"])
 
     def test_export_contract_does_not_resurrect_a_detached_managed_source(self):
         voiceover = self.create_session(

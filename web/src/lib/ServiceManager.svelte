@@ -245,6 +245,9 @@
       .includes(String(payload.default_service ?? '').toLowerCase());
   const isManaged = (service: TtsService) =>
     service.connection_mode === 'managed_local';
+  const externalServices = $derived(
+    (payload.services ?? []).filter((service) => !isManaged(service))
+  );
   const managedHealth = (service: TtsService) =>
     service.manager_service?.health?.state ?? 'stopped';
 
@@ -514,11 +517,11 @@
 <section>
   <div class="flex flex-wrap items-end justify-between gap-4">
     <div>
-      <div class="eyebrow">TTS services</div>
-      <h2 class="mt-1 text-2xl font-semibold">Speech connections</h2>
+      <div class="eyebrow">External speech services</div>
+      <h2 class="mt-1 text-2xl font-semibold">Connected endpoints</h2>
       <p class="muted mt-2 max-w-2xl text-sm">
-        Manage endpoints, API keys, provider defaults, and model catalogues
-        here. Browse and preview pre-built voices in the Voice Library.
+        Manage remote or independently hosted endpoints, API keys, defaults, and
+        model catalogues here. Local installations live in the Local tab.
       </p>
     </div>
     <div class="flex flex-wrap gap-2">
@@ -542,7 +545,7 @@
       {error}
     </p>{/if}
   <div class="mt-5 grid gap-3 md:grid-cols-2">
-    {#each payload.services ?? [] as service}
+    {#each externalServices as service}
       <article class="rounded-2xl border border-[var(--line)] p-4">
         <div class="flex items-center gap-3">
           <div
@@ -614,14 +617,14 @@
               <a
                 class="btn btn-sm btn-primary"
                 data-sveltekit-reload
-                href={`/providers?tab=local#component-${service.manager_component_id}`}
+                href={`/providers?tab=speech&speech=local#component-${service.manager_component_id}`}
                 >Install locally</a
               >
             {:else if service.manager_component_state === 'degraded' && service.manager_supported_actions?.includes('repair')}
               <a
                 class="btn btn-sm btn-primary"
                 data-sveltekit-reload
-                href={`/providers?tab=local#component-${service.manager_component_id}`}
+                href={`/providers?tab=speech&speech=local#component-${service.manager_component_id}`}
                 >Repair local service</a
               >
             {:else if service.manager_component_state === 'present'}

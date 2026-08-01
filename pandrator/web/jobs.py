@@ -56,10 +56,25 @@ class JobQueue:
     @staticmethod
     def _changed_entities(job: Job, event_type: str) -> list[str]:
         entities = {"jobs"}
+        kind = str(job.kind or "")
         if event_type == "job.progress":
+            # Audio takes are committed incrementally while generation jobs are
+            # still running.  Advertise that resource change so an open review
+            # drawer can replace placeholders with playable takes as soon as
+            # each unit completes.  Other broad workflow resources remain
+            # terminal-only to avoid progress-event fan-out.
+            if (
+                kind.startswith("generation.")
+                or kind in {
+                    "audiobook.generate_audio",
+                    "dubbing.generate_audio",
+                    "workflow.continue",
+                }
+                or (kind == "rvc.convert" and bool(job.session_id))
+            ):
+                entities.add("generation")
             return sorted(entities)
 
-        kind = str(job.kind or "")
         if job.session_id:
             entities.add("workflow")
         if event_type in JobQueue.TERMINAL_EVENT_TYPES and (

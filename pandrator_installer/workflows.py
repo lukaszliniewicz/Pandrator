@@ -55,7 +55,12 @@ from .constants import (
     XTTS_FINETUNING_PYTHON_VERSION,
     XTTS_FINETUNING_TORCH_PACKAGE_SPECS,
 )
-from .models import InstallSelection, qwen_effective_model_size, qwen_model_variants
+from .models import (
+    DEFAULT_QWEN_MODEL_SIZE,
+    InstallSelection,
+    qwen_effective_model_size,
+    qwen_model_variants,
+)
 from .platforms import is_windows
 from .reporting import HeadlessReporter, NullReporter
 
@@ -146,7 +151,7 @@ class WorkflowMixin:
         crispasr_engine="whisper-large-v3",
         crispasr_model_quantization=None,
         kobold_qwen_backend="auto",
-        kobold_qwen_model_size="0.6b",
+        kobold_qwen_model_size=DEFAULT_QWEN_MODEL_SIZE,
         kobold_qwen_quantization="f16",
         kobold_qwen_initial_model="base",
     ):
@@ -879,7 +884,10 @@ class WorkflowMixin:
                         self.install_kobold_qwen_api_server(
                             kobold_qwen_repo_path,
                             backend=config.get('kobold_qwen_backend', 'auto') if kobold_qwen_gpu_support else 'cpu',
-                            model_size=config.get('kobold_qwen_model_size', '0.6b'),
+                            model_size=config.get(
+                                'kobold_qwen_model_size',
+                                DEFAULT_QWEN_MODEL_SIZE,
+                            ),
                             quantization=config.get('kobold_qwen_quantization', 'f16'),
                             initial_model=model_variant,
                             pixi_path=shared_pixi_path,

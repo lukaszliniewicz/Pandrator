@@ -34,6 +34,18 @@
   let loginError = $state('');
   let theme = $state<'light' | 'dark'>('light');
   let mobileOpen = $state(false);
+  let tabletRail = $state(false);
+
+  const compactSidebar = $derived(appState.sidebarCollapsed || tabletRail);
+  const renderSidebarLabels = $derived(
+    !appState.sidebarCollapsed || tabletRail
+  );
+  const applicationVersion = $derived(
+    String(
+      (appState.capabilities.application as { version?: unknown } | undefined)
+        ?.version ?? ''
+    ).trim()
+  );
 
   const navigation = [
     { href: '/', label: 'Home', icon: Home },
@@ -78,6 +90,13 @@
     appState.sidebarCollapsed =
       localStorage.getItem('pandrator-sidebar') === 'collapsed';
     appState.initialize();
+    const tabletQuery = matchMedia(
+      '(min-width: 768px) and (max-width: 1023px)'
+    );
+    const updateTabletRail = () => (tabletRail = tabletQuery.matches);
+    updateTabletRail();
+    tabletQuery.addEventListener('change', updateTabletRail);
+    return () => tabletQuery.removeEventListener('change', updateTabletRail);
   });
 
   $effect(() => {
@@ -148,7 +167,7 @@
 {:else}
   <div
     class="app-shell min-h-screen md:grid"
-    style={`grid-template-columns:${appState.sidebarCollapsed ? '5rem' : '17rem'} minmax(0,1fr);--sidebar-offset:${appState.sidebarCollapsed ? '5rem' : '17rem'}`}
+    style={`grid-template-columns:${compactSidebar ? '5rem' : '17rem'} minmax(0,1fr);--sidebar-offset:${compactSidebar ? '5rem' : '17rem'}`}
   >
     <button
       onclick={() => (mobileOpen = true)}
@@ -162,6 +181,7 @@
       ></button>{/if}
     <aside
       class:collapsed={appState.sidebarCollapsed}
+      class:tablet-rail={tabletRail}
       class:mobile-open={mobileOpen}
       class="app-sidebar fixed inset-y-0 left-0 z-50 flex w-[17rem] flex-col border-r border-[var(--line)] bg-[var(--paper-strong)] px-3 py-4 md:z-20 md:h-[100svh] md:w-auto"
     >
@@ -170,7 +190,7 @@
           src="/pandrator-logo.png"
           alt="Pandrator"
           class="size-11 shrink-0 rounded-2xl border border-[var(--line)] object-cover"
-        />{#if !appState.sidebarCollapsed}<div class="min-w-0 flex-1">
+        />{#if renderSidebarLabels}<div class="sidebar-label min-w-0 flex-1">
             <div class="font-semibold">Pandrator</div>
             <a
               href="https://github.com/lukaszliniewicz/Pandrator"
@@ -189,10 +209,10 @@
             href={item.href}
             onclick={() => (mobileOpen = false)}
             class:active={active(item.href)}
-            title={appState.sidebarCollapsed ? item.label : undefined}
+            title={compactSidebar ? item.label : undefined}
             class="nav-item flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold"
-            ><Icon size={19} />{#if !appState.sidebarCollapsed}<span
-                >{item.label}</span
+            ><Icon class="shrink-0" size={19} />{#if renderSidebarLabels}<span
+                class="sidebar-label">{item.label}</span
               >{/if}</a
           >{/each}
       </nav>
@@ -202,21 +222,21 @@
           class="nav-item flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold"
           >{#if theme === 'light'}<Moon size={19} />{:else}<Sun
               size={19}
-            />{/if}{#if !appState.sidebarCollapsed}<span
+            />{/if}{#if renderSidebarLabels}<span class="sidebar-label"
               >{theme === 'light' ? 'Dark mode' : 'Light mode'}</span
             >{/if}</button
         >
         <button
           onclick={() => appState.logout()}
           class="nav-item flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold"
-          ><LogOut size={19} />{#if !appState.sidebarCollapsed}<span
-              >Sign out</span
+          ><LogOut class="shrink-0" size={19} />{#if renderSidebarLabels}<span
+              class="sidebar-label">Sign out</span
             >{/if}</button
         >
         <button
           onclick={() =>
             (appState.sidebarCollapsed = !appState.sidebarCollapsed)}
-          class="nav-item hidden w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold md:flex"
+          class="sidebar-preference nav-item hidden w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold md:flex"
           >{#if appState.sidebarCollapsed}<ChevronRight
               size={19}
             />{:else}<ChevronLeft size={19} /><span>Collapse sidebar</span
@@ -228,7 +248,7 @@
       class="content-column flex min-h-screen min-w-0 flex-col md:col-start-2"
     >
       <main
-        class="min-w-0 flex-1 px-5 pb-12 pt-20 sm:px-8 md:px-10 md:pt-9 xl:px-14"
+        class="min-w-0 flex-1 px-5 pb-12 pt-20 sm:px-8 md:px-6 md:pt-9 lg:px-10 xl:px-14"
       >
         {#if appState.securityWarning}<div
             role="alert"
@@ -242,7 +262,10 @@
       <footer
         class="app-footer mx-5 flex flex-wrap items-center justify-between gap-3 border-t border-[var(--line)] py-5 text-xs sm:mx-8 md:mx-10 xl:mx-14"
       >
-        <span class="muted">Pandrator · created by Łukasz Liniewicz</span><a
+        <span class="muted"
+          >Pandrator{applicationVersion ? ` v${applicationVersion}` : ''} · created
+          by Łukasz Liniewicz</span
+        ><a
           href="https://github.com/lukaszliniewicz/Pandrator"
           target="_blank"
           rel="noreferrer"
@@ -314,6 +337,38 @@
     .app-footer {
       margin-left: 2.5rem;
       margin-right: 2.5rem;
+    }
+  }
+  @media (min-width: 768px) and (max-width: 1023px) {
+    .app-sidebar.tablet-rail {
+      width: 5rem;
+      overflow-x: hidden;
+      box-shadow: none;
+    }
+    .app-sidebar.tablet-rail:hover,
+    .app-sidebar.tablet-rail:focus-within {
+      width: 17rem;
+      box-shadow: var(--shadow);
+    }
+    .app-sidebar.tablet-rail:not(:hover):not(:focus-within) .sidebar-brand,
+    .app-sidebar.tablet-rail:not(:hover):not(:focus-within) .nav-item {
+      justify-content: center;
+      gap: 0;
+      padding-left: 0;
+      padding-right: 0;
+    }
+    .app-sidebar.tablet-rail:not(:hover):not(:focus-within) .sidebar-label {
+      width: 0;
+      overflow: hidden;
+      opacity: 0;
+      pointer-events: none;
+      white-space: nowrap;
+    }
+    .app-sidebar.tablet-rail .sidebar-label {
+      transition: opacity 0.12s ease;
+    }
+    .app-sidebar.tablet-rail .sidebar-preference {
+      display: none;
     }
   }
   @media (prefers-reduced-motion: reduce) {

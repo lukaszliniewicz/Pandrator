@@ -458,6 +458,9 @@ class AutomationSecurityTests(unittest.TestCase):
         )
         self.assertEqual(200, settings.status_code)
         self.assertEqual(1, settings.get_json()["revision"])
+        self.assertEqual("test-model", settings.get_json()["effective"]["model"])
+        self.assertIn("builtin", settings.get_json())
+        self.assertIn("context", settings.get_json())
         self.assertEqual(settings.get_json(), replayed_settings.get_json())
         self.assertEqual(
             "true",

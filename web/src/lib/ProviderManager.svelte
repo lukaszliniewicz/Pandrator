@@ -7,6 +7,7 @@
     ChevronDown,
     CircleAlert,
     Pencil,
+    Play,
     Plus,
     RefreshCw,
     Settings2,
@@ -643,14 +644,12 @@
         class:opacity-60={!provider.enabled}
         class="surface overflow-hidden rounded-[1.5rem]"
       >
-        <header
-          class="flex flex-wrap items-center justify-between gap-4 border-b border-[var(--line)] p-5"
-        >
+        <header class="provider-header border-b border-[var(--line)] p-5">
           <button
             onclick={() =>
               (expandedProviders[provider.id] =
                 !expandedProviders[provider.id])}
-            class="flex min-w-0 flex-1 items-center gap-3 text-left"
+            class="provider-summary flex min-w-0 items-center gap-3 text-left"
             aria-expanded={Boolean(expandedProviders[provider.id])}
             ><ChevronDown
               class={`muted shrink-0 transition-transform ${expandedProviders[provider.id] ? 'rotate-180' : ''}`}
@@ -684,27 +683,40 @@
               </p>
             </div></button
           >
-          <div class="flex flex-wrap gap-2">
+          <div class="provider-actions flex flex-wrap gap-2">
             <button
               onclick={() => testProvider(provider.id)}
               disabled={!provider.enabled ||
                 !models[provider.id]?.some((item) => item.is_active)}
-              class="btn btn-sm btn-secondary">Test</button
+              class="btn btn-sm btn-secondary"
+              title={`Test ${provider.label}`}
+              aria-label={`Test ${provider.label}`}
+              ><Play size={14} /><span class="action-label">Test</span></button
             ><button
               onclick={() => refresh(provider.id)}
               disabled={!provider.enabled}
               class="btn btn-sm btn-secondary"
-              ><RefreshCw size={14} /> Discover</button
+              title={`Discover models for ${provider.label}`}
+              aria-label={`Discover models for ${provider.label}`}
+              ><RefreshCw size={14} /><span class="action-label">Discover</span
+              ></button
             ><button
               onclick={() => openProvider(provider)}
-              class="btn btn-sm btn-secondary"><Pencil size={14} /> Edit</button
+              class="btn btn-sm btn-secondary"
+              title={`Edit ${provider.label}`}
+              aria-label={`Edit ${provider.label}`}
+              ><Pencil size={14} /><span class="action-label">Edit</span
+              ></button
             ><button
               onclick={() => {
                 addModelProvider = provider.id;
                 modelId = '';
               }}
               class="btn btn-sm btn-secondary"
-              ><Plus size={14} /> Add model</button
+              title={`Add a model to ${provider.label}`}
+              aria-label={`Add a model to ${provider.label}`}
+              ><Plus size={14} /><span class="action-label">Add model</span
+              ></button
             ><button
               onclick={() => requestProviderDelete(provider)}
               aria-label={`Delete ${provider.label}`}
@@ -1197,5 +1209,36 @@
     font-size: 0.75rem;
     font-weight: 400;
     color: var(--ink);
+  }
+  .provider-header {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 1rem;
+  }
+  .provider-summary {
+    width: 100%;
+  }
+  .provider-actions {
+    justify-content: flex-end;
+  }
+  @media (max-width: 960px) {
+    .provider-header {
+      grid-template-columns: minmax(0, 1fr);
+      align-items: start;
+    }
+    .provider-actions {
+      width: 100%;
+    }
+  }
+  @media (max-width: 520px) {
+    .provider-actions .btn {
+      width: 2.25rem;
+      padding-left: 0.5rem;
+      padding-right: 0.5rem;
+    }
+    .provider-actions .action-label {
+      display: none;
+    }
   }
 </style>

@@ -78,29 +78,38 @@
 
   {#if activeTab === 'settings'}
     <div class="space-y-5">
-      <SettingsPanel {sessionId} section="text" title="Text processing" />
+      <SettingsPanel
+        {sessionId}
+        section="text"
+        title="Text processing"
+        collapsible
+      />
       <SettingsPanel
         {sessionId}
         section="stt"
         title="Speech recognition and VAD"
+        collapsible
       />
       <SettingsPanel
         {sessionId}
         section="subtitles"
         title="Subtitle composition"
         description="Viewer-facing cue limits are independent from dubbing speech blocks."
+        collapsible
       />
       <SettingsPanel
         {sessionId}
         section="correction"
         title="Subtitle correction"
         description="Creates a same-language revision intended to be proper subtitles."
+        collapsible
       />
       <SettingsPanel
         {sessionId}
         section="translation"
         title="Translation"
         description="May translate directly from source or from a corrected revision."
+        collapsible
       />
     </div>
   {:else}

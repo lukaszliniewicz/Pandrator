@@ -1,1 +1,0 @@
-import{a as m,f as t}from"../chunks/DoqMe4Lm.js";import"../chunks/Rf9zLiJ4.js";import{c as s,r as i}from"../chunks/Sfi6H7cG.js";import{A as c}from"../chunks/CR2wefQH.js";var d=t('<div class="mx-auto max-w-7xl"><!></div>');function f(a){var o=d(),r=s(o);c(r,{mode:"rvc",onback:()=>history.back()}),i(o),m(a,o)}export{f as component};

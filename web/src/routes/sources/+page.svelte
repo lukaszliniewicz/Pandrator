@@ -105,10 +105,8 @@
         accidental removal while a session still uses it.
       </p>
     </div>
-    <div class="flex items-center gap-4">
-      <label class="flex items-center gap-2 text-xs font-semibold"
-        ><input type="checkbox" bind:checked={showTrash} /> Show trash</label
-      ><label
+    <div class="flex items-center gap-3">
+      <label
         class="flex cursor-pointer items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-3 text-sm font-semibold text-white"
         ><Plus size={17} />{uploading
           ? `Uploading ${Math.round(progress * 100)}%`
@@ -117,6 +115,17 @@
           class="sr-only"
           onchange={upload}
         /></label
+      ><button
+        type="button"
+        role="switch"
+        aria-checked={showTrash}
+        onclick={() => (showTrash = !showTrash)}
+        class:active={showTrash}
+        class="trash-toggle"
+        title={showTrash ? 'Hide trashed sources' : 'Show trashed sources'}
+        ><Trash2 size={14} /><span>Trash</span><span class="toggle-track"
+          ><span></span></span
+        ></button
       >
     </div>
   </header>
@@ -259,6 +268,43 @@
   .action:disabled {
     cursor: not-allowed;
     opacity: 0.35;
+  }
+  .trash-toggle {
+    display: inline-flex;
+    min-height: 2.75rem;
+    align-items: center;
+    gap: 0.45rem;
+    border: 1px solid var(--line);
+    border-radius: 0.75rem;
+    padding: 0.55rem 0.7rem;
+    color: var(--muted);
+    font-size: 0.75rem;
+    font-weight: 700;
+  }
+  .trash-toggle.active {
+    color: var(--ink);
+    background: var(--accent-soft);
+  }
+  .toggle-track {
+    width: 1.75rem;
+    border-radius: 999px;
+    background: var(--line);
+    padding: 0.15rem;
+    transition: background 0.15s ease;
+  }
+  .toggle-track > span {
+    display: block;
+    width: 0.65rem;
+    height: 0.65rem;
+    border-radius: 999px;
+    background: var(--paper-strong);
+    transition: transform 0.15s ease;
+  }
+  .trash-toggle.active .toggle-track {
+    background: var(--accent);
+  }
+  .trash-toggle.active .toggle-track > span {
+    transform: translateX(0.8rem);
   }
   dd {
     margin-top: 0.2rem;

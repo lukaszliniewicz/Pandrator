@@ -7,6 +7,7 @@ import sys
 import tempfile
 
 from .catalog import COMPONENTS, PACKAGING_COMPONENT_PATHS
+from .models import DEFAULT_QWEN_MODEL_SIZE
 from .platforms import (
     normalized_machine,
     normalized_system,
@@ -62,7 +63,11 @@ def parse_launcher_cli_args(argv=None):
     )
     parser.add_argument('--crispasr-model-quantization', choices=('f16', 'q8_0', 'q5_0', 'q4_k'))
     parser.add_argument('--qwen-backend', choices=('auto', 'cpu', 'cuda', 'vulkan', 'metal'), default='auto')
-    parser.add_argument('--qwen-model-size', choices=('0.6b', '1.7b'), default='0.6b')
+    parser.add_argument(
+        '--qwen-model-size',
+        choices=('0.6b', '1.7b'),
+        default=DEFAULT_QWEN_MODEL_SIZE,
+    )
     parser.add_argument('--qwen-quantization', choices=('f16', 'q8_0'), default='f16')
     parser.add_argument(
         '--qwen-initial-model',

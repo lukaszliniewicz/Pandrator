@@ -565,9 +565,7 @@
   }}
 ></audio>
 
-<div
-  class="voice-manager mx-auto flex h-full min-h-0 w-full max-w-7xl flex-col overflow-hidden"
->
+<div class="voice-manager mx-auto flex w-full max-w-7xl flex-col">
   <button
     onclick={onback}
     class="muted mb-6 flex shrink-0 items-center gap-2 self-start text-sm font-semibold"
@@ -625,8 +623,8 @@
         {notice}
       </div>{/if}
 
-    <div class="grid min-h-0 flex-1 gap-5 lg:grid-cols-[20rem_1fr]">
-      <aside class="surface flex min-h-0 flex-col rounded-3xl p-4">
+    <div class="grid items-start gap-5 lg:grid-cols-[20rem_1fr]">
+      <aside class="surface flex flex-col rounded-3xl p-4">
         <div class="relative flex gap-2">
           <input
             bind:this={newNameInput}
@@ -653,7 +651,7 @@
               ></span>
             </div>{/if}
         </div>
-        <div class="mt-4 min-h-0 flex-1 space-y-1 overflow-auto">
+        <div class="mt-4 space-y-1">
           {#each voices as voice}<button
               onclick={() => choose(voice)}
               class:active={selected?.id === voice.id}
@@ -667,7 +665,7 @@
         </div>
       </aside>
 
-      <main class="surface min-h-0 overflow-auto rounded-3xl p-5 sm:p-7">
+      <main class="surface rounded-3xl p-5 sm:p-7">
         {#if selected}
           <div class="mb-6 flex flex-wrap items-center justify-between gap-4">
             <div>
@@ -951,7 +949,7 @@
       </main>
     </div>
   {:else}
-    <div class="min-h-0 flex-1 overflow-y-auto overscroll-contain pr-1">
+    <div>
       <PrebuiltVoiceLibrary initialService={requestedService} />
     </div>
   {/if}

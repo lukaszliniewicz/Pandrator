@@ -22,7 +22,12 @@ from typing import Any
 import psutil
 
 from .catalog import COMPONENTS
-from .models import InstallSelection, LaunchSelection, WorkspacePaths
+from .models import (
+    DEFAULT_QWEN_MODEL_SIZE,
+    InstallSelection,
+    LaunchSelection,
+    WorkspacePaths,
+)
 from .platforms import is_windows, resolve_launcher_workspace
 from .process_identity import (
     ProcessIdentityError,
@@ -172,7 +177,10 @@ def _selection(args) -> InstallSelection:
         crispasr_engine=str(getattr(args, "crispasr_engine", "whisper-large-v3") or "whisper-large-v3"),
         crispasr_model_quantization=getattr(args, "crispasr_model_quantization", None),
         kobold_qwen_backend=str(getattr(args, "qwen_backend", "auto") or "auto"),
-        kobold_qwen_model_size=str(getattr(args, "qwen_model_size", "0.6b") or "0.6b"),
+        kobold_qwen_model_size=str(
+            getattr(args, "qwen_model_size", DEFAULT_QWEN_MODEL_SIZE)
+            or DEFAULT_QWEN_MODEL_SIZE
+        ),
         kobold_qwen_quantization=str(getattr(args, "qwen_quantization", "f16") or "f16"),
         kobold_qwen_initial_model=str(getattr(args, "qwen_initial_model", "base") or "base"),
     )
@@ -736,7 +744,11 @@ def build_parser() -> argparse.ArgumentParser:
         )
         command.add_argument("--crispasr-model-quantization", choices=("f16", "q8_0", "q5_0", "q4_k"))
         command.add_argument("--qwen-backend", choices=("auto", "cpu", "cuda", "vulkan", "metal"), default="auto")
-        command.add_argument("--qwen-model-size", choices=("0.6b", "1.7b"), default="0.6b")
+        command.add_argument(
+            "--qwen-model-size",
+            choices=("0.6b", "1.7b"),
+            default=DEFAULT_QWEN_MODEL_SIZE,
+        )
         command.add_argument("--qwen-quantization", choices=("f16", "q8_0"), default="f16")
         command.add_argument("--qwen-initial-model", choices=("base", "customvoice", "both"), default="base")
         command.set_defaults(handler=handler)

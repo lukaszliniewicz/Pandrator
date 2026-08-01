@@ -10,6 +10,10 @@ from .catalog import INSTALL_COMPONENT_KEYS, resolve_dependencies
 
 
 PASSWORD_SCOPES = ("none", "local", "remote", "all")
+# Match the Manager catalogue. Explicit 0.6B selections remain supported for
+# Base-model voice cloning; this fallback is only for missing/invalid legacy
+# settings that predate persisted Qwen model-size choices.
+DEFAULT_QWEN_MODEL_SIZE = "1.7b"
 
 
 def normalize_password_scope(value: str | None, *, network_access: bool) -> str:
@@ -71,7 +75,7 @@ class InstallSelection:
     kobold_qwen: bool = False
     kobold_qwen_cpu: bool = False
     kobold_qwen_backend: str = "auto"
-    kobold_qwen_model_size: str = "0.6b"
+    kobold_qwen_model_size: str = DEFAULT_QWEN_MODEL_SIZE
     kobold_qwen_quantization: str = "f16"
     kobold_qwen_initial_model: str = "base"
     magpie: bool = False
@@ -90,7 +94,7 @@ class InstallSelection:
         crispasr_engine: str = "whisper-large-v3",
         crispasr_model_quantization: str | None = None,
         kobold_qwen_backend: str = "auto",
-        kobold_qwen_model_size: str = "0.6b",
+        kobold_qwen_model_size: str = DEFAULT_QWEN_MODEL_SIZE,
         kobold_qwen_quantization: str = "f16",
         kobold_qwen_initial_model: str = "base",
     ) -> "InstallSelection":
@@ -127,7 +131,9 @@ class InstallSelection:
             crispasr_engine=selected_crispasr_engine,
             crispasr_model_quantization=selected_crispasr_quantization,
             kobold_qwen_backend=str(kobold_qwen_backend or "auto").lower(),
-            kobold_qwen_model_size=str(kobold_qwen_model_size or "0.6b").lower(),
+            kobold_qwen_model_size=str(
+                kobold_qwen_model_size or DEFAULT_QWEN_MODEL_SIZE
+            ).lower(),
             kobold_qwen_quantization=str(kobold_qwen_quantization or "f16").lower(),
             kobold_qwen_initial_model=str(kobold_qwen_initial_model or "base").lower(),
             **{field.name: field.name in selected for field in fields(cls) if field.name not in (
@@ -209,8 +215,12 @@ def qwen_effective_model_size(selection: str, model_size: str) -> str:
     variants = qwen_model_variants(selection)
     if "customvoice" in variants:
         return "1.7b"
-    normalized = str(model_size or "0.6b").strip().lower()
-    return normalized if normalized in {"0.6b", "1.7b"} else "0.6b"
+    normalized = str(model_size or DEFAULT_QWEN_MODEL_SIZE).strip().lower()
+    return (
+        normalized
+        if normalized in {"0.6b", "1.7b"}
+        else DEFAULT_QWEN_MODEL_SIZE
+    )
 
 
 @dataclass(frozen=True)

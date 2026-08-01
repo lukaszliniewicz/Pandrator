@@ -82,6 +82,9 @@
     String(value('audio_mode', hasSourceAudio ? 'mixed' : 'dubbing_only'))
   );
   const subtitleMode = $derived(String(value('subtitle_mode', 'none')));
+  const outputFormat = $derived(String(value('format', 'wav')).toLowerCase());
+  const formatUsesBitrate = (format: unknown) =>
+    ['aac', 'm4b', 'mp3', 'opus'].includes(String(format ?? '').toLowerCase());
 
   const sharedSubtitleKeys = [
     'export_mode',
@@ -142,8 +145,13 @@
 
   function sanitizeOutput(source: Record<string, unknown>) {
     const allowed = applicableOutputKeys();
+    const selectedFormat = source.format ?? value('format', 'wav');
     return Object.fromEntries(
-      Object.entries(source).filter(([key]) => allowed.has(key))
+      Object.entries(source).filter(
+        ([key]) =>
+          allowed.has(key) &&
+          (key !== 'bitrate' || formatUsesBitrate(selectedFormat))
+      )
     );
   }
 
@@ -430,13 +438,13 @@
               ><option value="wav">PCM WAV</option></select
             ></label
           >
-          <label
-            >Bitrate<input
-              value={String(value('bitrate', '192k'))}
-              oninput={(event) => set('bitrate', event.currentTarget.value)}
-              class="field"
-            /></label
-          >
+          {#if formatUsesBitrate(outputFormat)}<label
+              >Bitrate<input
+                value={String(value('bitrate', '192k'))}
+                oninput={(event) => set('bitrate', event.currentTarget.value)}
+                class="field"
+              /></label
+            >{/if}
           <label
             >Language identifier<input
               value={String(value('language', ''))}
@@ -576,7 +584,16 @@
                     value="soft">Soft / selectable tracks</option
                   ><option value="burned">Burned into video</option></select
                 ></label
-              >{:else}<label
+              >{#if audioMode !== 'preserve'}<div
+                  class="rounded-xl bg-[var(--accent-soft)] p-3 text-xs"
+                >
+                  <strong>Video audio: AAC</strong>
+                  <p class="muted mt-1">
+                    New voiceover and mixed soundtracks are encoded as AAC for
+                    the final MP4.
+                  </p>
+                </div>{/if}
+            {:else}<label
                 >Audio format<select
                   value={String(value('format', 'wav'))}
                   onchange={(event) => set('format', event.currentTarget.value)}
@@ -587,13 +604,14 @@
                     >FLAC</option
                   ></select
                 ></label
-              ><label
-                >Bitrate<input
-                  value={String(value('bitrate', '192k'))}
-                  oninput={(event) => set('bitrate', event.currentTarget.value)}
-                  class="field"
-                /></label
-              >{/if}
+              >{#if formatUsesBitrate(outputFormat)}<label
+                  >Bitrate<input
+                    value={String(value('bitrate', '192k'))}
+                    oninput={(event) =>
+                      set('bitrate', event.currentTarget.value)}
+                    class="field"
+                  /></label
+                >{/if}{/if}
           {:else if exportMode === 'subtitles'}<label
               >Subtitle format<select
                 value={String(value('subtitle_format', 'srt'))}
@@ -720,7 +738,7 @@
                   min="0"
                   max="10000"
                   step="50"
-                  value={Number(audioValue('synchronization_delay_ms', 2000))}
+                  value={Number(audioValue('synchronization_delay_ms', 800))}
                   oninput={(event) =>
                     setAudio(
                       'synchronization_delay_ms',
@@ -735,7 +753,7 @@
                   min="1"
                   max="4"
                   step="0.01"
-                  value={Number(audioValue('synchronization_speed', 1.15))}
+                  value={Number(audioValue('synchronization_speed', 1.2))}
                   oninput={(event) =>
                     setAudio(
                       'synchronization_speed',

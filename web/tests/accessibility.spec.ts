@@ -42,6 +42,14 @@ test('core authenticated surfaces have no serious or critical WCAG violations', 
     await page.goto(route);
     await expect(page.locator('main')).toBeVisible();
     await expectNoBlockingViolations(page);
+    if (route === '/providers') {
+      await page.getByRole('button', { name: 'Other API keys' }).click();
+      await expect(
+        page.getByRole('heading', { name: 'Jina Reader' })
+      ).toBeVisible();
+      await expect(page.getByRole('heading', { name: 'DeepL' })).toBeVisible();
+      await expectNoBlockingViolations(page);
+    }
   }
 });
 

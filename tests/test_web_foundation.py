@@ -568,6 +568,33 @@ class DurableJobTests(unittest.TestCase):
         ]
         self.assertEqual("Processed 4 of 10 units", progress_events[-1].payload_json["detail"])
 
+    def test_generation_progress_invalidates_incremental_audio_takes(self):
+        session_record = self.sessions.create("Incremental generation")
+        job = self.queue.enqueue(
+            "audiobook.generate_audio",
+            {"generation_run_id": "run-one"},
+            session_id=session_record.id,
+        )
+        claimed = self.queue.claim("worker-one")
+
+        self.queue.heartbeat(
+            job.id,
+            "worker-one",
+            lease_generation=claimed.lease_generation,
+            progress=0.4,
+            detail="Generated segment 4 of 10",
+        )
+
+        progress_event = next(
+            event
+            for event in reversed(self.queue.events_for(job.id))
+            if event.event_type == "job.progress"
+        )
+        self.assertEqual(
+            ["generation", "jobs"],
+            progress_event.payload_json["changed_entities"],
+        )
+
     def test_job_progress_does_not_move_backward(self):
         job = self.queue.enqueue("noop")
         claimed = self.queue.claim("worker-one")
@@ -866,7 +893,9 @@ class WebApiTests(unittest.TestCase):
         deleted = self.client.get(
             f"/api/v1/artifacts?session_id={record['id']}&include_deleted=true"
         ).get_json()["items"]
-        self.assertEqual("deleted", next(item for item in deleted if item["id"] == exported.id)["state"])
+        deleted_export = next(item for item in deleted if item["id"] == exported.id)
+        self.assertEqual("deleted", deleted_export["state"])
+        self.assertEqual(str(output_path.resolve()), deleted_export["path"])
         self.assertEqual(404, self.client.get(f"/api/v1/artifacts/{exported.id}/content").status_code)
         self.assertEqual([], extension["artifacts"].reconcile(record["id"]))
 

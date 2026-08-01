@@ -694,12 +694,12 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     @require_auth
     def capabilities():
         force = request.args.get("refresh", "").lower() in {"1", "true", "yes"}
-        return jsonify(
-            capability_service.get(
-                local_mode=_is_loopback_address(request.remote_addr),
-                force=force,
-            )
+        payload = capability_service.get(
+            local_mode=_is_loopback_address(request.remote_addr),
+            force=force,
         )
+        payload["application"] = {"version": PANDRATOR_VERSION}
+        return jsonify(payload)
 
     @app.get("/pandrator-logo.png")
     def pandrator_logo():
@@ -1903,9 +1903,38 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             return rejected
         try:
             sessions.get(session_id)
-            artifacts.resolve(payload.source_artifact_id)
+            source_artifact, source_path = artifacts.resolve(
+                payload.source_artifact_id
+            )
         except KeyError:
             return error_response("not_found", "Session or source artifact not found.", 404)
+        attached_source = next(
+            (
+                item
+                for item in source_library.list(session_id=session_id)
+                if item.get("artifact_id") == source_artifact.id
+                and bool((item.get("attachment") or {}).get("is_current"))
+            ),
+            None,
+        )
+        if attached_source is None:
+            return error_response(
+                "invalid_source",
+                "Source cleaning requires a source attached to this session.",
+                422,
+            )
+        if source_path.suffix.lower() not in {
+            ".docx",
+            ".epub",
+            ".mobi",
+            ".pdf",
+            ".txt",
+        }:
+            return error_response(
+                "unsupported_source",
+                "Source cleaning is available for text documents, not audio, video, or subtitle sources.",
+                422,
+            )
         run_id = new_id()
         with database.session() as db_session:
             db_session.add(AgentRun(id=run_id, kind="source_cleaning", session_id=session_id, source_artifact_id=payload.source_artifact_id, status="queued", settings_json={**payload.settings, "agentic": True}))
@@ -2260,6 +2289,8 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         # the snapshot is assembled are replayed after this cursor.
         bounds = work.event_bounds()
         local_mode = _is_loopback_address(request.remote_addr)
+        capability_payload = capability_service.get(local_mode=local_mode)
+        capability_payload["application"] = {"version": PANDRATOR_VERSION}
         return jsonify(
             {
                 "cursor": bounds.latest,
@@ -2273,7 +2304,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                         for item in work.diagnostic_list(40)
                     ]
                 },
-                "capabilities": capability_service.get(local_mode=local_mode),
+                "capabilities": capability_payload,
             }
         )
 
@@ -2521,7 +2552,33 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             except ValueError:
                 limit = 500
             records = list(db_session.scalars(statement.limit(limit)).all())
-            return jsonify({"items": [_model_dict(item, ("id", "session_id", "kind", "role", "relative_path", "mime_type", "size_bytes", "content_hash", "state", "metadata_json", "created_at")) for item in records]})
+            items = []
+            for item in records:
+                serialized = _model_dict(
+                    item,
+                    (
+                        "id",
+                        "session_id",
+                        "kind",
+                        "role",
+                        "relative_path",
+                        "mime_type",
+                        "size_bytes",
+                        "content_hash",
+                        "state",
+                        "metadata_json",
+                        "created_at",
+                    ),
+                )
+                # The owner UI may copy the server-local path for completed
+                # outputs. The relative managed key remains the durable API
+                # identifier; this presentation field is intentionally
+                # read-only and never accepted back as an input path.
+                serialized["path"] = str(
+                    paths.managed_path(item.relative_path).resolve()
+                )
+                items.append(serialized)
+            return jsonify({"items": items})
 
     @app.delete("/api/v1/sessions/<session_id>/outputs/<artifact_id>")
     @require_auth

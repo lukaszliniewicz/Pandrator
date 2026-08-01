@@ -182,6 +182,30 @@ test('event cursor and batched invalidation avoid progress fan-out', async ({
     exactPath(`/api/v1/sessions/${session.id}/generation-segments`)
   ).toBeLessThanOrEqual(1);
   expect(exactPath('/api/v1/capabilities')).toBe(0);
+
+  requests.length = 0;
+  await page.evaluate((sessionId) => {
+    for (let index = 0; index < 5; index += 1) {
+      window.__emitPandratorEvent?.('job.progress', {
+        job_id: 'phase2-live-generation',
+        job_kind: 'audiobook.generate_audio',
+        session_id: sessionId,
+        status: 'running',
+        progress: (index + 1) / 10,
+        generation_run_id: 'phase2-live-run',
+        changed_entities: ['jobs', 'generation']
+      });
+    }
+  }, session.id);
+  await page.waitForTimeout(1100);
+
+  expect(exactPath(`/api/v1/sessions/${session.id}/generation-runs`)).toBe(1);
+  expect(
+    exactPath(`/api/v1/sessions/${session.id}/output-assemblies/latest`)
+  ).toBe(1);
+  expect(exactPath(`/api/v1/sessions/${session.id}/generation-segments`)).toBe(
+    1
+  );
 });
 
 test('four live event-stream tabs leave request capacity available', async ({

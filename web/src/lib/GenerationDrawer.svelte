@@ -6,6 +6,8 @@
     BookOpenText,
     Download,
     ListMusic,
+    Maximize2,
+    Minimize2,
     Pause,
     Play,
     RefreshCw,
@@ -968,7 +970,7 @@
   <aside
     class:full={mode === 'full'}
     class:half={mode === 'half'}
-    class="generation-drawer fixed inset-x-3 bottom-3 z-50 overflow-hidden rounded-2xl md:left-[calc(var(--sidebar-offset,5rem)+.75rem)]"
+    class="generation-drawer fixed inset-x-3 bottom-3 z-50 overflow-hidden rounded-2xl md:left-[calc(var(--sidebar-offset,5rem)+.35rem)] md:right-[.35rem]"
   >
     <header
       class="flex flex-wrap items-center gap-3 border-b border-[var(--line)] px-4 py-3"
@@ -1074,6 +1076,24 @@
           >
         {/if}
       </div>
+      {#if mode !== 'collapsed'}
+        <div class="view-switch" aria-label="Generation review view">
+          <button
+            onclick={() => (viewMode = 'segments')}
+            class:active={viewMode === 'segments'}
+            title="Segment review"
+            ><ListMusic size={13} /><span class="view-label">Segments</span
+            ></button
+          >
+          <button
+            onclick={() => (viewMode = 'reading')}
+            class:active={viewMode === 'reading'}
+            title="Reading view"
+            ><BookOpenText size={13} /><span class="view-label">Reading</span
+            ></button
+          >
+        </div>
+      {/if}
       <div class="ml-auto flex flex-wrap gap-2">
         {#if !run || ['completed', 'partial', 'failed', 'canceled'].includes(run.status)}
           <button onclick={() => start()} class="action primary"
@@ -1094,8 +1114,12 @@
         {#if mode !== 'collapsed'}
           <button
             onclick={() => (mode = mode === 'full' ? 'half' : 'full')}
-            class="action"
-            >{mode === 'full' ? 'Half height' : 'Full height'}</button
+            class="action icon-action"
+            title={mode === 'full' ? 'Use half height' : 'Use full height'}
+            aria-label={mode === 'full' ? 'Use half height' : 'Use full height'}
+            >{#if mode === 'full'}<Minimize2 size={14} />{:else}<Maximize2
+                size={14}
+              />{/if}</button
           >
         {/if}
       </div>
@@ -1127,9 +1151,10 @@
                 ['queued', 'running', 'pausing', 'cancel_requested'].includes(
                   selectedRun.status
                 )}
-              class="action text-red-500"
+              class="action icon-action text-red-500"
               title="Delete the selected run and its generated takes"
-              ><Trash2 size={14} /> Delete run</button
+              aria-label="Delete selected generation run"
+              ><Trash2 size={14} /></button
             >
             <span class="h-6 w-px bg-[var(--line)]"></span>
           {/if}
@@ -1145,18 +1170,6 @@
               {/each}
             </select>
           </label>
-          <div class="view-switch" aria-label="Generation review view">
-            <button
-              onclick={() => (viewMode = 'segments')}
-              class:active={viewMode === 'segments'}
-              ><ListMusic size={13} /> Segments</button
-            >
-            <button
-              onclick={() => (viewMode = 'reading')}
-              class:active={viewMode === 'reading'}
-              ><BookOpenText size={13} /> Reading</button
-            >
-          </div>
           <button
             onkeydown={keyboard}
             class="action"
@@ -1484,6 +1497,11 @@
   @media (prefers-reduced-motion: reduce) {
     .generation-drawer {
       transition: none;
+    }
+  }
+  @media (max-width: 720px) {
+    .view-label {
+      display: none;
     }
   }
 </style>

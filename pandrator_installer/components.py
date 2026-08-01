@@ -59,6 +59,7 @@ from .process_identity import (
     validated_process,
 )
 from .crispasr import CRISPASR_VERSION, detect_compute_backends, resolve_asset
+from .models import DEFAULT_QWEN_MODEL_SIZE
 
 
 class ComponentOperationsMixin:
@@ -951,7 +952,7 @@ class ComponentOperationsMixin:
         use_cpu=False,
         pixi_path=None,
         backend=None,
-        model_size="0.6b",
+        model_size=DEFAULT_QWEN_MODEL_SIZE,
         quantization="f16",
         initial_model="base",
     ):
@@ -1457,7 +1458,7 @@ class ComponentOperationsMixin:
         use_cpu=False,
         pixi_path=None,
         backend=None,
-        model_size="0.6b",
+        model_size=DEFAULT_QWEN_MODEL_SIZE,
         quantization="f16",
         initial_model="base",
     ):

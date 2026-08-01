@@ -4,6 +4,7 @@
     ChevronRight,
     CircleAlert,
     Clock3,
+    Eye,
     LoaderCircle,
     Play,
     Settings2,
@@ -206,6 +207,14 @@
         >
           <Settings2 size={16} /> Settings
         </button>
+        {#if stage.key === 'export' && stage.artifact}
+          <button
+            onclick={onpreview}
+            class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3.5 py-2.5 text-sm font-semibold"
+          >
+            <Eye size={16} /> Preview latest
+          </button>
+        {/if}
         {#if workspaceMode === 'review' || stage.key === 'export'}
           {#if stage.status === 'running'}
             <button
@@ -221,7 +230,7 @@
             >
               <Play size={16} />
               {stage.key === 'export'
-                ? 'Open export'
+                ? 'Export now'
                 : stage.artifact
                   ? 'Run again'
                   : 'Run now'}

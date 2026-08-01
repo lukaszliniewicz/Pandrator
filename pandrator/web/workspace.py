@@ -262,8 +262,8 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "fade_enabled": False,
         "fade_in_ms": 0,
         "fade_out_ms": 0,
-        "synchronization_delay_ms": 2000,
-        "synchronization_speed": 1.15,
+        "synchronization_delay_ms": 800,
+        "synchronization_speed": 1.2,
         "synchronization_sentence_gap_ms": 100,
     },
     "rvc": {"enabled": False, "model": "", "pitch": 0, "filter_radius": 3, "index_rate": 0.3, "volume_envelope": 1.0, "protect": 0.3, "f0_method": "rmvpe"},
@@ -509,91 +509,147 @@ class WorkspaceSettingsService:
     def get(self, session_id: str, section: str) -> dict[str, Any]:
         section = self._validate_section(section)
         with self.database.session() as session:
-            session_record = session.get(SessionRecord, session_id)
-            if session_record is None:
-                raise KeyError(session_id)
-            global_record = session.get(AppSetting, f"defaults.{section}")
-            override = session.get(SessionSetting, (session_id, section))
-            global_value = global_record.value_json if global_record and isinstance(global_record.value_json, dict) else {}
-            override_value = override.value_json if override else {}
-            source_language = str(session_record.source_language or "auto")
-            target_language = str(session_record.target_language or "")
-            outcome = session.get(OutcomePlan, session_id)
-            outcome_value = outcome.value_json if outcome and isinstance(outcome.value_json, dict) else {}
-            inputs = outcome_value.get("inputs") if isinstance(outcome_value.get("inputs"), dict) else {}
-            generation_input = str(inputs.get("generation") or "").strip().lower()
-            if not generation_input:
-                has_translation = session.scalar(
-                    select(Artifact.id).where(
+            return self.get_in_session(session, session_id, section)
+
+    def get_in_session(
+        self,
+        session: Session,
+        session_id: str,
+        section: str,
+    ) -> dict[str, Any]:
+        """Return the complete settings representation from one transaction."""
+
+        section = self._validate_section(section)
+        session_record = session.get(SessionRecord, session_id)
+        if session_record is None:
+            raise KeyError(session_id)
+        global_record = session.get(AppSetting, f"defaults.{section}")
+        override = session.get(SessionSetting, (session_id, section))
+        global_value = (
+            global_record.value_json
+            if global_record and isinstance(global_record.value_json, dict)
+            else {}
+        )
+        override_value = override.value_json if override else {}
+        source_language = str(session_record.source_language or "auto")
+        target_language = str(session_record.target_language or "")
+        outcome = session.get(OutcomePlan, session_id)
+        outcome_value = (
+            outcome.value_json
+            if outcome and isinstance(outcome.value_json, dict)
+            else {}
+        )
+        inputs = (
+            outcome_value.get("inputs")
+            if isinstance(outcome_value.get("inputs"), dict)
+            else {}
+        )
+        generation_input = str(inputs.get("generation") or "").strip().lower()
+        if not generation_input:
+            has_translation = (
+                session.scalar(
+                    select(Artifact.id)
+                    .where(
                         Artifact.session_id == session_id,
                         Artifact.role == "translation",
                         Artifact.state == "current",
-                    ).limit(1)
-                ) is not None
-                generation_input = "translation" if has_translation else "source"
-            speech_language = (
-                target_language
-                if generation_input == "translation" and target_language
-                else source_language if source_language != "auto" else ""
+                    )
+                    .limit(1)
+                )
+                is not None
             )
-            session_context: dict[str, Any] = {}
-            if section == "stt":
-                session_context = {"stt_language": source_language}
-            elif section == "translation":
-                session_context = {"source_language": source_language, **({"target_language": target_language} if target_language else {})}
-            elif section == "tts" and speech_language:
-                session_context = {"language": speech_language}
-            elif section == "output":
-                output_context = self._output_context(session, session_record)
-                # A subtitle workspace should produce a portable subtitle file
-                # without requiring users to opt out of the application-wide
-                # media defaults. Session overrides still win when somebody
-                # deliberately configures a different target.
-                if session_record.workflow_kind == "subtitles":
-                    session_context = {
-                        "export_mode": "subtitles",
-                        "audio_mode": "preserve",
-                        "subtitle_mode": "none",
-                        "subtitle_selection": "source",
-                    }
-                elif session_record.workflow_kind == "voiceover":
-                    session_context = {
-                        "export_mode": "media",
-                        "audio_mode": "mixed" if output_context["has_source_audio"] else "dubbing_only",
-                        "format": "wav",
-                    }
-                if speech_language:
-                    session_context["language"] = speech_language
-            effective = _merge(BUILTIN_DEFAULTS[section], global_value, session_context, override_value)
-            if section == "output" and session_record.workflow_kind == "subtitles":
-                if str(effective.get("export_mode") or "").lower() not in {"subtitles", "text"}:
-                    effective["export_mode"] = "subtitles"
-                effective["audio_mode"] = "preserve"
-                effective["subtitle_mode"] = "none"
-            elif section == "output" and session_record.workflow_kind == "voiceover":
-                if str(effective.get("export_mode") or "").lower() not in {"media", "subtitles", "text"}:
-                    effective["export_mode"] = "media"
-                if not output_context["has_source_audio"]:
-                    effective["audio_mode"] = "dubbing_only"
-                elif str(effective.get("audio_mode") or "").lower() not in {"preserve", "mixed", "dubbing_only"}:
-                    effective["audio_mode"] = "mixed"
-                if output_context["has_source_video"]:
-                    # Video exports use a lossless WAV assembly as their
-                    # intermediate. The final container controls its own codec.
-                    effective["format"] = "wav"
-                elif str(effective.get("format") or "").lower() not in {"wav", "mp3", "opus", "flac"}:
-                    effective["format"] = "wav"
-            return {
-                "section": section,
-                "builtin": deepcopy(BUILTIN_DEFAULTS[section]),
-                "global": deepcopy(global_value),
-                "override": deepcopy(override_value),
-                "session_context": session_context,
-                "effective": effective,
-                "context": output_context if section == "output" else {},
-                "revision": override.revision if override else 0,
-                "global_revision": global_record.revision if global_record else 0,
+            generation_input = "translation" if has_translation else "source"
+        speech_language = (
+            target_language
+            if generation_input == "translation" and target_language
+            else source_language if source_language != "auto" else ""
+        )
+        session_context: dict[str, Any] = {}
+        output_context: dict[str, Any] = {}
+        if section == "stt":
+            session_context = {"stt_language": source_language}
+        elif section == "translation":
+            session_context = {
+                "source_language": source_language,
+                **({"target_language": target_language} if target_language else {}),
             }
+        elif section == "tts" and speech_language:
+            session_context = {"language": speech_language}
+        elif section == "output":
+            output_context = self._output_context(session, session_record)
+            # A subtitle workspace should produce a portable subtitle file
+            # without requiring users to opt out of application-wide media
+            # defaults. Session overrides still win when deliberately set.
+            if session_record.workflow_kind == "subtitles":
+                session_context = {
+                    "export_mode": "subtitles",
+                    "audio_mode": "preserve",
+                    "subtitle_mode": "none",
+                    "subtitle_selection": "source",
+                }
+            elif session_record.workflow_kind == "voiceover":
+                session_context = {
+                    "export_mode": "media",
+                    "audio_mode": (
+                        "mixed"
+                        if output_context["has_source_audio"]
+                        else "dubbing_only"
+                    ),
+                    "format": "wav",
+                }
+            if speech_language:
+                session_context["language"] = speech_language
+        effective = _merge(
+            BUILTIN_DEFAULTS[section],
+            global_value,
+            session_context,
+            override_value,
+        )
+        if section == "output" and session_record.workflow_kind == "subtitles":
+            if str(effective.get("export_mode") or "").lower() not in {
+                "subtitles",
+                "text",
+            }:
+                effective["export_mode"] = "subtitles"
+            effective["audio_mode"] = "preserve"
+            effective["subtitle_mode"] = "none"
+        elif section == "output" and session_record.workflow_kind == "voiceover":
+            if str(effective.get("export_mode") or "").lower() not in {
+                "media",
+                "subtitles",
+                "text",
+            }:
+                effective["export_mode"] = "media"
+            if not output_context["has_source_audio"]:
+                effective["audio_mode"] = "dubbing_only"
+            elif str(effective.get("audio_mode") or "").lower() not in {
+                "preserve",
+                "mixed",
+                "dubbing_only",
+            }:
+                effective["audio_mode"] = "mixed"
+            if output_context["has_source_video"]:
+                # Video uses a lossless assembly intermediate; the final MP4
+                # path encodes new audio as AAC when replacement/mixing occurs.
+                effective["format"] = "wav"
+            elif str(effective.get("format") or "").lower() not in {
+                "wav",
+                "mp3",
+                "opus",
+                "flac",
+            }:
+                effective["format"] = "wav"
+        return {
+            "section": section,
+            "builtin": deepcopy(BUILTIN_DEFAULTS[section]),
+            "global": deepcopy(global_value),
+            "override": deepcopy(override_value),
+            "session_context": session_context,
+            "effective": effective,
+            "context": output_context,
+            "revision": override.revision if override else 0,
+            "global_revision": global_record.revision if global_record else 0,
+        }
 
     def update(
         self,
@@ -606,13 +662,14 @@ class WorkspaceSettingsService:
     ) -> dict[str, Any]:
         section = self._validate_section(section)
         if db_session is not None:
-            return self.update_in_session(
+            self.update_in_session(
                 db_session,
                 session_id,
                 section,
                 expected_revision,
                 value,
             )
+            return self.get_in_session(db_session, session_id, section)
         with self.database.session() as session:
             result = self.update_in_session(
                 session,
