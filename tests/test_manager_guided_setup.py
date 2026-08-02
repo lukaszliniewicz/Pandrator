@@ -360,6 +360,24 @@ class ManagedApplicationLaunchTests(unittest.TestCase):
         self.assertIsNotNone(spec)
         model_size_index = spec.arguments.index("--model-size")
         self.assertEqual("1.7b", spec.arguments[model_size_index + 1])
+        self.assertEqual("tcp", spec.readiness.kind)
+        self.assertEqual(8042, spec.readiness.port)
+        self.assertIsNone(spec.readiness.url)
+        self.assertTrue(
+            spec.environment["PANDRATOR_QWEN_STATE_DIR"].endswith(
+                str(Path("state") / "services" / "qwen_tts")
+            )
+        )
+        self.assertTrue(
+            spec.environment["PANDRATOR_QWEN_MODELS_DIR"].endswith(
+                str(Path("data") / "models" / "qwen_tts")
+            )
+        )
+        self.assertTrue(
+            spec.environment["PANDRATOR_QWEN_BIN_DIR"].endswith(
+                str(Path("data") / "runtime" / "qwen_tts")
+            )
+        )
 
     def test_kokoro_and_voxcpm_have_manager_owned_runtime_contracts(self):
         from pandrator_manager.models import ResolvedComponentState

@@ -315,6 +315,7 @@ def component_runtime_spec(
         arguments: tuple[str, ...],
         expected_json: dict | None = None,
         environment: dict[str, str] | None = None,
+        readiness: HealthProbeSpec | None = None,
         startup_timeout: float = 30 * 60,
     ) -> ManagedProcessSpec:
         manifest = root / "pyproject.toml"
@@ -336,7 +337,8 @@ def component_runtime_spec(
             cwd=str(root),
             environment={**common_environment, **(environment or {})},
             ports=(port,),
-            readiness=HealthProbeSpec(
+            readiness=readiness
+            or HealthProbeSpec(
                 kind="http",
                 url=f"http://127.0.0.1:{port}/health",
                 expected_json=expected_json or {"status": "ok"},
@@ -380,6 +382,7 @@ def component_runtime_spec(
             ),
         )
     if component_id == "qwen_tts":
+        qwen_state = layout.state / "services" / "qwen_tts"
         return python_bootstrap(
             service_id="tts.qwen",
             label="Qwen3 TTS",
@@ -398,7 +401,25 @@ def component_runtime_spec(
                 "--initial-model",
                 str(options.get("initial_model") or "base"),
             ),
-            expected_json={"status": "ok", "kobold_online": True},
+            environment={
+                "PANDRATOR_QWEN_STATE_DIR": str(qwen_state),
+                "PANDRATOR_QWEN_MODELS_DIR": str(
+                    layout.data / "models" / "qwen_tts"
+                ),
+                "PANDRATOR_QWEN_BIN_DIR": str(
+                    layout.data / "runtime" / "qwen_tts"
+                ),
+                "PANDRATOR_QWEN_VOICES_DIR": str(qwen_state / "voices"),
+            },
+            # Qwen synthesis is delegated to a single KoboldCpp child and may
+            # legitimately occupy the API's generation worker for minutes.
+            # The listening socket is the correct liveness contract; `/readyz`
+            # remains available to callers that need child readiness.
+            readiness=HealthProbeSpec(
+                kind="tcp",
+                host="127.0.0.1",
+                port=8042,
+            ),
         )
     if component_id == "magpie":
         return python_bootstrap(

@@ -255,6 +255,89 @@ class VoiceProviderPublishTests(unittest.TestCase):
             finally:
                 database.dispose()
 
+    def test_qwen_preflight_republishes_a_stale_managed_voice_once(self):
+        with tempfile.TemporaryDirectory() as directory:
+            paths = prepare_web_test_data_root(directory)
+            database = Database(paths.database)
+            try:
+                with database.session() as session:
+                    voice = Voice(
+                        name="My narrator",
+                        language="en",
+                        metadata_json={
+                            "providers": {
+                                "kobold_qwen": {
+                                    "voice_id": "My_narrator",
+                                    "status": "ready",
+                                }
+                            }
+                        },
+                    )
+                    session.add(voice)
+                    session.flush()
+                    voice_id = voice.id
+                handler = WorkflowHandlers(database, paths)
+                verified = set()
+                with mock.patch(
+                    "pandrator.logic.tts_handler.get_kobold_qwen_voice_catalog",
+                    return_value=[
+                        {"id": "Aiden", "type": "preset", "model": "Prebuilt Voices"},
+                        {"id": "kobo", "type": "cloned", "model": "Voice Cloning"},
+                    ],
+                ), mock.patch.object(handler, "publish_voice") as publish:
+                    handler._ensure_qwen_cloned_voice(
+                        {
+                            "service": "Qwen3 TTS",
+                            "model": "Voice Cloning",
+                            "voice": "My_narrator",
+                        },
+                        base_url="http://127.0.0.1:8042",
+                        verified=verified,
+                        cancel_event=threading.Event(),
+                    )
+                    handler._ensure_qwen_cloned_voice(
+                        {
+                            "service": "Qwen3 TTS",
+                            "model": "Voice Cloning",
+                            "voice": "My_narrator",
+                        },
+                        base_url="http://127.0.0.1:8042",
+                        verified=verified,
+                        cancel_event=threading.Event(),
+                    )
+
+                publish.assert_called_once()
+                self.assertEqual(voice_id, publish.call_args.args[0]["voice_id"])
+                self.assertEqual("kobold_qwen", publish.call_args.args[0]["service_id"])
+                self.assertEqual({"my_narrator"}, verified)
+            finally:
+                database.dispose()
+
+    def test_qwen_preflight_never_substitutes_an_unknown_voice(self):
+        with tempfile.TemporaryDirectory() as directory:
+            paths = prepare_web_test_data_root(directory)
+            database = Database(paths.database)
+            try:
+                handler = WorkflowHandlers(database, paths)
+                with mock.patch(
+                    "pandrator.logic.tts_handler.get_kobold_qwen_voice_catalog",
+                    return_value=[
+                        {"id": "kobo", "type": "cloned", "model": "Voice Cloning"}
+                    ],
+                ), self.assertRaisesRegex(ValueError, "no managed sample"):
+                    handler._ensure_qwen_cloned_voice(
+                        {
+                            "service": "Qwen3 TTS",
+                            "model": "Voice Cloning",
+                            "voice": "missing",
+                        },
+                        base_url="http://127.0.0.1:8042",
+                        verified=set(),
+                        cancel_event=threading.Event(),
+                    )
+            finally:
+                database.dispose()
+
 
 if __name__ == "__main__":
     unittest.main()

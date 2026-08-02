@@ -463,6 +463,12 @@ class WorkflowHandlers:
         }.get(service_id)
         if url_key and api_base:
             urls[url_key] = api_base
+        self._ensure_qwen_cloned_voice(
+            settings,
+            base_url=urls["kobold_qwen_base_url"],
+            verified=set(),
+            cancel_event=cancel_event,
+        )
         audio = self.tts_providers.synthesize(
             text,
             settings,
@@ -471,6 +477,10 @@ class WorkflowHandlers:
             retry_callback=lambda attempt, total, delay: progress(
                 0.1,
                 f"Voice preview retry {attempt} of {total} in {delay:.1f}s",
+            ),
+            recovery_callback=lambda cycle, total, timeout: progress(
+                0.1,
+                f"Waiting for Qwen3 TTS to recover ({cycle}/{total}, up to {timeout:.0f}s)",
             ),
             **urls,
         )
@@ -3495,6 +3505,106 @@ class WorkflowHandlers:
             )
         }
 
+    def _ensure_qwen_cloned_voice(
+        self,
+        settings: dict[str, Any],
+        *,
+        base_url: str,
+        verified: set[str],
+        cancel_event,
+    ) -> None:
+        """Restore a stale managed Qwen voice once, without silent fallback."""
+        from pandrator.logic import tts_handler
+
+        if self.tts_providers.service_id_for_settings(settings) != "kobold_qwen":
+            return
+        model = tts_handler.resolve_kobold_qwen_model(settings)
+        if str(model).strip().lower() not in {
+            "voice cloning",
+            "qwen3-tts",
+            "qwen3-tts-base",
+        }:
+            return
+        requested_voice = str(
+            settings.get("speaker")
+            or settings.get("voice")
+            or tts_handler.KOBOLD_QWEN_SAMPLE_VOICE
+        ).strip()
+        voice_key = requested_voice.removesuffix(".wav").lower()
+        if (
+            not voice_key
+            or voice_key == tts_handler.KOBOLD_QWEN_SAMPLE_VOICE.lower()
+        ):
+            return
+        if voice_key in verified:
+            return
+
+        catalogue = tts_handler.get_kobold_qwen_voice_catalog(base_url)
+        available = {
+            str(item.get("id") or "").removesuffix(".wav").lower()
+            for item in catalogue
+            if str(item.get("type") or "").lower() != "preset"
+        }
+        if voice_key in available:
+            verified.add(voice_key)
+            return
+
+        managed_voice_id = ""
+        metadata_service_id = "kobold_qwen"
+        with self.database.session() as session:
+            for managed_voice in session.scalars(select(Voice)).all():
+                providers = dict(
+                    (managed_voice.metadata_json or {}).get("providers") or {}
+                )
+                for provider_id, record in providers.items():
+                    normalized_provider = (
+                        str(provider_id)
+                        .strip()
+                        .lower()
+                        .replace("-", "_")
+                        .replace(" ", "_")
+                    )
+                    if normalized_provider not in {
+                        "kobold_qwen",
+                        "qwen",
+                        "qwen3",
+                        "qwen3_tts",
+                    } or not isinstance(record, dict):
+                        continue
+                    provider_voice = str(
+                        record.get("voice_id") or managed_voice.name
+                    ).removesuffix(".wav").lower()
+                    if provider_voice == voice_key:
+                        managed_voice_id = managed_voice.id
+                        metadata_service_id = str(provider_id)
+                        break
+                if managed_voice_id:
+                    break
+
+        if not managed_voice_id:
+            raise ValueError(
+                f"Qwen voice reference '{requested_voice}' is not installed and "
+                "has no managed sample to restore. Publish it from the Voice Library."
+            )
+        if cancel_event is not None and cancel_event.is_set():
+            return
+        logger.info(
+            "Qwen voice '%s' is absent from the live catalogue; republishing managed voice %s.",
+            requested_voice,
+            managed_voice_id,
+        )
+        self.publish_voice(
+            {
+                "voice_id": managed_voice_id,
+                "service_id": metadata_service_id,
+                "service": "Qwen3 TTS",
+                "base_url": base_url,
+            },
+            lambda _value, detail=None: logger.info("%s", detail) if detail else None,
+            cancel_event,
+        )
+        verified.add(voice_key)
+
     @staticmethod
     def _optimization_text_hash(text: str) -> str:
         return hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -3910,6 +4020,7 @@ class WorkflowHandlers:
             lambda value, detail=None: progress(float(value) * optimization_share, detail),
             job_id=job_id,
         )
+        verified_qwen_voices: set[str] = set()
         for index, (record, generation_segment_id) in enumerate(
             zip(records, generation_segment_ids, strict=True),
             start=1,
@@ -3929,6 +4040,12 @@ class WorkflowHandlers:
                 language=segment_language,
                 voice=segment_voice,
             )
+            self._ensure_qwen_cloned_voice(
+                segment_tts_settings,
+                base_url=self._tts_urls(segment_tts_settings)["kobold_qwen_base_url"],
+                verified=verified_qwen_voices,
+                cancel_event=cancel_event,
+            )
             audio = self.tts_providers.synthesize(
                 synthesized_text,
                 segment_tts_settings,
@@ -3938,6 +4055,11 @@ class WorkflowHandlers:
                     optimization_share
                     + ((index - 1) / len(records)) * synthesis_share,
                     f"Retrying segment {index} ({attempt}/{total}) in {delay:.1f}s",
+                ),
+                recovery_callback=lambda cycle, total, timeout, index=index, synthesis_share=synthesis_share: progress(
+                    optimization_share
+                    + ((index - 1) / len(records)) * synthesis_share,
+                    f"Waiting for Qwen3 TTS before segment {index} ({cycle}/{total}, up to {timeout:.0f}s)",
                 ),
                 **self._tts_urls(segment_tts_settings),
             )
@@ -4297,6 +4419,7 @@ class WorkflowHandlers:
                     rvc_source_sequence = source_run.sequence_number
         generated = 0
         skipped = 0
+        verified_qwen_voices: set[str] = set()
         for index, segment_id in enumerate(segment_ids):
             with self.database.session() as session:
                 run = session.get(GenerationRun, run_id)
@@ -4372,6 +4495,12 @@ class WorkflowHandlers:
                         language=segment_language,
                         voice=segment_voice,
                     )
+                    self._ensure_qwen_cloned_voice(
+                        segment_tts_settings,
+                        base_url=self._tts_urls(segment_tts_settings)["kobold_qwen_base_url"],
+                        verified=verified_qwen_voices,
+                        cancel_event=cancel_event,
+                    )
                     audio = self.tts_providers.synthesize(
                         synthesized_text,
                         segment_tts_settings,
@@ -4382,6 +4511,12 @@ class WorkflowHandlers:
                             + (index / len(segment_ids))
                             * (1.0 - optimization_share),
                             f"Retrying segment {index + 1} ({attempt}/{total}) in {delay:.1f}s",
+                        ),
+                        recovery_callback=lambda cycle, total, timeout, index=index: progress(
+                            optimization_share
+                            + (index / len(segment_ids))
+                            * (1.0 - optimization_share),
+                            f"Waiting for Qwen3 TTS before segment {index + 1} ({cycle}/{total}, up to {timeout:.0f}s)",
                         ),
                         **self._tts_urls(segment_tts_settings),
                     )

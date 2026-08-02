@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pandrator-manager"
-version = "0.9.11"
+version = "0.9.12"
 description = "Per-user installation, update, repair, and runtime manager for Pandrator"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"

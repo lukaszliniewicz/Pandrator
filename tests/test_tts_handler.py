@@ -1,6 +1,6 @@
-import unittest
 import base64
 import threading
+import unittest
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import Mock, patch
 
@@ -911,6 +911,70 @@ class TTSHandlerTests(unittest.TestCase):
 
         self.assertIsNone(result)
         self.assertEqual(1, post.call_count)
+
+    def test_qwen_service_recovery_does_not_consume_synthesis_budget(self):
+        success = Mock(status_code=200, headers={"Content-Type": "audio/wav"}, text="")
+        success.raise_for_status.return_value = None
+        decoded = object()
+        recovery_updates = []
+
+        with patch(
+            "pandrator.logic.tts_handler._request_kobold_qwen_audio",
+            side_effect=[
+                tts_handler.requests.exceptions.ConnectionError("manager restart"),
+                success,
+            ],
+        ) as request_audio, patch(
+            "pandrator.logic.tts_handler._wait_for_kobold_qwen_recovery",
+            return_value=True,
+        ) as wait_for_recovery, patch(
+            "pandrator.logic.tts_handler._decode_audio_response",
+            return_value=decoded,
+        ):
+            result = tts_handler.text_to_audio(
+                "Retry after service recovery",
+                {
+                    "service": "Qwen3 TTS",
+                    "model": "Voice Cloning",
+                    "voice": "narrator",
+                },
+                max_attempts=1,
+                recovery_callback=lambda cycle, total, timeout: recovery_updates.append(
+                    (cycle, total, timeout)
+                ),
+            )
+
+        self.assertIs(decoded, result)
+        self.assertEqual(2, request_audio.call_count)
+        wait_for_recovery.assert_called_once()
+        self.assertEqual([(1, 3, 90.0)], recovery_updates)
+
+    def test_qwen_invalid_voice_response_is_not_treated_as_recovery(self):
+        rejected = Mock(status_code=422, headers={}, text="voice reference not installed")
+        rejected.raise_for_status.side_effect = tts_handler.requests.exceptions.HTTPError(
+            "422 invalid voice",
+            response=rejected,
+        )
+
+        with patch(
+            "pandrator.logic.tts_handler._request_kobold_qwen_audio",
+            return_value=rejected,
+        ) as request_audio, patch(
+            "pandrator.logic.tts_handler._wait_for_kobold_qwen_recovery"
+        ) as wait_for_recovery:
+            result = tts_handler.text_to_audio(
+                "Do not silently fall back",
+                {
+                    "service": "Qwen3 TTS",
+                    "model": "Voice Cloning",
+                    "voice": "missing",
+                },
+                max_attempts=5,
+            )
+
+        self.assertIsNone(result)
+        self.assertEqual(1, request_audio.call_count)
+        wait_for_recovery.assert_not_called()
 
 
 if __name__ == "__main__":

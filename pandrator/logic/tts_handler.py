@@ -1,10 +1,11 @@
+import base64
+import copy
 import io
 import json
 import logging
 import os
-import copy
 import re
-import base64
+import time
 import wave
 from contextlib import ExitStack
 from threading import Lock
@@ -13,14 +14,6 @@ from urllib.parse import quote, urljoin, urlparse, urlunparse
 import requests
 from pydub import AudioSegment
 
-from .retry_utils import (
-    retry_after_seconds,
-    retry_delay_seconds,
-    retryable_error,
-    status_code_from_error,
-    wait_for_retry,
-)
-
 from ..constants import (
     KOKORO_NAMED_VOICE_META,
     KOKORO_OPENAI_ALIAS_VOICES,
@@ -28,6 +21,13 @@ from ..constants import (
     MAGPIE_TTS_MODELS,
     SILERO_LANGUAGES,
     magpie_voice_catalog,
+)
+from .retry_utils import (
+    retry_after_seconds,
+    retry_delay_seconds,
+    retryable_error,
+    status_code_from_error,
+    wait_for_retry,
 )
 
 _litellm_speech = None
@@ -4676,6 +4676,69 @@ def resolve_kobold_qwen_model(tts_settings: dict, fallback: str = KOBOLD_QWEN_DE
     return _kobold_qwen_cloning_model_from_metadata(tts_settings, voice) or fallback
 
 
+def _kobold_qwen_is_ready(base_url: str, api_key: str = "") -> bool:
+    """Return child readiness without confusing wrapper liveness with inference."""
+    normalized_base_url = _normalize_base_url(base_url, KOBOLD_QWEN_API_BASE_URL)
+    headers = _openai_auth_headers(api_key or _resolve_kobold_qwen_api_key())
+    try:
+        response = requests.get(
+            f"{normalized_base_url}/readyz",
+            headers=headers,
+            timeout=2,
+        )
+        if response.status_code < 400:
+            return True
+        if response.status_code != 404:
+            return False
+    except requests.exceptions.RequestException:
+        return False
+
+    # Compatibility with wrapper versions predating /readyz.
+    try:
+        response = requests.get(
+            f"{normalized_base_url}/health",
+            headers=headers,
+            timeout=2,
+        )
+        if response.status_code >= 400:
+            return False
+        payload = response.json()
+        return bool(
+            isinstance(payload, dict)
+            and payload.get("status") == "ok"
+            and payload.get("kobold_online") is True
+        )
+    except (requests.exceptions.RequestException, ValueError):
+        return False
+
+
+def _wait_for_kobold_qwen_recovery(
+    base_url: str,
+    *,
+    api_key: str = "",
+    timeout_seconds: float = 90.0,
+    retry_after: float = 0.0,
+    cancel_event=None,
+) -> bool:
+    """Wait for Qwen readiness; service downtime does not consume TTS attempts."""
+    timeout_seconds = max(1.0, min(300.0, float(timeout_seconds or 90.0)))
+    deadline = time.monotonic() + timeout_seconds
+    initial_delay = min(timeout_seconds, max(0.0, float(retry_after or 0.0)))
+    if initial_delay and not wait_for_retry(initial_delay, cancel_event):
+        return False
+    while time.monotonic() < deadline:
+        if cancel_event is not None and cancel_event.is_set():
+            return False
+        if _kobold_qwen_is_ready(base_url, api_key):
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        if not wait_for_retry(min(0.5, remaining), cancel_event):
+            return False
+    return False
+
+
 def _request_kobold_qwen_audio(text: str, tts_settings: dict, kobold_qwen_base_url: str) -> requests.Response:
     normalized_base_url = _normalize_base_url(kobold_qwen_base_url, KOBOLD_QWEN_API_BASE_URL)
     api_key = _resolve_kobold_qwen_api_key(tts_settings)
@@ -4753,6 +4816,7 @@ def text_to_audio(
     max_attempts: int = 5,
     cancel_event=None,
     retry_callback=None,
+    recovery_callback=None,
 ) -> AudioSegment | None:
     """
     Generates audio from text using the specified TTS service.
@@ -4765,10 +4829,20 @@ def text_to_audio(
     normalized_silero_base_url = _normalize_base_url(silero_base_url, SILERO_API_BASE_URL)
 
     max_attempts = max(1, min(20, int(max_attempts or 1)))
-    for attempt in range(max_attempts):
+    try:
+        maximum_recovery_cycles = max(
+            0,
+            min(10, int(tts_settings.get("service_recovery_cycles") or 3)),
+        )
+    except (TypeError, ValueError):
+        maximum_recovery_cycles = 3
+    attempt = 0
+    recovery_cycles = 0
+    while attempt < max_attempts:
         if cancel_event is not None and cancel_event.is_set():
             logging.info("TTS generation canceled before attempt %d/%d", attempt + 1, max_attempts)
             return None
+        attempt += 1
         try:
             if service == "XTTS":
                 response = _request_xtts_audio(text, tts_settings, xtts_base_url)
@@ -4832,7 +4906,7 @@ def text_to_audio(
             status = status_code_from_error(e)
             logging.warning(
                 "TTS generation attempt %d/%d failed%s: %s",
-                attempt + 1,
+                attempt,
                 max_attempts,
                 f" (HTTP {status})" if status else "",
                 e,
@@ -4845,24 +4919,70 @@ def text_to_audio(
                 break
             retry_after = retry_after_seconds(e)
 
-        if attempt + 1 >= max_attempts:
+            if service == "Qwen3 TTS" and recovery_cycles < maximum_recovery_cycles:
+                recovery_cycles += 1
+                try:
+                    recovery_timeout = max(
+                        1.0,
+                        min(
+                            300.0,
+                            float(
+                                tts_settings.get("service_recovery_timeout_seconds")
+                                or 90.0
+                            ),
+                        ),
+                    )
+                except (TypeError, ValueError):
+                    recovery_timeout = 90.0
+                logging.info(
+                    "Waiting up to %.1f seconds for Qwen3 TTS recovery (%d/%d).",
+                    recovery_timeout,
+                    recovery_cycles,
+                    maximum_recovery_cycles,
+                )
+                if recovery_callback is not None:
+                    recovery_callback(recovery_cycles, maximum_recovery_cycles, recovery_timeout)
+                recovered = _wait_for_kobold_qwen_recovery(
+                    kobold_qwen_base_url,
+                    api_key=_resolve_kobold_qwen_api_key(tts_settings),
+                    timeout_seconds=recovery_timeout,
+                    retry_after=retry_after,
+                    cancel_event=cancel_event,
+                )
+                if cancel_event is not None and cancel_event.is_set():
+                    logging.info("TTS generation canceled while waiting for Qwen3 TTS recovery.")
+                    return None
+                if recovered:
+                    # Infrastructure recovery is bounded separately from real
+                    # synthesis attempts, so connection-refused probes during
+                    # a Manager restart cannot exhaust the five-attempt budget.
+                    attempt -= 1
+                    logging.info(
+                        "Qwen3 TTS recovered; repeating synthesis attempt %d/%d.",
+                        attempt + 1,
+                        max_attempts,
+                    )
+                    continue
+                logging.warning("Qwen3 TTS did not recover within %.1f seconds.", recovery_timeout)
+
+        if attempt >= max_attempts:
             break
         try:
             maximum_retry_delay = max(1.0, min(300.0, float(tts_settings.get("retry_max_delay_seconds") or 90)))
         except (TypeError, ValueError):
             maximum_retry_delay = 90.0
         delay = retry_delay_seconds(
-            attempt + 1,
+            attempt,
             retry_after=retry_after,
             base_delay=0.5,
             maximum_delay=maximum_retry_delay,
         )
         if retry_callback is not None:
-            retry_callback(attempt + 2, max_attempts, delay)
-        logging.info("Retrying TTS generation in %.1f seconds (attempt %d/%d).", delay, attempt + 2, max_attempts)
+            retry_callback(attempt + 1, max_attempts, delay)
+        logging.info("Retrying TTS generation in %.1f seconds (attempt %d/%d).", delay, attempt + 1, max_attempts)
         if not wait_for_retry(delay, cancel_event):
             logging.info("TTS generation canceled while waiting to retry.")
             return None
 
-    logging.error("Failed to generate TTS audio after %d attempts: '%s...'", max_attempts, text[:50])
+    logging.error("Failed to generate TTS audio after %d attempts: '%s...'", attempt, text[:50])
     return None

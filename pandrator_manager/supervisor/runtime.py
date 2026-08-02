@@ -644,11 +644,12 @@ class ProcessSupervisor:
                         pending.spec,
                         restart_count=pending.restart_count,
                     )
-                except Exception:
+                except Exception as error:
                     logging.exception("Managed service restart failed: %s", service_id)
                     self._schedule_restart(
                         pending.spec,
                         pending.restart_count,
+                        reason=str(error),
                     )
 
             for service_id, runtime in list(self._runtime.items()):
@@ -694,12 +695,20 @@ class ProcessSupervisor:
                             pass
                     if runtime.log_handle:
                         runtime.log_handle.close()
-                self._schedule_restart(runtime.spec, runtime.restart_count)
+                self._schedule_restart(
+                    runtime.spec,
+                    runtime.restart_count,
+                    reason=health.message,
+                    health_failures=runtime.health_failures,
+                )
 
     def _schedule_restart(
         self,
         spec: ManagedProcessSpec,
         previous_restart_count: int,
+        *,
+        reason: str = "",
+        health_failures: int = 0,
     ) -> None:
         next_count = previous_restart_count + 1
         if next_count > spec.restart.maximum_restarts:
@@ -722,6 +731,8 @@ class ProcessSupervisor:
                 {
                     "service_id": spec.service_id,
                     "restart_count": previous_restart_count,
+                    "reason": reason,
+                    "health_failures": health_failures,
                 },
                 component_id=spec.component_id,
                 service_id=spec.service_id,
@@ -742,6 +753,8 @@ class ProcessSupervisor:
                 "service_id": spec.service_id,
                 "restart_count": next_count,
                 "delay_seconds": delay,
+                "reason": reason,
+                "health_failures": health_failures,
             },
             component_id=spec.component_id,
             service_id=spec.service_id,
