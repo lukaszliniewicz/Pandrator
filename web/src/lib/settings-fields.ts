@@ -355,6 +355,7 @@ export function settingLabel(key: string): string {
       'Optimize and review the document before generation',
     llm_tts_batch_size: 'Segments per inline JSON batch',
     llm_tts_document_batch_size: 'Segments per document JSON batch',
+    tts_batch_size: 'Segments per streaming speech batch',
     tts_optimization_model: 'Speech optimization model',
     speech_optimization_mode: 'Speech planning mode',
     speech_plan_min_retention: 'Minimum flexible-text retention',

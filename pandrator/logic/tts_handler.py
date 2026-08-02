@@ -8,7 +8,8 @@ import re
 import time
 import wave
 from contextlib import ExitStack
-from threading import Lock
+from queue import Queue
+from threading import Event, Lock, Thread
 from urllib.parse import quote, urljoin, urlparse, urlunparse
 
 import requests
@@ -1972,6 +1973,14 @@ def _openai_voice_catalog_urls(base_url: str) -> list[str]:
 
 def _openai_audio_speech_urls(base_url: str) -> list[str]:
     return _openai_url_candidates(base_url, "audio/speech")
+
+
+def _openai_audio_speech_batch_urls(base_url: str) -> list[str]:
+    return _openai_url_candidates(base_url, "audio/speech/batch")
+
+
+def _openai_capabilities_urls(base_url: str) -> list[str]:
+    return _openai_url_candidates(base_url, "capabilities")
 
 
 def _configured_openai_urls(endpoint: dict[str, object], path_key: str, fallback_urls: list[str]) -> list[str]:
@@ -4533,6 +4542,17 @@ def _decode_audio_response(response: requests.Response) -> AudioSegment:
         return AudioSegment.from_file(audio_data)
 
 
+def _decode_audio_bytes(audio: bytes, *, format_hint: str = "wav") -> AudioSegment:
+    if not audio:
+        raise RuntimeError("The speech service returned an empty response instead of audio.")
+    audio_data = io.BytesIO(audio)
+    try:
+        return AudioSegment.from_file(audio_data, format=format_hint)
+    except Exception:
+        audio_data.seek(0)
+        return AudioSegment.from_file(audio_data)
+
+
 def _request_chatterbox_audio(text: str, tts_settings: dict, chatterbox_base_url: str) -> requests.Response:
     normalized_base_url = _normalize_base_url(chatterbox_base_url, CHATTERBOX_API_BASE_URL)
     
@@ -4739,9 +4759,7 @@ def _wait_for_kobold_qwen_recovery(
     return False
 
 
-def _request_kobold_qwen_audio(text: str, tts_settings: dict, kobold_qwen_base_url: str) -> requests.Response:
-    normalized_base_url = _normalize_base_url(kobold_qwen_base_url, KOBOLD_QWEN_API_BASE_URL)
-    api_key = _resolve_kobold_qwen_api_key(tts_settings)
+def _build_kobold_qwen_payload(text: str, tts_settings: dict) -> dict[str, object]:
     model = resolve_kobold_qwen_model(tts_settings)
     if not model:
         model = KOBOLD_QWEN_DEFAULT_MODEL
@@ -4779,6 +4797,13 @@ def _request_kobold_qwen_audio(text: str, tts_settings: dict, kobold_qwen_base_u
         item.lower() for item in KOBOLD_QWEN_GENERATION_PROMPT_MODELS
     }:
         payload["instructions"] = generation_prompt
+    return payload
+
+
+def _request_kobold_qwen_audio(text: str, tts_settings: dict, kobold_qwen_base_url: str) -> requests.Response:
+    normalized_base_url = _normalize_base_url(kobold_qwen_base_url, KOBOLD_QWEN_API_BASE_URL)
+    api_key = _resolve_kobold_qwen_api_key(tts_settings)
+    payload = _build_kobold_qwen_payload(text, tts_settings)
 
     last_response = None
     for speech_url in _openai_audio_speech_urls(normalized_base_url):
@@ -4798,6 +4823,218 @@ def _request_kobold_qwen_audio(text: str, tts_settings: dict, kobold_qwen_base_u
         return last_response
 
     raise RuntimeError(f"No Qwen3 TTS speech endpoint could be resolved for '{normalized_base_url}'.")
+
+
+def get_kobold_qwen_batch_capabilities(
+    base_url: str = KOBOLD_QWEN_API_BASE_URL,
+    *,
+    api_key: str = "",
+) -> dict[str, object]:
+    normalized_base_url = _normalize_base_url(base_url, KOBOLD_QWEN_API_BASE_URL)
+    headers = _openai_auth_headers(api_key or _resolve_kobold_qwen_api_key())
+    fallback = {
+        "supported": False,
+        "streaming": False,
+        "default_batch_size": 1,
+        "max_batch_size": 1,
+    }
+    for url in _openai_capabilities_urls(normalized_base_url):
+        try:
+            response = requests.get(url, headers=headers, timeout=2)
+        except requests.RequestException:
+            continue
+        if _should_try_next_openai_candidate(response.status_code):
+            continue
+        if response.status_code >= 400:
+            return fallback
+        try:
+            payload = response.json()
+        except ValueError:
+            return fallback
+        batch = payload.get("batch_synthesis") if isinstance(payload, dict) else None
+        if not isinstance(batch, dict):
+            return fallback
+        try:
+            default_size = max(1, min(32, int(batch.get("default_batch_size") or 1)))
+            maximum_size = max(default_size, min(32, int(batch.get("max_batch_size") or default_size)))
+            parallelism = max(1, int(batch.get("parallelism") or 1))
+        except (TypeError, ValueError):
+            return fallback
+        return {
+            "supported": bool(batch.get("supported")),
+            "streaming": bool(batch.get("streaming")),
+            "endpoint": str(batch.get("endpoint") or "/v1/audio/speech/batch"),
+            "protocol": str(batch.get("protocol") or ""),
+            "default_batch_size": default_size,
+            "max_batch_size": maximum_size,
+            "parallelism": parallelism,
+        }
+    return fallback
+
+
+def _iter_kobold_qwen_batch_audio_http(
+    items: list[dict[str, object]],
+    *,
+    base_url: str = KOBOLD_QWEN_API_BASE_URL,
+    api_key: str = "",
+    stop_event: Event | None = None,
+    cancel_event: Event | None = None,
+):
+    if not items:
+        return
+    normalized_base_url = _normalize_base_url(base_url, KOBOLD_QWEN_API_BASE_URL)
+    resolved_api_key = api_key or _resolve_kobold_qwen_api_key(
+        next(
+            (
+                item["settings"]
+                for item in items
+                if isinstance(item.get("settings"), dict)
+            ),
+            {},
+        )
+    )
+    request_items = []
+    for item in items:
+        item_id = str(item.get("id") or "").strip()
+        settings = item.get("settings")
+        if not item_id or not isinstance(settings, dict):
+            raise ValueError("Qwen batch items require an ID and TTS settings.")
+        request_items.append(
+            {
+                "id": item_id,
+                **_build_kobold_qwen_payload(
+                    str(item.get("text") or ""),
+                    settings,
+                ),
+            }
+        )
+
+    request_payload = {
+        "items": request_items,
+        "stream": True,
+        "fail_fast": False,
+    }
+    last_response = None
+    for batch_url in _openai_audio_speech_batch_urls(normalized_base_url):
+        response = requests.post(
+            batch_url,
+            headers=_openai_auth_headers(resolved_api_key),
+            json=request_payload,
+            stream=True,
+            timeout=(10, KOBOLD_QWEN_MODEL_PREPARATION_TIMEOUT_SECONDS),
+        )
+        if _should_try_next_openai_candidate(response.status_code):
+            response.close()
+            last_response = response
+            continue
+        response.raise_for_status()
+        with response:
+            for raw_line in response.iter_lines(decode_unicode=True):
+                if stop_event is not None and stop_event.is_set():
+                    return
+                line = (
+                    raw_line.decode("utf-8")
+                    if isinstance(raw_line, bytes)
+                    else str(raw_line or "")
+                ).strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except ValueError as error:
+                    raise RuntimeError(
+                        "Qwen batch synthesis returned invalid NDJSON."
+                    ) from error
+                if not isinstance(event, dict) or event.get("type") != "item":
+                    continue
+                item_id = str(event.get("id") or "").strip()
+                if event.get("status") == "completed":
+                    try:
+                        audio_bytes = base64.b64decode(
+                            str(event.get("audio_base64") or ""),
+                            validate=True,
+                        )
+                        audio = _decode_audio_bytes(
+                            audio_bytes,
+                            format_hint=str(event.get("response_format") or "wav"),
+                        )
+                    except (ValueError, TypeError) as error:
+                        raise RuntimeError(
+                            f"Qwen batch item '{item_id}' returned invalid audio."
+                        ) from error
+                    yield {
+                        "id": item_id,
+                        "audio": audio,
+                        "error": None,
+                    }
+                    if cancel_event is not None and cancel_event.is_set():
+                        return
+                    continue
+                error_payload = event.get("error")
+                if not isinstance(error_payload, dict):
+                    error_payload = {"detail": "Qwen batch item failed."}
+                yield {
+                    "id": item_id,
+                    "audio": None,
+                    "error": error_payload,
+                }
+                if cancel_event is not None and cancel_event.is_set():
+                    return
+        return
+
+    if last_response is not None:
+        last_response.raise_for_status()
+    raise RuntimeError(
+        f"No Qwen3 TTS batch endpoint could be resolved for '{normalized_base_url}'."
+    )
+
+
+def iter_kobold_qwen_batch_audio(
+    items: list[dict[str, object]],
+    *,
+    base_url: str = KOBOLD_QWEN_API_BASE_URL,
+    api_key: str = "",
+    cancel_event: Event | None = None,
+):
+    """Read the batch stream ahead so inference overlaps local take handling."""
+    if not items:
+        return
+    stop_event = Event()
+    messages: Queue[tuple[str, object]] = Queue(maxsize=len(items) + 2)
+
+    def read_stream() -> None:
+        try:
+            for event in _iter_kobold_qwen_batch_audio_http(
+                items,
+                base_url=base_url,
+                api_key=api_key,
+                stop_event=stop_event,
+                cancel_event=cancel_event,
+            ):
+                messages.put(("event", event))
+        except Exception as error:  # noqa: BLE001 - cross-thread projection
+            messages.put(("error", error))
+        finally:
+            messages.put(("done", None))
+
+    worker = Thread(
+        target=read_stream,
+        name="qwen-batch-reader",
+        daemon=True,
+    )
+    worker.start()
+    try:
+        while True:
+            kind, payload = messages.get()
+            if kind == "done":
+                return
+            if kind == "error":
+                if isinstance(payload, BaseException):
+                    raise payload
+                raise RuntimeError(str(payload))
+            yield payload
+    finally:
+        stop_event.set()
 
 
 # Audio Generation

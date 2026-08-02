@@ -166,6 +166,10 @@ class LegacyImporter:
         config: dict[str, Any],
     ) -> ComputeVariant:
         if component_id == "voxcpm":
+            for field in ("voxcpm_runtime_variant", "voxcpm_backend", "voxcpm_device"):
+                raw_backend = str(config.get(field) or "").strip().lower()
+                if raw_backend == ComputeVariant.CPU.value:
+                    return ComputeVariant.CPU
             return ComputeVariant.CUDA
         if component_id == "voxtral":
             return ComputeVariant.WGPU

@@ -3505,6 +3505,55 @@ class WorkflowHandlers:
             )
         }
 
+    def _negotiated_tts_batch_size(
+        self,
+        settings: dict[str, Any],
+        tts_urls: dict[str, str],
+    ) -> int:
+        """Return one unless the selected service advertises streaming batches."""
+        try:
+            requested = max(
+                1,
+                min(32, int(settings.get("tts_batch_size") or 10)),
+            )
+        except (TypeError, ValueError):
+            requested = 10
+        if requested == 1:
+            return 1
+
+        capabilities = self.tts_providers.synthesis_capabilities(
+            settings,
+            **tts_urls,
+        )
+        if not (
+            capabilities.batch_synthesis
+            and capabilities.streaming_batch
+        ):
+            return 1
+        return min(requested, max(1, capabilities.max_batch_size))
+
+    def _start_streaming_tts_batch(
+        self,
+        items: list[tuple[str, str, dict[str, Any]]],
+        *,
+        batch_size: int,
+        tts_urls: dict[str, str],
+        cancel_event,
+    ):
+        from .tts_providers import TtsBatchItem
+
+        return iter(
+            self.tts_providers.synthesize_batch(
+                [
+                    TtsBatchItem(id=item_id, text=text, settings=item_settings)
+                    for item_id, text, item_settings in items
+                ],
+                batch_size=batch_size,
+                cancel_event=cancel_event,
+                **tts_urls,
+            )
+        )
+
     def _ensure_qwen_cloned_voice(
         self,
         settings: dict[str, Any],
@@ -4021,6 +4070,55 @@ class WorkflowHandlers:
             job_id=job_id,
         )
         verified_qwen_voices: set[str] = set()
+        tts_urls = self._tts_urls(settings)
+        batch_results = None
+        batch_contexts: dict[str, dict[str, Any]] = {}
+        effective_batch_size = self._negotiated_tts_batch_size(
+            settings,
+            tts_urls,
+        )
+        if effective_batch_size > 1:
+            batch_items: list[tuple[str, str, dict[str, Any]]] = []
+            for record, generation_segment_id, synthesized_text in zip(
+                records,
+                generation_segment_ids,
+                optimized_texts,
+                strict=True,
+            ):
+                segment_tts_settings = _apply_segment_tts_overrides(
+                    settings,
+                    language=self._usable_language(record.get("language")),
+                    voice=str(record.get("voice") or "").strip() or None,
+                )
+                self._ensure_qwen_cloned_voice(
+                    segment_tts_settings,
+                    base_url=tts_urls["kobold_qwen_base_url"],
+                    verified=verified_qwen_voices,
+                    cancel_event=cancel_event,
+                )
+                batch_contexts[generation_segment_id] = {
+                    "settings": segment_tts_settings,
+                    "synthesized_text": synthesized_text,
+                }
+                batch_items.append(
+                    (
+                        generation_segment_id,
+                        synthesized_text,
+                        segment_tts_settings,
+                    )
+                )
+            if batch_items:
+                batch_results = self._start_streaming_tts_batch(
+                    batch_items,
+                    batch_size=effective_batch_size,
+                    tts_urls=tts_urls,
+                    cancel_event=cancel_event,
+                )
+                logger.info(
+                    "Using streaming %s-item TTS batches for %d automatic generation segments.",
+                    effective_batch_size,
+                    len(batch_items),
+                )
         for index, (record, generation_segment_id) in enumerate(
             zip(records, generation_segment_ids, strict=True),
             start=1,
@@ -4032,37 +4130,75 @@ class WorkflowHandlers:
                 continue
             synthesis_share = 1.0 - optimization_share
             progress(optimization_share + ((index - 1) / len(records)) * synthesis_share, f"Generating segment {index} of {len(records)}")
-            synthesized_text = optimized_texts[index - 1]
-            segment_language = self._usable_language(record.get("language"))
-            segment_voice = str(record.get("voice") or "").strip() or None
-            segment_tts_settings = _apply_segment_tts_overrides(
-                settings,
-                language=segment_language,
-                voice=segment_voice,
-            )
-            self._ensure_qwen_cloned_voice(
-                segment_tts_settings,
-                base_url=self._tts_urls(segment_tts_settings)["kobold_qwen_base_url"],
-                verified=verified_qwen_voices,
-                cancel_event=cancel_event,
-            )
-            audio = self.tts_providers.synthesize(
-                synthesized_text,
-                segment_tts_settings,
-                max_attempts=int(segment_tts_settings.get("max_attempts") or 5),
-                cancel_event=cancel_event,
-                retry_callback=lambda attempt, total, delay, index=index, synthesis_share=synthesis_share: progress(
-                    optimization_share
-                    + ((index - 1) / len(records)) * synthesis_share,
-                    f"Retrying segment {index} ({attempt}/{total}) in {delay:.1f}s",
-                ),
-                recovery_callback=lambda cycle, total, timeout, index=index, synthesis_share=synthesis_share: progress(
-                    optimization_share
-                    + ((index - 1) / len(records)) * synthesis_share,
-                    f"Waiting for Qwen3 TTS before segment {index} ({cycle}/{total}, up to {timeout:.0f}s)",
-                ),
-                **self._tts_urls(segment_tts_settings),
-            )
+            batch_context = batch_contexts.get(generation_segment_id)
+            if batch_context is not None:
+                synthesized_text = str(batch_context["synthesized_text"])
+                segment_tts_settings = dict(batch_context["settings"])
+            else:
+                synthesized_text = optimized_texts[index - 1]
+                segment_tts_settings = _apply_segment_tts_overrides(
+                    settings,
+                    language=self._usable_language(record.get("language")),
+                    voice=str(record.get("voice") or "").strip() or None,
+                )
+                self._ensure_qwen_cloned_voice(
+                    segment_tts_settings,
+                    base_url=tts_urls["kobold_qwen_base_url"],
+                    verified=verified_qwen_voices,
+                    cancel_event=cancel_event,
+                )
+
+            def synthesize_one(
+                *,
+                text_to_synthesize: str = synthesized_text,
+                settings_for_segment: dict[str, Any] = segment_tts_settings,
+                segment_index: int = index,
+            ):
+                return self.tts_providers.synthesize(
+                    text_to_synthesize,
+                    settings_for_segment,
+                    max_attempts=int(
+                        settings_for_segment.get("max_attempts") or 5
+                    ),
+                    cancel_event=cancel_event,
+                    retry_callback=lambda attempt, total, delay: progress(
+                        optimization_share
+                        + ((segment_index - 1) / len(records))
+                        * synthesis_share,
+                        f"Retrying segment {segment_index} ({attempt}/{total}) in {delay:.1f}s",
+                    ),
+                    recovery_callback=lambda cycle, total, timeout: progress(
+                        optimization_share
+                        + ((segment_index - 1) / len(records))
+                        * synthesis_share,
+                        f"Waiting for Qwen3 TTS before segment {segment_index} ({cycle}/{total}, up to {timeout:.0f}s)",
+                    ),
+                    **tts_urls,
+                )
+
+            if batch_results is not None and batch_context is not None:
+                try:
+                    batch_result = next(batch_results)
+                except StopIteration as error:
+                    raise RuntimeError(
+                        "The streaming TTS batch ended before every segment completed."
+                    ) from error
+                if batch_result.id != generation_segment_id:
+                    raise RuntimeError(
+                        "The streaming TTS batch returned segments out of order."
+                    )
+                if batch_result.error is not None:
+                    if not batch_result.error.retryable:
+                        raise batch_result.error
+                    logger.warning(
+                        "Streaming TTS batch failed for segment %s; retrying it through the ordinary synthesis path.",
+                        generation_segment_id,
+                    )
+                    audio = synthesize_one()
+                else:
+                    audio = batch_result.audio
+            else:
+                audio = synthesize_one()
             if audio is None:
                 raise RuntimeError(f"Speech generation failed at segment {index}.")
             verification = self._verification_metadata(
@@ -4361,6 +4497,16 @@ class WorkflowHandlers:
             selected_segments = list(session.scalars(statement).all())
             segment_ids = [item.id for item in selected_segments]
             source_texts = [item.text for item in selected_segments]
+            segment_seeds = {
+                item.id: {
+                    "text": item.text,
+                    "speaker": item.speaker,
+                    "language": self._usable_language(item.language),
+                    "voice": str(item.voice or "").strip() or None,
+                    "status": item.status,
+                }
+                for item in selected_segments
+            }
         if not segment_ids:
             with self.database.session() as session:
                 run = session.get(GenerationRun, run_id)
@@ -4420,6 +4566,55 @@ class WorkflowHandlers:
         generated = 0
         skipped = 0
         verified_qwen_voices: set[str] = set()
+        batch_results = None
+        batch_contexts: dict[str, dict[str, Any]] = {}
+        tts_urls = self._tts_urls(tts_settings)
+        if operation != "rvc":
+            effective_batch_size = self._negotiated_tts_batch_size(
+                tts_settings,
+                tts_urls,
+            )
+            if effective_batch_size > 1:
+                batch_items: list[tuple[str, str, dict[str, Any]]] = []
+                for segment_id in segment_ids:
+                    seed = segment_seeds[segment_id]
+                    if operation == "resume" and seed["status"] == "completed":
+                        continue
+                    segment_tts_settings = _apply_segment_tts_overrides(
+                        tts_settings,
+                        language=seed["language"],
+                        voice=seed["voice"],
+                    )
+                    self._ensure_qwen_cloned_voice(
+                        segment_tts_settings,
+                        base_url=tts_urls["kobold_qwen_base_url"],
+                        verified=verified_qwen_voices,
+                        cancel_event=cancel_event,
+                    )
+                    synthesized_text = optimized_by_id.get(
+                        segment_id,
+                        str(seed["text"]),
+                    )
+                    batch_contexts[segment_id] = {
+                        "text": str(seed["text"]),
+                        "synthesized_text": synthesized_text,
+                        "settings": segment_tts_settings,
+                    }
+                    batch_items.append(
+                        (segment_id, synthesized_text, segment_tts_settings)
+                    )
+                if batch_items:
+                    batch_results = self._start_streaming_tts_batch(
+                        batch_items,
+                        batch_size=effective_batch_size,
+                        tts_urls=tts_urls,
+                        cancel_event=cancel_event,
+                    )
+                    logger.info(
+                        "Using streaming %s-item TTS batches for %d generation segments.",
+                        effective_batch_size,
+                        len(batch_items),
+                    )
         for index, segment_id in enumerate(segment_ids):
             with self.database.session() as session:
                 run = session.get(GenerationRun, run_id)
@@ -4489,37 +4684,80 @@ class WorkflowHandlers:
                     parent_take_id = source_take_id
                     take_settings = rvc_settings
                 else:
-                    synthesized_text = optimized_by_id.get(segment_id, text)
-                    segment_tts_settings = _apply_segment_tts_overrides(
-                        tts_settings,
-                        language=segment_language,
-                        voice=segment_voice,
-                    )
-                    self._ensure_qwen_cloned_voice(
-                        segment_tts_settings,
-                        base_url=self._tts_urls(segment_tts_settings)["kobold_qwen_base_url"],
-                        verified=verified_qwen_voices,
-                        cancel_event=cancel_event,
-                    )
-                    audio = self.tts_providers.synthesize(
-                        synthesized_text,
-                        segment_tts_settings,
-                        max_attempts=int(segment_tts_settings.get("max_attempts") or 5),
-                        cancel_event=cancel_event,
-                        retry_callback=lambda attempt, total, delay, index=index: progress(
-                            optimization_share
-                            + (index / len(segment_ids))
-                            * (1.0 - optimization_share),
-                            f"Retrying segment {index + 1} ({attempt}/{total}) in {delay:.1f}s",
-                        ),
-                        recovery_callback=lambda cycle, total, timeout, index=index: progress(
-                            optimization_share
-                            + (index / len(segment_ids))
-                            * (1.0 - optimization_share),
-                            f"Waiting for Qwen3 TTS before segment {index + 1} ({cycle}/{total}, up to {timeout:.0f}s)",
-                        ),
-                        **self._tts_urls(segment_tts_settings),
-                    )
+                    batch_context = batch_contexts.get(segment_id)
+                    if batch_context is not None:
+                        text = str(batch_context["text"])
+                        synthesized_text = str(
+                            batch_context["synthesized_text"]
+                        )
+                        segment_tts_settings = dict(
+                            batch_context["settings"]
+                        )
+                    else:
+                        synthesized_text = optimized_by_id.get(segment_id, text)
+                        segment_tts_settings = _apply_segment_tts_overrides(
+                            tts_settings,
+                            language=segment_language,
+                            voice=segment_voice,
+                        )
+                        self._ensure_qwen_cloned_voice(
+                            segment_tts_settings,
+                            base_url=tts_urls["kobold_qwen_base_url"],
+                            verified=verified_qwen_voices,
+                            cancel_event=cancel_event,
+                        )
+
+                    def synthesize_one(
+                        *,
+                        text_to_synthesize: str = synthesized_text,
+                        settings_for_segment: dict[str, Any] = segment_tts_settings,
+                        segment_index: int = index,
+                    ):
+                        return self.tts_providers.synthesize(
+                            text_to_synthesize,
+                            settings_for_segment,
+                            max_attempts=int(
+                                settings_for_segment.get("max_attempts") or 5
+                            ),
+                            cancel_event=cancel_event,
+                            retry_callback=lambda attempt, total, delay: progress(
+                                optimization_share
+                                + (segment_index / len(segment_ids))
+                                * (1.0 - optimization_share),
+                                f"Retrying segment {segment_index + 1} ({attempt}/{total}) in {delay:.1f}s",
+                            ),
+                            recovery_callback=lambda cycle, total, timeout: progress(
+                                optimization_share
+                                + (segment_index / len(segment_ids))
+                                * (1.0 - optimization_share),
+                                f"Waiting for Qwen3 TTS before segment {segment_index + 1} ({cycle}/{total}, up to {timeout:.0f}s)",
+                            ),
+                            **tts_urls,
+                        )
+
+                    if batch_results is not None and batch_context is not None:
+                        try:
+                            batch_result = next(batch_results)
+                        except StopIteration as error:
+                            raise RuntimeError(
+                                "The streaming TTS batch ended before every segment completed."
+                            ) from error
+                        if batch_result.id != segment_id:
+                            raise RuntimeError(
+                                "The streaming TTS batch returned segments out of order."
+                            )
+                        if batch_result.error is not None:
+                            if not batch_result.error.retryable:
+                                raise batch_result.error
+                            logger.warning(
+                                "Streaming TTS batch failed for segment %s; retrying it through the ordinary synthesis path.",
+                                segment_id,
+                            )
+                            audio = synthesize_one()
+                        else:
+                            audio = batch_result.audio
+                    else:
+                        audio = synthesize_one()
                     if audio is None:
                         raise RuntimeError("The speech service returned no audio.")
                     take_kind = "tts"

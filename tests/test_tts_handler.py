@@ -1,8 +1,9 @@
 import base64
+import json
 import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 from pandrator.logic import tts_handler
 
@@ -664,6 +665,107 @@ class TTSHandlerTests(unittest.TestCase):
             called_kwargs["timeout"],
             tts_handler.KOBOLD_QWEN_MODEL_PREPARATION_TIMEOUT_SECONDS,
         )
+
+    def test_kobold_qwen_negotiates_streaming_batch_capabilities(self):
+        response = Mock(status_code=200)
+        response.json.return_value = {
+            "batch_synthesis": {
+                "supported": True,
+                "streaming": True,
+                "endpoint": "/v1/audio/speech/batch",
+                "protocol": "ndjson-v1",
+                "default_batch_size": 10,
+                "max_batch_size": 32,
+                "parallelism": 1,
+            }
+        }
+
+        with patch("pandrator.logic.tts_handler.requests.get", return_value=response):
+            capabilities = tts_handler.get_kobold_qwen_batch_capabilities(
+                "http://localhost:8042"
+            )
+
+        self.assertTrue(capabilities["supported"])
+        self.assertTrue(capabilities["streaming"])
+        self.assertEqual("ndjson-v1", capabilities["protocol"])
+        self.assertEqual(10, capabilities["default_batch_size"])
+        self.assertEqual(32, capabilities["max_batch_size"])
+
+    def test_kobold_qwen_batch_stream_returns_completed_and_failed_items(self):
+        response = MagicMock(status_code=200)
+        response.__enter__.return_value = response
+        response.iter_lines.return_value = [
+            json.dumps(
+                {
+                    "type": "item",
+                    "id": "first",
+                    "status": "completed",
+                    "response_format": "wav",
+                    "audio_base64": base64.b64encode(b"wav-one").decode("ascii"),
+                }
+            ).encode("utf-8"),
+            json.dumps(
+                {
+                    "type": "item",
+                    "id": "second",
+                    "status": "failed",
+                    "error": {
+                        "detail": "temporary failure",
+                        "retryable": True,
+                    },
+                }
+            ).encode("utf-8"),
+            b'{"type":"batch","status":"partial"}',
+        ]
+        decoded = object()
+        with (
+            patch(
+                "pandrator.logic.tts_handler.requests.post",
+                return_value=response,
+            ) as post,
+            patch(
+                "pandrator.logic.tts_handler._decode_audio_bytes",
+                return_value=decoded,
+            ),
+        ):
+            events = list(
+                tts_handler._iter_kobold_qwen_batch_audio_http(
+                    [
+                        {
+                            "id": "first",
+                            "text": "First sentence.",
+                            "settings": {
+                                "service": "kobold_qwen",
+                                "model": "Prebuilt Voices",
+                                "voice": "Ryan",
+                            },
+                        },
+                        {
+                            "id": "second",
+                            "text": "Second sentence.",
+                            "settings": {
+                                "service": "kobold_qwen",
+                                "model": "Prebuilt Voices",
+                                "voice": "Ryan",
+                            },
+                        },
+                    ],
+                    base_url="http://localhost:8042",
+                )
+            )
+
+        self.assertEqual(["first", "second"], [event["id"] for event in events])
+        self.assertIs(decoded, events[0]["audio"])
+        self.assertEqual("temporary failure", events[1]["error"]["detail"])
+        self.assertEqual(
+            "http://localhost:8042/v1/audio/speech/batch",
+            post.call_args.args[0],
+        )
+        self.assertEqual(
+            ["first", "second"],
+            [item["id"] for item in post.call_args.kwargs["json"]["items"]],
+        )
+        self.assertTrue(post.call_args.kwargs["stream"])
 
     def test_kobold_qwen_forwards_generation_prompt_only_to_custom_voice(self):
         with patch("requests.post") as mock_post:

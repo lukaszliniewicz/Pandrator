@@ -440,6 +440,16 @@ export type TtsService = {
   generation_prompt_models?: string[];
   supports_voice_cloning?: boolean;
   supports_prebuilt_voices?: boolean;
+  supports_batch_synthesis?: boolean;
+  batch_synthesis?: {
+    supported?: boolean;
+    streaming?: boolean;
+    endpoint?: string;
+    protocol?: string;
+    default_batch_size?: number;
+    max_batch_size?: number;
+    parallelism?: number;
+  };
   settings?: Record<string, unknown>;
   credential_required?: boolean;
   credential_configured?: boolean;

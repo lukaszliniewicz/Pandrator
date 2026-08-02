@@ -325,9 +325,10 @@ PRESENTATIONS: dict[str, ComponentPresentation] = {
             "reference voice."
         ),
         guidance=(
-            "A comparatively large model intended for capable NVIDIA CUDA "
-            "hardware. Its model is downloaded into the shared Pandrator data "
-            "directory the first time the service starts."
+            "A comparatively large model. CUDA is strongly recommended for "
+            "normal use; CPU mode is available for compatibility and testing "
+            "but generation will be much slower. Its model is downloaded into "
+            "the shared Pandrator data directory the first time the service starts."
         ),
         languages=(
             "Arabic",
@@ -349,7 +350,7 @@ PRESENTATIONS: dict[str, ComponentPresentation] = {
         capabilities=(
             capability("voice_cloning", "Voice cloning"),
             capability("prebuilt_voices", "Pre-built voices", available=False),
-            capability("cuda_required", "CUDA required"),
+            capability("cuda_recommended", "CUDA recommended"),
         ),
         models=(
             model(

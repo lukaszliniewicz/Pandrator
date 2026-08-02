@@ -19,6 +19,7 @@ from pandrator.web.credentials import auxiliary_credential_key, upsert_credentia
 from pandrator.web.jobs import JobQueue
 from pandrator.web.models import Artifact, ArtifactEdge, AudioTake, GenerationPlan, GenerationPlanRevision, GenerationRun, GenerationSegment, OutputAssembly, PronunciationEntry, SessionRecord, UsageEvent
 from pandrator.web.sessions import SessionService
+from pandrator.web.tts_providers import TtsBatchResult, TtsCapabilities
 from pandrator.web.workflow_handlers import (
     WorkflowHandlers,
     _fraction_message_callback,
@@ -879,6 +880,80 @@ A single reviewed cue.
             self.assertEqual(len(segments), len(takes))
             self.assertEqual([], combined)
 
+    def test_automatic_audio_generation_uses_the_same_streaming_batch_contract(self):
+        prepared_path = self.session_dir / "batch-ready.json"
+        prepared_path.write_text(
+            json.dumps(
+                [
+                    {"original_sentence": "First batch sentence."},
+                    {"original_sentence": "Second batch sentence."},
+                    {"original_sentence": "Third batch sentence."},
+                ]
+            ),
+            encoding="utf-8",
+        )
+        prepared = self.artifacts.register(
+            prepared_path,
+            kind="json",
+            role="prepared_text",
+            session_id=self.session.id,
+        )
+        streamed_ids = []
+
+        def stream(items, *, batch_size, **_options):
+            self.assertEqual(2, batch_size)
+            streamed_ids.extend(item.id for item in items)
+            yield from (
+                TtsBatchResult(
+                    id=item.id,
+                    audio=AudioSegment.silent(duration=25),
+                )
+                for item in items
+            )
+
+        with (
+            mock.patch.object(
+                self.handlers.tts_providers,
+                "synthesis_capabilities",
+                return_value=TtsCapabilities(
+                    batch_synthesis=True,
+                    streaming_batch=True,
+                    default_batch_size=10,
+                    max_batch_size=32,
+                ),
+            ),
+            mock.patch.object(
+                self.handlers.tts_providers,
+                "synthesize_batch",
+                side_effect=stream,
+            ) as generate_batch,
+            mock.patch.object(
+                self.handlers.tts_providers,
+                "synthesize",
+                side_effect=AssertionError("ordinary synthesis must not be used"),
+            ),
+        ):
+            result = self.handlers.generate_audiobook_audio(
+                {
+                    "session_id": self.session.id,
+                    "source_artifact_id": prepared.id,
+                    "settings": {
+                        "service": "kobold_qwen",
+                        "model": "Prebuilt Voices",
+                        "voice": "Ryan",
+                        "tts_batch_size": 2,
+                    },
+                },
+                self.progress,
+                threading.Event(),
+            )
+
+        self.assertEqual(3, result["segments"])
+        self.assertEqual(3, len(streamed_ids))
+        generate_batch.assert_called_once()
+        with self.database.session() as session:
+            self.assertEqual(3, session.scalar(select(func.count()).select_from(AudioTake)))
+
     def test_automatic_generation_runs_document_optimization_but_stops_before_export(self):
         raw_path = self.paths.uploads / "automatic-book.txt"
         raw_path.write_text("Chapter One\n\nA short paragraph.", encoding="utf-8")
@@ -1079,6 +1154,91 @@ A single reviewed cue.
         self.assertEqual(0.0, next(value for value, detail in updates if detail == "Generating segment 1 of 2"))
         self.assertEqual(0.5, next(value for value, detail in updates if detail == "Generated segment 1 of 2"))
         self.assertEqual(1.0, next(value for value, detail in updates if detail == "Generated segment 2 of 2"))
+
+    def test_generation_streams_negotiated_batches_and_commits_each_take_in_order(self):
+        revision_id, segment_ids = self.handlers._store_generation_plan(
+            self.session.id,
+            [{"text": f"Sentence {index}."} for index in range(3)],
+            settings={},
+        )
+        with self.database.session() as session:
+            run = GenerationRun(
+                session_id=self.session.id,
+                plan_revision_id=revision_id,
+                status="queued",
+                settings_snapshot_json={
+                    "text": {"llm_tts_optimization": False},
+                    "tts": {
+                        "service": "kobold_qwen",
+                        "model": "Prebuilt Voices",
+                        "voice": "Ryan",
+                        "tts_batch_size": 2,
+                    },
+                },
+            )
+            session.add(run)
+            session.flush()
+            run_id = run.id
+
+        observed_completed_counts = []
+
+        def stream(items, *, batch_size, **_options):
+            self.assertEqual(2, batch_size)
+            self.assertEqual(segment_ids, [item.id for item in items])
+            for index, item in enumerate(items):
+                with self.database.session() as session:
+                    observed_completed_counts.append(
+                        session.scalar(
+                            select(func.count())
+                            .select_from(AudioTake)
+                            .where(AudioTake.generation_run_id == run_id)
+                        )
+                    )
+                yield TtsBatchResult(
+                    id=item.id,
+                    audio=AudioSegment.silent(duration=25 + index),
+                )
+
+        with (
+            mock.patch.object(
+                self.handlers.tts_providers,
+                "synthesis_capabilities",
+                return_value=TtsCapabilities(
+                    batch_synthesis=True,
+                    streaming_batch=True,
+                    default_batch_size=10,
+                    max_batch_size=32,
+                ),
+            ),
+            mock.patch.object(
+                self.handlers.tts_providers,
+                "synthesize_batch",
+                side_effect=stream,
+            ) as generate_batch,
+            mock.patch.object(
+                self.handlers.tts_providers,
+                "synthesize",
+                side_effect=AssertionError("ordinary synthesis must not be used"),
+            ),
+        ):
+            result = self.handlers.run_generation(
+                {"generation_run_id": run_id, "operation": "generate"},
+                self.progress,
+                threading.Event(),
+            )
+
+        self.assertEqual("completed", result["status"])
+        self.assertEqual([0, 1, 2], observed_completed_counts)
+        generate_batch.assert_called_once()
+        with self.database.session() as session:
+            takes = list(
+                session.scalars(
+                    select(AudioTake)
+                    .where(AudioTake.generation_run_id == run_id)
+                    .order_by(AudioTake.created_at)
+                ).all()
+            )
+        self.assertEqual(segment_ids, [take.generation_segment_id for take in takes])
 
     def test_generated_segment_database_writes_roll_back_as_one_unit(self):
         revision_id, segment_ids = self.handlers._store_generation_plan(

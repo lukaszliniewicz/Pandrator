@@ -10,7 +10,7 @@ from pandrator.web.api import create_app
 from pandrator.web.artifacts import ArtifactService
 from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.models import AppSetting, Artifact, AudioTake, GenerationRun, GenerationSegment, Job, UsageEvent
-from pandrator.web.tts_providers import KoboldQwenAdapter
+from pandrator.web.tts_providers import KoboldQwenAdapter, TtsBatchItem
 from pandrator.web.workspace import BUILTIN_DEFAULTS, adapt_runtime_settings
 from tests.web_test_support import prepare_web_test_data_root
 
@@ -442,6 +442,54 @@ class WebParityWorkspaceTests(unittest.TestCase):
         self.assertEqual(
             "cloned",
             refreshed["voice_metadata"]["Voice Cloning:cloned-voice"]["type"],
+        )
+
+    def test_qwen_adapter_negotiates_and_chunks_streaming_batches(self):
+        adapter = KoboldQwenAdapter("kobold_qwen")
+        service = {"api_base": "http://localhost:8042"}
+        settings = {
+            "service": "kobold_qwen",
+            "model": "Prebuilt Voices",
+            "voice": "Ryan",
+        }
+        items = [
+            TtsBatchItem(id=f"segment-{index}", text=f"Text {index}", settings=settings)
+            for index in range(5)
+        ]
+        audio_by_id = {item.id: object() for item in items}
+
+        def stream(chunk, **_options):
+            yield from (
+                {"id": item["id"], "audio": audio_by_id[item["id"]], "error": None}
+                for item in chunk
+            )
+
+        with (
+            patch(
+                "pandrator.logic.tts_handler.get_kobold_qwen_batch_capabilities",
+                return_value={
+                    "supported": True,
+                    "streaming": True,
+                    "protocol": "ndjson-v1",
+                    "default_batch_size": 10,
+                    "max_batch_size": 32,
+                },
+            ),
+            patch(
+                "pandrator.logic.tts_handler.iter_kobold_qwen_batch_audio",
+                side_effect=stream,
+            ) as generate,
+        ):
+            capabilities = adapter.capabilities(service)
+            results = list(adapter.synthesize_batch(items, batch_size=2))
+
+        self.assertTrue(capabilities.batch_synthesis)
+        self.assertTrue(capabilities.streaming_batch)
+        self.assertEqual(32, capabilities.max_batch_size)
+        self.assertEqual([2, 2, 1], [len(call.args[0]) for call in generate.call_args_list])
+        self.assertEqual([item.id for item in items], [item.id for item in results])
+        self.assertTrue(
+            all(result.audio is audio_by_id[result.id] for result in results)
         )
 
     def test_tts_catalogue_restores_managed_previews_and_marks_unavailable_services(self):

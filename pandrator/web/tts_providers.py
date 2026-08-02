@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import socket
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 from urllib.parse import urlparse
 
+from sqlalchemy import select
+
 from pandrator.logic import tts_handler
 from pandrator.logic.tts_provider_profiles import list_tts_provider_profiles
 from pandrator.runtime import DataPaths
-from sqlalchemy import select
 
 from .credentials import (
     TTS_SERVICE_ENVS,
@@ -62,6 +64,24 @@ class TtsCapabilities:
     health: bool = True
     dynamic_catalog: bool = False
     voice_upload: bool = False
+    batch_synthesis: bool = False
+    streaming_batch: bool = False
+    default_batch_size: int = 1
+    max_batch_size: int = 1
+
+
+@dataclass(frozen=True, slots=True)
+class TtsBatchItem:
+    id: str
+    text: str
+    settings: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class TtsBatchResult:
+    id: str
+    audio: Any = None
+    error: TtsProviderError | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -229,6 +249,37 @@ class LegacyTtsAdapter:
     ):
         return tts_handler.text_to_audio(text, settings, **options)
 
+    def synthesize_batch(
+        self,
+        items: list[TtsBatchItem],
+        *,
+        batch_size: int,
+        **options: Any,
+    ) -> Iterator[TtsBatchResult]:
+        del batch_size
+        for item in items:
+            try:
+                yield TtsBatchResult(
+                    id=item.id,
+                    audio=self.synthesize(
+                        item.text,
+                        item.settings,
+                        **options,
+                    ),
+                )
+            except Exception as error:  # noqa: BLE001 - stable result boundary
+                projected = (
+                    error
+                    if isinstance(error, TtsProviderError)
+                    else TtsProviderError(
+                        self.service_id,
+                        "synthesize",
+                        str(error),
+                        retryable=True,
+                    )
+                )
+                yield TtsBatchResult(id=item.id, error=projected)
+
     def upload_voice(
         self,
         wav_file_path: str | list[str],
@@ -252,6 +303,35 @@ class LegacyTtsAdapter:
 
 
 class KoboldQwenAdapter(LegacyTtsAdapter):
+    def capabilities(
+        self,
+        service: dict[str, Any],
+    ) -> TtsCapabilities:
+        base_url = str(
+            service.get("api_base")
+            or tts_handler.KOBOLD_QWEN_API_BASE_URL
+        )
+        advertised = tts_handler.get_kobold_qwen_batch_capabilities(
+            base_url,
+            api_key=str(service.get("api_key") or ""),
+        )
+        supported = bool(
+            advertised.get("supported")
+            and advertised.get("protocol") == "ndjson-v1"
+        )
+        return TtsCapabilities(
+            dynamic_catalog=True,
+            voice_upload=bool(service.get("supports_voice_cloning")),
+            batch_synthesis=supported,
+            streaming_batch=(
+                supported and bool(advertised.get("streaming"))
+            ),
+            default_batch_size=int(
+                advertised.get("default_batch_size") or 1
+            ),
+            max_batch_size=int(advertised.get("max_batch_size") or 1),
+        )
+
     def enrich_catalog(
         self,
         service: dict[str, Any],
@@ -284,6 +364,15 @@ class KoboldQwenAdapter(LegacyTtsAdapter):
             service.get("default_model")
             or tts_handler.KOBOLD_QWEN_DEFAULT_MODEL
         )
+        advertised = tts_handler.get_kobold_qwen_batch_capabilities(
+            base_url,
+            api_key=api_key,
+        )
+        batch_supported = bool(
+            advertised.get("supported")
+            and advertised.get("streaming")
+            and advertised.get("protocol") == "ndjson-v1"
+        )
         return {
             "voice_catalogues": catalogues,
             "default_voices": {
@@ -293,13 +382,99 @@ class KoboldQwenAdapter(LegacyTtsAdapter):
             },
             "voice_metadata": {
                 (
-                    f"{str(item.get('model') or ('Prebuilt Voices' if item.get('type') == 'preset' else 'Voice Cloning'))}:"
+                    f"{str(item.get('model') or ('Prebuilt Voices' if item.get('type') == 'preset' else 'Voice Cloning'))!s}:"
                     f"{item['id']}"
                 ): item
                 for item in entries
             },
             "voices": list(catalogues.get(active_model, [])),
+            "supports_batch_synthesis": bool(
+                batch_supported
+            ),
+            "batch_synthesis": {
+                **advertised,
+                "supported": batch_supported,
+            },
         }
+
+    def synthesize_batch(
+        self,
+        items: list[TtsBatchItem],
+        *,
+        batch_size: int,
+        **options: Any,
+    ) -> Iterator[TtsBatchResult]:
+        if not items:
+            return
+        base_url = str(
+            options.get("kobold_qwen_base_url")
+            or tts_handler.KOBOLD_QWEN_API_BASE_URL
+        )
+        size = max(1, min(32, int(batch_size or 1)))
+        for start in range(0, len(items), size):
+            chunk = items[start : start + size]
+            pending = {item.id: item for item in chunk}
+            try:
+                for event in tts_handler.iter_kobold_qwen_batch_audio(
+                    [
+                        {
+                            "id": item.id,
+                            "text": item.text,
+                            "settings": item.settings,
+                        }
+                        for item in chunk
+                    ],
+                    base_url=base_url,
+                    cancel_event=options.get("cancel_event"),
+                ):
+                    item_id = str(event.get("id") or "")
+                    item = pending.pop(item_id, None)
+                    if item is None:
+                        continue
+                    error_payload = event.get("error")
+                    if isinstance(error_payload, dict):
+                        detail = str(
+                            error_payload.get("detail")
+                            or "Qwen batch synthesis failed."
+                        )
+                        yield TtsBatchResult(
+                            id=item_id,
+                            error=TtsProviderError(
+                                self.service_id,
+                                "synthesize_batch",
+                                detail,
+                                retryable=bool(
+                                    error_payload.get("retryable")
+                                ),
+                            ),
+                        )
+                    else:
+                        yield TtsBatchResult(
+                            id=item_id,
+                            audio=event.get("audio"),
+                        )
+            except Exception as error:  # noqa: BLE001 - fall back per item
+                projected = TtsProviderError(
+                    self.service_id,
+                    "synthesize_batch",
+                    str(error),
+                    retryable=True,
+                )
+                for item in chunk:
+                    if item.id in pending:
+                        yield TtsBatchResult(id=item.id, error=projected)
+                continue
+            for item in chunk:
+                if item.id in pending:
+                    yield TtsBatchResult(
+                        id=item.id,
+                        error=TtsProviderError(
+                            self.service_id,
+                            "synthesize_batch",
+                            "Qwen batch stream ended before this item completed.",
+                            retryable=True,
+                        ),
+                    )
 
 
 class SileroAdapter(LegacyTtsAdapter):
@@ -476,6 +651,60 @@ class TtsProviderRegistry:
                 str(error),
                 retryable=True,
             ) from error
+
+    def synthesis_capabilities(
+        self,
+        settings: dict[str, Any],
+        **options: Any,
+    ) -> TtsCapabilities:
+        service_id = self.service_id_for_settings(settings)
+        api_base = ""
+        if service_id == "kobold_qwen":
+            api_base = str(
+                options.get("kobold_qwen_base_url")
+                or tts_handler.KOBOLD_QWEN_API_BASE_URL
+            )
+        return self.get(service_id).capabilities(
+            {
+                "id": service_id,
+                "api_base": api_base,
+                "supports_voice_cloning": service_id
+                in {"xtts", "voxcpm", "fishs2", "chatterbox", "kobold_qwen"},
+            }
+        )
+
+    def synthesize_batch(
+        self,
+        items: list[TtsBatchItem],
+        *,
+        batch_size: int,
+        **options: Any,
+    ) -> Iterator[TtsBatchResult]:
+        if not items:
+            return iter(())
+        service_id = self.service_id_for_settings(items[0].settings)
+        if any(
+            self.service_id_for_settings(item.settings) != service_id
+            for item in items
+        ):
+            raise TtsProviderConfigurationError(
+                service_id,
+                "synthesize_batch",
+                "Every item in a TTS batch must use the same service.",
+            )
+        adapter = self.get(service_id)
+        batch_method = getattr(adapter, "synthesize_batch", None)
+        if callable(batch_method):
+            return batch_method(
+                items,
+                batch_size=batch_size,
+                **options,
+            )
+        return LegacyTtsAdapter(service_id).synthesize_batch(
+            items,
+            batch_size=1,
+            **options,
+        )
 
     def upload_voice(
         self,

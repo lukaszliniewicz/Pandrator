@@ -91,6 +91,18 @@ class GuidedCatalogueTests(unittest.TestCase):
             if item["definition"]["id"] == "voxcpm"
         )
         self.assertIn("install", voxcpm["definition"]["supported_actions"])
+        self.assertEqual(
+            ["cpu", "cuda"],
+            voxcpm["definition"]["compute_variants"],
+        )
+        self.assertIn(
+            "cuda_recommended",
+            {
+                item["id"]
+                for item in voxcpm["definition"]["capabilities"]
+                if item["available"]
+            },
+        )
 
     def test_manager_owned_runtime_adapters_are_valid_python(self):
         for component_id in ("kokoro", "voxcpm"):
@@ -379,6 +391,56 @@ class ManagedApplicationLaunchTests(unittest.TestCase):
             )
         )
 
+    def test_fish_runtime_spec_keeps_large_artifacts_outside_version_slot(self):
+        from pandrator_manager.models import ResolvedComponentState
+        from pandrator_manager.runtime_specs import component_runtime_spec
+
+        with tempfile.TemporaryDirectory() as directory:
+            layout = WorkspaceLayout.from_value(directory)
+            layout.ensure_base_directories()
+            self._activate_fixture(layout, "fish_speech")
+            spec = component_runtime_spec(
+                layout,
+                "fish_speech",
+                ResolvedComponentState(
+                    compute=ComputeVariant.VULKAN,
+                    platform="test",
+                    quantization="q6_k",
+                ),
+            )
+            with self.assertRaisesRegex(
+                ValueError,
+                "does not support quantization",
+            ):
+                component_runtime_spec(
+                    layout,
+                    "fish_speech",
+                    ResolvedComponentState(
+                        compute=ComputeVariant.VULKAN,
+                        platform="test",
+                        quantization="not-a-real-quant",
+                    ),
+                )
+
+        self.assertIsNotNone(spec)
+        self.assertEqual(
+            str(layout.data / "models" / "fish_speech" / "s2-pro-q6_k.gguf"),
+            spec.environment["FISHS2_MODEL_PATH"],
+        )
+        self.assertEqual(
+            str(layout.data / "models" / "fish_speech" / "tokenizer.json"),
+            spec.environment["FISHS2_TOKENIZER_PATH"],
+        )
+        self.assertEqual(
+            str(layout.data / "runtime" / "fish_speech"),
+            spec.environment["FISHS2_RUNTIME_DIR"],
+        )
+        self.assertEqual(
+            str(layout.state / "services" / "fish_speech" / "voices"),
+            spec.environment["FISHS2_VOICES_DIR"],
+        )
+        self.assertEqual(60 * 60, spec.startup_timeout_seconds)
+
     def test_kokoro_and_voxcpm_have_manager_owned_runtime_contracts(self):
         from pandrator_manager.models import ResolvedComponentState
         from pandrator_manager.runtime_specs import component_runtime_spec
@@ -400,7 +462,7 @@ class ManagedApplicationLaunchTests(unittest.TestCase):
                 layout,
                 "voxcpm",
                 ResolvedComponentState(
-                    compute=ComputeVariant.CUDA,
+                    compute=ComputeVariant.CPU,
                     platform="test",
                 ),
             )
@@ -429,6 +491,9 @@ class ManagedApplicationLaunchTests(unittest.TestCase):
         self.assertEqual((8021,), voxcpm.ports)
         self.assertIn("pandrator-manager-run.py", voxcpm.arguments)
         self.assertEqual("8021", voxcpm.environment["VOXCPM_PORT"])
+        self.assertEqual("cpu", voxcpm.environment["VOXCPM_DEVICE"])
+        backend_argument = voxcpm.arguments.index("--backend") + 1
+        self.assertEqual("cpu", voxcpm.arguments[backend_argument])
 
 
 class ManagerBootstrapSecurityTests(unittest.TestCase):

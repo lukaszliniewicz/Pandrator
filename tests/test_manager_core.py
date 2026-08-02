@@ -787,6 +787,16 @@ class RegistryAndPlanningTests(unittest.TestCase):
 
 
 class LegacyImporterTests(unittest.TestCase):
+    def test_voxcpm_legacy_backend_preserves_explicit_cpu(self):
+        self.assertEqual(
+            LegacyImporter._compute("voxcpm", {"voxcpm_backend": "cpu"}),
+            ComputeVariant.CPU,
+        )
+        self.assertEqual(
+            LegacyImporter._compute("voxcpm", {}),
+            ComputeVariant.CUDA,
+        )
+
     def test_crispasr_uses_resolved_legacy_runtime_backend(self):
         self.assertEqual(
             LegacyImporter._compute(

@@ -15,22 +15,22 @@ computer. Cloud language and speech providers are optional.
 ## Quick start
 
 The current release is
-[Pandrator 0.8.2](https://github.com/lukaszliniewicz/Pandrator/releases/tag/v.0.8.2)
-with Pandrator Manager 0.9.12. The Manager installs Pandrator, launches it, and
+[Pandrator 0.8.3](https://github.com/lukaszliniewicz/Pandrator/releases/tag/v.0.8.3)
+with Pandrator Manager 0.9.13. The Manager installs Pandrator, launches it, and
 lets you add or remove speech components later. Docker and WSL are not
 required.
 
 ### Windows
 
 1. Download
-   [PandratorManager-0.9.12-windows-x86_64.exe](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.8.2/PandratorManager-0.9.12-windows-x86_64.exe).
+   [PandratorManager-0.9.13-windows-x86_64.exe](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.8.3/PandratorManager-0.9.13-windows-x86_64.exe).
 2. Run it and choose the parent folder for your installation.
 3. Let the Manager install Pandrator, then open the browser interface.
 4. Under **Providers & services**, install only the local models you want.
 
 The Windows executable is not Authenticode-signed, so Windows may show
 **Unknown publisher** or a SmartScreen warning. The
-[release page](https://github.com/lukaszliniewicz/Pandrator/releases/tag/v.0.8.2)
+[release page](https://github.com/lukaszliniewicz/Pandrator/releases/tag/v.0.8.3)
 collects the checksums for all downloadable files in one `SHA256SUMS` file.
 
 ### Linux
@@ -38,15 +38,15 @@ collects the checksums for all downloadable files in one `SHA256SUMS` file.
 Download the AppImage, make it executable, and run it:
 
 ```bash
-chmod +x PandratorManager-0.9.12-x86_64.AppImage
-./PandratorManager-0.9.12-x86_64.AppImage
+chmod +x PandratorManager-0.9.13-x86_64.AppImage
+./PandratorManager-0.9.13-x86_64.AppImage
 ```
 
 The first launch asks where to create the managed `Pandrator` folder. On a
 headless machine, choose the workspace explicitly:
 
 ```bash
-./PandratorManager-0.9.12-x86_64.AppImage \
+./PandratorManager-0.9.13-x86_64.AppImage \
   setup --workspace /srv/pandrator --no-open
 ```
 

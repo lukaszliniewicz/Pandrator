@@ -22,6 +22,16 @@ from .models import (
 from .network import EndpointExposure
 from .releases.bundles import active_release_bundle
 
+_FISHS2_MODEL_FILENAMES = {
+    "f16": "s2-pro-f16.gguf",
+    "q8_0": "s2-pro-q8_0.gguf",
+    "q6_k": "s2-pro-q6_k.gguf",
+    "q5_k_m": "s2-pro-q5_k_m.gguf",
+    "q4_k_m": "s2-pro-q4_k_m.gguf",
+    "q3_k": "s2-pro-q3_k.gguf",
+    "q2_k": "s2-pro-q2_k.gguf",
+}
+
 
 def _environment_python(environment: Path) -> Path:
     return environment / (
@@ -356,6 +366,17 @@ def component_runtime_spec(
             arguments=("--backend", compute),
         )
     if component_id == "fish_speech":
+        fish_quantization = str(quantization or "q6_k").strip().lower()
+        try:
+            fish_model_filename = _FISHS2_MODEL_FILENAMES[fish_quantization]
+        except KeyError as error:
+            allowed = ", ".join(sorted(_FISHS2_MODEL_FILENAMES))
+            raise ValueError(
+                "Fish S2 Pro does not support quantization "
+                f"{fish_quantization!r}; choose one of: {allowed}."
+            ) from error
+        fish_models = layout.data / "models" / "fish_speech"
+        fish_state = layout.state / "services" / "fish_speech"
         return python_bootstrap(
             service_id="tts.fish_speech",
             label="Fish S2 Pro",
@@ -363,9 +384,20 @@ def component_runtime_spec(
             arguments=(),
             environment={
                 "FISHS2_BACKEND": compute,
-                "FISHS2_MODEL_QUANT": quantization or "q6_k",
+                "FISHS2_MODEL_QUANT": fish_quantization,
                 "FISHS2_PORT": "8022",
+                "FISHS2_MODEL_PATH": str(fish_models / fish_model_filename),
+                "FISHS2_TOKENIZER_PATH": str(fish_models / "tokenizer.json"),
+                "FISHS2_RUNTIME_DIR": str(
+                    layout.data / "runtime" / "fish_speech"
+                ),
+                "FISHS2_VOICES_DIR": str(fish_state / "voices"),
+                "FISHS2_LOGS_DIR": str(layout.logs / "fish_speech"),
+                "FISHS2_TEMP_DIR": str(layout.cache / "fish_speech" / "tmp"),
             },
+            # The first Linux launch may compile s2.cpp before loading a
+            # multi-gigabyte model.  Subsequent launches reuse both artifacts.
+            startup_timeout=60 * 60,
         )
     if component_id == "chatterbox":
         return python_bootstrap(

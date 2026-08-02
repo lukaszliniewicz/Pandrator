@@ -158,6 +158,7 @@
   let ttsModel = $state('');
   let voiceName = $state('');
   let generationPrompt = $state('');
+  let ttsBatchSize = $state(10);
   let speechBlockMinChars = $state(10);
   let speechBlockMaxChars = $state(220);
   let speechBlockMergeThreshold = $state(250);
@@ -566,6 +567,7 @@
         ? String(saved.voice ?? saved.voice_name ?? '')
         : String(activeService?.default_voice ?? '');
     generationPrompt = String(saved.generation_prompt ?? '');
+    ttsBatchSize = Number(saved.tts_batch_size ?? 10);
     speechBlockMinChars = Number(saved.speech_block_min_chars ?? 10);
     speechBlockMaxChars = Number(saved.speech_block_max_chars ?? 220);
     speechBlockMergeThreshold = Number(
@@ -911,6 +913,16 @@
   );
   const supportsGenerationPrompt = $derived(
     generationPromptModels.includes(ttsModel.toLowerCase())
+  );
+  const supportsBatchSynthesis = $derived(
+    Boolean(
+      selectedTtsService?.supports_batch_synthesis &&
+        selectedTtsService?.batch_synthesis?.streaming &&
+        selectedTtsService?.batch_synthesis?.protocol === 'ndjson-v1'
+    )
+  );
+  const maximumTtsBatchSize = $derived(
+    Number(selectedTtsService?.batch_synthesis?.max_batch_size ?? 32)
   );
   const qwenVoiceCloning = $derived(
     selectedTtsServiceId === 'kobold_qwen' &&
@@ -1275,6 +1287,7 @@
         xtts_model: ttsModel,
         voice: voiceName,
         generation_prompt: generationPrompt,
+        tts_batch_size: ttsBatchSize,
         language: targetLanguage,
         target_language: targetLanguage,
         speech_block_min_chars: speechBlockMinChars,
@@ -2302,6 +2315,24 @@
               {ttsModel || 'This model'} does not accept speech-direction prompts.
               Choose an instruction-capable model to add one.
             </p>
+          {/if}
+          {#if supportsBatchSynthesis}
+            <div class="rounded-xl border border-[var(--line)] p-4">
+              <div class="text-sm font-semibold">Streaming generation batches</div>
+              <p class="muted mt-1 text-xs leading-relaxed">
+                Keep the speech engine continuously occupied while completed
+                segments become playable one by one. Use 1 to disable batching.
+              </p>
+              <label class="mt-3 block text-xs font-semibold"
+                >Segments per batch<input
+                  type="number"
+                  min="1"
+                  max={maximumTtsBatchSize}
+                  bind:value={ttsBatchSize}
+                  class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                /></label
+              >
+            </div>
           {/if}
           {#if session.workflow_kind !== 'audiobook'}<div
               class="rounded-xl border border-[var(--line)] p-4"
