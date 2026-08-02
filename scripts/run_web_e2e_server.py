@@ -15,7 +15,6 @@ from pandrator.web.auth import AuthService
 from pandrator.web.jobs import JobQueue, Worker, noop_handler
 from pandrator.web.workflow_handlers import WorkflowHandlers
 
-
 root = Path(tempfile.mkdtemp(prefix="pandrator-playwright-"))
 atexit.register(lambda: shutil.rmtree(root, ignore_errors=True))
 app = create_app(data_root=root, testing=False)
@@ -37,4 +36,16 @@ def stop_worker() -> None:
 
 
 atexit.register(stop_worker)
-serve(app, host="127.0.0.1", port=8098, threads=8)
+# Playwright creates a fresh browser context for every test and runs both
+# browser projects against this one disposable server. Waitress otherwise
+# retains inactive keep-alive channels for 120 seconds and reaches its default
+# 100-channel ceiling late in the suite, even though the pages have closed.
+serve(
+    app,
+    host="127.0.0.1",
+    port=8098,
+    threads=8,
+    connection_limit=512,
+    channel_timeout=15,
+    cleanup_interval=5,
+)
