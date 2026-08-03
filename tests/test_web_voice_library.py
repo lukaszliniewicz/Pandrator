@@ -95,6 +95,7 @@ class VoiceLibraryApiTests(unittest.TestCase):
         self.assertEqual(job["kind"], "voice.publish")
         self.assertEqual(job["payload_json"]["service_id"], "kobold_qwen")
         self.assertEqual(job["payload_json"]["service"], "Qwen3 TTS")
+        self.assertNotIn("base_url", job["payload_json"])
 
 
 class VoiceNormalizationTests(unittest.TestCase):
@@ -204,6 +205,73 @@ class InstallerAsrPreferenceTests(unittest.TestCase):
 
 
 class VoiceProviderPublishTests(unittest.TestCase):
+    def test_managed_fish_publish_resolves_endpoint_when_job_runs(self):
+        class FakeManager:
+            configured = True
+
+            @staticmethod
+            def managed_service(service_id):
+                if service_id != "tts.fish_speech":
+                    raise AssertionError(service_id)
+                return {
+                    "id": service_id,
+                    "endpoint": "http://127.0.0.1:8022",
+                    "health": {"state": "healthy"},
+                }
+
+        with tempfile.TemporaryDirectory() as directory:
+            paths = prepare_web_test_data_root(directory)
+            database = Database(paths.database)
+            try:
+                with database.session() as session:
+                    voice = Voice(name="Fish narrator", language="en")
+                    session.add(voice)
+                    session.flush()
+                    voice_id = voice.id
+                sample_path = paths.voices / voice_id / "sample.wav"
+                sample_path.parent.mkdir(parents=True)
+                sample_path.write_bytes(silent_wav())
+                artifacts = ArtifactService(database, paths)
+                artifact = artifacts.register(
+                    sample_path,
+                    kind="audio",
+                    role="voice_sample",
+                )
+                with database.session() as session:
+                    session.add(
+                        VoiceSample(
+                            voice_id=voice_id,
+                            artifact_id=artifact.id,
+                        )
+                    )
+                handler = WorkflowHandlers(
+                    database,
+                    paths,
+                    manager_bridge=FakeManager(),
+                )
+                with mock.patch(
+                    "pandrator.logic.tts_handler.upload_speaker_voice",
+                    return_value="Fish_narrator",
+                ) as upload:
+                    result = handler.publish_voice(
+                        {
+                            "voice_id": voice_id,
+                            "service_id": "fishs2",
+                            "service": "FishS2",
+                            "base_url": "http://127.0.0.1:8020",
+                        },
+                        lambda *_args: None,
+                        threading.Event(),
+                    )
+
+                self.assertEqual("Fish_narrator", result["provider_voice_id"])
+                self.assertEqual(
+                    "http://127.0.0.1:8022",
+                    upload.call_args.kwargs["base_url"],
+                )
+            finally:
+                database.dispose()
+
     def test_provider_publish_persists_returned_voice_id(self):
         with tempfile.TemporaryDirectory() as directory:
             paths = prepare_web_test_data_root(directory)

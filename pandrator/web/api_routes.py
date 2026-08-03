@@ -3513,7 +3513,6 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 "voice_id": voice_id,
                 "service_id": resolved_service_id,
                 "service": str(service.get("name") or resolved_service_id),
-                "base_url": str(service.get("api_base") or ""),
             },
             resource_keys=[f"service:tts:{resolved_service_id}"],
         )

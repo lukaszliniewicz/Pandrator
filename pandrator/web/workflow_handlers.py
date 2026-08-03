@@ -29,13 +29,10 @@ from .artifact_selection import canonical_stage_key, selected_artifacts
 from .audio_verification import add_run_rms_warning, run_rms_outliers, verify_audio
 from .artifacts import ArtifactService
 from .credentials import (
-    TTS_SERVICE_ENVS,
     auxiliary_credential_key,
     database_reference,
     hydrate_tts_settings,
-    resolve_provider_credential,
     resolve_secret_reference,
-    tts_service_credential_key,
 )
 from .database import Database
 from .export_contract import ExportContract, normalize_audio_mode
@@ -2812,7 +2809,6 @@ class WorkflowHandlers:
         voice_id = str(payload.get("voice_id") or "")
         service_id = str(payload.get("service_id") or "").strip()
         service_name = str(payload.get("service") or service_id).strip()
-        base_url = str(payload.get("base_url") or "").strip()
         with self.database.session() as session:
             voice = session.get(Voice, voice_id)
             if voice is None:
@@ -2843,15 +2839,23 @@ class WorkflowHandlers:
             defaults = session.get(AppSetting, "defaults.tts")
             connection_value = dict(connections.value_json or {}) if connections and isinstance(connections.value_json, dict) else {}
             default_value = dict(defaults.value_json or {}) if defaults and isinstance(defaults.value_json, dict) else {}
-        service_config = tts_handler.get_service_config({**default_value, **connection_value}, service_id) or {}
-        normalized_service_id = str(service_config.get("id") or service_id).strip().lower().replace("-", "_")
-        credential = resolve_provider_credential(
+        runtime_settings = hydrate_tts_settings(
             self.database,
             self.paths,
-            normalized_service_id,
-            service_config.get("secret_ref") or database_reference(tts_service_credential_key(normalized_service_id)),
-            fallback_environment_variable=str(service_config.get("api_key_env") or TTS_SERVICE_ENVS.get(normalized_service_id, "")),
+            {
+                **default_value,
+                **connection_value,
+                "service": service_id,
+            },
+            manager_bridge=self.manager_bridge,
         )
+        service_config = tts_handler.get_service_config(
+            runtime_settings,
+            service_id,
+        ) or {}
+        normalized_service_id = str(service_config.get("id") or service_id).strip().lower().replace("-", "_")
+        base_url = str(service_config.get("api_base") or "").strip()
+        service_name = str(service_config.get("name") or service_name).strip()
         provider_voice_id = self.tts_providers.upload_voice(
             normalized_service_id,
             str(sample_path),
@@ -2859,7 +2863,7 @@ class WorkflowHandlers:
             service=service_name,
             prompt_text=sample.transcript if sample.transcript_reviewed else None,
             voice_id=requested_provider_voice_id,
-            api_key=credential.resolved_value(),
+            api_key=str(service_config.get("api_key") or ""),
         )
         if cancel_event.is_set():
             return {}
