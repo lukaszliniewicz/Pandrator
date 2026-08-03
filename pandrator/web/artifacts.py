@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from pandrator.runtime import DataPaths
@@ -81,6 +81,7 @@ class ArtifactService:
         calculate_hash: bool = True,
         metadata: dict | None = None,
         settings: dict | None = None,
+        replace_parent_ids: bool = False,
     ) -> Artifact:
         prepared = self.prepare_registration(
             path,
@@ -98,6 +99,7 @@ class ArtifactService:
                 calculate_hash=calculate_hash,
                 metadata=metadata,
                 settings=settings,
+                replace_parent_ids=replace_parent_ids,
                 _prepared=prepared,
             )
             session.flush()
@@ -149,6 +151,7 @@ class ArtifactService:
         calculate_hash: bool = True,
         metadata: dict | None = None,
         settings: dict | None = None,
+        replace_parent_ids: bool = False,
         _prepared: PreparedArtifactRegistration | None = None,
     ) -> Artifact:
         """Register an artifact inside the caller's transaction.
@@ -220,6 +223,12 @@ class ArtifactService:
             artifact.updated_at = utcnow()
 
         normalized_parent_ids = list(dict.fromkeys(parent_ids or []))
+        if replace_parent_ids and not created:
+            session.execute(
+                delete(ArtifactEdge).where(
+                    ArtifactEdge.child_artifact_id == artifact.id
+                )
+            )
         existing_parent_ids: set[str] = set()
         if normalized_parent_ids and not created:
             existing_parent_ids = set(

@@ -181,6 +181,14 @@ class DurableOutputAssemblyTests(unittest.TestCase):
         artifact, path = ArtifactService(self.database, self.paths).resolve(latest["artifact_id"])
         self.assertEqual(420, len(AudioSegment.from_file(path)))
         self.assertEqual("assembled_audio", artifact.role)
+        snapshot = artifact.metadata_json["output_settings"]
+        self.assertEqual(1, snapshot["version"])
+        self.assertEqual("wav", snapshot["sections"]["output"]["format"])
+        self.assertEqual(
+            800,
+            snapshot["sections"]["audio"]["synchronization_delay_ms"],
+        )
+        self.assertEqual(64, len(snapshot["settings_hash"]))
 
         with self.database.session() as session:
             segment = session.get(GenerationSegment, segment_ids[0])

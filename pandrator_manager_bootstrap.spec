@@ -21,6 +21,9 @@ manager_package = package_root / "pandrator_manager"
 if not manager_package.is_dir() or manager_package.is_symlink():
     raise RuntimeError(f"Unsafe or missing wheel package root: {manager_package}")
 recovery_static = manager_package / "recovery_ui" / "static"
+tray_icon = manager_package / "tray" / "pandrator-tray.png"
+if not tray_icon.is_file() or tray_icon.is_symlink():
+    raise RuntimeError(f"Unsafe or missing tray icon: {tray_icon}")
 tray_backend = (
     "pystray._win32"
     if os.name == "nt"
@@ -33,7 +36,10 @@ a = Analysis(
     [str(entrypoint)],
     pathex=[str(package_root)],
     binaries=[],
-    datas=[(str(recovery_static), "pandrator_manager/recovery_ui/static")],
+    datas=[
+        (str(recovery_static), "pandrator_manager/recovery_ui/static"),
+        (str(tray_icon), "pandrator_manager/tray"),
+    ],
     hiddenimports=[
         "PIL.Image",
         "pystray",

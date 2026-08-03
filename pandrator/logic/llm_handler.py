@@ -337,6 +337,20 @@ def _model_optional_float(value: Any) -> float | None:
     return parsed if parsed >= 0 else None
 
 
+def _request_reasoning_effort(
+    model_record: Any,
+    llm_settings: Any | None,
+) -> str:
+    """Prefer a task override, otherwise inherit the selected model default."""
+
+    override = str(_read_setting(llm_settings, "reasoning_effort", "") or "").strip()
+    if override and override.lower() not in {"default", "inherit", "model_default"}:
+        return override
+    if isinstance(model_record, dict):
+        return str(model_record.get("default_reasoning_effort") or "").strip()
+    return ""
+
+
 def normalize_model_records(raw_models: Any, provider: str) -> list[dict[str, Any]]:
     """Normalize legacy string model IDs and current model-setting records."""
     raw_items = (
@@ -1639,11 +1653,7 @@ def chat_completion_with_metadata(
         temperature = _model_optional_float(model_record.get("default_temperature"))
         if temperature is not None and temperature <= 2.0:
             request_payload["temperature"] = temperature
-    reasoning_effort = str(
-        model_record.get("default_reasoning_effort", "")
-        if isinstance(model_record, dict)
-        else ""
-    ).strip()
+    reasoning_effort = _request_reasoning_effort(model_record, llm_settings)
     if reasoning_effort:
         request_payload["reasoning_effort"] = reasoning_effort
 
@@ -1816,7 +1826,7 @@ def _make_api_request(
         temperature = _model_optional_float(model_record.get("default_temperature"))
         if temperature is not None and temperature <= 2.0:
             request_payload["temperature"] = temperature
-        reasoning_effort = str(model_record.get("default_reasoning_effort") or "").strip()
+        reasoning_effort = _request_reasoning_effort(model_record, llm_settings)
         if reasoning_effort:
             request_payload["reasoning_effort"] = reasoning_effort
     logging.info("LiteLLM request model=%s", resolved_model)

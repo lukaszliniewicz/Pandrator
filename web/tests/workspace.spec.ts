@@ -69,6 +69,67 @@ test('wizard creates a guided subtitle workspace and preserves setup return', as
   await expect(page.getByRole('button', { name: 'Tour' })).toBeVisible();
 });
 
+test('correction and translation cards expose independent reasoning levels', async ({
+  page
+}) => {
+  await signIn(page);
+  const authStatus = await page.request.get('/api/v1/auth/status');
+  const csrfToken = (await authStatus.json()).csrf_token;
+  const created = await page.request.post('/api/v1/sessions', {
+    headers: { 'X-CSRF-Token': csrfToken },
+    data: {
+      name: uniqueName('Task reasoning controls'),
+      workflow_kind: 'voiceover',
+      included_stages: ['correct', 'translate']
+    }
+  });
+  expect(created.ok()).toBeTruthy();
+  const session = await created.json();
+
+  await page.goto(`/sessions/${session.id}`);
+  const correctionCard = page
+    .getByRole('heading', { name: 'Correct', exact: true })
+    .locator('xpath=ancestor::article');
+  await correctionCard.getByRole('button', { name: 'Settings' }).click();
+  let dialog = page.getByRole('dialog');
+  await expect(dialog.getByLabel('Reasoning level')).toHaveValue('');
+  await dialog.getByLabel('Reasoning level').selectOption('high');
+  await dialog.getByRole('button', { name: 'Save settings' }).click();
+  await expect(dialog).toHaveCount(0);
+
+  const correctionSettings = await page.request.get(
+    `/api/v1/sessions/${session.id}/settings/correction`
+  );
+  expect(correctionSettings.ok()).toBeTruthy();
+  expect((await correctionSettings.json()).override.reasoning_effort).toBe(
+    'high'
+  );
+
+  const translationCard = page
+    .getByRole('heading', { name: 'Translate', exact: true })
+    .locator('xpath=ancestor::article');
+  await translationCard.getByRole('button', { name: 'Settings' }).click();
+  dialog = page.getByRole('dialog');
+  await expect(dialog.getByLabel('Reasoning level')).toHaveValue('');
+  await dialog.getByLabel('Reasoning level').selectOption('low');
+  await dialog.getByRole('button', { name: 'Save settings' }).click();
+  await expect(dialog).toHaveCount(0);
+
+  const translationSettings = await page.request.get(
+    `/api/v1/sessions/${session.id}/settings/translation`
+  );
+  expect(translationSettings.ok()).toBeTruthy();
+  expect((await translationSettings.json()).override.reasoning_effort).toBe(
+    'low'
+  );
+
+  await translationCard.getByRole('button', { name: 'Settings' }).click();
+  dialog = page.getByRole('dialog');
+  await expect(dialog.getByLabel('Reasoning level')).toHaveValue('low');
+  await dialog.getByLabel('Translation backend').selectOption('deepl');
+  await expect(dialog.getByLabel('Reasoning level')).toHaveCount(0);
+});
+
 test('workflow version history loads older pages on demand', async ({
   page
 }) => {
@@ -176,6 +237,113 @@ test('workflow version history loads older pages on demand', async ({
   await expect(
     page.getByRole('button', { name: 'Load earlier versions' })
   ).toHaveCount(0);
+});
+
+test('a selected correction checkpoint can fork a clean session branch', async ({
+  page
+}) => {
+  await signIn(page);
+  const authStatus = await page.request.get('/api/v1/auth/status');
+  const csrfToken = (await authStatus.json()).csrf_token;
+  const created = await page.request.post('/api/v1/sessions', {
+    headers: { 'X-CSRF-Token': csrfToken },
+    data: {
+      name: uniqueName('Fork checkpoint'),
+      workflow_kind: 'voiceover',
+      included_stages: ['correct']
+    }
+  });
+  expect(created.ok()).toBeTruthy();
+  const session = await created.json();
+  const artifact = {
+    id: 'selected-correction-checkpoint',
+    version: 1,
+    kind: 'srt',
+    role: 'correction',
+    relative_path: 'sessions/fork-source/correction.srt',
+    path: 'sessions/fork-source/correction.srt',
+    mime_type: 'application/x-subrip',
+    size_bytes: 128,
+    state: 'current',
+    settings_hash: 'correction-settings',
+    metadata_json: {},
+    parent_ids: [],
+    created_at: '2026-08-03T12:00:00Z',
+    is_selected: true
+  };
+  await page.route(
+    `**/api/v1/sessions/${session.id}/workflow`,
+    async (route) => {
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          session_id: session.id,
+          workflow_kind: 'voiceover',
+          workflow_preset: 'default',
+          revision: 1,
+          sources: [],
+          stages: [
+            {
+              number: 1,
+              key: 'correct',
+              title: 'Correct',
+              explanation: 'Review the source-language subtitles.',
+              status: 'completed',
+              executable: true,
+              included: true,
+              artifact,
+              artifacts: [artifact],
+              selected_artifact_id: artifact.id,
+              selection_revision: 1,
+              artifact_history_total: 1,
+              artifact_history_has_more: false,
+              artifact_history_next_before_version: null,
+              job_id: null,
+              progress: null,
+              detail: null,
+              usage: null
+            }
+          ]
+        })
+      });
+    }
+  );
+
+  const forkedId = 'forked-session-checkpoint';
+  let forkPayload: Record<string, unknown> | null = null;
+  await page.route(`**/api/v1/sessions/${session.id}/forks`, async (route) => {
+    forkPayload = route.request().postDataJSON() as Record<string, unknown>;
+    await route.fulfill({
+      status: 201,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        ...session,
+        id: forkedId,
+        name: 'Polish alternate',
+        forked_from_session_id: session.id,
+        checkpoint_artifact_id: 'cloned-correction-checkpoint',
+        copied_stages: ['correction']
+      })
+    });
+  });
+
+  await page.goto(`/sessions/${session.id}`);
+  await page.getByRole('button', { name: 'Fork here' }).click();
+  const dialog = page.getByRole('dialog', {
+    name: 'Fork after correction'
+  });
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toContainText(
+    'Generation runs, audio takes, assemblies, and exports stay in the original session.'
+  );
+  await dialog.getByLabel('New session name').fill('Polish alternate');
+  await dialog.getByRole('button', { name: 'Create fork' }).click();
+
+  await expect(page).toHaveURL(`/sessions/${forkedId}`);
+  expect(forkPayload).toEqual({
+    checkpoint_artifact_id: artifact.id,
+    name: 'Polish alternate'
+  });
 });
 
 test('provider defaults and restartable tours are keyboard reachable', async ({

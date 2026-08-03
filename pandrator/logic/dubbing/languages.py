@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-
 LANGUAGE_CODE_ALIASES = {
     "english": "en",
     "spanish": "es",
@@ -73,6 +72,10 @@ FFMPEG_SUBTITLE_LANGUAGE_CODES = {
     "uk": "ukr",
 }
 
+LANGUAGE_DISPLAY_NAMES = {
+    code: name.title() for name, code in LANGUAGE_CODE_ALIASES.items()
+}
+
 
 def normalize_language_code(language: str, default: str = "en") -> str:
     """Normalize user-facing language names and service codes."""
@@ -90,3 +93,11 @@ def ffmpeg_subtitle_language_code(language: str, default: str = "eng") -> str:
     """Return an ISO-639-style three-letter code suitable for FFmpeg metadata."""
     normalized = normalize_language_code(language, default="en")
     return FFMPEG_SUBTITLE_LANGUAGE_CODES.get(normalized, default)
+
+
+def subtitle_language_title(language: str, default: str = "Subtitles") -> str:
+    """Return a concise human-facing title for a subtitle track."""
+    normalized = normalize_language_code(language, default="und")
+    if normalized in {"", "auto", "und", "unknown"}:
+        return default
+    return LANGUAGE_DISPLAY_NAMES.get(normalized, normalized.upper())

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pandrator-manager"
-version = "0.9.13"
+version = "0.9.14"
 description = "Per-user installation, update, repair, and runtime manager for Pandrator"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
@@ -84,6 +84,9 @@ pandrator_manager = "."
 [tool.setuptools.package-data]
 "pandrator_manager.recovery_ui" = [
   "static/**",
+]
+"pandrator_manager.tray" = [
+  "pandrator-tray.png",
 ]
 
 [tool.setuptools.exclude-package-data]

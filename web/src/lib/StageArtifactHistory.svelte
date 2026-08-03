@@ -5,6 +5,7 @@
     ChevronRight,
     Clock3,
     Eye,
+    GitFork,
     History,
     LoaderCircle,
     RotateCcw
@@ -27,6 +28,7 @@
     onselect,
     onpreview,
     onclear,
+    onfork,
     onloadmore
   }: {
     artifacts: StageArtifact[];
@@ -38,6 +40,7 @@
     onselect: (artifactId: string) => void;
     onpreview: () => void;
     onclear: () => void;
+    onfork?: () => void;
     onloadmore: () => void;
   } = $props();
 
@@ -80,6 +83,13 @@
     {:else}
       <span class="muted text-xs"
         >Choose an earlier version or run this stage for the selected input.</span
+      >
+    {/if}
+    {#if onfork && selectedArtifact}
+      <button
+        onclick={onfork}
+        class="flex items-center gap-1 text-xs font-semibold text-[var(--accent)]"
+        ><GitFork size={13} /> Fork here</button
       >
     {/if}
   </div>
@@ -183,6 +193,11 @@
                       onclick={() => onselect(artifact.id)}
                       class="history-action"
                       ><RotateCcw size={13} /> Select</button
+                    >
+                  {/if}
+                  {#if selected && onfork}
+                    <button onclick={onfork} class="history-action"
+                      ><GitFork size={13} /> Fork here</button
                     >
                   {/if}
                 </div>

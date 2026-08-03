@@ -50,7 +50,13 @@
     sources?: { url: string; title?: string }[];
   };
   let subtitleTracks = $state<SubtitleTrack[]>([]);
-  const url = $derived(`/api/v1/artifacts/${artifact.id}/content`);
+  const url = $derived(
+    `/api/v1/artifacts/${artifact.id}/content${
+      artifact.content_hash
+        ? `?v=${encodeURIComponent(artifact.content_hash)}`
+        : ''
+    }`
+  );
   const filename = $derived(artifactFilename(artifact));
   const extension = $derived(filename.split('.').at(-1)?.toLowerCase() ?? '');
   const mime = $derived(String(artifact.mime_type ?? '').toLowerCase());

@@ -17,6 +17,10 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import and_, func, select, update
 
+from pandrator.logic.dubbing.languages import (
+    normalize_language_code,
+    subtitle_language_title,
+)
 from pandrator.logic.dubbing.srt_utils import split_speaker_label
 from pandrator.logic.dubbing.transcript_normalization import load_transcript
 from pandrator.runtime import DataPaths
@@ -63,6 +67,7 @@ from .models import (
     new_id,
     utcnow,
 )
+from .output_settings_snapshot import build_output_settings_snapshot
 from .source_resolution import resolve_primary_source
 
 if TYPE_CHECKING:
@@ -74,6 +79,15 @@ logger = logging.getLogger(__name__)
 
 CLAUSE_PAUSE_RATIO = 1 / 3
 GENERATION_SEGMENT_POLICY_VERSION = 3
+
+
+def _effective_subtitle_language(*candidates: object) -> str:
+    """Choose the first concrete language without letting ``auto`` mask it."""
+    for candidate in candidates:
+        normalized = normalize_language_code(str(candidate or ""), default="")
+        if normalized and normalized not in {"auto", "und", "unknown"}:
+            return normalized
+    return "und"
 
 
 def _scaled_progress_callback(progress, start: float, end: float):
@@ -236,6 +250,9 @@ def _stage_settings_fingerprint(stage_key: str, settings: dict[str, Any]) -> dic
             "model": model,
             "instructions": _text("translate_prompt", "instructions"),
         }
+        reasoning_effort = _text("reasoning_effort")
+        if backend == "llm" and reasoning_effort:
+            result["reasoning_effort"] = reasoning_effort
         research = _research_fingerprint(settings)
         return {**result, **({"web_research": research} if research else {})}
     if stage_key == "correct":
@@ -244,6 +261,9 @@ def _stage_settings_fingerprint(stage_key: str, settings: dict[str, Any]) -> dic
             "model": model,
             "instructions": _text("custom_correction_prompt", "instructions"),
         }
+        reasoning_effort = _text("reasoning_effort")
+        if reasoning_effort:
+            result["reasoning_effort"] = reasoning_effort
         research = _research_fingerprint(settings)
         return {**result, **({"web_research": research} if research else {})}
     return {}
@@ -5489,6 +5509,13 @@ class WorkflowHandlers:
                         raise_on_error=True,
                     )
             progress(0.96, "Registering assembled audio")
+            output_settings_snapshot = build_output_settings_snapshot(
+                {},
+                {
+                    "audio": audio_settings,
+                    "output": output_settings,
+                },
+            )
             artifact = self.artifacts.register(
                 destination,
                 kind="audio",
@@ -5508,6 +5535,7 @@ class WorkflowHandlers:
                     "chapters": [{"start_ms": int(start * 1000), "title": title} for start, title in chapter_markers],
                     "takes": manifest,
                     "synchronization": alignment_diagnostics,
+                    "output_settings": output_settings_snapshot,
                 },
             )
             output_registered = True
@@ -5614,6 +5642,161 @@ class WorkflowHandlers:
             "point_count": len(waveform.points),
         }
 
+    def preview_output_mix(self, payload, progress, cancel_event):
+        """Render a short, managed sample with the exact export mix graph."""
+
+        from pandrator.logic.dubbing.audio_sync import build_mix_preview_command
+
+        from .media_process import (
+            MediaProcessCancelled,
+            find_first_audible_seconds,
+            probe_audio_stream,
+            resolve_ffmpeg_executable,
+            run_media_process,
+        )
+
+        session_id = str(payload.get("session_id") or "")
+        source, source_path = self._resolve_input(
+            str(payload.get("source_artifact_id") or "")
+        )
+        dubbing, dubbing_path = self._resolve_input(
+            str(payload.get("dubbing_artifact_id") or "")
+        )
+        if source.session_id != session_id or dubbing.session_id != session_id:
+            raise ValueError("Mix preview inputs do not belong to this session.")
+
+        settings = dict(payload.get("settings") or {})
+        automatic_start = payload.get("start_seconds") is None
+        automatic_start_method = "manual"
+        try:
+            requested_start = (
+                0.0
+                if automatic_start
+                else max(0.0, float(payload.get("start_seconds")))
+            )
+            requested_duration = min(
+                30.0,
+                max(4.0, float(payload.get("duration_seconds") or 12.0)),
+            )
+        except (TypeError, ValueError) as error:
+            raise ValueError("Mix preview timing must use numeric seconds.") from error
+
+        progress(0.08, "Inspecting preview audio")
+        try:
+            source_info = probe_audio_stream(source_path, cancel_event=cancel_event)
+            dubbing_info = probe_audio_stream(dubbing_path, cancel_event=cancel_event)
+            if automatic_start:
+                timeline_starts = [
+                    float(item["target_start_ms"])
+                    for item in (dubbing.metadata_json or {}).get("takes", [])
+                    if isinstance(item, dict)
+                    and isinstance(item.get("target_start_ms"), (int, float))
+                ]
+                if timeline_starts:
+                    requested_start = max(0.0, min(timeline_starts) / 1000.0 - 1.0)
+                    automatic_start_method = "assembly_timeline"
+                else:
+                    requested_start = find_first_audible_seconds(
+                        dubbing_path,
+                        cancel_event=cancel_event,
+                    )
+                    automatic_start_method = "audio_detection"
+        except MediaProcessCancelled:
+            return {}
+        available_seconds = min(
+            source_info.duration_ms,
+            dubbing_info.duration_ms,
+        ) / 1000.0
+        remaining_seconds = available_seconds - requested_start
+        if remaining_seconds < 0.25:
+            raise ValueError(
+                "The preview start is beyond the available source and voiceover audio."
+            )
+        duration_seconds = min(requested_duration, remaining_seconds)
+
+        destination_dir = self._session_dir(session_id) / "previews"
+        destination_dir.mkdir(parents=True, exist_ok=True)
+        destination = destination_dir / "soundtrack-mix-preview.wav"
+        temporary_destination = (
+            destination_dir / f".soundtrack-mix-preview-{new_id()}.wav"
+        )
+        command = build_mix_preview_command(
+            source_path,
+            dubbing_path,
+            temporary_destination,
+            start_seconds=requested_start,
+            duration_seconds=duration_seconds,
+            source_gain_db=settings.get("mix_source_gain_db", 0.0),
+            voice_gain_db=settings.get("mix_voice_gain_db", 0.0),
+            voice_lufs=settings.get("mix_voice_lufs", -16.0),
+            ducking=str(settings.get("mix_ducking") or "strong"),
+            attack_ms=settings.get("mix_attack_ms", 25),
+            release_ms=settings.get("mix_release_ms", 350),
+            ffmpeg_executable=resolve_ffmpeg_executable(),
+        )
+        progress(0.2, "Rendering soundtrack mix preview")
+        try:
+            run_media_process(command, cancel_event=cancel_event)
+            if cancel_event.is_set():
+                temporary_destination.unlink(missing_ok=True)
+                return {}
+            os.replace(temporary_destination, destination)
+        except MediaProcessCancelled:
+            temporary_destination.unlink(missing_ok=True)
+            return {}
+        except Exception:
+            temporary_destination.unlink(missing_ok=True)
+            raise
+
+        progress(0.9, "Registering soundtrack mix preview")
+        artifact = self.artifacts.register(
+            destination,
+            kind="audio",
+            role="mix_preview",
+            session_id=session_id,
+            parent_ids=[source.id, dubbing.id],
+            replace_parent_ids=True,
+            settings=settings,
+            metadata={
+                "generation_run_id": str(payload.get("generation_run_id") or ""),
+                "source_artifact_id": source.id,
+                "dubbing_artifact_id": dubbing.id,
+                "start_seconds": requested_start,
+                "duration_seconds": duration_seconds,
+                "automatic_start": automatic_start,
+                "automatic_start_method": automatic_start_method,
+                "mix": {
+                    "source_gain_db": settings.get("mix_source_gain_db", 0.0),
+                    "voice_gain_db": settings.get("mix_voice_gain_db", 0.0),
+                    "voice_lufs": settings.get("mix_voice_lufs", -16.0),
+                    "ducking": settings.get("mix_ducking", "strong"),
+                    "attack_ms": settings.get("mix_attack_ms", 25),
+                    "release_ms": settings.get("mix_release_ms", 350),
+                },
+            },
+        )
+        progress(1.0, "Soundtrack mix preview ready")
+        return {
+            "artifact_id": artifact.id,
+            "artifact": {
+                "id": artifact.id,
+                "session_id": artifact.session_id,
+                "kind": artifact.kind,
+                "role": artifact.role,
+                "relative_path": artifact.relative_path,
+                "mime_type": artifact.mime_type,
+                "size_bytes": artifact.size_bytes,
+                "content_hash": artifact.content_hash,
+                "state": artifact.state,
+                "metadata_json": artifact.metadata_json,
+                "created_at": artifact.created_at.isoformat(),
+            },
+            "start_seconds": requested_start,
+            "duration_seconds": duration_seconds,
+            "automatic_start": automatic_start,
+            "automatic_start_method": automatic_start_method,
+        }
+
     def export(self, payload, progress, cancel_event):
         """Create immutable, managed exports from the explicitly selected inputs."""
         from werkzeug.utils import secure_filename
@@ -5638,6 +5821,14 @@ class WorkflowHandlers:
         if raw_export_contract is not None and not isinstance(raw_export_contract, dict):
             raise ValueError("The queued export contract is malformed; submit the export again.")
         resolved_settings_snapshot = payload.get("resolved_settings_snapshot")
+        output_settings_snapshot = build_output_settings_snapshot(
+            settings,
+            (
+                resolved_settings_snapshot
+                if isinstance(resolved_settings_snapshot, dict)
+                else None
+            ),
+        )
         expected_assembly_settings_hash = None
         if isinstance(resolved_settings_snapshot, dict):
             from .workspace import stable_hash
@@ -5879,7 +6070,20 @@ class WorkflowHandlers:
                     parent_ids=[item.id],
                     settings=settings,
                     metadata={
-                        "language": str((item.metadata_json or {}).get("language") or (settings.get("target_language") if track_name == "translation" else settings.get("original_language")) or "und"),
+                        "language": _effective_subtitle_language(
+                            (item.metadata_json or {}).get("language"),
+                            (
+                                record.target_language
+                                if track_name == "translation"
+                                else record.source_language
+                            ),
+                            (
+                                settings.get("target_language")
+                                if track_name == "translation"
+                                else settings.get("original_language")
+                                or settings.get("source_language")
+                            ),
+                        ),
                         "source_role": item.role,
                     },
                 )
@@ -5896,8 +6100,17 @@ class WorkflowHandlers:
             def track_details(item: Artifact) -> tuple[str, str, str, bool]:
                 translation_track = is_translation_track(item)
                 track_name = "translation" if translation_track else "source"
-                language = str((item.metadata_json or {}).get("language") or (settings.get("target_language") if translation_track else settings.get("original_language")) or "und")
-                title = "Translation" if translation_track else "Source"
+                language = _effective_subtitle_language(
+                    (item.metadata_json or {}).get("language"),
+                    record.target_language if translation_track else record.source_language,
+                    (
+                        settings.get("target_language")
+                        if translation_track
+                        else settings.get("original_language")
+                        or settings.get("source_language")
+                    ),
+                )
+                title = subtitle_language_title(language)
                 is_default = translation_track or len(selected_subtitles) == 1
                 return track_name, language, title, is_default
 
@@ -6260,6 +6473,15 @@ class WorkflowHandlers:
                     progress(0.92, "Standalone audio export ready")
                 if not produced:
                     raise ValueError("No subtitle or audio artifact is available to export.")
+        with self.database.session() as session:
+            for produced_artifact in produced:
+                managed = session.get(Artifact, produced_artifact.id)
+                if managed is None:
+                    continue
+                managed.metadata_json = {
+                    **dict(managed.metadata_json or {}),
+                    "output_settings": output_settings_snapshot,
+                }
         progress(0.98, f"Registered {len(produced)} export artifact{'s' if len(produced) != 1 else ''}")
         progress(1.0, "Export ready")
         return {"artifact_ids": [item.id for item in produced], "paths": [item.relative_path for item in produced]}

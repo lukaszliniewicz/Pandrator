@@ -1,4 +1,5 @@
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -153,6 +154,23 @@ Wrong.
         self.assertIn("loudnorm", audio_sync.MIX_FILTER_COMPLEX)
         self.assertIn("alimiter", audio_sync.MIX_FILTER_COMPLEX)
 
+        preview_mix = audio_sync.build_mix_preview_command(
+            "video.mp4",
+            "dub.wav",
+            "preview.wav",
+            start_seconds=42,
+            duration_seconds=12,
+            ducking="very_strong",
+            ffmpeg_executable="ffmpeg-bin",
+        )
+        self.assertEqual(2, preview_mix.count("-ss"))
+        self.assertEqual("42.000", preview_mix[preview_mix.index("-ss") + 1])
+        self.assertEqual("12.000", preview_mix[preview_mix.index("-t") + 1])
+        self.assertTrue(
+            any("threshold=0.012589" in str(item) for item in preview_mix)
+        )
+        self.assertEqual("preview.wav", preview_mix[-1])
+
         normalize = audio_sync.build_normalize_dubbed_audio_command(
             "dub.wav",
             "normalized.wav",
@@ -283,7 +301,121 @@ Wrong.
         self.assertIn("alimiter", filter_graph)
 
     def test_strong_ducking_is_the_default_mix_profile(self):
-        self.assertIn("ratio=20.0", audio_sync.build_mix_filter_complex())
+        filter_graph = audio_sync.build_mix_filter_complex()
+
+        self.assertIn("threshold=0.025119", filter_graph)
+        self.assertIn("ratio=12.0", filter_graph)
+
+    def test_very_strong_ducking_has_a_distinct_lower_detector_threshold(self):
+        strong = audio_sync.build_mix_filter_complex(ducking="strong")
+        very_strong = audio_sync.build_mix_filter_complex(
+            ducking="very_strong"
+        )
+
+        self.assertIn("threshold=0.025119", strong)
+        self.assertIn("threshold=0.012589", very_strong)
+        self.assertIn("ratio=20.0", very_strong)
+
+    def test_ducking_detector_is_independent_from_audible_voice_controls(self):
+        filter_graph = audio_sync.build_mix_filter_complex(
+            voice_gain_db=-8,
+            voice_lufs=-20,
+            ducking="balanced",
+        )
+
+        self.assertIn(
+            "[voice_sidechain_input]volume=4.00dB[voice_sidechain]",
+            filter_graph,
+        )
+        self.assertIn(
+            "[voice_mix_input]volume=-8.00dB[voice_mix]",
+            filter_graph,
+        )
+        self.assertIn("detection=rms", filter_graph)
+        self.assertIn("link=maximum", filter_graph)
+
+    @unittest.skipUnless(shutil.which("ffmpeg"), "FFmpeg qualification requires ffmpeg")
+    def test_real_ducking_reduces_only_the_source_and_spaces_presets(self):
+        def tone_amplitude(
+            audio: AudioSegment,
+            start_ms: int,
+            end_ms: int,
+            frequency: float,
+        ) -> float:
+            window = audio[start_ms:end_ms]
+            samples = window.get_array_of_samples()[:: window.channels]
+            count = len(samples)
+            cosine = sum(
+                sample
+                * math.cos(
+                    2 * math.pi * frequency * index / window.frame_rate
+                )
+                for index, sample in enumerate(samples)
+            )
+            sine = sum(
+                sample
+                * math.sin(
+                    2 * math.pi * frequency * index / window.frame_rate
+                )
+                for index, sample in enumerate(samples)
+            )
+            return 2 * math.hypot(cosine, sine) / count
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_path = Path(temp_dir, "source.wav")
+            voice_path = Path(temp_dir, "voice.wav")
+            Sine(220, sample_rate=48000).to_audio_segment(
+                duration=6000
+            ).apply_gain(-18).set_channels(2).export(
+                source_path, format="wav"
+            ).close()
+            voice = (
+                AudioSegment.silent(duration=2000, frame_rate=48000)
+                + Sine(1000, sample_rate=48000)
+                .to_audio_segment(duration=2000)
+                .apply_gain(-12)
+                + AudioSegment.silent(duration=2000, frame_rate=48000)
+            ).set_channels(2)
+            voice.export(voice_path, format="wav").close()
+
+            attenuations: dict[str, float] = {}
+            for preset in (
+                "off",
+                "gentle",
+                "balanced",
+                "strong",
+                "very_strong",
+            ):
+                output_path = Path(temp_dir, f"{preset}.wav")
+                subprocess.run(
+                    audio_sync.build_mix_audio_command(
+                        source_path,
+                        voice_path,
+                        output_path,
+                        ducking=preset,
+                    ),
+                    check=True,
+                    capture_output=True,
+                )
+                mixed = AudioSegment.from_wav(output_path)
+                before = tone_amplitude(mixed, 500, 1500, 220)
+                during = tone_amplitude(mixed, 2500, 3500, 220)
+                attenuations[preset] = 20 * math.log10(before / during)
+
+            self.assertLess(attenuations["off"], 0.5)
+            self.assertGreater(attenuations["gentle"], 2.0)
+            self.assertGreater(
+                attenuations["balanced"],
+                attenuations["gentle"] + 3.0,
+            )
+            self.assertGreater(
+                attenuations["strong"],
+                attenuations["balanced"] + 3.0,
+            )
+            self.assertGreater(
+                attenuations["very_strong"],
+                attenuations["strong"] + 5.0,
+            )
 
     @unittest.skipUnless(shutil.which("ffmpeg"), "FFmpeg qualification requires ffmpeg")
     def test_real_mix_is_source_duration_bounded_and_peak_limited(self):

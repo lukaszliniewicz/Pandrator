@@ -30,7 +30,7 @@
             "type": "string"
           },
           "application_version": {
-            "default": "0.8.3",
+            "default": "0.8.4",
             "title": "Application Version",
             "type": "string"
           },
@@ -1286,6 +1286,90 @@
         "title": "OutputAssemblyCreateRequest",
         "type": "object"
       },
+      "OutputMixPreviewRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "duration_seconds": {
+            "default": 12.0,
+            "maximum": 30.0,
+            "minimum": 4.0,
+            "title": "Duration Seconds",
+            "type": "number"
+          },
+          "generation_run_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Generation Run Id",
+            "type": "string"
+          },
+          "mix_attack_ms": {
+            "default": 25,
+            "maximum": 2000,
+            "minimum": 1,
+            "title": "Mix Attack Ms",
+            "type": "integer"
+          },
+          "mix_ducking": {
+            "default": "strong",
+            "enum": [
+              "off",
+              "gentle",
+              "balanced",
+              "strong",
+              "very_strong"
+            ],
+            "title": "Mix Ducking",
+            "type": "string"
+          },
+          "mix_release_ms": {
+            "default": 350,
+            "maximum": 5000,
+            "minimum": 10,
+            "title": "Mix Release Ms",
+            "type": "integer"
+          },
+          "mix_source_gain_db": {
+            "default": 0.0,
+            "maximum": 12.0,
+            "minimum": -60.0,
+            "title": "Mix Source Gain Db",
+            "type": "number"
+          },
+          "mix_voice_gain_db": {
+            "default": 0.0,
+            "maximum": 12.0,
+            "minimum": -30.0,
+            "title": "Mix Voice Gain Db",
+            "type": "number"
+          },
+          "mix_voice_lufs": {
+            "default": -16.0,
+            "maximum": -8.0,
+            "minimum": -30.0,
+            "title": "Mix Voice Lufs",
+            "type": "number"
+          },
+          "start_seconds": {
+            "anyOf": [
+              {
+                "maximum": 604800.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Start Seconds"
+          }
+        },
+        "required": [
+          "generation_run_id"
+        ],
+        "title": "OutputMixPreviewRequest",
+        "type": "object"
+      },
       "PdfCropInput": {
         "additionalProperties": false,
         "properties": {
@@ -2032,6 +2116,36 @@
           "name"
         ],
         "title": "SessionCreate",
+        "type": "object"
+      },
+      "SessionForkRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "checkpoint_artifact_id": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Checkpoint Artifact Id",
+            "type": "string"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Name"
+          }
+        },
+        "required": [
+          "checkpoint_artifact_id"
+        ],
+        "title": "SessionForkRequest",
         "type": "object"
       },
       "SessionSettingsUpdate": {
@@ -4871,6 +4985,63 @@
         }
       }
     },
+    "/api/v1/sessions/{sessionId}/forks": {
+      "post": {
+        "operationId": "forkSession",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionForkRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Independent session fork created"
+          },
+          "422": {
+            "description": "Unsupported checkpoint"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
+            ]
+          }
+        ]
+      }
+    },
     "/api/v1/sessions/{sessionId}/generation-plan": {
       "post": {
         "operationId": "createGenerationPlan",
@@ -5093,6 +5264,36 @@
         "responses": {
           "200": {
             "description": "Latest output assembly"
+          }
+        }
+      }
+    },
+    "/api/v1/sessions/{sessionId}/output-mix-preview": {
+      "post": {
+        "operationId": "createOutputMixPreview",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OutputMixPreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Soundtrack mix preview queued"
           }
         }
       }

@@ -7,9 +7,14 @@ from types import SimpleNamespace
 from unittest import mock
 
 from pandrator.logic import dubbing_handler, llm_handler
-from pandrator.logic.dubbing import equalization, languages, srt_utils, video_muxing, zoom
+from pandrator.logic.dubbing import (
+    equalization,
+    languages,
+    srt_utils,
+    video_muxing,
+    zoom,
+)
 from pandrator.logic.dubbing.models import SubtitleSegment
-
 
 SAMPLE_SRT = """7
 00:00:01,000 --> 00:00:02,000
@@ -316,6 +321,8 @@ Alice: hello
 
         self.assertEqual(command[0], "ffmpeg")
         self.assertIn("mov_text", command)
+        self.assertIn("title=Polish", command)
+        self.assertIn("handler_name=Polish", command)
         self.assertIn("language=pol", command)
         self.assertEqual(command[-1], "out.mp4")
 

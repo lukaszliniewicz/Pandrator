@@ -9,7 +9,16 @@ from unittest.mock import patch
 from pandrator.web.api import create_app
 from pandrator.web.artifacts import ArtifactService
 from pandrator.web.auth import BootstrapTokenStore
-from pandrator.web.models import AppSetting, Artifact, AudioTake, GenerationRun, GenerationSegment, Job, UsageEvent
+from pandrator.web.models import (
+    AppSetting,
+    Artifact,
+    AudioTake,
+    GenerationRun,
+    GenerationSegment,
+    Job,
+    OutputAssembly,
+    UsageEvent,
+)
 from pandrator.web.tts_providers import KoboldQwenAdapter, TtsBatchItem
 from pandrator.web.workspace import BUILTIN_DEFAULTS, adapt_runtime_settings
 from tests.web_test_support import prepare_web_test_data_root
@@ -310,6 +319,90 @@ class WebParityWorkspaceTests(unittest.TestCase):
             },
             payload["export_contract"],
         )
+
+    def test_output_mix_preview_freezes_the_selected_assembly_and_mix_controls(self):
+        record = self.create_session(kind="voiceover", name="Mix preview")
+        extension = self.app.extensions["pandrator"]
+        paths = extension["paths"]
+        artifacts = ArtifactService(extension["database"], paths)
+        source_path = paths.uploads / "mix-preview-source.wav"
+        source_path.write_bytes(b"source audio fixture")
+        source = artifacts.register(
+            source_path,
+            kind="audio",
+            role="upload",
+            session_id=record["id"],
+            metadata={"original_filename": "mix-preview-source.wav"},
+        )
+        plan = self.client.post(
+            f"/api/v1/sessions/{record['id']}/generation-plan",
+            json={"segments": [{"text": "Preview this voiceover."}]},
+            headers=self.headers,
+        ).get_json()
+        assembly_path = (
+            paths.sessions / record["storage_key"] / "mix-preview-assembly.wav"
+        )
+        assembly_path.parent.mkdir(parents=True, exist_ok=True)
+        assembly_path.write_bytes(b"assembled voice fixture")
+        assembled = artifacts.register(
+            assembly_path,
+            kind="audio",
+            role="output_assembly",
+            session_id=record["id"],
+        )
+        with extension["database"].session() as session:
+            run = GenerationRun(
+                session_id=record["id"],
+                plan_revision_id=plan["active_revision_id"],
+                sequence_number=1,
+                status="completed",
+            )
+            session.add(run)
+            session.flush()
+            run_id = run.id
+            session.add(
+                OutputAssembly(
+                    session_id=record["id"],
+                    generation_run_id=run.id,
+                    artifact_id=assembled.id,
+                    status="completed",
+                )
+            )
+
+        response = self.client.post(
+            f"/api/v1/sessions/{record['id']}/output-mix-preview",
+            json={
+                "generation_run_id": run_id,
+                "start_seconds": 15,
+                "duration_seconds": 12,
+                "mix_source_gain_db": -3,
+                "mix_voice_gain_db": 1.5,
+                "mix_ducking": "very_strong",
+            },
+            headers=self.headers,
+        )
+
+        self.assertEqual(202, response.status_code, response.get_json())
+        queued = response.get_json()
+        self.assertEqual("output.mix_preview", queued["kind"])
+        self.assertEqual(source.id, queued["payload_json"]["source_artifact_id"])
+        self.assertEqual(
+            assembled.id,
+            queued["payload_json"]["dubbing_artifact_id"],
+        )
+        self.assertEqual(
+            "very_strong",
+            queued["payload_json"]["settings"]["mix_ducking"],
+        )
+        self.assertEqual(15, queued["payload_json"]["start_seconds"])
+
+        unavailable = self.client.post(
+            f"/api/v1/sessions/{record['id']}/output-mix-preview",
+            json={"generation_run_id": "another-run"},
+            headers=self.headers,
+        )
+        self.assertEqual(409, unavailable.status_code, unavailable.get_json())
+        self.assertIn("Assemble", unavailable.get_json()["error"]["message"])
 
     def test_unpromoted_legacy_upload_uses_the_shared_source_resolution(self):
         voiceover = self.create_session(
@@ -638,6 +731,8 @@ class WebParityWorkspaceTests(unittest.TestCase):
         self.assertEqual("libx264", BUILTIN_DEFAULTS["output"]["burn_video_encoder"])
         self.assertEqual("source", BUILTIN_DEFAULTS["output"]["burn_video_resolution"])
         self.assertEqual(18, BUILTIN_DEFAULTS["output"]["burn_video_quality"])
+        self.assertEqual("", BUILTIN_DEFAULTS["correction"]["reasoning_effort"])
+        self.assertEqual("", BUILTIN_DEFAULTS["translation"]["reasoning_effort"])
 
     def test_outcome_plan_supports_translation_without_correction(self):
         record = self.create_session()

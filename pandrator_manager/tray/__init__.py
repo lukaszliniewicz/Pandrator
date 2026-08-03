@@ -347,13 +347,9 @@ class TrayApplication:
         self._menu_refresh_stop = threading.Event()
 
     def _image(self):
-        from PIL import Image, ImageDraw
+        from .icon import load_tray_icon
 
-        image = Image.new("RGBA", (64, 64), "#211b2b")
-        draw = ImageDraw.Draw(image)
-        draw.rounded_rectangle((7, 7, 57, 57), radius=13, fill="#ad8ce8")
-        draw.polygon(((22, 18), (48, 32), (22, 46)), fill="#211b2b")
-        return image
+        return load_tray_icon()
 
     def _status_label(self, _item=None) -> str:
         return f"Pandrator Manager — {self._engine_snapshot.summary}"

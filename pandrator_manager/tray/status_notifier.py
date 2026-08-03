@@ -14,8 +14,9 @@ from dbus_next import Variant
 from dbus_next.aio import MessageBus
 from dbus_next.constants import BusType, PropertyAccess, RequestNameReply
 from dbus_next.service import ServiceInterface, dbus_property, method, signal
-from PIL import Image, ImageDraw
+from PIL import Image
 
+from .icon import load_tray_icon
 from .menu import EngineMenuSnapshot, unavailable_engine_snapshot
 
 
@@ -23,32 +24,21 @@ class StatusNotifierUnavailable(RuntimeError):
     """The desktop does not provide a usable StatusNotifier host."""
 
 
+def _argb_bytes(image: Image.Image) -> bytes:
+    rgba = image.tobytes()
+    argb = bytearray(len(rgba))
+    for offset in range(0, len(rgba), 4):
+        red, green, blue, alpha = rgba[offset : offset + 4]
+        argb[offset : offset + 4] = bytes((alpha, red, green, blue))
+    return bytes(argb)
+
+
 def _icon_pixmaps():
+    logo = load_tray_icon()
     pixmaps = []
     for size in (32, 64):
-        image = Image.new("RGBA", (size, size), "#211b2b")
-        draw = ImageDraw.Draw(image)
-        inset = max(3, size // 9)
-        radius = max(4, size // 5)
-        draw.rounded_rectangle(
-            (inset, inset, size - inset, size - inset),
-            radius=radius,
-            fill="#ad8ce8",
-        )
-        draw.polygon(
-            (
-                (size * 11 // 32, size * 9 // 32),
-                (size * 24 // 32, size // 2),
-                (size * 11 // 32, size * 23 // 32),
-            ),
-            fill="#211b2b",
-        )
-        rgba = image.tobytes()
-        argb = bytearray(len(rgba))
-        for offset in range(0, len(rgba), 4):
-            red, green, blue, alpha = rgba[offset : offset + 4]
-            argb[offset : offset + 4] = bytes((alpha, red, green, blue))
-        pixmaps.append([size, size, bytes(argb)])
+        image = logo.resize((size, size), Image.Resampling.LANCZOS)
+        pixmaps.append([size, size, _argb_bytes(image)])
     return pixmaps
 
 

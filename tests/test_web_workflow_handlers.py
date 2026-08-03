@@ -98,6 +98,125 @@ class WebWorkflowHandlerTests(unittest.TestCase):
             self.assertEqual(session.get(Artifact, cleaned.id).state, "stale")
             self.assertEqual(session.get(Artifact, prepared.id).state, "stale")
 
+    def test_output_mix_preview_uses_managed_inputs_and_registers_lineage(self):
+        source_path = self.session_dir / "source.wav"
+        source_path.write_bytes(b"source audio")
+        source = self.artifacts.register(
+            source_path,
+            kind="audio",
+            role="upload",
+            session_id=self.session.id,
+        )
+        dubbing_path = self.session_dir / "assembled.wav"
+        dubbing_path.write_bytes(b"voiceover audio")
+        dubbing = self.artifacts.register(
+            dubbing_path,
+            kind="audio",
+            role="output_assembly",
+            session_id=self.session.id,
+        )
+        next_source_path = self.session_dir / "source-next.wav"
+        next_source_path.write_bytes(b"next source audio")
+        next_source = self.artifacts.register(
+            next_source_path,
+            kind="audio",
+            role="upload",
+            session_id=self.session.id,
+        )
+        next_dubbing_path = self.session_dir / "assembled-next.wav"
+        next_dubbing_path.write_bytes(b"next voiceover audio")
+        next_dubbing = self.artifacts.register(
+            next_dubbing_path,
+            kind="audio",
+            role="output_assembly",
+            session_id=self.session.id,
+            metadata={"takes": [{"target_start_ms": 6500}]},
+        )
+        captured: list[list[str]] = []
+
+        def fake_run(command, **_kwargs):
+            captured.append(list(command))
+            Path(command[-1]).write_bytes(
+                f"preview audio {len(captured)}".encode()
+            )
+
+        with (
+            mock.patch(
+                "pandrator.web.media_process.probe_audio_stream",
+                side_effect=[
+                    SimpleNamespace(duration_ms=60_000),
+                    SimpleNamespace(duration_ms=50_000),
+                    SimpleNamespace(duration_ms=60_000),
+                    SimpleNamespace(duration_ms=50_000),
+                ],
+            ),
+            mock.patch(
+                "pandrator.web.media_process.run_media_process",
+                side_effect=fake_run,
+            ),
+        ):
+            result = self.handlers.preview_output_mix(
+                {
+                    "session_id": self.session.id,
+                    "generation_run_id": "generation-run",
+                    "source_artifact_id": source.id,
+                    "dubbing_artifact_id": dubbing.id,
+                    "start_seconds": 10,
+                    "duration_seconds": 12,
+                    "settings": {
+                        "mix_ducking": "very_strong",
+                        "mix_source_gain_db": -2,
+                        "mix_voice_gain_db": 1,
+                    },
+                },
+                self.progress,
+                threading.Event(),
+            )
+            repeated = self.handlers.preview_output_mix(
+                {
+                    "session_id": self.session.id,
+                    "generation_run_id": "next-generation-run",
+                    "source_artifact_id": next_source.id,
+                    "dubbing_artifact_id": next_dubbing.id,
+                    "start_seconds": None,
+                    "duration_seconds": 12,
+                    "settings": {"mix_ducking": "very_strong"},
+                },
+                self.progress,
+                threading.Event(),
+            )
+
+        self.assertEqual(10, result["start_seconds"])
+        self.assertEqual(12, result["duration_seconds"])
+        self.assertEqual(result["artifact_id"], repeated["artifact_id"])
+        self.assertNotEqual(
+            result["artifact"]["content_hash"],
+            repeated["artifact"]["content_hash"],
+        )
+        self.assertEqual(5.5, repeated["start_seconds"])
+        self.assertEqual("assembly_timeline", repeated["automatic_start_method"])
+        self.assertEqual(
+            "sessions/"
+            + self.session.storage_key
+            + "/previews/soundtrack-mix-preview.wav",
+            repeated["artifact"]["relative_path"].replace("\\", "/"),
+        )
+        self.assertTrue(
+            any("threshold=0.012589" in item for item in captured[0])
+        )
+        with self.database.session() as session:
+            preview = session.get(Artifact, result["artifact_id"])
+            self.assertEqual("mix_preview", preview.role)
+            self.assertEqual("very_strong", preview.metadata_json["mix"]["ducking"])
+            parent_ids = set(
+                session.scalars(
+                    select(ArtifactEdge.parent_artifact_id).where(
+                        ArtifactEdge.child_artifact_id == preview.id
+                    )
+                ).all()
+            )
+        self.assertEqual({next_source.id, next_dubbing.id}, parent_ids)
+
     def test_audiobook_audio_uses_the_shared_tts_engine_and_registers_output(self):
         prepared_path = self.session_dir / "prepared.json"
         prepared_path.write_text(
@@ -292,6 +411,22 @@ class WebWorkflowHandlerTests(unittest.TestCase):
             {"backend": "llm", "target_language": "pl", "model": "mock/default-model", "instructions": ""}
         )
         translate = self._continue_generation({"target_language": "de"})
+        translate.assert_called_once()
+
+    def test_translation_reasoning_override_is_part_of_the_fingerprint(self):
+        self._voiceover_session_with_translation(
+            {
+                "backend": "llm",
+                "target_language": "pl",
+                "model": "mock/default-model",
+                "instructions": "",
+            }
+        )
+
+        translate = self._continue_generation(
+            {"target_language": "pl", "reasoning_effort": "high"}
+        )
+
         translate.assert_called_once()
 
     def test_reuse_stages_choice_keeps_translation_despite_change(self):
@@ -1472,6 +1607,10 @@ A single reviewed cue.
         with self.database.session() as session:
             exported = session.scalar(select(Artifact).where(Artifact.id == result["artifact_ids"][0]))
             self.assertEqual(exported.role, "export_subtitle_source")
+            snapshot = exported.metadata_json["output_settings"]
+            self.assertEqual("source", snapshot["sections"]["output"]["subtitle_selection"])
+            self.assertEqual("none", snapshot["sections"]["output"]["subtitle_mode"])
+            self.assertEqual(64, len(snapshot["settings_hash"]))
             edge = session.scalar(
                 select(ArtifactEdge).where(ArtifactEdge.child_artifact_id == exported.id)
             )
@@ -2039,7 +2178,12 @@ A single reviewed cue.
 
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg qualification requires ffmpeg and ffprobe")
     def test_video_export_matrix_preserves_or_replaces_audio_and_handles_dual_subtitles(self):
-        voiceover = self.sessions.create("Export Matrix", workflow_kind="voiceover")
+        voiceover = self.sessions.create(
+            "Export Matrix",
+            workflow_kind="voiceover",
+            source_language="en",
+            target_language="pl",
+        )
         session_dir = self.paths.sessions / voiceover.storage_key
         session_dir.mkdir()
         media_path = session_dir / "source.mp4"
@@ -2067,7 +2211,6 @@ A single reviewed cue.
             role="correction",
             session_id=voiceover.id,
             parent_ids=[upload.id],
-            metadata={"language": "en"},
         )
         translation_srt = session_dir / "translation.srt"
         translation_srt.write_text("1\n00:00:00,050 --> 00:00:00,650\nWiersz docelowy\n", encoding="utf-8")
@@ -2077,7 +2220,6 @@ A single reviewed cue.
             role="translation",
             session_id=voiceover.id,
             parent_ids=[correction.id],
-            metadata={"language": "pl"},
         )
         dubbing_path = session_dir / "dub.wav"
         AudioSegment.silent(duration=800).overlay(AudioSegment.silent(duration=800)).export(dubbing_path, format="wav").close()
@@ -2162,10 +2304,18 @@ A single reviewed cue.
                     video_stream = next(stream for stream in streams if stream["codec_type"] == "video")
                     self.assertEqual(720, video_stream["height"])
                     self.assertEqual(["eng", "pol"], [stream.get("tags", {}).get("language") for stream in subtitle_streams])
+                    self.assertEqual(
+                        ["English", "Polish"],
+                        [stream.get("tags", {}).get("handler_name") for stream in subtitle_streams],
+                    )
                     self.assertEqual(1, subtitle_streams[1].get("disposition", {}).get("default"))
                     self.assertTrue(output.name.endswith("_soft.mp4"))
                     self.assertEqual(2, len(exported.metadata_json.get("subtitle_tracks", [])))
                     self.assertTrue(all(item.get("artifact_id") for item in exported.metadata_json["subtitle_tracks"]))
+                    self.assertEqual(
+                        ["English", "Polish"],
+                        [item["title"] for item in exported.metadata_json["subtitle_tracks"]],
+                    )
                     self.assertTrue(exported.metadata_json.get("video_transcoded"))
                     self.assertEqual("720p", exported.metadata_json.get("video_resolution"))
                 if subtitle_mode == "burned":

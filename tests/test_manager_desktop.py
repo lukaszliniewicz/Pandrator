@@ -99,7 +99,16 @@ class StatusNotifierContractTests(unittest.TestCase):
         self.assertIn("IconPixmap", property_names)
         self.assertIn("Menu", property_names)
         self.assertEqual("/MenuBar", notifier.Menu)
-        self.assertEqual([32, 64], [entry[0] for entry in notifier.IconPixmap])
+        pixmaps = notifier.IconPixmap
+        self.assertEqual([32, 64], [entry[0] for entry in pixmaps])
+        self.assertEqual(
+            [32 * 32 * 4, 64 * 64 * 4],
+            [len(entry[2]) for entry in pixmaps],
+        )
+        self.assertTrue(
+            all(entry[2][0] == 0 for entry in pixmaps),
+            "the packaged Pandrator mark should retain transparent corners",
+        )
 
     def test_dbus_menu_preserves_all_existing_tray_actions(self):
         menu = DBusMenu(self.dispatcher)

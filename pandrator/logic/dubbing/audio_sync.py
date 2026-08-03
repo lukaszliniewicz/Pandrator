@@ -712,12 +712,25 @@ def parse_ffmpeg_max_volume(stderr_text: str) -> float:
     return float(match.group(1))
 
 
-DUCKING_RATIOS = {
-    "off": 1.0,
-    "gentle": 3.0,
-    "balanced": 8.0,
-    "strong": 20.0,
+@dataclass(frozen=True, slots=True)
+class DuckingProfile:
+    """FFmpeg side-chain settings for a user-facing ducking preset."""
+
+    ratio: float
+    threshold: float = 0.031623  # -30 dBFS amplitude
+
+
+DUCKING_PROFILES = {
+    "off": DuckingProfile(ratio=1.0),
+    "gentle": DuckingProfile(ratio=2.5, threshold=0.063096),  # -24 dBFS
+    "balanced": DuckingProfile(ratio=6.0, threshold=0.039811),  # -28 dBFS
+    "strong": DuckingProfile(ratio=12.0, threshold=0.025119),  # -32 dBFS
+    # FFmpeg caps sidechaincompress at a 20:1 ratio. Lowering the detector
+    # threshold produces a materially stronger voice-priority preset instead
+    # of adding another label whose audible result matches ``strong``.
+    "very_strong": DuckingProfile(ratio=20.0, threshold=0.012589),  # -38 dBFS
 }
+DUCKING_REFERENCE_LUFS = -16.0
 
 
 def _bounded_float(value: Any, default: float, minimum: float, maximum: float) -> float:
@@ -748,7 +761,8 @@ def build_mix_filter_complex(
     attack = int(_bounded_float(attack_ms, 25.0, 1.0, 2000.0))
     release = int(_bounded_float(release_ms, 350.0, 10.0, 5000.0))
     preset = str(ducking or "strong").strip().lower()
-    ratio = DUCKING_RATIOS.get(preset, DUCKING_RATIOS["strong"])
+    profile = DUCKING_PROFILES.get(preset, DUCKING_PROFILES["strong"])
+    ratio = profile.ratio
     source_filters = ["aresample=48000:async=1000:first_pts=0", f"volume={source_gain:.2f}dB"]
     if pad_source:
         source_filters.append("apad")
@@ -759,25 +773,35 @@ def build_mix_filter_complex(
     voice_filters.extend(
         [
             "aresample=48000:async=1000:first_pts=0",
-            f"volume={voice_gain:.2f}dB",
             "apad",
         ]
     )
-    voice = f"[1:a]{','.join(voice_filters)}[voice]"
+    voice = f"[1:a]{','.join(voice_filters)}[voice_base]"
     if ratio <= 1.0:
+        voice_routing = (
+            f"[voice_base]volume={voice_gain:.2f}dB[voice_mix]"
+        )
         mix = (
-            "[source][voice]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,"
+            "[source][voice_mix]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,"
             "alimiter=limit=0.891251:attack=5:release=100:latency=1[mixed]"
         )
     else:
+        # Ducking is keyed pre-fader at a stable -16 LUFS reference. The
+        # voice-level and loudness controls therefore change what the listener
+        # hears without silently changing the selected ducking preset.
+        detector_gain = DUCKING_REFERENCE_LUFS - target_lufs
+        voice_routing = (
+            "[voice_base]asplit=2[voice_sidechain_input][voice_mix_input];"
+            f"[voice_sidechain_input]volume={detector_gain:.2f}dB[voice_sidechain];"
+            f"[voice_mix_input]volume={voice_gain:.2f}dB[voice_mix]"
+        )
         mix = (
-            "[voice]asplit=2[voice_sidechain][voice_mix];"
-            f"[source][voice_sidechain]sidechaincompress=threshold=0.031623:ratio={ratio:.1f}:"
-            f"attack={attack}:release={release}:makeup=1[ducked];"
+            f"[source][voice_sidechain]sidechaincompress=threshold={profile.threshold:.6f}:ratio={ratio:.1f}:"
+            f"attack={attack}:release={release}:makeup=1:knee=2.82843:link=maximum:detection=rms:mix=1[ducked];"
             "[ducked][voice_mix]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,"
             "alimiter=limit=0.891251:attack=5:release=100:latency=1[mixed]"
         )
-    return f"{source};{voice};{mix}"
+    return f"{source};{voice};{voice_routing};{mix}"
 
 
 MIX_FILTER_COMPLEX = build_mix_filter_complex()
@@ -908,6 +932,63 @@ def build_mix_audio_command(
         "-ac",
         "2",
         str(mixed_audio_path),
+    ]
+
+
+def build_mix_preview_command(
+    source_media_path: str | os.PathLike[str],
+    dubbed_audio_path: str | os.PathLike[str],
+    output_audio_path: str | os.PathLike[str],
+    *,
+    start_seconds: float = 0.0,
+    duration_seconds: float = 12.0,
+    source_gain_db: float = 0.0,
+    voice_gain_db: float = 0.0,
+    voice_lufs: float = -16.0,
+    ducking: str = "strong",
+    attack_ms: int = 25,
+    release_ms: int = 350,
+    ffmpeg_executable: str = "ffmpeg",
+) -> list[str]:
+    """Build a bounded audio-only preview using the production mix graph."""
+
+    start = _bounded_float(start_seconds, 0.0, 0.0, 604800.0)
+    duration = _bounded_float(duration_seconds, 12.0, 0.25, 30.0)
+    mix_filter = build_mix_filter_complex(
+        source_gain_db=source_gain_db,
+        voice_gain_db=voice_gain_db,
+        voice_lufs=voice_lufs,
+        ducking=ducking,
+        attack_ms=attack_ms,
+        release_ms=release_ms,
+    )
+    return [
+        ffmpeg_executable,
+        "-y",
+        "-ss",
+        f"{start:.3f}",
+        "-i",
+        str(source_media_path),
+        "-ss",
+        f"{start:.3f}",
+        "-i",
+        str(dubbed_audio_path),
+        "-filter_complex",
+        mix_filter,
+        "-map",
+        "[mixed]",
+        "-t",
+        f"{duration:.3f}",
+        "-vn",
+        "-sn",
+        "-dn",
+        "-ar",
+        "48000",
+        "-ac",
+        "2",
+        "-c:a",
+        "pcm_s16le",
+        str(output_audio_path),
     ]
 
 
@@ -1058,7 +1139,7 @@ def mix_audio_tracks_with_result(
             synced_audio_path,
             amplified_dubbed_audio_path,
             voice_lufs=voice_lufs,
-            voice_gain_db=voice_gain_db,
+            voice_gain_db=0.0,
             ffmpeg_executable=ffmpeg_executable,
         ),
         run_func=run_func,
@@ -1069,7 +1150,7 @@ def mix_audio_tracks_with_result(
             amplified_dubbed_audio_path,
             mixed_audio_path,
             source_gain_db=source_gain_db,
-            voice_gain_db=0.0,
+            voice_gain_db=voice_gain_db,
             voice_lufs=voice_lufs,
             ducking=ducking,
             attack_ms=attack_ms,

@@ -20,6 +20,12 @@ export type SessionRecord = {
   updated_at: string;
 };
 
+export type ForkedSessionRecord = SessionRecord & {
+  forked_from_session_id: string;
+  checkpoint_artifact_id: string;
+  copied_stages: string[];
+};
+
 export type JobRecord = {
   id: string;
   kind: string;

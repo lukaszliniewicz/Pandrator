@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -174,3 +175,50 @@ def probe_audio_stream(
         sample_rate_hz=sample_rate,
         channels=channels,
     )
+
+
+def find_first_audible_seconds(
+    path: str | os.PathLike[str],
+    *,
+    ffmpeg_executable: str | None = None,
+    cancel_event: threading.Event | None = None,
+    scan_seconds: float = 600.0,
+    noise_db: float = -42.0,
+    minimum_silence_seconds: float = 0.25,
+    pre_roll_seconds: float = 1.0,
+) -> float:
+    """Find the end of initial silence without decoding audio into Python."""
+
+    source = Path(path)
+    bounded_scan = min(3600.0, max(1.0, float(scan_seconds)))
+    bounded_noise = min(-10.0, max(-96.0, float(noise_db)))
+    bounded_silence = min(
+        5.0,
+        max(0.05, float(minimum_silence_seconds)),
+    )
+    result = run_media_process(
+        [
+            resolve_ffmpeg_executable(ffmpeg_executable),
+            "-hide_banner",
+            "-i",
+            str(source),
+            "-t",
+            f"{bounded_scan:.3f}",
+            "-vn",
+            "-sn",
+            "-dn",
+            "-af",
+            f"silencedetect=noise={bounded_noise:.1f}dB:d={bounded_silence:.3f}",
+            "-f",
+            "null",
+            os.devnull,
+        ],
+        cancel_event=cancel_event,
+    )
+    starts = re.findall(r"silence_start:\s*([0-9]+(?:\.[0-9]+)?)", result.stderr)
+    if not starts or float(starts[0]) > 0.05:
+        return 0.0
+    endings = re.findall(r"silence_end:\s*([0-9]+(?:\.[0-9]+)?)", result.stderr)
+    if not endings:
+        return 0.0
+    return max(0.0, float(endings[0]) - max(0.0, float(pre_roll_seconds)))

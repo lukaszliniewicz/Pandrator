@@ -24,7 +24,11 @@ from pandrator.web.audio_assembly import (
 )
 from pandrator.web.artifacts import ArtifactService
 from pandrator.web.database import Database
-from pandrator.web.media_process import MediaProcessCancelled, run_media_process
+from pandrator.web.media_process import (
+    MediaProcessCancelled,
+    find_first_audible_seconds,
+    run_media_process,
+)
 from pandrator.web.sessions import SessionService
 from pandrator.web.waveform import WaveformCancelled, generate_waveform_peaks
 from pandrator.web.workflow_handlers import WorkflowHandlers
@@ -239,6 +243,20 @@ class MediaCancellationTests(unittest.TestCase):
         finally:
             timer.cancel()
         self.assertLess(time.monotonic() - started, 3)
+
+    @unittest.skipUnless(shutil.which("ffmpeg"), "FFmpeg qualification requires ffmpeg")
+    def test_first_audible_detection_returns_a_short_preroll(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory, "delayed-voice.wav")
+            (
+                AudioSegment.silent(duration=1500, frame_rate=48000)
+                + Sine(440, sample_rate=48000).to_audio_segment(duration=1000)
+            ).export(source, format="wav").close()
+
+            start = find_first_audible_seconds(source)
+
+        self.assertGreater(start, 0.4)
+        self.assertLess(start, 0.7)
 
 
 @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg qualification requires ffmpeg and ffprobe")

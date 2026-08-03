@@ -1,7 +1,16 @@
 <script lang="ts">
   import { errorMessage } from './errors';
-  import { ImagePlus, RotateCcw, Save, Trash2 } from '@lucide/svelte';
-  import { appApi, artifactApi, sessionApi } from './domain-api';
+  import {
+    ImagePlus,
+    LoaderCircle,
+    Play,
+    RotateCcw,
+    Save,
+    Square,
+    Trash2
+  } from '@lucide/svelte';
+  import { appApi, artifactApi, jobApi, sessionApi } from './domain-api';
+  import type { ApiSchema } from './api';
   import type {
     ArtifactRecord,
     RuntimeCapabilities,
@@ -17,9 +26,14 @@
   };
   type Props = {
     sessionId: string;
+    generationRunId?: string;
     onSaveForExportReady?: (save: () => Promise<SavedOutputProfile>) => void;
   };
-  let { sessionId, onSaveForExportReady }: Props = $props();
+  let {
+    sessionId,
+    generationRunId = '',
+    onSaveForExportReady
+  }: Props = $props();
   let settings = $state<SettingsPayload | null>(null);
   let audioSettings = $state<SettingsPayload | null>(null);
   let session = $state<SessionRecord | null>(null);
@@ -28,6 +42,10 @@
   let audioDraft = $state<Record<string, unknown>>({});
   let images = $state<ArtifactRecord[]>([]);
   let preview = $state<ArtifactRecord | null>(null);
+  let previewBusy = $state(false);
+  let previewJobId = $state('');
+  let previewStartSeconds = $state<number | undefined>(undefined);
+  let previewAttempt = 0;
   let busy = $state(false);
   let message = $state('');
   let error = $state('');
@@ -238,6 +256,105 @@
     const saved = await save(draft, audioDraft, true);
     if (!saved) throw new Error('Output settings could not be saved.');
     return saved;
+  }
+
+  async function previewMix() {
+    if (!generationRunId || previewBusy) return;
+    const attempt = ++previewAttempt;
+    previewBusy = true;
+    previewJobId = '';
+    error = '';
+    message = 'Preparing a 12-second soundtrack mix preview…';
+    try {
+      const ducking = String(
+        value('mix_ducking', 'strong')
+      ) as ApiSchema<'OutputMixPreviewRequest'>['mix_ducking'];
+      const job = await sessionApi.previewOutputMix(sessionId, {
+        generation_run_id: generationRunId,
+        start_seconds:
+          previewStartSeconds == null
+            ? null
+            : Math.max(0, Number(previewStartSeconds) || 0),
+        duration_seconds: 12,
+        mix_source_gain_db: Number(value('mix_source_gain_db', 0)),
+        mix_voice_gain_db: Number(value('mix_voice_gain_db', 0)),
+        mix_voice_lufs: Number(value('mix_voice_lufs', -16)),
+        mix_ducking: ducking,
+        mix_attack_ms: Math.round(Number(value('mix_attack_ms', 25))),
+        mix_release_ms: Math.round(Number(value('mix_release_ms', 350)))
+      });
+      if (attempt !== previewAttempt) {
+        await jobApi.cancel(job.id).catch(() => null);
+        return;
+      }
+      previewJobId = job.id;
+      let completed = job;
+      for (let poll = 0; poll < 240; poll += 1) {
+        if (attempt !== previewAttempt) return;
+        if (completed.status === 'succeeded') break;
+        if (['failed', 'canceled', 'abandoned'].includes(completed.status))
+          throw new Error(
+            completed.error_message ||
+              (completed.status === 'canceled'
+                ? 'Soundtrack mix preview was canceled.'
+                : 'Soundtrack mix preview failed.')
+          );
+        await new Promise((resolve) => window.setTimeout(resolve, 500));
+        completed = await jobApi.get(job.id);
+      }
+      if (completed.status !== 'succeeded')
+        throw new Error(
+          'The soundtrack mix preview is taking longer than expected.'
+        );
+      const artifactId = String(completed.result_json?.artifact_id ?? '');
+      if (!artifactId)
+        throw new Error('The completed preview did not return an audio file.');
+      const returnedArtifact = completed.result_json?.artifact;
+      let artifact =
+        returnedArtifact &&
+        typeof returnedArtifact === 'object' &&
+        String((returnedArtifact as Record<string, unknown>).id ?? '') ===
+          artifactId
+          ? (returnedArtifact as ArtifactRecord)
+          : null;
+      if (!artifact) {
+        const artifactPayload = await artifactApi.list({
+          sessionId,
+          limit: 100
+        });
+        artifact =
+          artifactPayload.items.find((item) => item.id === artifactId) ?? null;
+      }
+      if (!artifact) throw new Error('The preview audio could not be loaded.');
+      if (attempt !== previewAttempt) return;
+      preview = artifact;
+      const previewStart = Number(
+        completed.result_json?.start_seconds ?? previewStartSeconds ?? 0
+      ).toFixed(1);
+      message = `${completed.result_json?.automatic_start ? 'The first voiceover was found automatically. ' : ''}Preview ready from ${previewStart} seconds; it used the current controls without saving them.`;
+    } catch (caught) {
+      if (attempt === previewAttempt) error = errorMessage(caught);
+    } finally {
+      if (attempt === previewAttempt) {
+        previewBusy = false;
+        previewJobId = '';
+      }
+    }
+  }
+
+  async function cancelMixPreview() {
+    const jobId = previewJobId;
+    previewAttempt += 1;
+    previewBusy = false;
+    previewJobId = '';
+    error = '';
+    message = 'Preview stopped.';
+    if (!jobId) return;
+    try {
+      await jobApi.cancel(jobId);
+    } catch (caught) {
+      error = errorMessage(caught);
+    }
   }
 
   async function saveAsDefaults() {
@@ -682,6 +799,8 @@
                   onchange={(event) =>
                     set('mix_ducking', event.currentTarget.value)}
                   class="field"
+                  ><option value="very_strong"
+                    >Very strong (voice priority)</option
                   ><option value="strong">Strong (recommended)</option><option
                     value="balanced">Balanced</option
                   ><option value="gentle">Gentle</option><option value="off"
@@ -724,6 +843,49 @@
                 /></label
               >
             </div>
+            <div
+              class="mt-4 flex flex-wrap items-end gap-3 rounded-xl bg-[var(--accent-soft)] p-3"
+            >
+              <label class="w-40 text-xs font-semibold"
+                >Preview from (optional)<input
+                  type="number"
+                  min="0"
+                  max="604800"
+                  step="1"
+                  bind:value={previewStartSeconds}
+                  placeholder="Auto"
+                  class="field"
+                /></label
+              >
+              <div class="min-w-48 flex-1 text-xs">
+                <strong>Check the balance before exporting</strong>
+                <p class="muted mt-1">
+                  Renders 12 seconds from the assembled audio version with the
+                  current, unsaved mix controls. Leave the start blank to jump
+                  to the first voiceover automatically.
+                </p>
+              </div>
+              {#if previewBusy}<button
+                  type="button"
+                  onclick={cancelMixPreview}
+                  class="tool"><Square size={14} /> Stop preview</button
+                >{:else}<button
+                  type="button"
+                  onclick={previewMix}
+                  disabled={!generationRunId || busy}
+                  class="tool primary disabled:opacity-50"
+                  ><Play size={15} /> Preview 12 seconds</button
+                >{/if}
+            </div>
+            {#if previewBusy}<p
+                class="muted mt-2 flex items-center gap-2 text-xs"
+                role="status"
+              >
+                <LoaderCircle class="animate-spin" size={14} /> Rendering the preview
+                with the production mix filters…
+              </p>{:else if !generationRunId}<p class="muted mt-2 text-xs">
+                Select a completed audio version above to preview its mix.
+              </p>{/if}
           </fieldset>
         {/if}
 

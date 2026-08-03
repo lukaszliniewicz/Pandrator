@@ -7,6 +7,7 @@ import type {
   AuthStatus,
   DocumentRecord,
   EventSnapshot,
+  ForkedSessionRecord,
   GenerationRun,
   GenerationSegment,
   GenerationSegmentPage,
@@ -88,6 +89,18 @@ export const sessionApi = {
       'post',
       { body }
     ),
+  forkAtCheckpoint: (
+    sessionId: string,
+    body: ApiSchema<'SessionForkRequest'>
+  ) =>
+    typedApiJson<
+      '/api/v1/sessions/{sessionId}/forks',
+      'post',
+      ForkedSessionRecord
+    >('/api/v1/sessions/{sessionId}/forks', 'post', {
+      path: { sessionId },
+      body
+    }),
   get: (sessionId: string) =>
     typedApiJson<'/api/v1/sessions/{sessionId}', 'get', SessionRecord>(
       '/api/v1/sessions/{sessionId}',
@@ -249,6 +262,18 @@ export const sessionApi = {
       JobRecord
     >('/api/v1/sessions/{sessionId}/stages/{stageKey}/run', 'post', {
       path: { sessionId, stageKey },
+      body
+    }),
+  previewOutputMix: (
+    sessionId: string,
+    body: ApiSchema<'OutputMixPreviewRequest'>
+  ) =>
+    typedApiJson<
+      '/api/v1/sessions/{sessionId}/output-mix-preview',
+      'post',
+      JobRecord
+    >('/api/v1/sessions/{sessionId}/output-mix-preview', 'post', {
+      path: { sessionId },
       body
     }),
   selectStageArtifact: (

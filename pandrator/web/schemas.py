@@ -52,6 +52,11 @@ class SessionUpdate(StrictModel):
     status: str | None = None
 
 
+class SessionForkRequest(StrictModel):
+    checkpoint_artifact_id: str = Field(min_length=1, max_length=80)
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+
+
 class JobCreate(StrictModel):
     kind: str = Field(min_length=1, max_length=120)
     session_id: str | None = None
@@ -373,6 +378,24 @@ class OutputAssemblyCreateRequest(StrictModel):
     run_override: dict[str, Any] = Field(default_factory=dict)
 
 
+class OutputMixPreviewRequest(StrictModel):
+    generation_run_id: str = Field(min_length=1, max_length=160)
+    start_seconds: float | None = Field(default=None, ge=0.0, le=604800.0)
+    duration_seconds: float = Field(default=12.0, ge=4.0, le=30.0)
+    mix_source_gain_db: float = Field(default=0.0, ge=-60.0, le=12.0)
+    mix_voice_gain_db: float = Field(default=0.0, ge=-30.0, le=12.0)
+    mix_voice_lufs: float = Field(default=-16.0, ge=-30.0, le=-8.0)
+    mix_ducking: Literal[
+        "off",
+        "gentle",
+        "balanced",
+        "strong",
+        "very_strong",
+    ] = "strong"
+    mix_attack_ms: int = Field(default=25, ge=1, le=2000)
+    mix_release_ms: int = Field(default=350, ge=10, le=5000)
+
+
 class TtsEndpointDiscoveryRequest(StrictModel):
     base_url: str = Field(min_length=8, max_length=2048)
     service_id: str | None = Field(default=None, min_length=1, max_length=160)
@@ -458,6 +481,7 @@ SCHEMA_MODELS = {
         ErrorBody,
         SessionCreate,
         SessionUpdate,
+        SessionForkRequest,
         JobCreate,
         LoginRequest,
         BootstrapRequest,
@@ -511,6 +535,7 @@ SCHEMA_MODELS = {
         OptimizationReviewItem,
         OptimizationReviewRequest,
         OutputAssemblyCreateRequest,
+        OutputMixPreviewRequest,
         TtsEndpointDiscoveryRequest,
         AgentRunCreateRequest,
     )

@@ -24,6 +24,7 @@
     onselect,
     onpreview,
     onclear,
+    onfork,
     onloadmore
   }: {
     stage: WorkflowStage;
@@ -36,6 +37,7 @@
     onselect: (artifactId: string) => void;
     onpreview: () => void;
     onclear: () => void;
+    onfork?: () => void;
     onloadmore: () => void;
   } = $props();
 
@@ -151,6 +153,7 @@
             {onselect}
             {onpreview}
             {onclear}
+            {onfork}
             {onloadmore}
           />
         {:else if stage.artifact}

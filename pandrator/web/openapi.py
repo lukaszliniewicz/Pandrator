@@ -85,6 +85,25 @@ def build_openapi_document() -> dict:
                     "responses": {"200": {"description": "Session moved to trash"}, "409": {"description": "Revision conflict"}},
                 },
             },
+            "/api/v1/sessions/{sessionId}/forks": {
+                "post": {
+                    "operationId": "forkSession",
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/SessionForkRequest"
+                                }
+                            }
+                        },
+                    },
+                    "responses": {
+                        "201": {"description": "Independent session fork created"},
+                        "422": {"description": "Unsupported checkpoint"},
+                    },
+                }
+            },
             "/api/v1/jobs": {
                 "get": {"operationId": "listJobs", "responses": {"200": {"description": "Jobs"}}},
                 "post": {
@@ -414,6 +433,7 @@ def build_openapi_document() -> dict:
         "/api/v1/generation-runs/{runId}/cancel": {"post": operation("cancelGenerationRun", "Cancellation requested", status="202")},
         "/api/v1/sessions/{sessionId}/output-assemblies/latest": {"get": operation("getLatestOutputAssembly", "Latest output assembly")},
         "/api/v1/sessions/{sessionId}/output-assemblies": {"post": operation("createOutputAssembly", "Output assembly queued", "OutputAssemblyCreateRequest", "202")},
+        "/api/v1/sessions/{sessionId}/output-mix-preview": {"post": operation("createOutputMixPreview", "Soundtrack mix preview queued", "OutputMixPreviewRequest", "202")},
         "/api/v1/sessions/{sessionId}/agent-runs": {
             "get": operation("listAgentRuns", "Auditable agent runs"),
             "post": operation("createAgentRun", "Agentic cleaning queued", "AgentRunCreateRequest", "202"),
@@ -450,6 +470,7 @@ def build_openapi_document() -> dict:
     }
     for path, method in (
         ("/api/v1/sessions", "post"),
+        ("/api/v1/sessions/{sessionId}/forks", "post"),
         ("/api/v1/sessions/{sessionId}", "patch"),
         (
             "/api/v1/sessions/{sessionId}/settings/{section}",
@@ -484,6 +505,7 @@ def build_openapi_document() -> dict:
         ("/api/v1/sessions", "post", "app.write"),
         ("/api/v1/sessions/{sessionId}", "get", "app.read"),
         ("/api/v1/sessions/{sessionId}", "patch", "app.write"),
+        ("/api/v1/sessions/{sessionId}/forks", "post", "app.write"),
         (
             "/api/v1/sessions/{sessionId}/workflow",
             "get",

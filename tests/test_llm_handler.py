@@ -366,6 +366,39 @@ class LlmHandlerTests(unittest.TestCase):
         self.assertEqual(captured_payload["temperature"], 0)
         self.assertEqual(captured_payload["reasoning_effort"], "provider-specific")
 
+    def test_task_reasoning_override_wins_over_the_model_default(self):
+        captured_payload = {}
+
+        def fake_completion(**kwargs):
+            captured_payload.update(kwargs)
+            return {"choices": [{"message": {"content": "ok"}}]}
+
+        provider = next(
+            item
+            for item in llm_handler.get_provider_configs(None)
+            if item["id"] == "openai"
+        )
+        provider["models"] = [
+            {
+                **llm_handler.default_model_record("gpt-5.4-mini"),
+                "default_reasoning_effort": "medium",
+            }
+        ]
+        with patch(
+            "pandrator.logic.llm_handler._get_litellm_clients",
+            return_value=(fake_completion, None),
+        ):
+            llm_handler.chat_completion_with_metadata(
+                messages=[{"role": "user", "content": "test"}],
+                model_name="openai/gpt-5.4-mini",
+                llm_settings={
+                    "provider_configs": [provider],
+                    "reasoning_effort": "high",
+                },
+            )
+
+        self.assertEqual(captured_payload["reasoning_effort"], "high")
+
     def test_authoritative_response_cost_wins_over_custom_pricing(self):
         response = {
             "choices": [{"message": {"content": "ok"}}],

@@ -87,6 +87,19 @@ class ManagerBootstrapBuildTests(unittest.TestCase):
         self.assertIn('console=os.name != "nt"', specification)
         self.assertIn('collect_submodules("dbus_next")', specification)
 
+    def test_tray_logo_is_included_in_the_wheel_and_frozen_bootstrap(self) -> None:
+        repository = Path(__file__).resolve().parents[1]
+        specification = (
+            repository / "pandrator_manager_bootstrap.spec"
+        ).read_text(encoding="utf-8")
+        package_configuration = (
+            repository / "pandrator_manager" / "pyproject.toml"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('tray" / "pandrator-tray.png"', specification)
+        self.assertIn('"pandrator_manager.tray"', package_configuration)
+        self.assertIn('"pandrator-tray.png"', package_configuration)
+
     def test_release_bundle_uses_public_platform_names(self) -> None:
         self.assertEqual(
             _release_platform(system="win32", machine="AMD64"),

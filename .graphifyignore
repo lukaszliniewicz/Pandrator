@@ -1,0 +1,4 @@
+pandrator/web/static/
+web/.svelte-kit/
+web/node_modules/
+graphify-out/

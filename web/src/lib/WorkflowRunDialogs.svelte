@@ -39,6 +39,7 @@
       backend: 'backend',
       target_language: 'target language',
       model: 'model',
+      reasoning_effort: 'reasoning level',
       instructions: 'guidance'
     })[field] ?? field;
 

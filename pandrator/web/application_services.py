@@ -24,6 +24,7 @@ from .manager_proxy import LocalManagerProxy
 from .models import AppSetting, SessionRecord
 from .pronunciations import PronunciationLibrary
 from .sessions import SessionService
+from .session_forks import SessionForkService
 from .startup import StartupMaintenance
 from .subtitle_review import SubtitleReviewService
 from .tts_providers import TtsCatalogueService, TtsProviderRegistry
@@ -58,6 +59,7 @@ class ApplicationServices:
     work: WorkService
     identity: ApplicationIdentityService
     sessions: SessionService
+    session_forks: SessionForkService
     artifacts: ArtifactService
     workflows: WorkflowService
     workflow_plans: WorkflowExecutionPlanService
@@ -124,6 +126,7 @@ class ApplicationServices:
         )
         sessions = SessionService(database)
         artifacts = ArtifactService(database, paths)
+        session_forks = SessionForkService(database, paths, artifacts)
         workflows = WorkflowService(database, jobs)
         workflow_plans = WorkflowExecutionPlanService(
             database,
@@ -198,6 +201,7 @@ class ApplicationServices:
             work=work,
             identity=identity,
             sessions=sessions,
+            session_forks=session_forks,
             artifacts=artifacts,
             workflows=workflows,
             workflow_plans=workflow_plans,
@@ -234,6 +238,7 @@ class ApplicationServices:
             "work": self.work,
             "identity": self.identity,
             "sessions": self.sessions,
+            "session_forks": self.session_forks,
             "artifacts": self.artifacts,
             "workflows": self.workflows,
             "workflow_plans": self.workflow_plans,

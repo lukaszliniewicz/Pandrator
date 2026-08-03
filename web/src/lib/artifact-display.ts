@@ -6,6 +6,7 @@ export type PreviewableArtifact = {
   path?: string | null;
   mime_type?: string | null;
   size_bytes?: number | null;
+  content_hash?: string | null;
   state?: string | null;
   metadata_json?: Record<string, unknown> | null;
 };

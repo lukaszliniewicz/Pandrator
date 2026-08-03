@@ -166,9 +166,10 @@ answered by somebody else.
                 cost=0.025,
             )
 
+        settings = {**_settings(), "reasoning_effort": "high"}
         result = llm_correction.correct_srt_content(
             SAMPLE_SRT,
-            _settings(),
+            settings,
             correction_instructions="Keep names unchanged.",
             completion_func=fake_completion,
         )
@@ -182,6 +183,7 @@ answered by somebody else.
         self.assertIn("Keep names unchanged.", calls[0]["messages"][1]["content"])
         self.assertIn("provider_configs", calls[0]["llm_settings"])
         self.assertEqual(calls[0]["llm_settings"]["request_timeout_seconds"], 600)
+        self.assertEqual(calls[0]["llm_settings"]["reasoning_effort"], "high")
         self.assertNotIn("max_tokens", calls[0])
         self.assertNotIn("temperature", calls[0])
 

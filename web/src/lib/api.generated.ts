@@ -1221,6 +1221,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{sessionId}/forks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["forkSession"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{sessionId}/generation-plan": {
         parameters: {
             query?: never;
@@ -1327,6 +1343,22 @@ export interface paths {
         get: operations["getLatestOutputAssembly"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/output-mix-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["createOutputMixPreview"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2046,7 +2078,7 @@ export interface components {
             api_version?: string;
             /**
              * Application Version
-             * @default 0.8.3
+             * @default 0.8.4
              */
             application_version?: string;
             /** Canonical Origin */
@@ -2585,6 +2617,52 @@ export interface components {
                 [key: string]: unknown;
             };
         };
+        /** OutputMixPreviewRequest */
+        OutputMixPreviewRequest: {
+            /**
+             * Duration Seconds
+             * @default 12
+             */
+            duration_seconds?: number;
+            /** Generation Run Id */
+            generation_run_id: string;
+            /**
+             * Mix Attack Ms
+             * @default 25
+             */
+            mix_attack_ms?: number;
+            /**
+             * Mix Ducking
+             * @default strong
+             * @enum {string}
+             */
+            mix_ducking?: "off" | "gentle" | "balanced" | "strong" | "very_strong";
+            /**
+             * Mix Release Ms
+             * @default 350
+             */
+            mix_release_ms?: number;
+            /**
+             * Mix Source Gain Db
+             * @default 0
+             */
+            mix_source_gain_db?: number;
+            /**
+             * Mix Voice Gain Db
+             * @default 0
+             */
+            mix_voice_gain_db?: number;
+            /**
+             * Mix Voice Lufs
+             * @default -16
+             */
+            mix_voice_lufs?: number;
+            /**
+             * Start Seconds
+             * @default null
+             */
+            start_seconds?: number | null;
+        };
         /** PdfCropInput */
         PdfCropInput: {
             /** Original Page */
@@ -2903,6 +2981,16 @@ export interface components {
              * @default custom
              */
             workflow_preset?: string;
+        };
+        /** SessionForkRequest */
+        SessionForkRequest: {
+            /** Checkpoint Artifact Id */
+            checkpoint_artifact_id: string;
+            /**
+             * Name
+             * @default null
+             */
+            name?: string | null;
         };
         /** SessionSettingsUpdate */
         SessionSettingsUpdate: {
@@ -5181,6 +5269,39 @@ export interface operations {
             };
         };
     };
+    forkSession: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SessionForkRequest"];
+            };
+        };
+        responses: {
+            /** @description Independent session fork created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unsupported checkpoint */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     createGenerationPlan: {
         parameters: {
             query?: never;
@@ -5373,6 +5494,30 @@ export interface operations {
         responses: {
             /** @description Latest output assembly */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createOutputMixPreview: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OutputMixPreviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Soundtrack mix preview queued */
+            202: {
                 headers: {
                     [name: string]: unknown;
                 };

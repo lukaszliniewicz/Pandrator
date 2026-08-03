@@ -60,4 +60,7 @@ def resolve_dubbing_llm_settings(
             configured_timeout,
         ),
     }
+    reasoning_effort = str(settings.get("reasoning_effort") or "").strip()
+    if reasoning_effort:
+        request_settings["reasoning_effort"] = reasoning_effort
     return DubbingLLMSettings(model_name=model_name, llm_settings=request_settings)

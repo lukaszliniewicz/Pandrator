@@ -35,6 +35,7 @@
   import AddSourceDialog from './AddSourceDialog.svelte';
   import WorkflowStageCard from './WorkflowStageCard.svelte';
   import WorkflowRunDialogs from './WorkflowRunDialogs.svelte';
+  import SessionForkDialog from './SessionForkDialog.svelte';
   import type { PreviewableArtifact } from './artifact-display';
   import { LANGUAGE_OPTIONS } from './settings-fields';
   import { describeVoice, languagesForService } from './voice-catalog';
@@ -67,7 +68,12 @@
   let ttsCatalogue = $state<TtsCatalogue>({ services: [] });
   let libraryVoices = $state<VoiceRecord[]>([]);
   let llmModels = $state<
-    { value: string; label: string; isDefault: boolean }[]
+    {
+      value: string;
+      label: string;
+      isDefault: boolean;
+      defaultReasoningEffort: string;
+    }[]
   >([]);
   let error = $state('');
   let sourceDialog = $state(false);
@@ -95,6 +101,10 @@
   let optimizationReviewArtifactId = $state('');
   let workspaceMode = $state<'review' | 'automatic'>('review');
   let preview = $state<PreviewableArtifact | null>(null);
+  let forkCheckpoint = $state<{
+    stage: 'correction' | 'translation';
+    artifactId: string;
+  } | null>(null);
   const sectionDisplay = (section: string) =>
     (({ stt: 'STT', tts: 'TTS', rvc: 'RVC' }) as Record<string, string>)[
       section
@@ -103,6 +113,7 @@
   let targetLanguage = $state('en');
   let originalLanguage = $state('auto');
   let model = $state('default');
+  let reasoningEffort = $state('');
   let backend = $state('llm');
   let sttEngine = $state('whisper');
   let sttQuantization = $state('f16');
@@ -354,6 +365,20 @@
     }
   }
 
+  function forkStage(stage: Stage) {
+    const forkStage =
+      stage.key === 'correct'
+        ? 'correction'
+        : stage.key === 'translate'
+          ? 'translation'
+          : null;
+    if (!forkStage || !stage.selected_artifact_id) return;
+    forkCheckpoint = {
+      stage: forkStage,
+      artifactId: stage.selected_artifact_id
+    };
+  }
+
   async function loadMoreStageArtifacts(stage: Stage) {
     const beforeVersion = stage.artifact_history_next_before_version;
     if (!beforeVersion || historyLoading[stage.key]) return;
@@ -445,12 +470,14 @@
     originalLanguage = String(
       saved.original_language ?? session.source_language ?? 'auto'
     );
-    model = String(
-      saved.model_name ??
-        saved.tts_optimization_model ??
-        saved[`${stage.key}_model`] ??
-        'default'
-    );
+    model =
+      String(
+        saved.model_name ??
+          saved.tts_optimization_model ??
+          saved[`${stage.key}_model`] ??
+          ''
+      ).trim() || 'default';
+    reasoningEffort = String(saved.reasoning_effort ?? '');
     backend = String(saved.backend ?? saved.translation_backend ?? 'llm');
     const hasSavedSttModel = Boolean(
       storedSettings?.override?.stt_engine ||
@@ -781,7 +808,10 @@
                 ? `custom:${providerId}/${item.model_id}`
                 : `${provider.provider_key}/${item.model_id}`,
               label: `${provider.label} · ${item.model_id}`,
-              isDefault: Boolean(item.is_default)
+              isDefault: Boolean(item.is_default),
+              defaultReasoningEffort: String(
+                item.default_reasoning_effort ?? ''
+              )
             };
           })
       );
@@ -886,6 +916,11 @@
     )
   );
   const ttsModels = $derived(selectedTtsService?.models ?? []);
+  const selectedLlmModel = $derived(
+    model === 'default'
+      ? (llmModels.find((item) => item.isDefault) ?? null)
+      : (llmModels.find((item) => item.value === model) ?? null)
+  );
   const selectedTtsDefaultVoice = $derived(
     selectedTtsService?.default_voices_by_language?.[ttsModel]?.[
       targetLanguage
@@ -917,8 +952,8 @@
   const supportsBatchSynthesis = $derived(
     Boolean(
       selectedTtsService?.supports_batch_synthesis &&
-        selectedTtsService?.batch_synthesis?.streaming &&
-        selectedTtsService?.batch_synthesis?.protocol === 'ndjson-v1'
+      selectedTtsService?.batch_synthesis?.streaming &&
+      selectedTtsService?.batch_synthesis?.protocol === 'ndjson-v1'
     )
   );
   const maximumTtsBatchSize = $derived(
@@ -1091,6 +1126,7 @@
           value: {
             enabled: true,
             model_name: model === 'default' ? '' : model,
+            reasoning_effort: reasoningEffort,
             instructions
           }
         }
@@ -1104,6 +1140,7 @@
             backend,
             target_language: targetLanguage,
             model_name: model === 'default' ? '' : model,
+            reasoning_effort: reasoningEffort,
             instructions
           }
         }
@@ -1221,12 +1258,17 @@
         subtitle_phrase_gap_ms: subtitlePhraseGap
       };
     else if (key === 'correct')
-      stageSettings[key] = { ...common, instructions };
+      stageSettings[key] = {
+        ...common,
+        reasoning_effort: reasoningEffort,
+        instructions
+      };
     else if (key === 'translate')
       stageSettings[key] = {
         ...common,
         translation_backend: backend,
         target_language: targetLanguage,
+        reasoning_effort: reasoningEffort,
         instructions
       };
     else if (key === 'optimize_tts') {
@@ -1521,6 +1563,10 @@
           onselect={(artifactId) => chooseStageArtifact(stage, artifactId)}
           onpreview={() => previewArtifact(stage)}
           onclear={() => clearStageArtifact(stage)}
+          onfork={['correct', 'translate'].includes(stage.key) &&
+          stage.selected_artifact_id
+            ? () => forkStage(stage)
+            : undefined}
           onloadmore={() => loadMoreStageArtifacts(stage)}
         />
       {/each}
@@ -1598,6 +1644,32 @@
                 >{/each}</select
             ></label
           >{/if}
+        {#if settingsStage.key === 'correct' || (settingsStage.key === 'translate' && backend === 'llm')}
+          <div
+            class="rounded-xl border border-[var(--line)] bg-[var(--accent-soft)] p-4"
+          >
+            <label class="text-sm font-semibold"
+              >Reasoning level<select
+                bind:value={reasoningEffort}
+                class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
+                ><option value="">Use model default</option><option
+                  value="minimal">Minimal · fastest</option
+                ><option value="low">Low · economical</option><option
+                  value="medium">Medium · balanced</option
+                ><option value="high">High · strongest</option></select
+              ></label
+            >
+            <p class="muted mt-2 text-xs leading-relaxed">
+              Higher reasoning can improve difficult passages, but usually adds
+              latency and may add billed reasoning tokens. {#if reasoningEffort}This
+                overrides the model default for this stage.{:else if selectedLlmModel?.defaultReasoningEffort}The
+                selected model currently defaults to
+                <strong>{selectedLlmModel.defaultReasoningEffort}</strong
+                >.{:else}The model or provider chooses the level.{/if}
+              Availability depends on the selected model.
+            </p>
+          </div>
+        {/if}
         {#if settingsStage.key === 'transcribe'}
           <label class="text-sm font-semibold"
             >Recognition model<select
@@ -2318,7 +2390,9 @@
           {/if}
           {#if supportsBatchSynthesis}
             <div class="rounded-xl border border-[var(--line)] p-4">
-              <div class="text-sm font-semibold">Streaming generation batches</div>
+              <div class="text-sm font-semibold">
+                Streaming generation batches
+              </div>
               <p class="muted mt-1 text-xs leading-relaxed">
                 Keep the speech engine continuously occupied while completed
                 segments become playable one by one. Use 1 to disable batching.
@@ -2544,6 +2618,12 @@
 {#if preview}<ArtifactPreview
     artifact={preview}
     onclose={() => (preview = null)}
+  />{/if}
+{#if forkCheckpoint}<SessionForkDialog
+    {session}
+    stage={forkCheckpoint.stage}
+    artifactId={forkCheckpoint.artifactId}
+    onclose={() => (forkCheckpoint = null)}
   />{/if}
 {#if optimizationReviewArtifactId}<TextOptimizationReview
     artifactId={optimizationReviewArtifactId}

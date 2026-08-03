@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from .languages import ffmpeg_subtitle_language_code
+from .languages import ffmpeg_subtitle_language_code, subtitle_language_title
 
 
 def escape_ffmpeg_subtitles_filter_path(path: str) -> str:
@@ -278,6 +278,7 @@ def build_add_subtitles_command(
         ]
 
     subtitle_language_code = ffmpeg_subtitle_language_code(subtitle_language)
+    subtitle_title = subtitle_language_title(subtitle_language)
     return [
         ffmpeg_executable,
         "-y",
@@ -291,6 +292,10 @@ def build_add_subtitles_command(
         "mov_text",
         "-metadata:s:s:0",
         f"language={subtitle_language_code}",
+        "-metadata:s:s:0",
+        f"title={subtitle_title}",
+        "-metadata:s:s:0",
+        f"handler_name={subtitle_title}",
         temp_output_path,
     ]
 
@@ -376,6 +381,8 @@ def build_multi_soft_subtitle_command(
                 f"language={language}",
                 f"-metadata:s:s:{index}",
                 f"title={title}",
+                f"-metadata:s:s:{index}",
+                f"handler_name={title}",
                 f"-disposition:s:{index}",
                 disposition,
             ]

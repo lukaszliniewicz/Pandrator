@@ -109,10 +109,8 @@
 </script>
 
 <svelte:head
-  ><title>Pandrator — voice, subtitle, and audiobook workspace</title><link
-    rel="icon"
-    href="/pandrator-logo.png"
-  /></svelte:head
+  ><title>Pandrator — voice, subtitle, and audiobook workspace</title
+  ></svelte:head
 >
 
 {#if appState.loading}
@@ -130,8 +128,10 @@
     >
       <div class="mb-7 flex items-center gap-4">
         <img
-          src="/pandrator-logo.png"
+          src="/pandrator-logo.webp"
           alt="Pandrator"
+          width="128"
+          height="128"
           class="size-12 rounded-2xl border border-[var(--line)] object-cover"
         />
         <div>
@@ -187,8 +187,10 @@
     >
       <div class="sidebar-brand mb-5 flex items-center gap-3 px-2">
         <img
-          src="/pandrator-logo.png"
+          src="/pandrator-logo.webp"
           alt="Pandrator"
+          width="128"
+          height="128"
           class="size-11 shrink-0 rounded-2xl border border-[var(--line)] object-cover"
         />{#if renderSidebarLabels}<div class="sidebar-label min-w-0 flex-1">
             <div class="font-semibold">Pandrator</div>

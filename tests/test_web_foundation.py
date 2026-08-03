@@ -833,7 +833,21 @@ class WebApiTests(unittest.TestCase):
         response = self.client.get("/")
         self.assertEqual(response.status_code, 200)
         self.assertIn(b"/_app/immutable/entry/", response.data)
+        self.assertIn(b"/favicon-32.png", response.data)
         response.close()
+
+        logo = self.client.get("/pandrator-logo.webp")
+        self.assertEqual(logo.status_code, 200)
+        self.assertEqual(logo.content_type, "image/webp")
+        legacy_logo = self.client.get("/pandrator-logo.png")
+        self.assertLess(len(logo.data), len(legacy_logo.data))
+        logo.close()
+        legacy_logo.close()
+
+        favicon = self.client.get("/favicon-32.png")
+        self.assertEqual(favicon.status_code, 200)
+        self.assertEqual(favicon.content_type, "image/png")
+        favicon.close()
 
     def test_job_logs_endpoint_returns_the_durable_timeline(self):
         self.authenticate()

@@ -128,6 +128,7 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
     "correction": {
         "enabled": False,
         "model_name": "",
+        "reasoning_effort": "",
         "instructions": "",
         "preserve_timing": True,
         "max_subtitles_per_call": 40,
@@ -153,6 +154,7 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "target_language": "en",
         "professional_cleanup": True,
         "model_name": "",
+        "reasoning_effort": "",
         "instructions": "",
         "glossary": "",
         "max_subtitles_per_call": 40,

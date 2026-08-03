@@ -175,6 +175,12 @@ class EngineMenuSnapshotTests(unittest.TestCase):
 
 
 class TrayApplicationEngineTests(unittest.TestCase):
+    def test_pystray_backend_uses_the_packaged_pandrator_mark(self):
+        image = TrayApplication(mock.Mock())._image()
+
+        self.assertEqual((64, 64), image.size)
+        self.assertEqual(0, image.getpixel((0, 0))[3])
+
     def test_tray_reads_components_services_and_operation_state(self):
         client = mock.Mock()
         client.status.return_value = {"active_operation_id": None}

@@ -122,9 +122,13 @@ hello = czesc
                 cost=0.05,
             )
 
+        settings = {
+            **_settings(glossary_enabled=True),
+            "reasoning_effort": "low",
+        }
         result = llm_translation.translate_srt_content(
             SAMPLE_SRT,
-            _settings(glossary_enabled=True),
+            settings,
             translation_instructions="Use informal language.",
             glossary={"test": "test"},
             completion_func=fake_completion,
@@ -137,6 +141,7 @@ hello = czesc
         self.assertEqual(calls[0]["model_name"], "anthropic/claude-sonnet-4-6")
         self.assertIn("Use informal language.", calls[0]["messages"][0]["content"])
         self.assertIn("provider_configs", calls[0]["llm_settings"])
+        self.assertEqual(calls[0]["llm_settings"]["reasoning_effort"], "low")
         self.assertNotIn("max_tokens", calls[0])
 
     def test_legacy_speaker_labels_stay_out_of_llm_translation_and_output(self):

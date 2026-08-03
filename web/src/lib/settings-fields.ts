@@ -94,6 +94,13 @@ const CHOICES: Record<string, SettingOption[]> = {
   crispasr_vad_model: [option('silero', 'Silero VAD')],
   max_lines: [option(1, '1 line'), option(2, '2 lines'), option(3, '3 lines')],
   backend: [option('llm', 'LLM provider'), option('deepl', 'DeepL')],
+  reasoning_effort: [
+    option('', 'Use model default'),
+    option('minimal', 'Minimal · fastest'),
+    option('low', 'Low · economical'),
+    option('medium', 'Medium · balanced'),
+    option('high', 'High · strongest')
+  ],
   speech_optimization_mode: [
     option('guarded', 'Guarded speech plan (recommended)'),
     option('flexible', 'Flexible contextual rewrite'),
@@ -145,6 +152,7 @@ const CHOICES: Record<string, SettingOption[]> = {
     option('dubbing_only', 'Generated audio only')
   ],
   mix_ducking: [
+    option('very_strong', 'Very strong (voice priority)'),
     option('strong', 'Strong (recommended)'),
     option('balanced', 'Balanced'),
     option('gentle', 'Gentle'),
@@ -357,6 +365,7 @@ export function settingLabel(key: string): string {
     llm_tts_document_batch_size: 'Segments per document JSON batch',
     tts_batch_size: 'Segments per streaming speech batch',
     tts_optimization_model: 'Speech optimization model',
+    reasoning_effort: 'Reasoning level',
     speech_optimization_mode: 'Speech planning mode',
     speech_plan_min_retention: 'Minimum flexible-text retention',
     speech_plan_save_proposals: 'Save new pronunciations for review',

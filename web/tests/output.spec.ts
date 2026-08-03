@@ -80,6 +80,10 @@ test('completed subtitle exports can be removed from Output', async ({
   await expect(page.getByText('Completed export')).toBeVisible({
     timeout: 20_000
   });
+  const settingsUsed = page.getByText('Settings used').first();
+  await expect(settingsUsed).toBeVisible();
+  await settingsUsed.click();
+  await expect(page.getByText('Export Mode').first()).toBeVisible();
   const remove = page.getByRole('button', { name: /Remove export/ }).first();
   await expect(remove).toBeVisible();
   page.once('dialog', (dialog) => dialog.accept());
@@ -320,6 +324,130 @@ test('Create export keeps the selected audio version when saved effective defaul
       audio_mode: 'mixed'
     },
     generation_run_id: 'selected-completed-run'
+  });
+});
+
+test('soundtrack mix preview uses the selected version and current unsaved controls', async ({
+  page
+}) => {
+  await signIn(page);
+  const { session, headers } = await createSession(page, 'voiceover');
+  const uploaded = await page.request.post('/api/v1/uploads', {
+    headers,
+    multipart: {
+      session_id: session.id,
+      purpose: 'source',
+      file: {
+        name: 'source-video.mp4',
+        mimeType: 'video/mp4',
+        buffer: Buffer.from('media fixture')
+      }
+    }
+  });
+  expect(uploaded.ok()).toBeTruthy();
+
+  await page.route(
+    `**/api/v1/sessions/${session.id}/generation-runs`,
+    async (route) => {
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          items: [
+            {
+              id: 'preview-completed-run',
+              status: 'completed',
+              label: 'Run 1: Preview voice',
+              assembly: {
+                id: 'preview-completed-assembly',
+                status: 'completed'
+              }
+            }
+          ]
+        })
+      });
+    }
+  );
+  const previewArtifact = {
+    id: 'ducking-preview-artifact',
+    session_id: session.id,
+    kind: 'audio',
+    role: 'mix_preview',
+    relative_path: `sessions/${session.storage_key}/previews/soundtrack-mix-preview.wav`,
+    mime_type: 'audio/wav',
+    size_bytes: 4096,
+    content_hash: 'preview-settings-hash',
+    state: 'current',
+    metadata_json: {},
+    created_at: new Date().toISOString()
+  };
+  let previewPayload: Record<string, unknown> | null = null;
+  await page.route(
+    `**/api/v1/sessions/${session.id}/output-mix-preview`,
+    async (route) => {
+      previewPayload = route.request().postDataJSON() as Record<
+        string,
+        unknown
+      >;
+      await route.fulfill({
+        status: 202,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          id: 'ducking-preview-job',
+          kind: 'output.mix_preview',
+          session_id: session.id,
+          status: 'queued',
+          progress: 0,
+          created_at: new Date().toISOString()
+        })
+      });
+    }
+  );
+  await page.route('**/api/v1/jobs/ducking-preview-job', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        id: 'ducking-preview-job',
+        kind: 'output.mix_preview',
+        session_id: session.id,
+        status: 'succeeded',
+        progress: 1,
+        result_json: {
+          artifact_id: previewArtifact.id,
+          artifact: previewArtifact,
+          start_seconds: 4.3,
+          duration_seconds: 12,
+          automatic_start: true
+        },
+        created_at: new Date().toISOString()
+      })
+    });
+  });
+
+  await page.goto(`/sessions/${session.id}/output`);
+  await expect(page.getByLabel('Audio version')).toHaveValue(
+    'preview-completed-run'
+  );
+  await page
+    .locator('select:has(option[value="very_strong"])')
+    .selectOption('very_strong');
+  await page.getByLabel('Source level (dB)').fill('-3');
+  await page.getByLabel('Voiceover level (dB)').fill('1.5');
+  await page.getByRole('button', { name: 'Preview 12 seconds' }).click();
+
+  await expect(
+    page.getByRole('heading', { name: 'soundtrack-mix-preview.wav' })
+  ).toBeVisible();
+  await expect(page.locator('audio')).toHaveAttribute(
+    'src',
+    `/api/v1/artifacts/${previewArtifact.id}/content?v=preview-settings-hash`
+  );
+  expect(previewPayload).toMatchObject({
+    generation_run_id: 'preview-completed-run',
+    start_seconds: null,
+    duration_seconds: 12,
+    mix_source_gain_db: -3,
+    mix_voice_gain_db: 1.5,
+    mix_ducking: 'very_strong'
   });
 });
 

@@ -99,6 +99,7 @@ from .schemas import (
     OptimizationReviewRequest,
     OutcomePlanUpdate,
     OutputAssemblyCreateRequest,
+    OutputMixPreviewRequest,
     PdfEditRequest,
     PronunciationCreate,
     PronunciationUpdate,
@@ -108,6 +109,7 @@ from .schemas import (
     RvcConvertRequest,
     RvcModelUploadRequest,
     SessionCreate,
+    SessionForkRequest,
     SessionSettingsUpdate,
     SessionUpdate,
     SettingUpdate,
@@ -125,6 +127,7 @@ from .schemas import (
     VoiceTranscriptReview,
 )
 from .sessions import RevisionConflict
+from .source_resolution import resolve_primary_source
 from .voice_library import ensure_bundled_voice
 from .workflow_plan_routes import register_workflow_plan_routes
 from .workspace import BUILTIN_DEFAULTS, SETTING_SECTIONS
@@ -237,6 +240,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     jobs = services.jobs
     work = services.work
     sessions = services.sessions
+    session_forks = services.session_forks
     artifacts = services.artifacts
     workflows = services.workflows
     workflow_handlers = services.workflow_handlers
@@ -695,9 +699,23 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         return jsonify(payload)
 
     @app.get("/pandrator-logo.png")
-    def pandrator_logo():
-        """Serve the application mark at the stable URL used by the SPA shell."""
+    def pandrator_logo_png():
+        """Retain the legacy application-mark URL for older cached shells."""
         return send_from_directory(static_dir, "pandrator-logo.png")
+
+    @app.get("/pandrator-logo.webp")
+    def pandrator_logo_webp():
+        """Serve the web-sized application mark used by the SPA shell."""
+        return send_from_directory(
+            static_dir,
+            "pandrator-logo.webp",
+            mimetype="image/webp",
+        )
+
+    @app.get("/favicon-32.png")
+    def pandrator_favicon():
+        """Serve the browser icon without requiring authentication."""
+        return send_from_directory(static_dir, "favicon-32.png")
 
     @app.get("/api/v1/parity")
     @require_auth
@@ -1039,6 +1057,94 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         response = jsonify(_session_payload(record))
         response.headers["ETag"] = f'"{record.revision}"'
         return response
+
+    @app.post("/api/v1/sessions/<session_id>/forks")
+    @require_auth
+    def session_fork(session_id: str):
+        payload = SessionForkRequest.model_validate(
+            request.get_json(silent=True) or {}
+        )
+        idempotency_key, idempotency_error = mutation_idempotency_key()
+        if idempotency_error is not None:
+            return idempotency_error
+        created_directory: Path | None = None
+        try:
+            with database.immediate_session() as db_session:
+                reservation = None
+                request_payload = {
+                    "session_id": session_id,
+                    **payload.model_dump(mode="json"),
+                }
+                if idempotency_key is not None:
+                    try:
+                        reservation = services.idempotency.begin(
+                            db_session,
+                            principal=context.guards.principal(),
+                            operation_id="forkSession",
+                            idempotency_key=idempotency_key,
+                            payload=request_payload,
+                        )
+                    except (
+                        IdempotencyConflict,
+                        IdempotencyInProgress,
+                        ValueError,
+                    ) as error:
+                        return idempotency_failure(error)
+                    if reservation.response is not None:
+                        replayed, status_code = reservation.response
+                        response = jsonify(replayed)
+                        response.status_code = status_code
+                        response.headers["Idempotency-Replayed"] = "true"
+                        return response
+
+                forked = session_forks.fork_in_session(
+                    db_session,
+                    session_id,
+                    payload.checkpoint_artifact_id,
+                    name=payload.name or "",
+                )
+                created_directory = forked.directory
+                result = {
+                    **_session_payload(forked.record),
+                    "forked_from_session_id": session_id,
+                    "checkpoint_artifact_id": forked.checkpoint_artifact_id,
+                    "copied_stages": list(forked.copied_stages),
+                }
+                if reservation is not None:
+                    services.idempotency.complete(
+                        db_session,
+                        reservation,
+                        response=result,
+                        status_code=201,
+                        resource_kind="session",
+                        resource_id=forked.record.id,
+                    )
+                g.audit_resource_kind = "session"
+                g.audit_resource_id = forked.record.id
+            response = jsonify(result)
+            response.status_code = 201
+            response.headers["ETag"] = f'"{result["revision"]}"'
+            return response
+        except KeyError:
+            return error_response(
+                "not_found",
+                "The session or selected checkpoint was not found.",
+                404,
+            )
+        except FileNotFoundError as error:
+            return error_response("checkpoint_missing", str(error), 409)
+        except ValueError as error:
+            return error_response("validation_error", str(error), 422)
+        except OSError as error:
+            return error_response(
+                "fork_failed",
+                f"The session fork could not be created: {error}",
+                409,
+            )
+        except Exception:
+            if created_directory is not None:
+                shutil.rmtree(created_directory, ignore_errors=True)
+            raise
 
     @app.patch("/api/v1/sessions/<session_id>")
     @require_auth
@@ -1879,6 +1985,84 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         except ValueError as error:
             return error_response("assembly_unavailable", str(error), 409)
         return jsonify(result), 202
+
+    @app.post("/api/v1/sessions/<session_id>/output-mix-preview")
+    @require_auth
+    def output_mix_preview(session_id: str):
+        """Queue a bounded audio preview from server-resolved mix inputs."""
+
+        payload = OutputMixPreviewRequest.model_validate(
+            request.get_json(silent=True) or {}
+        )
+        with database.session() as db_session:
+            record = db_session.get(SessionRecord, session_id)
+            if record is None:
+                return error_response("not_found", "Session not found.", 404)
+            if record.workflow_kind != "voiceover":
+                return error_response(
+                    "mix_preview_unavailable",
+                    "Soundtrack mix previews are available for voiceover sessions.",
+                    409,
+                )
+            source_resolution = resolve_primary_source(db_session, session_id)
+            source = source_resolution.artifact
+            if source is None or not source_resolution.has_audio:
+                return error_response(
+                    "mix_preview_unavailable",
+                    "Attach an audio or video source before previewing the soundtrack mix.",
+                    409,
+                )
+            assembly = db_session.scalar(
+                select(OutputAssembly)
+                .where(
+                    OutputAssembly.session_id == session_id,
+                    OutputAssembly.generation_run_id == payload.generation_run_id,
+                    OutputAssembly.status == "completed",
+                    OutputAssembly.artifact_id.is_not(None),
+                )
+                .order_by(OutputAssembly.created_at.desc())
+            )
+            if assembly is None:
+                return error_response(
+                    "mix_preview_unavailable",
+                    "Assemble the selected audio version before previewing its soundtrack mix.",
+                    409,
+                )
+            dubbing = db_session.get(Artifact, assembly.artifact_id)
+            if dubbing is None or dubbing.state == "deleted":
+                return error_response(
+                    "mix_preview_unavailable",
+                    "The selected audio version's assembly is unavailable.",
+                    409,
+                )
+            source_artifact_id = source.id
+            dubbing_artifact_id = dubbing.id
+
+        mix_fields = (
+            "mix_source_gain_db",
+            "mix_voice_gain_db",
+            "mix_voice_lufs",
+            "mix_ducking",
+            "mix_attack_ms",
+            "mix_release_ms",
+        )
+        job = jobs.enqueue(
+            "output.mix_preview",
+            {
+                "session_id": session_id,
+                "generation_run_id": payload.generation_run_id,
+                "source_artifact_id": source_artifact_id,
+                "dubbing_artifact_id": dubbing_artifact_id,
+                "start_seconds": payload.start_seconds,
+                "duration_seconds": payload.duration_seconds,
+                "settings": {
+                    field: getattr(payload, field) for field in mix_fields
+                },
+            },
+            session_id=session_id,
+            resource_keys=[f"session:{session_id}"],
+        )
+        return jsonify(_job_payload(job)), 202
 
     @app.get("/api/v1/sessions/<session_id>/agent-runs")
     @require_auth
