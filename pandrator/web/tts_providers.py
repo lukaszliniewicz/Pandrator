@@ -28,7 +28,11 @@ from .credentials import (
     tts_service_credential_key,
 )
 from .database import Database
-from .managed_services import binding_for_provider
+from .managed_services import (
+    binding_for_provider,
+    configured_tts_provider_ids,
+    effective_tts_connection_mode,
+)
 from .manager_proxy import LocalManagerProxy, ManagerProxyError
 from .models import AppSetting, Artifact
 from .workspace import BUILTIN_DEFAULTS
@@ -890,6 +894,22 @@ class TtsCatalogueService:
 
     def _refresh(self, services: list[dict[str, Any]]) -> None:
         def probe(service: dict[str, Any]) -> TtsHealth:
+            if service.get("connection_mode") == "managed_local":
+                managed = service.get("manager_service")
+                endpoint = (
+                    str(managed.get("endpoint") or "").strip()
+                    if isinstance(managed, dict)
+                    else ""
+                )
+                if not endpoint:
+                    return TtsHealth(
+                        False,
+                        False,
+                        str(
+                            service.get("availability_reason")
+                            or "The selected manager-owned service is not available."
+                        ),
+                    )
             try:
                 return self.providers.health(service)
             except TtsProviderError as error:
@@ -927,11 +947,19 @@ class TtsCatalogueService:
     def _project_manager(
         self,
         services: list[dict[str, Any]],
+        *,
+        configured_provider_ids: frozenset[str],
     ) -> dict[str, Any]:
         summary: dict[str, Any] = {
             "configured": self.manager_bridge.configured,
             "available": False,
         }
+        for service in services:
+            service["connection_mode"] = effective_tts_connection_mode(
+                service,
+                configured_provider_ids=configured_provider_ids,
+                manager_configured=self.manager_bridge.configured,
+            )
         try:
             inventory = self.manager_bridge.inventory()
         except ManagerProxyError as error:
@@ -942,6 +970,14 @@ class TtsCatalogueService:
             for service in services:
                 if binding_for_provider(service.get("id")) is not None:
                     service["manager_available"] = False
+                    if service.get("connection_mode") == "managed_local":
+                        service.update(
+                            {
+                                "online": False,
+                                "available": False,
+                                "availability_reason": str(error),
+                            }
+                        )
             return summary
 
         summary.update(
@@ -968,9 +1004,7 @@ class TtsCatalogueService:
             definition = component.get("definition") or {}
             inspection = component.get("inspection") or {}
             managed = managed_services.get(binding.service_id)
-            connection_mode = str(
-                service.get("connection_mode") or "external"
-            )
+            connection_mode = str(service["connection_mode"])
             service.update(
                 {
                     "connection_mode": connection_mode,
@@ -1055,7 +1089,13 @@ class TtsCatalogueService:
                 {**default_value, **connection_value}
             )
         ]
-        manager = self._project_manager(services)
+        manager = self._project_manager(
+            services,
+            configured_provider_ids=configured_tts_provider_ids(
+                default_value,
+                connection_value,
+            ),
+        )
         for service in services:
             self._decorate_credentials(service)
         if refresh:

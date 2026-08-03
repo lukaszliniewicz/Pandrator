@@ -1,16 +1,25 @@
-import tempfile
-import unittest
 import json
 import os
+import tempfile
+import unittest
+from pathlib import Path
 from unittest import mock
 
 from sqlalchemy import func, select
 
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
-from pandrator.web.credentials import hydrate_tts_settings, shared_provider_credential_key
+from pandrator.web.credentials import (
+    hydrate_tts_settings,
+    shared_provider_credential_key,
+)
 from pandrator.web.models import AppSetting, AppSettingHistory, StoredCredential
-from pandrator.web.tts_optimization import DEFAULT_FIRST_PROMPT, DEFAULT_PROMPT, DEFAULT_SECOND_PROMPT, DEFAULT_THIRD_PROMPT
+from pandrator.web.tts_optimization import (
+    DEFAULT_FIRST_PROMPT,
+    DEFAULT_PROMPT,
+    DEFAULT_SECOND_PROMPT,
+    DEFAULT_THIRD_PROMPT,
+)
 from tests.web_test_support import prepare_web_test_data_root
 
 
@@ -299,6 +308,131 @@ class SettingsApiTests(unittest.TestCase):
 
         runtime = tts_handler.get_service_config(hydrated, "xtts")
         self.assertEqual("http://127.0.0.1:9123", runtime["api_base"])
+
+    def test_unconfigured_manager_tts_service_uses_managed_endpoint_at_runtime(self):
+        class FakeManager:
+            configured = True
+
+            @staticmethod
+            def managed_service(service_id):
+                self.assertEqual("tts.fish_speech", service_id)
+                return {
+                    "id": service_id,
+                    "endpoint": "http://127.0.0.1:9125",
+                    "health": {"state": "healthy"},
+                }
+
+        database = self.app.extensions["pandrator"]["database"]
+        hydrated = hydrate_tts_settings(
+            database,
+            self.app.extensions["pandrator"]["paths"],
+            {"service": "FishS2"},
+            manager_bridge=FakeManager(),
+        )
+        self.assertEqual(
+            "http://127.0.0.1:9125",
+            hydrated["fishs2_base_url"],
+        )
+        from pandrator.logic import tts_handler
+
+        runtime = tts_handler.get_service_config(hydrated, "fishs2")
+        self.assertEqual("managed_local", runtime["connection_mode"])
+        self.assertEqual("http://127.0.0.1:9125", runtime["api_base"])
+
+    def test_saved_legacy_external_tts_endpoint_is_not_replaced_by_manager(self):
+        class UnexpectedManager:
+            configured = True
+
+            @staticmethod
+            def managed_service(_service_id):
+                raise AssertionError("Explicit external endpoint was replaced")
+
+        database = self.app.extensions["pandrator"]["database"]
+        hydrated = hydrate_tts_settings(
+            database,
+            self.app.extensions["pandrator"]["paths"],
+            {
+                "service": "FishS2",
+                "provider_configs": [
+                    {
+                        "id": "fishs2",
+                        "api_base": "http://speech.example.test:9022",
+                    }
+                ],
+            },
+            manager_bridge=UnexpectedManager(),
+        )
+        from pandrator.logic import tts_handler
+
+        runtime = tts_handler.get_service_config(hydrated, "fishs2")
+        self.assertEqual("http://speech.example.test:9022", runtime["api_base"])
+        self.assertNotIn("fishs2_base_url", hydrated)
+
+    def test_unconfigured_manager_tts_service_is_projected_into_catalogue(self):
+        inventory = {
+            "status": {"configuration_revision": 5},
+            "components": [
+                {
+                    "definition": {
+                        "id": "fish_speech",
+                        "supported_actions": [
+                            "install",
+                            "update",
+                            "repair",
+                            "remove",
+                            "start",
+                            "stop",
+                        ],
+                    },
+                    "inspection": {"state": "present"},
+                }
+            ],
+            "services": [
+                {
+                    "id": "tts.fish_speech",
+                    "endpoint": "http://127.0.0.1:9235",
+                    "health": {"state": "healthy"},
+                    "process": {"pid": 43},
+                }
+            ],
+        }
+        bridge = self.app.extensions["pandrator"]["manager_bridge"]
+        bridge.descriptor_path = Path(self.temporary.name) / "manager" / "connection.json"
+        with mock.patch.object(bridge, "inventory", return_value=inventory):
+            catalogue = self.client.get("/api/v1/services/tts").get_json()
+
+        fish = next(
+            service
+            for service in catalogue["services"]
+            if service["id"] == "fishs2"
+        )
+        self.assertEqual("managed_local", fish["connection_mode"])
+        self.assertEqual("http://127.0.0.1:9235", fish["api_base"])
+        self.assertEqual("tts.fish_speech", fish["managed_service_id"])
+        self.assertEqual([], catalogue["value"].get("provider_configs", []))
+
+    def test_unresolved_managed_service_never_probes_legacy_fallback(self):
+        catalogue = self.app.extensions["pandrator"]["tts_catalogue"]
+        services = [
+            {
+                "id": "fishs2",
+                "connection_mode": "managed_local",
+                "api_base": "http://127.0.0.1:8020",
+                "availability_reason": "Pandrator Manager is unavailable.",
+            }
+        ]
+        with mock.patch.object(
+            catalogue.providers,
+            "health",
+            side_effect=AssertionError("Legacy fallback was probed"),
+        ):
+            catalogue._refresh(services)
+        self.assertFalse(services[0]["online"])
+        self.assertFalse(services[0]["available"])
+        self.assertEqual(
+            "Pandrator Manager is unavailable.",
+            services[0]["availability_reason"],
+        )
 
     def test_tts_catalogue_projects_manager_state_without_persisting_endpoint(self):
         saved = self.client.put(

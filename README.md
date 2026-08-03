@@ -15,7 +15,7 @@ computer. Cloud language and speech providers are optional.
 ## Quick start
 
 The current release is
-[Pandrator 0.8.4](https://github.com/lukaszliniewicz/Pandrator/releases/tag/v.0.8.4)
+[Pandrator 0.8.5](https://github.com/lukaszliniewicz/Pandrator/releases/tag/v.0.8.5)
 with Pandrator Manager 0.9.14. The Manager installs Pandrator, launches it, and
 lets you add or remove speech components later. Docker and WSL are not
 required.
@@ -23,14 +23,14 @@ required.
 ### Windows
 
 1. Download
-   [PandratorManager-0.9.14-windows-x86_64.exe](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.8.4/PandratorManager-0.9.14-windows-x86_64.exe).
+   [PandratorManager-0.9.14-windows-x86_64.exe](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.8.5/PandratorManager-0.9.14-windows-x86_64.exe).
 2. Run it and choose the parent folder for your installation.
 3. Let the Manager install Pandrator, then open the browser interface.
 4. Under **Providers & services**, install only the local models you want.
 
 The Windows executable is not Authenticode-signed, so Windows may show
 **Unknown publisher** or a SmartScreen warning. The
-[release page](https://github.com/lukaszliniewicz/Pandrator/releases/tag/v.0.8.4)
+[release page](https://github.com/lukaszliniewicz/Pandrator/releases/tag/v.0.8.5)
 collects the checksums for all downloadable files in one `SHA256SUMS` file.
 
 ### Linux

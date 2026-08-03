@@ -21,7 +21,11 @@ from sqlalchemy.orm import Session
 from pandrator.runtime import DataPaths
 
 from .database import Database
-from .managed_services import binding_for_provider
+from .managed_services import (
+    binding_for_provider,
+    configured_tts_provider_ids,
+    effective_tts_connection_mode,
+)
 from .models import AppSetting, Provider, StoredCredential, utcnow
 
 DATABASE_REFERENCE_PREFIX = "db:"
@@ -803,6 +807,7 @@ def hydrate_tts_settings(
     if selected is None:
         return hydrated
     service_id = str(selected.get("id") or selected_value).strip().lower().replace("-", "_")
+    configured_provider_ids = configured_tts_provider_ids(hydrated)
     fallback_env = str(selected.get("api_key_env") or TTS_SERVICE_ENVS.get(service_id, ""))
     resolved = resolve_provider_credential(
         database,
@@ -829,8 +834,21 @@ def hydrate_tts_settings(
     elif resolved.environment_variable:
         record["api_key_env"] = resolved.environment_variable
     hydrated["provider_configs"] = records
-    if str(selected.get("connection_mode") or "external") == "managed_local":
-        from .manager_proxy import LocalManagerProxy, ManagerProxyError
+    from .manager_proxy import LocalManagerProxy, ManagerProxyError
+
+    bridge = manager_bridge or LocalManagerProxy()
+    connection_mode = effective_tts_connection_mode(
+        selected,
+        configured_provider_ids=configured_provider_ids,
+        manager_configured=bool(
+            getattr(
+                bridge,
+                "configured",
+                manager_bridge is not None,
+            )
+        ),
+    )
+    if connection_mode == "managed_local":
 
         binding = binding_for_provider(service_id)
         if binding is None:
@@ -844,7 +862,6 @@ def hydrate_tts_settings(
             raise ValueError(
                 f"{selected_value} has an invalid managed-service binding."
             )
-        bridge = manager_bridge or LocalManagerProxy()
         try:
             managed = bridge.managed_service(binding.service_id)
         except ManagerProxyError as error:

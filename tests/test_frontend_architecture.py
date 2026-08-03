@@ -2,7 +2,6 @@ import json
 import re
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 WEB_SOURCE = ROOT / "web" / "src"
 API_CORE = WEB_SOURCE / "lib" / "api.ts"
@@ -56,6 +55,11 @@ def test_api_core_assigns_idempotency_keys_to_mutations():
     assert "headers.has('Idempotency-Key')" in core
     assert "headers.set('Idempotency-Key', createIdempotencyKey())" in core
     assert "globalThis.crypto.randomUUID()" in core
+    assert all(
+        "randomUUID(" not in source(path)
+        for path in frontend_sources()
+        if path != API_CORE
+    )
 
 
 def test_legacy_catch_all_api_client_cannot_return():

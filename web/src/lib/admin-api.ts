@@ -185,7 +185,6 @@ export const managerApi = {
       '/api/v1/manager/legacy/import',
       'post',
       {
-        headers: { 'Idempotency-Key': crypto.randomUUID() },
         body
       }
     ),
@@ -204,7 +203,6 @@ export const managerApi = {
       '/api/v1/manager/releases/plans',
       'post',
       {
-        headers: { 'Idempotency-Key': crypto.randomUUID() },
         body
       }
     ),
@@ -213,7 +211,6 @@ export const managerApi = {
       '/api/v1/manager/uninstall/plans',
       'post',
       {
-        headers: { 'Idempotency-Key': crypto.randomUUID() },
         body
       }
     ),
@@ -239,7 +236,6 @@ export const managerApi = {
       '/api/v1/manager/plans',
       'post',
       {
-        headers: { 'Idempotency-Key': crypto.randomUUID() },
         body
       }
     ),
@@ -248,7 +244,6 @@ export const managerApi = {
       '/api/v1/manager/operations',
       'post',
       {
-        headers: { 'Idempotency-Key': crypto.randomUUID() },
         body
       }
     ),
@@ -257,7 +252,6 @@ export const managerApi = {
       '/api/v1/manager/operations/{operationId}/cancel',
       'post',
       {
-        headers: { 'Idempotency-Key': crypto.randomUUID() },
         path: { operationId }
       }
     ),
@@ -266,7 +260,6 @@ export const managerApi = {
       '/api/v1/manager/runtime/{action}',
       'post',
       {
-        headers: { 'Idempotency-Key': crypto.randomUUID() },
         path: { action },
         body: { service_ids: serviceIds }
       }
