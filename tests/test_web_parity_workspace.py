@@ -1038,6 +1038,57 @@ class WebParityWorkspaceTests(unittest.TestCase):
         self.assertNotEqual(first["job_id"], retry.get_json()["job_id"])
         self.assertEqual(1, len(self.client.get(f"/api/v1/sessions/{record['id']}/generation-runs").get_json()["items"]))
 
+    def test_terminal_job_reconciles_a_cancel_requested_generation_run(self):
+        record = self.create_session("audiobook")
+        self.client.post(
+            f"/api/v1/sessions/{record['id']}/generation-plan",
+            json={"segments": [{"text": "Synthetic failed segment."}]},
+            headers=self.headers,
+        )
+        started = self.client.post(
+            f"/api/v1/sessions/{record['id']}/generation-runs",
+            json={}, headers=self.headers,
+        ).get_json()
+        with self.app.extensions["pandrator"]["database"].session() as session:
+            run = session.get(GenerationRun, started["id"])
+            job = session.get(Job, started["job_id"])
+            run.status = "cancel_requested"
+            run.cancel_requested = True
+            job.status = "failed"
+
+        canceled = self.client.post(
+            f"/api/v1/generation-runs/{started['id']}/cancel", headers=self.headers
+        )
+        self.assertEqual(202, canceled.status_code, canceled.get_json())
+        self.assertEqual("failed", canceled.get_json()["status"])
+        listed = self.client.get(
+            f"/api/v1/sessions/{record['id']}/generation-runs"
+        ).get_json()["items"]
+        self.assertEqual("failed", listed[0]["status"])
+
+    def test_orphaned_cancel_requested_generation_run_is_canceled(self):
+        record = self.create_session("audiobook")
+        plan = self.client.post(
+            f"/api/v1/sessions/{record['id']}/generation-plan",
+            json={"segments": [{"text": "Synthetic orphaned segment."}]},
+            headers=self.headers,
+        ).get_json()
+        with self.app.extensions["pandrator"]["database"].session() as session:
+            run = GenerationRun(
+                session_id=record["id"], plan_revision_id=plan["active_revision_id"],
+                sequence_number=1, status="cancel_requested", cancel_requested=True,
+                job_id=None,
+            )
+            session.add(run)
+            session.flush()
+            run_id = run.id
+
+        listed = self.client.get(
+            f"/api/v1/sessions/{record['id']}/generation-runs"
+        ).get_json()["items"]
+        self.assertEqual(run_id, listed[0]["id"])
+        self.assertEqual("canceled", listed[0]["status"])
+
     def test_generation_segments_are_scoped_to_the_selected_run_revision(self):
         record = self.create_session("audiobook")
         first_plan = self.client.post(

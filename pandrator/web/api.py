@@ -39,6 +39,7 @@ def create_app(
         capability_ttl_seconds=capability_ttl_seconds,
         public_origin=public_origin,
     )
+    services.jobs.reconcile()
     static_dir = Path(__file__).with_name("static")
     app = Flask(
         __name__,

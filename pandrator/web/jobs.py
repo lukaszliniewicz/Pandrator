@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from .credentials import SecretRedactor
 from .database import Database
-from .models import Job, JobEvent, ResourceClaim, utcnow
+from .models import GenerationRun, Job, JobEvent, ResourceClaim, utcnow
 
 JobHandler = Callable[[dict[str, Any], Callable[[float, str | None], None], threading.Event], dict[str, Any] | None]
 
@@ -39,6 +39,13 @@ class JobQueue:
         "document_id",
         "model_id",
     )
+    GENERATION_ACTIVE_STATUSES = {
+        "queued",
+        "running",
+        "pausing",
+        "pause_requested",
+        "cancel_requested",
+    }
 
     def __init__(
         self,
@@ -233,6 +240,70 @@ class JobQueue:
             session.execute(
                 delete(ResourceClaim).where(ResourceClaim.job_id.in_(terminal_job_ids))
             )
+        self._reconcile_generation_runs_locked(session)
+
+    def _reconcile_generation_runs_locked(self, session, session_id: str | None = None) -> None:
+        """Keep generation runs terminal when their owning job is terminal or gone."""
+        runs = list(
+            session.scalars(
+                select(GenerationRun).where(
+                    GenerationRun.status.in_(self.GENERATION_ACTIVE_STATUSES),
+                    *([GenerationRun.session_id == session_id] if session_id else []),
+                )
+            ).all()
+        )
+        for run in runs:
+            job = session.get(Job, run.job_id) if run.job_id else None
+            if job is None:
+                if run.status == "cancel_requested":
+                    run.status = "canceled"
+                    run.cancel_requested = False
+                    run.updated_at = utcnow()
+                continue
+            payload = job.payload_json if isinstance(job.payload_json, dict) else {}
+            if (
+                job.kind != "generation.run"
+                or job.session_id != run.session_id
+                or str(payload.get("generation_run_id") or "") != run.id
+            ):
+                continue
+            if job.status == "failed":
+                run.status = "failed"
+                run.cancel_requested = False
+            elif job.status in {"canceled", "interrupted"}:
+                run.status = "canceled"
+                run.cancel_requested = False
+            else:
+                continue
+            run.updated_at = utcnow()
+
+    def reconcile(self) -> None:
+        """Repair expired jobs and any generation runs left behind by terminal jobs."""
+        with self.database.immediate_session() as session:
+            self._reconcile_stale_locked(session)
+
+    def reconcile_session(self, session_id: str) -> None:
+        """Repair terminal generation jobs for one session without touching others."""
+        with self.database.session() as session:
+            candidate = session.scalar(
+                select(GenerationRun.id)
+                .join(Job, GenerationRun.job_id == Job.id, isouter=True)
+                .where(
+                    GenerationRun.session_id == session_id,
+                    GenerationRun.status.in_(self.GENERATION_ACTIVE_STATUSES),
+                    or_(
+                        and_(
+                            GenerationRun.job_id.is_(None),
+                            GenerationRun.status == "cancel_requested",
+                        ),
+                        Job.status.in_(("failed", "canceled", "interrupted")),
+                    ),
+                ).limit(1)
+            )
+        if candidate is None:
+            return
+        with self.database.immediate_session() as session:
+            self._reconcile_generation_runs_locked(session, session_id)
 
     def _reconcile_stale(self) -> None:
         """Serialize the uncommon stale-job transition without locking normal reads."""
@@ -601,19 +672,13 @@ class JobQueue:
             job.finished_at = utcnow()
             event_type = "job.canceled"
         elif job.status in {"running", "cancel_requested"}:
-            # Cancellation is a terminal state immediately. The worker's
-            # monitor notices it independently of progress callbacks and
-            # prevents any later result from replacing this state.
-            self._event(session, job.id, "job.cancel_requested")
-            job.status = "canceled"
-            job.finished_at = utcnow()
-            job.lease_owner = None
-            job.lease_expires_at = None
-            event_type = "job.canceled"
+            job.status = "cancel_requested"
+            event_type = "job.cancel_requested"
         else:
             event_type = "job.cancel_ignored"
         job.updated_at = utcnow()
         self._event(session, job.id, event_type)
+        self._reconcile_generation_runs_locked(session)
         session.flush()
         return job
 
@@ -680,6 +745,8 @@ class JobQueue:
                 "job.retry_scheduled" if retry else "job.failed",
                 {"code": safe_code, "message": safe_message, "trace": safe_trace},
             )
+            if not retry:
+                self._reconcile_generation_runs_locked(session)
             return True
 
     def cancel_owned(
@@ -691,7 +758,12 @@ class JobQueue:
     ) -> bool:
         with self.database.immediate_session() as session:
             job = session.get(Job, job_id)
-            if not self._owns_lease(job, worker_id, lease_generation):
+            if not self._owns_lease(
+                job, worker_id, lease_generation, require_running=False
+            ) or (
+                job.lease_expires_at is not None
+                and job.lease_expires_at.replace(tzinfo=utcnow().tzinfo) <= utcnow()
+            ) or job.status not in {"running", "cancel_requested"}:
                 return False
             job.status = "canceled"
             job.lease_owner = None
@@ -699,6 +771,7 @@ class JobQueue:
             job.finished_at = utcnow()
             job.updated_at = job.finished_at
             self._event(session, job.id, "job.canceled")
+            self._reconcile_generation_runs_locked(session)
             return True
 
     def events_after(self, event_id: int = 0, limit: int = 250) -> list[JobEvent]:

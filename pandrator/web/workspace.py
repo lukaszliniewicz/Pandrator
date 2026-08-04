@@ -1769,6 +1769,7 @@ class GenerationService:
         generation_run_id: str | None = None,
         operation: str = "generate",
     ) -> dict[str, Any]:
+        self.jobs.reconcile_session(session_id)
         requested_segment_ids = [str(value) for value in (segment_ids or []) if str(value)]
         reused_run = False
         resolved_for_new: tuple[dict[str, Any], str] | None = None
@@ -1928,7 +1929,7 @@ class GenerationService:
         return {"id": run_id, "job_id": job.id, "status": "queued"}
 
     def cancel(self, run_id: str) -> dict[str, Any]:
-        with self.database.session() as session:
+        with self.database.immediate_session() as session:
             run = session.get(GenerationRun, run_id)
             if run is None:
                 raise KeyError(run_id)
@@ -1936,12 +1937,14 @@ class GenerationService:
             run.status = "cancel_requested"
             run.updated_at = utcnow()
             job_id = run.job_id
-        if job_id:
-            try:
-                self.jobs.request_cancel(job_id)
-            except KeyError:
-                pass
-        return {"id": run_id, "job_id": job_id, "status": "cancel_requested"}
+            if job_id:
+                try:
+                    self.jobs.request_cancel_in_session(session, job_id)
+                except KeyError:
+                    self.jobs._reconcile_generation_runs_locked(session)
+            else:
+                self.jobs._reconcile_generation_runs_locked(session)
+            return {"id": run.id, "job_id": job_id, "status": run.status}
 
     @staticmethod
     def _run_label(run: GenerationRun) -> str:
@@ -2009,6 +2012,7 @@ class GenerationService:
         }
 
     def list_runs(self, session_id: str) -> list[dict[str, Any]]:
+        self.jobs.reconcile_session(session_id)
         with self.database.session() as session:
             runs = list(
                 session.scalars(
@@ -2020,6 +2024,7 @@ class GenerationService:
             return [self._run_payload(session, run) for run in runs]
 
     def latest_run(self, session_id: str) -> dict[str, Any] | None:
+        self.jobs.reconcile_session(session_id)
         with self.database.session() as session:
             run = session.scalar(
                 select(GenerationRun)
@@ -2029,6 +2034,14 @@ class GenerationService:
             return self._run_payload(session, run)
 
     def delete_run(self, run_id: str) -> dict[str, Any]:
+        with self.database.session() as session:
+            run = session.get(GenerationRun, run_id)
+            if run is not None:
+                session_id = run.session_id
+            else:
+                session_id = None
+        if session_id:
+            self.jobs.reconcile_session(session_id)
         paths_to_remove: list[Path] = []
         with self.database.session() as session:
             run = session.get(GenerationRun, run_id)

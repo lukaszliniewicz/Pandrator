@@ -641,6 +641,67 @@ test('running generation controls stay on one drawer header row', async ({
   expect(Math.max(...rowCenters) - Math.min(...rowCenters)).toBeLessThan(2);
 });
 
+test('terminal generation recovery clears the active run state after refresh', async ({
+  page
+}) => {
+  await page.route('**/api/v1/events?after=*', (route) => route.abort());
+  await signIn(page);
+  const sessionId = await createGenerationPlan(page, [
+    { text: 'A recovery test generation segment.' }
+  ]);
+  let listReads = 0;
+  let starts = 0;
+  const run = (status: 'cancel_requested' | 'canceled') => ({
+    id: 'recovered-generation-run',
+    session_id: sessionId,
+    plan_revision_id: 'generation-plan',
+    sequence_number: 1,
+    operation: 'generate',
+    label: 'Run 1: recovery test',
+    job_id: 'recovered-generation-job',
+    status,
+    progress: 0.5
+  });
+  await page.route(
+    `**/api/v1/sessions/${sessionId}/generation-runs`,
+    async (route) => {
+      if (route.request().method() === 'POST') {
+        starts += 1;
+        await route.fulfill({
+          contentType: 'application/json',
+          body: JSON.stringify({ ...run('canceled'), id: 'replacement-run' })
+        });
+        return;
+      }
+      listReads += 1;
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          items: [run(listReads === 1 ? 'cancel_requested' : 'canceled')]
+        })
+      });
+    }
+  );
+
+  await page.goto(`/sessions/${sessionId}`);
+  await page.getByRole('button', { name: 'Generation', exact: true }).click();
+  await expect(
+    page.getByRole('progressbar', { name: 'Generation progress' })
+  ).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Start', exact: true })).toHaveCount(0);
+
+  await page.reload();
+  await page.getByRole('button', { name: 'Generation', exact: true }).click();
+  await expect(
+    page.getByRole('progressbar', { name: 'Generation progress' })
+  ).toHaveCount(0);
+  await expect(page.locator('.run-picker select')).toHaveText(/canceled/);
+  const start = page.getByRole('button', { name: 'Start', exact: true });
+  await expect(start).toBeEnabled();
+  await start.click();
+  await expect.poll(() => starts).toBe(1);
+});
+
 test('generation segments support Ctrl and Shift multi-selection in both review views', async ({
   page
 }) => {

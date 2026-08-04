@@ -6,7 +6,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
-from contextlib import closing
+from contextlib import closing, contextmanager
 from datetime import timedelta
 from pathlib import Path
 from unittest import mock
@@ -29,6 +29,7 @@ from pandrator.web.models import (
     Artifact,
     GenerationPlan,
     GenerationPlanRevision,
+    GenerationRun,
     GenerationSegment,
     Job,
     JobEvent,
@@ -480,6 +481,48 @@ class DurableJobTests(unittest.TestCase):
         self.database.dispose()
         self.temporary.cleanup()
 
+    def _generation_run(self, *, job_status="queued", run_status="queued", job_kind="generation.run", payload_run_id=None, job_session_id=None):
+        """Create one linked generation run with deliberately controllable job data."""
+        workspace = self.sessions.create("Generation reconciliation")
+        with self.database.session() as session:
+            plan = GenerationPlan(session_id=workspace.id)
+            session.add(plan)
+            session.flush()
+            revision = GenerationPlanRevision(
+                plan_id=plan.id,
+                revision_number=1,
+                content_hash=f"reconciliation-{workspace.id}",
+            )
+            session.add(revision)
+            session.flush()
+            plan.active_revision_id = revision.id
+            revision_id = revision.id
+        job = self.queue.enqueue(
+            job_kind,
+            {"generation_run_id": payload_run_id or "pending"},
+            session_id=job_session_id or workspace.id,
+        )
+        with self.database.session() as session:
+            run = GenerationRun(
+                session_id=workspace.id,
+                plan_revision_id=revision_id,
+                sequence_number=1,
+                job_id=job.id,
+                status=run_status,
+                cancel_requested=run_status == "cancel_requested",
+            )
+            session.add(run)
+            session.flush()
+            job = session.get(Job, job.id)
+            job.status = job_status
+            job.payload_json = {"generation_run_id": payload_run_id or run.id}
+            return workspace, run.id, job.id
+
+    def _run_state(self, run_id):
+        with self.database.session() as session:
+            run = session.get(GenerationRun, run_id)
+            return run.status, run.cancel_requested, run.updated_at
+
     def test_worker_completes_job_and_records_events(self):
         job = self.queue.enqueue("noop", {"echo": "ready"})
         worker = Worker(self.queue, "worker-one", {"noop": noop_handler})
@@ -508,14 +551,14 @@ class DurableJobTests(unittest.TestCase):
         self.assertEqual(canceled.status, "canceled")
         self.assertIsNone(self.queue.claim("worker"))
 
-    def test_canceling_running_job_is_immediately_terminal(self):
+    def test_canceling_running_job_waits_for_the_lease_owner(self):
         job = self.queue.enqueue("noop")
         claimed = self.queue.claim("worker")
         self.assertEqual(job.id, claimed.id)
 
         canceled = self.queue.request_cancel(job.id)
 
-        self.assertEqual("canceled", canceled.status)
+        self.assertEqual("cancel_requested", canceled.status)
         self.assertTrue(
             self.queue.should_cancel(
                 job.id,
@@ -523,6 +566,17 @@ class DurableJobTests(unittest.TestCase):
                 lease_generation=claimed.lease_generation,
             )
         )
+        self.assertFalse(
+            self.queue.cancel_owned(
+                job.id, "another-worker", lease_generation=claimed.lease_generation
+            )
+        )
+        self.assertTrue(
+            self.queue.cancel_owned(
+                job.id, "worker", lease_generation=claimed.lease_generation
+            )
+        )
+        self.assertEqual("canceled", self.queue.get(job.id).status)
         with self.assertRaises(RuntimeError):
             self.queue.complete(
                 job.id,
@@ -542,6 +596,170 @@ class DurableJobTests(unittest.TestCase):
 
         self.assertEqual("failed", reconciled.status)
         self.assertEqual("worker_lease_expired", reconciled.error_code)
+
+    def test_clean_job_get_and_list_do_not_take_an_immediate_session(self):
+        job = self.queue.enqueue("noop")
+        original_immediate = self.database.immediate_session
+        immediate_calls = []
+
+        def record_immediate():
+            immediate_calls.append(True)
+            return original_immediate()
+
+        with mock.patch.object(
+            self.database, "immediate_session", side_effect=record_immediate
+        ):
+            self.assertEqual(job.id, self.queue.get(job.id).id)
+            self.assertEqual([job.id], [item.id for item in self.queue.list()])
+
+        self.assertEqual([], immediate_calls)
+
+    def test_stale_job_probe_locks_and_reconciles_the_candidate(self):
+        job = self.queue.enqueue("noop", max_attempts=1)
+        claimed = self.queue.claim("worker", lease_seconds=5)
+        with self.database.session() as session:
+            session.get(Job, job.id).lease_expires_at = utcnow() - timedelta(seconds=1)
+        original_immediate = self.database.immediate_session
+        immediate_calls = []
+
+        def record_immediate():
+            immediate_calls.append(True)
+            return original_immediate()
+
+        with mock.patch.object(
+            self.database, "immediate_session", side_effect=record_immediate
+        ):
+            reconciled = self.queue.get(job.id)
+
+        self.assertEqual([True], immediate_calls)
+        self.assertEqual("failed", reconciled.status)
+        self.assertEqual("worker_lease_expired", reconciled.error_code)
+
+    def test_stale_job_candidate_is_revalidated_inside_the_write_transaction(self):
+        job = self.queue.enqueue("noop", max_attempts=1)
+        self.queue.claim("worker", lease_seconds=5)
+        with self.database.session() as session:
+            session.get(Job, job.id).lease_expires_at = utcnow() - timedelta(seconds=1)
+        original_immediate = self.database.immediate_session
+        immediate_calls = []
+
+        @contextmanager
+        def candidate_changed_before_lock():
+            with original_immediate() as session:
+                immediate_calls.append(True)
+                current = session.get(Job, job.id)
+                current.status = "succeeded"
+                current.lease_owner = None
+                current.lease_expires_at = None
+                yield session
+
+        with mock.patch.object(
+            self.database,
+            "immediate_session",
+            side_effect=candidate_changed_before_lock,
+        ):
+            reconciled = self.queue.get(job.id)
+
+        self.assertEqual([True], immediate_calls)
+        self.assertEqual("succeeded", reconciled.status)
+        self.assertIsNone(reconciled.error_code)
+
+    def test_startup_reconciliation_terminalizes_stale_generation_runs_only(self):
+        _, failed_id, _ = self._generation_run(job_status="failed", run_status="running")
+        _, canceled_id, _ = self._generation_run(job_status="canceled", run_status="cancel_requested")
+        orphan_workspace, orphan_id, _ = self._generation_run(run_status="cancel_requested")
+        with self.database.session() as session:
+            orphan = session.get(GenerationRun, orphan_id)
+            orphan.job_id = None
+        _, queued_id, _ = self._generation_run(run_status="queued")
+        _, running_id, running_job_id = self._generation_run(job_status="running", run_status="running")
+        with self.database.session() as session:
+            running_job = session.get(Job, running_job_id)
+            running_job.lease_owner = "healthy-worker"
+            running_job.lease_expires_at = utcnow() + timedelta(minutes=5)
+        before = {
+            queued_id: self._run_state(queued_id),
+            running_id: self._run_state(running_id),
+        }
+
+        self.queue.reconcile()
+
+        self.assertEqual(("failed", False), self._run_state(failed_id)[:2])
+        self.assertEqual(("canceled", False), self._run_state(canceled_id)[:2])
+        self.assertEqual(("canceled", False), self._run_state(orphan_id)[:2])
+        self.assertEqual(before[queued_id], self._run_state(queued_id))
+        self.assertEqual(before[running_id], self._run_state(running_id))
+
+    def test_startup_reconciliation_is_idempotent_for_terminal_and_orphaned_runs(self):
+        _, failed_id, _ = self._generation_run(job_status="failed", run_status="running")
+        _, canceled_id, _ = self._generation_run(job_status="canceled", run_status="cancel_requested")
+        _, orphan_id, _ = self._generation_run(run_status="cancel_requested")
+        with self.database.session() as session:
+            session.get(GenerationRun, orphan_id).job_id = None
+
+        self.queue.reconcile()
+        first_pass = {run_id: self._run_state(run_id) for run_id in (failed_id, canceled_id, orphan_id)}
+        self.queue.reconcile()
+
+        self.assertEqual(first_pass, {run_id: self._run_state(run_id) for run_id in first_pass})
+
+    def test_startup_reconciliation_requires_a_safe_generation_job_link(self):
+        _, payload_mismatch_id, _ = self._generation_run(job_status="failed", run_status="running", payload_run_id="other-run")
+        foreign_workspace = self.sessions.create("Foreign generation session")
+        _, session_mismatch_id, _ = self._generation_run(job_status="canceled", run_status="running", job_session_id=foreign_workspace.id)
+        _, non_generation_id, _ = self._generation_run(job_status="failed", run_status="running", job_kind="source.clean")
+        _, terminal_id, _ = self._generation_run(job_status="failed", run_status="canceled")
+        before = {run_id: self._run_state(run_id) for run_id in (payload_mismatch_id, session_mismatch_id, non_generation_id, terminal_id)}
+
+        self.queue.reconcile()
+
+        self.assertEqual(before, {run_id: self._run_state(run_id) for run_id in before})
+
+    def test_session_reconciliation_is_scoped_and_locks_only_stale_candidates(self):
+        session_a = self.sessions.create("Clean session")
+        _, stale_b_id, _ = self._generation_run(job_status="failed", run_status="running")
+        original_immediate = self.database.immediate_session
+        immediate_calls = []
+
+        def record_immediate():
+            immediate_calls.append(True)
+            return original_immediate()
+
+        with mock.patch.object(self.database, "immediate_session", side_effect=record_immediate):
+            self.queue.reconcile_session(session_a.id)
+        self.assertEqual([], immediate_calls)
+        self.assertEqual("running", self._run_state(stale_b_id)[0])
+
+        workspace_a, stale_a_id, _ = self._generation_run(job_status="failed", run_status="running")
+        locked_sessions = []
+        original_locked = self.queue._reconcile_generation_runs_locked
+
+        def record_locked(session, session_id=None):
+            locked_sessions.append(session_id)
+            return original_locked(session, session_id)
+
+        with mock.patch.object(self.database, "immediate_session", side_effect=record_immediate), mock.patch.object(self.queue, "_reconcile_generation_runs_locked", side_effect=record_locked):
+            self.queue.reconcile_session(workspace_a.id)
+        self.assertEqual([workspace_a.id], locked_sessions)
+        self.assertEqual([True], immediate_calls)
+        self.assertEqual(("failed", False), self._run_state(stale_a_id)[:2])
+        self.assertEqual("running", self._run_state(stale_b_id)[0])
+
+    def test_session_reconciliation_skips_a_harmless_unlinked_queued_run_without_locking(self):
+        workspace, run_id, _ = self._generation_run(run_status="queued")
+        with self.database.session() as session:
+            session.get(GenerationRun, run_id).job_id = None
+        original_immediate = self.database.immediate_session
+        immediate_calls = []
+
+        def record_immediate():
+            immediate_calls.append(True)
+            return original_immediate()
+
+        with mock.patch.object(self.database, "immediate_session", side_effect=record_immediate):
+            self.queue.reconcile_session(workspace.id)
+        self.assertEqual([], immediate_calls)
+        self.assertEqual(("queued", False), self._run_state(run_id)[:2])
 
     def test_worker_python_logs_are_available_in_job_timeline(self):
         def logged(_payload, _progress, _cancel_event):
