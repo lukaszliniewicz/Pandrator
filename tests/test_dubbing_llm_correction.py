@@ -1,7 +1,9 @@
 import json
 import os
 import tempfile
+import time
 import unittest
+from threading import Event, Lock
 from unittest.mock import patch
 
 from pandrator.logic import dubbing_handler, llm_handler
@@ -108,7 +110,49 @@ class DubbingLLMCorrectionTests(unittest.TestCase):
         self.assertNotIn('"char_count"', prompt)
         self.assertIn('"text": "hello there"', prompt)
 
-    def test_structured_speakers_stay_out_of_prompt_and_block_cross_speaker_merge(self):
+    def test_correction_prompt_marks_overlap_as_non_spoken_evidence(self):
+        prompt = llm_correction.build_correction_prompt(
+            [
+                {
+                    "index": 2,
+                    "start": 0.8,
+                    "end": 1.5,
+                    "text": "Okay",
+                    "speaker": "Speaker 2",
+                    "overlap_with_previous_ms": 200,
+                }
+            ]
+        )
+        cue = json.loads(prompt.rsplit("\nThe subtitles:\n", 1)[1])[0]
+
+        self.assertEqual(cue["speaker"], "Speaker 2")
+        self.assertEqual(cue["overlap_with_previous_ms"], 200)
+        self.assertIn("non-spoken evidence", prompt)
+
+    def test_correction_prompt_can_include_timing_and_gap_policy(self):
+        prompt = llm_correction.build_correction_prompt(
+            [
+                {
+                    "index": 2,
+                    "start_ms": 3100,
+                    "end_ms": 4200,
+                    "start": 3.1,
+                    "end": 4.2,
+                    "text": "A continued thought",
+                    "gap_from_previous_ms": 2100,
+                }
+            ],
+            include_timing_context=True,
+            substantial_gap_ms=2000,
+        )
+        cue = json.loads(prompt.rsplit("\nThe subtitles:\n", 1)[1])[0]
+
+        self.assertEqual(3100, cue["start_ms"])
+        self.assertEqual(4200, cue["end_ms"])
+        self.assertEqual(2100, cue["gap_from_previous_ms"])
+        self.assertIn("A gap of 2000 ms or more", prompt)
+
+    def test_structured_speakers_are_non_spoken_prompt_evidence_and_block_cross_speaker_merge(self):
         content = """1
 00:00:00,000 --> 00:00:01,000
 An unfinished thought,
@@ -137,10 +181,78 @@ answered by somebody else.
             [item["text"] for item in prompt_cues],
             ["An unfinished thought,", "answered by somebody else."],
         )
-        self.assertTrue(all("speaker" not in item for item in prompt_cues))
+        self.assertEqual(
+            ["Speaker 0", "Speaker 1"],
+            [item["speaker"] for item in prompt_cues],
+        )
         segments = srt_utils.parse_srt(result.srt_content)
         self.assertEqual(len(segments), 2)
         self.assertNotIn("[SPEAKER_", result.srt_content)
+
+    def test_concurrent_correction_runs_independent_blocks_and_keeps_output_order(self):
+        content = """1
+00:00:00,000 --> 00:00:01,000
+one
+
+2
+00:00:01,100 --> 00:00:02,000
+two
+
+3
+00:00:02,100 --> 00:00:03,000
+three
+"""
+        gate = Event()
+        lock = Lock()
+        active = 0
+        maximum_active = 0
+        prompts = []
+
+        def fake_completion(**kwargs):
+            nonlocal active, maximum_active
+            prompt = kwargs["messages"][-1]["content"]
+            cue = json.loads(prompt.rsplit("\nThe subtitles:\n", 1)[1])[0]
+            prompts.append(prompt)
+            with lock:
+                active += 1
+                maximum_active = max(maximum_active, active)
+                if active >= 2:
+                    gate.set()
+            self.assertTrue(gate.wait(2))
+            if cue["text"] == "one":
+                time.sleep(0.05)
+            with lock:
+                active -= 1
+            return llm_handler.ChatCompletionResult(
+                content=json.dumps(
+                    {
+                        "operations": [
+                            {
+                                "action": "edit",
+                                "ids": [1],
+                                "texts": [cue["text"].upper()],
+                            }
+                        ]
+                    }
+                )
+            )
+
+        result = llm_correction.correct_srt_content(
+            content,
+            {
+                **_settings(),
+                "max_subtitles_per_call": 1,
+                "llm_concurrent_calls": 2,
+            },
+            completion_func=fake_completion,
+        )
+
+        self.assertGreaterEqual(maximum_active, 2)
+        self.assertTrue(all("Prior corrected cues" not in prompt for prompt in prompts))
+        self.assertEqual(
+            ["ONE", "TWO", "THREE"],
+            [segment.text for segment in srt_utils.parse_srt(result.srt_content)],
+        )
 
     def test_apply_correction_operations_can_prevent_deletion(self):
         block = [

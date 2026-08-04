@@ -1298,7 +1298,7 @@ export interface paths {
         delete?: never;
         options?: never;
         head?: never;
-        patch?: never;
+        patch: operations["updateGenerationSegments"];
         trace?: never;
     };
     "/api/v1/sessions/{sessionId}/outcome-plan": {
@@ -2078,7 +2078,7 @@ export interface components {
             api_version?: string;
             /**
              * Application Version
-             * @default 0.8.6
+             * @default 0.8.7
              */
             application_version?: string;
             /** Canonical Origin */
@@ -2240,8 +2240,26 @@ export interface components {
              */
             source_revision_id?: string | null;
         };
+        /** GenerationSegmentBatchUpdate */
+        GenerationSegmentBatchUpdate: {
+            /** Updates */
+            updates: components["schemas"]["GenerationSegmentBatchUpdateItem"][];
+        };
+        /** GenerationSegmentBatchUpdateItem */
+        GenerationSegmentBatchUpdateItem: {
+            changes: components["schemas"]["GenerationSegmentUpdate"];
+            /** Id */
+            id: string;
+            /** Revision */
+            revision: number;
+        };
         /** GenerationSegmentCreate */
         GenerationSegmentCreate: {
+            /**
+             * Alignment Group
+             * @default null
+             */
+            alignment_group?: string | null;
             /**
              * Language
              * @default null
@@ -5405,6 +5423,30 @@ export interface operations {
         requestBody?: never;
         responses: {
             /** @description Cursor-paginated generation segments */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    updateGenerationSegments: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GenerationSegmentBatchUpdate"];
+            };
+        };
+        responses: {
+            /** @description Generation segments updated atomically */
             200: {
                 headers: {
                     [name: string]: unknown;

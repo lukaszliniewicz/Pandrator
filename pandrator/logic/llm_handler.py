@@ -136,6 +136,9 @@ class ChatCompletionResult:
     cost: float | None = None
     cost_source: str = ""
     response_id: str = ""
+    finish_reason: str = ""
+    assistant_message: dict[str, Any] = field(default_factory=dict)
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -1593,6 +1596,15 @@ def _extract_chat_completion_result(
     model_record: dict[str, Any] | None = None,
 ) -> ChatCompletionResult:
     payload = _response_payload(response_data)
+    choices = payload.get("choices") if isinstance(payload.get("choices"), list) else []
+    choice = choices[0] if choices and isinstance(choices[0], dict) else {}
+    message = choice.get("message") if isinstance(choice.get("message"), dict) else {}
+    raw_tool_calls = message.get("tool_calls") if isinstance(message, dict) else []
+    tool_calls = [
+        copy.deepcopy(item)
+        for item in (raw_tool_calls if isinstance(raw_tool_calls, list) else [])
+        if isinstance(item, dict)
+    ]
     usage = payload.get("usage")
     usage = normalize_usage_tokens(usage if isinstance(usage, dict) else {})
     cost, cost_source = _extract_response_cost(response_data, payload)
@@ -1607,6 +1619,12 @@ def _extract_chat_completion_result(
         cost=cost,
         cost_source=cost_source,
         response_id=str(payload.get("id") or ""),
+        finish_reason=str(choice.get("finish_reason") or ""),
+        # Keep the provider-normalized assistant message intact. Gemini 3
+        # thought signatures live inside tool calls/extra_content and must be
+        # returned verbatim on the following tool-result turn.
+        assistant_message=copy.deepcopy(message),
+        tool_calls=tool_calls,
     )
 
 
@@ -1617,6 +1635,8 @@ def chat_completion_with_metadata(
     max_tokens: int | None = None,
     cancel_event: Any | None = None,
     retry_callback: Any | None = None,
+    tools: list[dict[str, Any]] | None = None,
+    tool_choice: Any | None = None,
 ) -> ChatCompletionResult:
     """Runs a LiteLLM chat completion and preserves usage/cost metadata."""
     completion, _ = _get_litellm_clients()
@@ -1648,6 +1668,10 @@ def chat_completion_with_metadata(
             request_payload["max_tokens"] = max(1, int(max_tokens))
         except (TypeError, ValueError):
             logging.warning("Ignoring invalid max_tokens value: %r", max_tokens)
+    if tools:
+        request_payload["tools"] = copy.deepcopy(tools)
+        if tool_choice is not None:
+            request_payload["tool_choice"] = copy.deepcopy(tool_choice)
     model_record = details.get("model_record")
     if isinstance(model_record, dict):
         temperature = _model_optional_float(model_record.get("default_temperature"))
@@ -1706,7 +1730,7 @@ def chat_completion_with_metadata(
                 accumulated_cost += float(result.cost)
                 if result.cost_source and result.cost_source not in accumulated_cost_sources:
                     accumulated_cost_sources.append(result.cost_source)
-            if result.content:
+            if result.content or result.tool_calls:
                 result.usage = {
                     **accumulated_usage,
                     "provider_response_count": provider_response_count,
@@ -1714,7 +1738,21 @@ def chat_completion_with_metadata(
                 result.cost = accumulated_cost if accumulated_cost_sources else result.cost
                 result.cost_source = ",".join(accumulated_cost_sources) or result.cost_source
                 return result
-            error = RuntimeError("LiteLLM returned an empty chat response body.")
+            completion_details = result.usage.get("completion_tokens_details")
+            reasoning_tokens = (
+                _usage_int(completion_details.get("reasoning_tokens"))
+                if isinstance(completion_details, dict)
+                else 0
+            )
+            diagnostic = (
+                f"finish_reason={result.finish_reason or 'unknown'}, "
+                f"completion_tokens={_usage_int(result.usage.get('completion_tokens'))}, "
+                f"reasoning_tokens={reasoning_tokens}"
+            )
+            error = RuntimeError(
+                "LiteLLM returned neither visible content nor a tool call "
+                f"({diagnostic})."
+            )
         except Exception as caught:
             error = caught
 

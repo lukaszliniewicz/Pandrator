@@ -103,6 +103,71 @@ Wrong.
 
             self.assertEqual(["0001", "0002"], [block.number for block in blocks])
 
+    def test_explicit_alignment_group_joins_split_audio_before_timing(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            srt_path, speech_blocks_path, wavs_dir = self._write_sync_fixture(temp_dir)
+            Path(speech_blocks_path).write_text(
+                json.dumps(
+                    [
+                        {
+                            "number": "0001",
+                            "text": "First half",
+                            "subtitles": [1],
+                            "alignment_group": "a0001",
+                        },
+                        {
+                            "number": "0002",
+                            "text": "second half.",
+                            "subtitles": [1],
+                            "alignment_group": "a0001",
+                        },
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            blocks = audio_sync.create_alignment_blocks(
+                srt_path,
+                speech_blocks_path,
+                wavs_dir,
+            )
+
+            self.assertEqual(1, len(blocks))
+            self.assertEqual("0001-0002", blocks[0].number)
+            self.assertEqual(2, len(blocks[0].audio_files))
+            self.assertEqual([1], blocks[0].subtitles)
+
+    def test_distinct_alignment_groups_override_legacy_shared_cue_heuristic(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            srt_path, speech_blocks_path, wavs_dir = self._write_sync_fixture(temp_dir)
+            Path(speech_blocks_path).write_text(
+                json.dumps(
+                    [
+                        {
+                            "number": "0001",
+                            "text": "First utterance.",
+                            "subtitles": [1],
+                            "alignment_group": "a0001",
+                        },
+                        {
+                            "number": "0002",
+                            "text": "Second utterance.",
+                            "subtitles": [1],
+                            "alignment_group": "a0002",
+                        },
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            blocks = audio_sync.create_alignment_blocks(
+                srt_path,
+                speech_blocks_path,
+                wavs_dir,
+            )
+
+            self.assertEqual(2, len(blocks))
+
     def test_create_alignment_blocks_rejects_missing_generated_audio(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             srt_path, speech_blocks_path, wavs_dir = self._write_sync_fixture(temp_dir)

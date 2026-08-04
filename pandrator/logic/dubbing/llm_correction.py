@@ -8,14 +8,21 @@ import os
 import re
 import tempfile
 from collections.abc import Callable, Mapping
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 from .. import llm_handler
 from .llm_config import DubbingLLMSettings, resolve_dubbing_llm_settings as _resolve_dubbing_llm_settings
 from .models import SubtitleSegment
-from .srt_utils import compose_srt, create_translation_blocks, split_speaker_label
+from .srt_utils import (
+    compose_srt,
+    create_translation_blocks,
+    split_speaker_label,
+    subtitle_prompt_context,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +53,8 @@ Instructions:
 5. Cue timing, reading speed, visual wrapping, and line layout are handled by Pandrator after editing. Do not insert line breaks or split/merge merely to change visual layout.
 6. Every replacement must be complete, corrected plain text. Do not include IDs that are only context.
 7. If prior corrected context is provided, use it only for continuity. Operate only on the current array (IDs 1 to {subtitle_count}).
+8. Cue context fields such as `speaker`, timings, gaps, and overlap are non-spoken evidence. Speaker IDs may change at ASR chunk seams: never copy context into replacement text or assume that a changed ID always means a new person.
+9. Overlapping cues from different speakers can be legitimate simultaneous speech. Preserve meaningful speech. You may delete a very short, inconsequential interjection only when it obscures a longer utterance, and remove one copy of clearly duplicated near-identical ASR text that occupies the same time span.
 
 Additional context and instructions specific to your particular batch, if any:
 {correction_instructions}
@@ -346,6 +355,8 @@ def build_correction_prompt(
     previous_response: str = "",
     max_line_length: int = DEFAULT_MAX_LINE_LENGTH,
     no_remove_subtitles: bool = False,
+    include_timing_context: bool = False,
+    substantial_gap_ms: int = 2000,
 ) -> str:
     """Build a correction prompt for one subtitle block."""
     prompt_template = CORRECTION_PROMPT_TEMPLATE
@@ -359,6 +370,19 @@ def build_correction_prompt(
         correction_instructions=correction_instructions or "No additional instructions provided.",
         subtitle_count=len(block),
     )
+    if include_timing_context:
+        base_prompt += (
+            "\n\nTiming policy:\n"
+            "- `start_ms` and `end_ms` locate each cue on the source timeline; "
+            "`gap_from_previous_ms` and `overlap_with_previous_ms` describe its "
+            "relationship to the preceding cue.\n"
+            f"- A gap of {max(0, int(substantial_gap_ms))} ms or more is a "
+            "substantial audible pause: normally preserve a cue boundary there "
+            "even when the text is semantically related.\n"
+            "- A shorter gap is not by itself a reason to split a coherent "
+            "same-speaker utterance. Use semantics, punctuation, and the timing "
+            "evidence together."
+        )
     # Retained in the signature for callers using the old helper contract.
     # Layout limits intentionally do not belong in the LLM task.
     _ = max_line_length
@@ -367,6 +391,10 @@ def build_correction_prompt(
             {
                 "id": index + 1,
                 "text": _normalize_replacement_text(subtitle.get("text")),
+                **subtitle_prompt_context(
+                    subtitle,
+                    include_timing=include_timing_context,
+                ),
             }
             for index, subtitle in enumerate(block)
         ],
@@ -425,6 +453,12 @@ def correct_srt_content(
     )
     use_context = bool(settings.get("context", True))
     no_remove_subtitles = bool(settings.get("no_remove_subtitles", False))
+    include_timing_context = bool(settings.get("timing_context_enabled", True))
+    substantial_gap_ms = max(
+        0,
+        _coerce_int(settings.get("timing_context_gap_ms"), 2000),
+    )
+    workers = max(1, min(16, _coerce_int(settings.get("llm_concurrent_calls"), 1)))
 
     blocks = create_translation_blocks(
         srt_content,
@@ -441,14 +475,19 @@ def correct_srt_content(
     completed_subtitles = 0
     resolved = resolve_dubbing_llm_settings(settings, stage="correction")
     completion = completion_func or llm_handler.chat_completion_with_metadata
-    previous_context = ""
     corrected_subtitles: list[dict[str, Any]] = []
     total_cost = 0.0
     response_count = 0
     cost_sources: list[str] = []
     usage: dict[str, Any] = {}
+    progress_lock = Lock()
 
-    for block_number, block in enumerate(blocks, start=1):
+    def correct_block(
+        block_number: int,
+        block: list[dict[str, Any]],
+        previous_context: str,
+    ) -> tuple[list[dict[str, Any]], str, float, int, list[str], dict[str, Any]]:
+        nonlocal completed_subtitles
         if cancel_event is not None and cancel_event.is_set():
             raise RuntimeError("LLM correction was canceled.")
         prompt = build_correction_prompt(
@@ -457,23 +496,30 @@ def correct_srt_content(
             previous_response=previous_context if use_context else "",
             max_line_length=max_line_length,
             no_remove_subtitles=no_remove_subtitles,
+            include_timing_context=include_timing_context,
+            substantial_gap_ms=substantial_gap_ms,
         )
         last_protocol_error: ValueError | None = None
+        block_cost = 0.0
+        block_response_count = 0
+        block_cost_sources: list[str] = []
+        block_usage: dict[str, Any] = {}
         for attempt in range(1, MAX_CORRECTION_ATTEMPTS + 1):
             if cancel_event is not None and cancel_event.is_set():
                 raise RuntimeError("LLM correction was canceled.")
-            _report_progress(
-                progress_callback,
-                completed_subtitles / total_subtitles,
-                (
-                    f"Correcting subtitle block {block_number} of {len(blocks)}"
-                    + (
-                        f" — validation attempt {attempt} of {MAX_CORRECTION_ATTEMPTS}"
-                        if attempt > 1
-                        else ""
-                    )
-                ),
-            )
+            with progress_lock:
+                _report_progress(
+                    progress_callback,
+                    completed_subtitles / total_subtitles,
+                    (
+                        f"Correcting subtitle block {block_number} of {len(blocks)}"
+                        + (
+                            f" — validation attempt {attempt} of {MAX_CORRECTION_ATTEMPTS}"
+                            if attempt > 1
+                            else ""
+                        )
+                    ),
+                )
             messages = [
                 {"role": "system", "content": CORRECTION_SYSTEM_PROMPT},
                 {"role": "user", "content": prompt},
@@ -499,11 +545,11 @@ def correct_srt_content(
                 completion_kwargs["cancel_event"] = cancel_event
             result = completion(**completion_kwargs)
             content, cost, cost_source = _coerce_completion_content_and_cost(result)
-            _merge_completion_usage(usage, result)
-            total_cost += cost
-            if cost_source and cost_source not in cost_sources:
-                cost_sources.append(cost_source)
-            response_count += 1
+            _merge_completion_usage(block_usage, result)
+            block_cost += cost
+            if cost_source and cost_source not in block_cost_sources:
+                block_cost_sources.append(cost_source)
+            block_response_count += 1
             try:
                 if not content:
                     raise ValueError("LLM correction returned an empty response.")
@@ -519,21 +565,28 @@ def correct_srt_content(
                     operations,
                     no_remove_subtitles=no_remove_subtitles,
                 )
-                corrected_subtitles.extend(corrected_block)
-                previous_context = json.dumps(
+                next_context = json.dumps(
                     [_normalize_replacement_text(item.get("text")) for item in corrected_block[-CORRECTION_CONTEXT_CUES:]],
                     ensure_ascii=False,
                 )
-                completed_subtitles += len(block)
-                _report_progress(
-                    progress_callback,
-                    completed_subtitles / total_subtitles,
-                    (
-                        f"Corrected {completed_subtitles} of "
-                        f"{total_subtitles} subtitles"
-                    ),
+                with progress_lock:
+                    completed_subtitles += len(block)
+                    _report_progress(
+                        progress_callback,
+                        completed_subtitles / total_subtitles,
+                        (
+                            f"Corrected {completed_subtitles} of "
+                            f"{total_subtitles} subtitles"
+                        ),
+                    )
+                return (
+                    corrected_block,
+                    next_context,
+                    block_cost,
+                    block_response_count,
+                    block_cost_sources,
+                    block_usage,
                 )
-                break
             except ValueError as error:
                 last_protocol_error = error
                 if attempt == MAX_CORRECTION_ATTEMPTS:
@@ -548,6 +601,55 @@ def correct_srt_content(
                     block_number,
                     error,
                 )
+
+        raise AssertionError("Correction retry loop exited without a result.")
+
+    def append_metrics(
+        cost: float,
+        count: int,
+        sources: list[str],
+        block_usage: dict[str, Any],
+    ) -> None:
+        nonlocal total_cost, response_count
+        total_cost += cost
+        response_count += count
+        for source in sources:
+            if source and source not in cost_sources:
+                cost_sources.append(source)
+        for key, value in block_usage.items():
+            usage[key] = int(usage.get(key) or 0) + int(value or 0)
+
+    if workers == 1 or len(blocks) == 1:
+        previous_context = ""
+        for block_number, block in enumerate(blocks, start=1):
+            corrected, previous_context, cost, count, sources, block_usage = correct_block(
+                block_number,
+                block,
+                previous_context,
+            )
+            corrected_subtitles.extend(corrected)
+            append_metrics(cost, count, sources, block_usage)
+    else:
+        ordered: dict[int, tuple[list[dict[str, Any]], str, float, int, list[str], dict[str, Any]]] = {}
+        executor = ThreadPoolExecutor(max_workers=min(workers, len(blocks)))
+        futures = {
+            executor.submit(correct_block, block_number, block, ""): block_number
+            for block_number, block in enumerate(blocks, start=1)
+        }
+        try:
+            for future in as_completed(futures):
+                ordered[futures[future]] = future.result()
+        except BaseException:
+            for future in futures:
+                future.cancel()
+            executor.shutdown(wait=True, cancel_futures=True)
+            raise
+        else:
+            executor.shutdown(wait=True)
+        for block_number in range(1, len(blocks) + 1):
+            corrected, _context, cost, count, sources, block_usage = ordered[block_number]
+            corrected_subtitles.extend(corrected)
+            append_metrics(cost, count, sources, block_usage)
 
     segments = [
         SubtitleSegment(

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 
 from .artifact_selection import (
     STAGE_OUTPUT_ROLES,
@@ -26,6 +26,7 @@ from .models import (
     SessionSource,
     SourceAsset,
     UsageEvent,
+    utcnow,
 )
 from .source_resolution import resolve_primary_source
 
@@ -276,17 +277,25 @@ class WorkflowService:
                 )
                 .limit(1)
             )
-            completed_generation_run = session.scalar(
-                select(GenerationRun)
-                .where(GenerationRun.session_id == session_id, GenerationRun.status == "completed")
-                .order_by(GenerationRun.sequence_number.desc(), GenerationRun.created_at.desc())
-                .limit(1)
-            )
-            latest_optimization_usage = session.scalar(
-                select(UsageEvent)
-                .where(UsageEvent.session_id == session_id, UsageEvent.stage == "tts_optimization")
-                .order_by(UsageEvent.created_at.desc())
-                .limit(1)
+            completed_generation_run = (
+                generation_run
+                if generation_run is not None and generation_run.status == "completed"
+                else (
+                    session.scalar(
+                        select(GenerationRun)
+                        .where(
+                            GenerationRun.session_id == session_id,
+                            GenerationRun.status == "completed",
+                        )
+                        .order_by(
+                            GenerationRun.sequence_number.desc(),
+                            GenerationRun.created_at.desc(),
+                        )
+                        .limit(1)
+                    )
+                    if generation_run is not None
+                    else None
+                )
             )
             transformations = (outcome.value_json or {}).get("transformations", {}) if outcome and isinstance(outcome.value_json, dict) else {}
             optimization_enabled = bool(transformations.get("llm_tts_optimization"))
@@ -302,6 +311,7 @@ class WorkflowService:
                 job_by_kind["dubbing.generate_audio"] = job_by_kind["workflow.continue"]
                 job_by_kind["audiobook.generate_audio"] = job_by_kind["workflow.continue"]
             stages = []
+            stage_usage_scopes: dict[str, dict[str, str]] = {}
             document_definition = next((item for item in definitions if item.key == "optimize_document"), None)
             visible_definitions = tuple(item for item in definitions if item.key != "optimize_document")
             for index, definition in enumerate(visible_definitions, start=1):
@@ -375,19 +385,63 @@ class WorkflowService:
                     # make this card available.
                     status = "ready"
                 stage_enabled = (optimization_enabled or document_optimization_enabled) if definition.key == "optimize_tts" else None
-                usage = None
-                if definition.key == "optimize_tts" and stage_enabled and latest_optimization_usage is not None:
-                    input_tokens = int(latest_optimization_usage.input_tokens or 0)
-                    output_tokens = int(latest_optimization_usage.output_tokens or 0)
-                    usage = {
-                        "input_tokens": input_tokens,
-                        "cached_input_tokens": int(latest_optimization_usage.cached_input_tokens or 0),
-                        "output_tokens": output_tokens,
-                        "total_tokens": input_tokens + output_tokens,
-                        "cost_usd": float(latest_optimization_usage.cost_usd) if latest_optimization_usage.cost_usd is not None else None,
-                        "cost_source": latest_optimization_usage.cost_source,
-                        "model_id": latest_optimization_usage.model_id,
-                        "created_at": latest_optimization_usage.created_at.isoformat(),
+                metric_job = active
+                usage_scope: dict[str, str] = {}
+                if definition.key == "generate_audio" and generation_run is not None:
+                    usage_scope["generation_run_id"] = generation_run.id
+                    if generation_run.job_id:
+                        metric_job = session.get(Job, generation_run.job_id) or metric_job
+                elif (
+                    definition.key == "optimize_tts"
+                    and not document_optimization_enabled
+                    and generation_run is not None
+                ):
+                    usage_scope.update(
+                        {
+                            "generation_run_id": generation_run.id,
+                            "usage_stage": "tts_optimization",
+                        }
+                    )
+                    if generation_run.job_id:
+                        metric_job = session.get(Job, generation_run.job_id) or metric_job
+                elif artifact is not None:
+                    usage_scope["artifact_id"] = artifact.id
+                    if active is not None:
+                        # Research and the main LLM call share a job, while
+                        # only the final call is linked to the output artifact.
+                        # Keep both links so the card reports the whole stage.
+                        usage_scope["job_id"] = active.id
+                elif active is not None:
+                    usage_scope["job_id"] = active.id
+                elif definition.key == "optimize_tts" and stage_enabled:
+                    # Compatibility for optimization usage recorded before
+                    # artifact/job links were introduced.
+                    usage_scope["usage_stage"] = "tts_optimization"
+                stage_usage_scopes[definition.key] = usage_scope
+                run_metrics = None
+                if metric_job is not None:
+                    duration_seconds = None
+                    if metric_job.started_at is not None:
+                        end = metric_job.finished_at or utcnow()
+                        try:
+                            duration_seconds = max(
+                                0.0,
+                                (end - metric_job.started_at).total_seconds(),
+                            )
+                        except TypeError:
+                            duration_seconds = None
+                    run_metrics = {
+                        "started_at": (
+                            metric_job.started_at.isoformat()
+                            if metric_job.started_at
+                            else None
+                        ),
+                        "finished_at": (
+                            metric_job.finished_at.isoformat()
+                            if metric_job.finished_at
+                            else None
+                        ),
+                        "duration_seconds": duration_seconds,
                     }
                 stages.append(
                     {
@@ -432,9 +486,187 @@ class WorkflowService:
                                 else None
                             )
                         ),
-                        "usage": usage,
+                        "usage": None,
+                        "run_metrics": run_metrics,
                     }
                 )
+
+            artifact_ids = {
+                scope["artifact_id"]
+                for scope in stage_usage_scopes.values()
+                if scope.get("artifact_id")
+            }
+            unlinked_artifact_ids = {
+                scope["artifact_id"]
+                for scope in stage_usage_scopes.values()
+                if scope.get("artifact_id") and not scope.get("job_id")
+            }
+            # Automatic workflows can run several stages inside one
+            # ``workflow.continue`` job, so that job is not necessarily the
+            # latest job under the stage's direct kind. The final usage event
+            # is linked to the artifact and tells us which job owns the whole
+            # stage, including research/tool turns that are not artifact-linked.
+            artifact_job_links: dict[str, str] = {}
+            if unlinked_artifact_ids:
+                for artifact_id, job_id in session.execute(
+                    select(UsageEvent.artifact_id, UsageEvent.job_id)
+                    .where(
+                        UsageEvent.session_id == session_id,
+                        UsageEvent.artifact_id.in_(unlinked_artifact_ids),
+                        UsageEvent.job_id.is_not(None),
+                    )
+                    .order_by(UsageEvent.created_at.desc())
+                ):
+                    if artifact_id and job_id:
+                        artifact_job_links.setdefault(artifact_id, job_id)
+            for stage in stages:
+                scope = stage_usage_scopes.get(str(stage["key"]), {})
+                linked_job_id = artifact_job_links.get(
+                    str(scope.get("artifact_id") or "")
+                )
+                if linked_job_id and not scope.get("job_id"):
+                    scope["job_id"] = linked_job_id
+                    metric_job = session.get(Job, linked_job_id)
+                    if metric_job is not None:
+                        duration_seconds = None
+                        if metric_job.started_at is not None:
+                            end = metric_job.finished_at or utcnow()
+                            try:
+                                duration_seconds = max(
+                                    0.0,
+                                    (end - metric_job.started_at).total_seconds(),
+                                )
+                            except TypeError:
+                                duration_seconds = None
+                        stage["run_metrics"] = {
+                            "started_at": (
+                                metric_job.started_at.isoformat()
+                                if metric_job.started_at
+                                else None
+                            ),
+                            "finished_at": (
+                                metric_job.finished_at.isoformat()
+                                if metric_job.finished_at
+                                else None
+                            ),
+                            "duration_seconds": duration_seconds,
+                        }
+            metric_job_ids = {
+                scope["job_id"]
+                for scope in stage_usage_scopes.values()
+                if scope.get("job_id")
+            }
+            generation_run_ids = {
+                scope["generation_run_id"]
+                for scope in stage_usage_scopes.values()
+                if scope.get("generation_run_id")
+            }
+            usage_stages = {
+                scope["usage_stage"]
+                for scope in stage_usage_scopes.values()
+                if scope.get("usage_stage")
+            }
+            usage_filters = []
+            if artifact_ids:
+                usage_filters.append(UsageEvent.artifact_id.in_(artifact_ids))
+            if metric_job_ids:
+                usage_filters.append(UsageEvent.job_id.in_(metric_job_ids))
+            if generation_run_ids:
+                usage_filters.append(
+                    UsageEvent.generation_run_id.in_(generation_run_ids)
+                )
+            if usage_stages:
+                usage_filters.append(UsageEvent.stage.in_(usage_stages))
+            usage_rows = []
+            if usage_filters:
+                usage_rows = session.execute(
+                    select(
+                        UsageEvent.job_id,
+                        UsageEvent.artifact_id,
+                        UsageEvent.generation_run_id,
+                        UsageEvent.stage,
+                        UsageEvent.model_id,
+                        func.sum(UsageEvent.input_tokens).label("input_tokens"),
+                        func.sum(UsageEvent.cached_input_tokens).label(
+                            "cached_input_tokens"
+                        ),
+                        func.sum(UsageEvent.output_tokens).label("output_tokens"),
+                        func.sum(UsageEvent.cost_usd).label("cost_usd"),
+                        func.count(UsageEvent.cost_usd).label("priced_event_count"),
+                        func.count(UsageEvent.id).label("event_count"),
+                        func.max(UsageEvent.created_at).label("created_at"),
+                    )
+                    .where(
+                        UsageEvent.session_id == session_id,
+                        or_(*usage_filters),
+                    )
+                    .group_by(
+                        UsageEvent.job_id,
+                        UsageEvent.artifact_id,
+                        UsageEvent.generation_run_id,
+                        UsageEvent.stage,
+                        UsageEvent.model_id,
+                    )
+                ).all()
+            for stage in stages:
+                scope = stage_usage_scopes.get(str(stage["key"]), {})
+                matching = []
+                for row in usage_rows:
+                    linked_scope = any(
+                        scope.get(key)
+                        for key in ("artifact_id", "generation_run_id", "job_id")
+                    )
+                    matched = bool(
+                        (scope.get("artifact_id") and row.artifact_id == scope["artifact_id"])
+                        or (
+                            scope.get("generation_run_id")
+                            and row.generation_run_id == scope["generation_run_id"]
+                        )
+                        or (scope.get("job_id") and row.job_id == scope["job_id"])
+                        or (not linked_scope and scope.get("usage_stage"))
+                    )
+                    if matched and scope.get("usage_stage"):
+                        matched = row.stage == scope["usage_stage"]
+                    if matched:
+                        matching.append(row)
+                if not matching:
+                    continue
+                input_tokens = sum(int(row.input_tokens or 0) for row in matching)
+                cached_input_tokens = sum(
+                    int(row.cached_input_tokens or 0) for row in matching
+                )
+                output_tokens = sum(int(row.output_tokens or 0) for row in matching)
+                priced_event_count = sum(
+                    int(row.priced_event_count or 0) for row in matching
+                )
+                models = sorted(
+                    {
+                        str(row.model_id)
+                        for row in matching
+                        if str(row.model_id or "").strip()
+                    }
+                )
+                created_at = max(
+                    (row.created_at for row in matching if row.created_at),
+                    default=None,
+                )
+                stage["usage"] = {
+                    "input_tokens": input_tokens,
+                    "cached_input_tokens": cached_input_tokens,
+                    "output_tokens": output_tokens,
+                    "total_tokens": input_tokens + output_tokens,
+                    "cost_usd": (
+                        sum(float(row.cost_usd or 0.0) for row in matching)
+                        if priced_event_count
+                        else None
+                    ),
+                    "event_count": sum(
+                        int(row.event_count or 0) for row in matching
+                    ),
+                    "model_ids": models,
+                    "model_id": " · ".join(models),
+                    "created_at": created_at.isoformat() if created_at else None,
+                }
             return {
                 "session_id": record.id,
                 "workflow_kind": record.workflow_kind,

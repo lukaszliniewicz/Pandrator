@@ -1,8 +1,8 @@
+import json
+import subprocess
 import tempfile
 import threading
 import unittest
-import json
-import subprocess
 from pathlib import Path
 
 from mutagen.flac import FLAC
@@ -19,10 +19,25 @@ from pandrator.web.artifacts import ArtifactService
 from pandrator.web.audio_assembly import compose_audio, export_audio
 from pandrator.web.database import Database
 from pandrator.web.jobs import JobQueue
-from pandrator.web.models import Artifact, ArtifactEdge, AudioTake, Document, DocumentRevision, GenerationRun, GenerationSegment, OutputAssembly, Segment, SessionRecord
+from pandrator.web.models import (
+    Artifact,
+    ArtifactEdge,
+    AudioTake,
+    Document,
+    DocumentRevision,
+    GenerationRun,
+    GenerationSegment,
+    OutputAssembly,
+    Segment,
+    SessionRecord,
+)
 from pandrator.web.sessions import SessionService
 from pandrator.web.workflow_handlers import WorkflowHandlers
-from pandrator.web.workspace import GenerationService, WorkspaceSettingsService
+from pandrator.web.workspace import (
+    GenerationService,
+    RevisionConflict,
+    WorkspaceSettingsService,
+)
 from tests.web_test_support import prepare_web_test_data_root
 
 
@@ -139,6 +154,83 @@ class DurableOutputAssemblyTests(unittest.TestCase):
                     )
                 )
         return segment_ids
+
+    def test_batch_segment_update_is_atomic_on_revision_conflict(self):
+        plan = self.generation.create_plan(
+            self.record.id,
+            source_revision_id=None,
+            segments=[{"text": "First"}, {"text": "Second"}],
+        )
+        with self.database.session() as session:
+            segments = list(
+                session.scalars(
+                    select(GenerationSegment)
+                    .where(
+                        GenerationSegment.plan_revision_id
+                        == plan["active_revision_id"]
+                    )
+                    .order_by(GenerationSegment.ordinal)
+                ).all()
+            )
+            original = [(item.id, item.text, item.revision) for item in segments]
+
+        with self.assertRaises(RevisionConflict):
+            self.generation.update_segments(
+                self.record.id,
+                [
+                    {
+                        "id": original[0][0],
+                        "revision": original[0][2],
+                        "changes": {"text": "Changed first"},
+                    },
+                    {
+                        "id": original[1][0],
+                        "revision": original[1][2] + 1,
+                        "changes": {"text": "Changed second"},
+                    },
+                ],
+            )
+
+        with self.database.session() as session:
+            stored = [
+                session.get(GenerationSegment, segment_id)
+                for segment_id, _text, _revision in original
+            ]
+            self.assertEqual(
+                [(text, revision) for _id, text, revision in original],
+                [(item.text, item.revision) for item in stored],
+            )
+
+    def test_batch_segment_update_commits_all_changes_together(self):
+        plan = self.generation.create_plan(
+            self.record.id,
+            source_revision_id=None,
+            segments=[{"text": "First"}, {"text": "Second"}],
+        )
+        with self.database.session() as session:
+            segments = list(
+                session.scalars(
+                    select(GenerationSegment)
+                    .where(
+                        GenerationSegment.plan_revision_id
+                        == plan["active_revision_id"]
+                    )
+                    .order_by(GenerationSegment.ordinal)
+                ).all()
+            )
+            updates = [
+                {
+                    "id": item.id,
+                    "revision": item.revision,
+                    "changes": {"text": f"Changed {index + 1}"},
+                }
+                for index, item in enumerate(segments)
+            ]
+
+        result = self.generation.update_segments(self.record.id, updates)
+
+        self.assertEqual(["Changed 1", "Changed 2"], [item["text"] for item in result["items"]])
+        self.assertEqual([2, 2], [item["revision"] for item in result["items"]])
 
     def test_m4b_assembly_preserves_generation_chapters(self):
         self._plan_with_takes()
@@ -269,6 +361,112 @@ class DurableOutputAssemblyTests(unittest.TestCase):
         self.assertEqual(2500, len(AudioSegment.from_file(output_path)))
         self.assertEqual([500, 2000], [item["target_start_ms"] for item in artifact.metadata_json["takes"]])
         self.assertTrue(all(item["silence_after_ms"] == 0 for item in artifact.metadata_json["takes"]))
+
+    def test_subtitle_generation_assembly_joins_explicit_alignment_group_before_timing(self):
+        with self.database.session() as session:
+            document = Document(session_id=self.record.id, stage="translation", language="pl")
+            session.add(document)
+            session.flush()
+            revision = DocumentRevision(
+                document_id=document.id,
+                revision_number=1,
+                content_hash="explicit-alignment-group",
+            )
+            session.add(revision)
+            session.flush()
+            cues = [
+                Segment(
+                    revision_id=revision.id,
+                    ordinal=0,
+                    start_ms=500,
+                    end_ms=1000,
+                    text="Pierwsza część.",
+                ),
+                Segment(
+                    revision_id=revision.id,
+                    ordinal=1,
+                    start_ms=1000,
+                    end_ms=1500,
+                    text="Druga część.",
+                ),
+            ]
+            session.add_all(cues)
+            session.flush()
+            cue_ids = [cue.id for cue in cues]
+            document.active_revision_id = revision.id
+            revision_id = revision.id
+        plan = self.generation.create_plan(
+            self.record.id,
+            source_revision_id=revision_id,
+            segments=[
+                {
+                    "text": "Pierwsza część.",
+                    "node_kind": "subtitle_cue",
+                    "source_segment_ids": [cue_ids[0]],
+                    "alignment_group": "a0001",
+                    "silence_after_ms": 0,
+                },
+                {
+                    "text": "Druga część.",
+                    "node_kind": "subtitle_cue",
+                    "source_segment_ids": [cue_ids[1]],
+                    "alignment_group": "a0001",
+                    "silence_after_ms": 0,
+                },
+            ],
+        )
+        artifacts = ArtifactService(self.database, self.paths)
+        with self.database.session() as session:
+            segments = list(
+                session.scalars(
+                    select(GenerationSegment)
+                    .where(
+                        GenerationSegment.plan_revision_id
+                        == plan["active_revision_id"]
+                    )
+                    .order_by(GenerationSegment.ordinal)
+                ).all()
+            )
+            segment_ids = [segment.id for segment in segments]
+        for index, segment_id in enumerate(segment_ids):
+            path = self.session_dir / f"explicit-group-take-{index}.wav"
+            Sine(440 + index * 110).to_audio_segment(duration=100).export(
+                path, format="wav"
+            ).close()
+            artifact = artifacts.register(
+                path,
+                kind="audio",
+                role="generation_take",
+                session_id=self.record.id,
+            )
+            with self.database.session() as session:
+                segment = session.get(GenerationSegment, segment_id)
+                segment.status = "completed"
+                session.add(
+                    AudioTake(
+                        generation_segment_id=segment_id,
+                        artifact_id=artifact.id,
+                        kind="tts",
+                        status="completed",
+                        duration_ms=100,
+                        is_active=True,
+                    )
+                )
+
+        queued = self.generation.create_assembly(self.record.id)
+        result = WorkflowHandlers(self.database, self.paths).assemble_generation_output(
+            {"output_assembly_id": queued["id"]},
+            lambda *_args: None,
+            threading.Event(),
+        )
+
+        self.assertEqual("subtitle_timed", result["synchronization"]["mode"])
+        self.assertEqual(1, result["synchronization"]["block_count"])
+        artifact, _output_path = artifacts.resolve(result["artifact_id"])
+        self.assertEqual(
+            ["a0001", "a0001"],
+            [item["alignment_group"] for item in artifact.metadata_json["takes"]],
+        )
 
     def test_second_generation_run_still_applies_configured_drift_speedup(self):
         with self.database.session() as session:

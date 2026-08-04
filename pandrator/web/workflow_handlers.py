@@ -75,7 +75,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 CLAUSE_PAUSE_RATIO = 1 / 3
-GENERATION_SEGMENT_POLICY_VERSION = 3
+GENERATION_SEGMENT_POLICY_VERSION = 5
 
 
 def _effective_subtitle_language(*candidates: object) -> str:
@@ -236,6 +236,27 @@ def _stage_settings_fingerprint(stage_key: str, settings: dict[str, Any]) -> dic
         value = _text(*keys)
         return "" if value.lower() == "default" else value
 
+    def _positive_int(key: str, default: int = 1) -> int:
+        try:
+            return max(1, int(settings.get(key) or default))
+        except (TypeError, ValueError):
+            return default
+
+    def _boolean(key: str, default: bool) -> bool:
+        value = settings.get(key)
+        if value is None or value == "":
+            return default
+        if isinstance(value, str):
+            return value.strip().lower() not in {"0", "false", "no", "off"}
+        return bool(value)
+
+    def _nonnegative_int(key: str, default: int) -> int:
+        value = settings.get(key)
+        try:
+            return max(0, int(default if value is None or value == "" else value))
+        except (TypeError, ValueError):
+            return default
+
     if stage_key == "translate":
         backend = _text("translation_backend", "backend").lower() or "llm"
         model = _model("translation_model", "translate_model", "model_name")
@@ -250,6 +271,17 @@ def _stage_settings_fingerprint(stage_key: str, settings: dict[str, Any]) -> dic
         reasoning_effort = _text("reasoning_effort")
         if backend == "llm" and reasoning_effort:
             result["reasoning_effort"] = reasoning_effort
+        concurrent_calls = _positive_int("llm_concurrent_calls")
+        if backend == "llm" and concurrent_calls > 1:
+            result["llm_concurrent_calls"] = concurrent_calls
+        if backend == "llm":
+            timing_context = _boolean("timing_context_enabled", True)
+            if not timing_context:
+                result["timing_context_enabled"] = False
+            else:
+                timing_gap = _nonnegative_int("timing_context_gap_ms", 2000)
+                if timing_gap != 2000:
+                    result["timing_context_gap_ms"] = timing_gap
         research = _research_fingerprint(settings)
         return {**result, **({"web_research": research} if research else {})}
     if stage_key == "correct":
@@ -261,6 +293,16 @@ def _stage_settings_fingerprint(stage_key: str, settings: dict[str, Any]) -> dic
         reasoning_effort = _text("reasoning_effort")
         if reasoning_effort:
             result["reasoning_effort"] = reasoning_effort
+        concurrent_calls = _positive_int("llm_concurrent_calls")
+        if concurrent_calls > 1:
+            result["llm_concurrent_calls"] = concurrent_calls
+        timing_context = _boolean("timing_context_enabled", True)
+        if not timing_context:
+            result["timing_context_enabled"] = False
+        else:
+            timing_gap = _nonnegative_int("timing_context_gap_ms", 2000)
+            if timing_gap != 2000:
+                result["timing_context_gap_ms"] = timing_gap
         research = _research_fingerprint(settings)
         return {**result, **({"web_research": research} if research else {})}
     return {}
@@ -281,7 +323,11 @@ def _research_fingerprint(settings: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _speech_block_settings(settings: dict[str, Any]) -> tuple[int, int, int]:
+def _speech_block_settings(settings: dict[str, Any]) -> tuple[int, int, int, int, int]:
+    def integer_setting(key: str, default: int) -> int:
+        value = settings.get(key)
+        return int(default if value is None or value == "" else value)
+
     min_chars = max(1, int(settings.get("speech_block_min_chars") or 10))
     max_chars = max(
         min_chars,
@@ -295,7 +341,23 @@ def _speech_block_settings(settings: dict[str, Any]) -> tuple[int, int, int]:
             else settings.get("subtitle_merge_threshold", 250)
         ),
     )
-    return min_chars, max_chars, merge_threshold
+    # These are independent policies.  In particular, zero is meaningful and
+    # must not be replaced through truthiness-based defaulting.
+    continuation_threshold = max(
+        0,
+        integer_setting("speech_block_continuation_threshold_ms", 3000),
+    )
+    max_internal_gap = max(
+        0,
+        integer_setting("speech_block_max_internal_gap_ms", 1800),
+    )
+    return (
+        min_chars,
+        max_chars,
+        merge_threshold,
+        continuation_threshold,
+        max_internal_gap,
+    )
 
 
 def _generation_segmentation_settings(settings: dict[str, Any]) -> dict[str, Any]:
@@ -304,12 +366,20 @@ def _generation_segmentation_settings(settings: dict[str, Any]) -> dict[str, Any
     Voice, service, and model choices must not invalidate a segment plan, so
     they are deliberately excluded from the plan revision content hash.
     """
-    min_chars, max_chars, merge_threshold = _speech_block_settings(settings)
+    (
+        min_chars,
+        max_chars,
+        merge_threshold,
+        continuation_threshold,
+        max_internal_gap,
+    ) = _speech_block_settings(settings)
     return {
         "segment_policy_version": GENERATION_SEGMENT_POLICY_VERSION,
         "speech_block_min_chars": min_chars,
         "speech_block_max_chars": max_chars,
         "speech_block_merge_threshold": merge_threshold,
+        "speech_block_continuation_threshold_ms": continuation_threshold,
+        "speech_block_max_internal_gap_ms": max_internal_gap,
         "paragraph_silence_ms": settings.get("paragraph_silence_ms", settings.get("silence_for_paragraphs", 700)),
         "sentence_silence_ms": settings.get("sentence_silence_ms", settings.get("silence_between_sentences", 250)),
         "clause_pause_ratio": CLAUSE_PAUSE_RATIO,
@@ -1104,99 +1174,6 @@ class WorkflowHandlers:
             logger.warning("Could not resolve speaker metadata for artifact %s", artifact.id)
         return mapping
 
-    @staticmethod
-    def _reviewed_subtitle_blocks(
-        display_segments: list[Any],
-        speech_segments: list[Any],
-        speaker_by_subtitle: dict[int, str],
-        *,
-        max_chars: int,
-        merge_threshold: int,
-    ) -> list[dict[str, Any]]:
-        """Group aligned display/speech cues without losing cue identity.
-
-        Reviewed speech can differ enough from its display subtitle that the
-        two texts cannot be split at equivalent character offsets. Treat each
-        aligned cue as atomic, then merge only when both text variants fit the
-        same speaker-safe timing partition. This prevents a long display cue
-        from causing its full optimized speech to be repeated in every split.
-        """
-
-        diarization_expected = bool(speaker_by_subtitle) or any(
-            segment.speaker for segment in display_segments
-        )
-        blocks: list[dict[str, Any]] = []
-        for display_segment, speech_segment in zip(
-            display_segments,
-            speech_segments,
-            strict=True,
-        ):
-            speaker = str(
-                speaker_by_subtitle.get(display_segment.index)
-                or display_segment.speaker
-                or ""
-            ).strip()
-            speaker_key = (
-                speaker.casefold()
-                if speaker
-                else f"unknown-cue:{display_segment.index}"
-                if diarization_expected
-                else ""
-            )
-            display_text = re.sub(
-                r"\s+",
-                " ",
-                str(display_segment.text or ""),
-            ).strip()
-            optimized_text = re.sub(
-                r"\s+",
-                " ",
-                str(speech_segment.text or ""),
-            ).strip()
-            if not display_text or not optimized_text:
-                continue
-
-            previous = blocks[-1] if blocks else None
-            can_merge = bool(
-                previous
-                and previous["_speaker_key"] == speaker_key
-                and max(0, display_segment.start_ms - previous["_end_ms"])
-                <= merge_threshold
-                and len(previous["text"]) + 1 + len(display_text) <= max_chars
-                and len(previous["_optimized_text"]) + 1 + len(optimized_text)
-                <= max_chars
-            )
-            if can_merge:
-                previous["text"] = f"{previous['text']} {display_text}"
-                previous["_optimized_text"] = (
-                    f"{previous['_optimized_text']} {optimized_text}"
-                )
-                previous["subtitles"].append(display_segment.index)
-                previous["_end_ms"] = display_segment.end_ms
-                continue
-
-            blocks.append(
-                {
-                    "text": display_text,
-                    "_optimized_text": optimized_text,
-                    "subtitles": [display_segment.index],
-                    "speaker": speaker,
-                    "_speaker_key": speaker_key,
-                    "_end_ms": display_segment.end_ms,
-                }
-            )
-
-        return [
-            {
-                "number": str(index).zfill(4),
-                "text": block["text"],
-                "subtitles": list(block["subtitles"]),
-                **({"speaker": block["speaker"]} if block["speaker"] else {}),
-                "_optimized_text": block["_optimized_text"],
-            }
-            for index, block in enumerate(blocks, start=1)
-        ]
-
     def _subtitle_generation_records(
         self,
         source_artifact: Artifact,
@@ -1208,7 +1185,13 @@ class WorkflowHandlers:
         from pandrator.logic.dubbing.speech_blocks import create_speech_blocks
         from pandrator.logic.dubbing.srt_utils import parse_srt
 
-        min_chars, max_chars, merge_threshold = _speech_block_settings(settings)
+        (
+            min_chars,
+            max_chars,
+            merge_threshold,
+            continuation_threshold,
+            max_internal_gap,
+        ) = _speech_block_settings(settings)
         display_artifact = source_artifact
         display_path = source_path
         display_segments = None
@@ -1273,27 +1256,25 @@ class WorkflowHandlers:
             display_segments = parse_srt(
                 display_path.read_text(encoding="utf-8-sig")
             )
-        if speech_segments is not None:
-            blocks = self._reviewed_subtitle_blocks(
-                display_segments,
-                speech_segments,
-                speaker_by_subtitle,
-                max_chars=max_chars,
-                merge_threshold=merge_threshold,
-            )
-        else:
-            blocks = create_speech_blocks(
-                display_path.read_text(encoding="utf-8-sig"),
-                target_language=language,
-                min_chars=min_chars,
-                max_chars=max_chars,
-                merge_threshold=merge_threshold,
-                **(
-                    {"speaker_by_subtitle": speaker_by_subtitle}
-                    if speaker_by_subtitle
-                    else {}
-                ),
-            )
+        blocks = create_speech_blocks(
+            display_path.read_text(encoding="utf-8-sig"),
+            target_language=language,
+            min_chars=min_chars,
+            max_chars=max_chars,
+            merge_threshold=merge_threshold,
+            continuation_threshold_ms=continuation_threshold,
+            max_internal_gap_ms=max_internal_gap,
+            speech_srt_content=(
+                source_path.read_text(encoding="utf-8-sig")
+                if speech_segments is not None
+                else None
+            ),
+            **(
+                {"speaker_by_subtitle": speaker_by_subtitle}
+                if speaker_by_subtitle
+                else {}
+            ),
+        )
         if not blocks:
             raise ValueError("No dubbing speech blocks were produced.")
 
@@ -3468,6 +3449,7 @@ class WorkflowHandlers:
                     plan_revision_id=revision.id,
                     ordinal=ordinal,
                     source_segment_ids_json=list(record.get("source_segment_ids") or record.get("subtitles") or []),
+                    alignment_group=str(record.get("alignment_group") or "").strip() or None,
                     node_kind=str(record.get("node_kind") or ("subtitle_cue" if is_subtitle else "chapter_marker" if str(record.get("chapter") or "").lower() == "yes" else "paragraph")),
                     paragraph_break_after=False if is_subtitle else bool(record.get("paragraph_break_after", str(record.get("paragraph") or "").lower() == "yes")),
                     speaker=str(record.get("speaker") or "").strip() or None,
@@ -4353,18 +4335,23 @@ class WorkflowHandlers:
             if speaker_by_subtitle
             else {}
         )
+        (
+            min_chars,
+            max_chars,
+            merge_threshold,
+            continuation_threshold,
+            max_internal_gap,
+        ) = _speech_block_settings(settings)
         blocks_path = Path(
             generate_speech_blocks_file(
                 str(self._operation_dir(session_id, "speech-blocks")),
                 str(source_path),
                 target_language=language,
-                min_chars=int(settings.get("speech_block_min_chars") or 10),
-                max_chars=int(settings.get("speech_block_max_chars") or 220),
-                merge_threshold=int(
-                    settings.get("speech_block_merge_threshold")
-                    if settings.get("speech_block_merge_threshold") is not None
-                    else settings.get("subtitle_merge_threshold", 250)
-                ),
+                min_chars=min_chars,
+                max_chars=max_chars,
+                merge_threshold=merge_threshold,
+                continuation_threshold_ms=continuation_threshold,
+                max_internal_gap_ms=max_internal_gap,
                 **speaker_options,
             )
         )
@@ -5207,6 +5194,7 @@ class WorkflowHandlers:
 
             if subtitle_timed:
                 alignment_blocks: list[AudioAlignmentBlock] = []
+                previous_alignment_group: str | None = None
                 with tempfile.TemporaryDirectory(
                     prefix=f".assembly-{assembly_id}-",
                     dir=assemblies_dir,
@@ -5254,10 +5242,20 @@ class WorkflowHandlers:
                             audio_files=[input_path],
                             subtitles=[value[2] for value in timings],
                         )
-                        if (
+                        alignment_group = str(segment.alignment_group or "").strip() or None
+                        same_explicit_group = bool(
                             alignment_blocks
-                            and alignment_blocks[-1].subtitles[-1:] == block.subtitles[:1]
-                        ):
+                            and alignment_group
+                            and alignment_group == previous_alignment_group
+                        )
+                        legacy_shared_boundary = bool(
+                            alignment_blocks
+                            and not alignment_group
+                            and not previous_alignment_group
+                            and alignment_blocks[-1].subtitles[-1:]
+                            == block.subtitles[:1]
+                        )
+                        if same_explicit_group or legacy_shared_boundary:
                             previous = alignment_blocks[-1]
                             alignment_blocks[-1] = AudioAlignmentBlock(
                                 number=f"{previous.number}-{block.number}",
@@ -5271,12 +5269,14 @@ class WorkflowHandlers:
                             )
                         else:
                             alignment_blocks.append(block)
+                        previous_alignment_group = alignment_group
                         manifest.append(
                             {
                                 "segment_id": segment.id,
                                 "segment_revision": segment.revision,
                                 "node_kind": segment.node_kind,
                                 "speaker": segment.speaker,
+                                "alignment_group": alignment_group,
                                 "take_id": take.id,
                                 "take_revision": take.revision,
                                 "artifact_id": artifact.id,

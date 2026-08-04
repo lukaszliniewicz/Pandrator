@@ -429,6 +429,25 @@ class WebWorkflowHandlerTests(unittest.TestCase):
 
         translate.assert_called_once()
 
+    def test_parallel_translation_is_part_of_the_fingerprint_but_default_one_is_legacy_compatible(self):
+        self._voiceover_session_with_translation(
+            {
+                "backend": "llm",
+                "target_language": "pl",
+                "model": "mock/default-model",
+                "instructions": "",
+            }
+        )
+
+        sequential = self._continue_generation(
+            {"target_language": "pl", "llm_concurrent_calls": 1}
+        )
+        sequential.assert_not_called()
+        parallel = self._continue_generation(
+            {"target_language": "pl", "llm_concurrent_calls": 2}
+        )
+        parallel.assert_called_once()
+
     def test_reuse_stages_choice_keeps_translation_despite_change(self):
         self._voiceover_session_with_translation(
             {"backend": "llm", "target_language": "pl", "model": "mock/default-model", "instructions": ""}
@@ -779,11 +798,19 @@ A single reviewed cue.
                 session.scalars(
                     select(GenerationSegment)
                     .where(GenerationSegment.plan_revision_id == revision_id)
+                    .order_by(GenerationSegment.ordinal)
                 ).all()
             )
-        self.assertEqual(1, len(segments))
-        self.assertEqual([1], segments[0].source_segment_ids_json)
-        self.assertEqual("A single reviewed cue.", segments[0].optimized_text)
+        self.assertEqual(2, len(segments))
+        self.assertTrue(
+            all(segment.source_segment_ids_json == [1] for segment in segments)
+        )
+        self.assertEqual(1, len({segment.alignment_group for segment in segments}))
+        self.assertEqual(
+            "A single reviewed cue.",
+            " ".join(segment.optimized_text for segment in segments),
+        )
+        self.assertTrue(all(len(segment.optimized_text) <= 20 for segment in segments))
 
     def test_full_new_run_rematerializes_plan_with_current_merge_threshold(self):
         with self.database.session() as session:
@@ -2068,6 +2095,8 @@ A single reviewed cue.
                 "min_chars": 14,
                 "max_chars": 120,
                 "merge_threshold": 425,
+                "continuation_threshold_ms": 3000,
+                "max_internal_gap_ms": 1800,
             },
         )
 

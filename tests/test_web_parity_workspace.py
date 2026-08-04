@@ -214,6 +214,39 @@ class WebParityWorkspaceTests(unittest.TestCase):
         self.assertIn("mix", video_output["context"]["applicable_groups"])
         self.assertNotIn("audiobook_metadata", video_output["context"]["applicable_groups"])
 
+        transcript_path = Path(self.temporary.name) / "voiceover-transcript.srt"
+        transcript_path.write_text(
+            "1\n00:00:00,000 --> 00:00:01,000\nHello\n",
+            encoding="utf-8",
+        )
+        ArtifactService(extension["database"], extension["paths"]).register(
+            transcript_path,
+            kind="srt",
+            role="transcription",
+            session_id=voiceover["id"],
+        )
+        subtitle_first = self.client.get(
+            f"/api/v1/sessions/{voiceover['id']}/settings/output"
+        ).get_json()
+        self.assertFalse(subtitle_first["context"]["has_generated_voiceover"])
+        self.assertEqual("preserve", subtitle_first["effective"]["audio_mode"])
+        self.assertEqual("soft", subtitle_first["effective"]["subtitle_mode"])
+        self.assertEqual("source", subtitle_first["effective"]["subtitle_selection"])
+
+        generated_path = Path(self.temporary.name) / "voiceover-assembly.wav"
+        generated_path.write_bytes(b"generated voice fixture")
+        ArtifactService(extension["database"], extension["paths"]).register(
+            generated_path,
+            kind="audio",
+            role="dubbing_audio",
+            session_id=voiceover["id"],
+        )
+        generated_profile = self.client.get(
+            f"/api/v1/sessions/{voiceover['id']}/settings/output"
+        ).get_json()
+        self.assertTrue(generated_profile["context"]["has_generated_voiceover"])
+        self.assertEqual("mixed", generated_profile["effective"]["audio_mode"])
+
         coerced = self.client.put(
             f"/api/v1/sessions/{voiceover['id']}/settings/output",
             json={"value": {"format": "m4b", "album": "Not applicable", "genre": "Audiobook"}},
@@ -733,6 +766,13 @@ class WebParityWorkspaceTests(unittest.TestCase):
         self.assertEqual(18, BUILTIN_DEFAULTS["output"]["burn_video_quality"])
         self.assertEqual("", BUILTIN_DEFAULTS["correction"]["reasoning_effort"])
         self.assertEqual("", BUILTIN_DEFAULTS["translation"]["reasoning_effort"])
+        self.assertEqual(1, BUILTIN_DEFAULTS["correction"]["llm_concurrent_calls"])
+        self.assertEqual(1, BUILTIN_DEFAULTS["translation"]["llm_concurrent_calls"])
+        self.assertEqual(0.0, BUILTIN_DEFAULTS["stt"]["moss_chunk_overlap_seconds"])
+        self.assertEqual(
+            3000,
+            BUILTIN_DEFAULTS["tts"]["speech_block_continuation_threshold_ms"],
+        )
 
     def test_outcome_plan_supports_translation_without_correction(self):
         record = self.create_session()

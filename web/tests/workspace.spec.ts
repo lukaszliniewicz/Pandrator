@@ -94,15 +94,43 @@ test('correction and translation cards expose independent reasoning levels', asy
   let dialog = page.getByRole('dialog');
   await expect(dialog.getByLabel('Reasoning level')).toHaveValue('');
   await dialog.getByLabel('Reasoning level').selectOption('high');
-  await dialog.getByRole('button', { name: 'Save settings' }).click();
+  await dialog
+    .getByLabel('Correction guidance')
+    .fill('Keep the acronym IARF unchanged.');
+  await dialog.getByRole('button', { name: 'All correction settings' }).click();
+  dialog = page.getByRole('dialog');
+  await expect(dialog.getByLabel('Reasoning level')).toHaveValue('high');
+  await expect(dialog.getByLabel('Instructions')).toHaveValue(
+    'Keep the acronym IARF unchanged.'
+  );
+
+  const unsavedCorrectionSettings = await page.request.get(
+    `/api/v1/sessions/${session.id}/settings/correction`
+  );
+  expect(unsavedCorrectionSettings.ok()).toBeTruthy();
+  expect(
+    (await unsavedCorrectionSettings.json()).override.reasoning_effort
+  ).toBeUndefined();
+
+  await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(dialog.getByText('Saved for this session.')).toBeVisible();
+  await dialog.getByRole('button', { name: 'Close settings' }).click();
+  dialog = page.getByRole('dialog');
+  await expect(dialog.getByLabel('Reasoning level')).toHaveValue('high');
+  await expect(dialog.getByLabel('Correction guidance')).toHaveValue(
+    'Keep the acronym IARF unchanged.'
+  );
+  await dialog.getByRole('button', { name: 'Cancel' }).click();
   await expect(dialog).toHaveCount(0);
 
   const correctionSettings = await page.request.get(
     `/api/v1/sessions/${session.id}/settings/correction`
   );
   expect(correctionSettings.ok()).toBeTruthy();
-  expect((await correctionSettings.json()).override.reasoning_effort).toBe(
-    'high'
+  const correctionSettingsBody = await correctionSettings.json();
+  expect(correctionSettingsBody.override.reasoning_effort).toBe('high');
+  expect(correctionSettingsBody.override.instructions).toBe(
+    'Keep the acronym IARF unchanged.'
   );
 
   const translationCard = page
@@ -414,12 +442,28 @@ test('sessions page launches creation and workspace source picker exposes every 
   await page.getByLabel('Source name').fill('Pasted source');
   await page
     .getByLabel('Text')
-    .fill('This source source was pasted directly into an existing session.');
+    .fill(
+      'AİB cafe\u0301 cafe. This source source was pasted directly into an existing session.'
+    );
+  await page.getByLabel('Find in pasted source').fill('İ');
+  await page.getByLabel('Replace in pasted source').fill('X');
+  await page.getByRole('button', { name: 'Replace all' }).click();
+  await expect(page.getByLabel('Text')).toHaveValue(
+    'AXB cafe\u0301 cafe. This source source was pasted directly into an existing session.'
+  );
+  await page.getByLabel('Find in pasted source').fill('cafe');
+  await page.getByLabel('Replace in pasted source').fill('bistro');
+  await page.getByRole('button', { name: 'Match whole word' }).click();
+  await expect(page.getByText('1 / 1', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Replace all' }).click();
+  await expect(page.getByLabel('Text')).toHaveValue(
+    'AXB cafe\u0301 bistro. This source source was pasted directly into an existing session.'
+  );
   await page.getByLabel('Find in pasted source').fill('source');
   await page.getByLabel('Replace in pasted source').fill('asset');
   await page.getByRole('button', { name: 'Replace all' }).click();
   await expect(page.getByLabel('Text')).toHaveValue(
-    'This asset asset was pasted directly into an existing session.'
+    'AXB cafe\u0301 bistro. This asset asset was pasted directly into an existing session.'
   );
   await page.getByRole('button', { name: 'Add and select' }).click();
   await expect(

@@ -797,26 +797,23 @@
   }
 
   async function applySearchReplacements(updates: TextReplacement[]) {
-    let completed = 0;
     error = '';
     try {
-      for (const update of updates) {
+      const changes = updates.flatMap((update) => {
         const item = payload.items[update.index];
-        if (!item || update.text === item.text) continue;
+        if (!item || update.text === item.text) return [];
         if (!update.text.trim())
           throw new Error(
             'Replacement would leave a generation segment blank. Remove that segment instead.'
           );
-        const changedText = update.text.trim();
-        await generationStore.updateSegment(item, { text: changedText });
-        completed += 1;
-      }
-      if (completed) await refreshAssembly();
+        return [{ segment: item, changes: { text: update.text.trim() } }];
+      });
+      if (!changes.length) return;
+      await generationStore.updateSegments(changes);
+      await refreshAssembly();
     } catch (caught) {
       const message = errorMessage(caught);
-      error = completed
-        ? `${completed} segment(s) were updated before search and replace stopped. ${message}`
-        : message;
+      error = message;
       await load(true, true);
       throw new Error(error, { cause: caught });
     }

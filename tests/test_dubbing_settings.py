@@ -85,6 +85,7 @@ class DubbingSettingsTests(unittest.TestCase):
         self.assertEqual(migrated["speech_block_merge_threshold"], 475)
         self.assertEqual(migrated["speech_block_min_chars"], 10)
         self.assertEqual(migrated["speech_block_max_chars"], 220)
+        self.assertEqual(migrated["speech_block_continuation_threshold_ms"], 3000)
 
     def test_legacy_parakeet_int8_migrates_to_crispasr_q8(self):
         migrated = settings.migrate_dubbing_payload(
@@ -105,6 +106,7 @@ class DubbingSettingsTests(unittest.TestCase):
         self.assertEqual(migrated["stt_engine"], "moss")
         self.assertEqual(migrated["stt_model_quantization"], "q8_0")
         self.assertEqual(migrated["moss_max_chunk_seconds"], 120.0)
+        self.assertEqual(migrated["moss_chunk_overlap_seconds"], 0.0)
         self.assertFalse(migrated["moss_vad_enabled"])
         self.assertTrue(migrated["moss_ctc_alignment_enabled"])
         self.assertEqual(migrated["moss_ctc_padding_seconds"], 0.5)

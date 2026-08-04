@@ -4,7 +4,7 @@ import os
 import tempfile
 import threading
 import unittest
-from pathlib import Path
+from datetime import timedelta
 from unittest import mock
 
 from sqlalchemy import select
@@ -13,22 +13,24 @@ from pandrator.web.api import create_app
 from pandrator.web.artifacts import ArtifactService
 from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.database import Database
+from pandrator.web.jobs import JobQueue
 from pandrator.web.models import (
     AppSetting,
     Artifact,
     GenerationPlan,
     GenerationPlanRevision,
     GenerationRun,
+    Job,
     Provider,
     ProviderModel,
     TrainingRun,
     UsageEvent,
+    utcnow,
 )
 from pandrator.web.provider_settings import build_llm_settings
 from pandrator.web.sessions import SessionService
 from pandrator.web.workflow_handlers import WorkflowHandlers
 from pandrator.web.workflows import WorkflowService
-from pandrator.web.jobs import JobQueue
 from pandrator.web.workspace import OutcomePlanService
 from tests.web_test_support import prepare_web_test_data_root
 
@@ -341,6 +343,91 @@ class SourceAwareWorkflowTests(unittest.TestCase):
                 optimized_path.write_text(source_path.read_text(encoding="utf-8"), encoding="utf-8")
                 ArtifactService(database, paths).register(optimized_path, kind="srt", role="tts_optimized", session_id=record.id, parent_ids=[upload.id])
                 self.assertEqual("ready", next(item for item in service.snapshot(record.id)["stages"] if item["key"] == "generate_audio")["status"])
+            finally:
+                database.dispose()
+
+    def test_stage_metrics_aggregate_the_whole_llm_job_and_duration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            paths = prepare_web_test_data_root(directory)
+            database = Database(paths.database)
+            try:
+                record = SessionService(database).create(
+                    "Measured correction", workflow_kind="subtitles"
+                )
+                source_path = paths.uploads / "measured.srt"
+                source_path.write_text(
+                    "1\n00:00:00,000 --> 00:00:01,000\nHelo\n",
+                    encoding="utf-8",
+                )
+                source = ArtifactService(database, paths).register(
+                    source_path,
+                    kind="srt",
+                    role="upload",
+                    session_id=record.id,
+                    metadata={"original_filename": source_path.name},
+                )
+                correction_path = paths.artifacts / "measured-correction.srt"
+                correction_path.write_text(
+                    "1\n00:00:00,000 --> 00:00:01,000\nHello\n",
+                    encoding="utf-8",
+                )
+                correction = ArtifactService(database, paths).register(
+                    correction_path,
+                    kind="srt",
+                    role="correction",
+                    session_id=record.id,
+                    parent_ids=[source.id],
+                )
+                started = utcnow()
+                with database.session() as session:
+                    job = Job(
+                        kind="workflow.continue",
+                        session_id=record.id,
+                        status="completed",
+                        started_at=started,
+                        finished_at=started + timedelta(seconds=95),
+                    )
+                    session.add(job)
+                    session.flush()
+                    session.add_all(
+                        [
+                            UsageEvent(
+                                session_id=record.id,
+                                job_id=job.id,
+                                stage="web_research",
+                                provider_key="vertex_ai",
+                                model_id="gemini-3-flash",
+                                input_tokens=100,
+                                output_tokens=20,
+                                cost_usd=0.03,
+                            ),
+                            UsageEvent(
+                                session_id=record.id,
+                                job_id=job.id,
+                                artifact_id=correction.id,
+                                stage="correction",
+                                provider_key="vertex_ai",
+                                model_id="gemini-3-flash",
+                                input_tokens=900,
+                                cached_input_tokens=400,
+                                output_tokens=200,
+                                cost_usd=0.27,
+                            ),
+                        ]
+                    )
+
+                correction_stage = next(
+                    item
+                    for item in WorkflowService(database, JobQueue(database)).snapshot(
+                        record.id
+                    )["stages"]
+                    if item["key"] == "correct"
+                )
+
+                self.assertEqual(1220, correction_stage["usage"]["total_tokens"])
+                self.assertEqual(400, correction_stage["usage"]["cached_input_tokens"])
+                self.assertAlmostEqual(0.3, correction_stage["usage"]["cost_usd"])
+                self.assertEqual(95.0, correction_stage["run_metrics"]["duration_seconds"])
             finally:
                 database.dispose()
 

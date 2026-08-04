@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from difflib import SequenceMatcher
 from pathlib import Path
 from statistics import median
 from typing import Any
@@ -59,6 +60,8 @@ class SubtitleFinalizationConfig:
     max_chars_per_second: float = 20.0
     min_gap_ms: int = 80
     phrase_gap_ms: int = 600
+    hard_gap_ms: int = 1500
+    sentence_boundary_threshold: float = 0.25
 
     @classmethod
     def from_settings(cls, settings: dict[str, Any] | None) -> "SubtitleFinalizationConfig":
@@ -75,6 +78,14 @@ class SubtitleFinalizationConfig:
             max_chars_per_second=max(5.0, min(40.0, float(value("subtitle_max_cps", 20.0)))),
             min_gap_ms=max(0, min(500, int(value("subtitle_min_gap_ms", 80)))),
             phrase_gap_ms=max(100, min(3000, int(value("subtitle_phrase_gap_ms", 600)))),
+            hard_gap_ms=max(250, min(5000, int(value("subtitle_hard_gap_ms", 1500)))),
+            sentence_boundary_threshold=max(
+                0.01,
+                min(
+                    0.99,
+                    float(value("subtitle_sentence_boundary_threshold", 0.25)),
+                ),
+            ),
         )
 
     @property
@@ -91,6 +102,7 @@ class _TimedWord:
     start_ms: int
     end_ms: int
     speaker: str = ""
+    source_segment_id: str = ""
     char_start: int = 0
     char_end: int = 0
 
@@ -332,10 +344,133 @@ def _sanitize_timed_words(words: list[_TimedWord]) -> list[_TimedWord]:
                 start_ms=start,
                 end_ms=end,
                 speaker=word.speaker,
+                source_segment_id=word.source_segment_id,
             )
         )
         previous_start = start
     return output
+
+
+def _normalized_overlap_token(text: str) -> str:
+    normalized = re.sub(r"[^\w]+", "", _clean_text(text).casefold())
+    return normalized or _clean_text(text).casefold()
+
+
+def _deduplicate_moss_overlap_words(words: list[_TimedWord]) -> list[_TimedWord]:
+    """Remove only strong, time-aligned duplicated runs at MOSS chunk seams.
+
+    MOSS-diarize emits independently decoded native turns. Older Pandrator
+    defaults asked CrispASR for a three-second chunk overlap, but that backend
+    has no token stream during chunk stitching, so the overlap could appear
+    twice and even carry different local speaker IDs. Isolated repeated words
+    can be real overlapping speech; this guard therefore requires either a
+    substantial four-word run or a tightly time-aligned three-word run from
+    different source segment IDs.
+    """
+
+    groups: dict[str, list[_TimedWord]] = {}
+    for word in words:
+        if word.source_segment_id:
+            groups.setdefault(word.source_segment_id, []).append(word)
+    group_items = sorted(
+        groups.items(),
+        key=lambda item: (
+            min(word.start_ms for word in item[1]),
+            max(word.end_ms for word in item[1]),
+        ),
+    )
+    if len(group_items) < 2:
+        return words
+
+    dropped: set[int] = set()
+    speaker_overrides: dict[int, str] = {}
+    for left_position, (_left_id, left_words) in enumerate(group_items):
+        left_start = min(word.start_ms for word in left_words)
+        left_end = max(word.end_ms for word in left_words)
+        left_tokens = [_normalized_overlap_token(word.text) for word in left_words]
+        for _right_id, right_words in group_items[left_position + 1 :]:
+            right_start = min(word.start_ms for word in right_words)
+            right_end = max(word.end_ms for word in right_words)
+            if right_start > left_end:
+                break
+            if min(left_end, right_end) - max(left_start, right_start) < 200:
+                continue
+            right_tokens = [_normalized_overlap_token(word.text) for word in right_words]
+            matcher = SequenceMatcher(None, left_tokens, right_tokens, autojunk=False)
+            for match in matcher.get_matching_blocks():
+                visible_chars = sum(
+                    len(right_words[match.b + offset].text)
+                    for offset in range(match.size)
+                )
+                offsets = [
+                    abs(
+                        left_words[match.a + offset].start_ms
+                        - right_words[match.b + offset].start_ms
+                    )
+                    for offset in range(match.size)
+                ]
+                strong_long_run = (
+                    match.size >= 4
+                    and visible_chars >= 20
+                    and sum(offset <= 1000 for offset in offsets) / match.size >= 0.75
+                )
+                strong_short_run = (
+                    match.size >= 3
+                    and visible_chars >= 12
+                    and all(offset <= 400 for offset in offsets)
+                )
+                if not (strong_long_run or strong_short_run):
+                    continue
+                # The common MOSS failure is a suffix/prefix overlap where the
+                # later turn continues with new words. Keep that later stream
+                # and remove the earlier duplicate suffix so a speaker change
+                # happens once, at the start of the repeated phrase. Other
+                # duplicate shapes retain the earlier stream.
+                suffix_prefix_overlap = (
+                    match.a + match.size >= len(left_words) - 1
+                    and match.b <= 1
+                )
+                duplicate_words = left_words if suffix_prefix_overlap else right_words
+                duplicate_start = match.a if suffix_prefix_overlap else match.b
+                dropped.update(
+                    id(duplicate_words[duplicate_start + offset])
+                    for offset in range(match.size)
+                )
+
+                if suffix_prefix_overlap:
+                    left_speaker = left_words[match.a].speaker
+                    right_speaker = right_words[match.b].speaker
+                    # A one- or two-word fragment immediately before a large
+                    # duplicated suffix is usually a decoder omission, not a
+                    # real one-word speaker turn. Carry it with the retained
+                    # later stream unless a sentence boundary separates it.
+                    prefix_tail = left_words[max(0, match.a - 2) : match.a]
+                    if (
+                        left_speaker
+                        and right_speaker
+                        and left_speaker != right_speaker
+                        and 0 < match.a <= 2
+                        and prefix_tail
+                        and not any(
+                            _last_syntactic_char(word.text) in _SENTENCE_END_CHARS
+                            for word in prefix_tail
+                        )
+                    ):
+                        speaker_overrides.update(
+                            {id(word): right_speaker for word in prefix_tail}
+                        )
+
+    if not dropped:
+        return words
+    logger.warning(
+        "Removed %d duplicated MOSS word(s) from time-aligned chunk seams.",
+        len(dropped),
+    )
+    return [
+        replace(word, speaker=speaker_overrides.get(id(word), word.speaker))
+        for word in words
+        if id(word) not in dropped
+    ]
 
 
 def _timed_words(payload: NormalizedTranscript | Any) -> list[_TimedWord]:
@@ -347,10 +482,11 @@ def _timed_words(payload: NormalizedTranscript | Any) -> list[_TimedWord]:
             start_ms=word.start_ms,
             end_ms=word.end_ms,
             speaker=word.speaker,
+            source_segment_id=str(word.metadata.get("moss_segment_id") or ""),
         )
         for index, word in enumerate(transcript.words)
     ]
-    return _sanitize_timed_words(result)
+    return _sanitize_timed_words(_deduplicate_moss_overlap_words(result))
 
 
 def _source_text_and_spans(words: list[_TimedWord]) -> tuple[str, list[_TimedWord]]:
@@ -378,6 +514,7 @@ def _source_text_and_spans(words: list[_TimedWord]) -> tuple[str, list[_TimedWor
                 start_ms=word.start_ms,
                 end_ms=word.end_ms,
                 speaker=word.speaker,
+                source_segment_id=word.source_segment_id,
                 char_start=start,
                 char_end=len(text),
             )
@@ -404,11 +541,18 @@ def _normalized_lexeme(text: str) -> str:
     return _clean_text(text).strip(".,!?;:\"'()[]{}\u2018\u2019\u201c\u201d").casefold()
 
 
-def _sat_boundary_probabilities(source_text: str, words: list[_TimedWord]) -> list[float]:
+def _sat_boundary_probabilities(
+    source_text: str,
+    words: list[_TimedWord],
+    threshold: float,
+) -> list[float]:
     if len(words) < 2 or not source_text:
         return []
     try:
-        prediction = sentence_segmenter.predict_boundaries(source_text)
+        prediction = sentence_segmenter.predict_boundaries(
+            source_text,
+            threshold=threshold,
+        )
     except Exception as exc:  # pragma: no cover - defensive around optional model runtimes
         logger.warning("SaT boundary prediction failed; using deterministic boundary evidence: %s", exc)
         prediction = None
@@ -423,15 +567,30 @@ def _sat_boundary_probabilities(source_text: str, words: list[_TimedWord]) -> li
         boundary_index = value.get("index") if isinstance(value, dict) else value
         if isinstance(boundary_index, (int, float)):
             explicit.add(int(boundary_index))
-    threshold = float(prediction.get("threshold") or 0.25)
+    effective_threshold = max(
+        0.01,
+        min(0.99, float(prediction.get("threshold") or threshold)),
+    )
     output: list[float] = []
     for current, following in zip(words, words[1:]):
         left = max(0, current.char_end - 1)
         right = min(len(probabilities), max(left + 1, following.char_start + 1))
         probability = max((float(value) for value in probabilities[left:right]), default=0.0)
-        if any(left <= boundary < right for boundary in explicit):
-            probability = max(probability, threshold)
-        output.append(max(0.0, min(1.0, probability)))
+        is_explicit = any(left <= boundary < right for boundary in explicit)
+        if probability < effective_threshold and not is_explicit:
+            output.append(0.0)
+            continue
+        normalized = max(
+            0.0,
+            min(
+                1.0,
+                (probability - effective_threshold) / (1.0 - effective_threshold),
+            ),
+        )
+        # Crossing the configured threshold is meaningful even if the raw
+        # score only just clears it. This floor keeps threshold-selected SaT
+        # boundaries competitive with punctuation without making them hard.
+        output.append(max(0.20 if is_explicit else 0.0, normalized))
     return output
 
 
@@ -440,7 +599,6 @@ def _boundary_evidence(
     probabilities: list[float],
     config: SubtitleFinalizationConfig,
 ) -> list[_BoundaryEvidence]:
-    hard_silence_ms = max(1000, min(1500, config.phrase_gap_ms * 2))
     output: list[_BoundaryEvidence] = []
     for index, (current, following) in enumerate(zip(words, words[1:])):
         last_char = _last_syntactic_char(current.text)
@@ -455,7 +613,7 @@ def _boundary_evidence(
                 punctuation=last_char in _CLAUSE_PUNCTUATION,
                 clause_start=following_lexeme in _CLAUSE_STARTERS,
                 speaker_change=current.speaker != following.speaker,
-                hard_silence=gap_ms >= hard_silence_ms,
+                hard_silence=gap_ms >= config.hard_gap_ms,
                 weak_start=following_lexeme in _WEAK_CUE_STARTS,
                 weak_end=current_lexeme in _WEAK_CUE_ENDS,
             )
@@ -561,7 +719,11 @@ def _compose_semantic_cues(
 ) -> list[SubtitleSegment]:
     if not words:
         return []
-    probabilities = _sat_boundary_probabilities(source_text, words)
+    probabilities = _sat_boundary_probabilities(
+        source_text,
+        words,
+        config.sentence_boundary_threshold,
+    )
     evidence = _boundary_evidence(words, probabilities, config)
     word_count = len(words)
     costs = [float("inf")] * (word_count + 1)

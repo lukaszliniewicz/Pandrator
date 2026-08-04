@@ -16,7 +16,24 @@ export type TextReplacement = {
 };
 
 function isWordCharacter(value: string | undefined) {
-  return Boolean(value && /[\p{L}\p{N}_]/u.test(value));
+  return Boolean(value && /[\p{L}\p{M}\p{N}_]/u.test(value));
+}
+
+function characterBefore(text: string, index: number) {
+  if (index <= 0) return undefined;
+  const trailing = text.charCodeAt(index - 1);
+  const start =
+    trailing >= 0xdc00 && trailing <= 0xdfff ? index - 2 : index - 1;
+  return text.slice(Math.max(0, start), index);
+}
+
+function characterAt(text: string, index: number) {
+  const codePoint = text.codePointAt(index);
+  return codePoint === undefined ? undefined : String.fromCodePoint(codePoint);
+}
+
+function escapeRegularExpression(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 export function findTextMatches(
@@ -25,21 +42,29 @@ export function findTextMatches(
   options: TextSearchOptions = {}
 ): TextSearchMatch[] {
   if (!query) return [];
-  const needle = options.matchCase ? query : query.toLocaleLowerCase();
+  const pattern = new RegExp(
+    escapeRegularExpression(query),
+    options.matchCase ? 'gu' : 'giu'
+  );
   const matches: TextSearchMatch[] = [];
 
   texts.forEach((text, itemIndex) => {
-    const haystack = options.matchCase ? text : text.toLocaleLowerCase();
-    let offset = 0;
-    while (offset <= haystack.length - needle.length) {
-      const start = haystack.indexOf(needle, offset);
-      if (start < 0) break;
-      const end = start + needle.length;
+    for (const match of text.matchAll(pattern)) {
+      const start = match.index;
+      const matchedText = match[0];
+      const end = start + matchedText.length;
+      const matchedCharacters = Array.from(matchedText);
+      const requiresLeadingBoundary = isWordCharacter(matchedCharacters[0]);
+      const requiresTrailingBoundary = isWordCharacter(
+        matchedCharacters[matchedCharacters.length - 1]
+      );
       const wholeWordMatch =
         !options.wholeWord ||
-        (!isWordCharacter(text[start - 1]) && !isWordCharacter(text[end]));
+        ((!requiresLeadingBoundary ||
+          !isWordCharacter(characterBefore(text, start))) &&
+          (!requiresTrailingBoundary ||
+            !isWordCharacter(characterAt(text, end))));
       if (wholeWordMatch) matches.push({ itemIndex, start, end });
-      offset = Math.max(end, start + 1);
     }
   });
 

@@ -597,6 +597,10 @@ export const jobApi = {
 export type GenerationSegmentChanges = Partial<
   ApiSchema<'GenerationSegmentUpdate'>
 >;
+export type GenerationSegmentBatchChange = {
+  segment: GenerationSegment;
+  changes: GenerationSegmentChanges;
+};
 
 export const generationApi = {
   runs: (sessionId: string, signal?: AbortSignal) =>
@@ -617,6 +621,24 @@ export const generationApi = {
       path: { sessionId },
       query,
       signal
+    }),
+  updateSegments: (
+    sessionId: string,
+    updates: GenerationSegmentBatchChange[]
+  ) =>
+    typedApiJson<
+      '/api/v1/sessions/{sessionId}/generation-segments',
+      'patch',
+      { items: GenerationSegment[] }
+    >('/api/v1/sessions/{sessionId}/generation-segments', 'patch', {
+      path: { sessionId },
+      body: {
+        updates: updates.map(({ segment, changes }) => ({
+          id: segment.id,
+          revision: segment.revision,
+          changes
+        }))
+      }
     }),
   latestAssembly: (sessionId: string, signal?: AbortSignal) =>
     typedApiJson<

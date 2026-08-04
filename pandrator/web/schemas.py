@@ -329,6 +329,7 @@ class ChunkUploadInitialize(StrictModel):
 class GenerationSegmentCreate(StrictModel):
     text: str = Field(min_length=1)
     source_segment_ids: list[str] = Field(default_factory=list)
+    alignment_group: str | None = Field(default=None, max_length=64)
     node_kind: Literal["paragraph", "heading", "chapter_marker", "subtitle_cue"] = "paragraph"
     paragraph_break_after: bool = False
     speaker: str | None = Field(default=None, max_length=160)
@@ -355,6 +356,19 @@ class GenerationSegmentUpdate(StrictModel):
     silence_after_ms: int | None = Field(default=None, ge=0)
     marked: bool | None = None
     removed: bool | None = None
+
+
+class GenerationSegmentBatchUpdateItem(StrictModel):
+    id: str = Field(min_length=1)
+    revision: int = Field(ge=1)
+    changes: GenerationSegmentUpdate
+
+
+class GenerationSegmentBatchUpdate(StrictModel):
+    updates: list[GenerationSegmentBatchUpdateItem] = Field(
+        min_length=1,
+        max_length=20_000,
+    )
 
 
 class GenerationStartRequest(StrictModel):
@@ -531,6 +545,8 @@ SCHEMA_MODELS = {
         GenerationSegmentCreate,
         GenerationPlanCreate,
         GenerationSegmentUpdate,
+        GenerationSegmentBatchUpdateItem,
+        GenerationSegmentBatchUpdate,
         GenerationStartRequest,
         OptimizationReviewItem,
         OptimizationReviewRequest,

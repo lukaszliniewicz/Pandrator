@@ -135,7 +135,15 @@ type WorkflowUsage = {
   total_tokens: number;
   cost_usd: number | null;
   model_id: string;
-  created_at: string;
+  model_ids?: string[];
+  event_count?: number;
+  created_at: string | null;
+};
+
+type WorkflowRunMetrics = {
+  started_at: string | null;
+  finished_at: string | null;
+  duration_seconds: number | null;
 };
 
 export type ArtifactRecord = {
@@ -319,6 +327,7 @@ export type WorkflowStage = {
   progress?: number | null;
   detail?: string | null;
   usage?: WorkflowUsage | null;
+  run_metrics?: WorkflowRunMetrics | null;
 };
 
 export type WorkflowSnapshot = {
@@ -637,6 +646,7 @@ export type GenerationSegment = {
   speaker?: string | null;
   text: string;
   source_segment_ids?: string[];
+  alignment_group?: string | null;
   optimized_text?: string | null;
   speech_plan?: SpeechPlan;
   optimization_status?: string | null;

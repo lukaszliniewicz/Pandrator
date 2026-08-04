@@ -3,18 +3,23 @@
   import GlobalSettingsPanel from './GlobalSettingsPanel.svelte';
   import OutputSettingsPanel from './OutputSettingsPanel.svelte';
   import SettingsPanel from './SettingsPanel.svelte';
+  import type { SettingsPayload } from './api-models';
   import { modalFocus } from './modal-focus';
   let {
     section,
     title,
     description = '',
     sessionId,
+    initialOverride = {},
+    onpersisted,
     onclose
   }: {
     section: string;
     title: string;
     description?: string;
     sessionId?: string;
+    initialOverride?: Record<string, unknown>;
+    onpersisted?: (payload: SettingsPayload) => void | Promise<void>;
     onclose: () => void;
   } = $props();
 </script>
@@ -58,6 +63,8 @@
           {sessionId}
           {section}
           {title}
+          {initialOverride}
+          {onpersisted}
         />{:else}<GlobalSettingsPanel {section} />{/if}
     </div>
   </div>

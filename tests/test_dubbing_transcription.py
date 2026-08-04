@@ -206,10 +206,18 @@ class CrispASRTranscriptionTests(unittest.TestCase):
         self.assertEqual(command[command.index("--backend") + 1], "moss-diarize")
         self.assertIn("moss-transcribe-diarize-0.9b-q8_0.gguf", command)
         self.assertEqual(command[command.index("--chunk-seconds") + 1], "120")
-        self.assertEqual(command[command.index("--chunk-overlap") + 1], "3")
+        self.assertEqual(command[command.index("--chunk-overlap") + 1], "0")
         self.assertNotIn("--vad", command)
         self.assertNotIn("--diarize", command)
         self.assertNotIn("-am", command)
+
+        overlapped = crispasr.build_command(
+            "audio.wav",
+            "output",
+            {"stt_engine": "moss", "moss_chunk_overlap_seconds": 1.5},
+            executable="crispasr-test",
+        )
+        self.assertEqual(overlapped[overlapped.index("--chunk-overlap") + 1], "1.5")
 
         align = crispasr.build_moss_alignment_command(
             "turn.wav",

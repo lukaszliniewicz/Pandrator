@@ -244,6 +244,36 @@ def remove_speaker_labels(srt_content: str) -> str:
     return compose_srt(parse_srt(srt_content))
 
 
+def subtitle_prompt_context(
+    subtitle: Mapping[str, Any],
+    *,
+    include_timing: bool,
+) -> dict[str, Any]:
+    """Return compact, non-spoken cue evidence for an LLM prompt.
+
+    Overlap is always useful because it can identify simultaneous speech or a
+    duplicated ASR seam. Absolute timings and ordinary gaps are optional: they
+    improve high-quality editorial decisions, but increase prompt tokens.
+    """
+
+    context: dict[str, Any] = {}
+    speaker = str(subtitle.get("speaker") or "").strip()
+    if speaker:
+        context["speaker"] = speaker
+    if include_timing:
+        context["start_ms"] = int(subtitle.get("start_ms") or 0)
+        context["end_ms"] = int(subtitle.get("end_ms") or 0)
+        if "gap_from_previous_ms" in subtitle:
+            context["gap_from_previous_ms"] = max(
+                0,
+                int(subtitle.get("gap_from_previous_ms") or 0),
+            )
+    overlap_ms = max(0, int(subtitle.get("overlap_with_previous_ms") or 0))
+    if overlap_ms:
+        context["overlap_with_previous_ms"] = overlap_ms
+    return context
+
+
 def create_translation_blocks(
     srt_content: str,
     char_limit: int,
@@ -252,7 +282,13 @@ def create_translation_blocks(
     max_subtitles_per_block: int | None = None,
     speaker_by_subtitle: Mapping[int, str] | None = None,
 ) -> list[list[dict[str, Any]]]:
-    """Group subtitle segments by character and subtitle-count limits."""
+    """Group subtitle segments without cutting avoidable semantic boundaries.
+
+    Timing and speaker metadata are included as non-text evidence for LLM
+    correction/translation.  In particular, an overlap marker lets the model
+    distinguish ordinary consecutive cues from simultaneous speech or an ASR
+    chunk-boundary duplicate.
+    """
     normalized_language = str(source_language or "").strip().lower()
     if normalized_language in {"chinese", "japanese", "ja", "zh", "zh-cn", "zh-tw"}:
         char_limit = max(1, char_limit // 2)
@@ -270,59 +306,96 @@ def create_translation_blocks(
     def is_sentence_ending(text: str) -> bool:
         return any(str(text or "").strip().endswith(ending) for ending in endings)
 
+    records: list[dict[str, Any]] = []
+    previous_segment: SubtitleSegment | None = None
+    for segment in parse_srt(srt_content):
+        gap_ms = (
+            max(0, segment.start_ms - previous_segment.end_ms)
+            if previous_segment is not None
+            else 0
+        )
+        overlap_ms = (
+            max(0, previous_segment.end_ms - segment.start_ms)
+            if previous_segment is not None
+            else 0
+        )
+        record = {
+            "index": segment.index,
+            "text": segment.text,
+            "start": segment.start_ms / 1000,
+            "end": segment.end_ms / 1000,
+            "start_ms": segment.start_ms,
+            "end_ms": segment.end_ms,
+            "speaker": str(
+                (speaker_by_subtitle or {}).get(segment.index)
+                or segment.speaker
+                or ""
+            ).strip(),
+        }
+        if overlap_ms:
+            record["overlap_with_previous_ms"] = overlap_ms
+        elif previous_segment is not None:
+            record["gap_from_previous_ms"] = gap_ms
+        records.append(record)
+        previous_segment = segment
+
+    def safe_boundary(left: dict[str, Any], right: dict[str, Any]) -> bool:
+        if int(right.get("overlap_with_previous_ms") or 0) > 0:
+            return False
+        return bool(
+            is_sentence_ending(str(left.get("text") or ""))
+            or (
+                str(left.get("speaker") or "")
+                and str(right.get("speaker") or "")
+                and str(left.get("speaker")).casefold()
+                != str(right.get("speaker")).casefold()
+            )
+        )
+
+    def preferred_split(
+        current: list[dict[str, Any]],
+        following: dict[str, Any],
+    ) -> int:
+        candidates = [
+            index
+            for index in range(1, len(current) + 1)
+            if safe_boundary(
+                current[index - 1],
+                current[index] if index < len(current) else following,
+            )
+        ]
+        if not candidates:
+            return len(current)
+        # Keep a short semantic tail with the next request rather than forcing
+        # a hard batch boundary through it.  Prefer the latest safe cut that
+        # still leaves at most half of the current batch behind.
+        minimum = max(1, len(current) // 2)
+        return next(
+            (candidate for candidate in reversed(candidates) if candidate >= minimum),
+            candidates[-1],
+        )
+
     blocks: list[list[dict[str, Any]]] = []
     current_block: list[dict[str, Any]] = []
     current_char_count = 0
 
-    for segment in parse_srt(srt_content):
-        segment_text = segment.text
-        segment_speaker = str(
-            (speaker_by_subtitle or {}).get(segment.index)
-            or segment.speaker
-            or ""
-        ).strip()
-        if (
-            current_block
-            and max_subtitles_per_block is not None
-            and len(current_block) >= max_subtitles_per_block
+    for record in records:
+        while current_block and (
+            (
+                max_subtitles_per_block is not None
+                and len(current_block) >= max_subtitles_per_block
+            )
+            or current_char_count + len(str(record["text"])) > char_limit
         ):
-            blocks.append(current_block)
-            current_block = []
-            current_char_count = 0
+            split_at = preferred_split(current_block, record)
+            blocks.append(current_block[:split_at])
+            current_block = current_block[split_at:]
+            current_char_count = sum(
+                len(str(item.get("text") or "")) for item in current_block
+            )
 
-        if current_block and current_char_count + len(segment_text) > char_limit:
-            if is_sentence_ending(current_block[-1]["text"]):
-                blocks.append(current_block)
-                current_block = []
-                current_char_count = 0
-            else:
-                split_index = next(
-                    (
-                        idx
-                        for idx in range(len(current_block) - 1, -1, -1)
-                        if is_sentence_ending(current_block[idx]["text"])
-                    ),
-                    -1,
-                )
-                if split_index >= 0:
-                    blocks.append(current_block[: split_index + 1])
-                    current_block = current_block[split_index + 1:]
-                    current_char_count = sum(len(item["text"]) for item in current_block)
-                else:
-                    blocks.append(current_block)
-                    current_block = []
-                    current_char_count = 0
-
-        current_block.append(
-            {
-                "index": segment.index,
-                "text": segment_text,
-                "start": segment.start_ms / 1000,
-                "end": segment.end_ms / 1000,
-                "speaker": segment_speaker,
-            }
-        )
-        current_char_count += len(segment_text)
+        current_block.append(record)
+        current_char_count += len(str(record["text"]))
 
     if current_block:
         blocks.append(current_block)

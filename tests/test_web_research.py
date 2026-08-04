@@ -1,3 +1,4 @@
+import copy
 import json
 import tempfile
 import unittest
@@ -69,6 +70,122 @@ class _FakeHttpSession:
 
 
 class WebResearchTests(unittest.TestCase):
+    def test_empty_completion_stops_instead_of_restarting_the_retry_budget(self):
+        provider = _FakeResearchProvider()
+        calls = []
+
+        def empty_completion(**kwargs):
+            calls.append(kwargs)
+            return "   "
+
+        result = run_web_research_agent(
+            "Text with an uncertain term.",
+            provider=provider,
+            model_name="local/test",
+            llm_settings=SimpleNamespace(),
+            config=ResearchAgentConfig(
+                stage="correction",
+                max_iterations=8,
+            ),
+            completion_func=empty_completion,
+        )
+
+        self.assertEqual(1, len(calls))
+        self.assertEqual(1, result.response_count)
+        self.assertEqual([], provider.search_calls)
+        self.assertEqual([], provider.read_calls)
+        self.assertIn("provider retry budget", result.summary)
+        self.assertTrue(
+            any("provider retry budget" in warning for warning in result.warnings)
+        )
+
+    def test_native_tool_calls_preserve_assistant_state_and_use_tool_messages(self):
+        provider = _FakeResearchProvider()
+        calls = []
+        signature = "opaque-thought-signature"
+
+        def tool_response(call_id, name, arguments):
+            tool_call = {
+                "id": call_id,
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "arguments": json.dumps(arguments),
+                },
+                "extra_content": {
+                    "google": {"thought_signature": signature}
+                },
+            }
+            assistant = {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [tool_call],
+            }
+            return SimpleNamespace(
+                content="",
+                tool_calls=[tool_call],
+                assistant_message=assistant,
+                usage={},
+                cost=None,
+                cost_source="",
+            )
+
+        responses = iter(
+            [
+                tool_response(
+                    "call-search",
+                    "search_web",
+                    {"query": "Nautilus official spelling"},
+                ),
+                tool_response(
+                    "call-finish",
+                    "finish",
+                    {
+                        "summary": "Verified one term.",
+                        "evidence": [
+                            {
+                                "term": "Nautilus",
+                                "recommendation": "Nautilus",
+                                "claim": "This is the official spelling.",
+                                "source_url": "https://example.com/guide",
+                                "source_title": "Official terminology",
+                                "excerpt": "The source uses this spelling.",
+                            }
+                        ],
+                        "glossary": [],
+                    },
+                ),
+            ]
+        )
+
+        def completion(**kwargs):
+            calls.append(copy.deepcopy(kwargs))
+            return next(responses)
+
+        result = run_web_research_agent(
+            "Captain Nemo commanded the Nautilus.",
+            provider=provider,
+            model_name="vertex_ai/gemini-3-flash",
+            llm_settings=SimpleNamespace(),
+            config=ResearchAgentConfig(stage="correction"),
+            completion_func=completion,
+        )
+
+        self.assertEqual(2, len(calls))
+        self.assertEqual("auto", calls[0]["tool_choice"])
+        self.assertGreaterEqual(calls[0]["max_tokens"], 4096)
+        assistant_turn = calls[1]["messages"][-2]
+        tool_turn = calls[1]["messages"][-1]
+        self.assertEqual(
+            signature,
+            assistant_turn["tool_calls"][0]["extra_content"]["google"][
+                "thought_signature"
+            ],
+        )
+        self.assertEqual("tool", tool_turn["role"])
+        self.assertEqual("call-search", tool_turn["tool_call_id"])
+        self.assertEqual(1, len(result.evidence))
+
     def test_finish_discards_evidence_not_returned_by_a_tool(self):
         provider = _FakeResearchProvider()
         commands = iter(

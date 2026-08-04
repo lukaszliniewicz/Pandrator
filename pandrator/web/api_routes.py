@@ -89,6 +89,7 @@ from .schemas import (
     ChunkUploadInitialize,
     CredentialUpdate,
     GenerationPlanCreate,
+    GenerationSegmentBatchUpdate,
     GenerationSegmentUpdate,
     GenerationStartRequest,
     JobCreate,
@@ -1826,6 +1827,54 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 "Session or generation run not found.",
                 404,
             )
+        except ValueError as error:
+            return error_response("validation_error", str(error), 422)
+        return jsonify(result)
+
+    @app.patch("/api/v1/sessions/<session_id>/generation-segments")
+    @require_auth
+    def generation_segments_update(session_id: str):
+        payload = GenerationSegmentBatchUpdate.model_validate(
+            request.get_json(silent=True) or {}
+        )
+        clearable = {"optimized_text", "voice_id", "voice", "language"}
+        updates = []
+        for item in payload.updates:
+            changes = item.changes.model_dump(exclude_unset=True)
+            if not changes:
+                return error_response(
+                    "validation_error",
+                    "Every generation segment update requires at least one change.",
+                    422,
+                )
+            null_fields = [
+                key
+                for key, value in changes.items()
+                if value is None and key not in clearable
+            ]
+            if null_fields:
+                return error_response(
+                    "validation_error",
+                    f"{', '.join(null_fields)} cannot be null.",
+                    422,
+                )
+            updates.append(
+                {
+                    "id": item.id,
+                    "revision": item.revision,
+                    "changes": changes,
+                }
+            )
+        try:
+            result = generation.update_segments(session_id, updates)
+        except KeyError:
+            return error_response(
+                "not_found",
+                "Session or generation segment not found.",
+                404,
+            )
+        except WorkspaceRevisionConflict as error:
+            return error_response("revision_conflict", str(error), 409)
         except ValueError as error:
             return error_response("validation_error", str(error), 422)
         return jsonify(result)

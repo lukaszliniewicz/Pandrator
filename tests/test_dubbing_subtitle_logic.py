@@ -165,6 +165,24 @@ with more words.
             [[1, 2], [3, 4], [5]],
         )
 
+    def test_create_translation_blocks_records_gap_and_absolute_timing(self):
+        blocks = srt_utils.create_translation_blocks(
+            """1
+00:00:00,000 --> 00:00:01,000
+First.
+
+2
+00:00:03,100 --> 00:00:04,200
+Second.
+""",
+            char_limit=1000,
+            source_language="English",
+        )
+
+        self.assertEqual(0, blocks[0][0]["start_ms"])
+        self.assertEqual(1000, blocks[0][0]["end_ms"])
+        self.assertEqual(2100, blocks[0][1]["gap_from_previous_ms"])
+
     def test_zoom_vtt_parse_group_and_chunk(self):
         vtt = io.StringIO(
             """WEBVTT

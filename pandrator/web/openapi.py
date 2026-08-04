@@ -418,7 +418,12 @@ def build_openapi_document() -> dict:
                         "description": "Return the plan revision bound to this generation run.",
                     }
                 ],
-            }
+            },
+            "patch": operation(
+                "updateGenerationSegments",
+                "Generation segments updated atomically",
+                "GenerationSegmentBatchUpdate",
+            ),
         },
         "/api/v1/generation-segments/{segmentId}": {"patch": operation("updateGenerationSegment", "Generation segment updated", "GenerationSegmentUpdate")},
         "/api/v1/generation-segments/{segmentId}/takes/{takeId}/select": {"post": operation("selectGenerationTake", "Active audio take selected")},

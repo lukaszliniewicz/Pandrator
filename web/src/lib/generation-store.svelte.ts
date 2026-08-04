@@ -1,5 +1,9 @@
 import { errorMessage } from './errors';
-import { generationApi, type GenerationSegmentChanges } from './domain-api';
+import {
+  generationApi,
+  type GenerationSegmentBatchChange,
+  type GenerationSegmentChanges
+} from './domain-api';
 import type {
   GenerationRun,
   GenerationSegment,
@@ -233,10 +237,23 @@ export class GenerationStore {
     this.payload = {
       ...this.payload,
       items: this.payload.items.map((candidate) =>
-        candidate.id === updated.id ? updated : candidate
+        candidate.id === updated.id ? { ...candidate, ...updated } : candidate
       )
     };
     return updated;
+  }
+
+  async updateSegments(updates: GenerationSegmentBatchChange[]) {
+    const result = await generationApi.updateSegments(this.sessionId, updates);
+    const byId = new Map(result.items.map((item) => [item.id, item]));
+    this.payload = {
+      ...this.payload,
+      items: this.payload.items.map((candidate) => {
+        const updated = byId.get(candidate.id);
+        return updated ? { ...candidate, ...updated } : candidate;
+      })
+    };
+    return result.items;
   }
 
   async selectTake(item: GenerationSegment, takeId: string) {

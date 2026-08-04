@@ -164,6 +164,7 @@ def migrate_dubbing_payload(
     migrated.setdefault("stt_beam_size", 1)
     migrated.setdefault("parakeet_decoder", "tdt")
     migrated.setdefault("moss_max_chunk_seconds", 120.0)
+    migrated.setdefault("moss_chunk_overlap_seconds", 0.0)
     migrated.setdefault("moss_vad_enabled", False)
     migrated.setdefault("moss_ctc_alignment_enabled", True)
     migrated.setdefault("moss_ctc_aligner_model", "auto")
@@ -185,6 +186,10 @@ def migrate_dubbing_payload(
         migrated["speech_block_merge_threshold"] = migrated.get("subtitle_merge_threshold", 250)
     migrated.setdefault("speech_block_min_chars", 10)
     migrated.setdefault("speech_block_max_chars", 220)
+    migrated.setdefault("speech_block_continuation_threshold_ms", 3000)
+    migrated.setdefault("speech_block_max_internal_gap_ms", 1800)
+    migrated.setdefault("timing_context_enabled", True)
+    migrated.setdefault("timing_context_gap_ms", 2000)
 
     legacy_provider = str(migrated.get("translation_provider") or "").strip()
     legacy_model = str(migrated.get("translation_model") or "").strip()
@@ -256,6 +261,7 @@ def normalize_dubbing_state(
         "stt_beam_size",
         "parakeet_decoder",
         "moss_max_chunk_seconds",
+        "moss_chunk_overlap_seconds",
         "moss_vad_enabled",
         "moss_ctc_alignment_enabled",
         "moss_ctc_aligner_model",
@@ -270,6 +276,10 @@ def normalize_dubbing_state(
         "speech_block_min_chars",
         "speech_block_max_chars",
         "speech_block_merge_threshold",
+        "speech_block_continuation_threshold_ms",
+        "speech_block_max_internal_gap_ms",
+        "timing_context_enabled",
+        "timing_context_gap_ms",
         "correction_model",
         "translation_backend",
         "translation_model",

@@ -1,7 +1,7 @@
-import unittest
 import os
 import threading
 import time
+import unittest
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -290,6 +290,74 @@ class LlmHandlerTests(unittest.TestCase):
         self.assertEqual(captured_payload["timeout"], 30)
         self.assertEqual(captured_payload["reasoning_effort"], "medium")
         self.assertEqual(captured_payload["organization"], "pandrator-test")
+
+    def test_tool_call_is_a_success_and_preserves_gemini_thought_signature(self):
+        captured_payload = {}
+        thought_signature = "opaque-gemini-state"
+
+        def fake_completion(**kwargs):
+            captured_payload.update(kwargs)
+            return {
+                "id": "tool-response-1",
+                "model": kwargs["model"],
+                "choices": [
+                    {
+                        "finish_reason": "tool_calls",
+                        "message": {
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": "call-search-1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "search_web",
+                                        "arguments": '{"query":"Nautilus"}',
+                                    },
+                                    "extra_content": {
+                                        "google": {
+                                            "thought_signature": thought_signature
+                                        }
+                                    },
+                                }
+                            ],
+                        },
+                    }
+                ],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 20},
+            }
+
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "search_web",
+                    "parameters": {"type": "object"},
+                },
+            }
+        ]
+        with patch(
+            "pandrator.logic.llm_handler._get_litellm_clients",
+            return_value=(fake_completion, None),
+        ):
+            result = llm_handler.chat_completion_with_metadata(
+                messages=[{"role": "user", "content": "Research this"}],
+                model_name="openai/gpt-5.4-mini",
+                tools=tools,
+                tool_choice="auto",
+            )
+
+        self.assertEqual("", result.content)
+        self.assertEqual("tool_calls", result.finish_reason)
+        self.assertEqual("search_web", result.tool_calls[0]["function"]["name"])
+        self.assertEqual(
+            thought_signature,
+            result.assistant_message["tool_calls"][0]["extra_content"]["google"][
+                "thought_signature"
+            ],
+        )
+        self.assertEqual(tools, captured_payload["tools"])
+        self.assertEqual("auto", captured_payload["tool_choice"])
 
     def test_custom_model_pricing_accounts_for_cached_prompt_tokens(self):
         response = {

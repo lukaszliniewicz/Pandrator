@@ -19,7 +19,9 @@
     title,
     description = '',
     collapsible = false,
-    initiallyOpen = false
+    initiallyOpen = false,
+    initialOverride = {},
+    onpersisted
   }: {
     sessionId: string;
     section: string;
@@ -27,6 +29,8 @@
     description?: string;
     collapsible?: boolean;
     initiallyOpen?: boolean;
+    initialOverride?: Record<string, unknown>;
+    onpersisted?: (payload: SettingsPayload) => void | Promise<void>;
   } = $props();
   let payload = $state<SettingsPayload | null>(null);
   let override = $state<Record<string, unknown>>({});
@@ -53,6 +57,7 @@
       'stt_language',
       'whisper_prompt',
       'moss_max_chunk_seconds',
+      'moss_chunk_overlap_seconds',
       'moss_vad_enabled',
       'moss_ctc_alignment_enabled',
       'moss_ctc_padding_seconds',
@@ -72,12 +77,18 @@
       'max_duration_ms',
       'min_gap_ms',
       'phrase_gap_ms',
+      'hard_gap_ms',
+      'sentence_boundary_threshold',
       'boundary_correction_enabled',
       'merge_threshold_ms'
     ],
     correction: [
       'enabled',
       'model_name',
+      'reasoning_effort',
+      'llm_concurrent_calls',
+      'timing_context_enabled',
+      'timing_context_gap_ms',
       'instructions',
       'preserve_timing',
       'max_subtitles_per_call',
@@ -99,6 +110,10 @@
       'target_language',
       'professional_cleanup',
       'model_name',
+      'reasoning_effort',
+      'llm_concurrent_calls',
+      'timing_context_enabled',
+      'timing_context_gap_ms',
       'instructions',
       'glossary',
       'glossary_enabled',
@@ -115,7 +130,20 @@
       'web_research_blocked_domains',
       'request_timeout_seconds'
     ],
-    tts: ['service', 'model', 'voice', 'language', 'speed', 'max_attempts'],
+    tts: [
+      'service',
+      'model',
+      'voice',
+      'language',
+      'speed',
+      'max_attempts',
+      'tts_batch_size',
+      'speech_block_min_chars',
+      'speech_block_max_chars',
+      'speech_block_merge_threshold',
+      'speech_block_continuation_threshold_ms',
+      'speech_block_max_internal_gap_ms'
+    ],
     audio: [
       'audio_verification_mode',
       'sentence_silence_ms',
@@ -358,7 +386,9 @@
   );
   async function load() {
     payload = await sessionApi.settings(sessionId, section);
-    override = { ...(payload.override ?? {}) };
+    override = { ...(payload.override ?? {}), ...initialOverride };
+    if (Object.keys(initialOverride).length)
+      message = 'Unsaved changes from the stage editor are ready to review.';
   }
   async function save() {
     saving = true;
@@ -376,6 +406,7 @@
       );
       override = { ...payload.override };
       message = 'Saved for this session.';
+      await onpersisted?.(payload);
     } catch (caught) {
       message = errorMessage(caught);
     } finally {
@@ -394,6 +425,7 @@
       );
       override = {};
       message = 'Reverted to application defaults.';
+      await onpersisted?.(payload);
     } catch (caught) {
       message = errorMessage(caught);
     } finally {
@@ -427,6 +459,7 @@
       );
       override = { ...payload.override };
       message = 'Saved as application defaults.';
+      await onpersisted?.(payload);
     } catch (caught) {
       message = errorMessage(caught);
     } finally {

@@ -89,6 +89,7 @@
   let settingsStage = $state<Stage | null>(null);
   let stageMessage = $state('');
   let fullSettingsSection = $state('');
+  let fullSettingsDraft = $state<Record<string, unknown> | null>(null);
   let SettingsModalComponent = $state<typeof SettingsModal | null>(null);
   let ttsServicesOpen = $state(false);
   let TtsServicesModalComponent = $state<typeof TtsServicesModal | null>(null);
@@ -127,6 +128,7 @@
   let sttBeamSize = $state(1);
   let parakeetDecoder = $state('tdt');
   let mossMaxChunkSeconds = $state(120);
+  let mossChunkOverlap = $state(0);
   let mossVadEnabled = $state(false);
   let mossCtcAlignmentEnabled = $state(true);
   let mossCtcPaddingSeconds = $state(0.5);
@@ -144,9 +146,13 @@
   let subtitleCps = $state(20);
   let subtitleMinGap = $state(80);
   let subtitlePhraseGap = $state(600);
+  let subtitleHardGap = $state(1500);
+  let subtitleSentenceBoundaryThreshold = $state(0.25);
   let instructions = $state('');
   let optimizationPrompt = $state('');
   let optimizationConcurrent = $state(1);
+  let timingContextEnabled = $state(true);
+  let timingContextGap = $state(2000);
   let optimizationBatchSize = $state(3);
   let documentOptimizationBatchSize = $state(8);
   let optimizationMultiStage = $state(false);
@@ -173,6 +179,8 @@
   let speechBlockMinChars = $state(10);
   let speechBlockMaxChars = $state(220);
   let speechBlockMergeThreshold = $state(250);
+  let speechBlockContinuationThreshold = $state(3000);
+  let speechBlockMaxInternalGap = $state(1800);
   let subtitleMode = $state('soft');
   let subtitleSelection = $state('dual');
   let audioMode = $state('mixed');
@@ -509,6 +517,7 @@
     sttBeamSize = Number(saved.stt_beam_size ?? 1);
     parakeetDecoder = String(saved.parakeet_decoder ?? 'tdt');
     mossMaxChunkSeconds = Number(saved.moss_max_chunk_seconds ?? 120);
+    mossChunkOverlap = Number(saved.moss_chunk_overlap_seconds ?? 0);
     mossVadEnabled = Boolean(saved.moss_vad_enabled ?? false);
     mossCtcAlignmentEnabled = Boolean(saved.moss_ctc_alignment_enabled ?? true);
     mossCtcPaddingSeconds = Number(saved.moss_ctc_padding_seconds ?? 0.5);
@@ -526,9 +535,15 @@
     subtitleCps = Number(saved.subtitle_max_cps ?? 20);
     subtitleMinGap = Number(saved.subtitle_min_gap_ms ?? 80);
     subtitlePhraseGap = Number(saved.subtitle_phrase_gap_ms ?? 600);
+    subtitleHardGap = Number(saved.subtitle_hard_gap_ms ?? 1500);
+    subtitleSentenceBoundaryThreshold = Number(
+      saved.subtitle_sentence_boundary_threshold ?? 0.25
+    );
     instructions = String(saved.instructions ?? '');
     optimizationPrompt = String(saved.combined_prompt ?? '');
     optimizationConcurrent = Number(saved.llm_concurrent_calls ?? 1);
+    timingContextEnabled = Boolean(saved.timing_context_enabled ?? true);
+    timingContextGap = Number(saved.timing_context_gap_ms ?? 2000);
     optimizationBatchSize = Number(saved.llm_tts_batch_size ?? 3);
     documentOptimizationBatchSize = Number(
       saved.llm_tts_document_batch_size ?? 8
@@ -599,6 +614,12 @@
     speechBlockMaxChars = Number(saved.speech_block_max_chars ?? 220);
     speechBlockMergeThreshold = Number(
       saved.speech_block_merge_threshold ?? 250
+    );
+    speechBlockContinuationThreshold = Number(
+      saved.speech_block_continuation_threshold_ms ?? 3000
+    );
+    speechBlockMaxInternalGap = Number(
+      saved.speech_block_max_internal_gap_ms ?? 1800
     );
     subtitleMode = String(saved.subtitle_mode ?? 'soft');
     subtitleSelection = String(saved.subtitle_selection ?? 'dual');
@@ -879,8 +900,12 @@
     );
   }
 
-  async function openFullSettings(section: string) {
+  async function openFullSettings(
+    section: string,
+    initialOverride: Record<string, unknown> | null = null
+  ) {
     SettingsModalComponent ??= (await import('./SettingsModal.svelte')).default;
+    fullSettingsDraft = initialOverride ? { ...initialOverride } : null;
     fullSettingsSection = section;
   }
 
@@ -1115,7 +1140,9 @@
             max_duration_ms: subtitleMaxDuration,
             max_cps: subtitleCps,
             min_gap_ms: subtitleMinGap,
-            phrase_gap_ms: subtitlePhraseGap
+            phrase_gap_ms: subtitlePhraseGap,
+            hard_gap_ms: subtitleHardGap,
+            sentence_boundary_threshold: subtitleSentenceBoundaryThreshold
           }
         }
       ];
@@ -1127,7 +1154,10 @@
             enabled: true,
             model_name: model === 'default' ? '' : model,
             reasoning_effort: reasoningEffort,
-            instructions
+            instructions,
+            llm_concurrent_calls: optimizationConcurrent,
+            timing_context_enabled: timingContextEnabled,
+            timing_context_gap_ms: timingContextGap
           }
         }
       ];
@@ -1141,7 +1171,10 @@
             target_language: targetLanguage,
             model_name: model === 'default' ? '' : model,
             reasoning_effort: reasoningEffort,
-            instructions
+            instructions,
+            llm_concurrent_calls: optimizationConcurrent,
+            timing_context_enabled: timingContextEnabled,
+            timing_context_gap_ms: timingContextGap
           }
         }
       ];
@@ -1202,21 +1235,8 @@
     }
   }
 
-  async function saveSettings(mode: 'session' | 'defaults' = 'session') {
-    if (!settingsStage) return;
-    const key = settingsStage.key;
-    if (
-      key === 'generate_audio' &&
-      showClonedVoices &&
-      (!voiceName ||
-        !clonedVoiceIds.some(
-          (voice) => voice.toLowerCase() === voiceName.toLowerCase()
-        ))
-    ) {
-      error =
-        'Choose a provider-ready cloned voice, or create and upload one through the Voice Library.';
-      return;
-    }
+  function captureStageSettings(stage: Stage) {
+    const key = stage.key;
     const common = {
       model_name: model === 'default' ? '' : model,
       [`${key}_model`]: model
@@ -1238,6 +1258,7 @@
         stt_beam_size: sttBeamSize,
         parakeet_decoder: parakeetDecoder,
         moss_max_chunk_seconds: mossMaxChunkSeconds,
+        moss_chunk_overlap_seconds: mossChunkOverlap,
         moss_vad_enabled: mossVadEnabled,
         moss_ctc_alignment_enabled: mossCtcAlignmentEnabled,
         moss_ctc_aligner_model: 'auto',
@@ -1255,13 +1276,18 @@
         subtitle_max_duration_ms: subtitleMaxDuration,
         subtitle_max_cps: subtitleCps,
         subtitle_min_gap_ms: subtitleMinGap,
-        subtitle_phrase_gap_ms: subtitlePhraseGap
+        subtitle_phrase_gap_ms: subtitlePhraseGap,
+        subtitle_hard_gap_ms: subtitleHardGap,
+        subtitle_sentence_boundary_threshold: subtitleSentenceBoundaryThreshold
       };
     else if (key === 'correct')
       stageSettings[key] = {
         ...common,
         reasoning_effort: reasoningEffort,
-        instructions
+        instructions,
+        llm_concurrent_calls: optimizationConcurrent,
+        timing_context_enabled: timingContextEnabled,
+        timing_context_gap_ms: timingContextGap
       };
     else if (key === 'translate')
       stageSettings[key] = {
@@ -1269,10 +1295,13 @@
         translation_backend: backend,
         target_language: targetLanguage,
         reasoning_effort: reasoningEffort,
-        instructions
+        instructions,
+        llm_concurrent_calls: optimizationConcurrent,
+        timing_context_enabled: timingContextEnabled,
+        timing_context_gap_ms: timingContextGap
       };
     else if (key === 'optimize_tts') {
-      const enabled = Boolean(settingsStage.enabled);
+      const enabled = Boolean(stage.enabled);
       optimizationEnabled = enabled && optimizationTiming === 'generation';
       documentOptimizationEnabled =
         enabled && optimizationTiming === 'document';
@@ -1334,7 +1363,10 @@
         target_language: targetLanguage,
         speech_block_min_chars: speechBlockMinChars,
         speech_block_max_chars: speechBlockMaxChars,
-        speech_block_merge_threshold: speechBlockMergeThreshold
+        speech_block_merge_threshold: speechBlockMergeThreshold,
+        speech_block_continuation_threshold_ms:
+          speechBlockContinuationThreshold,
+        speech_block_max_internal_gap_ms: speechBlockMaxInternalGap
       };
     else if (key === 'export')
       stageSettings[key] = {
@@ -1349,9 +1381,55 @@
         subtitle_max_duration_ms: subtitleMaxDuration,
         subtitle_max_cps: subtitleCps,
         subtitle_min_gap_ms: subtitleMinGap,
-        subtitle_phrase_gap_ms: subtitlePhraseGap
+        subtitle_phrase_gap_ms: subtitlePhraseGap,
+        subtitle_hard_gap_ms: subtitleHardGap,
+        subtitle_sentence_boundary_threshold: subtitleSentenceBoundaryThreshold
       };
     else stageSettings[key] = common;
+  }
+
+  async function openFullSettingsFromStage() {
+    if (!settingsStage) return;
+    const stage = settingsStage;
+    captureStageSettings(stage);
+    const section = stageSection(stage.key);
+    const draft = stageSectionUpdates(stage.key).find(
+      (update) => update.section === section
+    )?.value;
+    await openFullSettings(section, draft ?? stageSettings[stage.key]);
+  }
+
+  async function syncStageAfterFullSettings(payload: SettingsPayload) {
+    if (!settingsStage) return;
+    const stage = settingsStage;
+    stageSettings[stage.key] = {
+      ...(stageSettings[stage.key] ?? {}),
+      ...(payload.effective ?? {})
+    };
+    await openSettings(stage);
+  }
+
+  function closeFullSettings() {
+    fullSettingsSection = '';
+    fullSettingsDraft = null;
+  }
+
+  async function saveSettings(mode: 'session' | 'defaults' = 'session') {
+    if (!settingsStage) return;
+    const key = settingsStage.key;
+    if (
+      key === 'generate_audio' &&
+      showClonedVoices &&
+      (!voiceName ||
+        !clonedVoiceIds.some(
+          (voice) => voice.toLowerCase() === voiceName.toLowerCase()
+        ))
+    ) {
+      error =
+        'Choose a provider-ready cloned voice, or create and upload one through the Voice Library.';
+      return;
+    }
+    captureStageSettings(settingsStage);
     const updates = stageSectionUpdates(key);
     try {
       if (mode === 'defaults') {
@@ -1605,7 +1683,7 @@
   }}
 />
 
-{#if settingsStage}
+{#if settingsStage && !fullSettingsSection}
   <div
     class="fixed inset-0 z-50 grid place-items-center bg-black/35 p-5 backdrop-blur-sm"
     role="presentation"
@@ -1668,6 +1746,62 @@
                 >.{:else}The model or provider chooses the level.{/if}
               Availability depends on the selected model.
             </p>
+          </div>
+        {/if}
+        {#if settingsStage.key === 'correct' || (settingsStage.key === 'translate' && backend === 'llm') || ['optimize_tts', 'optimize_document'].includes(settingsStage.key)}
+          <div class="rounded-xl border border-[var(--line)] p-4">
+            <label class="text-sm font-semibold"
+              >Concurrent LLM requests<input
+                type="number"
+                min="1"
+                max="16"
+                bind:value={optimizationConcurrent}
+                class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
+              /></label
+            >
+            <p class="muted mt-2 text-xs leading-relaxed">
+              1 preserves full continuity and is the quality-first default.
+              Higher values process independent batches in parallel for speed.
+              {#if settingsStage.key === 'correct'}Parallel correction cannot
+                include the preceding corrected batch.{:else if settingsStage.key === 'translate'}Parallel
+                translation cannot include the preceding translation or glossary
+                terms discovered by sibling batches.{:else}Optimization batches
+                are independent, so parallel processing does not carry context
+                between them.{/if}
+            </p>
+          </div>
+        {/if}
+        {#if settingsStage.key === 'correct' || (settingsStage.key === 'translate' && backend === 'llm')}
+          <div class="rounded-xl border border-[var(--line)] p-4">
+            <label class="flex items-start gap-3 text-sm font-semibold"
+              ><input
+                type="checkbox"
+                bind:checked={timingContextEnabled}
+                class="mt-1 accent-[var(--accent)]"
+              /><span
+                >Include cue timing context<span
+                  class="muted mt-1 block text-xs font-normal leading-relaxed"
+                  >Lets the model distinguish ordinary cue boundaries, long
+                  pauses, and overlapping speech. This improves difficult
+                  editorial decisions at a modest prompt-token cost.</span
+                ></span
+              ></label
+            >
+            {#if timingContextEnabled}<label
+                class="mt-4 block text-xs font-semibold"
+                >Substantial audible pause (ms)<input
+                  type="number"
+                  min="0"
+                  max="10000"
+                  step="100"
+                  bind:value={timingContextGap}
+                  class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                /><span class="muted mt-1 block font-normal"
+                  >The model is asked to preserve a rhetorical boundary at or
+                  above this gap. Overlap evidence remains available even when
+                  full timing context is off.</span
+                ></label
+              >{/if}
           </div>
         {/if}
         {#if settingsStage.key === 'transcribe'}
@@ -1937,14 +2071,27 @@
                     bind:value={sttChunkSeconds}
                     class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
                   /></label
-                >{/if}<label class="text-xs font-semibold"
-                >Chunk overlap (s)<input
-                  type="number"
-                  min="0"
-                  step="0.5"
-                  bind:value={sttChunkOverlap}
-                  class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
-                /></label
+                >{/if}{#if sttEngine === 'moss'}<label
+                  class="text-xs font-semibold"
+                  >MOSS chunk overlap (s)<input
+                    type="number"
+                    min="0"
+                    step="0.5"
+                    bind:value={mossChunkOverlap}
+                    class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                  /><span class="muted mt-1 block font-normal"
+                    >0 prevents duplicated speech and conflicting speaker IDs at
+                    chunk seams.</span
+                  ></label
+                >{:else}<label class="text-xs font-semibold"
+                  >Chunk overlap (s)<input
+                    type="number"
+                    min="0"
+                    step="0.5"
+                    bind:value={sttChunkOverlap}
+                    class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                  /></label
+                >{/if}
               ><label class="col-span-2 text-xs font-semibold"
                 >Hotwords<textarea
                   rows="2"
@@ -2029,6 +2176,23 @@
                   bind:value={subtitlePhraseGap}
                   class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
                 /></label
+              ><label class="text-xs font-semibold"
+                >Hard silence boundary (ms)<input
+                  type="number"
+                  min="250"
+                  max="5000"
+                  bind:value={subtitleHardGap}
+                  class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                /></label
+              ><label class="text-xs font-semibold"
+                >Sentence boundary threshold<input
+                  type="number"
+                  min="0.01"
+                  max="0.99"
+                  step="0.01"
+                  bind:value={subtitleSentenceBoundaryThreshold}
+                  class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                /></label
               >
             </div>
           </div>
@@ -2104,7 +2268,7 @@
               >
             </div>
           </fieldset>
-          <div class="grid gap-3 sm:grid-cols-2">
+          <div>
             <label class="text-sm font-semibold"
               >Segments per JSON batch{#if optimizationTiming === 'document'}<input
                   type="number"
@@ -2119,14 +2283,6 @@
                   bind:value={optimizationBatchSize}
                   class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
                 />{/if}</label
-            ><label class="text-sm font-semibold"
-              >Concurrent batches<input
-                type="number"
-                min="1"
-                max="16"
-                bind:value={optimizationConcurrent}
-                class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
-              /></label
             >
           </div>
           <label
@@ -2413,13 +2569,14 @@
             >
               <div class="text-sm font-semibold">Speech blocks for dubbing</div>
               <p class="muted mt-1 text-xs">
-                Adjacent cues merge only for the same speaker, within the merge
-                gap, and below the maximum length. These TTS chunks are
+                Pandrator first reconstructs unfinished same-speaker sentences,
+                then splits at balanced linguistic boundaries and optionally
+                packs nearby complete utterances. These TTS chunks are
                 independent from the final subtitle layout.
               </p>
               <div class="mt-3 grid grid-cols-2 gap-3">
                 <label class="text-xs font-semibold"
-                  >Minimum characters<input
+                  >Preferred minimum split size<input
                     type="number"
                     min="1"
                     bind:value={speechBlockMinChars}
@@ -2437,6 +2594,20 @@
                     type="number"
                     min="0"
                     bind:value={speechBlockMergeThreshold}
+                    class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                  /></label
+                ><label class="text-xs font-semibold"
+                  >Unfinished-sentence pause (ms)<input
+                    type="number"
+                    min="0"
+                    bind:value={speechBlockContinuationThreshold}
+                    class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                  /></label
+                ><label class="text-xs font-semibold"
+                  >Maximum silence inside a TTS chunk (ms)<input
+                    type="number"
+                    min="0"
+                    bind:value={speechBlockMaxInternalGap}
                     class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
                   /></label
                 >
@@ -2563,6 +2734,23 @@
                   bind:value={subtitlePhraseGap}
                   class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
                 /></label
+              ><label class="text-xs font-semibold"
+                >Hard silence boundary (ms)<input
+                  type="number"
+                  min="250"
+                  max="5000"
+                  bind:value={subtitleHardGap}
+                  class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                /></label
+              ><label class="text-xs font-semibold"
+                >Sentence boundary threshold<input
+                  type="number"
+                  min="0.01"
+                  max="0.99"
+                  step="0.01"
+                  bind:value={subtitleSentenceBoundaryThreshold}
+                  class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                /></label
               >
             </div>
           </div>
@@ -2576,10 +2764,7 @@
         </p>{/if}
       <div class="mt-7 flex flex-wrap justify-end gap-3">
         <button
-          onclick={() => {
-            void openFullSettings(stageSection(settingsStage!.key));
-            settingsStage = null;
-          }}
+          onclick={openFullSettingsFromStage}
           class="mr-auto rounded-xl border border-[var(--line)] px-4 py-2.5 text-sm font-semibold"
           >All {sectionDisplay(stageSection(settingsStage.key))} settings</button
         ><button
@@ -2635,7 +2820,9 @@
     section={fullSettingsSection}
     title={`${sectionDisplay(fullSettingsSection)} settings`}
     description="These settings are saved as session overrides and inherited by future runs."
-    onclose={() => (fullSettingsSection = '')}
+    initialOverride={fullSettingsDraft ?? {}}
+    onpersisted={syncStageAfterFullSettings}
+    onclose={closeFullSettings}
   />{/if}
 {#if ttsServicesOpen && TtsServicesModalComponent}<TtsServicesModalComponent
     onclose={async () => {

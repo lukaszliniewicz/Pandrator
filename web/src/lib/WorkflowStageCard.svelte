@@ -56,10 +56,46 @@
   };
 
   const formatCost = (cost: number | null) => {
-    if (cost == null) return 'Cost not reported';
+    if (cost == null) return 'not metered';
     if (cost === 0) return '$0.00';
     return cost < 0.01 ? `$${cost.toFixed(6)}` : `$${cost.toFixed(4)}`;
   };
+
+  const formatDuration = (seconds: number) => {
+    const rounded = Math.max(0, Math.round(seconds));
+    if (rounded < 60) return `${rounded}s`;
+    const minutes = Math.floor(rounded / 60);
+    const remainingSeconds = rounded % 60;
+    if (minutes < 60)
+      return remainingSeconds
+        ? `${minutes}m ${remainingSeconds}s`
+        : `${minutes}m`;
+    const hours = Math.floor(minutes / 60);
+    const remainingMinutes = minutes % 60;
+    return remainingMinutes ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
+  };
+
+  let nowMs = $state(Date.now());
+  $effect(() => {
+    if (!stage.run_metrics?.started_at || stage.run_metrics.finished_at) return;
+    nowMs = Date.now();
+    const timer = window.setInterval(() => (nowMs = Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  });
+  const elapsedSeconds = $derived.by(() => {
+    const metrics = stage.run_metrics;
+    if (!metrics?.started_at) return metrics?.duration_seconds ?? null;
+    if (metrics.finished_at) return metrics.duration_seconds;
+    const started = Date.parse(metrics.started_at);
+    return Number.isFinite(started)
+      ? Math.max(0, (nowMs - started) / 1000)
+      : metrics.duration_seconds;
+  });
+  const costAware = $derived(
+    ['correct', 'translate', 'optimize_tts', 'generate_audio'].includes(
+      stage.key
+    )
+  );
 
   const StatusIcon = $derived(statusIcon(stage.status));
 </script>
@@ -129,17 +165,40 @@
           <p class="mt-2 text-xs text-red-500">{stage.detail}</p>
         {/if}
 
-        {#if stage.key === 'optimize_tts' && stage.usage}
-          <p class="muted mt-2 text-xs">
-            <strong class="text-[var(--ink)]">Latest usage:</strong>
-            {stage.usage.total_tokens.toLocaleString()} tokens ({stage.usage.input_tokens.toLocaleString()}
-            input,
-            {stage.usage.output_tokens.toLocaleString()} output{stage.usage
-              .cached_input_tokens
-              ? `, ${stage.usage.cached_input_tokens.toLocaleString()} cached`
-              : ''}) · {formatCost(stage.usage.cost_usd)} · {stage.usage
-              .model_id}
-          </p>
+        {#if elapsedSeconds != null || stage.usage || (costAware && stage.run_metrics)}
+          <div
+            class="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs"
+            aria-label={`${stage.title} run metrics`}
+          >
+            {#if elapsedSeconds != null}
+              <span class="muted inline-flex items-center gap-1.5 tabular-nums">
+                <Clock3 size={13} aria-hidden="true" />
+                {stage.status === 'running' ? 'Elapsed' : 'Duration'}
+                <strong class="text-[var(--ink)]"
+                  >{formatDuration(elapsedSeconds)}</strong
+                >
+              </span>
+            {/if}
+            {#if stage.usage || (costAware && stage.run_metrics)}
+              <span
+                class="muted"
+                title={stage.usage
+                  ? `${stage.usage.total_tokens.toLocaleString()} tokens (${stage.usage.input_tokens.toLocaleString()} input, ${stage.usage.output_tokens.toLocaleString()} output${stage.usage.cached_input_tokens ? `, ${stage.usage.cached_input_tokens.toLocaleString()} cached` : ''})`
+                  : 'This run did not report metered provider usage.'}
+              >
+                Cost
+                <strong class="text-[var(--ink)]"
+                  >{formatCost(stage.usage?.cost_usd ?? null)}</strong
+                >
+              </span>
+              {#if stage.usage?.model_id}
+                <span
+                  class="muted max-w-full truncate"
+                  title={stage.usage.model_id}>{stage.usage.model_id}</span
+                >
+              {/if}
+            {/if}
+          </div>
         {/if}
 
         {#if (stage.artifacts?.length ?? 0) > 0}

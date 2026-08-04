@@ -117,6 +117,7 @@ def create_alignment_blocks(
     subtitles_by_index = {segment.index: segment for segment in subtitles}
     speech_blocks = _load_speech_blocks(speech_blocks_file)
     alignment_blocks: list[AudioAlignmentBlock] = []
+    alignment_group_by_number: dict[str, str] = {}
     invalid_blocks: list[str] = []
 
     for block in speech_blocks:
@@ -148,6 +149,9 @@ def create_alignment_blocks(
         )
 
         alignment_blocks.append(new_block)
+        alignment_group_by_number[block_number] = str(
+            block.get("alignment_group") or ""
+        ).strip()
 
     if invalid_blocks:
         raise AudioSyncError("Cannot synchronize incomplete speech blocks: " + ", ".join(invalid_blocks))
@@ -155,8 +159,17 @@ def create_alignment_blocks(
         raise ValueError("No alignment blocks could be created from the selected subtitles and speech blocks.")
     alignment_blocks.sort(key=lambda item: (item.start_ms, item.end_ms, item.number))
     merged: list[AudioAlignmentBlock] = []
+    previous_group = ""
     for block in alignment_blocks:
-        if merged and merged[-1].subtitles[-1:] == block.subtitles[:1]:
+        group = alignment_group_by_number.get(block.number, "")
+        same_explicit_group = bool(merged and group and group == previous_group)
+        legacy_shared_boundary = bool(
+            merged
+            and not group
+            and not previous_group
+            and merged[-1].subtitles[-1:] == block.subtitles[:1]
+        )
+        if same_explicit_group or legacy_shared_boundary:
             previous = merged[-1]
             merged[-1] = AudioAlignmentBlock(
                 number=f"{previous.number}-{block.number}",
@@ -168,6 +181,7 @@ def create_alignment_blocks(
             )
         else:
             merged.append(block)
+        previous_group = group
     return merged
 
 

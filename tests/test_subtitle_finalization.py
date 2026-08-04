@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from pandrator.logic.dubbing.srt_utils import parse_srt
+from pandrator.logic.dubbing import subtitle_finalization
 from pandrator.logic.dubbing.subtitle_finalization import (
     SubtitleFinalizationConfig,
     compose_from_crispasr_json,
@@ -82,6 +83,17 @@ This cue contains forty readable characters.
     def test_zero_minimum_gap_is_a_valid_explicit_setting(self):
         config = SubtitleFinalizationConfig.from_settings({"subtitle_min_gap_ms": 0})
         self.assertEqual(config.min_gap_ms, 0)
+
+    def test_hard_gap_and_sentence_threshold_are_configurable(self):
+        config = SubtitleFinalizationConfig.from_settings(
+            {
+                "subtitle_hard_gap_ms": 1000,
+                "subtitle_sentence_boundary_threshold": 0.7,
+            }
+        )
+
+        self.assertEqual(1000, config.hard_gap_ms)
+        self.assertEqual(0.7, config.sentence_boundary_threshold)
 
     def test_diarized_words_break_on_speaker_changes_without_visible_labels(self):
         payload = {
@@ -175,6 +187,46 @@ This cue contains forty readable characters.
         self.assertTrue(segments[0].text.endswith("today"))
         self.assertTrue(segments[1].text.startswith("everyone"))
 
+    def test_sentence_boundary_threshold_actually_gates_sat_evidence(self):
+        tokens = "We carefully reviewed the report today everyone approved the final version".split()
+        payload = {"transcription": [{"words": [
+            {"text": token, "offsets": {"from": index * 330, "to": index * 330 + 290}}
+            for index, token in enumerate(tokens)
+        ]}]}
+        source_text = " ".join(tokens)
+        probabilities = [0.0] * len(source_text)
+        probabilities[source_text.index("today") + len("today") - 1] = 0.98
+
+        def prediction(_text, *, threshold):
+            return {
+                "threshold": threshold,
+                "probabilities": probabilities,
+                "boundaries": [],
+            }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "words.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            with patch(
+                "pandrator.logic.dubbing.subtitle_finalization.sentence_segmenter.predict_boundaries",
+                side_effect=prediction,
+            ):
+                permissive = parse_srt(
+                    compose_from_crispasr_json(
+                        path,
+                        {"subtitle_sentence_boundary_threshold": 0.25},
+                    )
+                )
+                conservative = parse_srt(
+                    compose_from_crispasr_json(
+                        path,
+                        {"subtitle_sentence_boundary_threshold": 0.99},
+                    )
+                )
+
+        self.assertEqual(2, len(permissive))
+        self.assertEqual(1, len(conservative))
+
     def test_implausible_word_span_is_sanitized_and_all_words_are_preserved_once(self):
         payload = {"transcription": [{"words": [
             {"text": "This", "offsets": {"from": 0, "to": 240}},
@@ -191,6 +243,110 @@ This cue contains forty readable characters.
         self.assertTrue(all(segment.end_ms - segment.start_ms <= 7000 for segment in segments))
         for token in ("This", "ends", "too.", "Another", "thought", "follows."):
             self.assertEqual(flattened.split().count(token), 1)
+
+    def test_moss_chunk_seam_deduplicates_only_a_time_aligned_word_run(self):
+        payload = {
+            "schema": "pandrator.transcript.v1",
+            "source_format": "moss-transcribe-cpp",
+            "segments": [
+                {
+                    "id": "moss-a",
+                    "start_ms": 0,
+                    "end_ms": 1800,
+                    "speaker": "S1",
+                    "text": "A lot of the other things",
+                    "words": [
+                        {
+                            "text": token,
+                            "start_ms": index * 300,
+                            "end_ms": index * 300 + 250,
+                            "speaker": "S1",
+                            "metadata": {"moss_segment_id": "moss-a"},
+                        }
+                        for index, token in enumerate("A lot of the other things".split())
+                    ],
+                },
+                {
+                    "id": "moss-b",
+                    "start_ms": 20,
+                    "end_ms": 2150,
+                    "speaker": "S2",
+                    "text": "A lot of the other things remain",
+                    "words": [
+                        {
+                            "text": token,
+                            "start_ms": 20 + index * 300,
+                            "end_ms": 270 + index * 300,
+                            "speaker": "S2",
+                            "metadata": {"moss_segment_id": "moss-b"},
+                        }
+                        for index, token in enumerate(
+                            "A lot of the other things remain".split()
+                        )
+                    ],
+                },
+            ],
+        }
+
+        segments = self._compose_payload(payload)
+        flattened = " ".join(segment.text.replace("\n", " ") for segment in segments)
+
+        self.assertEqual(flattened.casefold().split().count("lot"), 1)
+        self.assertIn("remain", flattened)
+
+    def test_moss_suffix_prefix_seam_keeps_the_continuing_later_stream(self):
+        def word(text, start_ms, speaker, segment_id):
+            return {
+                "text": text,
+                "start_ms": start_ms,
+                "end_ms": start_ms + 220,
+                "speaker": speaker,
+                "metadata": {"moss_segment_id": segment_id},
+            }
+
+        payload = {
+            "schema": "pandrator.transcript.v1",
+            "source_format": "moss-transcribe-cpp",
+            "segments": [
+                {
+                    "id": "moss-a",
+                    "start_ms": 0,
+                    "end_ms": 1700,
+                    "speaker": "S1",
+                    "text": "asleep when you're under",
+                    "words": [
+                        word("asleep", 0, "S1", "moss-a"),
+                        word("when", 400, "S1", "moss-a"),
+                        word("you're", 800, "S1", "moss-a"),
+                        word("under", 1200, "S1", "moss-a"),
+                    ],
+                },
+                {
+                    "id": "moss-b",
+                    "start_ms": 420,
+                    "end_ms": 2300,
+                    "speaker": "S2",
+                    "text": "when you're under anesthesia",
+                    "words": [
+                        word("when", 420, "S2", "moss-b"),
+                        word("you're", 820, "S2", "moss-b"),
+                        word("under", 1220, "S2", "moss-b"),
+                        word("anesthesia", 1700, "S2", "moss-b"),
+                    ],
+                },
+            ],
+        }
+
+        words = subtitle_finalization._timed_words(payload)
+        tokens = [item.text.casefold() for item in words]
+
+        self.assertEqual(1, tokens.count("when"))
+        self.assertEqual(1, tokens.count("you're"))
+        self.assertEqual(1, tokens.count("under"))
+        self.assertEqual(
+            ["S2", "S2", "S2"],
+            [item.speaker for item in words if item.text.casefold() in {"when", "you're", "under"}],
+        )
 
 
 if __name__ == "__main__":

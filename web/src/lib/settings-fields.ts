@@ -382,7 +382,9 @@ export function settingLabel(key: string): string {
     web_research_result_chars: 'Maximum characters per tool result',
     llm_processing_enabled: 'Enable LLM text processing',
     llm_multi_stage: 'Use divided prompts',
-    llm_concurrent_calls: 'Concurrent LLM calls',
+    llm_concurrent_calls: 'Concurrent LLM requests',
+    timing_context_enabled: 'Include cue timing context',
+    timing_context_gap_ms: 'Substantial audible pause (ms)',
     combined_prompt: 'Single optimization prompt',
     first_prompt: 'First optimization prompt',
     second_prompt: 'Second optimization prompt',
@@ -400,9 +402,21 @@ export function settingLabel(key: string): string {
     mix_attack_ms: 'Ducking attack (ms)',
     mix_release_ms: 'Ducking release (ms)',
     moss_max_chunk_seconds: 'Maximum MOSS context (seconds)',
+    moss_chunk_overlap_seconds: 'MOSS chunk overlap (seconds)',
     moss_vad_enabled: 'Use VAD before MOSS diarization',
     moss_ctc_alignment_enabled: 'Align each MOSS turn to words with CTC',
-    moss_ctc_padding_seconds: 'MOSS turn CTC padding (seconds)'
+    moss_ctc_padding_seconds: 'MOSS turn CTC padding (seconds)',
+    subtitle_hard_gap_ms: 'Hard subtitle boundary after silence (ms)',
+    subtitle_sentence_boundary_threshold: 'Sentence boundary sensitivity',
+    hard_gap_ms: 'Hard subtitle boundary after silence (ms)',
+    sentence_boundary_threshold: 'Sentence boundary sensitivity',
+    speech_block_continuation_threshold_ms:
+      'Unfinished-sentence pause tolerance (ms)',
+    speech_block_min_chars: 'Preferred minimum split size',
+    speech_block_max_chars: 'Maximum TTS chunk size',
+    speech_block_merge_threshold: 'Complete-utterance merge gap (ms)',
+    speech_block_max_internal_gap_ms:
+      'Maximum silence inside one TTS chunk (ms)'
   };
   if (labels[key]) return labels[key];
   return key

@@ -30,7 +30,7 @@
             "type": "string"
           },
           "application_version": {
-            "default": "0.8.6",
+            "default": "0.8.7",
             "title": "Application Version",
             "type": "string"
           },
@@ -411,9 +411,66 @@
         "title": "GenerationPlanCreate",
         "type": "object"
       },
+      "GenerationSegmentBatchUpdate": {
+        "additionalProperties": false,
+        "properties": {
+          "updates": {
+            "items": {
+              "$ref": "#/components/schemas/GenerationSegmentBatchUpdateItem"
+            },
+            "maxItems": 20000,
+            "minItems": 1,
+            "title": "Updates",
+            "type": "array"
+          }
+        },
+        "required": [
+          "updates"
+        ],
+        "title": "GenerationSegmentBatchUpdate",
+        "type": "object"
+      },
+      "GenerationSegmentBatchUpdateItem": {
+        "additionalProperties": false,
+        "properties": {
+          "changes": {
+            "$ref": "#/components/schemas/GenerationSegmentUpdate"
+          },
+          "id": {
+            "minLength": 1,
+            "title": "Id",
+            "type": "string"
+          },
+          "revision": {
+            "minimum": 1,
+            "title": "Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "revision",
+          "changes"
+        ],
+        "title": "GenerationSegmentBatchUpdateItem",
+        "type": "object"
+      },
       "GenerationSegmentCreate": {
         "additionalProperties": false,
         "properties": {
+          "alignment_group": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Alignment Group"
+          },
           "language": {
             "anyOf": [
               {
@@ -5166,6 +5223,34 @@
         "responses": {
           "200": {
             "description": "Cursor-paginated generation segments"
+          }
+        }
+      },
+      "patch": {
+        "operationId": "updateGenerationSegments",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenerationSegmentBatchUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Generation segments updated atomically"
           }
         }
       }

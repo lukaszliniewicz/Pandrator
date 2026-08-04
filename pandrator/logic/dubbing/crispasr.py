@@ -497,7 +497,18 @@ def build_command(
         chunk_seconds = max(30.0, min(120.0, float(_setting(settings, "moss_max_chunk_seconds", 120.0))))
     if chunk_seconds > 0:
         command.extend(("--chunk-seconds", f"{chunk_seconds:g}"))
-    chunk_overlap = float(_setting(settings, "stt_chunk_overlap_seconds", 3.0))
+    # MOSS supplies native speaker turns but no token stream to Crisp's
+    # cross-chunk overlap stitcher. Re-decoding overlap therefore duplicated
+    # speech with conflicting speaker IDs. Keep MOSS overlap independently
+    # configurable and off by default; other engines retain their established
+    # overlap behavior.
+    chunk_overlap = float(
+        _setting(
+            settings,
+            "moss_chunk_overlap_seconds" if engine == STT_ENGINE_MOSS else "stt_chunk_overlap_seconds",
+            0.0 if engine == STT_ENGINE_MOSS else 3.0,
+        )
+    )
     if chunk_seconds > 0 and chunk_overlap >= 0:
         command.extend(("--chunk-overlap", f"{chunk_overlap:g}"))
     hotwords = str(settings.get("stt_hotwords") or "").strip()

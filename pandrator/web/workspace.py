@@ -101,6 +101,7 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "stt_beam_size": 1,
         "parakeet_decoder": "tdt",
         "moss_max_chunk_seconds": 120,
+        "moss_chunk_overlap_seconds": 0.0,
         "moss_vad_enabled": False,
         "moss_ctc_alignment_enabled": True,
         "moss_ctc_aligner_model": "auto",
@@ -122,6 +123,8 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "max_duration_ms": 7000,
         "min_gap_ms": 80,
         "phrase_gap_ms": 600,
+        "hard_gap_ms": 1500,
+        "sentence_boundary_threshold": 0.25,
         "boundary_correction_enabled": False,
         "merge_threshold_ms": 250,
     },
@@ -132,6 +135,9 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "instructions": "",
         "preserve_timing": True,
         "max_subtitles_per_call": 40,
+        "llm_concurrent_calls": 1,
+        "timing_context_enabled": True,
+        "timing_context_gap_ms": 2000,
         "context_before": 2,
         "context_after": 2,
         "request_timeout_seconds": 600,
@@ -158,6 +164,9 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "instructions": "",
         "glossary": "",
         "max_subtitles_per_call": 40,
+        "llm_concurrent_calls": 1,
+        "timing_context_enabled": True,
+        "timing_context_gap_ms": 2000,
         "max_line_length": 0,
         "context_before": 2,
         "context_after": 2,
@@ -257,6 +266,8 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "speech_block_min_chars": 10,
         "speech_block_max_chars": 220,
         "speech_block_merge_threshold": 250,
+        "speech_block_continuation_threshold_ms": 3000,
+        "speech_block_max_internal_gap_ms": 1800,
     },
     "audio": {
         "audio_verification_mode": "off",
@@ -337,6 +348,8 @@ RUNTIME_SETTING_ALIASES: dict[str, dict[str, str]] = {
         "max_duration_ms": "subtitle_max_duration_ms",
         "min_gap_ms": "subtitle_min_gap_ms",
         "phrase_gap_ms": "subtitle_phrase_gap_ms",
+        "hard_gap_ms": "subtitle_hard_gap_ms",
+        "sentence_boundary_threshold": "subtitle_sentence_boundary_threshold",
         "merge_threshold_ms": "subtitle_merge_threshold",
     },
     "correction": {
@@ -485,6 +498,53 @@ class WorkspaceSettingsService:
         has_source_video = source.has_video
         has_source_audio = source.has_audio
         workflow_kind = session_record.workflow_kind
+        available_subtitle_roles = set(
+            session.scalars(
+                select(Artifact.role).where(
+                    Artifact.session_id == session_record.id,
+                    Artifact.state == "current",
+                    Artifact.role.in_(("transcription", "correction", "translation")),
+                )
+            ).all()
+        )
+        subtitle_selection = next(
+            (
+                selection
+                for role, selection in (
+                    ("translation", "translation"),
+                    ("correction", "correction"),
+                    ("transcription", "source"),
+                )
+                if role in available_subtitle_roles
+            ),
+            "",
+        )
+        has_generated_voiceover = (
+            session.scalar(
+                select(GenerationRun.id)
+                .where(
+                    GenerationRun.session_id == session_record.id,
+                    GenerationRun.status == "completed",
+                )
+                .limit(1)
+            )
+            is not None
+        )
+        if not has_generated_voiceover:
+            has_generated_voiceover = (
+                session.scalar(
+                    select(Artifact.id)
+                    .where(
+                        Artifact.session_id == session_record.id,
+                        Artifact.state == "current",
+                        Artifact.role.in_(
+                            ("assembled_audio", "dubbing_audio")
+                        ),
+                    )
+                    .limit(1)
+                )
+                is not None
+            )
         if workflow_kind == "audiobook":
             applicable_groups = ["audiobook_audio", "audiobook_metadata", "cover"]
         elif workflow_kind == "subtitles":
@@ -507,6 +567,8 @@ class WorkspaceSettingsService:
             "source_resolution": source.resolution,
             "has_source_video": has_source_video,
             "has_source_audio": has_source_audio,
+            "has_generated_voiceover": has_generated_voiceover,
+            "subtitle_selection": subtitle_selection or None,
             "applicable_groups": applicable_groups,
         }
 
@@ -592,15 +654,35 @@ class WorkspaceSettingsService:
                     "subtitle_selection": "source",
                 }
             elif session_record.workflow_kind == "voiceover":
+                subtitle_first = bool(
+                    output_context["has_source_audio"]
+                    and output_context["subtitle_selection"]
+                    and not output_context["has_generated_voiceover"]
+                )
                 session_context = {
                     "export_mode": "media",
                     "audio_mode": (
-                        "mixed"
+                        "preserve"
+                        if subtitle_first
+                        else "mixed"
                         if output_context["has_source_audio"]
                         else "dubbing_only"
                     ),
                     "format": "wav",
                 }
+                if subtitle_first:
+                    session_context.update(
+                        {
+                            "subtitle_selection": output_context[
+                                "subtitle_selection"
+                            ],
+                            "subtitle_mode": (
+                                "soft"
+                                if output_context["has_source_video"]
+                                else "none"
+                            ),
+                        }
+                    )
             if speech_language:
                 session_context["language"] = speech_language
         effective = _merge(
@@ -1243,6 +1325,7 @@ class GenerationService:
                         plan_revision_id=revision.id,
                         ordinal=index,
                         source_segment_ids_json=list(item.get("source_segment_ids") or []),
+                        alignment_group=str(item.get("alignment_group") or "").strip() or None,
                         node_kind=str(item.get("node_kind") or ("chapter_marker" if str(item.get("chapter") or "").lower() == "yes" else "paragraph")),
                         paragraph_break_after=bool(item.get("paragraph_break_after", str(item.get("paragraph") or "").lower() == "yes")),
                         speaker=str(item.get("speaker") or "").strip() or None,
@@ -1353,6 +1436,7 @@ class GenerationService:
                     "speaker": item.speaker,
                     "text": item.text,
                     "source_segment_ids": list(item.source_segment_ids_json or []),
+                    "alignment_group": item.alignment_group,
                     "optimized_text": item.optimized_text,
                     "speech_plan": dict(item.speech_plan_json or {}),
                     "optimization_status": item.optimization_status,
@@ -1404,110 +1488,235 @@ class GenerationService:
                 "plan_revision_id": plan_revision_id,
             }
 
-    def update_segment(self, segment_id: str, expected_revision: int, changes: dict[str, Any]) -> dict[str, Any]:
+    @staticmethod
+    def _updated_segment_payload(segment: GenerationSegment) -> dict[str, Any]:
+        return {
+            "id": segment.id,
+            "node_kind": segment.node_kind,
+            "paragraph_break_after": segment.paragraph_break_after,
+            "speaker": segment.speaker,
+            "alignment_group": segment.alignment_group,
+            "text": segment.text,
+            "optimized_text": segment.optimized_text,
+            "speech_plan": dict(segment.speech_plan_json or {}),
+            "optimization_status": segment.optimization_status,
+            "optimization_reviewed": segment.optimization_reviewed,
+            "optimization_model": segment.optimization_model,
+            "voice_id": segment.voice_id,
+            "voice": segment.voice,
+            "language": segment.language,
+            "silence_after_ms": segment.silence_after_ms,
+            "marked": segment.marked,
+            "removed": segment.removed,
+            "status": segment.status,
+            "revision": segment.revision,
+        }
+
+    def _apply_segment_changes(
+        self,
+        session,
+        segment: GenerationSegment,
+        changes: dict[str, Any],
+        *,
+        completed_takes: list[AudioTake] | None = None,
+        mark_assemblies: bool = True,
+    ) -> dict[str, Any]:
         allowed = {"text", "optimized_text", "node_kind", "paragraph_break_after", "voice_id", "voice", "language", "silence_after_ms", "marked", "removed"}
+        session.add(
+            GenerationSegmentRevision(
+                generation_segment_id=segment.id,
+                revision=segment.revision,
+                alignment_group=segment.alignment_group,
+                node_kind=segment.node_kind,
+                paragraph_break_after=segment.paragraph_break_after,
+                speaker=segment.speaker,
+                text=segment.text,
+                optimized_text=segment.optimized_text,
+                speech_plan_json=dict(segment.speech_plan_json or {}),
+                optimization_status=segment.optimization_status,
+                optimization_reviewed=segment.optimization_reviewed,
+                marked=segment.marked,
+                removed=segment.removed,
+                voice_id=segment.voice_id,
+                voice=segment.voice,
+                language=segment.language,
+                silence_after_ms=segment.silence_after_ms,
+            )
+        )
+        text_changed = "text" in changes and str(changes["text"]).strip() != segment.text
+        optimized_changed = "optimized_text" in changes and (str(changes["optimized_text"] or "").strip() or None) != segment.optimized_text
+        for key, value in changes.items():
+            if key not in allowed:
+                continue
+            if key == "text":
+                value = str(value).strip()
+                if not value:
+                    raise ValueError("Generation text cannot be blank; remove the segment instead.")
+            if key == "optimized_text":
+                value = str(value or "").strip() or None
+            if key == "silence_after_ms":
+                value = max(0, int(value))
+            if key == "node_kind" and value not in {"paragraph", "heading", "chapter_marker", "subtitle_cue"}:
+                raise ValueError("Unsupported generation segment type.")
+            setattr(segment, key, value)
+        if text_changed:
+            segment.optimized_text = None
+            segment.speech_plan_json = {}
+            segment.optimization_status = "stale"
+            segment.optimization_source_hash = None
+            segment.optimization_reviewed = False
+            segment.optimization_model = None
+        elif optimized_changed:
+            segment.optimization_status = "reviewed" if segment.optimized_text else "pending"
+            segment.optimization_source_hash = hashlib.sha256(
+                segment.text.encode("utf-8")
+            ).hexdigest()
+            segment.optimization_reviewed = bool(segment.optimized_text)
+            speech_plan = dict(segment.speech_plan_json or {})
+            if segment.optimized_text:
+                segment.speech_plan_json = {
+                    **speech_plan,
+                    "version": int(speech_plan.get("version") or 1),
+                    "status": "manual_override",
+                    "compiled_text": segment.optimized_text,
+                    "reviewed": True,
+                }
+            else:
+                segment.speech_plan_json = {}
+        audio_stale = (
+            text_changed
+            or optimized_changed
+            or any(key in changes for key in ("voice_id", "voice", "language"))
+        )
+        if audio_stale:
+            segment.status = "stale"
+            takes = completed_takes
+            if takes is None:
+                takes = list(
+                    session.scalars(
+                        select(AudioTake).where(
+                            AudioTake.generation_segment_id == segment.id,
+                            AudioTake.status == "completed",
+                        )
+                    ).all()
+                )
+            for take in takes:
+                take.status = "stale"
+        assembly_changed = any(key in changes for key in ("text", "node_kind", "paragraph_break_after", "voice_id", "voice", "language", "silence_after_ms", "removed"))
+        if mark_assemblies and assembly_changed:
+            plan_revision = session.get(GenerationPlanRevision, segment.plan_revision_id)
+            plan = session.get(GenerationPlan, plan_revision.plan_id) if plan_revision else None
+            if plan is not None:
+                mark_output_assemblies_stale(session, plan.session_id)
+        segment.revision += 1
+        segment.updated_at = utcnow()
+        session.flush()
+        return self._updated_segment_payload(segment)
+
+    def update_segment(self, segment_id: str, expected_revision: int, changes: dict[str, Any]) -> dict[str, Any]:
         with self.database.session() as session:
             segment = session.get(GenerationSegment, segment_id)
             if segment is None:
                 raise KeyError(segment_id)
             if segment.revision != expected_revision:
                 raise RevisionConflict("The generation segment changed in another client.")
-            session.add(
-                GenerationSegmentRevision(
-                    generation_segment_id=segment.id,
-                    revision=segment.revision,
-                    node_kind=segment.node_kind,
-                    paragraph_break_after=segment.paragraph_break_after,
-                    speaker=segment.speaker,
-                    text=segment.text,
-                    optimized_text=segment.optimized_text,
-                    speech_plan_json=dict(segment.speech_plan_json or {}),
-                    optimization_status=segment.optimization_status,
-                    optimization_reviewed=segment.optimization_reviewed,
-                    marked=segment.marked,
-                    removed=segment.removed,
-                    voice_id=segment.voice_id,
-                    voice=segment.voice,
-                    language=segment.language,
-                    silence_after_ms=segment.silence_after_ms,
-                )
-            )
-            text_changed = "text" in changes and str(changes["text"]).strip() != segment.text
-            optimized_changed = "optimized_text" in changes and (str(changes["optimized_text"] or "").strip() or None) != segment.optimized_text
-            for key, value in changes.items():
-                if key not in allowed:
-                    continue
-                if key == "text":
-                    value = str(value).strip()
-                    if not value:
-                        raise ValueError("Generation text cannot be blank; remove the segment instead.")
-                if key == "optimized_text":
-                    value = str(value or "").strip() or None
-                if key == "silence_after_ms":
-                    value = max(0, int(value))
-                if key == "node_kind" and value not in {"paragraph", "heading", "chapter_marker", "subtitle_cue"}:
-                    raise ValueError("Unsupported generation segment type.")
-                setattr(segment, key, value)
-            if text_changed:
-                segment.optimized_text = None
-                segment.speech_plan_json = {}
-                segment.optimization_status = "stale"
-                segment.optimization_source_hash = None
-                segment.optimization_reviewed = False
-                segment.optimization_model = None
-            elif optimized_changed:
-                segment.optimization_status = "reviewed" if segment.optimized_text else "pending"
-                segment.optimization_source_hash = hashlib.sha256(
-                    segment.text.encode("utf-8")
-                ).hexdigest()
-                segment.optimization_reviewed = bool(segment.optimized_text)
-                speech_plan = dict(segment.speech_plan_json or {})
-                if segment.optimized_text:
-                    segment.speech_plan_json = {
-                        **speech_plan,
-                        "version": int(speech_plan.get("version") or 1),
-                        "status": "manual_override",
-                        "compiled_text": segment.optimized_text,
-                        "reviewed": True,
-                    }
-                else:
-                    segment.speech_plan_json = {}
-            if text_changed or any(key in changes for key in ("voice_id", "voice", "language")):
-                segment.status = "stale"
-                for take in session.scalars(select(AudioTake).where(AudioTake.generation_segment_id == segment.id, AudioTake.status == "completed")).all():
-                    take.status = "stale"
-            if optimized_changed:
-                segment.status = "stale"
-                for take in session.scalars(select(AudioTake).where(AudioTake.generation_segment_id == segment.id, AudioTake.status == "completed")).all():
-                    take.status = "stale"
-            if any(key in changes for key in ("text", "node_kind", "paragraph_break_after", "voice_id", "voice", "language", "silence_after_ms", "removed")):
-                plan_revision = session.get(GenerationPlanRevision, segment.plan_revision_id)
-                plan = session.get(GenerationPlan, plan_revision.plan_id) if plan_revision else None
-                if plan is not None:
-                    mark_output_assemblies_stale(session, plan.session_id)
-            segment.revision += 1
-            segment.updated_at = utcnow()
-            session.flush()
-            return {
-                "id": segment.id,
-                "node_kind": segment.node_kind,
-                "paragraph_break_after": segment.paragraph_break_after,
-                "speaker": segment.speaker,
-                "text": segment.text,
-                "optimized_text": segment.optimized_text,
-                "speech_plan": dict(segment.speech_plan_json or {}),
-                "optimization_status": segment.optimization_status,
-                "optimization_reviewed": segment.optimization_reviewed,
-                "optimization_model": segment.optimization_model,
-                "voice_id": segment.voice_id,
-                "voice": segment.voice,
-                "language": segment.language,
-                "silence_after_ms": segment.silence_after_ms,
-                "marked": segment.marked,
-                "removed": segment.removed,
-                "status": segment.status,
-                "revision": segment.revision,
+            return self._apply_segment_changes(session, segment, changes)
+
+    def update_segments(self, session_id: str, updates: list[dict[str, Any]]) -> dict[str, Any]:
+        if not updates:
+            raise ValueError("At least one generation segment update is required.")
+        segment_ids = [str(item.get("id") or "").strip() for item in updates]
+        if any(not segment_id for segment_id in segment_ids):
+            raise ValueError("Every generation segment update requires an ID.")
+        if len(set(segment_ids)) != len(segment_ids):
+            raise ValueError("A generation segment can only be updated once per request.")
+        if any(not dict(item.get("changes") or {}) for item in updates):
+            raise ValueError("Every generation segment update requires at least one change.")
+
+        with self.database.session() as session:
+            if session.get(SessionRecord, session_id) is None:
+                raise KeyError(session_id)
+            segments = {
+                segment.id: segment
+                for segment in session.scalars(
+                    select(GenerationSegment).where(
+                        GenerationSegment.id.in_(segment_ids)
+                    )
+                ).all()
             }
+            if len(segments) != len(segment_ids):
+                missing = next(
+                    segment_id
+                    for segment_id in segment_ids
+                    if segment_id not in segments
+                )
+                raise KeyError(missing)
+
+            revision_ids = {segment.plan_revision_id for segment in segments.values()}
+            plan_revisions = {
+                revision.id: revision
+                for revision in session.scalars(
+                    select(GenerationPlanRevision).where(
+                        GenerationPlanRevision.id.in_(revision_ids)
+                    )
+                ).all()
+            }
+            plan_ids = {revision.plan_id for revision in plan_revisions.values()}
+            plans = {
+                plan.id: plan
+                for plan in session.scalars(
+                    select(GenerationPlan).where(GenerationPlan.id.in_(plan_ids))
+                ).all()
+            }
+            for segment_id in segment_ids:
+                segment = segments[segment_id]
+                revision = plan_revisions.get(segment.plan_revision_id)
+                plan = plans.get(revision.plan_id) if revision is not None else None
+                if plan is None or plan.session_id != session_id:
+                    raise KeyError(segment_id)
+
+            for item in updates:
+                segment = segments[str(item["id"])]
+                if segment.revision != int(item["revision"]):
+                    raise RevisionConflict(
+                        "One or more generation segments changed in another client; no replacements were applied."
+                    )
+
+            completed_takes_by_segment: dict[str, list[AudioTake]] = {}
+            for take in session.scalars(
+                select(AudioTake).where(
+                    AudioTake.generation_segment_id.in_(segment_ids),
+                    AudioTake.status == "completed",
+                )
+            ).all():
+                completed_takes_by_segment.setdefault(
+                    take.generation_segment_id, []
+                ).append(take)
+
+            assembly_keys = {"text", "node_kind", "paragraph_break_after", "voice_id", "voice", "language", "silence_after_ms", "removed"}
+            assembly_changed = False
+            results = []
+            for item in updates:
+                segment = segments[str(item["id"])]
+                changes = dict(item["changes"])
+                assembly_changed = assembly_changed or bool(
+                    assembly_keys.intersection(changes)
+                )
+                results.append(
+                    self._apply_segment_changes(
+                        session,
+                        segment,
+                        changes,
+                        completed_takes=completed_takes_by_segment.get(
+                            segment.id, []
+                        ),
+                        mark_assemblies=False,
+                    )
+                )
+            if assembly_changed:
+                mark_output_assemblies_stale(session, session_id)
+            session.flush()
+            return {"items": results}
 
     def select_take(self, segment_id: str, take_id: str, expected_revision: int) -> dict[str, Any]:
         with self.database.session() as session:
@@ -1523,6 +1732,7 @@ class GenerationService:
                 GenerationSegmentRevision(
                     generation_segment_id=segment.id,
                     revision=segment.revision,
+                    alignment_group=segment.alignment_group,
                     node_kind=segment.node_kind,
                     paragraph_break_after=segment.paragraph_break_after,
                     speaker=segment.speaker,

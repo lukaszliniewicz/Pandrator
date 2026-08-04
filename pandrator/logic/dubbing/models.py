@@ -26,6 +26,8 @@ class SpeechBlock:
     text: str
     subtitles: list[int] = field(default_factory=list)
     speaker: str = ""
+    alignment_group: str = ""
+    optimized_text: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         payload = {
@@ -35,6 +37,13 @@ class SpeechBlock:
         }
         if self.speaker:
             payload["speaker"] = self.speaker
+        if self.alignment_group:
+            payload["alignment_group"] = self.alignment_group
+        if self.optimized_text:
+            # Private during plan materialization: the public generation model
+            # stores this as ``optimized_text`` rather than exposing a second
+            # viewer-facing subtitle string.
+            payload["_optimized_text"] = self.optimized_text
         return payload
 
 
