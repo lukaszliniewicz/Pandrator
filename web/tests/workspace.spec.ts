@@ -736,6 +736,145 @@ test('generation segment search and replace preserves partial words and saves ev
   ]);
 });
 
+test('generation drawer layout survives segment regeneration refreshes', async ({
+  page
+}) => {
+  let phase: 'completed' | 'running' = 'completed';
+  let revision = 0;
+  let failNextRegeneration = false;
+  const runId = 'layout-run';
+  await page.route('**/api/v1/events?after=*', (route) => route.abort());
+  await signIn(page);
+  const sessionId = await createGenerationPlan(page, [
+    { text: 'Synthetic generation segment.' }
+  ]);
+  const run = () => ({
+    id: runId,
+    session_id: sessionId,
+    plan_revision_id: 'layout-plan',
+    sequence_number: 1,
+    operation: 'regenerate',
+    label: 'Layout test run',
+    job_id: 'layout-job',
+    status: phase,
+    progress: phase === 'completed' ? 1 : 0.5
+  });
+  await page.route(
+    `**/api/v1/sessions/${sessionId}/generation-runs`,
+    async (route) => {
+      if (route.request().method() === 'POST') {
+        if (failNextRegeneration) {
+          failNextRegeneration = false;
+          await route.fulfill({
+            status: 500,
+            contentType: 'application/json',
+            body: JSON.stringify({ detail: 'Synthetic regeneration failure.' })
+          });
+          return;
+        }
+        phase = 'running';
+        await route.fulfill({
+          contentType: 'application/json',
+          body: JSON.stringify(run())
+        });
+        setTimeout(() => {
+          revision += 1;
+          phase = 'completed';
+        }, 100);
+        return;
+      }
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ items: [run()] })
+      });
+    }
+  );
+  await page.route(
+    `**/api/v1/sessions/${sessionId}/output-assemblies/latest`,
+    (route) =>
+      route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ item: null })
+      })
+  );
+  await page.route(
+    `**/api/v1/sessions/${sessionId}/generation-segments?*`,
+    (route) =>
+      route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          items: [
+            {
+              id: 'synthetic-segment',
+              ordinal: 0,
+              node_kind: 'paragraph',
+              paragraph_break_after: false,
+              text: `Synthetic generation segment revision ${revision}.`,
+              optimized_text: null,
+              speech_plan: {},
+              optimization_status: 'not_requested',
+              optimization_reviewed: false,
+              marked: false,
+              removed: false,
+              status: 'completed',
+              revision,
+              takes: []
+            }
+          ],
+          total: 1,
+          next_cursor: null,
+          plan_revision_id: 'layout-plan'
+        })
+      })
+  );
+
+  await page.goto(`/sessions/${sessionId}`);
+  const drawer = page.locator('[data-generation-layout]');
+  await expect(drawer).toHaveAttribute('data-generation-layout', 'collapsed');
+  await page.getByRole('button', { name: 'Generation', exact: true }).click();
+  await expect(drawer).toHaveAttribute('data-generation-layout', 'half');
+  await page.getByRole('button', { name: 'Use full height' }).click();
+  await expect(drawer).toHaveAttribute('data-generation-layout', 'full');
+
+  const regenerate = page.getByRole('button', {
+    name: 'Regenerate segment 1'
+  });
+  const segmentText = page.locator(
+    'tr[data-segment-id="synthetic-segment"] textarea'
+  );
+  await regenerate.click();
+  await expect(drawer).toHaveAttribute('data-generation-layout', 'full');
+  await expect(segmentText).toHaveValue(
+    'Synthetic generation segment revision 1.',
+    { timeout: 10_000 }
+  );
+  await expect(drawer).toHaveAttribute('data-generation-layout', 'full');
+
+  await page.getByRole('button', { name: 'Use half height' }).click();
+  await expect(drawer).toHaveAttribute('data-generation-layout', 'half');
+  await regenerate.click();
+  await expect(drawer).toHaveAttribute('data-generation-layout', 'half');
+  await expect(segmentText).toHaveValue(
+    'Synthetic generation segment revision 2.',
+    { timeout: 10_000 }
+  );
+  await expect(drawer).toHaveAttribute('data-generation-layout', 'half');
+
+  await page.getByRole('button', { name: 'Use full height' }).click();
+  failNextRegeneration = true;
+  await regenerate.click();
+  expect(failNextRegeneration).toBeFalsy();
+  await expect(drawer).toHaveAttribute('data-generation-layout', 'full');
+
+  const unrelatedSessionId = await createGenerationPlan(page, [
+    { text: 'Unrelated synthetic segment.' }
+  ]);
+  await page.goto(`/sessions/${unrelatedSessionId}`);
+  await expect(drawer).toHaveAttribute('data-generation-layout', 'collapsed');
+  await page.getByRole('button', { name: 'Generation', exact: true }).click();
+  await expect(drawer).toHaveAttribute('data-generation-layout', 'half');
+});
+
 test('generated segments return to the current filtered page after repeated regeneration', async ({
   page
 }) => {

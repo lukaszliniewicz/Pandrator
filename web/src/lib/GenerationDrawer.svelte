@@ -455,9 +455,13 @@
     }
   }
 
+  function expandIfCollapsed() {
+    if (mode === 'collapsed') mode = 'half';
+  }
+
   function applyLoadResult(result: GenerationLoadResult) {
     selectedRunId = result.selectedRunId;
-    if (result.shouldExpand) mode = 'half';
+    if (result.shouldExpand) expandIfCollapsed();
   }
 
   async function patchSegment(
@@ -559,7 +563,7 @@
   ) {
     if (operation === 'rvc' && !rvcModel) {
       showRvc = true;
-      mode = 'half';
+      expandIfCollapsed();
       error = 'Choose an RVC model before converting audio.';
       return;
     }
@@ -589,7 +593,7 @@
       );
       generationStore.upsertRun(started);
       selectedRunId = started.id;
-      mode = 'half';
+      expandIfCollapsed();
       await load();
       void reconcileStartedRun(started.id);
     } catch (caught) {
@@ -965,6 +969,7 @@
 
 {#if payload.total > 0 || run}
   <aside
+    data-generation-layout={mode}
     class:full={mode === 'full'}
     class:half={mode === 'half'}
     class="generation-drawer fixed inset-x-3 bottom-3 z-50 overflow-hidden rounded-2xl md:left-[calc(var(--sidebar-offset,5rem)+.35rem)] md:right-[.35rem]"
