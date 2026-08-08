@@ -1,4 +1,5 @@
 import type { PreviewableArtifact } from './artifact-display';
+import { modelDisplayName } from './model-display';
 import { LANGUAGE_OPTIONS } from './settings-fields';
 
 export type StageArtifact = PreviewableArtifact & {
@@ -75,7 +76,7 @@ export function artifactOptionLabel(artifact: StageArtifact) {
   const descriptor =
     engineLabels[rawDescriptor.toLowerCase()] ??
     backendLabels[rawDescriptor.toLowerCase()] ??
-    rawDescriptor;
+    modelDisplayName(rawDescriptor);
   return `v${artifact.version} · ${descriptor ? `${descriptor} · ` : ''}${formatArtifactDate(artifact.created_at)}`;
 }
 
@@ -117,7 +118,8 @@ export function artifactDetails(artifact: StageArtifact): ArtifactDetail[] {
 
   const details: ArtifactDetail[] = [];
   if (model) {
-    const displayModel = engineLabels[model.toLowerCase()] ?? model;
+    const displayModel =
+      engineLabels[model.toLowerCase()] ?? modelDisplayName(model);
     details.push({
       label: 'Model',
       value: quantization ? `${displayModel} · ${quantization}` : displayModel

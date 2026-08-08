@@ -10,7 +10,6 @@ from unittest.mock import patch
 from pandrator.logic import dubbing_handler, llm_handler
 from pandrator.logic.dubbing import llm_translation, srt_utils
 
-
 SAMPLE_SRT = """1
 00:00:00,000 --> 00:00:01,000
 Hello.
@@ -94,7 +93,9 @@ hello = czesc
         self.assertEqual(translations, ["Czesc."])
         self.assertEqual(glossary, {"hello": "czesc"})
 
-    def test_parse_translation_response_validates_identity_and_restores_input_order(self):
+    def test_parse_translation_response_validates_identity_and_restores_input_order(
+        self,
+    ):
         translations, _glossary = llm_translation.parse_translation_response(
             '[{"number":12,"text":"Twelve"},{"number":7,"text":"Seven"}]',
             expected_numbers=[7, 12],
@@ -136,7 +137,11 @@ hello = czesc
 
             def translate_text(self, text, target_lang):
                 self.target_langs.append(target_lang)
-                return SimpleNamespace(text=text.replace("Hello.", "Czesc.").replace("Remove this.", "Usun to."))
+                return SimpleNamespace(
+                    text=text.replace("Hello.", "Czesc.").replace(
+                        "Remove this.", "Usun to."
+                    )
+                )
 
         fake_translator = FakeTranslator()
         responses = llm_translation.translate_blocks_deepl(
@@ -219,7 +224,9 @@ hello = czesc
         )
         self.assertNotIn("SPEAKER", result.srt_content.upper())
 
-    def test_concurrent_translation_runs_independent_blocks_and_keeps_output_order(self):
+    def test_concurrent_translation_runs_independent_blocks_and_keeps_output_order(
+        self,
+    ):
         content = """1
 00:00:00,000 --> 00:00:01,000
 One.
@@ -259,7 +266,7 @@ Three.
                         [
                             {
                                 "number": cue["number"],
-                                "text": f'T-{cue["text"]}',
+                                "text": f"T-{cue['text']}",
                             }
                         ]
                     )
@@ -280,10 +287,15 @@ Three.
 
         self.assertGreaterEqual(maximum_active, 2)
         self.assertTrue(
-            all("final version of the previous subtitle block" not in prompt for prompt in prompts)
+            all(
+                "final version of the previous subtitle block" not in prompt
+                for prompt in prompts
+            )
         )
         self.assertTrue(all('"base": "basis"' in prompt for prompt in prompts))
-        self.assertFalse(any('"term1"' in prompt or '"term2"' in prompt for prompt in prompts))
+        self.assertFalse(
+            any('"term1"' in prompt or '"term2"' in prompt for prompt in prompts)
+        )
         self.assertEqual(
             ["T-One.", "T-Two.", "T-Three."],
             [segment.text for segment in srt_utils.parse_srt(result.srt_content)],
@@ -308,7 +320,11 @@ Three.
 
             def translate_text(self, text, target_lang):
                 self.request_text = text
-                return SimpleNamespace(text=text.replace("Hello.", "Cześć.").replace("Goodbye.", "Do widzenia."))
+                return SimpleNamespace(
+                    text=text.replace("Hello.", "Cześć.").replace(
+                        "Goodbye.", "Do widzenia."
+                    )
+                )
 
         translator = FakeTranslator()
         result = llm_translation.translate_srt_content_deepl(
@@ -351,7 +367,9 @@ Three.
             srt_content,
             settings,
             completion_func=fake_completion,
-            progress_callback=lambda value, detail=None: progress_updates.append((value, detail)),
+            progress_callback=lambda value, detail=None: progress_updates.append(
+                (value, detail)
+            ),
         )
 
         self.assertEqual(prompt_batch_sizes, [2, 2, 1])
@@ -386,7 +404,9 @@ Three.
                 "pl",
                 "test-key",
                 translator_factory=lambda _auth_key: FakeTranslator(),
-                progress_callback=lambda value, detail=None: updates.append((value, detail)),
+                progress_callback=lambda value, detail=None: updates.append(
+                    (value, detail)
+                ),
             )
 
         self.assertEqual(["ONE"], responses[0]["translation"])
@@ -426,7 +446,9 @@ Three.
         self.assertEqual(2, result.response_count)
         self.assertAlmostEqual(0.03, result.cost)
         self.assertEqual(2, len(calls))
-        self.assertIn("previous response was rejected", calls[1]["messages"][1]["content"])
+        self.assertIn(
+            "previous response was rejected", calls[1]["messages"][1]["content"]
+        )
         self.assertEqual(
             ["Czesc.", "Usun to."],
             [segment.text for segment in srt_utils.parse_srt(result.srt_content)],
@@ -519,7 +541,11 @@ Three.
         class FakeTranslator:
             def translate_text(self, text, target_lang):
                 self.target_lang = target_lang
-                return SimpleNamespace(text=text.replace("Hello.", "Czesc.").replace("Remove this.", "Usun to."))
+                return SimpleNamespace(
+                    text=text.replace("Hello.", "Czesc.").replace(
+                        "Remove this.", "Usun to."
+                    )
+                )
 
         with tempfile.TemporaryDirectory() as temp_dir:
             srt_path = os.path.join(temp_dir, "deepl.srt")
@@ -530,9 +556,12 @@ Three.
             deepl_settings = _settings()
             deepl_settings["translation_backend"] = "deepl"
 
-            with patch.dict(os.environ, {"DEEPL_API_KEY": "test-deepl-key"}), patch(
-                "pandrator.logic.dubbing.llm_translation._build_deepl_translator",
-                return_value=fake_translator,
+            with (
+                patch.dict(os.environ, {"DEEPL_API_KEY": "test-deepl-key"}),
+                patch(
+                    "pandrator.logic.dubbing.llm_translation._build_deepl_translator",
+                    return_value=fake_translator,
+                ),
             ):
                 self.assertTrue(
                     dubbing_handler.translate_subtitles(
@@ -551,6 +580,98 @@ Three.
             self.assertIn("Czesc.", translated_srt)
             self.assertIn("Usun to.", translated_srt)
             self.assertEqual(fake_translator.target_lang, "PL")
+
+    def test_recursive_split_leaf_is_restored_after_failure(self):
+        checkpoints = {}
+
+        def first_run(**kwargs):
+            prompt = kwargs["messages"][0]["content"]
+            subtitles = json.loads(prompt.rsplit("\nThe subtitles:\n", 1)[1])
+            if len(subtitles) > 1:
+                return llm_handler.ChatCompletionResult(
+                    content=json.dumps(
+                        [{"number": subtitles[0]["number"], "text": "Incomplete"}]
+                    )
+                )
+            item = subtitles[0]
+            if item["number"] == 2:
+                raise RuntimeError("temporary provider outage")
+            return llm_handler.ChatCompletionResult(
+                content=json.dumps([{"number": item["number"], "text": "Czesc."}])
+            )
+
+        with self.assertRaisesRegex(RuntimeError, "provider outage"):
+            llm_translation.translate_srt_content(
+                SAMPLE_SRT,
+                {
+                    **_settings(),
+                    "translation_structured_max_attempts": 1,
+                    "translation_recovery_split_depth": 2,
+                },
+                completion_func=first_run,
+                on_unit_completed=lambda key, payload: checkpoints.__setitem__(
+                    key, payload
+                ),
+            )
+
+        resumed_prompts = []
+
+        def resumed(**kwargs):
+            prompt = kwargs["messages"][0]["content"]
+            resumed_prompts.append(prompt)
+            subtitles = json.loads(prompt.rsplit("\nThe subtitles:\n", 1)[1])
+            self.assertEqual([2], [item["number"] for item in subtitles])
+            return llm_handler.ChatCompletionResult(
+                content='[{"number":2,"text":"Usun to."}]'
+            )
+
+        result = llm_translation.translate_srt_content(
+            SAMPLE_SRT,
+            {
+                **_settings(),
+                "translation_structured_max_attempts": 1,
+                "translation_recovery_split_depth": 2,
+            },
+            completion_func=resumed,
+            completed_units=checkpoints,
+        )
+
+        self.assertEqual(1, len(resumed_prompts))
+        self.assertEqual(
+            ["Czesc.", "Usun to."],
+            [segment.text for segment in srt_utils.parse_srt(result.srt_content)],
+        )
+
+    def test_manual_glossary_overrides_research_seed_and_speaker_can_be_corrected(self):
+        prompts = []
+
+        def complete(**kwargs):
+            prompts.append(kwargs["messages"][0]["content"])
+            return llm_handler.ChatCompletionResult(
+                content=(
+                    '[{"number":1,"text":"Czesc.","speaker":"Speaker 1"},'
+                    '{"number":2,"text":"Usun to.","speaker":"Speaker 1"}]'
+                )
+            )
+
+        result = llm_translation.translate_srt_content(
+            SAMPLE_SRT,
+            {
+                **_settings(glossary_enabled=True),
+                "glossary": "Nautilus = Nautylus",
+            },
+            glossary={"nautilus": "wrong", "Nemo": "Nemo"},
+            completion_func=complete,
+            speaker_by_subtitle={1: "Speaker 0", 2: "Speaker 1"},
+        )
+
+        self.assertEqual("Nautylus", result.glossary["Nautilus"])
+        self.assertNotIn("nautilus", result.glossary)
+        self.assertIn('"Nautilus": "Nautylus"', prompts[0])
+        self.assertEqual(
+            {1: "Speaker 1", 2: "Speaker 1"},
+            result.speaker_by_subtitle,
+        )
 
 
 if __name__ == "__main__":

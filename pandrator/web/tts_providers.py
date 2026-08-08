@@ -39,13 +39,7 @@ from .workspace import BUILTIN_DEFAULTS
 
 
 def normalize_service_id(value: object) -> str:
-    normalized = (
-        str(value or "")
-        .strip()
-        .lower()
-        .replace("-", "_")
-        .replace(" ", "_")
-    )
+    normalized = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
     return {
         "qwen3_tts": "kobold_qwen",
         "qwen3": "kobold_qwen",
@@ -68,6 +62,7 @@ class TtsCapabilities:
     health: bool = True
     dynamic_catalog: bool = False
     voice_upload: bool = False
+    voice_delete: bool = False
     batch_synthesis: bool = False
     streaming_batch: bool = False
     default_batch_size: int = 1
@@ -98,22 +93,18 @@ class TtsRetryPolicy:
         cls,
         settings: dict[str, Any],
         *,
-        max_attempts: object | None = None,
+        max_attempts: float | str | None = None,
     ) -> TtsRetryPolicy:
         try:
             attempts = int(
                 max_attempts
                 if max_attempts is not None
-                else settings.get("max_attempts")
-                or 5
+                else settings.get("max_attempts") or 5
             )
         except (TypeError, ValueError):
             attempts = 5
         try:
-            maximum_delay = float(
-                settings.get("retry_max_delay_seconds")
-                or 90.0
-            )
+            maximum_delay = float(settings.get("retry_max_delay_seconds") or 90.0)
         except (TypeError, ValueError):
             maximum_delay = 90.0
         return cls(
@@ -158,27 +149,23 @@ class TtsProviderAdapter(Protocol):
     def capabilities(
         self,
         service: dict[str, Any],
-    ) -> TtsCapabilities:
-        ...
+    ) -> TtsCapabilities: ...
 
-    def health(self, service: dict[str, Any]) -> TtsHealth:
-        ...
+    def health(self, service: dict[str, Any]) -> TtsHealth: ...
 
     def enrich_catalog(
         self,
         service: dict[str, Any],
         *,
         api_key: str = "",
-    ) -> dict[str, Any]:
-        ...
+    ) -> dict[str, Any]: ...
 
     def synthesize(
         self,
         text: str,
         settings: dict[str, Any],
         **options: Any,
-    ):
-        ...
+    ): ...
 
     def upload_voice(
         self,
@@ -190,8 +177,16 @@ class TtsProviderAdapter(Protocol):
         mode: str | None = None,
         voice_id: str | None = None,
         api_key: str = "",
-    ) -> str:
-        ...
+    ) -> str: ...
+
+    def delete_voice(
+        self,
+        voice_id: str,
+        *,
+        base_url: str,
+        service: str,
+        api_key: str = "",
+    ) -> bool: ...
 
 
 class LegacyTtsAdapter:
@@ -207,6 +202,7 @@ class LegacyTtsAdapter:
         return TtsCapabilities(
             dynamic_catalog=self.service_id in {"kobold_qwen", "silero"},
             voice_upload=bool(service.get("supports_voice_cloning")),
+            voice_delete=bool(service.get("supports_voice_deletion")),
         )
 
     def health(self, service: dict[str, Any]) -> TtsHealth:
@@ -305,34 +301,42 @@ class LegacyTtsAdapter:
             api_key=api_key,
         )
 
+    def delete_voice(
+        self,
+        voice_id: str,
+        *,
+        base_url: str,
+        service: str,
+        api_key: str = "",
+    ) -> bool:
+        return tts_handler.delete_speaker_voice(
+            voice_id,
+            base_url=base_url,
+            service=service,
+            api_key=api_key,
+        )
+
 
 class KoboldQwenAdapter(LegacyTtsAdapter):
     def capabilities(
         self,
         service: dict[str, Any],
     ) -> TtsCapabilities:
-        base_url = str(
-            service.get("api_base")
-            or tts_handler.KOBOLD_QWEN_API_BASE_URL
-        )
+        base_url = str(service.get("api_base") or tts_handler.KOBOLD_QWEN_API_BASE_URL)
         advertised = tts_handler.get_kobold_qwen_batch_capabilities(
             base_url,
             api_key=str(service.get("api_key") or ""),
         )
         supported = bool(
-            advertised.get("supported")
-            and advertised.get("protocol") == "ndjson-v1"
+            advertised.get("supported") and advertised.get("protocol") == "ndjson-v1"
         )
         return TtsCapabilities(
             dynamic_catalog=True,
             voice_upload=bool(service.get("supports_voice_cloning")),
+            voice_delete=bool(service.get("supports_voice_deletion")),
             batch_synthesis=supported,
-            streaming_batch=(
-                supported and bool(advertised.get("streaming"))
-            ),
-            default_batch_size=int(
-                advertised.get("default_batch_size") or 1
-            ),
+            streaming_batch=(supported and bool(advertised.get("streaming"))),
+            default_batch_size=int(advertised.get("default_batch_size") or 1),
             max_batch_size=int(advertised.get("max_batch_size") or 1),
         )
 
@@ -342,10 +346,7 @@ class KoboldQwenAdapter(LegacyTtsAdapter):
         *,
         api_key: str = "",
     ) -> dict[str, Any]:
-        base_url = str(
-            service.get("api_base")
-            or tts_handler.KOBOLD_QWEN_API_BASE_URL
-        )
+        base_url = str(service.get("api_base") or tts_handler.KOBOLD_QWEN_API_BASE_URL)
         entries = tts_handler.get_kobold_qwen_voice_catalog(
             base_url,
             api_key=api_key,
@@ -365,8 +366,7 @@ class KoboldQwenAdapter(LegacyTtsAdapter):
             "Voice Cloning": cloned_voices,
         }
         active_model = str(
-            service.get("default_model")
-            or tts_handler.KOBOLD_QWEN_DEFAULT_MODEL
+            service.get("default_model") or tts_handler.KOBOLD_QWEN_DEFAULT_MODEL
         )
         advertised = tts_handler.get_kobold_qwen_batch_capabilities(
             base_url,
@@ -380,8 +380,7 @@ class KoboldQwenAdapter(LegacyTtsAdapter):
         return {
             "voice_catalogues": catalogues,
             "default_voices": {
-                tts_handler.KOBOLD_QWEN_DEFAULT_MODEL:
-                    tts_handler.KOBOLD_QWEN_DEFAULT_VOICE,
+                tts_handler.KOBOLD_QWEN_DEFAULT_MODEL: tts_handler.KOBOLD_QWEN_DEFAULT_VOICE,
                 "Voice Cloning": tts_handler.KOBOLD_QWEN_SAMPLE_VOICE,
             },
             "voice_metadata": {
@@ -392,9 +391,7 @@ class KoboldQwenAdapter(LegacyTtsAdapter):
                 for item in entries
             },
             "voices": list(catalogues.get(active_model, [])),
-            "supports_batch_synthesis": bool(
-                batch_supported
-            ),
+            "supports_batch_synthesis": bool(batch_supported),
             "batch_synthesis": {
                 **advertised,
                 "supported": batch_supported,
@@ -411,8 +408,7 @@ class KoboldQwenAdapter(LegacyTtsAdapter):
         if not items:
             return
         base_url = str(
-            options.get("kobold_qwen_base_url")
-            or tts_handler.KOBOLD_QWEN_API_BASE_URL
+            options.get("kobold_qwen_base_url") or tts_handler.KOBOLD_QWEN_API_BASE_URL
         )
         size = max(1, min(32, int(batch_size or 1)))
         for start in range(0, len(items), size):
@@ -447,9 +443,7 @@ class KoboldQwenAdapter(LegacyTtsAdapter):
                                 self.service_id,
                                 "synthesize_batch",
                                 detail,
-                                retryable=bool(
-                                    error_payload.get("retryable")
-                                ),
+                                retryable=bool(error_payload.get("retryable")),
                             ),
                         )
                     else:
@@ -489,16 +483,12 @@ class SileroAdapter(LegacyTtsAdapter):
         api_key: str = "",
     ) -> dict[str, Any]:
         del api_key
-        base_url = str(
-            service.get("api_base")
-            or tts_handler.SILERO_API_BASE_URL
-        )
+        base_url = str(service.get("api_base") or tts_handler.SILERO_API_BASE_URL)
         model_catalog = tts_handler.get_silero_model_catalog(base_url)
         installed_models = [
             str(item["id"])
             for item in model_catalog
-            if isinstance(item.get("status"), dict)
-            and item["status"].get("installed")
+            if isinstance(item.get("status"), dict) and item["status"].get("installed")
         ]
         voice_catalogues: dict[str, list[str]] = {}
         voice_metadata: dict[str, dict[str, Any]] = {}
@@ -509,10 +499,7 @@ class SileroAdapter(LegacyTtsAdapter):
                 model=model_id,
                 include_unavailable=False,
             )
-            voice_catalogues[model_id] = [
-                str(item["id"])
-                for item in entries
-            ]
+            voice_catalogues[model_id] = [str(item["id"]) for item in entries]
             language_defaults: dict[str, str] = {}
             for item in entries:
                 voice_id = str(item["id"])
@@ -601,14 +588,12 @@ class TtsProviderRegistry:
 
     def service_id_for_settings(self, settings: dict[str, Any]) -> str:
         explicit = normalize_service_id(
-            settings.get("preview_service_id")
-            or settings.get("service_id")
+            settings.get("preview_service_id") or settings.get("service_id")
         )
         if explicit:
             return explicit
         service_name = normalize_service_id(
-            settings.get("service")
-            or settings.get("tts_service")
+            settings.get("service") or settings.get("tts_service")
         )
         return {
             "qwen3_tts": "kobold_qwen",
@@ -688,8 +673,7 @@ class TtsProviderRegistry:
             return iter(())
         service_id = self.service_id_for_settings(items[0].settings)
         if any(
-            self.service_id_for_settings(item.settings) != service_id
-            for item in items
+            self.service_id_for_settings(item.settings) != service_id for item in items
         ):
             raise TtsProviderConfigurationError(
                 service_id,
@@ -737,21 +721,42 @@ class TtsProviderRegistry:
                 retryable=True,
             ) from error
 
+    def delete_voice(
+        self,
+        service_id: str,
+        voice_id: str,
+        **options: Any,
+    ) -> bool:
+        try:
+            return self.get(service_id).delete_voice(
+                voice_id,
+                **options,
+            )
+        except TtsProviderError:
+            raise
+        except ValueError as error:
+            raise TtsProviderConfigurationError(
+                service_id,
+                "delete_voice",
+                str(error),
+            ) from error
+        except Exception as error:
+            raise TtsProviderError(
+                service_id,
+                "delete_voice",
+                str(error),
+                retryable=True,
+            ) from error
+
     def capabilities(
         self,
         service: dict[str, Any],
     ) -> TtsCapabilities:
-        service_id = normalize_service_id(
-            service.get("id")
-            or service.get("name")
-        )
+        service_id = normalize_service_id(service.get("id") or service.get("name"))
         return self.get(service_id).capabilities(service)
 
     def health(self, service: dict[str, Any]) -> TtsHealth:
-        service_id = normalize_service_id(
-            service.get("id")
-            or service.get("name")
-        )
+        service_id = normalize_service_id(service.get("id") or service.get("name"))
         try:
             return self.get(service_id).health(service)
         except Exception as error:
@@ -768,10 +773,7 @@ class TtsProviderRegistry:
         *,
         api_key: str = "",
     ) -> dict[str, Any]:
-        service_id = normalize_service_id(
-            service.get("id")
-            or service.get("name")
-        )
+        service_id = normalize_service_id(service.get("id") or service.get("name"))
         try:
             return self.get(service_id).enrich_catalog(
                 service,
@@ -826,9 +828,8 @@ class TtsCatalogueService:
                 if defaults and isinstance(defaults.value_json, dict)
                 else {}
             )
-            if (
-                not connection_value
-                and isinstance(default_value.get("provider_configs"), list)
+            if not connection_value and isinstance(
+                default_value.get("provider_configs"), list
             ):
                 connection_value = {
                     "provider_configs": list(default_value["provider_configs"])
@@ -844,13 +845,9 @@ class TtsCatalogueService:
         self,
         service: dict[str, Any],
     ) -> tuple[str, str, str]:
-        service_id = normalize_service_id(
-            service.get("id")
-            or service.get("name")
-        )
+        service_id = normalize_service_id(service.get("id") or service.get("name"))
         key_env = str(
-            service.get("api_key_env")
-            or TTS_SERVICE_ENVS.get(service_id, "")
+            service.get("api_key_env") or TTS_SERVICE_ENVS.get(service_id, "")
         ).strip()
         secret_reference = str(
             service.get("secret_ref")
@@ -877,17 +874,14 @@ class TtsCatalogueService:
             )
         )
         service["credential_backend"] = credential_backend(secret_reference)
-        service["credential_reference"] = credential_reference_input(
-            secret_reference
-        )
+        service["credential_reference"] = credential_reference_input(secret_reference)
 
     def _resolved_api_key(self, service: dict[str, Any]) -> str:
         service_id, key_env, secret_reference = self._credential_details(service)
         credential = resolve_secret_reference(
             self.database,
             self.paths,
-            secret_reference
-            or database_reference(tts_credential_key(service_id)),
+            secret_reference or database_reference(tts_credential_key(service_id)),
             fallback_environment_variable=key_env,
         )
         return credential.resolved_value()
@@ -915,9 +909,7 @@ class TtsCatalogueService:
             except TtsProviderError as error:
                 return TtsHealth(False, False, str(error))
 
-        with ThreadPoolExecutor(
-            max_workers=min(12, max(1, len(services)))
-        ) as executor:
+        with ThreadPoolExecutor(max_workers=min(12, max(1, len(services)))) as executor:
             states = list(executor.map(probe, services))
         for service, state in zip(services, states, strict=True):
             service.update(
@@ -1018,9 +1010,7 @@ class TtsCatalogueService:
                     ),
                     "managed_service_id": binding.service_id,
                     "manager_service": managed,
-                    "manager_endpoint_read_only": (
-                        connection_mode == "managed_local"
-                    ),
+                    "manager_endpoint_read_only": (connection_mode == "managed_local"),
                 }
             )
             if connection_mode != "managed_local":
@@ -1057,9 +1047,7 @@ class TtsCatalogueService:
                 if not metadata.get("voice"):
                     continue
                 try:
-                    if not self.paths.managed_path(
-                        artifact.relative_path
-                    ).is_file():
+                    if not self.paths.managed_path(artifact.relative_path).is_file():
                         continue
                 except ValueError:
                     continue
@@ -1070,19 +1058,14 @@ class TtsCatalogueService:
                         "model": str(metadata.get("model") or ""),
                         "voice": str(metadata.get("voice") or ""),
                         "language": str(metadata.get("language") or ""),
-                        "preview_text": str(
-                            metadata.get("preview_text")
-                            or ""
-                        ),
+                        "preview_text": str(metadata.get("preview_text") or ""),
                         "updated_at": artifact.updated_at.isoformat(),
                     }
                 )
         return previews
 
     def snapshot(self, *, refresh: bool = False) -> tuple[dict[str, Any], int]:
-        connection_value, revision, default_value, default_revision = (
-            self._settings()
-        )
+        connection_value, revision, default_value, default_revision = self._settings()
         services = [
             dict(item)
             for item in tts_handler.get_service_configs(
@@ -1105,13 +1088,10 @@ class TtsCatalogueService:
             "revision": revision,
             "default_value": redact_inline_secrets(default_value),
             "default_service": str(
-                default_value.get("service")
-                or BUILTIN_DEFAULTS["tts"]["service"]
+                default_value.get("service") or BUILTIN_DEFAULTS["tts"]["service"]
             ),
             "default_revision": default_revision,
-            "builtin_defaults": redact_inline_secrets(
-                BUILTIN_DEFAULTS["tts"]
-            ),
+            "builtin_defaults": redact_inline_secrets(BUILTIN_DEFAULTS["tts"]),
             "services": redact_inline_secrets(services),
             "profiles": list_tts_provider_profiles(),
             "previews": self._previews(),
@@ -1129,10 +1109,7 @@ class TtsCatalogueService:
         )
         if service is None:
             return ""
-        normalized = normalize_service_id(
-            service.get("id")
-            or service_id
-        )
+        normalized = normalize_service_id(service.get("id") or service_id)
         resolved = resolve_provider_credential(
             self.database,
             self.paths,
@@ -1140,8 +1117,7 @@ class TtsCatalogueService:
             service.get("secret_ref")
             or database_reference(tts_service_credential_key(normalized)),
             fallback_environment_variable=str(
-                service.get("api_key_env")
-                or TTS_SERVICE_ENVS.get(normalized, "")
+                service.get("api_key_env") or TTS_SERVICE_ENVS.get(normalized, "")
             ),
         )
         return resolved.resolved_value()
@@ -1161,10 +1137,7 @@ class TtsCatalogueService:
         )
         if service is None:
             return None
-        resolved_id = normalize_service_id(
-            service.get("id")
-            or service_id
-        )
+        resolved_id = normalize_service_id(service.get("id") or service_id)
         resolved_model = model or str(service.get("default_model") or "")
         default_voices = (
             service.get("default_voices")
@@ -1195,8 +1168,7 @@ class TtsCatalogueService:
             "xtts_model": resolved_model,
             "voice": resolved_voice,
             "speaker": resolved_voice,
-            "language": language
-            or str(default_value.get("language") or "en"),
+            "language": language or str(default_value.get("language") or "en"),
             "preview_service_id": resolved_id,
             "preview_api_base": str(service.get("api_base") or ""),
         }

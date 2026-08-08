@@ -9,6 +9,7 @@ export type ModalFocusOptions = {
 const FOCUSABLE = [
   'a[href]',
   'button:not([disabled])',
+  'summary',
   'input:not([disabled]):not([type="hidden"])',
   'select:not([disabled])',
   'textarea:not([disabled])',
@@ -23,6 +24,7 @@ function focusableChildren(node: HTMLElement) {
       return (
         !element.hidden &&
         element.getAttribute('aria-hidden') !== 'true' &&
+        element.getClientRects().length > 0 &&
         style.display !== 'none' &&
         style.visibility !== 'hidden'
       );

@@ -30,6 +30,7 @@ import type {
   StageRerunImpact,
   StageSettingsMismatch,
   SubtitleReviewPayload,
+  SubtitleReviewCatalog,
   TtsCatalogue,
   TtsDiscovery,
   VoiceRecord,
@@ -433,6 +434,14 @@ export const sessionApi = {
     >('/api/v1/agent-runs/{runId}/steps', 'get', {
       path: { runId }
     }),
+  resumeAgentRun: (runId: string) =>
+    typedApiJson<
+      '/api/v1/agent-runs/{runId}/resume',
+      'post',
+      Pick<AgentRun, 'id' | 'job_id' | 'status'>
+    >('/api/v1/agent-runs/{runId}/resume', 'post', {
+      path: { runId }
+    }),
   acceptAgentRun: (runId: string) =>
     typedApiJson<'/api/v1/agent-runs/{runId}/accept', 'post', AgentRun>(
       '/api/v1/agent-runs/{runId}/accept',
@@ -447,14 +456,27 @@ export const sessionApi = {
     >('/api/v1/sessions/{sessionId}/outputs/{artifactId}', 'delete', {
       path: { sessionId, artifactId }
     }),
-  subtitles: (sessionId: string) =>
+  subtitleCatalog: (sessionId: string) =>
     typedApiJson<
-      '/api/v1/sessions/{sessionId}/subtitles',
+      '/api/v1/sessions/{sessionId}/subtitles/catalog',
       'get',
-      SubtitleReviewPayload
-    >('/api/v1/sessions/{sessionId}/subtitles', 'get', {
+      SubtitleReviewCatalog
+    >('/api/v1/sessions/{sessionId}/subtitles/catalog', 'get', {
       path: { sessionId }
     }),
+  subtitleReview: (sessionId: string, artifactIds: string[]) => {
+    const query = new URLSearchParams();
+    for (const artifactId of artifactIds)
+      query.append('artifact_id', artifactId);
+    return typedApiJson<
+      '/api/v1/sessions/{sessionId}/subtitles/review',
+      'get',
+      SubtitleReviewPayload
+    >('/api/v1/sessions/{sessionId}/subtitles/review', 'get', {
+      path: { sessionId },
+      query
+    });
+  },
   saveSubtitleReview: (
     sessionId: string,
     stage: string,

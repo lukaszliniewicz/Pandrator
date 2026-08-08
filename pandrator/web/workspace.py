@@ -143,6 +143,9 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "request_timeout_seconds": 600,
         "web_research_enabled": False,
         "web_research_provider": "jina",
+        "web_research_model_name": "",
+        "web_research_mode": "global",
+        "web_research_context_fraction": 0.8,
         "web_research_language": "",
         "web_research_max_searches": 3,
         "web_research_max_extractions": 2,
@@ -177,6 +180,9 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "request_timeout_seconds": 600,
         "web_research_enabled": False,
         "web_research_provider": "jina",
+        "web_research_model_name": "",
+        "web_research_mode": "global",
+        "web_research_context_fraction": 0.8,
         "web_research_language": "",
         "web_research_max_searches": 3,
         "web_research_max_extractions": 2,
@@ -280,7 +286,16 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "synchronization_speed": 1.2,
         "synchronization_sentence_gap_ms": 100,
     },
-    "rvc": {"enabled": False, "model": "", "pitch": 0, "filter_radius": 3, "index_rate": 0.3, "volume_envelope": 1.0, "protect": 0.3, "f0_method": "rmvpe"},
+    "rvc": {
+        "enabled": False,
+        "model": "",
+        "pitch": 0,
+        "filter_radius": 3,
+        "index_rate": 0.3,
+        "volume_envelope": 1.0,
+        "protect": 0.3,
+        "f0_method": "rmvpe",
+    },
     "source_cleaning": {
         "agentic": False,
         "max_iterations": 53,
@@ -379,8 +394,14 @@ def adapt_runtime_settings(section: str, values: dict[str, Any]) -> dict[str, An
         # Adapt both current and already-frozen run snapshots at that boundary.
         from pandrator.logic import tts_handler
 
-        selected_value = str(result.get("service") or result.get("tts_service") or "").strip()
-        selected = tts_handler.get_service_config(result, selected_value) if selected_value else None
+        selected_value = str(
+            result.get("service") or result.get("tts_service") or ""
+        ).strip()
+        selected = (
+            tts_handler.get_service_config(result, selected_value)
+            if selected_value
+            else None
+        )
         canonical = tts_handler.get_first_class_service_name(selected_value)
         if canonical:
             result["service"] = canonical
@@ -408,7 +429,17 @@ def adapt_runtime_settings(section: str, values: dict[str, Any]) -> dict[str, An
             result["openai_audio_endpoint"] = str(selected.get("id") or selected_value)
     return result
 
-SECRET_KEYS = {"secret", "password", "api_key", "token", "access_token", "refresh_token", "credential", "credentials"}
+
+SECRET_KEYS = {
+    "secret",
+    "password",
+    "api_key",
+    "token",
+    "access_token",
+    "refresh_token",
+    "credential",
+    "credentials",
+}
 
 
 def _merge(*values: dict[str, Any]) -> dict[str, Any]:
@@ -429,7 +460,17 @@ def _secret_free(value: Any) -> Any:
             for key, item in value.items()
             if not (
                 key.lower() in SECRET_KEYS
-                or key.lower().endswith(("_secret", "_password", "_api_key", "_access_token", "_refresh_token", "_credential", "_credentials"))
+                or key.lower().endswith(
+                    (
+                        "_secret",
+                        "_password",
+                        "_api_key",
+                        "_access_token",
+                        "_refresh_token",
+                        "_credential",
+                        "_credentials",
+                    )
+                )
             )
         }
     if isinstance(value, list):
@@ -439,11 +480,19 @@ def _secret_free(value: Any) -> Any:
 
 def stable_hash(value: Any) -> str:
     return hashlib.sha256(
-        json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8")
     ).hexdigest()
 
 
-def mark_output_assemblies_stale(session, session_id: str, *, generation_run_id: str | None = None) -> None:
+def mark_output_assemblies_stale(
+    session, session_id: str, *, generation_run_id: str | None = None
+) -> None:
     """Invalidate completed assemblies and their exports after audio-plan changes.
 
     Assemblies are scoped to the run whose takes were produced or replaced:
@@ -537,9 +586,7 @@ class WorkspaceSettingsService:
                     .where(
                         Artifact.session_id == session_record.id,
                         Artifact.state == "current",
-                        Artifact.role.in_(
-                            ("assembled_audio", "dubbing_audio")
-                        ),
+                        Artifact.role.in_(("assembled_audio", "dubbing_audio")),
                     )
                     .limit(1)
                 )
@@ -628,7 +675,9 @@ class WorkspaceSettingsService:
         speech_language = (
             target_language
             if generation_input == "translation" and target_language
-            else source_language if source_language != "auto" else ""
+            else source_language
+            if source_language != "auto"
+            else ""
         )
         session_context: dict[str, Any] = {}
         output_context: dict[str, Any] = {}
@@ -673,13 +722,9 @@ class WorkspaceSettingsService:
                 if subtitle_first:
                     session_context.update(
                         {
-                            "subtitle_selection": output_context[
-                                "subtitle_selection"
-                            ],
+                            "subtitle_selection": output_context["subtitle_selection"],
                             "subtitle_mode": (
-                                "soft"
-                                if output_context["has_source_video"]
-                                else "none"
+                                "soft" if output_context["has_source_video"] else "none"
                             ),
                         }
                     )
@@ -780,10 +825,7 @@ class WorkspaceSettingsService:
         if session_record is None:
             raise KeyError(session_id)
         value = dict(value)
-        if (
-            section == "output"
-            and session_record.workflow_kind != "audiobook"
-        ):
+        if section == "output" and session_record.workflow_kind != "audiobook":
             for key in (
                 "title",
                 "artist",
@@ -803,11 +845,7 @@ class WorkspaceSettingsService:
                     "subtitle_format",
                     "language",
                 }
-                value = {
-                    key: item
-                    for key, item in value.items()
-                    if key in allowed
-                }
+                value = {key: item for key, item in value.items() if key in allowed}
             else:
                 if output_context["has_source_video"]:
                     value.pop("format", None)
@@ -854,9 +892,7 @@ class WorkspaceSettingsService:
             session.add(record)
         else:
             if expected_revision != record.revision:
-                raise RevisionConflict(
-                    "Session settings changed in another client."
-                )
+                raise RevisionConflict("Session settings changed in another client.")
             session.add(
                 SessionSettingHistory(
                     session_id=session_id,
@@ -875,7 +911,12 @@ class WorkspaceSettingsService:
             "revision": record.revision,
         }
 
-    def resolve(self, session_id: str, sections: list[str] | None = None, run_override: dict[str, Any] | None = None) -> tuple[dict[str, Any], str]:
+    def resolve(
+        self,
+        session_id: str,
+        sections: list[str] | None = None,
+        run_override: dict[str, Any] | None = None,
+    ) -> tuple[dict[str, Any], str]:
         requested = sections or list(SETTING_SECTIONS)
         override = run_override or {}
         snapshots = {section: self.get(session_id, section) for section in requested}
@@ -886,14 +927,39 @@ class WorkspaceSettingsService:
         if "tts" in resolved:
             with self.database.session() as session:
                 connections = session.get(AppSetting, "services.tts")
-                connection_value = connections.value_json if connections and isinstance(connections.value_json, dict) else {}
+                connection_value = (
+                    connections.value_json
+                    if connections and isinstance(connections.value_json, dict)
+                    else {}
+                )
             from pandrator.logic import tts_handler
 
             snapshot = snapshots["tts"]
-            selection_seed = _merge(snapshot["builtin"], snapshot["global"], connection_value, snapshot.get("session_context", {}), snapshot["override"], override.get("tts", {}))
-            selected = tts_handler.get_service_config(selection_seed, str(selection_seed.get("service") or "XTTS"))
-            provider_defaults = selected.get("settings") if selected and isinstance(selected.get("settings"), dict) else {}
-            resolved["tts"] = _merge(snapshot["builtin"], snapshot["global"], connection_value, provider_defaults, snapshot.get("session_context", {}), snapshot["override"], override.get("tts", {}))
+            selection_seed = _merge(
+                snapshot["builtin"],
+                snapshot["global"],
+                connection_value,
+                snapshot.get("session_context", {}),
+                snapshot["override"],
+                override.get("tts", {}),
+            )
+            selected = tts_handler.get_service_config(
+                selection_seed, str(selection_seed.get("service") or "XTTS")
+            )
+            provider_defaults = (
+                selected.get("settings")
+                if selected and isinstance(selected.get("settings"), dict)
+                else {}
+            )
+            resolved["tts"] = _merge(
+                snapshot["builtin"],
+                snapshot["global"],
+                connection_value,
+                provider_defaults,
+                snapshot.get("session_context", {}),
+                snapshot["override"],
+                override.get("tts", {}),
+            )
             if selected:
                 if str(selected.get("id") or "").lower() == "kobold_qwen":
                     model = tts_handler.resolve_kobold_qwen_model(
@@ -901,14 +967,44 @@ class WorkspaceSettingsService:
                         fallback=str(selected.get("default_model") or ""),
                     )
                 else:
-                    model = str(resolved["tts"].get("model") or selected.get("default_model") or "")
-                default_voices = selected.get("default_voices") if isinstance(selected.get("default_voices"), dict) else {}
-                language_defaults = selected.get("default_voices_by_language") if isinstance(selected.get("default_voices_by_language"), dict) else {}
-                model_language_defaults = language_defaults.get(model) if isinstance(language_defaults.get(model), dict) else {}
-                language = str(resolved["tts"].get("language") or resolved["tts"].get("target_language") or "").strip().lower()
+                    model = str(
+                        resolved["tts"].get("model")
+                        or selected.get("default_model")
+                        or ""
+                    )
+                default_voices = (
+                    selected.get("default_voices")
+                    if isinstance(selected.get("default_voices"), dict)
+                    else {}
+                )
+                language_defaults = (
+                    selected.get("default_voices_by_language")
+                    if isinstance(selected.get("default_voices_by_language"), dict)
+                    else {}
+                )
+                model_language_defaults = (
+                    language_defaults.get(model)
+                    if isinstance(language_defaults.get(model), dict)
+                    else {}
+                )
+                language = (
+                    str(
+                        resolved["tts"].get("language")
+                        or resolved["tts"].get("target_language")
+                        or ""
+                    )
+                    .strip()
+                    .lower()
+                )
                 if str(selected.get("id") or "").lower() == "kokoro":
                     language = tts_handler.normalize_kokoro_language_code(language)
-                voice = str(resolved["tts"].get("voice") or model_language_defaults.get(language) or default_voices.get(model) or selected.get("default_voice") or "")
+                voice = str(
+                    resolved["tts"].get("voice")
+                    or model_language_defaults.get(language)
+                    or default_voices.get(model)
+                    or selected.get("default_voice")
+                    or ""
+                )
                 if model:
                     resolved["tts"]["model"] = model
                 if voice:
@@ -939,15 +1035,33 @@ def derive_legacy_outcome(record: SessionRecord) -> dict[str, Any]:
             "generate_audio": "generate_audio" in included or kind == "audiobook",
             "rvc": False,
         },
-        "inputs": {"translation": "correction" if "correct" in included else "source", "generation": "translation" if "translate" in included else "correction" if "correct" in included else "source"},
-        "export": {"audio": "generated" if kind in {"audiobook", "voiceover"} else "preserve", "subtitles": "translation" if "translate" in included else "source"},
+        "inputs": {
+            "translation": "correction" if "correct" in included else "source",
+            "generation": "translation"
+            if "translate" in included
+            else "correction"
+            if "correct" in included
+            else "source",
+        },
+        "export": {
+            "audio": "generated" if kind in {"audiobook", "voiceover"} else "preserve",
+            "subtitles": "translation" if "translate" in included else "source",
+        },
     }
 
 
-def resolve_pipeline(plan: dict[str, Any], *, source_requires_transcription: bool = False) -> list[dict[str, str]]:
+def resolve_pipeline(
+    plan: dict[str, Any], *, source_requires_transcription: bool = False
+) -> list[dict[str, str]]:
     kind = str(plan.get("workflow_kind") or "audiobook")
-    transformations = plan.get("transformations") if isinstance(plan.get("transformations"), dict) else {}
-    deliverables = plan.get("deliverables") if isinstance(plan.get("deliverables"), dict) else {}
+    transformations = (
+        plan.get("transformations")
+        if isinstance(plan.get("transformations"), dict)
+        else {}
+    )
+    deliverables = (
+        plan.get("deliverables") if isinstance(plan.get("deliverables"), dict) else {}
+    )
     stages: list[tuple[str, str]] = []
     if kind == "audiobook":
         stages.append(("clean_source", "Clean source"))
@@ -958,10 +1072,20 @@ def resolve_pipeline(plan: dict[str, Any], *, source_requires_transcription: boo
         stages.append(("correct", "Correct subtitles"))
     if transformations.get("translate"):
         stages.append(("translate", "Translate"))
-    if transformations.get("llm_tts_document_optimization") or transformations.get("llm_tts_optimization"):
-        timing = "before generation" if transformations.get("llm_tts_document_optimization") else "while generating"
+    if transformations.get("llm_tts_document_optimization") or transformations.get(
+        "llm_tts_optimization"
+    ):
+        timing = (
+            "before generation"
+            if transformations.get("llm_tts_document_optimization")
+            else "while generating"
+        )
         stages.append(("optimize_tts", f"Optimize for speech {timing}"))
-    if transformations.get("generate_audio") or deliverables.get("audiobook") or deliverables.get("voiceover"):
+    if (
+        transformations.get("generate_audio")
+        or deliverables.get("audiobook")
+        or deliverables.get("voiceover")
+    ):
         stages.append(("generate_audio", "Generate audio"))
     if transformations.get("rvc"):
         stages.append(("apply_rvc", "Apply RVC"))
@@ -981,44 +1105,94 @@ class OutcomePlanService:
                 raise KeyError(session_id)
             plan = session.get(OutcomePlan, session_id)
             if plan is None:
-                plan = OutcomePlan(session_id=session_id, value_json=derive_legacy_outcome(record))
+                plan = OutcomePlan(
+                    session_id=session_id, value_json=derive_legacy_outcome(record)
+                )
                 session.add(plan)
                 session.flush()
             value = deepcopy(plan.value_json)
             revision = plan.revision
-        return {"value": value, "revision": revision, "pipeline": resolve_pipeline(value)}
+        return {
+            "value": value,
+            "revision": revision,
+            "pipeline": resolve_pipeline(value),
+        }
 
-    def update(self, session_id: str, expected_revision: int, value: dict[str, Any]) -> dict[str, Any]:
+    def update(
+        self, session_id: str, expected_revision: int, value: dict[str, Any]
+    ) -> dict[str, Any]:
         with self.database.session() as session:
             record = session.get(SessionRecord, session_id)
             if record is None:
                 raise KeyError(session_id)
             plan = session.get(OutcomePlan, session_id)
+            previous_value = deepcopy(plan.value_json) if plan is not None else {}
             if plan is None:
                 if expected_revision != 0:
-                    raise RevisionConflict("The workflow plan was created in another client.")
+                    raise RevisionConflict(
+                        "The workflow plan was created in another client."
+                    )
                 plan = OutcomePlan(session_id=session_id, value_json=value, revision=1)
                 session.add(plan)
             else:
                 if expected_revision != plan.revision:
-                    raise RevisionConflict("The workflow plan changed in another client.")
-                session.add(OutcomePlanHistory(session_id=session_id, value_json=plan.value_json, revision=plan.revision))
+                    raise RevisionConflict(
+                        "The workflow plan changed in another client."
+                    )
+                session.add(
+                    OutcomePlanHistory(
+                        session_id=session_id,
+                        value_json=plan.value_json,
+                        revision=plan.revision,
+                    )
+                )
                 plan.value_json = value
                 plan.revision += 1
                 plan.updated_at = utcnow()
-            record.workflow_kind = str(value.get("workflow_kind") or record.workflow_kind)
+            previous_inputs = (
+                previous_value.get("inputs")
+                if isinstance(previous_value.get("inputs"), dict)
+                else {}
+            )
+            next_inputs = (
+                value.get("inputs") if isinstance(value.get("inputs"), dict) else {}
+            )
+            if str(previous_inputs.get("translation") or "correction") != str(
+                next_inputs.get("translation") or "correction"
+            ):
+                # The chosen translation and speech-optimized descendants may
+                # belong to the other source branch. Preserve their immutable
+                # history, but do not continue presenting that branch as the
+                # selected/current workflow result.
+                from .artifact_selection import clear_selection
+
+                clear_selection(session, session_id, "translate")
+            record.workflow_kind = str(
+                value.get("workflow_kind") or record.workflow_kind
+            )
             record.workflow_preset = "custom"
             pipeline_keys = {item["key"] for item in resolve_pipeline(value)}
             record.included_stages_json = [
                 key
-                for key in ("transcribe", "correct", "translate", "optimize_tts", "generate_audio", "export")
+                for key in (
+                    "transcribe",
+                    "correct",
+                    "translate",
+                    "optimize_tts",
+                    "generate_audio",
+                    "export",
+                )
                 if key in pipeline_keys
             ]
             record.revision += 1
             record.updated_at = utcnow()
             session.flush()
             revision = plan.revision
-        return {"value": deepcopy(value), "revision": revision, "pipeline": resolve_pipeline(value)}
+        return {
+            "value": deepcopy(value),
+            "revision": revision,
+            "pipeline": resolve_pipeline(value),
+        }
 
 
 class SourceLibraryService:
@@ -1026,7 +1200,12 @@ class SourceLibraryService:
         self.database = database
 
     @staticmethod
-    def _asset_payload(asset: SourceAsset, *, reference_count: int = 0, current_reference_count: int = 0) -> dict[str, Any]:
+    def _asset_payload(
+        asset: SourceAsset,
+        *,
+        reference_count: int = 0,
+        current_reference_count: int = 0,
+    ) -> dict[str, Any]:
         return {
             "id": asset.id,
             "artifact_id": asset.artifact_id,
@@ -1045,14 +1224,25 @@ class SourceLibraryService:
             "updated_at": asset.updated_at.isoformat(),
         }
 
-    def ensure_for_artifact(self, artifact_id: str, *, display_name: str | None = None, kind: str | None = None) -> SourceAsset:
+    def ensure_for_artifact(
+        self,
+        artifact_id: str,
+        *,
+        display_name: str | None = None,
+        kind: str | None = None,
+    ) -> SourceAsset:
         with self.database.session() as session:
             artifact = session.get(Artifact, artifact_id)
             if artifact is None:
                 raise KeyError(artifact_id)
-            asset = session.scalar(select(SourceAsset).where(SourceAsset.artifact_id == artifact_id))
+            asset = session.scalar(
+                select(SourceAsset).where(SourceAsset.artifact_id == artifact_id)
+            )
             if asset is None:
-                name = display_name or str((artifact.metadata_json or {}).get("original_filename") or Path(artifact.relative_path).name)
+                name = display_name or str(
+                    (artifact.metadata_json or {}).get("original_filename")
+                    or Path(artifact.relative_path).name
+                )
                 asset = SourceAsset(
                     artifact_id=artifact.id,
                     display_name=name,
@@ -1060,7 +1250,9 @@ class SourceLibraryService:
                     mime_type=artifact.mime_type,
                     size_bytes=artifact.size_bytes,
                     content_hash=artifact.content_hash,
-                    metadata_json={"legacy_session_id": artifact.session_id} if artifact.session_id else {},
+                    metadata_json={"legacy_session_id": artifact.session_id}
+                    if artifact.session_id
+                    else {},
                 )
                 session.add(asset)
                 session.flush()
@@ -1082,9 +1274,7 @@ class SourceLibraryService:
                 session_id,
                 source_asset_id,
                 role=role,
-                expected_session_revision=(
-                    expected_session_revision
-                ),
+                expected_session_revision=(expected_session_revision),
             )
         with self.database.session() as session:
             return self.attach_in_session(
@@ -1092,9 +1282,7 @@ class SourceLibraryService:
                 session_id,
                 source_asset_id,
                 role=role,
-                expected_session_revision=(
-                    expected_session_revision
-                ),
+                expected_session_revision=(expected_session_revision),
             )
 
     @staticmethod
@@ -1165,18 +1353,24 @@ class SourceLibraryService:
             "session_revision": session_record.revision,
         }
 
-    def detach(self, session_id: str, attachment_id: str, expected_revision: int) -> None:
+    def detach(
+        self, session_id: str, attachment_id: str, expected_revision: int
+    ) -> None:
         with self.database.session() as session:
             attachment = session.get(SessionSource, attachment_id)
             if attachment is None or attachment.session_id != session_id:
                 raise KeyError(attachment_id)
             if attachment.revision != expected_revision:
-                raise RevisionConflict("The source attachment changed in another client.")
+                raise RevisionConflict(
+                    "The source attachment changed in another client."
+                )
             if attachment.role == "primary" and attachment.is_current:
                 select_source_path(session, session_id, None)
             session.delete(attachment)
 
-    def rename(self, source_asset_id: str, expected_revision: int, display_name: str) -> dict[str, Any]:
+    def rename(
+        self, source_asset_id: str, expected_revision: int, display_name: str
+    ) -> dict[str, Any]:
         with self.database.session() as session:
             asset = session.get(SourceAsset, source_asset_id)
             if asset is None:
@@ -1187,11 +1381,32 @@ class SourceLibraryService:
             asset.revision += 1
             asset.updated_at = utcnow()
             session.flush()
-            references = int(session.scalar(select(func.count()).select_from(SessionSource).where(SessionSource.source_asset_id == asset.id)) or 0)
-            current = int(session.scalar(select(func.count()).select_from(SessionSource).where(SessionSource.source_asset_id == asset.id, SessionSource.is_current.is_(True))) or 0)
-            return self._asset_payload(asset, reference_count=references, current_reference_count=current)
+            references = int(
+                session.scalar(
+                    select(func.count())
+                    .select_from(SessionSource)
+                    .where(SessionSource.source_asset_id == asset.id)
+                )
+                or 0
+            )
+            current = int(
+                session.scalar(
+                    select(func.count())
+                    .select_from(SessionSource)
+                    .where(
+                        SessionSource.source_asset_id == asset.id,
+                        SessionSource.is_current.is_(True),
+                    )
+                )
+                or 0
+            )
+            return self._asset_payload(
+                asset, reference_count=references, current_reference_count=current
+            )
 
-    def set_state(self, source_asset_id: str, expected_revision: int, state: str) -> dict[str, Any]:
+    def set_state(
+        self, source_asset_id: str, expected_revision: int, state: str
+    ) -> dict[str, Any]:
         if state not in {"current", "trashed"}:
             raise ValueError("Unsupported source lifecycle state.")
         with self.database.session() as session:
@@ -1200,17 +1415,40 @@ class SourceLibraryService:
                 raise KeyError(source_asset_id)
             if asset.revision != expected_revision:
                 raise RevisionConflict("The source asset changed in another client.")
-            references = int(session.scalar(select(func.count()).select_from(SessionSource).where(SessionSource.source_asset_id == asset.id)) or 0)
-            current = int(session.scalar(select(func.count()).select_from(SessionSource).where(SessionSource.source_asset_id == asset.id, SessionSource.is_current.is_(True))) or 0)
+            references = int(
+                session.scalar(
+                    select(func.count())
+                    .select_from(SessionSource)
+                    .where(SessionSource.source_asset_id == asset.id)
+                )
+                or 0
+            )
+            current = int(
+                session.scalar(
+                    select(func.count())
+                    .select_from(SessionSource)
+                    .where(
+                        SessionSource.source_asset_id == asset.id,
+                        SessionSource.is_current.is_(True),
+                    )
+                )
+                or 0
+            )
             if state == "trashed" and references:
-                raise ValueError(f"Detach this source from {references} session attachment(s) before moving it to trash.")
+                raise ValueError(
+                    f"Detach this source from {references} session attachment(s) before moving it to trash."
+                )
             asset.state = state
             asset.revision += 1
             asset.updated_at = utcnow()
             session.flush()
-            return self._asset_payload(asset, reference_count=references, current_reference_count=current)
+            return self._asset_payload(
+                asset, reference_count=references, current_reference_count=current
+            )
 
-    def list(self, *, session_id: str | None = None, include_trashed: bool = False) -> list[dict[str, Any]]:
+    def list(
+        self, *, session_id: str | None = None, include_trashed: bool = False
+    ) -> list[dict[str, Any]]:
         with self.database.session() as session:
             if session_id:
                 rows = session.execute(
@@ -1220,36 +1458,73 @@ class SourceLibraryService:
                     .order_by(SessionSource.updated_at.desc())
                 ).all()
                 asset_ids = {asset.id for _link, asset in rows}
-                counts = dict(
-                    session.execute(
-                        select(SessionSource.source_asset_id, func.count())
-                        .where(SessionSource.source_asset_id.in_(asset_ids))
-                        .group_by(SessionSource.source_asset_id)
-                    ).all()
-                ) if asset_ids else {}
-                current_counts = dict(
-                    session.execute(
-                        select(SessionSource.source_asset_id, func.count())
-                        .where(SessionSource.source_asset_id.in_(asset_ids), SessionSource.is_current.is_(True))
-                        .group_by(SessionSource.source_asset_id)
-                    ).all()
-                ) if asset_ids else {}
+                counts = (
+                    dict(
+                        session.execute(
+                            select(SessionSource.source_asset_id, func.count())
+                            .where(SessionSource.source_asset_id.in_(asset_ids))
+                            .group_by(SessionSource.source_asset_id)
+                        ).all()
+                    )
+                    if asset_ids
+                    else {}
+                )
+                current_counts = (
+                    dict(
+                        session.execute(
+                            select(SessionSource.source_asset_id, func.count())
+                            .where(
+                                SessionSource.source_asset_id.in_(asset_ids),
+                                SessionSource.is_current.is_(True),
+                            )
+                            .group_by(SessionSource.source_asset_id)
+                        ).all()
+                    )
+                    if asset_ids
+                    else {}
+                )
                 return [
                     self._asset_payload(
                         asset,
                         reference_count=int(counts.get(asset.id, 0)),
                         current_reference_count=int(current_counts.get(asset.id, 0)),
                     )
-                    | {"attachment": {"id": link.id, "role": link.role, "is_current": link.is_current, "revision": link.revision}}
+                    | {
+                        "attachment": {
+                            "id": link.id,
+                            "role": link.role,
+                            "is_current": link.is_current,
+                            "revision": link.revision,
+                        }
+                    }
                     for link, asset in rows
                 ]
             statement = select(SourceAsset).order_by(SourceAsset.updated_at.desc())
             if not include_trashed:
                 statement = statement.where(SourceAsset.state != "trashed")
             assets = list(session.scalars(statement).all())
-            counts = dict(session.execute(select(SessionSource.source_asset_id, func.count()).group_by(SessionSource.source_asset_id)).all())
-            current_counts = dict(session.execute(select(SessionSource.source_asset_id, func.count()).where(SessionSource.is_current.is_(True)).group_by(SessionSource.source_asset_id)).all())
-            return [self._asset_payload(asset, reference_count=int(counts.get(asset.id, 0)), current_reference_count=int(current_counts.get(asset.id, 0))) for asset in assets]
+            counts = dict(
+                session.execute(
+                    select(SessionSource.source_asset_id, func.count()).group_by(
+                        SessionSource.source_asset_id
+                    )
+                ).all()
+            )
+            current_counts = dict(
+                session.execute(
+                    select(SessionSource.source_asset_id, func.count())
+                    .where(SessionSource.is_current.is_(True))
+                    .group_by(SessionSource.source_asset_id)
+                ).all()
+            )
+            return [
+                self._asset_payload(
+                    asset,
+                    reference_count=int(counts.get(asset.id, 0)),
+                    current_reference_count=int(current_counts.get(asset.id, 0)),
+                )
+                for asset in assets
+            ]
 
     def backfill_legacy(self) -> int:
         """Deprecated compatibility hook.
@@ -1260,12 +1535,18 @@ class SourceLibraryService:
         """
         created = 0
         with self.database.session() as session:
-            records = list(session.scalars(select(SourceRecord).where(SourceRecord.artifact_id.is_not(None))).all())
+            records = list(
+                session.scalars(
+                    select(SourceRecord).where(SourceRecord.artifact_id.is_not(None))
+                ).all()
+            )
             for legacy in records:
                 artifact = session.get(Artifact, legacy.artifact_id)
                 if artifact is None:
                     continue
-                asset = session.scalar(select(SourceAsset).where(SourceAsset.artifact_id == artifact.id))
+                asset = session.scalar(
+                    select(SourceAsset).where(SourceAsset.artifact_id == artifact.id)
+                )
                 if asset is None:
                     asset = SourceAsset(
                         artifact_id=artifact.id,
@@ -1279,9 +1560,21 @@ class SourceLibraryService:
                     session.add(asset)
                     session.flush()
                     created += 1
-                link = session.scalar(select(SessionSource).where(SessionSource.session_id == legacy.session_id, SessionSource.source_asset_id == asset.id, SessionSource.role == "primary"))
+                link = session.scalar(
+                    select(SessionSource).where(
+                        SessionSource.session_id == legacy.session_id,
+                        SessionSource.source_asset_id == asset.id,
+                        SessionSource.role == "primary",
+                    )
+                )
                 if link is None:
-                    session.add(SessionSource(session_id=legacy.session_id, source_asset_id=asset.id, role="primary"))
+                    session.add(
+                        SessionSource(
+                            session_id=legacy.session_id,
+                            source_asset_id=asset.id,
+                            role="primary",
+                        )
+                    )
         return created
 
 
@@ -1300,23 +1593,57 @@ class GenerationService:
         self.artifacts = artifacts
         self.plan_refresher = plan_refresher
 
-    def create_plan(self, session_id: str, *, source_revision_id: str | None, segments: list[dict[str, Any]], settings: dict[str, Any] | None = None) -> dict[str, Any]:
-        clean_segments = [item for item in segments if str(item.get("text") or "").strip()]
+    def create_plan(
+        self,
+        session_id: str,
+        *,
+        source_revision_id: str | None,
+        segments: list[dict[str, Any]],
+        settings: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        clean_segments = [
+            item for item in segments if str(item.get("text") or "").strip()
+        ]
         if not clean_segments:
             raise ValueError("At least one generation segment is required.")
-        content = {"source_revision_id": source_revision_id, "segments": clean_segments, "settings": settings or {}}
+        content = {
+            "source_revision_id": source_revision_id,
+            "segments": clean_segments,
+            "settings": settings or {},
+        }
         with self.database.session() as session:
             if session.get(SessionRecord, session_id) is None:
                 raise KeyError(session_id)
-            if source_revision_id and session.get(DocumentRevision, source_revision_id) is None:
+            if (
+                source_revision_id
+                and session.get(DocumentRevision, source_revision_id) is None
+            ):
                 raise KeyError(source_revision_id)
-            plan = session.scalar(select(GenerationPlan).where(GenerationPlan.session_id == session_id))
+            plan = session.scalar(
+                select(GenerationPlan).where(GenerationPlan.session_id == session_id)
+            )
             if plan is None:
                 plan = GenerationPlan(session_id=session_id)
                 session.add(plan)
                 session.flush()
-            revision_number = int(session.scalar(select(func.max(GenerationPlanRevision.revision_number)).where(GenerationPlanRevision.plan_id == plan.id)) or 0) + 1
-            revision = GenerationPlanRevision(plan_id=plan.id, source_revision_id=source_revision_id, revision_number=revision_number, settings_json=settings or {}, content_hash=stable_hash(content))
+            revision_number = (
+                int(
+                    session.scalar(
+                        select(func.max(GenerationPlanRevision.revision_number)).where(
+                            GenerationPlanRevision.plan_id == plan.id
+                        )
+                    )
+                    or 0
+                )
+                + 1
+            )
+            revision = GenerationPlanRevision(
+                plan_id=plan.id,
+                source_revision_id=source_revision_id,
+                revision_number=revision_number,
+                settings_json=settings or {},
+                content_hash=stable_hash(content),
+            )
             session.add(revision)
             session.flush()
             for index, item in enumerate(clean_segments):
@@ -1324,10 +1651,25 @@ class GenerationService:
                     GenerationSegment(
                         plan_revision_id=revision.id,
                         ordinal=index,
-                        source_segment_ids_json=list(item.get("source_segment_ids") or []),
-                        alignment_group=str(item.get("alignment_group") or "").strip() or None,
-                        node_kind=str(item.get("node_kind") or ("chapter_marker" if str(item.get("chapter") or "").lower() == "yes" else "paragraph")),
-                        paragraph_break_after=bool(item.get("paragraph_break_after", str(item.get("paragraph") or "").lower() == "yes")),
+                        source_segment_ids_json=list(
+                            item.get("source_segment_ids") or []
+                        ),
+                        alignment_group=str(item.get("alignment_group") or "").strip()
+                        or None,
+                        node_kind=str(
+                            item.get("node_kind")
+                            or (
+                                "chapter_marker"
+                                if str(item.get("chapter") or "").lower() == "yes"
+                                else "paragraph"
+                            )
+                        ),
+                        paragraph_break_after=bool(
+                            item.get(
+                                "paragraph_break_after",
+                                str(item.get("paragraph") or "").lower() == "yes",
+                            )
+                        ),
                         speaker=str(item.get("speaker") or "").strip() or None,
                         text=str(item.get("text") or "").strip(),
                         optimized_text=(
@@ -1348,7 +1690,9 @@ class GenerationService:
                             else None
                         ),
                         optimization_model=(
-                            str((item.get("speech_plan") or {}).get("model") or "").strip()
+                            str(
+                                (item.get("speech_plan") or {}).get("model") or ""
+                            ).strip()
                             or None
                         ),
                         voice_id=item.get("voice_id"),
@@ -1360,7 +1704,12 @@ class GenerationService:
             plan.active_revision_id = revision.id
             plan.updated_at = utcnow()
             session.flush()
-            return {"id": plan.id, "active_revision_id": revision.id, "revision_number": revision_number, "segment_count": len(clean_segments)}
+            return {
+                "id": plan.id,
+                "active_revision_id": revision.id,
+                "revision_number": revision_number,
+                "segment_count": len(clean_segments),
+            }
 
     def list_segments(
         self,
@@ -1384,9 +1733,16 @@ class GenerationService:
                 selected_run = session.get(GenerationRun, generation_run_id)
                 if selected_run is None or selected_run.session_id != session_id:
                     raise KeyError(generation_run_id)
-            plan = session.scalar(select(GenerationPlan).where(GenerationPlan.session_id == session_id))
+            plan = session.scalar(
+                select(GenerationPlan).where(GenerationPlan.session_id == session_id)
+            )
             if plan is None or not plan.active_revision_id:
-                return {"items": [], "next_cursor": None, "total": 0, "plan_revision_id": None}
+                return {
+                    "items": [],
+                    "next_cursor": None,
+                    "total": 0,
+                    "plan_revision_id": None,
+                }
             plan_revision_id = plan.active_revision_id
             if selected_run is not None:
                 plan_revision_id = selected_run.plan_revision_id
@@ -1396,7 +1752,9 @@ class GenerationService:
             if marked is not None:
                 filters.append(GenerationSegment.marked.is_(marked))
             if verification == "issues":
-                verification_status = Artifact.metadata_json["audio_verification"]["status"].as_string()
+                verification_status = Artifact.metadata_json["audio_verification"][
+                    "status"
+                ].as_string()
                 filters.append(
                     select(AudioTake.id)
                     .join(Artifact, Artifact.id == AudioTake.artifact_id)
@@ -1421,12 +1779,29 @@ class GenerationService:
             takes_by_segment: dict[str, list[AudioTake]] = {}
             artifacts_by_id: dict[str, Artifact] = {}
             if rows:
-                takes = list(session.scalars(select(AudioTake).where(AudioTake.generation_segment_id.in_([item.id for item in rows])).order_by(AudioTake.created_at.desc())).all())
+                takes = list(
+                    session.scalars(
+                        select(AudioTake)
+                        .where(
+                            AudioTake.generation_segment_id.in_(
+                                [item.id for item in rows]
+                            )
+                        )
+                        .order_by(AudioTake.created_at.desc())
+                    ).all()
+                )
                 for take in takes:
-                    takes_by_segment.setdefault(take.generation_segment_id, []).append(take)
+                    takes_by_segment.setdefault(take.generation_segment_id, []).append(
+                        take
+                    )
                 artifact_ids = [take.artifact_id for take in takes if take.artifact_id]
                 if artifact_ids:
-                    artifacts_by_id = {artifact.id: artifact for artifact in session.scalars(select(Artifact).where(Artifact.id.in_(artifact_ids))).all()}
+                    artifacts_by_id = {
+                        artifact.id: artifact
+                        for artifact in session.scalars(
+                            select(Artifact).where(Artifact.id.in_(artifact_ids))
+                        ).all()
+                    }
             items = [
                 {
                     "id": item.id,
@@ -1462,11 +1837,43 @@ class GenerationService:
                             "is_active": take.is_active,
                             "revision": take.revision,
                             "created_at": take.created_at.isoformat(),
-                            "source_text": (artifacts_by_id.get(take.artifact_id).metadata_json or {}).get("source_text") if take.artifact_id and artifacts_by_id.get(take.artifact_id) else None,
-                            "synthesized_text": (artifacts_by_id.get(take.artifact_id).metadata_json or {}).get("synthesized_text") if take.artifact_id and artifacts_by_id.get(take.artifact_id) else None,
-                            "llm_optimized": bool((artifacts_by_id.get(take.artifact_id).metadata_json or {}).get("llm_optimized")) if take.artifact_id and artifacts_by_id.get(take.artifact_id) else False,
-                            "llm_model": (artifacts_by_id.get(take.artifact_id).metadata_json or {}).get("llm_model") if take.artifact_id and artifacts_by_id.get(take.artifact_id) else None,
-                            "audio_verification": (artifacts_by_id.get(take.artifact_id).metadata_json or {}).get("audio_verification") if take.artifact_id and artifacts_by_id.get(take.artifact_id) else None,
+                            "source_text": (
+                                artifacts_by_id.get(take.artifact_id).metadata_json
+                                or {}
+                            ).get("source_text")
+                            if take.artifact_id
+                            and artifacts_by_id.get(take.artifact_id)
+                            else None,
+                            "synthesized_text": (
+                                artifacts_by_id.get(take.artifact_id).metadata_json
+                                or {}
+                            ).get("synthesized_text")
+                            if take.artifact_id
+                            and artifacts_by_id.get(take.artifact_id)
+                            else None,
+                            "llm_optimized": bool(
+                                (
+                                    artifacts_by_id.get(take.artifact_id).metadata_json
+                                    or {}
+                                ).get("llm_optimized")
+                            )
+                            if take.artifact_id
+                            and artifacts_by_id.get(take.artifact_id)
+                            else False,
+                            "llm_model": (
+                                artifacts_by_id.get(take.artifact_id).metadata_json
+                                or {}
+                            ).get("llm_model")
+                            if take.artifact_id
+                            and artifacts_by_id.get(take.artifact_id)
+                            else None,
+                            "audio_verification": (
+                                artifacts_by_id.get(take.artifact_id).metadata_json
+                                or {}
+                            ).get("audio_verification")
+                            if take.artifact_id
+                            and artifacts_by_id.get(take.artifact_id)
+                            else None,
                         }
                         for take in takes_by_segment.get(item.id, [])
                     ],
@@ -1475,9 +1882,7 @@ class GenerationService:
             ]
             total = int(
                 session.scalar(
-                    select(func.count())
-                    .select_from(GenerationSegment)
-                    .where(*filters)
+                    select(func.count()).select_from(GenerationSegment).where(*filters)
                 )
                 or 0
             )
@@ -1521,7 +1926,18 @@ class GenerationService:
         completed_takes: list[AudioTake] | None = None,
         mark_assemblies: bool = True,
     ) -> dict[str, Any]:
-        allowed = {"text", "optimized_text", "node_kind", "paragraph_break_after", "voice_id", "voice", "language", "silence_after_ms", "marked", "removed"}
+        allowed = {
+            "text",
+            "optimized_text",
+            "node_kind",
+            "paragraph_break_after",
+            "voice_id",
+            "voice",
+            "language",
+            "silence_after_ms",
+            "marked",
+            "removed",
+        }
         session.add(
             GenerationSegmentRevision(
                 generation_segment_id=segment.id,
@@ -1543,20 +1959,33 @@ class GenerationService:
                 silence_after_ms=segment.silence_after_ms,
             )
         )
-        text_changed = "text" in changes and str(changes["text"]).strip() != segment.text
-        optimized_changed = "optimized_text" in changes and (str(changes["optimized_text"] or "").strip() or None) != segment.optimized_text
+        text_changed = (
+            "text" in changes and str(changes["text"]).strip() != segment.text
+        )
+        optimized_changed = (
+            "optimized_text" in changes
+            and (str(changes["optimized_text"] or "").strip() or None)
+            != segment.optimized_text
+        )
         for key, value in changes.items():
             if key not in allowed:
                 continue
             if key == "text":
                 value = str(value).strip()
                 if not value:
-                    raise ValueError("Generation text cannot be blank; remove the segment instead.")
+                    raise ValueError(
+                        "Generation text cannot be blank; remove the segment instead."
+                    )
             if key == "optimized_text":
                 value = str(value or "").strip() or None
             if key == "silence_after_ms":
                 value = max(0, int(value))
-            if key == "node_kind" and value not in {"paragraph", "heading", "chapter_marker", "subtitle_cue"}:
+            if key == "node_kind" and value not in {
+                "paragraph",
+                "heading",
+                "chapter_marker",
+                "subtitle_cue",
+            }:
                 raise ValueError("Unsupported generation segment type.")
             setattr(segment, key, value)
         if text_changed:
@@ -1567,7 +1996,9 @@ class GenerationService:
             segment.optimization_reviewed = False
             segment.optimization_model = None
         elif optimized_changed:
-            segment.optimization_status = "reviewed" if segment.optimized_text else "pending"
+            segment.optimization_status = (
+                "reviewed" if segment.optimized_text else "pending"
+            )
             segment.optimization_source_hash = hashlib.sha256(
                 segment.text.encode("utf-8")
             ).hexdigest()
@@ -1602,10 +2033,28 @@ class GenerationService:
                 )
             for take in takes:
                 take.status = "stale"
-        assembly_changed = any(key in changes for key in ("text", "node_kind", "paragraph_break_after", "voice_id", "voice", "language", "silence_after_ms", "removed"))
+        assembly_changed = any(
+            key in changes
+            for key in (
+                "text",
+                "node_kind",
+                "paragraph_break_after",
+                "voice_id",
+                "voice",
+                "language",
+                "silence_after_ms",
+                "removed",
+            )
+        )
         if mark_assemblies and assembly_changed:
-            plan_revision = session.get(GenerationPlanRevision, segment.plan_revision_id)
-            plan = session.get(GenerationPlan, plan_revision.plan_id) if plan_revision else None
+            plan_revision = session.get(
+                GenerationPlanRevision, segment.plan_revision_id
+            )
+            plan = (
+                session.get(GenerationPlan, plan_revision.plan_id)
+                if plan_revision
+                else None
+            )
             if plan is not None:
                 mark_output_assemblies_stale(session, plan.session_id)
         segment.revision += 1
@@ -1613,25 +2062,35 @@ class GenerationService:
         session.flush()
         return self._updated_segment_payload(segment)
 
-    def update_segment(self, segment_id: str, expected_revision: int, changes: dict[str, Any]) -> dict[str, Any]:
+    def update_segment(
+        self, segment_id: str, expected_revision: int, changes: dict[str, Any]
+    ) -> dict[str, Any]:
         with self.database.session() as session:
             segment = session.get(GenerationSegment, segment_id)
             if segment is None:
                 raise KeyError(segment_id)
             if segment.revision != expected_revision:
-                raise RevisionConflict("The generation segment changed in another client.")
+                raise RevisionConflict(
+                    "The generation segment changed in another client."
+                )
             return self._apply_segment_changes(session, segment, changes)
 
-    def update_segments(self, session_id: str, updates: list[dict[str, Any]]) -> dict[str, Any]:
+    def update_segments(
+        self, session_id: str, updates: list[dict[str, Any]]
+    ) -> dict[str, Any]:
         if not updates:
             raise ValueError("At least one generation segment update is required.")
         segment_ids = [str(item.get("id") or "").strip() for item in updates]
         if any(not segment_id for segment_id in segment_ids):
             raise ValueError("Every generation segment update requires an ID.")
         if len(set(segment_ids)) != len(segment_ids):
-            raise ValueError("A generation segment can only be updated once per request.")
+            raise ValueError(
+                "A generation segment can only be updated once per request."
+            )
         if any(not dict(item.get("changes") or {}) for item in updates):
-            raise ValueError("Every generation segment update requires at least one change.")
+            raise ValueError(
+                "Every generation segment update requires at least one change."
+            )
 
         with self.database.session() as session:
             if session.get(SessionRecord, session_id) is None:
@@ -1693,7 +2152,16 @@ class GenerationService:
                     take.generation_segment_id, []
                 ).append(take)
 
-            assembly_keys = {"text", "node_kind", "paragraph_break_after", "voice_id", "voice", "language", "silence_after_ms", "removed"}
+            assembly_keys = {
+                "text",
+                "node_kind",
+                "paragraph_break_after",
+                "voice_id",
+                "voice",
+                "language",
+                "silence_after_ms",
+                "removed",
+            }
             assembly_changed = False
             results = []
             for item in updates:
@@ -1707,9 +2175,7 @@ class GenerationService:
                         session,
                         segment,
                         changes,
-                        completed_takes=completed_takes_by_segment.get(
-                            segment.id, []
-                        ),
+                        completed_takes=completed_takes_by_segment.get(segment.id, []),
                         mark_assemblies=False,
                     )
                 )
@@ -1718,14 +2184,22 @@ class GenerationService:
             session.flush()
             return {"items": results}
 
-    def select_take(self, segment_id: str, take_id: str, expected_revision: int) -> dict[str, Any]:
+    def select_take(
+        self, segment_id: str, take_id: str, expected_revision: int
+    ) -> dict[str, Any]:
         with self.database.session() as session:
             segment = session.get(GenerationSegment, segment_id)
             take = session.get(AudioTake, take_id)
-            if segment is None or take is None or take.generation_segment_id != segment_id:
+            if (
+                segment is None
+                or take is None
+                or take.generation_segment_id != segment_id
+            ):
                 raise KeyError(take_id)
             if segment.revision != expected_revision:
-                raise RevisionConflict("The generation segment changed in another client.")
+                raise RevisionConflict(
+                    "The generation segment changed in another client."
+                )
             if take.status not in {"completed", "stale"} or not take.artifact_id:
                 raise ValueError("Only an available audio take can be selected.")
             session.add(
@@ -1749,16 +2223,28 @@ class GenerationService:
                     silence_after_ms=segment.silence_after_ms,
                 )
             )
-            for item in session.scalars(select(AudioTake).where(AudioTake.generation_segment_id == segment_id)).all():
+            for item in session.scalars(
+                select(AudioTake).where(AudioTake.generation_segment_id == segment_id)
+            ).all():
                 item.is_active = item.id == take_id
                 item.revision += 1
             segment.revision += 1
             segment.updated_at = utcnow()
-            plan_revision = session.get(GenerationPlanRevision, segment.plan_revision_id)
-            plan = session.get(GenerationPlan, plan_revision.plan_id) if plan_revision else None
+            plan_revision = session.get(
+                GenerationPlanRevision, segment.plan_revision_id
+            )
+            plan = (
+                session.get(GenerationPlan, plan_revision.plan_id)
+                if plan_revision
+                else None
+            )
             if plan is not None:
                 mark_output_assemblies_stale(session, plan.session_id)
-            return {"id": segment.id, "active_take_id": take.id, "revision": segment.revision}
+            return {
+                "id": segment.id,
+                "active_take_id": take.id,
+                "revision": segment.revision,
+            }
 
     def start(
         self,
@@ -1769,7 +2255,9 @@ class GenerationService:
         generation_run_id: str | None = None,
         operation: str = "generate",
     ) -> dict[str, Any]:
-        requested_segment_ids = [str(value) for value in (segment_ids or []) if str(value)]
+        requested_segment_ids = [
+            str(value) for value in (segment_ids or []) if str(value)
+        ]
         reused_run = False
         resolved_for_new: tuple[dict[str, Any], str] | None = None
         if operation == "generate" and not requested_segment_ids:
@@ -1785,9 +2273,13 @@ class GenerationService:
                 )
 
         with self.database.session() as session:
-            plan = session.scalar(select(GenerationPlan).where(GenerationPlan.session_id == session_id))
+            plan = session.scalar(
+                select(GenerationPlan).where(GenerationPlan.session_id == session_id)
+            )
             if plan is None or not plan.active_revision_id:
-                raise ValueError("Create generation segments before starting audio generation.")
+                raise ValueError(
+                    "Create generation segments before starting audio generation."
+                )
             plan_revision_id = plan.active_revision_id
             if requested_segment_ids:
                 unique_requested_ids = set(requested_segment_ids)
@@ -1796,9 +2288,7 @@ class GenerationService:
                         select(
                             GenerationSegment.id,
                             GenerationSegment.plan_revision_id,
-                        ).where(
-                            GenerationSegment.id.in_(requested_segment_ids)
-                        )
+                        ).where(GenerationSegment.id.in_(requested_segment_ids))
                     ).all()
                 )
                 requested_revisions = {
@@ -1843,11 +2333,23 @@ class GenerationService:
                             GenerationRun.plan_revision_id == plan_revision_id,
                             GenerationRun.operation != "rvc",
                         )
-                        .order_by(GenerationRun.sequence_number.desc(), GenerationRun.created_at.desc())
+                        .order_by(
+                            GenerationRun.sequence_number.desc(),
+                            GenerationRun.created_at.desc(),
+                        )
                     )
             if reusable is not None:
-                if reusable.status in {"queued", "running", "pausing", "pause_requested", "cancel_requested", "paused"}:
-                    raise ValueError("The current generation run is still active; stop or resume it before regenerating segments.")
+                if reusable.status in {
+                    "queued",
+                    "running",
+                    "pausing",
+                    "pause_requested",
+                    "cancel_requested",
+                    "paused",
+                }:
+                    raise ValueError(
+                        "The current generation run is still active; stop or resume it before regenerating segments."
+                    )
                 reusable.status = "queued"
                 reusable.pause_requested = False
                 reusable.cancel_requested = False
@@ -1862,7 +2364,17 @@ class GenerationService:
                         run_override=run_override,
                     )
                 snapshot, settings_hash = resolved_for_new
-                sequence_number = int(session.scalar(select(func.max(GenerationRun.sequence_number)).where(GenerationRun.session_id == session_id)) or 0) + 1
+                sequence_number = (
+                    int(
+                        session.scalar(
+                            select(func.max(GenerationRun.sequence_number)).where(
+                                GenerationRun.session_id == session_id
+                            )
+                        )
+                        or 0
+                    )
+                    + 1
+                )
                 run = GenerationRun(
                     session_id=session_id,
                     plan_revision_id=plan_revision_id,
@@ -1876,7 +2388,16 @@ class GenerationService:
                 session.flush()
                 run_id = run.id
         resource_keys = self._resource_keys(session_id, snapshot)
-        job = self.jobs.enqueue("generation.run", {"generation_run_id": run_id, "segment_ids": requested_segment_ids, "operation": operation}, session_id=session_id, resource_keys=resource_keys)
+        job = self.jobs.enqueue(
+            "generation.run",
+            {
+                "generation_run_id": run_id,
+                "segment_ids": requested_segment_ids,
+                "operation": operation,
+            },
+            session_id=session_id,
+            resource_keys=resource_keys,
+        )
         with self.database.session() as session:
             run = session.get(GenerationRun, run_id)
             run.job_id = job.id
@@ -1921,14 +2442,19 @@ class GenerationService:
             run.updated_at = utcnow()
             session_id = run.session_id
             snapshot = dict(run.settings_snapshot_json or {})
-        job = self.jobs.enqueue("generation.run", {"generation_run_id": run_id, "segment_ids": [], "operation": "resume"}, session_id=session_id, resource_keys=self._resource_keys(session_id, snapshot))
+        job = self.jobs.enqueue(
+            "generation.run",
+            {"generation_run_id": run_id, "segment_ids": [], "operation": "resume"},
+            session_id=session_id,
+            resource_keys=self._resource_keys(session_id, snapshot),
+        )
         with self.database.session() as session:
             run = session.get(GenerationRun, run_id)
             run.job_id = job.id
         return {"id": run_id, "job_id": job.id, "status": "queued"}
 
     def cancel(self, run_id: str) -> dict[str, Any]:
-        with self.database.session() as session:
+        with self.database.immediate_session() as session:
             run = session.get(GenerationRun, run_id)
             if run is None:
                 raise KeyError(run_id)
@@ -1936,12 +2462,18 @@ class GenerationService:
             run.status = "cancel_requested"
             run.updated_at = utcnow()
             job_id = run.job_id
-        if job_id:
-            try:
-                self.jobs.request_cancel(job_id)
-            except KeyError:
-                pass
-        return {"id": run_id, "job_id": job_id, "status": "cancel_requested"}
+            if job_id:
+                try:
+                    self.jobs.request_cancel_in_session(session, job_id)
+                except KeyError:
+                    run.status = "canceled"
+                    run.cancel_requested = False
+                    run.updated_at = utcnow()
+            else:
+                run.status = "canceled"
+                run.cancel_requested = False
+                run.updated_at = utcnow()
+            return {"id": run.id, "job_id": job_id, "status": run.status}
 
     @staticmethod
     def _run_label(run: GenerationRun) -> str:
@@ -1955,7 +2487,9 @@ class GenerationService:
             tts.get("voice") or tts.get("voice_name"),
         ):
             normalized = str(value or "").strip()
-            if normalized and normalized.lower() not in {item.lower() for item in details}:
+            if normalized and normalized.lower() not in {
+                item.lower() for item in details
+            }:
                 details.append(normalized)
         if run.operation == "rvc":
             model = str(rvc.get("model") or rvc.get("rvc_model") or "").strip()
@@ -1974,11 +2508,20 @@ class GenerationService:
             .order_by(OutputAssembly.created_at.desc())
         )
         take_count = int(
-            session.scalar(select(func.count()).select_from(AudioTake).where(AudioTake.generation_run_id == run.id)) or 0
+            session.scalar(
+                select(func.count())
+                .select_from(AudioTake)
+                .where(AudioTake.generation_run_id == run.id)
+            )
+            or 0
         )
         from .usage import usage_summary
 
-        usage = list(session.scalars(select(UsageEvent).where(UsageEvent.generation_run_id == run.id)).all())
+        usage = list(
+            session.scalars(
+                select(UsageEvent).where(UsageEvent.generation_run_id == run.id)
+            ).all()
+        )
         return {
             "id": run.id,
             "session_id": run.session_id,
@@ -1988,7 +2531,9 @@ class GenerationService:
             "label": self._run_label(run),
             "job_id": run.job_id,
             "status": run.status,
-            "progress": float(job.progress) if job else (1.0 if run.status == "completed" else 0.0),
+            "progress": float(job.progress)
+            if job
+            else (1.0 if run.status == "completed" else 0.0),
             "pause_requested": run.pause_requested,
             "cancel_requested": run.cancel_requested,
             "settings_hash": run.settings_hash,
@@ -2014,7 +2559,10 @@ class GenerationService:
                 session.scalars(
                     select(GenerationRun)
                     .where(GenerationRun.session_id == session_id)
-                    .order_by(GenerationRun.sequence_number.desc(), GenerationRun.created_at.desc())
+                    .order_by(
+                        GenerationRun.sequence_number.desc(),
+                        GenerationRun.created_at.desc(),
+                    )
                 ).all()
             )
             return [self._run_payload(session, run) for run in runs]
@@ -2024,7 +2572,10 @@ class GenerationService:
             run = session.scalar(
                 select(GenerationRun)
                 .where(GenerationRun.session_id == session_id)
-                .order_by(GenerationRun.sequence_number.desc(), GenerationRun.created_at.desc())
+                .order_by(
+                    GenerationRun.sequence_number.desc(),
+                    GenerationRun.created_at.desc(),
+                )
             )
             return self._run_payload(session, run)
 
@@ -2036,16 +2587,38 @@ class GenerationService:
                 raise KeyError(run_id)
             if run.status in {"queued", "running", "pausing", "cancel_requested"}:
                 raise ValueError("Stop or cancel this run before deleting it.")
-            takes = list(session.scalars(select(AudioTake).where(AudioTake.generation_run_id == run.id)).all())
-            assemblies = list(session.scalars(select(OutputAssembly).where(OutputAssembly.generation_run_id == run.id)).all())
+            takes = list(
+                session.scalars(
+                    select(AudioTake).where(AudioTake.generation_run_id == run.id)
+                ).all()
+            )
+            assemblies = list(
+                session.scalars(
+                    select(OutputAssembly).where(
+                        OutputAssembly.generation_run_id == run.id
+                    )
+                ).all()
+            )
             affected_segment_ids = {take.generation_segment_id for take in takes}
             artifact_ids = {take.artifact_id for take in takes if take.artifact_id}
-            artifact_ids.update(item.artifact_id for item in assemblies if item.artifact_id)
-            artifacts = list(session.scalars(select(Artifact).where(Artifact.id.in_(artifact_ids))).all()) if artifact_ids else []
+            artifact_ids.update(
+                item.artifact_id for item in assemblies if item.artifact_id
+            )
+            artifacts = (
+                list(
+                    session.scalars(
+                        select(Artifact).where(Artifact.id.in_(artifact_ids))
+                    ).all()
+                )
+                if artifact_ids
+                else []
+            )
             if self.artifacts is not None:
                 for artifact in artifacts:
                     try:
-                        paths_to_remove.append(self.artifacts.paths.managed_path(artifact.relative_path))
+                        paths_to_remove.append(
+                            self.artifacts.paths.managed_path(artifact.relative_path)
+                        )
                     except ValueError:
                         pass
             from .artifacts import ArtifactService
@@ -2060,11 +2633,20 @@ class GenerationService:
             for segment_id in affected_segment_ids:
                 remaining = session.scalar(
                     select(AudioTake)
-                    .where(AudioTake.generation_segment_id == segment_id, AudioTake.artifact_id.is_not(None))
+                    .where(
+                        AudioTake.generation_segment_id == segment_id,
+                        AudioTake.artifact_id.is_not(None),
+                    )
                     .order_by(AudioTake.created_at.desc())
                 )
-                for candidate in session.scalars(select(AudioTake).where(AudioTake.generation_segment_id == segment_id)).all():
-                    candidate.is_active = remaining is not None and candidate.id == remaining.id
+                for candidate in session.scalars(
+                    select(AudioTake).where(
+                        AudioTake.generation_segment_id == segment_id
+                    )
+                ).all():
+                    candidate.is_active = (
+                        remaining is not None and candidate.id == remaining.id
+                    )
             for artifact in artifacts:
                 session.delete(artifact)
             session.delete(run)
@@ -2114,7 +2696,9 @@ class GenerationService:
             sections=["audio", "output"],
             run_override=run_override,
         )
-        output_format = str((snapshot.get("output") or {}).get("format") or "wav").lower()
+        output_format = str(
+            (snapshot.get("output") or {}).get("format") or "wav"
+        ).lower()
         from .audio_assembly import OUTPUT_FORMATS
 
         if output_format not in OUTPUT_FORMATS:
@@ -2122,20 +2706,35 @@ class GenerationService:
         with self.database.session() as session:
             if session.get(SessionRecord, session_id) is None:
                 raise KeyError(session_id)
-            run = session.get(GenerationRun, generation_run_id) if generation_run_id else None
+            run = (
+                session.get(GenerationRun, generation_run_id)
+                if generation_run_id
+                else None
+            )
             if generation_run_id and (run is None or run.session_id != session_id):
                 raise KeyError(generation_run_id)
             if run is not None and run.status != "completed":
                 raise ValueError("Only a completed generation run can be assembled.")
-            plan = session.scalar(select(GenerationPlan).where(GenerationPlan.session_id == session_id))
-            plan_revision_id = run.plan_revision_id if run else plan.active_revision_id if plan else None
+            plan = session.scalar(
+                select(GenerationPlan).where(GenerationPlan.session_id == session_id)
+            )
+            plan_revision_id = (
+                run.plan_revision_id
+                if run
+                else plan.active_revision_id
+                if plan
+                else None
+            )
             if not plan_revision_id:
                 raise ValueError("Create generation segments before assembling audio.")
             record = OutputAssembly(
                 session_id=session_id,
                 generation_run_id=run.id if run else None,
                 status="queued",
-                settings_json={"resolved": snapshot, "plan_revision_id": plan_revision_id},
+                settings_json={
+                    "resolved": snapshot,
+                    "plan_revision_id": plan_revision_id,
+                },
                 settings_hash=settings_hash,
             )
             session.add(record)

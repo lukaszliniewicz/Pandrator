@@ -58,6 +58,8 @@
     input_cost_per_million: number | null;
     cached_input_cost_per_million: number | null;
     output_cost_per_million: number | null;
+    context_window_tokens: number;
+    max_output_tokens: number | null;
     options_json: Record<string, unknown>;
     revision: number;
   };
@@ -103,6 +105,8 @@
   let inputCost = $state('');
   let cachedCost = $state('');
   let outputCost = $state('');
+  let contextWindow = $state('262144');
+  let maxOutputTokens = $state('');
   let deletingModel = $state<Model | null>(null);
   let deletingProvider = $state<Provider | null>(null);
   let replacementModelRecordId = $state('');
@@ -403,6 +407,8 @@
     inputCost = model.input_cost_per_million?.toString() ?? '';
     cachedCost = model.cached_input_cost_per_million?.toString() ?? '';
     outputCost = model.output_cost_per_million?.toString() ?? '';
+    contextWindow = String(model.context_window_tokens || 262144);
+    maxOutputTokens = model.max_output_tokens?.toString() ?? '';
   }
 
   const optionalNumber = (value: string) =>
@@ -420,7 +426,12 @@
           default_reasoning_effort: reasoning.trim() || null,
           input_cost_per_million: optionalNumber(inputCost),
           cached_input_cost_per_million: optionalNumber(cachedCost),
-          output_cost_per_million: optionalNumber(outputCost)
+          output_cost_per_million: optionalNumber(outputCost),
+          context_window_tokens: Math.max(
+            4096,
+            Number(contextWindow) || 262144
+          ),
+          max_output_tokens: optionalNumber(maxOutputTokens)
         }
       );
       edit = null;
@@ -1092,6 +1103,25 @@
             type="number"
             min="0"
             step="any"
+            class="field font-normal"
+          /></label
+        ><label class="text-sm font-semibold"
+          >Context window (tokens)<input
+            bind:value={contextWindow}
+            type="number"
+            min="4096"
+            step="1"
+            class="field font-normal"
+          /><small class="muted mt-1 block font-normal"
+            >Research budgeting defaults unknown models to 262,144.</small
+          ></label
+        ><label class="text-sm font-semibold"
+          >Maximum output tokens<input
+            bind:value={maxOutputTokens}
+            type="number"
+            min="1"
+            step="1"
+            placeholder="8,192 reserve"
             class="field font-normal"
           /></label
         >

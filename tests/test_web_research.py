@@ -10,6 +10,8 @@ from pandrator.web.web_research import (
     PersistentResearchCache,
     ResearchAgentConfig,
     _safe_public_url,
+    batch_research_source,
+    research_source_token_budget,
     run_web_research_agent,
 )
 from tests.web_test_support import prepare_web_test_data_root
@@ -112,9 +114,7 @@ class WebResearchTests(unittest.TestCase):
                     "name": name,
                     "arguments": json.dumps(arguments),
                 },
-                "extra_content": {
-                    "google": {"thought_signature": signature}
-                },
+                "extra_content": {"google": {"thought_signature": signature}},
             }
             assistant = {
                 "role": "assistant",
@@ -231,9 +231,7 @@ class WebResearchTests(unittest.TestCase):
 
         self.assertEqual(1, len(result.evidence))
         self.assertEqual("https://example.com/guide", result.evidence[0]["source_url"])
-        self.assertTrue(
-            any("not returned" in warning for warning in result.warnings)
-        )
+        self.assertTrue(any("not returned" in warning for warning in result.warnings))
 
     def test_page_extraction_is_restricted_to_search_results(self):
         provider = _FakeResearchProvider()
@@ -297,6 +295,78 @@ class WebResearchTests(unittest.TestCase):
             self.assertEqual(1, len(http.calls))
             self.assertNotIn("secret-value", json.dumps(second))
             database.dispose()
+
+    def test_context_batches_cover_every_character_within_budget(self):
+        source = ("A paragraph with ordinary ASCII words.\n\n" * 300) + (
+            "Zażółć gęślą jaźń.\n" * 100
+        )
+        batches = batch_research_source(
+            source,
+            context_window_tokens=16_384,
+            input_fraction=0.8,
+            reserved_prompt_tokens=1_000,
+        )
+
+        self.assertEqual(source, "".join(batch.text for batch in batches))
+        self.assertEqual(list(range(len(batches))), [batch.index for batch in batches])
+        budget = research_source_token_budget(
+            16_384,
+            input_fraction=0.8,
+            reserved_prompt_tokens=1_000,
+        )
+        self.assertTrue(all(batch.estimated_tokens <= budget for batch in batches))
+
+    def test_research_resumes_after_a_persisted_tool_turn(self):
+        provider = _FakeResearchProvider()
+        checkpoint = {}
+
+        class CheckpointSaved(RuntimeError):
+            pass
+
+        def save_and_stop(state):
+            checkpoint.update(state)
+            raise CheckpointSaved
+
+        with self.assertRaises(CheckpointSaved):
+            run_web_research_agent(
+                "Nautilus",
+                provider=provider,
+                model_name="local/test",
+                llm_settings=SimpleNamespace(),
+                config=ResearchAgentConfig(stage="correction"),
+                completion_func=lambda **_kwargs: json.dumps(
+                    {"action": "search_web", "arguments": {"query": "Nautilus"}}
+                ),
+                on_checkpoint=save_and_stop,
+            )
+
+        result = run_web_research_agent(
+            "Nautilus",
+            provider=provider,
+            model_name="local/test",
+            llm_settings=SimpleNamespace(),
+            config=ResearchAgentConfig(stage="correction"),
+            completion_func=lambda **_kwargs: json.dumps(
+                {
+                    "action": "finish",
+                    "summary": "Verified.",
+                    "evidence": [
+                        {
+                            "term": "Nautilus",
+                            "recommendation": "Nautilus",
+                            "claim": "Official spelling.",
+                            "source_url": "https://example.com/guide",
+                        }
+                    ],
+                    "glossary": [],
+                }
+            ),
+            resume_state=checkpoint,
+        )
+
+        self.assertEqual(["Nautilus"], provider.search_calls)
+        self.assertEqual(1, len(result.evidence))
+        self.assertEqual(2, result.response_count)
 
 
 if __name__ == "__main__":

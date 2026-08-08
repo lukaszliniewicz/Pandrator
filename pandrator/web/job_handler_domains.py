@@ -5,8 +5,8 @@ from __future__ import annotations
 from functools import wraps
 from typing import TYPE_CHECKING
 
-from .jobs import JobHandler
 from .job_registry import JobHandlerRegistry, JobPayloadContract
+from .jobs import JobHandler
 
 if TYPE_CHECKING:
     from .workflow_handlers import WorkflowHandlers
@@ -124,6 +124,7 @@ def register_voice_handlers(
                 "voice.transcribe": "transcribe_voice",
                 "voice.normalize_recording": "normalize_voice_recording",
                 "voice.publish": "publish_voice",
+                "voice.unpublish": "unpublish_voice",
                 "rvc.model.upload": "upload_rvc_model",
                 "rvc.convert": "convert_with_rvc",
                 "training.xtts": "train_xtts",
@@ -137,6 +138,7 @@ def register_voice_handlers(
                     "source_artifact_id",
                 ),
                 "voice.publish": ("voice_id", "service_id"),
+                "voice.unpublish": ("voice_id", "service_id"),
                 "rvc.model.upload": (
                     "pth_artifact_id",
                     "index_artifact_id",

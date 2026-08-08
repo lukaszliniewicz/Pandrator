@@ -99,7 +99,11 @@
   }
 </script>
 
-<div class="search-replace" aria-label={`Search and replace ${label}`}>
+<div
+  class="search-replace"
+  role="search"
+  aria-label={`Search and replace ${label}`}
+>
   <div class="find-field">
     <Search class="search-icon" size={15} />
     <input

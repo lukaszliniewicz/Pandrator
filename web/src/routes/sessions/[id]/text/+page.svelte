@@ -18,7 +18,7 @@
 
   const sessionId = String(page.params.id);
   let documents = $state<DocumentRecord[]>([]);
-  let review = $state(false);
+  let reviewArtifactId = $state('');
   let sourceArtifact = $state('');
   let activeTab = $state<'settings' | 'history'>('settings');
   let preview = $state<ArtifactRecord | null>(null);
@@ -37,6 +37,43 @@
     return `${minutes}:${String(total % 60).padStart(2, '0')}`;
   }
 
+  function openReview() {
+    const stageRank = new Map([
+      ['transcription', 1],
+      ['correction', 2],
+      ['translation', 3],
+      ['tts_optimization', 4]
+    ]);
+    reviewArtifactId =
+      documents
+        .flatMap((document) =>
+          document.revisions.map((revision) => ({
+            stage: document.stage,
+            revision
+          }))
+        )
+        .filter((item) => item.revision.artifact)
+        .sort(
+          (left, right) =>
+            (stageRank.get(right.stage) ?? 0) -
+              (stageRank.get(left.stage) ?? 0) ||
+            right.revision.revision_number - left.revision.revision_number
+        )[0]?.revision.artifact?.id ?? '';
+  }
+
+  function previewRevision(artifact: ArtifactRecord) {
+    const role = artifact.raw_role ?? artifact.role;
+    if (
+      ['transcription', 'correction', 'translation', 'tts_optimized'].includes(
+        role
+      )
+    ) {
+      reviewArtifactId = artifact.id;
+      return;
+    }
+    preview = artifact;
+  }
+
   load();
 </script>
 
@@ -50,7 +87,7 @@
       </p>
     </div>
     <button
-      onclick={() => (review = true)}
+      onclick={openReview}
       disabled={!documents.some((item) =>
         ['transcription', 'correction', 'translation'].includes(item.stage)
       )}
@@ -170,7 +207,7 @@
                   </div>
                   {#if revision.artifact}<div class="flex shrink-0 gap-1">
                       <button
-                        onclick={() => (preview = revision.artifact)}
+                        onclick={() => previewRevision(revision.artifact!)}
                         class="tool"
                         title="Preview revision"
                         aria-label={`Preview revision ${revision.revision_number}`}
@@ -198,10 +235,11 @@
   {/if}
 </div>
 
-{#if review}<SubtitleReview
+{#if reviewArtifactId}<SubtitleReview
     {sessionId}
-    sourceArtifactId={sourceArtifact}
-    onclose={() => (review = false)}
+    primaryArtifactId={reviewArtifactId}
+    sourceAudioArtifactId={sourceArtifact}
+    onclose={() => (reviewArtifactId = '')}
     onsaved={load}
   />{/if}
 {#if preview}<ArtifactPreview

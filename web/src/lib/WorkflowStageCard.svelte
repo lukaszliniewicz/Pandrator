@@ -11,6 +11,7 @@
     Sparkles
   } from '@lucide/svelte';
   import type { WorkflowStage } from './api-models';
+  import { modelDisplayName } from './model-display';
   import StageArtifactHistory from './StageArtifactHistory.svelte';
 
   let {
@@ -20,6 +21,7 @@
     onsettings,
     ontoggle,
     onrun,
+    onresume,
     oncancel,
     onselect,
     onpreview,
@@ -33,6 +35,7 @@
     onsettings: () => void;
     ontoggle: (enabled: boolean) => void;
     onrun: () => void;
+    onresume: () => void;
     oncancel: () => void;
     onselect: (artifactId: string) => void;
     onpreview: () => void;
@@ -191,10 +194,34 @@
                   >{formatCost(stage.usage?.cost_usd ?? null)}</strong
                 >
               </span>
+              {#if stage.usage}
+                <span class="muted tabular-nums">
+                  Input
+                  <strong class="text-[var(--ink)]"
+                    >{stage.usage.input_tokens.toLocaleString()}</strong
+                  >
+                </span>
+                <span class="muted tabular-nums">
+                  Output
+                  <strong class="text-[var(--ink)]"
+                    >{stage.usage.output_tokens.toLocaleString()}</strong
+                  >
+                </span>
+                {#if stage.usage.cached_input_tokens}
+                  <span class="muted tabular-nums">
+                    Cached
+                    <strong class="text-[var(--ink)]"
+                      >{stage.usage.cached_input_tokens.toLocaleString()}</strong
+                    >
+                  </span>
+                {/if}
+              {/if}
               {#if stage.usage?.model_id}
                 <span
                   class="muted max-w-full truncate"
-                  title={stage.usage.model_id}>{stage.usage.model_id}</span
+                  title={stage.usage.model_id}
+                  aria-label={`Model ${modelDisplayName(stage.usage.model_id)}`}
+                  >{modelDisplayName(stage.usage.model_id)}</span
                 >
               {/if}
             {/if}
@@ -254,11 +281,22 @@
             >
           {:else}
             <button
-              onclick={onrun}
+              onclick={stage.status === 'failed' &&
+              stage.agent_run_id &&
+              stage.resumable
+                ? onresume
+                : onrun}
               disabled={stage.status === 'unavailable'}
               class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-35"
             >
-              <Play size={16} /> Run optimization
+              <Play size={16} />
+              {stage.status === 'failed' &&
+              stage.agent_run_id &&
+              stage.resumable
+                ? 'Resume'
+                : stage.status === 'failed'
+                  ? 'Retry optimization'
+                  : 'Run optimization'}
             </button>
           {/if}
         {/if}
@@ -277,7 +315,7 @@
             <Eye size={16} /> Preview latest
           </button>
         {/if}
-        {#if workspaceMode === 'review' || stage.key === 'export'}
+        {#if workspaceMode === 'review' || stage.key === 'export' || stage.status === 'failed'}
           {#if stage.status === 'running'}
             <button
               onclick={oncancel}
@@ -286,16 +324,26 @@
             >
           {:else}
             <button
-              onclick={onrun}
+              onclick={stage.status === 'failed' &&
+              stage.agent_run_id &&
+              stage.resumable
+                ? onresume
+                : onrun}
               disabled={stage.status === 'unavailable'}
               class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-35"
             >
               <Play size={16} />
               {stage.key === 'export'
                 ? 'Export now'
-                : stage.artifact
-                  ? 'Run again'
-                  : 'Run now'}
+                : stage.status === 'failed' &&
+                    stage.agent_run_id &&
+                    stage.resumable
+                  ? 'Resume'
+                  : stage.status === 'failed'
+                    ? 'Retry'
+                    : stage.artifact
+                      ? 'Run again'
+                      : 'Run now'}
             </button>
           {/if}
         {/if}

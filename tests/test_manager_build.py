@@ -11,6 +11,7 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest import mock
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PrivateKey,
@@ -23,7 +24,11 @@ from cryptography.hazmat.primitives.serialization import (
 )
 
 from pandrator_manager.releases.trust import TrustStore
-from scripts.build_manager_appimage import stage_appdir, write_checksum
+from scripts.build_manager_appimage import (
+    qualify_linux_build_host,
+    stage_appdir,
+    write_checksum,
+)
 from scripts.build_manager_bootstrap import (
     _extract_wheel,
     _stage_wheel_source,
@@ -40,6 +45,26 @@ from scripts.qualify_manager_lifecycle import _default_bundle_path
 
 
 class ManagerBootstrapBuildTests(unittest.TestCase):
+    def test_manager_appimage_rejects_a_newer_glibc_build_floor(self) -> None:
+        with (
+            mock.patch("scripts.build_manager_appimage.sys.platform", "linux"),
+            mock.patch(
+                "scripts.build_manager_appimage._glibc_version",
+                return_value=(2, 39),
+            ),
+            self.assertRaisesRegex(RuntimeError, "maximum qualified"),
+        ):
+            qualify_linux_build_host()
+
+        with (
+            mock.patch("scripts.build_manager_appimage.sys.platform", "linux"),
+            mock.patch(
+                "scripts.build_manager_appimage._glibc_version",
+                return_value=(2, 35),
+            ),
+        ):
+            qualify_linux_build_host()
+
     def test_release_checksum_manifest_is_single_sorted_file(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -80,18 +105,18 @@ class ManagerBootstrapBuildTests(unittest.TestCase):
 
     def test_windows_bootstrap_uses_the_gui_subsystem(self) -> None:
         repository = Path(__file__).resolve().parents[1]
-        specification = (
-            repository / "pandrator_manager_bootstrap.spec"
-        ).read_text(encoding="utf-8")
+        specification = (repository / "pandrator_manager_bootstrap.spec").read_text(
+            encoding="utf-8"
+        )
 
         self.assertIn('console=os.name != "nt"', specification)
         self.assertIn('collect_submodules("dbus_next")', specification)
 
     def test_tray_logo_is_included_in_the_wheel_and_frozen_bootstrap(self) -> None:
         repository = Path(__file__).resolve().parents[1]
-        specification = (
-            repository / "pandrator_manager_bootstrap.spec"
-        ).read_text(encoding="utf-8")
+        specification = (repository / "pandrator_manager_bootstrap.spec").read_text(
+            encoding="utf-8"
+        )
         package_configuration = (
             repository / "pandrator_manager" / "pyproject.toml"
         ).read_text(encoding="utf-8")
@@ -205,16 +230,11 @@ class ManagerBootstrapBuildTests(unittest.TestCase):
                 text=True,
             )
 
-            verified = TrustStore({"qualification": public}).verify(
-                output.read_bytes()
-            )
+            verified = TrustStore({"qualification": public}).verify(output.read_bytes())
             self.assertEqual(verified.payload.version, "0.9.0")
             self.assertEqual(
-                output.with_suffix(".json.sha256").read_text(
-                    encoding="ascii"
-                ),
-                f"{hashlib.sha256(output.read_bytes()).hexdigest()}  "
-                "release.json\n",
+                output.with_suffix(".json.sha256").read_text(encoding="ascii"),
+                f"{hashlib.sha256(output.read_bytes()).hexdigest()}  release.json\n",
             )
 
     def test_wheel_source_staging_excludes_local_build_residue(self) -> None:
@@ -241,9 +261,7 @@ class ManagerBootstrapBuildTests(unittest.TestCase):
             self.assertTrue((staged / "__init__.py").is_file())
             self.assertFalse((staged / "build").exists())
             self.assertFalse((staged / "__pycache__").exists())
-            self.assertFalse(
-                (staged / "pandrator_manager.egg-info").exists()
-            )
+            self.assertFalse((staged / "pandrator_manager.egg-info").exists())
 
     def test_wheel_extraction_rejects_parent_traversal(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -280,9 +298,7 @@ class ManagerBootstrapBuildTests(unittest.TestCase):
             first.write_bytes(b"wheel")
             self.assertEqual(_wheel_from_directory(root), first.resolve())
 
-            (root / "pandrator_manager-0.6.1-py3-none-any.whl").write_bytes(
-                b"wheel"
-            )
+            (root / "pandrator_manager-0.6.1-py3-none-any.whl").write_bytes(b"wheel")
             with self.assertRaisesRegex(RuntimeError, "found 2"):
                 _wheel_from_directory(root)
 
@@ -324,10 +340,7 @@ class ManagerBootstrapBuildTests(unittest.TestCase):
             stage_appdir(root, bootstrap, appdir)
 
             apprun = appdir / "AppRun"
-            desktop = (
-                appdir
-                / "io.github.lukaszliniewicz.PandratorManager.desktop"
-            )
+            desktop = appdir / "io.github.lukaszliniewicz.PandratorManager.desktop"
             metainfo = (
                 appdir
                 / "usr"
@@ -335,12 +348,7 @@ class ManagerBootstrapBuildTests(unittest.TestCase):
                 / "metainfo"
                 / "io.github.lukaszliniewicz.PandratorManager.appdata.xml"
             )
-            executable = (
-                appdir
-                / "usr"
-                / "bin"
-                / "pandrator-manager-launcher"
-            )
+            executable = appdir / "usr" / "bin" / "pandrator-manager-launcher"
             self.assertTrue(apprun.stat().st_mode & stat.S_IXUSR)
             self.assertTrue(executable.stat().st_mode & stat.S_IXUSR)
             self.assertIn(

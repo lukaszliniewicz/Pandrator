@@ -2,6 +2,7 @@
   import { errorMessage } from './errors';
   import {
     BookOpenCheck,
+    Columns2,
     Download,
     ExternalLink,
     FileQuestion,
@@ -19,7 +20,7 @@
   } from './artifact-display';
   import { apiResponse } from './api';
   import { artifactApi } from './domain-api';
-  import type { UsageSummary } from './api-models';
+  import type { ArtifactRecord, UsageSummary } from './api-models';
   import AudioPlayer from './AudioPlayer.svelte';
   import TextDiff from './TextDiff.svelte';
   import { modalFocus } from './modal-focus';
@@ -34,6 +35,9 @@
   let comparisonText = $state('');
   let comparisonName = $state('');
   let comparisonId = $state('');
+  let comparisonChoice = $state('');
+  let comparisonCandidates = $state<ArtifactRecord[]>([]);
+  let comparisonLoading = $state(false);
   let comparisonMode = $state<'single' | 'side' | 'diff'>('single');
   let usageSummary = $state<UsageSummary | null>(null);
   type SubtitleTrack = {
@@ -132,6 +136,50 @@
       : 'disabled';
   }
 
+  function isTextArtifact(value: ArtifactRecord) {
+    const name = String(value.relative_path ?? '').toLowerCase();
+    const type = String(value.mime_type ?? '').toLowerCase();
+    return (
+      value.kind === 'text' ||
+      type.startsWith('text/') ||
+      [
+        '.txt',
+        '.md',
+        '.srt',
+        '.vtt',
+        '.json',
+        '.xml',
+        '.csv',
+        '.yaml',
+        '.yml'
+      ].some((suffix) => name.endsWith(suffix))
+    );
+  }
+
+  async function loadComparison() {
+    const candidate = comparisonCandidates.find(
+      (item) => item.id === comparisonChoice
+    );
+    if (!candidate) return;
+    comparisonLoading = true;
+    error = '';
+    try {
+      const response = await apiResponse(`/artifacts/${candidate.id}/content`, {
+        headers: { Range: 'bytes=0-2097151' }
+      });
+      comparisonText = await response.text();
+      if (comparisonText.length >= 2_097_000)
+        comparisonText += '\n\n— Preview truncated at 2 MiB —';
+      comparisonId = candidate.id;
+      comparisonName = artifactFilename(candidate);
+      comparisonMode = 'side';
+    } catch (caught) {
+      error = errorMessage(caught);
+    } finally {
+      comparisonLoading = false;
+    }
+  }
+
   onMount(async () => {
     loading = isText;
     try {
@@ -167,30 +215,16 @@
             });
           }
         }
-        if (isText) {
-          const parent = (context.parents ?? []).find((item) => {
-            const name = String(item.relative_path ?? '').toLowerCase();
-            const type = String(item.mime_type ?? '').toLowerCase();
-            return (
-              item.kind === 'text' ||
-              type.startsWith('text/') ||
-              ['.txt', '.md', '.srt', '.vtt', '.json'].some((suffix) =>
-                name.endsWith(suffix)
-              )
-            );
-          });
-          if (parent) {
-            const parentResponse = await apiResponse(
-              `/artifacts/${parent.id}/content`,
-              { headers: { Range: 'bytes=0-2097151' } }
-            ).catch(() => null);
-            if (parentResponse) {
-              comparisonText = await parentResponse.text();
-              comparisonId = parent.id;
-              comparisonName = artifactFilename(parent);
-            }
-          }
-        }
+        if (isText)
+          comparisonCandidates = [
+            ...(context.parents ?? []),
+            ...(context.children ?? [])
+          ].filter(
+            (item, index, items) =>
+              item.id !== artifact.id &&
+              isTextArtifact(item) &&
+              items.findIndex((candidate) => candidate.id === item.id) === index
+          );
       }
     } catch (caught) {
       error = errorMessage(caught);
@@ -231,9 +265,14 @@
             >{/if}{#if artifact.state}<span>· {artifact.state}</span>{/if}
         </div>
       </div>
-      {#if usageSummary?.commercial}<div class="cost-badge">
+      {#if usageSummary?.commercial || usageSummary?.total_tokens}<div
+          class="cost-badge"
+        >
           <span>{usageSummary.estimated ? 'Estimated cost' : 'Cost'}</span
-          ><strong>{formattedCost}</strong
+          ><strong>{formattedCost}</strong>{#if usageSummary.total_tokens}<small
+              >{usageSummary.input_tokens?.toLocaleString() ?? 0} in ·
+              {usageSummary.output_tokens?.toLocaleString() ?? 0} out</small
+            >{/if}
           >{#if usageSummary.has_unpriced_usage}<small>partial</small>{/if}
         </div>{/if}
       {#if comparisonId}<div class="flex gap-1">
@@ -258,6 +297,42 @@
         aria-label="Close preview"><X size={20} /></button
       >
     </header>
+    {#if isText && comparisonCandidates.length}<div
+        class="flex flex-wrap items-end gap-3 border-b border-[var(--line)] px-5 py-3 sm:px-6"
+        aria-label="Artifact comparison"
+      >
+        <label class="min-w-0 flex-1 text-xs font-semibold sm:max-w-lg">
+          Compare with a related asset
+          <select
+            bind:value={comparisonChoice}
+            disabled={comparisonLoading}
+            class="mt-1 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-sm font-normal disabled:opacity-50"
+          >
+            <option value="">Choose an asset…</option>
+            {#each comparisonCandidates as candidate (candidate.id)}
+              <option value={candidate.id}
+                >{artifactRoleLabel(candidate.role)} · {artifactFilename(
+                  candidate
+                )}</option
+              >
+            {/each}
+          </select>
+        </label>
+        <button
+          onclick={loadComparison}
+          disabled={!comparisonChoice || comparisonLoading}
+          class="tool flex items-center gap-2 disabled:opacity-40"
+        >
+          {#if comparisonLoading}<LoaderCircle
+              class="animate-spin"
+              size={15}
+            />{:else}<Columns2 size={15} />{/if}
+          {comparisonLoading ? 'Loading…' : 'Load comparison'}
+        </button>
+        <span class="muted pb-2 text-xs"
+          >Related files stay unloaded until selected.</span
+        >
+      </div>{/if}
     <div class="min-h-0 flex-1 overflow-auto bg-[var(--paper)] p-4 sm:p-6">
       {#if research}
         <details class="research-ledger mb-4" open>

@@ -20,6 +20,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/agent-runs/{runId}/resume": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["resumeAgentRun"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/agent-runs/{runId}/steps": {
         parameters: {
             query?: never;
@@ -1621,6 +1637,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{sessionId}/subtitles/catalog": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listSubtitleReviewArtifacts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/subtitles/review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getExactSubtitleReview"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{sessionId}/subtitles/{stage}/review": {
         parameters: {
             query?: never;
@@ -1893,6 +1941,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/voices/{voiceId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["deleteVoice"];
+        options?: never;
+        head?: never;
+        patch: operations["updateVoice"];
+        trace?: never;
+    };
     "/api/v1/voices/{voiceId}/providers/{serviceId}": {
         parameters: {
             query?: never;
@@ -1903,7 +1967,7 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["publishVoiceToProvider"];
-        delete?: never;
+        delete: operations["removeVoiceFromProvider"];
         options?: never;
         head?: never;
         patch?: never;
@@ -1919,6 +1983,38 @@ export interface paths {
         get: operations["listVoiceSamples"];
         put?: never;
         post: operations["uploadVoiceSample"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/voices/{voiceId}/samples/{sampleId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["deleteVoiceSample"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/voices/{voiceId}/samples/{sampleId}/replace": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["replaceVoiceSample"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2078,7 +2174,7 @@ export interface components {
             api_version?: string;
             /**
              * Application Version
-             * @default 0.8.7
+             * @default 0.8.8
              */
             application_version?: string;
             /** Canonical Origin */
@@ -2518,6 +2614,11 @@ export interface components {
              */
             cached_input_cost_per_million?: number | null;
             /**
+             * Context Window Tokens
+             * @default 262144
+             */
+            context_window_tokens?: number;
+            /**
              * Default Reasoning Effort
              * @default null
              */
@@ -2542,6 +2643,11 @@ export interface components {
              * @default false
              */
             is_default?: boolean;
+            /**
+             * Max Output Tokens
+             * @default null
+             */
+            max_output_tokens?: number | null;
             /** Model Id */
             model_id: string;
             /** Options */
@@ -2561,6 +2667,11 @@ export interface components {
              * @default null
              */
             cached_input_cost_per_million?: number | null;
+            /**
+             * Context Window Tokens
+             * @default null
+             */
+            context_window_tokens?: number | null;
             /**
              * Default Reasoning Effort
              * @default null
@@ -2586,6 +2697,11 @@ export interface components {
              * @default null
              */
             is_default?: boolean | null;
+            /**
+             * Max Output Tokens
+             * @default null
+             */
+            max_output_tokens?: number | null;
             /**
              * Model Id
              * @default null
@@ -3099,6 +3215,11 @@ export interface components {
             expected_revision: number;
             /** Segments */
             segments: components["schemas"]["SubtitleSegmentInput"][];
+            /**
+             * Source Artifact Id
+             * @default null
+             */
+            source_artifact_id?: string | null;
         };
         /** SubtitleSegmentInput */
         SubtitleSegmentInput: {
@@ -3203,12 +3324,35 @@ export interface components {
         /** VoiceTranscriptReview */
         VoiceTranscriptReview: {
             /**
+             * Expected Voice Revision
+             * @default null
+             */
+            expected_voice_revision?: number | null;
+            /**
              * Language
              * @default null
              */
             language?: string | null;
             /** Transcript */
             transcript: string;
+        };
+        /** VoiceUpdate */
+        VoiceUpdate: {
+            /**
+             * Description
+             * @default null
+             */
+            description?: string | null;
+            /**
+             * Language
+             * @default null
+             */
+            language?: string | null;
+            /**
+             * Name
+             * @default null
+             */
+            name?: string | null;
         };
         /** WorkError */
         WorkError: {
@@ -3388,6 +3532,26 @@ export interface operations {
         responses: {
             /** @description Cleaning result accepted */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    resumeAgentRun: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Resume an interrupted agentic operation from its durable checkpoint */
+            202: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -5990,6 +6154,55 @@ export interface operations {
             };
         };
     };
+    listSubtitleReviewArtifacts: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Reviewable subtitle artifact catalog */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getExactSubtitleReview: {
+        parameters: {
+            query: {
+                artifact_id: string[];
+            };
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Exact immutable subtitle revisions aligned for review */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid artifact selection */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     saveSubtitleReview: {
         parameters: {
             query?: never;
@@ -6460,10 +6673,74 @@ export interface operations {
             };
         };
     };
+    deleteVoice: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": string;
+            };
+            path: {
+                voiceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision conflict or bundled voice */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    updateVoice: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": string;
+            };
+            path: {
+                voiceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VoiceUpdate"];
+            };
+        };
+        responses: {
+            /** @description Updated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     publishVoiceToProvider: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                "If-Match": string;
+            };
             path: {
                 voiceId: string;
                 serviceId: string;
@@ -6474,6 +6751,43 @@ export interface operations {
         responses: {
             /** @description Provider upload queued */
             202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    removeVoiceFromProvider: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": string;
+            };
+            path: {
+                voiceId: string;
+                serviceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Provider deletion queued */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision conflict or unowned legacy registration */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Provider deletion unsupported */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6504,7 +6818,9 @@ export interface operations {
     uploadVoiceSample: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                "If-Match": string;
+            };
             path: {
                 voiceId: string;
             };
@@ -6514,6 +6830,73 @@ export interface operations {
         responses: {
             /** @description Queued */
             202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    deleteVoiceSample: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": string;
+            };
+            path: {
+                voiceId: string;
+                sampleId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision conflict or bundled voice */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    replaceVoiceSample: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": string;
+            };
+            path: {
+                voiceId: string;
+                sampleId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Replacement queued */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision conflict or bundled voice */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

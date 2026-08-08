@@ -43,7 +43,10 @@ class TTSHandlerTests(unittest.TestCase):
                         for _index in range(7)
                     ]
                     release.set()
-                    results = [first.result(), *(future.result() for future in remaining)]
+                    results = [
+                        first.result(),
+                        *(future.result() for future in remaining),
+                    ]
         finally:
             (
                 tts_handler._litellm_speech,
@@ -76,7 +79,9 @@ class TTSHandlerTests(unittest.TestCase):
             )
         )
 
-    def test_azure_openai_profile_uses_api_key_header_and_manual_deployment_directly(self):
+    def test_azure_openai_profile_uses_api_key_header_and_manual_deployment_directly(
+        self,
+    ):
         settings = {
             "service": tts_handler.OPENAI_COMPAT_SERVICE,
             "openai_audio_endpoint": "azure-openai-v1",
@@ -98,9 +103,10 @@ class TTSHandlerTests(unittest.TestCase):
                 }
             ],
         }
-        with patch("pandrator.logic.tts_handler._request_litellm_audio") as litellm, patch(
-            "pandrator.logic.tts_handler.requests.post"
-        ) as post:
+        with (
+            patch("pandrator.logic.tts_handler._request_litellm_audio") as litellm,
+            patch("pandrator.logic.tts_handler.requests.post") as post,
+        ):
             post.return_value.status_code = 200
             tts_handler._request_openai_compatible_audio("Hello", settings)
 
@@ -117,7 +123,15 @@ class TTSHandlerTests(unittest.TestCase):
         response = Mock()
         response.ok = True
         response.json.return_value = {
-            "candidates": [{"content": {"parts": [{"inlineData": {"data": base64.b64encode(pcm).decode()}}]}}]
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [
+                            {"inlineData": {"data": base64.b64encode(pcm).decode()}}
+                        ]
+                    }
+                }
+            ]
         }
         settings = {
             "service": tts_handler.VERTEX_SERVICE,
@@ -126,15 +140,28 @@ class TTSHandlerTests(unittest.TestCase):
             "generation_prompt": "Speak brightly, with a quick conversational rhythm.",
             "provider_configs": [{"id": "vertex_ai", "vertex_location": "us-central1"}],
         }
-        with patch("pandrator.logic.tts_handler._vertex_access_token", return_value=("token", "project")), patch(
-            "pandrator.logic.tts_handler.requests.post", return_value=response
-        ) as post:
+        with (
+            patch(
+                "pandrator.logic.tts_handler._vertex_access_token",
+                return_value=("token", "project"),
+            ),
+            patch(
+                "pandrator.logic.tts_handler.requests.post", return_value=response
+            ) as post,
+        ):
             audio_response = tts_handler._request_vertex_ai_audio("Hello", settings)
 
         self.assertTrue(audio_response.content.startswith(b"RIFF"))
-        self.assertIn("/projects/project/locations/us-central1/", post.call_args.args[0])
-        self.assertEqual("Bearer token", post.call_args.kwargs["headers"]["Authorization"])
-        self.assertEqual("AUDIO", post.call_args.kwargs["json"]["generationConfig"]["responseModalities"][0])
+        self.assertIn(
+            "/projects/project/locations/us-central1/", post.call_args.args[0]
+        )
+        self.assertEqual(
+            "Bearer token", post.call_args.kwargs["headers"]["Authorization"]
+        )
+        self.assertEqual(
+            "AUDIO",
+            post.call_args.kwargs["json"]["generationConfig"]["responseModalities"][0],
+        )
         prompt = post.call_args.kwargs["json"]["contents"][0]["parts"][0]["text"]
         self.assertIn("Speaking directions:", prompt)
         self.assertIn("Speak brightly", prompt)
@@ -200,10 +227,14 @@ class TTSHandlerTests(unittest.TestCase):
         )
         self.assertNotIn("instructions", payload)
         self.assertIn("Speaking directions:\nWarm and reassuring", payload["input"])
-        self.assertIn("Transcript:\nThe transcript must remain unchanged.", payload["input"])
+        self.assertIn(
+            "Transcript:\nThe transcript must remain unchanged.", payload["input"]
+        )
         self.assertNotEqual("The transcript must remain unchanged.", payload["input"])
 
-    def test_json_speech_response_reports_provider_error_instead_of_audio_decode_noise(self):
+    def test_json_speech_response_reports_provider_error_instead_of_audio_decode_noise(
+        self,
+    ):
         response = Mock()
         response.headers = {"Content-Type": "application/json"}
         response.content = b'{"detail":"voice is unavailable"}'
@@ -235,7 +266,9 @@ class TTSHandlerTests(unittest.TestCase):
         }
 
         custom_providers = tts_handler.get_provider_configs(settings)
-        self.assertEqual([provider["id"] for provider in custom_providers], ["my-server"])
+        self.assertEqual(
+            [provider["id"] for provider in custom_providers], ["my-server"]
+        )
 
         services = {
             service["id"]: service
@@ -397,14 +430,19 @@ class TTSHandlerTests(unittest.TestCase):
             ],
         }
 
-        with patch(
-            "pandrator.logic.tts_handler._request_litellm_audio",
-            side_effect=RuntimeError("use direct HTTP"),
-        ), patch("pandrator.logic.tts_handler.requests.post") as mock_post:
+        with (
+            patch(
+                "pandrator.logic.tts_handler._request_litellm_audio",
+                side_effect=RuntimeError("use direct HTTP"),
+            ),
+            patch("pandrator.logic.tts_handler.requests.post") as mock_post,
+        ):
             mock_post.return_value.status_code = 200
             tts_handler._request_openai_compatible_audio("Hello", settings)
 
-        self.assertEqual(mock_post.call_args.args[0], "http://127.0.0.1:9000/custom/speech")
+        self.assertEqual(
+            mock_post.call_args.args[0], "http://127.0.0.1:9000/custom/speech"
+        )
 
     def test_service_base_url_uses_saved_default_and_active_session_override(self):
         settings = {
@@ -450,7 +488,11 @@ class TTSHandlerTests(unittest.TestCase):
                 }
             ]
         }
-        service = next(item for item in tts_handler.get_service_configs(settings) if item["id"] == "kokoro")
+        service = next(
+            item
+            for item in tts_handler.get_service_configs(settings)
+            if item["id"] == "kokoro"
+        )
         self.assertEqual(["kokoro-v1"], service["models"])
         self.assertEqual(["af_heart", "bf_alice"], service["voices"])
         self.assertEqual("bf_alice", service["default_voice"])
@@ -459,7 +501,9 @@ class TTSHandlerTests(unittest.TestCase):
 
     def test_kokoro_voice_language_inference(self):
         self.assertEqual(tts_handler.infer_kokoro_voice_language_code("af_heart"), "en")
-        self.assertEqual(tts_handler.infer_kokoro_voice_language_code("bf_alice"), "en-gb")
+        self.assertEqual(
+            tts_handler.infer_kokoro_voice_language_code("bf_alice"), "en-gb"
+        )
         self.assertEqual(tts_handler.infer_kokoro_voice_language_code("jf_alpha"), "ja")
         self.assertEqual(tts_handler.infer_kokoro_voice_language_code("martin"), "de")
         self.assertEqual(tts_handler.infer_kokoro_voice_language_code("alloy"), "en")
@@ -543,10 +587,11 @@ class TTSHandlerTests(unittest.TestCase):
 
     def test_chatterbox_payload_construction(self):
         from unittest.mock import patch
+
         with patch("requests.post") as mock_post:
             mock_post.return_value.status_code = 200
             mock_post.return_value.content = b"fake audio content"
-            
+
             tts_handler._request_chatterbox_audio(
                 "Hello world",
                 {
@@ -563,9 +608,9 @@ class TTSHandlerTests(unittest.TestCase):
                     "chatterbox_cfg_weight": 0.7,
                     "chatterbox_norm_loudness": False,
                 },
-                "http://localhost:8040"
+                "http://localhost:8040",
             )
-            
+
             mock_post.assert_called_once()
             called_args, called_kwargs = mock_post.call_args
             payload = called_kwargs["json"]
@@ -585,16 +630,16 @@ class TTSHandlerTests(unittest.TestCase):
 
         with patch("requests.post") as mock_post:
             mock_post.return_value.status_code = 200
-            
+
             tts_handler._request_chatterbox_audio(
                 "Bonjour",
                 {
                     "xtts_model": "chatterbox-multilingual",
                     "language": "fr",
                 },
-                "http://localhost:8040"
+                "http://localhost:8040",
             )
-            
+
             mock_post.assert_called_once()
             called_args, called_kwargs = mock_post.call_args
             payload = called_kwargs["json"]
@@ -623,11 +668,15 @@ class TTSHandlerTests(unittest.TestCase):
             mock_post.call_args.kwargs["json"]["model"],
         )
 
-    def test_chatterbox_language_normalization_preserves_only_supported_base_codes(self):
+    def test_chatterbox_language_normalization_preserves_only_supported_base_codes(
+        self,
+    ):
         self.assertEqual(tts_handler.normalize_chatterbox_language_code("pt_br"), "pt")
         self.assertEqual(tts_handler.normalize_chatterbox_language_code("en-US"), "en")
         self.assertEqual(tts_handler.normalize_chatterbox_language_code("zh-CN"), "zh")
-        self.assertEqual(tts_handler.normalize_chatterbox_language_code("vi-VN"), "vi-vn")
+        self.assertEqual(
+            tts_handler.normalize_chatterbox_language_code("vi-VN"), "vi-vn"
+        )
 
     def test_kobold_qwen_payload_construction(self):
         with patch("requests.post") as mock_post:
@@ -645,7 +694,9 @@ class TTSHandlerTests(unittest.TestCase):
             )
 
         mock_post.assert_called_once()
-        self.assertEqual(mock_post.call_args.args[0], "http://localhost:8042/v1/audio/speech")
+        self.assertEqual(
+            mock_post.call_args.args[0], "http://localhost:8042/v1/audio/speech"
+        )
         called_kwargs = mock_post.call_args.kwargs
         self.assertEqual(
             called_kwargs["headers"],
@@ -839,7 +890,9 @@ class TTSHandlerTests(unittest.TestCase):
                 }
             },
         }
-        self.assertEqual("Voice Cloning", tts_handler.resolve_kobold_qwen_model(settings))
+        self.assertEqual(
+            "Voice Cloning", tts_handler.resolve_kobold_qwen_model(settings)
+        )
 
     def test_kobold_qwen_metadata_ignores_other_provider_catalogues(self):
         settings = {
@@ -875,7 +928,9 @@ class TTSHandlerTests(unittest.TestCase):
             "requests.get",
             side_effect=tts_handler.requests.exceptions.ConnectionError("offline"),
         ):
-            catalogue = tts_handler.get_kobold_qwen_voice_catalog("http://localhost:8042")
+            catalogue = tts_handler.get_kobold_qwen_voice_catalog(
+                "http://localhost:8042"
+            )
 
         kobo = next(item for item in catalogue if item["id"] == "kobo")
         self.assertEqual(kobo["type"], "cloned")
@@ -896,7 +951,10 @@ class TTSHandlerTests(unittest.TestCase):
         }
         voices_response.raise_for_status.return_value = None
 
-        with patch("pandrator.logic.tts_handler.requests.get", side_effect=[models_response, voices_response]) as get:
+        with patch(
+            "pandrator.logic.tts_handler.requests.get",
+            side_effect=[models_response, voices_response],
+        ) as get:
             self.assertEqual(
                 tts_handler.get_silero_models("http://silero", installed_only=True),
                 ["v5_cis_base_nostress"],
@@ -916,9 +974,14 @@ class TTSHandlerTests(unittest.TestCase):
         response = Mock()
         response.raise_for_status.return_value = None
         decoded = object()
-        with patch("pandrator.logic.tts_handler.requests.post", return_value=response) as post, patch(
-            "pandrator.logic.tts_handler._decode_audio_response",
-            return_value=decoded,
+        with (
+            patch(
+                "pandrator.logic.tts_handler.requests.post", return_value=response
+            ) as post,
+            patch(
+                "pandrator.logic.tts_handler._decode_audio_response",
+                return_value=decoded,
+            ),
         ):
             result = tts_handler.text_to_audio(
                 "Привіт, світе!",
@@ -954,9 +1017,14 @@ class TTSHandlerTests(unittest.TestCase):
     def test_tts_payload_collapses_visual_line_breaks_and_whitespace(self):
         response = Mock()
         response.raise_for_status.return_value = None
-        with patch("pandrator.logic.tts_handler.requests.post", return_value=response) as post, patch(
-            "pandrator.logic.tts_handler._decode_audio_response",
-            return_value=object(),
+        with (
+            patch(
+                "pandrator.logic.tts_handler.requests.post", return_value=response
+            ) as post,
+            patch(
+                "pandrator.logic.tts_handler._decode_audio_response",
+                return_value=object(),
+            ),
         ):
             tts_handler.text_to_audio(
                 "Visually wrapped\n  but spoken\tcontinuously.",
@@ -972,8 +1040,10 @@ class TTSHandlerTests(unittest.TestCase):
 
     def test_tts_generation_retries_transient_http_failures_with_backoff(self):
         transient = Mock(status_code=503, headers={}, text="temporarily unavailable")
-        transient.raise_for_status.side_effect = tts_handler.requests.exceptions.HTTPError(
-            "503 unavailable", response=transient
+        transient.raise_for_status.side_effect = (
+            tts_handler.requests.exceptions.HTTPError(
+                "503 unavailable", response=transient
+            )
         )
         success = Mock(status_code=200, headers={"Content-Type": "audio/wav"}, text="")
         success.raise_for_status.return_value = None
@@ -982,8 +1052,15 @@ class TTSHandlerTests(unittest.TestCase):
         cancel_event.wait.return_value = False
         decoded = object()
 
-        with patch("pandrator.logic.tts_handler.requests.post", side_effect=[transient, success]) as post, patch(
-            "pandrator.logic.tts_handler._decode_audio_response", return_value=decoded
+        with (
+            patch(
+                "pandrator.logic.tts_handler.requests.post",
+                side_effect=[transient, success],
+            ) as post,
+            patch(
+                "pandrator.logic.tts_handler._decode_audio_response",
+                return_value=decoded,
+            ),
         ):
             result = tts_handler.text_to_audio(
                 "Retry me",
@@ -1000,11 +1077,13 @@ class TTSHandlerTests(unittest.TestCase):
 
     def test_tts_generation_does_not_retry_invalid_http_requests(self):
         rejected = Mock(status_code=400, headers={}, text="invalid voice")
-        rejected.raise_for_status.side_effect = tts_handler.requests.exceptions.HTTPError(
-            "400 invalid", response=rejected
+        rejected.raise_for_status.side_effect = (
+            tts_handler.requests.exceptions.HTTPError("400 invalid", response=rejected)
         )
 
-        with patch("pandrator.logic.tts_handler.requests.post", return_value=rejected) as post:
+        with patch(
+            "pandrator.logic.tts_handler.requests.post", return_value=rejected
+        ) as post:
             result = tts_handler.text_to_audio(
                 "Do not retry",
                 {"service": "Silero", "speaker": "missing", "language": "en"},
@@ -1014,24 +1093,64 @@ class TTSHandlerTests(unittest.TestCase):
         self.assertIsNone(result)
         self.assertEqual(1, post.call_count)
 
+    def test_vertex_rate_limit_uses_capacity_aware_backoff(self):
+        limited = Mock(status_code=429, headers={}, text="resource exhausted")
+        limited.raise_for_status.side_effect = (
+            tts_handler.requests.exceptions.HTTPError(
+                "429 resource exhausted", response=limited
+            )
+        )
+        success = Mock(status_code=200, headers={"Content-Type": "audio/wav"}, text="")
+        success.raise_for_status.return_value = None
+        cancel_event = Mock()
+        cancel_event.is_set.return_value = False
+        cancel_event.wait.return_value = False
+        decoded = object()
+
+        with (
+            patch(
+                "pandrator.logic.tts_handler._request_vertex_ai_audio",
+                side_effect=[limited, success],
+            ),
+            patch(
+                "pandrator.logic.tts_handler._decode_audio_response",
+                return_value=decoded,
+            ),
+        ):
+            result = tts_handler.text_to_audio(
+                "Und wir stellen fest",
+                {"service": tts_handler.VERTEX_SERVICE},
+                max_attempts=3,
+                cancel_event=cancel_event,
+            )
+
+        self.assertIs(decoded, result)
+        retry_delay = cancel_event.wait.call_args.args[0]
+        self.assertGreaterEqual(retry_delay, 4.0)
+        self.assertLessEqual(retry_delay, 6.0)
+
     def test_qwen_service_recovery_does_not_consume_synthesis_budget(self):
         success = Mock(status_code=200, headers={"Content-Type": "audio/wav"}, text="")
         success.raise_for_status.return_value = None
         decoded = object()
         recovery_updates = []
 
-        with patch(
-            "pandrator.logic.tts_handler._request_kobold_qwen_audio",
-            side_effect=[
-                tts_handler.requests.exceptions.ConnectionError("manager restart"),
-                success,
-            ],
-        ) as request_audio, patch(
-            "pandrator.logic.tts_handler._wait_for_kobold_qwen_recovery",
-            return_value=True,
-        ) as wait_for_recovery, patch(
-            "pandrator.logic.tts_handler._decode_audio_response",
-            return_value=decoded,
+        with (
+            patch(
+                "pandrator.logic.tts_handler._request_kobold_qwen_audio",
+                side_effect=[
+                    tts_handler.requests.exceptions.ConnectionError("manager restart"),
+                    success,
+                ],
+            ) as request_audio,
+            patch(
+                "pandrator.logic.tts_handler._wait_for_kobold_qwen_recovery",
+                return_value=True,
+            ) as wait_for_recovery,
+            patch(
+                "pandrator.logic.tts_handler._decode_audio_response",
+                return_value=decoded,
+            ),
         ):
             result = tts_handler.text_to_audio(
                 "Retry after service recovery",
@@ -1052,18 +1171,25 @@ class TTSHandlerTests(unittest.TestCase):
         self.assertEqual([(1, 3, 90.0)], recovery_updates)
 
     def test_qwen_invalid_voice_response_is_not_treated_as_recovery(self):
-        rejected = Mock(status_code=422, headers={}, text="voice reference not installed")
-        rejected.raise_for_status.side_effect = tts_handler.requests.exceptions.HTTPError(
-            "422 invalid voice",
-            response=rejected,
+        rejected = Mock(
+            status_code=422, headers={}, text="voice reference not installed"
+        )
+        rejected.raise_for_status.side_effect = (
+            tts_handler.requests.exceptions.HTTPError(
+                "422 invalid voice",
+                response=rejected,
+            )
         )
 
-        with patch(
-            "pandrator.logic.tts_handler._request_kobold_qwen_audio",
-            return_value=rejected,
-        ) as request_audio, patch(
-            "pandrator.logic.tts_handler._wait_for_kobold_qwen_recovery"
-        ) as wait_for_recovery:
+        with (
+            patch(
+                "pandrator.logic.tts_handler._request_kobold_qwen_audio",
+                return_value=rejected,
+            ) as request_audio,
+            patch(
+                "pandrator.logic.tts_handler._wait_for_kobold_qwen_recovery"
+            ) as wait_for_recovery,
+        ):
             result = tts_handler.text_to_audio(
                 "Do not silently fall back",
                 {
@@ -1077,6 +1203,64 @@ class TTSHandlerTests(unittest.TestCase):
         self.assertIsNone(result)
         self.assertEqual(1, request_audio.call_count)
         wait_for_recovery.assert_not_called()
+
+    def test_provider_voice_delete_uses_only_voice_routes(self):
+        unsupported = Mock(status_code=405, text="method not allowed")
+        deleted = Mock(status_code=200, text="ok")
+        with patch(
+            "pandrator.logic.tts_handler.requests.delete",
+            side_effect=[unsupported, deleted],
+        ) as request_delete:
+            result = tts_handler.delete_speaker_voice(
+                "pandrator-narrator-123",
+                base_url="http://provider.example/v1",
+                service="Qwen3 TTS",
+            )
+
+        self.assertTrue(result)
+        called_urls = [call.args[0] for call in request_delete.call_args_list]
+        self.assertEqual(
+            [
+                "http://provider.example/v1/audio/voices/pandrator-narrator-123",
+                "http://provider.example/v1/voices/pandrator-narrator-123",
+            ],
+            called_urls,
+        )
+        self.assertFalse(any("/files/" in url for url in called_urls))
+
+    def test_provider_voice_delete_treats_verified_absence_as_success(self):
+        missing = Mock(status_code=404, text="missing")
+        catalogue = Mock(status_code=200)
+        catalogue.json.return_value = {"data": [{"id": "another-voice"}]}
+        with (
+            patch(
+                "pandrator.logic.tts_handler.requests.delete",
+                side_effect=[missing, missing],
+            ),
+            patch(
+                "pandrator.logic.tts_handler.requests.get",
+                return_value=catalogue,
+            ),
+        ):
+            result = tts_handler.delete_speaker_voice(
+                "already-gone",
+                base_url="http://provider.example/v1",
+                service="Chatterbox",
+            )
+
+        self.assertFalse(result)
+
+    def test_provider_voice_delete_rejects_unsafe_ids_before_request(self):
+        with (
+            patch("pandrator.logic.tts_handler.requests.delete") as request_delete,
+            self.assertRaisesRegex(ValueError, "not safe"),
+        ):
+            tts_handler.delete_speaker_voice(
+                "../other-voice",
+                base_url="http://provider.example/v1",
+                service="XTTS",
+            )
+        request_delete.assert_not_called()
 
 
 if __name__ == "__main__":

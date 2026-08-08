@@ -26,15 +26,18 @@ from pandrator.web.database import SCHEMA_HEAD, Database, sqlite_url, upgrade_da
 from pandrator.web.jobs import JobQueue, Worker, noop_handler
 from pandrator.web.legacy_migration import import_legacy_data
 from pandrator.web.models import (
+    AgentRun,
     Artifact,
     GenerationPlan,
     GenerationPlanRevision,
+    GenerationRun,
     GenerationSegment,
     Job,
     JobEvent,
     ProviderModel,
     Segment,
     SessionRecord,
+    SessionSetting,
     SessionSource,
     SourceAsset,
     SourceRecord,
@@ -51,7 +54,10 @@ class DataPathsTests(unittest.TestCase):
             previous = os.getcwd()
             try:
                 os.chdir(Path(directory).parent)
-                self.assertEqual(paths.managed_path("sessions/example"), Path(directory).resolve() / "sessions" / "example")
+                self.assertEqual(
+                    paths.managed_path("sessions/example"),
+                    Path(directory).resolve() / "sessions" / "example",
+                )
             finally:
                 os.chdir(previous)
 
@@ -59,11 +65,16 @@ class DataPathsTests(unittest.TestCase):
                 paths.managed_path("../escape.txt")
 
     def test_external_paths_require_an_allowlisted_root(self):
-        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as other:
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            tempfile.TemporaryDirectory() as other,
+        ):
             source = Path(directory) / "source.txt"
             source.write_text("hello", encoding="utf-8")
             paths = DataPaths.from_value(other).ensure()
-            self.assertEqual(paths.allowed_external_path(source, [directory]), source.resolve())
+            self.assertEqual(
+                paths.allowed_external_path(source, [directory]), source.resolve()
+            )
             with self.assertRaises(PathBoundaryError):
                 paths.allowed_external_path(source, [other])
 
@@ -76,12 +87,7 @@ class SchemaUpgradeTests(unittest.TestCase):
             config = Config()
             config.set_main_option(
                 "script_location",
-                str(
-                    Path(__file__).parents[1]
-                    / "pandrator"
-                    / "web"
-                    / "migrations"
-                ),
+                str(Path(__file__).parents[1] / "pandrator" / "web" / "migrations"),
             )
             config.set_main_option(
                 "sqlalchemy.url",
@@ -139,47 +145,276 @@ class SchemaUpgradeTests(unittest.TestCase):
             database_path = Path(directory) / "pandrator.sqlite3"
             upgrade_database(database_path)
             config = Config()
-            config.set_main_option("script_location", str(Path(__file__).parents[1] / "pandrator" / "web" / "migrations"))
+            config.set_main_option(
+                "script_location",
+                str(Path(__file__).parents[1] / "pandrator" / "web" / "migrations"),
+            )
             config.set_main_option("sqlalchemy.url", sqlite_url(database_path))
             command.downgrade(config, "0003_parity_workspace")
             with closing(sqlite3.connect(database_path)) as connection:
-                self.assertEqual("0003_parity_workspace", connection.execute("SELECT version_num FROM alembic_version").fetchone()[0])
-                self.assertNotIn("job_id", [row[1] for row in connection.execute("PRAGMA table_info(output_assemblies)")])
-                self.assertNotIn("source_text_artifact_id", [row[1] for row in connection.execute("PRAGMA table_info(training_runs)")])
+                self.assertEqual(
+                    "0003_parity_workspace",
+                    connection.execute(
+                        "SELECT version_num FROM alembic_version"
+                    ).fetchone()[0],
+                )
+                self.assertNotIn(
+                    "job_id",
+                    [
+                        row[1]
+                        for row in connection.execute(
+                            "PRAGMA table_info(output_assemblies)"
+                        )
+                    ],
+                )
+                self.assertNotIn(
+                    "source_text_artifact_id",
+                    [
+                        row[1]
+                        for row in connection.execute(
+                            "PRAGMA table_info(training_runs)"
+                        )
+                    ],
+                )
             upgrade_database(database_path)
             with closing(sqlite3.connect(database_path)) as connection:
-                self.assertEqual(SCHEMA_HEAD, connection.execute("SELECT version_num FROM alembic_version").fetchone()[0])
-                self.assertIn("job_id", [row[1] for row in connection.execute("PRAGMA table_info(output_assemblies)")])
-                self.assertIn("source_text_artifact_id", [row[1] for row in connection.execute("PRAGMA table_info(training_runs)")])
-                self.assertIn("node_kind", [row[1] for row in connection.execute("PRAGMA table_info(generation_segments)")])
-                self.assertIn("paragraph_break_after", [row[1] for row in connection.execute("PRAGMA table_info(generation_segments)")])
-                self.assertIn("voice", [row[1] for row in connection.execute("PRAGMA table_info(generation_segments)")])
-                self.assertIn("speaker", [row[1] for row in connection.execute("PRAGMA table_info(generation_segments)")])
-                self.assertIn("speech_plan_json", [row[1] for row in connection.execute("PRAGMA table_info(generation_segments)")])
-                self.assertIn("alignment_group", [row[1] for row in connection.execute("PRAGMA table_info(generation_segments)")])
-                self.assertIn("node_kind", [row[1] for row in connection.execute("PRAGMA table_info(generation_segment_revisions)")])
-                self.assertIn("paragraph_break_after", [row[1] for row in connection.execute("PRAGMA table_info(generation_segment_revisions)")])
-                self.assertIn("voice", [row[1] for row in connection.execute("PRAGMA table_info(generation_segment_revisions)")])
-                self.assertIn("speaker", [row[1] for row in connection.execute("PRAGMA table_info(generation_segment_revisions)")])
-                self.assertIn("speech_plan_json", [row[1] for row in connection.execute("PRAGMA table_info(generation_segment_revisions)")])
-                self.assertIn("alignment_group", [row[1] for row in connection.execute("PRAGMA table_info(generation_segment_revisions)")])
+                self.assertEqual(
+                    SCHEMA_HEAD,
+                    connection.execute(
+                        "SELECT version_num FROM alembic_version"
+                    ).fetchone()[0],
+                )
+                self.assertIn(
+                    "job_id",
+                    [
+                        row[1]
+                        for row in connection.execute(
+                            "PRAGMA table_info(output_assemblies)"
+                        )
+                    ],
+                )
+                self.assertIn(
+                    "source_text_artifact_id",
+                    [
+                        row[1]
+                        for row in connection.execute(
+                            "PRAGMA table_info(training_runs)"
+                        )
+                    ],
+                )
+                self.assertIn(
+                    "node_kind",
+                    [
+                        row[1]
+                        for row in connection.execute(
+                            "PRAGMA table_info(generation_segments)"
+                        )
+                    ],
+                )
+                self.assertIn(
+                    "paragraph_break_after",
+                    [
+                        row[1]
+                        for row in connection.execute(
+                            "PRAGMA table_info(generation_segments)"
+                        )
+                    ],
+                )
+                self.assertIn(
+                    "voice",
+                    [
+                        row[1]
+                        for row in connection.execute(
+                            "PRAGMA table_info(generation_segments)"
+                        )
+                    ],
+                )
+                self.assertIn(
+                    "speaker",
+                    [
+                        row[1]
+                        for row in connection.execute(
+                            "PRAGMA table_info(generation_segments)"
+                        )
+                    ],
+                )
+                self.assertIn(
+                    "speech_plan_json",
+                    [
+                        row[1]
+                        for row in connection.execute(
+                            "PRAGMA table_info(generation_segments)"
+                        )
+                    ],
+                )
+                self.assertIn(
+                    "alignment_group",
+                    [
+                        row[1]
+                        for row in connection.execute(
+                            "PRAGMA table_info(generation_segments)"
+                        )
+                    ],
+                )
+                self.assertIn(
+                    "node_kind",
+                    [
+                        row[1]
+                        for row in connection.execute(
+                            "PRAGMA table_info(generation_segment_revisions)"
+                        )
+                    ],
+                )
+                self.assertIn(
+                    "paragraph_break_after",
+                    [
+                        row[1]
+                        for row in connection.execute(
+                            "PRAGMA table_info(generation_segment_revisions)"
+                        )
+                    ],
+                )
+                self.assertIn(
+                    "voice",
+                    [
+                        row[1]
+                        for row in connection.execute(
+                            "PRAGMA table_info(generation_segment_revisions)"
+                        )
+                    ],
+                )
+                self.assertIn(
+                    "speaker",
+                    [
+                        row[1]
+                        for row in connection.execute(
+                            "PRAGMA table_info(generation_segment_revisions)"
+                        )
+                    ],
+                )
+                self.assertIn(
+                    "speech_plan_json",
+                    [
+                        row[1]
+                        for row in connection.execute(
+                            "PRAGMA table_info(generation_segment_revisions)"
+                        )
+                    ],
+                )
+                self.assertIn(
+                    "alignment_group",
+                    [
+                        row[1]
+                        for row in connection.execute(
+                            "PRAGMA table_info(generation_segment_revisions)"
+                        )
+                    ],
+                )
                 self.assertIn(
                     "ix_generation_segments_alignment_group",
-                    [row[1] for row in connection.execute("PRAGMA index_list(generation_segments)")],
+                    [
+                        row[1]
+                        for row in connection.execute(
+                            "PRAGMA index_list(generation_segments)"
+                        )
+                    ],
                 )
-                self.assertIn("kind", [row[1] for row in connection.execute("PRAGMA table_info(agent_runs)")])
-                self.assertIn("stored_credentials", [row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")])
-                self.assertIn("research_cache_entries", [row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")])
-                self.assertIn("pronunciation_entries", [row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")])
-                self.assertIn("source_language", [row[1] for row in connection.execute("PRAGMA table_info(sessions)")])
-                self.assertIn("target_language", [row[1] for row in connection.execute("PRAGMA table_info(sessions)")])
-                self.assertIn("is_active", [row[1] for row in connection.execute("PRAGMA table_info(provider_models)")])
-                self.assertIn("session_stage_selections", [row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")])
-                self.assertIn("progress_detail", [row[1] for row in connection.execute("PRAGMA table_info(jobs)")])
-                self.assertIn("lease_generation", [row[1] for row in connection.execute("PRAGMA table_info(jobs)")])
-                self.assertIn("available_at", [row[1] for row in connection.execute("PRAGMA table_info(jobs)")])
-                self.assertIn("lease_generation", [row[1] for row in connection.execute("PRAGMA table_info(resource_claims)")])
-                self.assertIn("capability_snapshots", [row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")])
+                self.assertIn(
+                    "kind",
+                    [
+                        row[1]
+                        for row in connection.execute("PRAGMA table_info(agent_runs)")
+                    ],
+                )
+                self.assertIn(
+                    "stored_credentials",
+                    [
+                        row[0]
+                        for row in connection.execute(
+                            "SELECT name FROM sqlite_master WHERE type = 'table'"
+                        )
+                    ],
+                )
+                self.assertIn(
+                    "research_cache_entries",
+                    [
+                        row[0]
+                        for row in connection.execute(
+                            "SELECT name FROM sqlite_master WHERE type = 'table'"
+                        )
+                    ],
+                )
+                self.assertIn(
+                    "pronunciation_entries",
+                    [
+                        row[0]
+                        for row in connection.execute(
+                            "SELECT name FROM sqlite_master WHERE type = 'table'"
+                        )
+                    ],
+                )
+                self.assertIn(
+                    "source_language",
+                    [
+                        row[1]
+                        for row in connection.execute("PRAGMA table_info(sessions)")
+                    ],
+                )
+                self.assertIn(
+                    "target_language",
+                    [
+                        row[1]
+                        for row in connection.execute("PRAGMA table_info(sessions)")
+                    ],
+                )
+                self.assertIn(
+                    "is_active",
+                    [
+                        row[1]
+                        for row in connection.execute(
+                            "PRAGMA table_info(provider_models)"
+                        )
+                    ],
+                )
+                self.assertIn(
+                    "session_stage_selections",
+                    [
+                        row[0]
+                        for row in connection.execute(
+                            "SELECT name FROM sqlite_master WHERE type = 'table'"
+                        )
+                    ],
+                )
+                self.assertIn(
+                    "progress_detail",
+                    [row[1] for row in connection.execute("PRAGMA table_info(jobs)")],
+                )
+                self.assertIn(
+                    "lease_generation",
+                    [row[1] for row in connection.execute("PRAGMA table_info(jobs)")],
+                )
+                self.assertIn(
+                    "available_at",
+                    [row[1] for row in connection.execute("PRAGMA table_info(jobs)")],
+                )
+                self.assertIn(
+                    "lease_generation",
+                    [
+                        row[1]
+                        for row in connection.execute(
+                            "PRAGMA table_info(resource_claims)"
+                        )
+                    ],
+                )
+                self.assertIn(
+                    "capability_snapshots",
+                    [
+                        row[0]
+                        for row in connection.execute(
+                            "SELECT name FROM sqlite_master WHERE type = 'table'"
+                        )
+                    ],
+                )
 
     def test_segment_language_equal_to_plan_default_becomes_inherited(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -187,7 +422,9 @@ class SchemaUpgradeTests(unittest.TestCase):
             upgrade_database(database_path)
             database = Database(database_path)
             with database.session() as session:
-                workspace = SessionRecord(name="Language migration", storage_key="language-migration")
+                workspace = SessionRecord(
+                    name="Language migration", storage_key="language-migration"
+                )
                 session.add(workspace)
                 session.flush()
                 plan = GenerationPlan(session_id=workspace.id)
@@ -220,7 +457,10 @@ class SchemaUpgradeTests(unittest.TestCase):
             database.dispose()
 
             config = Config()
-            config.set_main_option("script_location", str(Path(__file__).parents[1] / "pandrator" / "web" / "migrations"))
+            config.set_main_option(
+                "script_location",
+                str(Path(__file__).parents[1] / "pandrator" / "web" / "migrations"),
+            )
             config.set_main_option("sqlalchemy.url", sqlite_url(database_path))
             command.downgrade(config, "0014_usage_event_links")
             upgrade_database(database_path)
@@ -240,25 +480,47 @@ class SchemaUpgradeTests(unittest.TestCase):
             database_path = Path(directory) / "pandrator.sqlite3"
             upgrade_database(database_path)
             config = Config()
-            config.set_main_option("script_location", str(Path(__file__).parents[1] / "pandrator" / "web" / "migrations"))
+            config.set_main_option(
+                "script_location",
+                str(Path(__file__).parents[1] / "pandrator" / "web" / "migrations"),
+            )
             config.set_main_option("sqlalchemy.url", sqlite_url(database_path))
             command.downgrade(config, "0008_generation_paragraph_boundaries")
             secret = "legacy-speech-secret"
             with closing(sqlite3.connect(database_path)) as connection:
                 connection.execute(
                     "INSERT OR REPLACE INTO app_settings (key, value_json, revision, updated_at) VALUES (?, ?, 1, CURRENT_TIMESTAMP)",
-                    ("services.tts", json.dumps({"provider_configs": [{"id": "openai", "api_key": secret}], "deepl_api_key": "legacy-deepl-secret"})),
+                    (
+                        "services.tts",
+                        json.dumps(
+                            {
+                                "provider_configs": [
+                                    {"id": "openai", "api_key": secret}
+                                ],
+                                "deepl_api_key": "legacy-deepl-secret",
+                            }
+                        ),
+                    ),
                 )
                 connection.commit()
             upgrade_database(database_path)
             with closing(sqlite3.connect(database_path)) as connection:
-                stored = connection.execute("SELECT secret_value FROM stored_credentials WHERE key = 'shared:openai'").fetchone()
-                stored_deepl = connection.execute("SELECT secret_value FROM stored_credentials WHERE key = 'aux:deepl'").fetchone()
-                setting = connection.execute("SELECT value_json FROM app_settings WHERE key = 'services.tts'").fetchone()
+                stored = connection.execute(
+                    "SELECT secret_value FROM stored_credentials WHERE key = 'shared:openai'"
+                ).fetchone()
+                stored_deepl = connection.execute(
+                    "SELECT secret_value FROM stored_credentials WHERE key = 'aux:deepl'"
+                ).fetchone()
+                setting = connection.execute(
+                    "SELECT value_json FROM app_settings WHERE key = 'services.tts'"
+                ).fetchone()
             self.assertEqual(secret, stored[0])
             self.assertEqual("legacy-deepl-secret", stored_deepl[0])
             self.assertNotIn(secret, setting[0])
-            self.assertEqual("db:shared:openai", json.loads(setting[0])["provider_configs"][0]["secret_ref"])
+            self.assertEqual(
+                "db:shared:openai",
+                json.loads(setting[0])["provider_configs"][0]["secret_ref"],
+            )
 
     def test_legacy_sources_are_promoted_once_by_the_marked_migration(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -267,12 +529,7 @@ class SchemaUpgradeTests(unittest.TestCase):
             config = Config()
             config.set_main_option(
                 "script_location",
-                str(
-                    Path(__file__).parents[1]
-                    / "pandrator"
-                    / "web"
-                    / "migrations"
-                ),
+                str(Path(__file__).parents[1] / "pandrator" / "web" / "migrations"),
             )
             config.set_main_option("sqlalchemy.url", sqlite_url(database_path))
             command.downgrade(config, "0021_query_path_indexes")
@@ -313,9 +570,7 @@ class SchemaUpgradeTests(unittest.TestCase):
             database = Database(database_path)
             with database.session() as session:
                 asset = session.scalar(
-                    select(SourceAsset).where(
-                        SourceAsset.artifact_id == artifact_id
-                    )
+                    select(SourceAsset).where(SourceAsset.artifact_id == artifact_id)
                 )
                 self.assertIsNotNone(asset)
                 self.assertEqual("Legacy source.txt", asset.display_name)
@@ -371,12 +626,18 @@ class LegacyMigrationTests(unittest.TestCase):
             json.dumps(
                 [
                     {"sentence_number": "1", "original_sentence": "First sentence."},
-                    {"sentence_number": "2", "processed_sentence": "Second sentence.", "paragraph": "yes"},
+                    {
+                        "sentence_number": "2",
+                        "processed_sentence": "Second sentence.",
+                        "paragraph": "yes",
+                    },
                 ]
             ),
             encoding="utf-8",
         )
-        (outputs / "preview.srt").write_text("1\n00:00:00,000 --> 00:00:01,000\nHello\n", encoding="utf-8")
+        (outputs / "preview.srt").write_text(
+            "1\n00:00:00,000 --> 00:00:01,000\nHello\n", encoding="utf-8"
+        )
 
         database_path = root / "pandrator_state.sqlite3"
         connection = sqlite3.connect(database_path)
@@ -414,7 +675,9 @@ class LegacyMigrationTests(unittest.TestCase):
                 ],
             }
         }
-        connection.execute("INSERT INTO app_settings_current VALUES (1, ?)", (json.dumps(settings),))
+        connection.execute(
+            "INSERT INTO app_settings_current VALUES (1, ?)", (json.dumps(settings),)
+        )
         connection.execute(
             "INSERT INTO sessions VALUES (?, ?, ?, ?, NULL)",
             ("Legacy Book", str(outputs), "idle", 1),
@@ -444,8 +707,14 @@ class LegacyMigrationTests(unittest.TestCase):
                 self.assertEqual(record.name, "Legacy Book")
                 self.assertEqual(record.workflow_kind, "voiceover")
                 self.assertNotEqual(record.storage_key, record.name)
-                self.assertEqual(session.scalar(select(func.count()).select_from(Segment)), 2)
-                generation_segments = list(session.scalars(select(GenerationSegment).order_by(GenerationSegment.ordinal)).all())
+                self.assertEqual(
+                    session.scalar(select(func.count()).select_from(Segment)), 2
+                )
+                generation_segments = list(
+                    session.scalars(
+                        select(GenerationSegment).order_by(GenerationSegment.ordinal)
+                    ).all()
+                )
                 self.assertEqual(len(generation_segments), 2)
                 self.assertFalse(generation_segments[0].paragraph_break_after)
                 self.assertTrue(generation_segments[1].paragraph_break_after)
@@ -457,12 +726,19 @@ class LegacyMigrationTests(unittest.TestCase):
             marker = json.loads(paths.migration_marker.read_text(encoding="utf-8"))
             self.assertEqual(SCHEMA_HEAD, marker["web_schema"])
             self.assertEqual(1, marker["generation_promotion_version"])
-            with mock.patch(
-                "pandrator.web.legacy_migration._legacy_session_rows",
-                side_effect=AssertionError("completed imports must not rescan legacy sessions"),
-            ), mock.patch(
-                "pandrator.web.legacy_migration._import_generation",
-                side_effect=AssertionError("completed imports must not re-promote generation data"),
+            with (
+                mock.patch(
+                    "pandrator.web.legacy_migration._legacy_session_rows",
+                    side_effect=AssertionError(
+                        "completed imports must not rescan legacy sessions"
+                    ),
+                ),
+                mock.patch(
+                    "pandrator.web.legacy_migration._import_generation",
+                    side_effect=AssertionError(
+                        "completed imports must not re-promote generation data"
+                    ),
+                ),
             ):
                 second = import_legacy_data(paths)
             self.assertEqual(second["completed_at"], result["completed_at"])
@@ -487,7 +763,10 @@ class DurableJobTests(unittest.TestCase):
         completed = self.queue.get(job.id)
         self.assertEqual(completed.status, "succeeded")
         self.assertEqual(completed.result_json["echo"], "ready")
-        self.assertEqual([event.event_type for event in self.queue.events_after()], ["job.queued", "job.started", "job.succeeded"])
+        self.assertEqual(
+            [event.event_type for event in self.queue.events_after()],
+            ["job.queued", "job.started", "job.succeeded"],
+        )
 
     def test_session_jobs_are_serialized_while_other_sessions_can_run(self):
         first_session = self.sessions.create("First")
@@ -508,14 +787,48 @@ class DurableJobTests(unittest.TestCase):
         self.assertEqual(canceled.status, "canceled")
         self.assertIsNone(self.queue.claim("worker"))
 
-    def test_canceling_running_job_is_immediately_terminal(self):
+    def _generation_run(self, *, job_status="queued", run_status="queued"):
+        workspace = self.sessions.create("Generation reconciliation")
+        with self.database.session() as session:
+            plan = GenerationPlan(session_id=workspace.id)
+            session.add(plan)
+            session.flush()
+            revision = GenerationPlanRevision(
+                plan_id=plan.id,
+                revision_number=1,
+                content_hash=f"reconciliation-{workspace.id}",
+            )
+            session.add(revision)
+            session.flush()
+            plan.active_revision_id = revision.id
+            run = GenerationRun(
+                session_id=workspace.id,
+                plan_revision_id=revision.id,
+                sequence_number=1,
+                status=run_status,
+                cancel_requested=run_status == "cancel_requested",
+            )
+            session.add(run)
+            session.flush()
+            run_id = run.id
+        job = self.queue.enqueue(
+            "generation.run",
+            {"generation_run_id": run_id},
+            session_id=workspace.id,
+        )
+        with self.database.session() as session:
+            session.get(GenerationRun, run_id).job_id = job.id
+            session.get(Job, job.id).status = job_status
+        return run_id, job.id
+
+    def test_canceling_running_job_waits_for_the_lease_owner(self):
         job = self.queue.enqueue("noop")
         claimed = self.queue.claim("worker")
         self.assertEqual(job.id, claimed.id)
 
         canceled = self.queue.request_cancel(job.id)
 
-        self.assertEqual("canceled", canceled.status)
+        self.assertEqual("cancel_requested", canceled.status)
         self.assertTrue(
             self.queue.should_cancel(
                 job.id,
@@ -523,6 +836,14 @@ class DurableJobTests(unittest.TestCase):
                 lease_generation=claimed.lease_generation,
             )
         )
+        self.assertTrue(
+            self.queue.cancel_owned(
+                job.id,
+                "worker",
+                lease_generation=claimed.lease_generation,
+            )
+        )
+        self.assertEqual("canceled", self.queue.get(job.id).status)
         with self.assertRaises(RuntimeError):
             self.queue.complete(
                 job.id,
@@ -530,6 +851,82 @@ class DurableJobTests(unittest.TestCase):
                 {"late": True},
                 lease_generation=claimed.lease_generation,
             )
+
+    def test_terminal_job_transition_updates_only_its_generation_run(self):
+        failed_run_id, failed_job_id = self._generation_run(
+            job_status="running",
+            run_status="running",
+        )
+        other_run_id, _ = self._generation_run(run_status="running")
+        with self.database.session() as session:
+            failed_job = session.get(Job, failed_job_id)
+            failed_job.lease_owner = "worker"
+            failed_job.lease_generation = 3
+            failed_job.attempts = failed_job.max_attempts
+
+        self.queue.fail(
+            failed_job_id,
+            "worker",
+            "synthetic",
+            "Synthetic failure",
+            lease_generation=3,
+        )
+
+        with self.database.session() as session:
+            self.assertEqual("failed", session.get(GenerationRun, failed_run_id).status)
+            self.assertEqual("running", session.get(GenerationRun, other_run_id).status)
+
+    def test_startup_repair_detects_terminal_and_missing_generation_jobs(self):
+        failed_run_id, _ = self._generation_run(
+            job_status="failed",
+            run_status="running",
+        )
+        missing_run_id, _ = self._generation_run(run_status="cancel_requested")
+        with self.database.session() as session:
+            # The outer join also detects dangling non-NULL IDs in databases
+            # restored while foreign-key checks were disabled.
+            session.get(GenerationRun, missing_run_id).job_id = None
+
+        self.queue.reconcile()
+
+        with self.database.session() as session:
+            self.assertEqual("failed", session.get(GenerationRun, failed_run_id).status)
+            missing = session.get(GenerationRun, missing_run_id)
+            self.assertEqual("canceled", missing.status)
+            self.assertFalse(missing.cancel_requested)
+
+    def test_worker_failure_updates_only_active_agent_runs_linked_after_claim(self):
+        workspace = self.sessions.create("Agent run recovery")
+        job = self.queue.enqueue("transform", session_id=workspace.id)
+        claimed = self.queue.claim("agent-worker")
+        with self.database.session() as session:
+            active = AgentRun(
+                kind="translation",
+                session_id=workspace.id,
+                job_id=job.id,
+                status="running",
+            )
+            completed = AgentRun(
+                kind="correction",
+                session_id=workspace.id,
+                job_id=job.id,
+                status="completed",
+            )
+            session.add_all([active, completed])
+            session.flush()
+            active_id = active.id
+            completed_id = completed.id
+
+        worker = Worker(self.queue, "agent-worker")
+        worker._update_agent_run_status(
+            claimed,
+            "failed",
+            claimed.lease_generation,
+        )
+
+        with self.database.session() as session:
+            self.assertEqual("failed", session.get(AgentRun, active_id).status)
+            self.assertEqual("completed", session.get(AgentRun, completed_id).status)
 
     def test_expired_exhausted_job_is_not_left_running(self):
         job = self.queue.enqueue("noop", max_attempts=1)
@@ -551,7 +948,11 @@ class DurableJobTests(unittest.TestCase):
         job = self.queue.enqueue("logged")
         Worker(self.queue, "worker-one", {"logged": logged}).run_once()
 
-        captured = [event for event in self.queue.events_for(job.id) if event.event_type == "job.log"]
+        captured = [
+            event
+            for event in self.queue.events_for(job.id)
+            if event.event_type == "job.log"
+        ]
         self.assertEqual(1, len(captured))
         self.assertEqual("INFO", captured[0].payload_json["level"])
         self.assertEqual("provider retry detail", captured[0].payload_json["message"])
@@ -572,7 +973,9 @@ class DurableJobTests(unittest.TestCase):
             for event in self.queue.events_for(job.id)
             if event.event_type == "job.progress"
         ]
-        self.assertEqual("Processed 4 of 10 units", progress_events[-1].payload_json["detail"])
+        self.assertEqual(
+            "Processed 4 of 10 units", progress_events[-1].payload_json["detail"]
+        )
 
     def test_generation_progress_invalidates_incremental_audio_takes(self):
         session_record = self.sessions.create("Incremental generation")
@@ -631,7 +1034,9 @@ class WebApiTests(unittest.TestCase):
         prepare_web_test_data_root(self.temporary.name)
         self.bootstrap = BootstrapTokenStore()
         self.token = self.bootstrap.issue()
-        self.app = create_app(data_root=self.temporary.name, testing=True, bootstrap_tokens=self.bootstrap)
+        self.app = create_app(
+            data_root=self.temporary.name, testing=True, bootstrap_tokens=self.bootstrap
+        )
         self.client = self.app.test_client()
 
     def tearDown(self):
@@ -639,14 +1044,18 @@ class WebApiTests(unittest.TestCase):
         self.temporary.cleanup()
 
     def authenticate(self):
-        response = self.client.post("/api/v1/auth/bootstrap", json={"token": self.token})
+        response = self.client.post(
+            "/api/v1/auth/bootstrap", json={"token": self.token}
+        )
         self.assertEqual(response.status_code, 200)
         return response.get_json()["csrf_token"]
 
     def test_event_snapshot_captures_high_water_and_new_streams_do_not_replay(self):
         self.authenticate()
         queue = self.app.extensions["pandrator"]["jobs"]
-        workspace = self.app.extensions["pandrator"]["sessions"].create("Event snapshot")
+        workspace = self.app.extensions["pandrator"]["sessions"].create(
+            "Event snapshot"
+        )
         queue.enqueue(
             "source.clean",
             {
@@ -797,7 +1206,10 @@ class WebApiTests(unittest.TestCase):
         )
         self.assertEqual(409, duplicate.status_code)
         self.assertEqual("duplicate_session", duplicate.get_json()["error"]["code"])
-        self.assertEqual(original["id"], duplicate.get_json()["error"]["details"]["existing_session"]["id"])
+        self.assertEqual(
+            original["id"],
+            duplicate.get_json()["error"]["details"]["existing_session"]["id"],
+        )
 
         replaced = self.client.post(
             "/api/v1/sessions",
@@ -809,7 +1221,9 @@ class WebApiTests(unittest.TestCase):
 
         active = self.client.get("/api/v1/sessions").get_json()["items"]
         self.assertEqual([replaced.get_json()["id"]], [item["id"] for item in active])
-        including_trash = self.client.get("/api/v1/sessions?include_trashed=true").get_json()["items"]
+        including_trash = self.client.get(
+            "/api/v1/sessions?include_trashed=true"
+        ).get_json()["items"]
         old = next(item for item in including_trash if item["id"] == original["id"])
         self.assertEqual("trashed", old["status"])
 
@@ -857,7 +1271,9 @@ class WebApiTests(unittest.TestCase):
 
     def test_job_logs_endpoint_returns_the_durable_timeline(self):
         self.authenticate()
-        job = self.app.extensions["pandrator"]["jobs"].enqueue("noop", {"echo": "logged"})
+        job = self.app.extensions["pandrator"]["jobs"].enqueue(
+            "noop", {"echo": "logged"}
+        )
 
         response = self.client.get(f"/api/v1/jobs/{job.id}/logs")
 
@@ -873,7 +1289,12 @@ class WebApiTests(unittest.TestCase):
             headers=headers,
         ).get_json()
         extension = self.app.extensions["pandrator"]
-        output_path = extension["paths"].sessions / record["storage_key"] / "exports" / "finished.wav"
+        output_path = (
+            extension["paths"].sessions
+            / record["storage_key"]
+            / "exports"
+            / "finished.wav"
+        )
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_bytes(b"finished export")
         exported = extension["artifacts"].register(
@@ -907,7 +1328,9 @@ class WebApiTests(unittest.TestCase):
         self.assertFalse(output_path.exists())
         visible_ids = {
             item["id"]
-            for item in self.client.get(f"/api/v1/artifacts?session_id={record['id']}").get_json()["items"]
+            for item in self.client.get(
+                f"/api/v1/artifacts?session_id={record['id']}"
+            ).get_json()["items"]
         }
         self.assertNotIn(exported.id, visible_ids)
         deleted = self.client.get(
@@ -916,7 +1339,9 @@ class WebApiTests(unittest.TestCase):
         deleted_export = next(item for item in deleted if item["id"] == exported.id)
         self.assertEqual("deleted", deleted_export["state"])
         self.assertEqual(str(output_path.resolve()), deleted_export["path"])
-        self.assertEqual(404, self.client.get(f"/api/v1/artifacts/{exported.id}/content").status_code)
+        self.assertEqual(
+            404, self.client.get(f"/api/v1/artifacts/{exported.id}/content").status_code
+        )
         self.assertEqual([], extension["artifacts"].reconcile(record["id"]))
 
         output_path.write_bytes(b"replacement export")
@@ -945,7 +1370,10 @@ class WebApiTests(unittest.TestCase):
             "/api/v1/uploads",
             data={
                 "session_id": session_id,
-                "file": (io.BytesIO(b"1\n00:00:00,000 --> 00:00:01,000\nHello\n"), "source.srt"),
+                "file": (
+                    io.BytesIO(b"1\n00:00:00,000 --> 00:00:01,000\nHello\n"),
+                    "source.srt",
+                ),
             },
             headers={"X-CSRF-Token": csrf},
             content_type="multipart/form-data",
@@ -965,6 +1393,78 @@ class WebApiTests(unittest.TestCase):
         self.assertEqual(queued.status_code, 202)
         self.assertEqual(queued.get_json()["kind"], "dubbing.correct")
 
+    def test_saved_translation_source_controls_lineage_and_stage_resolution(self):
+        csrf = self.authenticate()
+        created = self.client.post(
+            "/api/v1/sessions",
+            json={"name": "Exact translation source", "workflow_kind": "voiceover"},
+            headers={"X-CSRF-Token": csrf},
+        ).get_json()
+        extension = self.app.extensions["pandrator"]
+        session_id = created["id"]
+        artifact_dir = extension["paths"].artifacts
+        transcription_path = artifact_dir / "exact-source-transcription.srt"
+        correction_path = artifact_dir / "exact-source-correction.srt"
+        translation_path = artifact_dir / "exact-source-translation.srt"
+        transcription_path.write_text(
+            "1\n00:00:00,000 --> 00:00:01,000\nRaw source\n",
+            encoding="utf-8",
+        )
+        correction_path.write_text(
+            "1\n00:00:00,000 --> 00:00:01,000\nCorrected source\n",
+            encoding="utf-8",
+        )
+        translation_path.write_text(
+            "1\n00:00:00,000 --> 00:00:01,000\nOld translation\n",
+            encoding="utf-8",
+        )
+        transcription = extension["artifacts"].register(
+            transcription_path,
+            kind="srt",
+            role="transcription",
+            session_id=session_id,
+        )
+        correction = extension["artifacts"].register(
+            correction_path,
+            kind="srt",
+            role="correction",
+            session_id=session_id,
+            parent_ids=[transcription.id],
+        )
+        extension["artifacts"].register(
+            translation_path,
+            kind="srt",
+            role="translation",
+            session_id=session_id,
+            parent_ids=[correction.id],
+            metadata={"source_artifact_id": correction.id},
+        )
+        with extension["database"].session() as session:
+            session.add(
+                SessionSetting(
+                    session_id=session_id,
+                    section="translation",
+                    value_json={"source_artifact_id": transcription.id},
+                )
+            )
+
+        snapshot = extension["workflows"].snapshot(session_id)
+        translation_stage = next(
+            stage for stage in snapshot["stages"] if stage["key"] == "translate"
+        )
+        resolved = extension["workflows"].resolve_stage(
+            session_id,
+            "translate",
+            settings={},
+        )
+
+        self.assertEqual("stale", translation_stage["status"])
+        self.assertEqual(transcription.id, resolved.source_artifact_id)
+        self.assertEqual(
+            transcription.id,
+            resolved.payload["source_artifact_id"],
+        )
+
     def test_media_preview_waits_for_transcription_artifact(self):
         csrf = self.authenticate()
         record = self.client.post(
@@ -975,18 +1475,28 @@ class WebApiTests(unittest.TestCase):
         session_id = record["id"]
         uploaded = self.client.post(
             "/api/v1/uploads",
-            data={"session_id": session_id, "file": (io.BytesIO(b"ID3fixture"), "source.mp3")},
+            data={
+                "session_id": session_id,
+                "file": (io.BytesIO(b"ID3fixture"), "source.mp3"),
+            },
             headers={"X-CSRF-Token": csrf},
             content_type="multipart/form-data",
         )
         self.assertEqual(201, uploaded.status_code, uploaded.get_json())
 
         snapshot = self.client.get(f"/api/v1/sessions/{session_id}/workflow").get_json()
-        self.assertEqual("unavailable", next(stage for stage in snapshot["stages"] if stage["key"] == "preview")["status"])
+        self.assertEqual(
+            "unavailable",
+            next(stage for stage in snapshot["stages"] if stage["key"] == "preview")[
+                "status"
+            ],
+        )
 
         extension = self.app.extensions["pandrator"]
         transcription_path = extension["paths"].artifacts / "media-preview.srt"
-        transcription_path.write_text("1\n00:00:00,000 --> 00:00:01,000\nReady\n", encoding="utf-8")
+        transcription_path.write_text(
+            "1\n00:00:00,000 --> 00:00:01,000\nReady\n", encoding="utf-8"
+        )
         extension["artifacts"].register(
             transcription_path,
             kind="srt",
@@ -994,13 +1504,22 @@ class WebApiTests(unittest.TestCase):
             session_id=session_id,
         )
         ready = self.client.get(f"/api/v1/sessions/{session_id}/workflow").get_json()
-        self.assertEqual("ready", next(stage for stage in ready["stages"] if stage["key"] == "preview")["status"])
+        self.assertEqual(
+            "ready",
+            next(stage for stage in ready["stages"] if stage["key"] == "preview")[
+                "status"
+            ],
+        )
 
     def test_session_languages_are_first_class_and_revision_safe(self):
         csrf = self.authenticate()
         response = self.client.post(
             "/api/v1/sessions",
-            json={"name": "Polish narration", "workflow_kind": "audiobook", "source_language": "pl"},
+            json={
+                "name": "Polish narration",
+                "workflow_kind": "audiobook",
+                "source_language": "pl",
+            },
             headers={"X-CSRF-Token": csrf},
         )
         self.assertEqual(response.status_code, 201)

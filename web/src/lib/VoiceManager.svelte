@@ -10,6 +10,7 @@
     Library,
     LoaderCircle,
     Mic,
+    Pencil,
     Play,
     Plus,
     Save,
@@ -20,46 +21,44 @@
     WandSparkles
   } from '@lucide/svelte';
   import { diagnosticsApi, speechServiceApi, voiceApi } from './admin-api';
-  import type { RuntimeCapabilities, TtsService } from './api-models';
+  import type {
+    RuntimeCapabilities,
+    TtsService,
+    VoiceRecord,
+    VoiceProviderRegistration
+  } from './api-models';
   import { jobApi } from './domain-api';
   import { onDestroy, onMount } from 'svelte';
   import GuidedTour from './GuidedTour.svelte';
   import SettingsModal from './SettingsModal.svelte';
   import PrebuiltVoiceLibrary from './PrebuiltVoiceLibrary.svelte';
+  import { modalFocus } from './modal-focus';
 
-  type ProviderRegistration = {
-    voice_id: string;
-    sample_id?: string;
-    status?: string;
-    updated_at?: string;
-  };
-  type Voice = {
-    id: string;
-    name: string;
-    language?: string;
-    description?: string;
-    metadata_json?: {
-      providers?: Record<string, ProviderRegistration>;
-      bundled_voice?: string;
-    };
-  };
+  type Voice = VoiceRecord;
   type Sample = {
     id: string;
     artifact_id: string;
     transcript?: string;
     transcript_language?: string;
     transcript_reviewed: boolean;
+    file_status?: 'ready' | 'missing' | 'unsafe';
+    available?: boolean;
+    voice_revision?: number;
   };
 
   let {
     onback,
     initialView,
     initialService = '',
+    initialVoice = '',
+    embedded = false,
     onvoicepublished
   }: {
     onback: () => void;
     initialView?: 'references' | 'prebuilt';
     initialService?: string;
+    initialVoice?: string;
+    embedded?: boolean;
     onvoicepublished?: (providerVoiceId: string) => void;
   } = $props();
   let activeView = $state<'references' | 'prebuilt'>('references');
@@ -75,6 +74,7 @@
   let notice = $state('');
   let newName = $state('');
   let newNameInput = $state<HTMLInputElement>();
+  let sampleUploadInput = $state<HTMLInputElement>();
   let nameRequired = $state(false);
   let language = $state('en');
   let engine = $state('whisper');
@@ -104,6 +104,18 @@
   let transcribing = $state<Record<string, boolean>>({});
   let transcribingMissing = $state(false);
   let publishing = $state(false);
+  let uploadingSample = $state(false);
+  let removingProviders = $state<Record<string, boolean>>({});
+  let deleteDialogOpen = $state(false);
+  let deleteProviderSelection = $state<Record<string, boolean>>({});
+  let editingVoice = $state(false);
+  let savingVoice = $state(false);
+  let deletingVoice = $state(false);
+  let deletingSamples = $state<Record<string, boolean>>({});
+  let replacingSamples = $state<Record<string, boolean>>({});
+  let editName = $state('');
+  let editLanguage = $state('');
+  let editDescription = $state('');
 
   const tourSteps = [
     {
@@ -140,6 +152,19 @@
   );
   const providerRegistration = $derived(
     selected?.metadata_json?.providers?.[providerTarget?.id ?? '']
+  );
+  const providerNeedsReviewedTranscript = $derived(
+    providerTarget?.voice_reference_text === 'required' &&
+      !selected?.preferred_sample_transcript_reviewed
+  );
+  const providerRegistrations = $derived(
+    Object.entries(selected?.metadata_json?.providers ?? {}).map(
+      ([serviceId, registration]) => ({
+        serviceId,
+        registration: registration as VoiceProviderRegistration,
+        service: ttsServices.find((item) => item.id === serviceId)
+      })
+    )
   );
   const transcribingCount = $derived(
     Object.values(transcribing).filter(Boolean).length
@@ -182,6 +207,10 @@
   async function choose(voice: Voice) {
     stopPlayback();
     selected = voice;
+    editingVoice = false;
+    editName = voice.name;
+    editLanguage = voice.language ?? '';
+    editDescription = voice.description ?? '';
     const result = await voiceApi.samples<Sample>(voice.id);
     samples = result.items;
     transcripts = Object.fromEntries(
@@ -207,6 +236,107 @@
       await choose(voice);
     } catch (caught) {
       report(caught);
+    }
+  }
+
+  async function saveVoice() {
+    if (!selected || selected.bundled || savingVoice || !editName.trim())
+      return;
+    savingVoice = true;
+    error = '';
+    try {
+      const updated = await voiceApi.update<Voice>(
+        selected.id,
+        selected.revision,
+        {
+          name: editName.trim(),
+          language: editLanguage.trim() || null,
+          description: editDescription.trim() || null
+        }
+      );
+      notice = 'Voice details saved.';
+      await loadVoices();
+      await choose(updated);
+    } catch (caught) {
+      report(caught);
+    } finally {
+      savingVoice = false;
+    }
+  }
+
+  function requestDeleteVoice() {
+    if (!selected || selected.bundled || deletingVoice) return;
+    deleteProviderSelection = Object.fromEntries(
+      providerRegistrations.map(({ serviceId }) => [serviceId, false])
+    );
+    deleteDialogOpen = true;
+  }
+
+  async function removeProviderCopy(
+    serviceId: string,
+    announce = true
+  ): Promise<void> {
+    if (!selected || removingProviders[serviceId]) return;
+    const service = ttsServices.find((item) => item.id === serviceId);
+    removingProviders = { ...removingProviders, [serviceId]: true };
+    try {
+      const job = await voiceApi.unpublish(
+        selected.id,
+        serviceId,
+        selected.revision
+      );
+      await waitJob(job.id);
+      await loadVoices();
+      if (selected) await choose(selected);
+      if (announce)
+        notice = `${service?.name ?? serviceId} provider copy removed.`;
+    } finally {
+      const next = { ...removingProviders };
+      delete next[serviceId];
+      removingProviders = next;
+    }
+  }
+
+  async function removeProvider(serviceId: string) {
+    const service = ttsServices.find((item) => item.id === serviceId);
+    if (
+      !window.confirm(
+        `Remove this managed voice copy from ${service?.name ?? serviceId}? Existing generated audio will remain, but future generation with this provider voice will stop working until it is uploaded again.`
+      )
+    )
+      return;
+    error = '';
+    try {
+      await removeProviderCopy(serviceId);
+    } catch (caught) {
+      report(caught, 'Could not remove the provider copy: ');
+    }
+  }
+
+  async function deleteVoice() {
+    if (!selected || selected.bundled || deletingVoice) return;
+    deletingVoice = true;
+    error = '';
+    try {
+      for (const serviceId of Object.keys(deleteProviderSelection).filter(
+        (id) => deleteProviderSelection[id]
+      ))
+        await removeProviderCopy(serviceId, false);
+      if (!selected) throw new Error('The local voice is no longer available.');
+      await voiceApi.delete(selected.id, selected.revision);
+      stopPlayback();
+      selected = null;
+      samples = [];
+      deleteDialogOpen = false;
+      notice = 'Voice and its managed local samples were deleted.';
+      await loadVoices();
+    } catch (caught) {
+      report(
+        caught,
+        'The local voice was retained because cleanup did not finish: '
+      );
+    } finally {
+      deletingVoice = false;
     }
   }
 
@@ -347,7 +477,8 @@
   }
 
   async function saveRecording() {
-    if (!selected || !recordingBlob || savingRecording) return;
+    if (!selected || selected.bundled || !recordingBlob || savingRecording)
+      return;
     savingRecording = true;
     error = '';
     const body = new FormData();
@@ -357,14 +488,21 @@
         ? 'm4a'
         : 'webm';
     body.set('file', recordingBlob, `recording.${extension}`);
+    body.set('expected_revision', String(selected.revision));
     try {
-      const job = await voiceApi.uploadSample(selected.id, body);
+      const job = await voiceApi.uploadSample(
+        selected.id,
+        selected.revision,
+        body
+      );
       await waitJob(job.id);
       clearRecording();
-      notice = providerTarget
-        ? `The sample is ready. Upload this voice to ${providerTarget.name} to use it for generation.`
-        : 'The normalized voice sample was saved.';
-      await choose(selected);
+      await loadVoices();
+      if (selected) await choose(selected);
+      if (!(await maybePublishRequestedVoice()))
+        notice = providerNeedsReviewedTranscript
+          ? `The sample is ready. Review its transcript before using it with ${providerTarget?.name ?? 'this provider'}.`
+          : 'The normalized voice sample was saved.';
     } catch (caught) {
       report(caught);
     } finally {
@@ -373,24 +511,85 @@
   }
 
   async function uploadReference(event: Event) {
-    if (!selected) return;
+    if (!selected || selected.bundled || uploadingSample) return;
     const input = event.currentTarget as HTMLInputElement;
     const file = input.files?.[0];
     if (!file) return;
     const body = new FormData();
     body.set('file', file);
+    body.set('expected_revision', String(selected.revision));
     error = '';
+    uploadingSample = true;
     try {
-      const job = await voiceApi.uploadSample(selected.id, body);
+      const job = await voiceApi.uploadSample(
+        selected.id,
+        selected.revision,
+        body
+      );
       await waitJob(job.id);
-      notice = providerTarget
-        ? `The sample is ready. Upload this voice to ${providerTarget.name} to use it for generation.`
-        : 'Voice sample saved.';
-      await choose(selected);
+      await loadVoices();
+      if (selected) await choose(selected);
+      if (!(await maybePublishRequestedVoice()))
+        notice = providerNeedsReviewedTranscript
+          ? `The sample is ready. Review its transcript before using it with ${providerTarget?.name ?? 'this provider'}.`
+          : 'Voice sample saved.';
     } catch (caught) {
       report(caught);
     } finally {
+      uploadingSample = false;
       input.value = '';
+    }
+  }
+
+  async function replaceReference(sample: Sample, event: Event) {
+    if (!selected || selected.bundled || replacingSamples[sample.id]) return;
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    if (!file) return;
+    const body = new FormData();
+    body.set('file', file);
+    replacingSamples = { ...replacingSamples, [sample.id]: true };
+    error = '';
+    try {
+      const job = await voiceApi.replaceSample(
+        selected.id,
+        sample.id,
+        selected.revision,
+        body
+      );
+      await waitJob(job.id);
+      await loadVoices();
+      if (selected) await choose(selected);
+      if (!(await maybePublishRequestedVoice()))
+        notice =
+          'Reference audio replaced. Review or transcribe its new transcript.';
+    } catch (caught) {
+      report(caught);
+    } finally {
+      const next = { ...replacingSamples };
+      delete next[sample.id];
+      replacingSamples = next;
+      input.value = '';
+    }
+  }
+
+  async function deleteSample(sample: Sample) {
+    if (!selected || selected.bundled || deletingSamples[sample.id]) return;
+    if (!window.confirm('Delete this local reference sample?')) return;
+    deletingSamples = { ...deletingSamples, [sample.id]: true };
+    error = '';
+    try {
+      await voiceApi.deleteSample(selected.id, sample.id, selected.revision);
+      if (playingKey === sample.id) stopPlayback();
+      notice = 'Reference sample deleted.';
+      await loadVoices();
+      if (selected) await choose(selected);
+    } catch (caught) {
+      report(caught);
+    } finally {
+      const next = { ...deletingSamples };
+      delete next[sample.id];
+      deletingSamples = next;
     }
   }
 
@@ -453,7 +652,11 @@
     error = '';
     notice = `Uploading ${selected.name} to ${providerTarget.name}…`;
     try {
-      const job = await voiceApi.publish(selected.id, providerTarget.id);
+      const job = await voiceApi.publish(
+        selected.id,
+        providerTarget.id,
+        selected.revision
+      );
       const completed = await waitJob(job.id);
       const providerVoiceId = String(
         completed.result_json?.provider_voice_id ?? ''
@@ -471,15 +674,31 @@
     }
   }
 
+  async function maybePublishRequestedVoice(): Promise<boolean> {
+    if (
+      !onvoicepublished ||
+      !providerTarget ||
+      providerNeedsReviewedTranscript ||
+      providerTarget.available === false ||
+      !samples.some((sample) => sample.available !== false)
+    )
+      return false;
+    await publishVoice();
+    return true;
+  }
+
   async function saveTranscript(sample: Sample) {
     if (!selected || !transcripts[sample.id]?.trim()) return;
     try {
       await voiceApi.reviewTranscript<Sample>(selected.id, sample.id, {
         transcript: transcripts[sample.id].trim(),
-        language
+        language,
+        expected_voice_revision: selected.revision
       });
       notice = 'Reviewed transcript saved.';
-      await choose(selected);
+      await loadVoices();
+      if (selected) await choose(selected);
+      await maybePublishRequestedVoice();
     } catch (caught) {
       report(caught);
     }
@@ -526,9 +745,7 @@
     try {
       const [capabilityPayload, servicesPayload] = await Promise.all([
         diagnosticsApi.capabilities(),
-        requestedService
-          ? speechServiceApi.catalogue(true)
-          : Promise.resolve({ services: [] }),
+        speechServiceApi.catalogue(Boolean(requestedService)),
         loadVoices()
       ]);
       capabilities = capabilityPayload;
@@ -538,6 +755,8 @@
         capabilities?.stt?.default_model_quantization ?? 'f16'
       );
       if (engine === 'moss') vadEnabled = false;
+      const requestedVoice = voices.find((voice) => voice.id === initialVoice);
+      if (requestedVoice) await choose(requestedVoice);
       await refreshMicrophones(false);
     } catch (caught) {
       report(caught);
@@ -566,38 +785,31 @@
 ></audio>
 
 <div class="voice-manager mx-auto flex w-full max-w-7xl flex-col">
-  <button
-    onclick={onback}
-    class="muted mb-6 flex shrink-0 items-center gap-2 self-start text-sm font-semibold"
-    ><ArrowLeft size={17} /> Workspace</button
-  >
-  <header class="mb-5 flex shrink-0 flex-wrap items-end justify-between gap-4">
-    <div>
-      <div class="eyebrow">Voices</div>
-      <h1 class="mt-2 text-4xl font-semibold">Voice Library</h1>
-      <p class="muted mt-2 text-sm">
-        Manage voice-cloning references and compare provider voices in one
-        workspace.
-      </p>
-    </div>
-    {#if activeView === 'references'}<div class="flex gap-2">
-        <label
-          class:pointer-events-none={!selected}
-          class:opacity-40={!selected}
-          class="cursor-pointer rounded-xl border border-[var(--line)] px-4 py-2 text-sm font-semibold"
-          >Upload sample<input
-            type="file"
-            accept="audio/*"
-            onchange={uploadReference}
-            class="sr-only"
-          /></label
-        ><button
-          onclick={() => (tourOpen = true)}
-          class="rounded-xl border border-[var(--line)] px-4 py-2 text-sm font-semibold"
-          >Tour</button
-        >
-      </div>{/if}
-  </header>
+  {#if !embedded}<button
+      onclick={onback}
+      class="muted mb-6 flex shrink-0 items-center gap-2 self-start text-sm font-semibold"
+      ><ArrowLeft size={17} /> Workspace</button
+    >
+    <header
+      class="mb-5 flex shrink-0 flex-wrap items-end justify-between gap-4"
+    >
+      <div>
+        <div class="eyebrow">Voices</div>
+        <h1 class="mt-2 text-4xl font-semibold">Voice Library</h1>
+        <p class="muted mt-2 text-sm">
+          Manage voice-cloning references and compare provider voices in one
+          workspace.
+        </p>
+      </div>
+      {#if activeView === 'references'}<div class="flex gap-2">
+          <button
+            onclick={() => (tourOpen = true)}
+            class="rounded-xl border border-[var(--line)] px-4 py-2 text-sm font-semibold"
+            >Tour</button
+          >
+        </div>{/if}
+    </header>
+  {/if}
   <div class="mb-6 flex shrink-0 gap-2 border-b border-[var(--line)]">
     <button
       onclick={() => (activeView = 'references')}
@@ -669,11 +881,99 @@
         {#if selected}
           <div class="mb-6 flex flex-wrap items-center justify-between gap-4">
             <div>
-              <h2 class="text-2xl font-semibold">{selected.name}</h2>
+              <div class="flex flex-wrap items-center gap-2">
+                <h2 class="text-2xl font-semibold">{selected.name}</h2>
+                {#if selected.bundled}<span
+                    class="rounded-full bg-[var(--accent-soft)] px-2 py-1 text-[0.65rem] font-bold uppercase tracking-wide text-[var(--accent)]"
+                    >Bundled</span
+                  >{/if}
+              </div>
               <p class="muted text-sm">
                 Review playback, transcripts, and recordings in one place.
               </p>
             </div>
+            <div class="flex flex-wrap items-center justify-end gap-2">
+              {#if !selected.bundled}<button
+                  onclick={() => (editingVoice = !editingVoice)}
+                  class="stt-control font-semibold"
+                  ><Pencil size={15} /> Edit voice</button
+                ><button
+                  onclick={requestDeleteVoice}
+                  disabled={deletingVoice}
+                  class="stt-control font-semibold text-red-600 disabled:opacity-40"
+                  ><Trash2 size={15} />
+                  {deletingVoice ? 'Deleting…' : 'Delete voice'}</button
+                >{/if}
+            </div>
+          </div>
+
+          {#if editingVoice && !selected.bundled}<section
+              class="mb-5 grid gap-3 rounded-2xl border border-[var(--line)] p-4 sm:grid-cols-2"
+            >
+              <label class="text-xs font-semibold"
+                >Name<input
+                  bind:value={editName}
+                  class="mt-1 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-sm font-normal"
+                /></label
+              ><label class="text-xs font-semibold"
+                >Language<input
+                  bind:value={editLanguage}
+                  placeholder="en"
+                  class="mt-1 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-sm font-normal"
+                /></label
+              ><label class="text-xs font-semibold sm:col-span-2"
+                >Description<textarea
+                  bind:value={editDescription}
+                  rows="2"
+                  class="mt-1 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-sm font-normal"
+                ></textarea></label
+              >
+              <div class="flex justify-end gap-2 sm:col-span-2">
+                <button onclick={() => (editingVoice = false)} class="btn"
+                  >Cancel</button
+                ><button
+                  onclick={saveVoice}
+                  disabled={savingVoice || !editName.trim()}
+                  class="btn btn-primary disabled:opacity-40"
+                  ><Save size={15} />
+                  {savingVoice ? 'Saving…' : 'Save voice'}</button
+                >
+              </div>
+            </section>{/if}
+
+          <section
+            class="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[var(--line)] p-4"
+            aria-busy={uploadingSample}
+          >
+            <div>
+              <h3 class="font-semibold">Samples</h3>
+              <p class="muted mt-1 text-xs">
+                {selected.available_sample_count ??
+                  samples.filter((sample) => sample.available !== false).length}
+                readable sample{(selected.available_sample_count ??
+                  samples.length) === 1
+                  ? ''
+                  : 's'} · add clean speech references for reusable voices.
+              </p>
+            </div>
+            {#if !selected.bundled}<button
+                type="button"
+                onclick={() => sampleUploadInput?.click()}
+                disabled={uploadingSample}
+                class="btn btn-primary disabled:opacity-40"
+                ><CloudUpload size={16} />
+                {uploadingSample ? 'Uploading…' : 'Upload sample'}</button
+              ><input
+                bind:this={sampleUploadInput}
+                type="file"
+                accept="audio/*"
+                disabled={uploadingSample}
+                onchange={uploadReference}
+                class="sr-only"
+              />{/if}
+          </section>
+
+          <div class="mb-5 flex flex-wrap items-center justify-end gap-3">
             <div class="stt-toolbar">
               <select
                 bind:value={engine}
@@ -764,11 +1064,16 @@
                 </div>
                 <p class="muted mt-1 text-xs">
                   {#if providerRegistration?.status === 'ready'}Uploaded as “{providerRegistration.voice_id}”.
-                    Upload again after changing the reference sample.{:else if samples.length}Uploads
+                    The provider copy matches the current reference.{:else if providerRegistration?.status === 'stale'}Uploaded
+                    as “{providerRegistration.voice_id}”, but the local
+                    reference changed. Upload again to refresh it.{:else if providerNeedsReviewedTranscript}This
+                    provider needs an accurate reviewed transcript for the
+                    newest sample. Transcribe or enter it below, then save the
+                    review.{:else if samples.some((sample) => sample.available !== false)}Uploads
                     the newest normalized sample and stores the exact provider
-                    voice ID returned by the API.{:else}Add or record a sample
-                    first; local library names are not sent to synthesis until
-                    the provider accepts them.{/if}
+                    voice ID returned by the API.{:else}Add, replace, or record
+                    a readable sample first; local library names are not sent to
+                    synthesis until the provider accepts them.{/if}
                 </p>
                 {#if providerTarget.available === false}<p
                     class="mt-1 text-xs text-[var(--warning)]"
@@ -779,8 +1084,11 @@
               </div>
               <button
                 onclick={publishVoice}
-                disabled={!samples.length ||
+                disabled={!samples.some(
+                  (sample) => sample.available !== false
+                ) ||
                   publishing ||
+                  providerNeedsReviewedTranscript ||
                   providerTarget.available === false}
                 class="btn btn-primary disabled:opacity-40"
                 >{#if publishing}<LoaderCircle
@@ -795,6 +1103,62 @@
               >
             </section>
           {/if}
+          {#if providerRegistrations.length}
+            <section class="mb-5 rounded-2xl border border-[var(--line)] p-4">
+              <h3 class="font-semibold">Provider copies</h3>
+              <p class="muted mt-1 text-xs">
+                These are separate managed copies. Removing one does not delete
+                the local voice or previously generated audio.
+              </p>
+              <div class="mt-3 space-y-2">
+                {#each providerRegistrations as item}
+                  <div
+                    class="flex flex-wrap items-center gap-3 rounded-xl bg-[var(--paper)] px-3 py-3"
+                  >
+                    <div class="min-w-0 flex-1">
+                      <div
+                        class="flex flex-wrap items-center gap-2 text-sm font-semibold"
+                      >
+                        <span>{item.service?.name ?? item.serviceId}</span>
+                        <span
+                          class="rounded-full bg-[var(--accent-soft)] px-2 py-0.5 text-[0.65rem] uppercase tracking-wide"
+                          >{item.registration.status ?? 'registered'}</span
+                        >
+                      </div>
+                      <p
+                        class="muted mt-1 truncate text-xs"
+                        title={item.registration.voice_id}
+                      >
+                        Provider ID: {item.registration.voice_id ?? 'unknown'}
+                      </p>
+                    </div>
+                    {#if item.registration.managed_by === 'pandrator' && item.service?.supports_voice_deletion}
+                      <button
+                        type="button"
+                        onclick={() => removeProvider(item.serviceId)}
+                        disabled={Boolean(removingProviders[item.serviceId])}
+                        class="flex items-center gap-2 rounded-xl border border-red-400/50 px-3 py-2 text-xs font-semibold text-red-600 disabled:opacity-40"
+                      >
+                        {#if removingProviders[item.serviceId]}<LoaderCircle
+                            size={14}
+                            class="animate-spin"
+                          />{:else}<Trash2 size={14} />{/if}
+                        {removingProviders[item.serviceId]
+                          ? 'Removing…'
+                          : 'Remove from provider'}
+                      </button>
+                    {:else}
+                      <span class="muted max-w-52 text-right text-xs">
+                        {item.registration.managed_by !== 'pandrator'
+                          ? 'Legacy copy—remove it in the provider.'
+                          : 'This provider cannot remove voices remotely.'}
+                      </span>
+                    {/if}
+                  </div>
+                {/each}
+              </div>
+            </section>
+          {/if}
           <section class="mb-7 rounded-2xl border border-[var(--line)] p-4">
             <div class="mb-3">
               <h3 class="font-semibold">Record a reference</h3>
@@ -806,7 +1170,9 @@
             <div class="flex flex-wrap items-center gap-3">
               {#if !microphoneReady}<button
                   onclick={() => refreshMicrophones(true)}
-                  disabled={!canRecord || checkingMicrophone}
+                  disabled={selected.bundled ||
+                    !canRecord ||
+                    checkingMicrophone}
                   class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-4 py-2 text-sm font-semibold disabled:opacity-40"
                   ><Mic size={16} />
                   {checkingMicrophone
@@ -829,7 +1195,10 @@
               >
               {#if !recording && !stopping}<button
                   onclick={startRecording}
-                  disabled={!microphoneReady || !devices.length || !canRecord}
+                  disabled={selected.bundled ||
+                    !microphoneReady ||
+                    !devices.length ||
+                    !canRecord}
                   class="flex items-center gap-2 rounded-xl bg-red-500 px-4 py-2 font-semibold text-white disabled:opacity-40"
                   ><Mic size={16} /> Record</button
                 >{:else}<button
@@ -858,7 +1227,7 @@
                 >
                 <button
                   onclick={saveRecording}
-                  disabled={savingRecording}
+                  disabled={selected.bundled || savingRecording}
                   class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2 font-semibold text-white disabled:opacity-50"
                   ><Save size={16} />
                   {savingRecording ? 'Normalizing…' : 'Save sample'}</button
@@ -873,19 +1242,35 @@
           </section>
 
           <div class="space-y-4">
-            {#each samples as sample}
+            {#each samples as sample, sampleIndex}
               <article class="rounded-2xl border border-[var(--line)] p-4">
+                <div class="mb-3 flex flex-wrap items-center gap-2">
+                  <h4 class="font-semibold">Sample {sampleIndex + 1}</h4>
+                  <span
+                    class="rounded-full bg-[var(--accent-soft)] px-2 py-0.5 text-[0.65rem] font-semibold uppercase tracking-wide"
+                    >{sample.available === false
+                      ? 'Missing audio'
+                      : 'Ready'}</span
+                  >
+                  {#if selected.preferred_sample_id === sample.id}<span
+                      class="muted text-xs"
+                      >Used for the next provider upload</span
+                    >{/if}
+                </div>
                 <div class="flex flex-wrap items-center gap-3">
                   <button
                     aria-label={playingKey === sample.id
                       ? 'Stop sample playback'
-                      : 'Play sample'}
+                      : sample.available === false
+                        ? 'Sample file missing'
+                        : 'Play sample'}
+                    disabled={sample.available === false}
                     onclick={() =>
                       togglePlayback(
                         sample.id,
                         `/api/v1/artifacts/${sample.artifact_id}/content`
                       )}
-                    class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3 py-2 text-sm font-semibold"
+                    class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3 py-2 text-sm font-semibold disabled:opacity-40"
                     >{#if playingKey === sample.id}<Square size={15} /> Stop{:else}<Volume2
                         size={16}
                       /> Play sample{/if}</button
@@ -893,6 +1278,7 @@
                   <button
                     onclick={() => transcribe(sample)}
                     disabled={!canTranscribe ||
+                      sample.available === false ||
                       Boolean(transcribing[sample.id]) ||
                       transcribingMissing}
                     aria-busy={Boolean(transcribing[sample.id])}
@@ -906,34 +1292,81 @@
                       : 'Transcribe'}</button
                   >
                   <span class="muted text-xs" aria-live="polite"
-                    >{transcribing[sample.id]
-                      ? 'Speech recognition is running'
-                      : sample.transcript_reviewed
-                        ? 'Transcript reviewed'
-                        : 'Transcript not reviewed'}</span
+                    >{sample.available === false
+                      ? 'Audio file missing · replace or remove this entry'
+                      : transcribing[sample.id]
+                        ? 'Speech recognition is running'
+                        : sample.transcript_reviewed
+                          ? 'Transcript reviewed'
+                          : 'Transcript not reviewed'}</span
                   >
+                  {#if !selected.bundled}<span
+                      class="ml-auto flex items-center gap-2"
+                      ><label
+                        class:pointer-events-none={Boolean(
+                          replacingSamples[sample.id]
+                        )}
+                        class="cursor-pointer rounded-xl border border-[var(--line)] px-3 py-2 text-xs font-semibold"
+                        >{replacingSamples[sample.id]
+                          ? 'Replacing…'
+                          : 'Replace audio'}<input
+                          type="file"
+                          accept="audio/*"
+                          onchange={(event) => replaceReference(sample, event)}
+                          class="sr-only"
+                        /></label
+                      ><button
+                        onclick={() => deleteSample(sample)}
+                        disabled={Boolean(deletingSamples[sample.id])}
+                        aria-label="Delete voice sample"
+                        class="flex items-center gap-1.5 rounded-xl border border-[var(--line)] px-3 py-2 text-xs font-semibold text-red-600 disabled:opacity-40"
+                        ><Trash2 size={15} />
+                        {deletingSamples[sample.id]
+                          ? 'Removing…'
+                          : 'Remove'}</button
+                      ></span
+                    >{/if}
                 </div>
-                <textarea
-                  bind:value={transcripts[sample.id]}
-                  rows="3"
-                  placeholder="Transcript will remain unsaved until you review it."
-                  class="mt-3 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] p-3 text-sm"
-                ></textarea>
-                <div class="mt-2 flex justify-end">
-                  <button
-                    onclick={() => saveTranscript(sample)}
-                    disabled={!transcripts[sample.id]?.trim()}
-                    class="flex items-center gap-2 rounded-lg bg-[var(--accent)] px-3 py-2 text-xs font-semibold text-white disabled:opacity-40"
-                    ><Save size={14} /> Save reviewed transcript</button
-                  >
-                </div>
+                <details
+                  class="mt-3 rounded-xl border border-[var(--line)] px-3 py-2"
+                >
+                  <summary class="cursor-pointer text-sm font-semibold">
+                    Transcript and recognition · {sample.transcript_reviewed
+                      ? 'reviewed'
+                      : 'needs review'}
+                  </summary>
+                  <textarea
+                    bind:value={transcripts[sample.id]}
+                    disabled={selected.bundled}
+                    rows="3"
+                    placeholder="Transcript will remain unsaved until you review it."
+                    class="mt-3 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] p-3 text-sm"
+                  ></textarea>
+                  <div class="mt-2 flex justify-end">
+                    <button
+                      onclick={() => saveTranscript(sample)}
+                      disabled={selected.bundled ||
+                        !transcripts[sample.id]?.trim()}
+                      class="flex items-center gap-2 rounded-lg bg-[var(--accent)] px-3 py-2 text-xs font-semibold text-white disabled:opacity-40"
+                      ><Save size={14} /> Save reviewed transcript</button
+                    >
+                  </div>
+                </details>
               </article>
             {:else}
               <div
                 class="muted rounded-2xl border border-dashed border-[var(--line)] p-10 text-center"
               >
-                <Play class="mx-auto mb-2" size={22} /> Record or upload the first
-                sample above.
+                <Play class="mx-auto mb-2" size={22} /> Add the first clean voice
+                sample by recording above or uploading a file.
+                {#if !selected.bundled}<button
+                    type="button"
+                    onclick={() => sampleUploadInput?.click()}
+                    disabled={uploadingSample}
+                    class="btn btn-primary mx-auto mt-4 w-fit disabled:opacity-40"
+                    ><CloudUpload size={16} />
+                    {uploadingSample ? 'Uploading…' : 'Upload sample'}</button
+                  >{/if}
               </div>
             {/each}
           </div>
@@ -954,6 +1387,86 @@
     </div>
   {/if}
 </div>
+{#if deleteDialogOpen && selected}<div
+    class="fixed inset-0 z-[80] grid place-items-center bg-black/45 p-4 backdrop-blur-sm"
+    role="presentation"
+  >
+    <div
+      use:modalFocus={{ onclose: () => (deleteDialogOpen = false) }}
+      class="surface w-full max-w-xl rounded-3xl p-6 shadow-2xl"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="delete-voice-title"
+    >
+      <h2 id="delete-voice-title" class="text-xl font-semibold">
+        Delete “{selected.name}”?
+      </h2>
+      <p class="muted mt-2 text-sm leading-relaxed">
+        The local voice and {samples.length} sample{samples.length === 1
+          ? ''
+          : 's'} will be deleted. Existing generated audio is not affected.
+      </p>
+      {#if providerRegistrations.length}
+        <fieldset class="mt-5 space-y-2">
+          <legend class="mb-2 text-sm font-semibold">
+            Also remove managed provider copies (optional)
+          </legend>
+          {#each providerRegistrations as item}
+            {@const removable =
+              item.registration.managed_by === 'pandrator' &&
+              item.service?.supports_voice_deletion === true}
+            <label
+              class="flex items-start gap-3 rounded-xl border border-[var(--line)] p-3"
+              class:opacity-60={!removable}
+            >
+              <input
+                type="checkbox"
+                bind:checked={deleteProviderSelection[item.serviceId]}
+                disabled={!removable || deletingVoice}
+                class="mt-1"
+              />
+              <span class="min-w-0">
+                <span class="block text-sm font-semibold"
+                  >{item.service?.name ?? item.serviceId}</span
+                >
+                <span class="muted mt-0.5 block text-xs">
+                  {removable
+                    ? 'Remove the Pandrator-managed copy before deleting locally.'
+                    : item.registration.managed_by !== 'pandrator'
+                      ? 'Legacy registration: ownership cannot be verified, so remote deletion is disabled.'
+                      : 'This provider does not support remote voice deletion.'}
+                </span>
+              </span>
+            </label>
+          {/each}
+        </fieldset>
+      {/if}
+      <p class="muted mt-4 text-xs">
+        If a selected provider cleanup fails, the local voice will be retained
+        so you can retry without losing its samples.
+      </p>
+      <div class="mt-6 flex justify-end gap-2">
+        <button
+          type="button"
+          onclick={() => (deleteDialogOpen = false)}
+          disabled={deletingVoice}
+          class="rounded-xl border border-[var(--line)] px-4 py-2 text-sm font-semibold disabled:opacity-40"
+          >Cancel</button
+        >
+        <button
+          type="button"
+          onclick={deleteVoice}
+          disabled={deletingVoice}
+          class="flex items-center gap-2 rounded-xl bg-red-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-40"
+          >{#if deletingVoice}<LoaderCircle
+              size={16}
+              class="animate-spin"
+            />{/if}
+          {deletingVoice ? 'Deleting…' : 'Delete local voice'}</button
+        >
+      </div>
+    </div>
+  </div>{/if}
 <GuidedTour tourId="voices" steps={tourSteps} bind:open={tourOpen} />
 {#if sttSettingsOpen}<SettingsModal
     section="stt"

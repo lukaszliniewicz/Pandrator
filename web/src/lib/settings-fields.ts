@@ -107,6 +107,10 @@ const CHOICES: Record<string, SettingOption[]> = {
     option('legacy', 'Legacy whole-text prompt')
   ],
   web_research_provider: [option('jina', 'Jina Reader')],
+  web_research_mode: [
+    option('global', 'Research the whole stage once'),
+    option('per_chunk', 'Research each processing chunk')
+  ],
   f0_method: [
     option('rmvpe', 'RMVPE'),
     option('harvest', 'Harvest'),
@@ -263,7 +267,8 @@ const RANGE_KEYS = new Set([
   'chatterbox_top_p',
   'chatterbox_min_p',
   'chatterbox_exaggeration',
-  'chatterbox_cfg_weight'
+  'chatterbox_cfg_weight',
+  'web_research_context_fraction'
 ]);
 
 export const GLOBAL_TTS_KEYS = new Set([
@@ -304,6 +309,12 @@ export function numberPresentation(key: string): NumberPresentation {
     chatterbox_min_p: { min: 0, max: 1, step: 0.01, range: true },
     chatterbox_exaggeration: { min: 0, max: 1, step: 0.05, range: true },
     chatterbox_cfg_weight: { min: 0, max: 1, step: 0.05, range: true },
+    web_research_context_fraction: {
+      min: 0.1,
+      max: 0.8,
+      step: 0.05,
+      range: true
+    },
     speech_plan_min_retention: { min: 0.75, max: 1, step: 0.01, range: true },
     pitch: { min: -24, max: 24, step: 1 },
     max_attempts: { min: 1, max: 20, step: 1 },
@@ -371,6 +382,9 @@ export function settingLabel(key: string): string {
     speech_plan_save_proposals: 'Save new pronunciations for review',
     web_research_enabled: 'Ground uncertain terms with web research',
     web_research_provider: 'Research provider',
+    web_research_model_name: 'Researcher model',
+    web_research_mode: 'Research mode',
+    web_research_context_fraction: 'Maximum context used for research',
     web_research_language: 'Preferred research language',
     web_research_max_searches: 'Maximum searches per stage',
     web_research_max_extractions: 'Maximum page extractions per stage',

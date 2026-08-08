@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from threading import Event, Lock
-from typing import Any, Callable
+from typing import Any
 
-from pandrator.logic.llm_handler import ChatCompletionResult, chat_completion_with_metadata
+from pandrator.logic.llm_handler import (
+    ChatCompletionResult,
+    chat_completion_with_metadata,
+)
+
+UnitCompletedCallback = Callable[[str, dict[str, Any]], None]
 
 
 # Restored from the Qt application's LLM defaults. The legacy prompts' plain-text
@@ -51,6 +58,80 @@ class OptimizationUsage:
         if result.cost_source:
             self.cost_sources.append(result.cost_source)
 
+    def merge(self, other: OptimizationUsage) -> None:
+        self.response_count += other.response_count
+        self.cost += other.cost
+        for key, value in other.usage.items():
+            self.usage[key] = self.usage.get(key, 0) + int(value)
+        self.cost_sources.extend(other.cost_sources)
+
+
+def optimization_unit_key(indexes: list[int], *, stage: int = 0) -> str:
+    digest = hashlib.sha256(
+        json.dumps(indexes, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()[:12]
+    return f"tts-optimization:{indexes[0]}-{indexes[-1]}:{digest}:stage-{stage}"
+
+
+def _restore_optimization_unit(
+    indexes: list[int],
+    *,
+    stage: int,
+    completed_units: Mapping[str, Mapping[str, Any]] | None,
+) -> tuple[dict[int, str], OptimizationUsage] | None:
+    if not completed_units:
+        return None
+    key = optimization_unit_key(indexes, stage=stage)
+    raw = completed_units.get(key)
+    if raw is None:
+        return None
+    if [int(value) for value in raw.get("original_indices", [])] != indexes:
+        raise ValueError(
+            f"Speech-optimization checkpoint {key} has mismatched indexes."
+        )
+    raw_items = raw.get("items")
+    if not isinstance(raw_items, list):
+        raise ValueError(f"Speech-optimization checkpoint {key} has no items.")
+    restored: dict[int, str] = {}
+    for item in raw_items:
+        if not isinstance(item, Mapping):
+            raise ValueError(
+                f"Speech-optimization checkpoint {key} has an invalid item."
+            )
+        try:
+            index = int(item["index"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError(
+                f"Speech-optimization checkpoint {key} has an invalid index."
+            ) from error
+        text = _clean_response(str(item.get("text") or ""))
+        if index not in indexes or index in restored or not text:
+            raise ValueError(f"Speech-optimization checkpoint {key} has invalid items.")
+        restored[index] = text
+    if set(restored) != set(indexes):
+        raise ValueError(f"Speech-optimization checkpoint {key} is incomplete.")
+    raw_usage = raw.get("usage")
+    try:
+        unit_usage = OptimizationUsage(
+            cost=float(raw.get("cost") or 0.0),
+            response_count=int(raw.get("response_count") or 0),
+            usage=(
+                {str(name): int(value or 0) for name, value in raw_usage.items()}
+                if isinstance(raw_usage, Mapping)
+                else {}
+            ),
+            cost_sources=[
+                str(source)
+                for source in raw.get("cost_sources", [])
+                if str(source or "")
+            ],
+        )
+    except (TypeError, ValueError) as error:
+        raise ValueError(
+            f"Speech-optimization checkpoint {key} has invalid metrics."
+        ) from error
+    return restored, unit_usage
+
 
 def _clean_response(value: str) -> str:
     text = str(value or "").strip()
@@ -73,7 +154,9 @@ def _parse_batch_response(value: str, expected_indexes: list[int]) -> dict[int, 
             cleaned = _clean_response(text)
             if cleaned:
                 return {expected_indexes[0]: cleaned}
-        raise RuntimeError("LLM speech optimization did not return valid JSON.") from error
+        raise RuntimeError(
+            "LLM speech optimization did not return valid JSON."
+        ) from error
     rows = payload.get("items") if isinstance(payload, dict) else payload
     if not isinstance(rows, list):
         raise RuntimeError("LLM speech optimization JSON must contain an items list.")
@@ -82,21 +165,30 @@ def _parse_batch_response(value: str, expected_indexes: list[int]) -> dict[int, 
         if not isinstance(row, dict):
             raise RuntimeError("Every optimized item must be a JSON object.")
         try:
-            index = int(row.get("index"))
+            index = int(str(row.get("index")))
         except (TypeError, ValueError) as error:
-            raise RuntimeError("Every optimized item must retain its numeric index.") from error
+            raise RuntimeError(
+                "Every optimized item must retain its numeric index."
+            ) from error
         revised = _clean_response(str(row.get("text") or ""))
         if index in parsed or index not in expected_indexes or not revised:
-            raise RuntimeError("LLM speech optimization returned missing, duplicate, or unexpected items.")
+            raise RuntimeError(
+                "LLM speech optimization returned missing, duplicate, or unexpected items."
+            )
         parsed[index] = revised
     if set(parsed) != set(expected_indexes):
-        raise RuntimeError("LLM speech optimization changed the number or identity of text items.")
+        raise RuntimeError(
+            "LLM speech optimization changed the number or identity of text items."
+        )
     return parsed
 
 
 def prompt_sequence(settings: dict[str, Any]) -> list[str]:
     if bool(settings.get("llm_multi_stage")):
-        prompts = [str(settings.get(key) or "").strip() for key in ("first_prompt", "second_prompt", "third_prompt")]
+        prompts = [
+            str(settings.get(key) or "").strip()
+            for key in ("first_prompt", "second_prompt", "third_prompt")
+        ]
         prompts = [prompt for prompt in prompts if prompt]
         if prompts:
             return prompts
@@ -112,10 +204,14 @@ def optimize_texts(
     progress: Callable[[float, str | None], None],
     *,
     on_batch: Callable[[list[tuple[int, str]]], None] | None = None,
-    on_plan_batch: Callable[[list[tuple[int, str, dict[str, Any]]]], None] | None = None,
-    known_pronunciation_resolver: Callable[[str, str], list[dict[str, Any]]] | None = None,
+    on_plan_batch: Callable[[list[tuple[int, str, dict[str, Any]]]], None]
+    | None = None,
+    known_pronunciation_resolver: Callable[[str, str], list[dict[str, Any]]]
+    | None = None,
     languages: list[str] | None = None,
     voice_languages: list[str] | None = None,
+    completed_units: Mapping[str, Mapping[str, Any]] | None = None,
+    on_unit_completed: UnitCompletedCallback | None = None,
 ) -> tuple[list[str], OptimizationUsage]:
     """Optimize indexed text units in JSON batches while retaining order and count."""
     speech_mode = str(settings.get("speech_optimization_mode") or "").strip().lower()
@@ -133,6 +229,8 @@ def optimize_texts(
             known_pronunciation_resolver=known_pronunciation_resolver,
             languages=languages,
             voice_languages=voice_languages,
+            completed_units=completed_units,
+            on_unit_completed=on_unit_completed,
         )
     prompts = prompt_sequence(settings)
     workers = max(1, min(16, int(settings.get("llm_concurrent_calls") or 1)))
@@ -154,7 +252,10 @@ def optimize_texts(
     output = list(texts)
     usage = OptimizationUsage()
     populated = [(index, text) for index, text in enumerate(texts) if text.strip()]
-    batches = [populated[index:index + batch_size] for index in range(0, len(populated), batch_size)]
+    batches = [
+        populated[index : index + batch_size]
+        for index in range(0, len(populated), batch_size)
+    ]
     if not populated:
         progress(1.0, "No non-empty text units require speech optimization")
         return output, usage
@@ -186,21 +287,38 @@ def optimize_texts(
                 ),
             )
 
-    def process(batch: list[tuple[int, str]]) -> tuple[list[tuple[int, str]], list[ChatCompletionResult]]:
+    checkpoint_lock = Lock()
+
+    def process(
+        batch: list[tuple[int, str]],
+    ) -> tuple[list[tuple[int, str]], OptimizationUsage]:
         current = {index: original for index, original in batch}
-        responses: list[ChatCompletionResult] = []
-        for prompt in prompts:
+        batch_usage = OptimizationUsage()
+        for prompt_index, prompt in enumerate(prompts):
             if cancel_event.is_set():
-                return list(current.items()), responses
+                return list(current.items()), batch_usage
             indexes = list(current)
-            request_payload = {"items": [{"index": index, "text": current[index]} for index in indexes]}
+            restored = _restore_optimization_unit(
+                indexes,
+                stage=prompt_index,
+                completed_units=completed_units,
+            )
+            if restored is not None:
+                current, unit_usage = restored
+                batch_usage.merge(unit_usage)
+                report_completed_request(len(batch))
+                continue
+            request_payload = {
+                "items": [{"index": index, "text": current[index]} for index in indexes]
+            }
             last_error: RuntimeError | None = None
+            unit_usage = OptimizationUsage()
             for attempt in range(1, structured_attempts + 1):
                 if cancel_event.is_set():
-                    return list(current.items()), responses
+                    return list(current.items()), batch_usage
                 system_prompt = (
                     "You optimize text for speech synthesis without changing meaning. "
-                    "Return valid JSON only as {\"items\":[{\"index\":0,\"text\":\"...\"}]}. "
+                    'Return valid JSON only as {"items":[{"index":0,"text":"..."}]}. '
                     "Preserve every supplied index exactly once and never merge or split items."
                 )
                 if last_error is not None:
@@ -224,7 +342,7 @@ def optimize_texts(
                     llm_settings=llm_settings,
                     cancel_event=cancel_event,
                 )
-                responses.append(result)
+                unit_usage.add(result)
                 try:
                     current = _parse_batch_response(result.content, indexes)
                 except RuntimeError as error:
@@ -235,18 +353,40 @@ def optimize_texts(
                             f"after {structured_attempts} attempts: {error}"
                         ) from error
                     continue
+                if on_unit_completed is not None:
+                    payload = {
+                        "version": 1,
+                        "kind": "tts_optimization",
+                        "stage": prompt_index,
+                        "original_indices": indexes,
+                        "items": [
+                            {"index": index, "text": current[index]}
+                            for index in indexes
+                        ],
+                        "cost": unit_usage.cost,
+                        "response_count": unit_usage.response_count,
+                        "usage": unit_usage.usage,
+                        "cost_sources": unit_usage.cost_sources,
+                    }
+                    with checkpoint_lock:
+                        on_unit_completed(
+                            optimization_unit_key(indexes, stage=prompt_index),
+                            payload,
+                        )
+                batch_usage.merge(unit_usage)
                 report_completed_request(len(batch))
                 break
-        return list(current.items()), responses
+        return list(current.items()), batch_usage
 
-    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="tts-optimize") as executor:
+    with ThreadPoolExecutor(
+        max_workers=workers, thread_name_prefix="tts-optimize"
+    ) as executor:
         futures = {executor.submit(process, batch): batch for batch in batches}
         for future in as_completed(futures):
-            revised_items, responses = future.result()
+            revised_items, batch_usage = future.result()
             for index, revised in revised_items:
                 output[index] = revised
-            for response in responses:
-                usage.add(response)
+            usage.merge(batch_usage)
             if on_batch:
                 on_batch(revised_items)
     if not cancel_event.is_set():
@@ -268,6 +408,8 @@ def _optimize_with_speech_plans(
     known_pronunciation_resolver: Callable[[str, str], list[dict[str, Any]]] | None,
     languages: list[str] | None,
     voice_languages: list[str] | None,
+    completed_units: Mapping[str, Mapping[str, Any]] | None,
+    on_unit_completed: UnitCompletedCallback | None,
 ) -> tuple[list[str], OptimizationUsage]:
     """Plan one stable sentence per call and compile only validated responses."""
     from .speech_planning import plan_speech_text
@@ -303,9 +445,30 @@ def _optimize_with_speech_plans(
     except (TypeError, ValueError):
         structured_attempts = 2
 
+    checkpoint_lock = Lock()
+
     def process(index: int, text: str):
         if cancel_event.is_set():
-            return index, text, {}, []
+            return index, text, {}, OptimizationUsage()
+        restored = _restore_optimization_unit(
+            [index],
+            stage=0,
+            completed_units=completed_units,
+        )
+        if restored is not None:
+            restored_items, restored_usage = restored
+            raw = (
+                completed_units.get(optimization_unit_key([index], stage=0), {})
+                if completed_units
+                else {}
+            )
+            raw_plan = raw.get("plan") if isinstance(raw, Mapping) else None
+            return (
+                index,
+                restored_items[index],
+                dict(raw_plan) if isinstance(raw_plan, Mapping) else {},
+                restored_usage,
+            )
         language = (
             str(languages[index] or default_language)
             if languages and index < len(languages)
@@ -333,7 +496,25 @@ def _optimize_with_speech_plans(
             min_retention=float(settings.get("speech_plan_min_retention") or 0.9),
             max_attempts_per_mode=structured_attempts,
         )
-        return index, result.text, result.plan, result.responses
+        unit_usage = OptimizationUsage()
+        for response in result.responses:
+            unit_usage.add(response)
+        if on_unit_completed is not None:
+            payload = {
+                "version": 1,
+                "kind": "tts_optimization_plan",
+                "stage": 0,
+                "original_indices": [index],
+                "items": [{"index": index, "text": result.text}],
+                "plan": result.plan,
+                "cost": unit_usage.cost,
+                "response_count": unit_usage.response_count,
+                "usage": unit_usage.usage,
+                "cost_sources": unit_usage.cost_sources,
+            }
+            with checkpoint_lock:
+                on_unit_completed(optimization_unit_key([index], stage=0), payload)
+        return index, result.text, result.plan, unit_usage
 
     completed = 0
     with ThreadPoolExecutor(
@@ -344,10 +525,9 @@ def _optimize_with_speech_plans(
             executor.submit(process, index, text): index for index, text in populated
         }
         for future in as_completed(futures):
-            index, revised, plan, responses = future.result()
+            index, revised, plan, unit_usage = future.result()
             output[index] = revised
-            for response in responses:
-                usage.add(response)
+            usage.merge(unit_usage)
             if on_batch:
                 on_batch([(index, revised)])
             if on_plan_batch:

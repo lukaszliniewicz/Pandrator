@@ -3,7 +3,9 @@
   import {
     ArrowLeft,
     ChevronRight,
+    CheckCircle2,
     CircleAlert,
+    CloudUpload,
     Crop,
     LoaderCircle,
     Library,
@@ -15,13 +17,15 @@
     Sparkles,
     X
   } from '@lucide/svelte';
-  import { sessionApi } from './domain-api';
+  import { jobApi, sessionApi } from './domain-api';
+  import { voiceApi } from './admin-api';
   import type {
     OutcomePlan,
     RuntimeCapabilities,
     SessionRecord,
     SettingsPayload,
     StageRerunImpact,
+    SubtitleReviewCatalogItem,
     TtsCatalogue,
     TtsService,
     VoiceRecord,
@@ -99,6 +103,9 @@
   );
   let voiceLibraryView = $state<'references' | 'prebuilt'>('references');
   let voiceLibraryService = $state('');
+  let voiceLibraryInitialVoice = $state('');
+  let publishingLibraryVoiceId = $state('');
+  let voicePublishStatus = $state('');
   let optimizationReviewArtifactId = $state('');
   let workspaceMode = $state<'review' | 'automatic'>('review');
   let preview = $state<PreviewableArtifact | null>(null);
@@ -188,7 +195,13 @@
   let subtitleFormat = $state('srt');
   let pdfSource = $state<{ id: string; filename: string } | null>(null);
   let PdfEditorComponent = $state<typeof PdfEditor | null>(null);
-  let reviewOpen = $state(false);
+  let reviewArtifactId = $state('');
+  let subtitleCatalogItems = $state<SubtitleReviewCatalogItem[]>([]);
+  let translationSourceArtifactId = $state('');
+  let webResearchEnabled = $state(false);
+  let webResearchModel = $state('');
+  let webResearchMode = $state<'global' | 'per_chunk'>('global');
+  let webResearchContextFraction = $state(0.8);
   let refreshingTtsServices = $state(false);
   let speechCataloguesLoaded = false;
   let llmModelsLoaded = false;
@@ -250,6 +263,53 @@
     }
   }
 
+  async function loadSubtitleCatalog() {
+    try {
+      const response = await sessionApi.subtitleCatalog(session.id);
+      subtitleCatalogItems = response.items.filter((item) =>
+        ['transcription', 'correction'].includes(item.stage)
+      );
+    } catch (caught) {
+      error = errorMessage(caught);
+      subtitleCatalogItems = [];
+    }
+  }
+
+  function defaultReviewArtifactId() {
+    const preferredStages = [
+      'optimize_tts',
+      'translate',
+      'correct',
+      'transcribe'
+    ];
+    for (const key of preferredStages) {
+      const artifact = snapshot?.stages.find(
+        (stage) => stage.key === key
+      )?.artifact;
+      if (
+        artifact &&
+        ['transcription', 'correction', 'translation'].includes(
+          artifact.raw_role ?? artifact.role
+        )
+      )
+        return artifact.id;
+      if (
+        artifact?.kind === 'srt' &&
+        (artifact.raw_role ?? artifact.role) === 'tts_optimized'
+      )
+        return artifact.id;
+    }
+    return '';
+  }
+
+  function subtitleSourceLabel(item: SubtitleReviewCatalogItem) {
+    const stage =
+      item.stage === 'correction' ? 'Corrected subtitles' : 'Transcription';
+    const language = item.language ? ` · ${item.language}` : '';
+    const state = item.state === 'current' ? '' : ' · earlier result';
+    return `${stage} v${item.version}${language}${state}`;
+  }
+
   const supportsSttCompute = (name: string) =>
     name === 'auto' ||
     (capabilities?.stt?.compute_backends ?? []).includes(name);
@@ -274,7 +334,7 @@
     reuseStages: string[] = []
   ) {
     if (stage.key === 'preview') {
-      reviewOpen = true;
+      reviewArtifactId = defaultReviewArtifactId();
       return;
     }
     if (stage.key === 'export') {
@@ -449,6 +509,7 @@
     ) {
       dependencies.push(loadLlmModels());
     }
+    if (stage.key === 'translate') dependencies.push(loadSubtitleCatalog());
     if (stage.key === 'generate_audio')
       dependencies.push(loadSpeechCatalogues());
     await Promise.all(dependencies);
@@ -486,7 +547,31 @@
           ''
       ).trim() || 'default';
     reasoningEffort = String(saved.reasoning_effort ?? '');
+    webResearchEnabled = Boolean(saved.web_research_enabled ?? false);
+    webResearchModel = String(saved.web_research_model_name ?? '');
+    webResearchMode =
+      String(saved.web_research_mode ?? 'global') === 'per_chunk'
+        ? 'per_chunk'
+        : 'global';
+    webResearchContextFraction = Number(
+      saved.web_research_context_fraction ?? 0.8
+    );
     backend = String(saved.backend ?? saved.translation_backend ?? 'llm');
+    if (stage.key === 'translate') {
+      const selectedCorrection = snapshot?.stages.find(
+        (item) => item.key === 'correct'
+      )?.selected_artifact_id;
+      const selectedTranscription = snapshot?.stages.find(
+        (item) => item.key === 'transcribe'
+      )?.selected_artifact_id;
+      const requestedSource = String(saved.source_artifact_id ?? '');
+      translationSourceArtifactId =
+        [requestedSource, selectedCorrection, selectedTranscription].find(
+          (artifactId) =>
+            artifactId &&
+            subtitleCatalogItems.some((item) => item.artifact_id === artifactId)
+        ) ?? '';
+    }
     const hasSavedSttModel = Boolean(
       storedSettings?.override?.stt_engine ||
       storedSettings?.global?.stt_engine ||
@@ -676,6 +761,20 @@
     if (!stage.job_id) return;
     try {
       await sessionApi.cancelJob(stage.job_id);
+      await load();
+    } catch (caught) {
+      error = errorMessage(caught);
+    }
+  }
+
+  async function resume(stage: Stage) {
+    if (!stage.agent_run_id || !stage.resumable) {
+      await run(stage);
+      return;
+    }
+    error = '';
+    try {
+      await sessionApi.resumeAgentRun(stage.agent_run_id);
       await load();
     } catch (caught) {
       error = errorMessage(caught);
@@ -917,12 +1016,14 @@
 
   async function openVoiceLibrary(
     view: 'references' | 'prebuilt',
-    serviceId = ''
+    serviceId = '',
+    voiceId = ''
   ) {
     VoiceLibraryModalComponent ??= (await import('./VoiceLibraryModal.svelte'))
       .default;
     voiceLibraryView = view;
     voiceLibraryService = serviceId;
+    voiceLibraryInitialVoice = voiceId;
     voiceLibraryOpen = true;
   }
 
@@ -931,6 +1032,19 @@
     voiceLibraryOpen = false;
     await loadSpeechCatalogues(true, true);
     voiceName = providerVoiceId;
+  }
+
+  async function waitForVoiceJob(id: string) {
+    for (let attempt = 0; attempt < 240; attempt += 1) {
+      const job = await jobApi.get(id);
+      if (job.status === 'succeeded') return job;
+      if (['failed', 'canceled', 'interrupted'].includes(job.status))
+        throw new Error(job.error_message || `Voice upload ${job.status}.`);
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    throw new Error(
+      'The voice upload is still running. Check Activity & logs.'
+    );
   }
 
   const selectedTtsService = $derived(
@@ -955,7 +1069,11 @@
       ''
   );
   const selectedTtsServiceId = $derived(
-    String(selectedTtsService?.id ?? ttsService).toLowerCase()
+    String(selectedTtsService?.id ?? ttsService)
+      .trim()
+      .toLowerCase()
+      .replaceAll('-', '_')
+      .replaceAll(' ', '_')
   );
   const ttsModelAcquisitionHint = $derived(
     selectedTtsServiceId === 'kobold_qwen'
@@ -985,8 +1103,9 @@
     Number(selectedTtsService?.batch_synthesis?.max_batch_size ?? 32)
   );
   const qwenVoiceCloning = $derived(
-    selectedTtsServiceId === 'kobold_qwen' &&
-      ttsModel.toLowerCase() === 'voice cloning'
+    selectedTtsService?.model_voice_modes?.[ttsModel] === 'cloning' ||
+      (selectedTtsServiceId === 'kobold_qwen' &&
+        ttsModel.toLowerCase() === 'voice cloning')
   );
   const supportsCloningVoices = $derived(
     Boolean(selectedTtsService?.supports_voice_cloning)
@@ -1027,6 +1146,21 @@
         : [];
     })
   );
+  const managedProviderVoiceIds = $derived(
+    new Set(
+      libraryVoices
+        .map((voice) =>
+          String(
+            voice.metadata_json?.providers?.[selectedTtsServiceId]?.voice_id ??
+              ''
+          ).toLowerCase()
+        )
+        .filter(Boolean)
+    )
+  );
+  const readyManagedProviderVoiceIds = $derived(
+    new Set(publishedProviderVoices.map((voice) => voice.toLowerCase()))
+  );
   const prebuiltVoiceIds = $derived(
     new Set(
       Array.from(
@@ -1047,13 +1181,29 @@
         ]
           .map((voice) => String(voice))
           .filter(
-            (voice) => voice && !prebuiltVoiceIds.has(voice.toLowerCase())
+            (voice) =>
+              voice &&
+              !prebuiltVoiceIds.has(voice.toLowerCase()) &&
+              (!managedProviderVoiceIds.has(voice.toLowerCase()) ||
+                readyManagedProviderVoiceIds.has(voice.toLowerCase()))
           )
       )
     )
   );
   const clonedVoiceDescriptors = $derived(
-    clonedVoiceIds.map((voice) => describeVoice(selectedTtsServiceId, voice))
+    clonedVoiceIds.map((voice) => {
+      const managed = libraryVoices.find(
+        (item) =>
+          String(
+            item.metadata_json?.providers?.[selectedTtsServiceId]?.voice_id ??
+              ''
+          ).toLowerCase() === voice.toLowerCase()
+      );
+      return {
+        ...describeVoice(selectedTtsServiceId, voice),
+        name: managed?.name ?? describeVoice(selectedTtsServiceId, voice).name
+      };
+    })
   );
   const showClonedVoices = $derived(
     Boolean(
@@ -1061,6 +1211,122 @@
       (!selectedTtsService?.supports_prebuilt_voices || qwenVoiceCloning)
     )
   );
+  const localVoiceChoices = $derived(
+    libraryVoices
+      .map((voice) => {
+        const registration =
+          voice.metadata_json?.providers?.[selectedTtsServiceId];
+        const hasSample = Number(voice.available_sample_count ?? 0) > 0;
+        const needsTranscript = Boolean(
+          selectedTtsService?.voice_reference_text === 'required' &&
+          !voice.preferred_sample_transcript_reviewed
+        );
+        return { voice, registration, hasSample, needsTranscript };
+      })
+      .sort((left, right) => {
+        const leftLanguage = left.voice.language === targetLanguage ? 0 : 1;
+        const rightLanguage = right.voice.language === targetLanguage ? 0 : 1;
+        return (
+          leftLanguage - rightLanguage ||
+          left.voice.name.localeCompare(right.voice.name)
+        );
+      })
+  );
+
+  async function useLibraryVoice(voice: VoiceRecord) {
+    const registration = voice.metadata_json?.providers?.[selectedTtsServiceId];
+    if (registration?.status === 'ready' && registration.voice_id) {
+      voiceName = String(registration.voice_id);
+      return;
+    }
+    if (
+      Number(voice.available_sample_count ?? 0) < 1 ||
+      (selectedTtsService?.voice_reference_text === 'required' &&
+        !voice.preferred_sample_transcript_reviewed)
+    ) {
+      await openVoiceLibrary('references', selectedTtsServiceId, voice.id);
+      return;
+    }
+    if (selectedTtsService?.available === false) {
+      error =
+        selectedTtsService.availability_reason ||
+        'Start the speech service before uploading a voice.';
+      return;
+    }
+    if (publishingLibraryVoiceId) return;
+    publishingLibraryVoiceId = voice.id;
+    voicePublishStatus = `Uploading ${voice.name} to ${selectedTtsService?.name ?? selectedTtsServiceId}…`;
+    error = '';
+    try {
+      const queued = await voiceApi.publish(
+        voice.id,
+        selectedTtsServiceId,
+        voice.revision
+      );
+      const completed = await waitForVoiceJob(queued.id);
+      const providerVoiceId = String(
+        completed.result_json?.provider_voice_id ?? ''
+      );
+      if (!providerVoiceId)
+        throw new Error('The provider did not return a usable voice ID.');
+      const nextRevision = Number(
+        completed.result_json?.voice_revision ?? voice.revision + 1
+      );
+      libraryVoices = libraryVoices.map((item) =>
+        item.id === voice.id
+          ? {
+              ...item,
+              revision: nextRevision,
+              metadata_json: {
+                ...(item.metadata_json ?? {}),
+                providers: {
+                  ...(item.metadata_json?.providers ?? {}),
+                  [selectedTtsServiceId]: {
+                    ...(item.metadata_json?.providers?.[selectedTtsServiceId] ??
+                      {}),
+                    voice_id: providerVoiceId,
+                    status: 'ready',
+                    managed_by: 'pandrator'
+                  }
+                }
+              }
+            }
+          : item
+      );
+      ttsCatalogue = {
+        ...ttsCatalogue,
+        services: ttsCatalogue.services.map((service) =>
+          service.id === selectedTtsService?.id
+            ? {
+                ...service,
+                voices: Array.from(
+                  new Set([...(service.voices ?? []), providerVoiceId])
+                ),
+                live_voices: Array.from(
+                  new Set([...(service.live_voices ?? []), providerVoiceId])
+                ),
+                voice_catalogues: {
+                  ...(service.voice_catalogues ?? {}),
+                  [ttsModel]: Array.from(
+                    new Set([
+                      ...(service.voice_catalogues?.[ttsModel] ?? []),
+                      providerVoiceId
+                    ])
+                  )
+                }
+              }
+            : service
+        )
+      };
+      voiceName = providerVoiceId;
+      voicePublishStatus = `${voice.name} is ready and selected.`;
+    } catch (caught) {
+      voicePublishStatus = '';
+      error = `Could not prepare ${voice.name}: ${errorMessage(caught)}`;
+    } finally {
+      publishingLibraryVoiceId = '';
+    }
+  }
 
   async function updateOutcomeTransformations(
     changes: Record<string, boolean>
@@ -1115,7 +1381,7 @@
         role
       )
     ) {
-      reviewOpen = true;
+      reviewArtifactId = stage.artifact.id;
       return;
     }
     preview = {
@@ -1157,7 +1423,11 @@
             instructions,
             llm_concurrent_calls: optimizationConcurrent,
             timing_context_enabled: timingContextEnabled,
-            timing_context_gap_ms: timingContextGap
+            timing_context_gap_ms: timingContextGap,
+            web_research_enabled: webResearchEnabled,
+            web_research_model_name: webResearchModel,
+            web_research_mode: webResearchMode,
+            web_research_context_fraction: webResearchContextFraction
           }
         }
       ];
@@ -1172,9 +1442,14 @@
             model_name: model === 'default' ? '' : model,
             reasoning_effort: reasoningEffort,
             instructions,
+            source_artifact_id: translationSourceArtifactId,
             llm_concurrent_calls: optimizationConcurrent,
             timing_context_enabled: timingContextEnabled,
-            timing_context_gap_ms: timingContextGap
+            timing_context_gap_ms: timingContextGap,
+            web_research_enabled: webResearchEnabled,
+            web_research_model_name: webResearchModel,
+            web_research_mode: webResearchMode,
+            web_research_context_fraction: webResearchContextFraction
           }
         }
       ];
@@ -1287,18 +1562,27 @@
         instructions,
         llm_concurrent_calls: optimizationConcurrent,
         timing_context_enabled: timingContextEnabled,
-        timing_context_gap_ms: timingContextGap
+        timing_context_gap_ms: timingContextGap,
+        web_research_enabled: webResearchEnabled,
+        web_research_model_name: webResearchModel,
+        web_research_mode: webResearchMode,
+        web_research_context_fraction: webResearchContextFraction
       };
     else if (key === 'translate')
       stageSettings[key] = {
         ...common,
         translation_backend: backend,
         target_language: targetLanguage,
+        source_artifact_id: translationSourceArtifactId,
         reasoning_effort: reasoningEffort,
         instructions,
         llm_concurrent_calls: optimizationConcurrent,
         timing_context_enabled: timingContextEnabled,
-        timing_context_gap_ms: timingContextGap
+        timing_context_gap_ms: timingContextGap,
+        web_research_enabled: webResearchEnabled,
+        web_research_model_name: webResearchModel,
+        web_research_mode: webResearchMode,
+        web_research_context_fraction: webResearchContextFraction
       };
     else if (key === 'optimize_tts') {
       const enabled = Boolean(stage.enabled);
@@ -1417,6 +1701,10 @@
   async function saveSettings(mode: 'session' | 'defaults' = 'session') {
     if (!settingsStage) return;
     const key = settingsStage.key;
+    if (key === 'generate_audio' && publishingLibraryVoiceId) {
+      error = 'Wait for the selected library voice to finish uploading.';
+      return;
+    }
     if (
       key === 'generate_audio' &&
       showClonedVoices &&
@@ -1429,8 +1717,21 @@
         'Choose a provider-ready cloned voice, or create and upload one through the Voice Library.';
       return;
     }
+    if (
+      mode === 'session' &&
+      key === 'translate' &&
+      !translationSourceArtifactId
+    ) {
+      error = 'Choose the exact transcription or correction to translate.';
+      return;
+    }
     captureStageSettings(settingsStage);
-    const updates = stageSectionUpdates(key);
+    const updates = stageSectionUpdates(key).map((update) => {
+      if (mode !== 'defaults' || key !== 'translate') return update;
+      const value = { ...update.value };
+      delete value.source_artifact_id;
+      return { ...update, value };
+    });
     try {
       if (mode === 'defaults') {
         for (const update of updates)
@@ -1637,6 +1938,7 @@
           onsettings={() => openSettings(stage)}
           ontoggle={toggleSpeechOptimization}
           onrun={() => run(stage)}
+          onresume={() => resume(stage)}
           oncancel={() => cancel(stage)}
           onselect={(artifactId) => chooseStageArtifact(stage, artifactId)}
           onpreview={() => previewArtifact(stage)}
@@ -1803,6 +2105,77 @@
                 ></label
               >{/if}
           </div>
+        {/if}
+        {#if settingsStage.key === 'correct' || (settingsStage.key === 'translate' && backend === 'llm')}
+          <fieldset class="rounded-xl border border-[var(--line)] p-4">
+            <legend class="px-1 text-sm font-semibold">Web research</legend>
+            <label class="flex items-start gap-3 text-sm font-semibold">
+              <input
+                type="checkbox"
+                bind:checked={webResearchEnabled}
+                class="mt-1 accent-[var(--accent)]"
+              />
+              <span>
+                Ground uncertain terms before processing
+                <span
+                  class="muted mt-1 block text-xs font-normal leading-relaxed"
+                  >Research evidence is kept separately from the editable
+                  glossary and attached to the resulting artifact.</span
+                >
+              </span>
+            </label>
+            {#if webResearchEnabled}
+              <div class="mt-4 grid gap-4">
+                <label class="text-xs font-semibold">
+                  Researcher model
+                  <select
+                    bind:value={webResearchModel}
+                    class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                  >
+                    <option value="">Use the task model</option>
+                    {#each llmModels as item}
+                      <option value={item.value}>{item.label}</option>
+                    {/each}
+                  </select>
+                </label>
+                <label class="text-xs font-semibold">
+                  Research mode
+                  <select
+                    bind:value={webResearchMode}
+                    class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                  >
+                    <option value="global"
+                      >Research once for the full document</option
+                    >
+                    <option value="per_chunk"
+                      >Research each chunk and compound findings</option
+                    >
+                  </select>
+                </label>
+                <label class="text-xs font-semibold">
+                  Maximum researcher context ({Math.round(
+                    webResearchContextFraction * 100
+                  )}%)
+                  <input
+                    type="range"
+                    min="0.1"
+                    max="0.8"
+                    step="0.05"
+                    bind:value={webResearchContextFraction}
+                    class="mt-2 w-full accent-[var(--accent)]"
+                  />
+                </label>
+                <p class="muted text-xs leading-relaxed">
+                  {#if webResearchMode === 'global'}The researcher receives up
+                    to this share of its context in deterministic batches, then
+                    the consolidated evidence is reused by every request.{:else}Per-chunk
+                    research runs as a sequential prepass so each chunk can
+                    refine the accumulated evidence. Transformation requests may
+                    still run concurrently after that prepass.{/if}
+                </p>
+              </div>
+            {/if}
+          </fieldset>
         {/if}
         {#if settingsStage.key === 'transcribe'}
           <label class="text-sm font-semibold"
@@ -2207,6 +2580,21 @@
           >{/if}
         {#if settingsStage.key === 'translate'}<label
             class="text-sm font-semibold"
+            >Translate from<select
+              bind:value={translationSourceArtifactId}
+              required
+              class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
+              >{#if !translationSourceArtifactId}<option value="" disabled
+                  >Choose subtitle input</option
+                >{/if}{#each subtitleCatalogItems as item (item.artifact_id)}<option
+                  value={item.artifact_id}>{subtitleSourceLabel(item)}</option
+                >{/each}</select
+            ><span class="muted mt-1 block text-xs font-normal leading-relaxed"
+              >Choose the exact transcription or corrected revision. A
+              correction no longer silently replaces your selected
+              transcription.</span
+            ></label
+          ><label class="text-sm font-semibold"
             >Translation backend<select
               bind:value={backend}
               class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
@@ -2509,7 +2897,7 @@
             <div class="flex flex-wrap items-center justify-between gap-3">
               <p class="muted text-xs">
                 {showClonedVoices
-                  ? 'Only voices returned by this provider or uploaded from the Library can be selected.'
+                  ? 'Provider-ready voices can be selected above. Local voices can be prepared in one click below.'
                   : 'Only voices supported by the selected model are shown.'}
               </p>
               {#if showClonedVoices}<button
@@ -2517,7 +2905,7 @@
                   onclick={() =>
                     openVoiceLibrary('references', selectedTtsServiceId)}
                   class="flex items-center gap-1.5 text-xs font-semibold text-[var(--accent)]"
-                  ><Library size={14} /> Create or upload cloned voice</button
+                  ><Library size={14} /> Manage Voice Library</button
                 >{:else}<button
                   type="button"
                   onclick={() => openVoiceLibrary('prebuilt')}
@@ -2525,6 +2913,106 @@
                   ><Library size={14} /> Browse pre-built voices</button
                 >{/if}
             </div>
+            {#if showClonedVoices}
+              <section
+                class="rounded-2xl border border-[var(--line)] bg-[var(--paper)] p-4"
+              >
+                <div class="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <h4 class="text-sm font-semibold">
+                      Available from your Voice Library
+                    </h4>
+                    <p class="muted mt-1 text-xs">
+                      Choose a local voice; Pandrator uploads or refreshes only
+                      that voice, then selects it automatically.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onclick={() =>
+                      openVoiceLibrary('references', selectedTtsServiceId)}
+                    class="text-xs font-semibold text-[var(--accent)]"
+                    >Add a new voice</button
+                  >
+                </div>
+                {#if localVoiceChoices.length}
+                  <div class="mt-3 grid gap-2 sm:grid-cols-2">
+                    {#each localVoiceChoices as choice}
+                      {@const ready =
+                        choice.registration?.status === 'ready' &&
+                        Boolean(choice.registration.voice_id)}
+                      {@const preparing =
+                        publishingLibraryVoiceId === choice.voice.id}
+                      <article
+                        class="flex min-w-0 items-center gap-3 rounded-xl border border-[var(--line)] px-3 py-3"
+                      >
+                        <div class="min-w-0 flex-1">
+                          <div class="truncate text-sm font-semibold">
+                            {choice.voice.name}
+                          </div>
+                          <div class="muted mt-0.5 text-xs">
+                            {choice.voice.language || 'Language not set'} · {ready
+                              ? 'ready in provider'
+                              : choice.registration?.status === 'stale'
+                                ? 'provider copy needs update'
+                                : !choice.hasSample
+                                  ? 'sample needed'
+                                  : choice.needsTranscript
+                                    ? 'reviewed transcript needed'
+                                    : 'ready to upload'}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onclick={() => useLibraryVoice(choice.voice)}
+                          disabled={preparing ||
+                            (Boolean(publishingLibraryVoiceId) && !preparing) ||
+                            (selectedTtsService?.available === false &&
+                              !ready &&
+                              choice.hasSample &&
+                              !choice.needsTranscript)}
+                          class:btn-primary={!ready}
+                          class="btn shrink-0 disabled:opacity-40"
+                        >
+                          {#if preparing}<LoaderCircle
+                              size={15}
+                              class="animate-spin"
+                            />{:else if ready}<CheckCircle2
+                              size={15}
+                            />{:else}<CloudUpload size={15} />{/if}
+                          {preparing
+                            ? 'Uploading…'
+                            : ready
+                              ? voiceName === choice.registration?.voice_id
+                                ? 'Selected'
+                                : 'Use'
+                              : !choice.hasSample
+                                ? 'Add sample'
+                                : choice.needsTranscript
+                                  ? 'Review text'
+                                  : choice.registration?.status === 'stale'
+                                    ? 'Update & use'
+                                    : 'Upload & use'}
+                        </button>
+                      </article>
+                    {/each}
+                  </div>
+                {:else}
+                  <p
+                    class="muted mt-3 rounded-xl border border-dashed border-[var(--line)] p-4 text-sm"
+                  >
+                    No local voices yet. Add one once, then reuse it across
+                    compatible speech services.
+                  </p>
+                {/if}
+                {#if voicePublishStatus}<p
+                    class="mt-3 text-xs font-semibold text-[var(--accent)]"
+                    role="status"
+                  >
+                    {voicePublishStatus}
+                  </p>{/if}
+              </section>
+            {/if}
           {/if}
           {#if supportsGenerationPrompt}
             <label class="text-sm font-semibold"
@@ -2773,7 +3261,8 @@
           ><RotateCcw size={15} /> Revert to defaults</button
         ><button
           onclick={() => saveSettings('defaults')}
-          class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-4 py-2.5 text-sm font-semibold"
+          disabled={Boolean(publishingLibraryVoiceId)}
+          class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-4 py-2.5 text-sm font-semibold disabled:opacity-40"
           ><Save size={15} /> Save as defaults</button
         ><button
           onclick={() => (settingsStage = null)}
@@ -2781,7 +3270,9 @@
           >Cancel</button
         ><button
           onclick={() => saveSettings('session')}
-          class="rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white"
+          disabled={Boolean(publishingLibraryVoiceId) ||
+            (settingsStage.key === 'translate' && !translationSourceArtifactId)}
+          class="rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40"
           >Save settings</button
         >
       </div>
@@ -2794,10 +3285,11 @@
     source={pdfSource}
     onclose={() => (pdfSource = null)}
   />{/if}
-{#if reviewOpen}<SubtitleReview
+{#if reviewArtifactId}<SubtitleReview
     sessionId={session.id}
-    sourceArtifactId={snapshot?.sources[0]?.id}
-    onclose={() => (reviewOpen = false)}
+    primaryArtifactId={reviewArtifactId}
+    sourceAudioArtifactId={snapshot?.sources[0]?.id}
+    onclose={() => (reviewArtifactId = '')}
     onsaved={load}
   />{/if}
 {#if preview}<ArtifactPreview
@@ -2833,6 +3325,7 @@
 {#if voiceLibraryOpen && VoiceLibraryModalComponent}<VoiceLibraryModalComponent
     initialView={voiceLibraryView}
     initialService={voiceLibraryService}
+    initialVoice={voiceLibraryInitialVoice}
     onvoicepublished={usePublishedVoice}
     onclose={async () => {
       voiceLibraryOpen = false;

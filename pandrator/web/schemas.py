@@ -194,6 +194,8 @@ class ModelCreate(StrictModel):
     input_cost_per_million: float | None = Field(default=None, ge=0)
     cached_input_cost_per_million: float | None = Field(default=None, ge=0)
     output_cost_per_million: float | None = Field(default=None, ge=0)
+    context_window_tokens: int = Field(default=262_144, ge=4096)
+    max_output_tokens: int | None = Field(default=None, ge=1)
     options: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -206,6 +208,8 @@ class ModelUpdate(StrictModel):
     input_cost_per_million: float | None = Field(default=None, ge=0)
     cached_input_cost_per_million: float | None = Field(default=None, ge=0)
     output_cost_per_million: float | None = Field(default=None, ge=0)
+    context_window_tokens: int | None = Field(default=None, ge=4096)
+    max_output_tokens: int | None = Field(default=None, ge=1)
     options: dict[str, Any] | None = None
 
 
@@ -222,7 +226,9 @@ class PdfCropInput(StrictModel):
 
 
 class PdfWhiteoutInput(PdfCropInput):
-    color: list[float] = Field(default_factory=lambda: [1.0, 1.0, 1.0], min_length=3, max_length=3)
+    color: list[float] = Field(
+        default_factory=lambda: [1.0, 1.0, 1.0], min_length=3, max_length=3
+    )
 
 
 class PdfEditRequest(StrictModel):
@@ -241,6 +247,7 @@ class SubtitleSegmentInput(StrictModel):
 
 
 class SubtitleReviewRequest(StrictModel):
+    source_artifact_id: str | None = None
     expected_revision: int = Field(ge=1)
     segments: list[SubtitleSegmentInput] = Field(min_length=1)
 
@@ -251,9 +258,16 @@ class VoiceCreate(StrictModel):
     description: str | None = None
 
 
+class VoiceUpdate(StrictModel):
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    language: str | None = Field(default=None, max_length=40)
+    description: str | None = None
+
+
 class VoiceTranscriptReview(StrictModel):
     transcript: str = Field(min_length=1)
     language: str | None = Field(default=None, max_length=40)
+    expected_voice_revision: int | None = Field(default=None, ge=1)
 
 
 class RvcModelUploadRequest(StrictModel):
@@ -323,14 +337,18 @@ class ChunkUploadInitialize(StrictModel):
     mime_type: str | None = Field(default=None, max_length=160)
     session_id: str | None = None
     sha256: str | None = Field(default=None, min_length=64, max_length=64)
-    chunk_size: int = Field(default=8 * 1024 * 1024, ge=1024 * 1024, le=16 * 1024 * 1024)
+    chunk_size: int = Field(
+        default=8 * 1024 * 1024, ge=1024 * 1024, le=16 * 1024 * 1024
+    )
 
 
 class GenerationSegmentCreate(StrictModel):
     text: str = Field(min_length=1)
     source_segment_ids: list[str] = Field(default_factory=list)
     alignment_group: str | None = Field(default=None, max_length=64)
-    node_kind: Literal["paragraph", "heading", "chapter_marker", "subtitle_cue"] = "paragraph"
+    node_kind: Literal["paragraph", "heading", "chapter_marker", "subtitle_cue"] = (
+        "paragraph"
+    )
     paragraph_break_after: bool = False
     speaker: str | None = Field(default=None, max_length=160)
     voice_id: str | None = None
@@ -348,7 +366,9 @@ class GenerationPlanCreate(StrictModel):
 class GenerationSegmentUpdate(StrictModel):
     text: str | None = Field(default=None, min_length=1)
     optimized_text: str | None = None
-    node_kind: Literal["paragraph", "heading", "chapter_marker", "subtitle_cue"] | None = None
+    node_kind: (
+        Literal["paragraph", "heading", "chapter_marker", "subtitle_cue"] | None
+    ) = None
     paragraph_break_after: bool | None = None
     voice_id: str | None = None
     voice: str | None = Field(default=None, max_length=255)
@@ -519,6 +539,7 @@ SCHEMA_MODELS = {
         SubtitleSegmentInput,
         SubtitleReviewRequest,
         VoiceCreate,
+        VoiceUpdate,
         VoiceTranscriptReview,
         TtsVoicePreviewRequest,
         ManagerDesiredComponentState,

@@ -170,7 +170,9 @@ class AtomicJobQueueTests(unittest.TestCase):
                     select(ResourceClaim).order_by(ResourceClaim.resource_key)
                 ).all()
             )
-        self.assertEqual(["gpu:0", "voice:alice"], [claim.resource_key for claim in claims])
+        self.assertEqual(
+            ["gpu:0", "voice:alice"], [claim.resource_key for claim in claims]
+        )
         self.assertTrue(all(claim.job_id == holder.id for claim in claims))
 
         next_job = self.queue.claim("unrelated-worker")
@@ -189,8 +191,7 @@ class AtomicJobQueueTests(unittest.TestCase):
             for index in range(count)
         ]
         claimed = [
-            self.queue.claim(f"resource-worker-{index}")
-            for index in range(count)
+            self.queue.claim(f"resource-worker-{index}") for index in range(count)
         ]
         barrier = threading.Barrier(count)
 
@@ -358,9 +359,18 @@ class AtomicJobQueueTests(unittest.TestCase):
             outcomes = list(executor.map(lambda action: action(), (cancel, complete)))
 
         current = self.queue.get(job.id)
-        self.assertIn(current.status, {"canceled", "succeeded"})
+        self.assertIn(current.status, {"cancel_requested", "succeeded"})
         complete_succeeded = dict(outcomes)["complete"]
         self.assertEqual(current.status == "succeeded", complete_succeeded)
+        if current.status == "cancel_requested":
+            self.assertTrue(
+                self.queue.cancel_owned(
+                    job.id,
+                    "worker",
+                    lease_generation=claimed.lease_generation,
+                )
+            )
+            self.assertEqual("canceled", self.queue.get(job.id).status)
 
 
 class WorkerResilienceTests(unittest.TestCase):
@@ -411,7 +421,9 @@ class WorkerResilienceTests(unittest.TestCase):
                 raise RuntimeError("simulated acquire failure")
             return original_acquire(*args, **kwargs)
 
-        with patch.object(self.queue, "acquire_resources", side_effect=fail_first_acquire):
+        with patch.object(
+            self.queue, "acquire_resources", side_effect=fail_first_acquire
+        ):
             self.assertTrue(worker.run_once())
 
         deferred = self.queue.get(first.id)
@@ -430,7 +442,9 @@ class WorkerResilienceTests(unittest.TestCase):
                 raise RuntimeError("simulated cleanup failure")
             return original_release(*args, **kwargs)
 
-        with patch.object(self.queue, "release_resources", side_effect=fail_first_release):
+        with patch.object(
+            self.queue, "release_resources", side_effect=fail_first_release
+        ):
             self.assertTrue(worker.run_once())
             self.assertTrue(worker.run_once())
 

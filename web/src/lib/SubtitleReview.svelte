@@ -1,10 +1,12 @@
 <script lang="ts">
   import { errorMessage } from './errors';
   import {
+    ChevronDown,
     Columns3,
     Filter,
     Merge,
     Play,
+    Plus,
     Save,
     Scissors,
     Trash2,
@@ -13,6 +15,9 @@
   import { sessionApi } from './domain-api';
   import type {
     SubtitleComparisonRow as Row,
+    SubtitleReviewCatalog as Catalog,
+    SubtitleReviewCatalogItem as CatalogItem,
+    SubtitleReviewColumn as ReviewColumn,
     SubtitleReviewPayload as Payload,
     SubtitleSegment as Segment
   } from './api-models';
@@ -26,23 +31,27 @@
 
   let {
     sessionId,
-    sourceArtifactId,
+    primaryArtifactId,
+    sourceAudioArtifactId,
     onclose,
     onsaved
   }: {
     sessionId: string;
-    sourceArtifactId?: string;
+    primaryArtifactId: string;
+    sourceAudioArtifactId?: string;
     onclose: () => void;
     onsaved: () => void;
   } = $props();
   let payload = $state<Payload | null>(null);
+  let catalog = $state<Catalog | null>(null);
   let error = $state('');
   let loading = $state(true);
   let changedOnly = $state(false);
   let diffView = $state(false);
-  type ReviewStage =
-    'transcription' | 'correction' | 'translation' | 'tts_optimization';
-  let editStage = $state<ReviewStage>('translation');
+  let reviewPrimaryArtifactId = $state('');
+  let editArtifactId = $state('');
+  let comparisonChoice = $state('');
+  let comparisonLoading = $state(false);
   let saving = $state(false);
   let audioPreview = $state<HTMLAudioElement>();
   let cuePreviewFrame: number | null = null;
@@ -65,28 +74,58 @@
       body: 'A save creates a reviewed immutable revision and invalidates only affected descendants.'
     }
   ];
-  const availableStages = $derived(
-    (
-      [
-        'transcription',
-        'correction',
-        'translation',
-        'tts_optimization'
-      ] as const
-    ).filter((stage) => payload?.stages[stage])
+  const columns = $derived(payload?.columns ?? []);
+  const editColumn = $derived(
+    columns.find((column) => column.artifact_id === editArtifactId)
   );
+  const editStage = $derived(editColumn?.stage ?? '');
+  const selectedArtifactIds = $derived(
+    columns.map((column) => column.artifact_id)
+  );
+  const comparisonOptions = $derived(
+    (catalog?.items ?? []).filter(
+      (item) => !selectedArtifactIds.includes(item.artifact_id)
+    )
+  );
+  const comparisonStages = [
+    'transcription',
+    'correction',
+    'translation',
+    'tts_optimization'
+  ] as const;
   const visibleRows = $derived(
     (payload?.rows ?? []).filter((row) => !changedOnly || row.changed)
   );
   const editableTexts = $derived(
-    payload?.stages[editStage]?.segments.map((segment) => segment.text) ?? []
+    editColumn?.segments.map((segment) => segment.text) ?? []
   );
 
-  function stageText(row: Row, stage: ReviewStage) {
-    return (row[stage] ?? [])
+  function catalogRecord(artifactId: string) {
+    return catalog?.items.find((item) => item.artifact_id === artifactId);
+  }
+
+  function columnLabel(value: ReviewColumn | CatalogItem) {
+    const record =
+      'artifact_id' in value ? catalogRecord(value.artifact_id) : undefined;
+    const stage = value.stage.replaceAll('_', ' ');
+    const version = record?.version
+      ? `v${record.version}`
+      : `r${value.revision}`;
+    const language = value.language ? ` · ${value.language}` : '';
+    return `${stage} ${version}${language}`;
+  }
+
+  function comparisonGroupLabel(stage: (typeof comparisonStages)[number]) {
+    if (stage === 'tts_optimization') return 'TTS optimizations';
+    return `${stage[0].toUpperCase()}${stage.slice(1)}s`;
+  }
+
+  function stageText(row: Row, artifactId: string) {
+    return (row.cells[artifactId] ?? [])
       .map(
         (segment) =>
-          (stage === editStage ? canonicalSegment(segment) : segment).text
+          (artifactId === editArtifactId ? canonicalSegment(segment) : segment)
+            .text
       )
       .join('\n');
   }
@@ -112,14 +151,14 @@
   }
 
   function canonicalSegment(segment: Segment) {
-    const records = payload?.stages[editStage]?.segments;
+    const records = editColumn?.segments;
     return (
       records?.find((candidate) => sameSegment(candidate, segment)) ?? segment
     );
   }
 
   function stageIndex(segment: Segment) {
-    const records = payload?.stages[editStage]?.segments;
+    const records = editColumn?.segments;
     return (
       records?.findIndex((candidate) => sameSegment(candidate, segment)) ?? -1
     );
@@ -127,7 +166,7 @@
 
   function replaceInRows(segment: Segment, replacements: Segment[]) {
     for (const row of payload?.rows ?? []) {
-      const records = row[editStage];
+      const records = row.cells[editArtifactId];
       const index =
         records?.findIndex((candidate) => sameSegment(candidate, segment)) ??
         -1;
@@ -136,7 +175,7 @@
   }
 
   function nextSegment(segment: Segment) {
-    const records = payload?.stages[editStage]?.segments;
+    const records = editColumn?.segments;
     const index = stageIndex(segment);
     return records && index >= 0 ? records[index + 1] : undefined;
   }
@@ -157,27 +196,44 @@
       : 'Cues from different speakers cannot be merged';
   }
 
-  function previousStageText(row: Row) {
-    const stage = previousStage(row);
-    return stage ? stageText(row, stage) : '';
+  function previousColumnText(row: Row) {
+    const column = previousColumn(row);
+    return column ? stageText(row, column.artifact_id) : '';
   }
 
-  function previousStage(row: Row): ReviewStage | null {
-    const position = availableStages.indexOf(editStage);
+  function previousColumn(row: Row): ReviewColumn | null {
+    const position = columns.findIndex(
+      (column) => column.artifact_id === editArtifactId
+    );
     for (let index = position - 1; index >= 0; index -= 1) {
-      const text = stageText(row, availableStages[index]);
-      if (text) return availableStages[index];
+      const column = columns[index];
+      const text = stageText(row, column.artifact_id);
+      if (text) return column;
     }
     return null;
   }
 
-  async function load() {
+  async function load(
+    artifactIds = [reviewPrimaryArtifactId],
+    refreshCatalog = false
+  ) {
     loading = true;
+    error = '';
     try {
-      payload = await sessionApi.subtitles(sessionId);
-      if (!payload.stages[editStage])
-        editStage = (availableStages.at(-1) ??
-          'transcription') as typeof editStage;
+      const [nextPayload, nextCatalog] = await Promise.all([
+        sessionApi.subtitleReview(sessionId, artifactIds),
+        refreshCatalog || !catalog
+          ? sessionApi.subtitleCatalog(sessionId)
+          : Promise.resolve(catalog)
+      ]);
+      payload = nextPayload;
+      catalog = nextCatalog;
+      if (
+        !nextPayload.columns.some(
+          (column) => column.artifact_id === editArtifactId
+        )
+      )
+        editArtifactId = nextPayload.primary_artifact_id;
     } catch (caught) {
       error = errorMessage(caught);
     } finally {
@@ -185,8 +241,26 @@
     }
   }
 
+  async function addComparison() {
+    if (!comparisonChoice || selectedArtifactIds.length >= 4) return;
+    comparisonLoading = true;
+    try {
+      await load([...selectedArtifactIds, comparisonChoice]);
+      comparisonChoice = '';
+    } finally {
+      comparisonLoading = false;
+    }
+  }
+
+  async function removeComparison(artifactId: string) {
+    if (artifactId === reviewPrimaryArtifactId) return;
+    const remaining = selectedArtifactIds.filter((item) => item !== artifactId);
+    if (editArtifactId === artifactId) editArtifactId = reviewPrimaryArtifactId;
+    await load(remaining);
+  }
+
   function split(segment: Segment) {
-    const records = payload?.stages[editStage]?.segments;
+    const records = editColumn?.segments;
     if (!records) return;
     const index = stageIndex(segment);
     if (index < 0) return;
@@ -213,7 +287,7 @@
   }
 
   function mergeNext(segment: Segment) {
-    const records = payload?.stages[editStage]?.segments;
+    const records = editColumn?.segments;
     if (!records) return;
     const index = stageIndex(segment);
     if (index < 0) return;
@@ -232,7 +306,7 @@
   }
 
   function removeSegment(segment: Segment) {
-    const records = payload?.stages[editStage]?.segments;
+    const records = editColumn?.segments;
     const index = stageIndex(segment);
     if (records && index >= 0) {
       records.splice(index, 1);
@@ -244,7 +318,7 @@
   }
 
   function applySearchReplacements(updates: TextReplacement[]) {
-    const records = payload?.stages[editStage]?.segments;
+    const records = editColumn?.segments;
     if (!records) return;
     for (const update of updates) {
       if (records[update.index]) records[update.index].text = update.text;
@@ -298,21 +372,35 @@
   onDestroy(() => stopCuePreview(true));
 
   async function save() {
-    const stage = payload?.stages[editStage];
-    if (!stage) return;
+    const column = editColumn;
+    if (!column) return;
     saving = true;
     error = '';
     try {
-      await sessionApi.saveSubtitleReview(sessionId, editStage, {
-        expected_revision: stage.revision,
-        segments: stage.segments.map(({ start_ms, end_ms, text, speaker }) => ({
-          start_ms,
-          end_ms,
-          text,
-          speaker
-        }))
-      });
-      await load();
+      const result = await sessionApi.saveSubtitleReview(
+        sessionId,
+        column.stage,
+        {
+          source_artifact_id: column.artifact_id,
+          expected_revision: column.revision,
+          segments: column.segments.map(
+            ({ start_ms, end_ms, text, speaker }) => ({
+              start_ms,
+              end_ms,
+              text,
+              speaker
+            })
+          )
+        }
+      );
+      const previousId = column.artifact_id;
+      const nextIds = selectedArtifactIds.map((artifactId) =>
+        artifactId === previousId ? result.artifact_id : artifactId
+      );
+      if (reviewPrimaryArtifactId === previousId)
+        reviewPrimaryArtifactId = result.artifact_id;
+      editArtifactId = result.artifact_id;
+      await load(nextIds, true);
       onsaved();
     } catch (caught) {
       error = errorMessage(caught);
@@ -320,7 +408,11 @@
       saving = false;
     }
   }
-  onMount(load);
+  onMount(() => {
+    reviewPrimaryArtifactId = primaryArtifactId;
+    editArtifactId = primaryArtifactId;
+    void load([primaryArtifactId], true);
+  });
 </script>
 
 <div
@@ -351,32 +443,13 @@
           <Columns3 size={20} /> Compare and refine
         </h2>
       </div>
-      <div class="flex flex-wrap items-center gap-2">
-        <button
-          onclick={() => (changedOnly = !changedOnly)}
-          class:active={changedOnly}
-          class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3 py-2 text-sm font-semibold"
-          ><Filter size={16} /> Changed only</button
-        >
-        <button
-          onclick={() => (diffView = !diffView)}
-          class:active={diffView}
-          class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3 py-2 text-sm font-semibold"
-          >Diff view</button
-        >
-        <select
-          bind:value={editStage}
-          class="rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-sm"
-          aria-label="Stage to edit"
-          >{#each availableStages as stage}<option value={stage}>{stage}</option
-            >{/each}</select
-        >
+      <div class="flex min-w-0 flex-wrap items-center justify-end gap-2">
         <button
           onclick={save}
-          disabled={saving || !payload?.stages[editStage]}
+          disabled={saving || !editColumn}
           class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2 text-sm font-semibold text-white disabled:opacity-40"
           ><Save size={16} />
-          {saving ? 'Saving…' : 'Save reviewed revision'}</button
+          {saving ? 'Saving…' : 'Save revision'}</button
         >
         <button
           onclick={onclose}
@@ -386,23 +459,132 @@
         >
       </div>
     </header>
-    {#if sourceArtifactId}<div
+    <details class="review-tools border-b border-[var(--line)]">
+      <summary
+        class="flex cursor-pointer list-none items-center gap-3 px-5 py-3 text-sm sm:px-7"
+      >
+        <span
+          class="grid size-8 shrink-0 place-items-center rounded-xl bg-[var(--accent-soft)] text-[var(--accent)]"
+          ><Filter size={16} /></span
+        >
+        <span class="min-w-0 flex-1">
+          <strong class="block">Find, filter & compare</strong>
+          <span class="muted mt-0.5 block text-xs font-normal"
+            >Search the editable revision, focus on changes, or compare any
+            subtitle revisions.</span
+          >
+        </span>
+        {#if changedOnly || diffView}<span
+            class="rounded-full bg-[var(--accent-soft)] px-2 py-1 text-[.68rem] font-semibold text-[var(--accent)]"
+            >Active</span
+          >{/if}
+        <span class="muted shrink-0 text-xs tabular-nums"
+          >{selectedArtifactIds.length}/4</span
+        >
+        <span class="review-tools-chevron muted shrink-0"
+          ><ChevronDown size={17} /></span
+        >
+      </summary>
+      <div class="space-y-3 border-t border-[var(--line)] px-5 py-4 sm:px-7">
+        <div
+          class="flex flex-wrap items-end gap-3"
+          aria-label="Subtitle comparisons and filters"
+        >
+          <label class="min-w-56 text-xs font-semibold">
+            Editable revision
+            <select
+              bind:value={editArtifactId}
+              class="mt-1 w-full min-w-0 rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-sm font-normal"
+              aria-label="Subtitle artifact to edit"
+              >{#each columns as column}<option value={column.artifact_id}
+                  >{columnLabel(column)}</option
+                >{/each}</select
+            >
+          </label>
+          <button
+            onclick={() => (changedOnly = !changedOnly)}
+            aria-pressed={changedOnly}
+            class:active={changedOnly}
+            class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3 py-2 text-sm font-semibold"
+            ><Filter size={16} /> Changed only</button
+          >
+          <button
+            onclick={() => (diffView = !diffView)}
+            aria-pressed={diffView}
+            class:active={diffView}
+            class="rounded-xl border border-[var(--line)] px-3 py-2 text-sm font-semibold"
+            >Diff view</button
+          >
+          <label class="min-w-56 flex-1 text-xs font-semibold sm:max-w-lg">
+            Add a comparison
+            <select
+              bind:value={comparisonChoice}
+              disabled={selectedArtifactIds.length >= 4 || comparisonLoading}
+              class="mt-1 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-sm font-normal disabled:opacity-50"
+            >
+              <option value="">Choose any subtitle revision…</option>
+              {#each comparisonStages as stage}
+                {@const stageOptions = comparisonOptions.filter(
+                  (item) => item.stage === stage
+                )}
+                {#if stageOptions.length}
+                  <optgroup label={comparisonGroupLabel(stage)}>
+                    {#each stageOptions as item (item.artifact_id)}
+                      <option value={item.artifact_id}
+                        >{columnLabel(item)} · {item.segment_count} cues</option
+                      >
+                    {/each}
+                  </optgroup>
+                {/if}
+              {/each}
+            </select>
+          </label>
+          <button
+            onclick={addComparison}
+            disabled={!comparisonChoice ||
+              selectedArtifactIds.length >= 4 ||
+              comparisonLoading}
+            class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3 py-2 text-sm font-semibold disabled:opacity-40"
+          >
+            <Plus size={15} />
+            {comparisonLoading ? 'Loading…' : 'Add'}
+          </button>
+        </div>
+        <div class="flex flex-wrap items-center gap-2">
+          {#each columns as column (column.artifact_id)}
+            <span
+              class="inline-flex max-w-full items-center gap-1 rounded-full bg-[var(--accent-soft)] px-2.5 py-1 text-xs"
+            >
+              <span class="truncate">{columnLabel(column)}</span>
+              {#if column.artifact_id !== reviewPrimaryArtifactId}
+                <button
+                  onclick={() => removeComparison(column.artifact_id)}
+                  aria-label={`Remove ${columnLabel(column)} from comparison`}
+                  class="rounded-full p-0.5 hover:bg-[var(--paper)]"
+                >
+                  <X size={12} />
+                </button>
+              {:else}
+                <span class="font-semibold text-[var(--accent)]">Primary</span>
+              {/if}
+            </span>
+          {/each}
+        </div>
+        {#if editColumn}<SearchReplaceBar
+            texts={editableTexts}
+            onreplace={applySearchReplacements}
+            onnavigate={navigateSearchMatch}
+            label={`${editStage.replaceAll('_', ' ')} segments`}
+          />{/if}
+      </div>
+    </details>
+    {#if sourceAudioArtifactId}<div
         class="border-b border-[var(--line)] px-5 py-3 sm:px-7"
       >
         <AudioPlayer
           bind:element={audioPreview}
-          src={`/api/v1/artifacts/${sourceArtifactId}/content`}
+          src={`/api/v1/artifacts/${sourceAudioArtifactId}/content`}
           label="Source audio preview"
-        />
-      </div>{/if}
-    {#if payload?.stages[editStage]}<div
-        class="border-b border-[var(--line)] px-5 py-2 sm:px-7"
-      >
-        <SearchReplaceBar
-          texts={editableTexts}
-          onreplace={applySearchReplacements}
-          onnavigate={navigateSearchMatch}
-          label={`${editStage.replaceAll('_', ' ')} segments`}
         />
       </div>{/if}
     {#if error}<div
@@ -430,9 +612,13 @@
               ><th
                 class="w-32 border-b border-r border-[var(--line)] p-3 text-left"
                 >Timing</th
-              >{#each availableStages as stage}<th
+              >{#each columns as column (column.artifact_id)}<th
                   class="border-b border-r border-[var(--line)] p-3 text-left capitalize last:border-r-0"
-                  >{stage}</th
+                  ><span class="block">{column.stage.replaceAll('_', ' ')}</span
+                  ><span
+                    class="muted mt-0.5 block text-[.68rem] font-normal normal-case"
+                    >{columnLabel(column)}</span
+                  ></th
                 >{/each}</tr
             ></thead
           >
@@ -446,19 +632,19 @@
                     row.end_ms / 1000
                   ).toFixed(2)}</td
                 >
-                {#each availableStages as stage}<td
+                {#each columns as column (column.artifact_id)}<td
                     class="border-b border-r border-[var(--line)] p-3 last:border-r-0"
-                    >{#if diffView && stage === previousStage(row)}<TextDiff
-                        before={previousStageText(row)}
-                        after={stageText(row, editStage)}
+                    >{#if diffView && column.artifact_id === previousColumn(row)?.artifact_id}<TextDiff
+                        before={previousColumnText(row)}
+                        after={stageText(row, editArtifactId)}
                         view="before"
-                      />{:else if diffView && stage === editStage}<TextDiff
-                        before={previousStageText(row)}
-                        after={stageText(row, editStage)}
+                      />{:else if diffView && column.artifact_id === editArtifactId}<TextDiff
+                        before={previousColumnText(row)}
+                        after={stageText(row, editArtifactId)}
                         view="after"
                       />{:else}<div class="space-y-3">
-                        {#each row[stage] ?? [] as segment}{@const item =
-                            stage === editStage
+                        {#each row.cells[column.artifact_id] ?? [] as segment}{@const item =
+                            column.artifact_id === editArtifactId
                               ? canonicalSegment(segment)
                               : segment}
                           <div
@@ -470,7 +656,7 @@
                                   >{speakerLabel(item.speaker)}</span
                                 >
                               </div>{/if}
-                            {#if stage === editStage}<div
+                            {#if column.artifact_id === editArtifactId}<div
                                 class="mb-2 grid grid-cols-2 gap-2"
                               >
                                 <label class="muted text-[.68rem]"
@@ -537,5 +723,19 @@
   button.active {
     color: var(--accent);
     background: var(--accent-soft);
+  }
+  .review-tools summary::-webkit-details-marker {
+    display: none;
+  }
+  .review-tools-chevron {
+    transition: transform 160ms ease;
+  }
+  .review-tools[open] .review-tools-chevron {
+    transform: rotate(180deg);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .review-tools-chevron {
+      transition: none;
+    }
   }
 </style>

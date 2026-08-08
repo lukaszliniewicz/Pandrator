@@ -7,11 +7,13 @@
     onclose,
     initialView = 'references',
     initialService = '',
+    initialVoice = '',
     onvoicepublished
   }: {
     onclose: () => void;
     initialView?: 'references' | 'prebuilt';
     initialService?: string;
+    initialVoice?: string;
     onvoicepublished?: (providerVoiceId: string) => void;
   } = $props();
 </script>
@@ -48,6 +50,8 @@
         onback={onclose}
         {initialView}
         {initialService}
+        {initialVoice}
+        embedded
         {onvoicepublished}
       />
     </div>

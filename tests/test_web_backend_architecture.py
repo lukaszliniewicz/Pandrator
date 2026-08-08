@@ -42,9 +42,9 @@ class BackendArchitectureTests(unittest.TestCase):
 
     def test_route_contract_is_partitioned_without_losing_rules(self):
         rules = list(self.app.url_map.iter_rules())
-        self.assertEqual(162, len(rules))
+        self.assertEqual(172, len(rules))
         self.assertEqual(
-            155,
+            165,
             sum(rule.rule.startswith("/api/") for rule in rules),
         )
         self.assertEqual(set(DOMAIN_ORDER), set(self.app.blueprints))
@@ -65,9 +65,7 @@ class BackendArchitectureTests(unittest.TestCase):
             for method in rule.methods
             if method not in {"HEAD", "OPTIONS"}
         }
-        document = self.app.test_client().get(
-            "/api/v1/openapi.json"
-        ).get_json()
+        document = self.app.test_client().get("/api/v1/openapi.json").get_json()
         for path, operations in document["paths"].items():
             for method in operations:
                 normalized_path = re.sub(r"{[^}]+}", "{}", path)
@@ -90,7 +88,7 @@ class BackendArchitectureTests(unittest.TestCase):
     def test_workflow_job_registry_has_domain_ownership_and_late_binding(self):
         handlers = self.app.extensions["pandrator"]["workflow_handlers"]
         registry = handlers.handler_registry
-        self.assertEqual(26, len(registry))
+        self.assertEqual(27, len(registry))
         self.assertEqual(
             {
                 "delivery",
@@ -186,6 +184,16 @@ class BackendArchitectureTests(unittest.TestCase):
                 api_key="",
             ):
                 return "voice-id"
+
+            def delete_voice(
+                self,
+                voice_id,
+                *,
+                base_url,
+                service,
+                api_key="",
+            ):
+                return True
 
         registry = TtsProviderRegistry()
         adapter = RecordingAdapter()

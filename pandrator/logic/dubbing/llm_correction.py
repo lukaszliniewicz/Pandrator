@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -15,7 +16,8 @@ from threading import Lock
 from typing import Any
 
 from .. import llm_handler
-from .llm_config import DubbingLLMSettings, resolve_dubbing_llm_settings as _resolve_dubbing_llm_settings
+from .llm_config import DubbingLLMSettings
+from .llm_config import resolve_dubbing_llm_settings as _resolve_dubbing_llm_settings
 from .models import SubtitleSegment
 from .srt_utils import (
     compose_srt,
@@ -31,6 +33,7 @@ DEFAULT_MAX_LINE_LENGTH = 42
 MAX_CORRECTION_ATTEMPTS = 3
 CORRECTION_CONTEXT_CUES = 8
 ProgressCallback = Callable[[float, str | None], None]
+UnitCompletedCallback = Callable[[str, dict[str, Any]], None]
 CORRECTION_SYSTEM_PROMPT = (
     "You are an expert subtitle transcript editor. Correct the supplied source-language "
     "cues accurately and conservatively. Return only valid JSON in the requested operation "
@@ -39,11 +42,11 @@ CORRECTION_SYSTEM_PROMPT = (
 
 CORRECTION_PROMPT_TEMPLATE = """
 Review the array of {subtitle_count} subtitle cues below and return this JSON shape:
-{{"operations":[{{"action":"edit|delete|merge|split","ids":[1],"texts":["corrected text"]}}]}}
+{{"operations":[{{"action":"edit|delete|merge|split","ids":[1],"texts":["corrected text"],"speakers":["SPEAKER_00"]}}]}}
 
 Instructions:
 1. Use your editorial judgment to fix punctuation, capitalization, spelling, and clear transcription errors. Remove isolated filler and accidental repetition when appropriate.
-2. Preserve each speaker's meaning, register, names, and terminology. Speaker identity is managed separately by Pandrator: do not add speaker labels to replacement text.
+2. Preserve each speaker's meaning, register, names, and terminology. Do not add speaker labels to replacement text. Preserve the supplied speaker by default, but correct a likely diarization mistake when the discourse clearly supports it. When changing a speaker or merging across different supplied speakers, include one `speakers` entry for every replacement text and use only a supplied speaker ID. Otherwise omit `speakers`.
 3. Return operations only for cues that need a change; return an empty `operations` array when no changes are needed.
 4. Available actions:
    - "edit": one cue ID and exactly one corrected text.
@@ -55,6 +58,7 @@ Instructions:
 7. If prior corrected context is provided, use it only for continuity. Operate only on the current array (IDs 1 to {subtitle_count}).
 8. Cue context fields such as `speaker`, timings, gaps, and overlap are non-spoken evidence. Speaker IDs may change at ASR chunk seams: never copy context into replacement text or assume that a changed ID always means a new person.
 9. Overlapping cues from different speakers can be legitimate simultaneous speech. Preserve meaningful speech. You may delete a very short, inconsequential interjection only when it obscures a longer utterance, and remove one copy of clearly duplicated near-identical ASR text that occupies the same time span.
+10. Known speaker IDs for this document: {known_speakers}. Never invent another speaker ID.
 
 Additional context and instructions specific to your particular batch, if any:
 {correction_instructions}
@@ -76,6 +80,7 @@ class CorrectionResult:
     output_path: str = ""
     cost_sources: tuple[str, ...] = ()
     usage: dict[str, Any] = field(default_factory=dict)
+    speaker_by_subtitle: dict[int, str] = field(default_factory=dict)
 
 
 def _report_progress(
@@ -145,7 +150,9 @@ def parse_correction_operations(response_text: str) -> list[dict[str, Any]]:
     normalized: list[dict[str, Any]] = []
     for operation_index, operation in enumerate(operations, start=1):
         if not isinstance(operation, dict):
-            raise ValueError(f"Correction operation {operation_index} must be a JSON object.")
+            raise ValueError(
+                f"Correction operation {operation_index} must be a JSON object."
+            )
         action = str(operation.get("action") or "").strip().lower()
         if action not in {"edit", "delete", "merge", "split"}:
             raise ValueError(
@@ -154,6 +161,7 @@ def parse_correction_operations(response_text: str) -> list[dict[str, Any]]:
             )
         ids = operation.get("ids")
         texts = operation.get("texts")
+        speakers = operation.get("speakers", [])
         if not isinstance(ids, list) or not ids:
             raise ValueError(
                 f"Correction operation {operation_index} must contain a non-empty ids list."
@@ -184,13 +192,24 @@ def parse_correction_operations(response_text: str) -> list[dict[str, Any]]:
             raise ValueError(
                 f"Correction operation {operation_index} texts must all be strings."
             )
-        normalized.append(
-            {
-                "action": action,
-                "ids": normalized_ids,
-                "texts": list(texts),
-            }
-        )
+        if speakers is None:
+            speakers = []
+        if not isinstance(speakers, list) or any(
+            not isinstance(speaker, str) for speaker in speakers
+        ):
+            raise ValueError(
+                f"Correction operation {operation_index} speakers must be a list of strings."
+            )
+        normalized_operation = {
+            "action": action,
+            "ids": normalized_ids,
+            "texts": list(texts),
+        }
+        if speakers:
+            normalized_operation["speakers"] = [
+                str(speaker).strip() for speaker in speakers
+            ]
+        normalized.append(normalized_operation)
     return normalized
 
 
@@ -199,6 +218,7 @@ def validate_correction_operations(
     operations: list[dict[str, Any]],
     *,
     no_remove_subtitles: bool = False,
+    known_speakers: set[str] | None = None,
 ) -> None:
     """Reject ambiguous operation sets before any subtitle mutation is applied."""
     valid_ids = set(range(1, len(block) + 1))
@@ -210,6 +230,9 @@ def validate_correction_operations(
             text
             for raw_text in operation["texts"]
             if (text := _normalize_replacement_text(raw_text))
+        ]
+        speakers = [
+            str(speaker or "").strip() for speaker in operation.get("speakers", [])
         ]
         unexpected = [cue_id for cue_id in ids if cue_id not in valid_ids]
         if unexpected:
@@ -229,12 +252,7 @@ def validate_correction_operations(
         valid_shape = (
             (action == "edit" and len(ids) == 1 and len(texts) == 1)
             or (action == "delete" and sequential and not texts)
-            or (
-                action == "merge"
-                and len(ids) >= 2
-                and sequential
-                and bool(texts)
-            )
+            or (action == "merge" and len(ids) >= 2 and sequential and bool(texts))
             or (action == "split" and len(ids) == 1 and len(texts) >= 2)
         )
         if not valid_shape:
@@ -242,6 +260,25 @@ def validate_correction_operations(
                 f"Correction operation {operation_index} has an invalid "
                 f"{action} ids/texts shape."
             )
+        if speakers and (action == "delete" or len(speakers) != len(texts)):
+            raise ValueError(
+                f"Correction operation {operation_index} must provide exactly one "
+                "speaker for every replacement text, or omit speakers."
+            )
+        if speakers and known_speakers is not None:
+            known_by_casefold = {
+                speaker.casefold(): speaker for speaker in known_speakers
+            }
+            unknown = [
+                speaker
+                for speaker in speakers
+                if speaker.casefold() not in known_by_casefold
+            ]
+            if unknown:
+                raise ValueError(
+                    f"Correction operation {operation_index} returned unknown speaker "
+                    f"ID(s): {unknown}."
+                )
         if action == "delete" and no_remove_subtitles:
             raise ValueError(
                 f"Correction operation {operation_index} deletes subtitles even "
@@ -287,20 +324,36 @@ def apply_correction_operations(
     operations: list[dict[str, Any]],
     *,
     no_remove_subtitles: bool = False,
+    known_speakers: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Apply Subdub-style correction operations to a local subtitle block."""
-    block_by_local_id = {index + 1: subtitle.copy() for index, subtitle in enumerate(block)}
+    block_by_local_id = {
+        index + 1: subtitle.copy() for index, subtitle in enumerate(block)
+    }
     processed_ids: set[int] = set()
     new_subtitles_by_primary_id: dict[int, list[dict[str, Any]]] = {}
 
     for operation in operations:
         action = operation.get("action")
-        ids = list(dict.fromkeys(item for item in operation.get("ids", []) if item in block_by_local_id))
-        texts = [text for value in operation.get("texts", []) if (text := _normalize_replacement_text(value))]
+        ids = list(
+            dict.fromkeys(
+                item for item in operation.get("ids", []) if item in block_by_local_id
+            )
+        )
+        texts = [
+            text
+            for value in operation.get("texts", [])
+            if (text := _normalize_replacement_text(value))
+        ]
+        requested_speakers = [
+            str(speaker or "").strip() for speaker in operation.get("speakers", [])
+        ]
         if not ids or any(item in processed_ids for item in ids):
             continue
 
-        sequential = ids == sorted(ids) and all(right == left + 1 for left, right in zip(ids, ids[1:]))
+        sequential = ids == sorted(ids) and all(
+            right == left + 1 for left, right in zip(ids, ids[1:])
+        )
         valid_shape = (
             (action == "edit" and len(ids) == 1 and len(texts) == 1)
             or (action == "delete" and sequential and not texts)
@@ -315,9 +368,17 @@ def apply_correction_operations(
             continue
         if action == "delete" and no_remove_subtitles:
             continue
-        speakers = [str(subtitle.get("speaker") or "").strip() for subtitle in valid_subtitles]
-        if action == "merge" and len({speaker.casefold() for speaker in speakers}) > 1:
-            logger.warning("Ignoring correction merge across a speaker boundary: %s", ids)
+        speakers = [
+            str(subtitle.get("speaker") or "").strip() for subtitle in valid_subtitles
+        ]
+        if (
+            action == "merge"
+            and len({speaker.casefold() for speaker in speakers if speaker}) > 1
+            and not requested_speakers
+        ):
+            logger.warning(
+                "Ignoring correction merge across a speaker boundary: %s", ids
+            )
             continue
 
         processed_ids.update(ids)
@@ -331,12 +392,25 @@ def apply_correction_operations(
         if not texts:
             texts = [" ".join(str(subtitle["text"]) for subtitle in valid_subtitles)]
 
-        new_subtitles_by_primary_id[primary_id] = _split_timing(
-            new_start,
-            new_end,
-            texts,
-            speaker=speakers[0] if speakers else "",
+        default_speaker = speakers[0] if speakers else ""
+        known_by_casefold = {
+            speaker.casefold(): speaker for speaker in (known_speakers or set())
+        }
+        output_speakers = (
+            [
+                known_by_casefold.get(speaker.casefold(), speaker)
+                for speaker in requested_speakers
+            ]
+            if requested_speakers
+            else [default_speaker for _ in texts]
         )
+        replacement_subtitles: list[dict[str, Any]] = []
+        split_parts = _split_timing(new_start, new_end, texts)
+        for part, speaker in zip(split_parts, output_speakers, strict=True):
+            if speaker:
+                part["speaker"] = speaker
+            replacement_subtitles.append(part)
+        new_subtitles_by_primary_id[primary_id] = replacement_subtitles
 
     corrected: list[dict[str, Any]] = []
     for local_id in range(1, len(block) + 1):
@@ -357,6 +431,7 @@ def build_correction_prompt(
     no_remove_subtitles: bool = False,
     include_timing_context: bool = False,
     substantial_gap_ms: int = 2000,
+    known_speakers: set[str] | None = None,
 ) -> str:
     """Build a correction prompt for one subtitle block."""
     prompt_template = CORRECTION_PROMPT_TEMPLATE
@@ -367,8 +442,14 @@ def build_correction_prompt(
         )
 
     base_prompt = prompt_template.format(
-        correction_instructions=correction_instructions or "No additional instructions provided.",
+        correction_instructions=correction_instructions
+        or "No additional instructions provided.",
         subtitle_count=len(block),
+        known_speakers=(
+            ", ".join(sorted(known_speakers, key=str.casefold))
+            if known_speakers
+            else "none (do not add speaker assignments)"
+        ),
     )
     if include_timing_context:
         base_prompt += (
@@ -402,7 +483,9 @@ def build_correction_prompt(
     )
 
     if previous_response:
-        context_prompt = CONTEXT_PROMPT_TEMPLATE.format(context_previous_cues=previous_response)
+        context_prompt = CONTEXT_PROMPT_TEMPLATE.format(
+            context_previous_cues=previous_response
+        )
         return f"{base_prompt}\n{context_prompt}\n\nThe subtitles:\n{subtitles}"
     return f"{base_prompt}\n\nThe subtitles:\n{subtitles}"
 
@@ -423,9 +506,89 @@ def _merge_completion_usage(totals: dict[str, Any], result: Any) -> None:
     raw = getattr(result, "usage", {})
     if hasattr(raw, "model_dump"):
         raw = raw.model_dump(mode="json")
-    normalized = llm_handler.normalize_usage_tokens(raw if isinstance(raw, dict) else {})
-    for key in ("prompt_tokens", "completion_tokens", "total_tokens", "cached_prompt_tokens", "uncached_prompt_tokens"):
+    normalized = llm_handler.normalize_usage_tokens(
+        raw if isinstance(raw, dict) else {}
+    )
+    for key in (
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
+        "cached_prompt_tokens",
+        "uncached_prompt_tokens",
+    ):
         totals[key] = int(totals.get(key) or 0) + int(normalized.get(key) or 0)
+
+
+def correction_unit_key(block: list[dict[str, Any]]) -> str:
+    """Return a stable, database-safe key for one correction block."""
+    indices = [int(subtitle["index"]) for subtitle in block]
+    digest = hashlib.sha256(
+        json.dumps(indices, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()[:12]
+    return f"correction:{indices[0]}-{indices[-1]}:{digest}"
+
+
+def _restore_correction_unit(
+    block: list[dict[str, Any]],
+    completed_units: Mapping[str, Mapping[str, Any]] | None,
+) -> tuple[list[dict[str, Any]], str, float, int, list[str], dict[str, Any]] | None:
+    if not completed_units:
+        return None
+    key = correction_unit_key(block)
+    raw = completed_units.get(key)
+    if raw is None:
+        return None
+    expected_indices = [int(subtitle["index"]) for subtitle in block]
+    if [int(value) for value in raw.get("original_indices", [])] != expected_indices:
+        raise ValueError(
+            f"Correction checkpoint {key} does not match its source block."
+        )
+    raw_subtitles = raw.get("corrected_subtitles")
+    if not isinstance(raw_subtitles, list):
+        raise ValueError(f"Correction checkpoint {key} has no corrected subtitle list.")
+    corrected: list[dict[str, Any]] = []
+    for item in raw_subtitles:
+        if not isinstance(item, Mapping):
+            raise ValueError(
+                f"Correction checkpoint {key} contains an invalid subtitle."
+            )
+        text = _normalize_replacement_text(item.get("text"))
+        try:
+            start = float(item["start"])
+            end = float(item["end"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError(
+                f"Correction checkpoint {key} contains invalid timing."
+            ) from error
+        if not text or end <= start:
+            raise ValueError(
+                f"Correction checkpoint {key} contains an invalid subtitle."
+            )
+        subtitle = {"start": start, "end": end, "text": text}
+        speaker = str(item.get("speaker") or "").strip()
+        if speaker:
+            subtitle["speaker"] = speaker
+        corrected.append(subtitle)
+    context = str(raw.get("context") or "")
+    if not context:
+        context = json.dumps(
+            [
+                _normalize_replacement_text(item.get("text"))
+                for item in corrected[-CORRECTION_CONTEXT_CUES:]
+            ],
+            ensure_ascii=False,
+        )
+    try:
+        cost = float(raw.get("cost") or 0.0)
+        response_count = int(raw.get("response_count") or 0)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"Correction checkpoint {key} has invalid metrics.") from error
+    cost_sources = [
+        str(source) for source in raw.get("cost_sources", []) if str(source or "")
+    ]
+    raw_usage = raw.get("usage")
+    usage = dict(raw_usage) if isinstance(raw_usage, Mapping) else {}
+    return corrected, context, cost, response_count, cost_sources, usage
 
 
 def correct_srt_content(
@@ -437,6 +600,8 @@ def correct_srt_content(
     cancel_event: Any | None = None,
     speaker_by_subtitle: Mapping[int, str] | None = None,
     progress_callback: ProgressCallback | None = None,
+    completed_units: Mapping[str, Mapping[str, Any]] | None = None,
+    on_unit_completed: UnitCompletedCallback | None = None,
 ) -> CorrectionResult:
     """Correct SRT content with Pandrator's LLM provider layer."""
     char_limit = _coerce_int(settings.get("llm_char"), DEFAULT_LLM_CHAR_LIMIT)
@@ -444,7 +609,9 @@ def correct_srt_content(
         1,
         _coerce_int(settings.get("max_subtitles_per_call"), 40),
     )
-    max_line_length = _coerce_int(settings.get("max_line_length"), DEFAULT_MAX_LINE_LENGTH)
+    max_line_length = _coerce_int(
+        settings.get("max_line_length"), DEFAULT_MAX_LINE_LENGTH
+    )
     source_language = str(
         settings.get("original_language")
         or settings.get("stt_language")
@@ -481,6 +648,13 @@ def correct_srt_content(
     cost_sources: list[str] = []
     usage: dict[str, Any] = {}
     progress_lock = Lock()
+    checkpoint_lock = Lock()
+    known_speakers = {
+        str(subtitle.get("speaker") or "").strip()
+        for block in blocks
+        for subtitle in block
+        if str(subtitle.get("speaker") or "").strip()
+    }
 
     def correct_block(
         block_number: int,
@@ -490,6 +664,19 @@ def correct_srt_content(
         nonlocal completed_subtitles
         if cancel_event is not None and cancel_event.is_set():
             raise RuntimeError("LLM correction was canceled.")
+        restored = _restore_correction_unit(block, completed_units)
+        if restored is not None:
+            with progress_lock:
+                completed_subtitles += len(block)
+                _report_progress(
+                    progress_callback,
+                    completed_subtitles / total_subtitles,
+                    (
+                        f"Restored {completed_subtitles} of {total_subtitles} "
+                        "corrected subtitles"
+                    ),
+                )
+            return restored
         prompt = build_correction_prompt(
             block,
             correction_instructions=correction_instructions,
@@ -498,6 +685,7 @@ def correct_srt_content(
             no_remove_subtitles=no_remove_subtitles,
             include_timing_context=include_timing_context,
             substantial_gap_ms=substantial_gap_ms,
+            known_speakers=known_speakers,
         )
         last_protocol_error: ValueError | None = None
         block_cost = 0.0
@@ -536,7 +724,7 @@ def correct_srt_content(
                         ),
                     }
                 )
-            completion_kwargs = {
+            completion_kwargs: dict[str, Any] = {
                 "messages": messages,
                 "model_name": resolved.model_name,
                 "llm_settings": resolved.llm_settings,
@@ -559,16 +747,42 @@ def correct_srt_content(
                     block,
                     operations,
                     no_remove_subtitles=no_remove_subtitles,
+                    known_speakers=known_speakers,
                 )
                 corrected_block = apply_correction_operations(
                     block,
                     operations,
                     no_remove_subtitles=no_remove_subtitles,
+                    known_speakers=known_speakers,
                 )
                 next_context = json.dumps(
-                    [_normalize_replacement_text(item.get("text")) for item in corrected_block[-CORRECTION_CONTEXT_CUES:]],
+                    [
+                        _normalize_replacement_text(item.get("text"))
+                        for item in corrected_block[-CORRECTION_CONTEXT_CUES:]
+                    ],
                     ensure_ascii=False,
                 )
+                if on_unit_completed is not None:
+                    payload = {
+                        "version": 1,
+                        "kind": "correction",
+                        "original_indices": [
+                            int(subtitle["index"]) for subtitle in block
+                        ],
+                        "corrected_subtitles": corrected_block,
+                        "context": next_context,
+                        "cost": block_cost,
+                        "response_count": block_response_count,
+                        "cost_sources": block_cost_sources,
+                        "usage": block_usage,
+                    }
+                    with checkpoint_lock:
+                        try:
+                            on_unit_completed(correction_unit_key(block), payload)
+                        except Exception as error:
+                            raise RuntimeError(
+                                "Could not persist the completed correction unit."
+                            ) from error
                 with progress_lock:
                     completed_subtitles += len(block)
                     _report_progress(
@@ -622,15 +836,19 @@ def correct_srt_content(
     if workers == 1 or len(blocks) == 1:
         previous_context = ""
         for block_number, block in enumerate(blocks, start=1):
-            corrected, previous_context, cost, count, sources, block_usage = correct_block(
-                block_number,
-                block,
-                previous_context,
+            corrected, previous_context, cost, count, sources, block_usage = (
+                correct_block(
+                    block_number,
+                    block,
+                    previous_context,
+                )
             )
             corrected_subtitles.extend(corrected)
             append_metrics(cost, count, sources, block_usage)
     else:
-        ordered: dict[int, tuple[list[dict[str, Any]], str, float, int, list[str], dict[str, Any]]] = {}
+        ordered: dict[
+            int, tuple[list[dict[str, Any]], str, float, int, list[str], dict[str, Any]]
+        ] = {}
         executor = ThreadPoolExecutor(max_workers=min(workers, len(blocks)))
         futures = {
             executor.submit(correct_block, block_number, block, ""): block_number
@@ -647,7 +865,9 @@ def correct_srt_content(
         else:
             executor.shutdown(wait=True)
         for block_number in range(1, len(blocks) + 1):
-            corrected, _context, cost, count, sources, block_usage = ordered[block_number]
+            corrected, _context, cost, count, sources, block_usage = ordered[
+                block_number
+            ]
             corrected_subtitles.extend(corrected)
             append_metrics(cost, count, sources, block_usage)
 
@@ -668,12 +888,17 @@ def correct_srt_content(
         response_count=response_count,
         cost_sources=tuple(cost_sources),
         usage=usage,
+        speaker_by_subtitle={
+            segment.index: segment.speaker for segment in segments if segment.speaker
+        },
     )
 
 
 def _write_text_atomic(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temp_path = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+    fd, temp_path = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
+    )
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(text)
@@ -696,6 +921,8 @@ def correct_srt_file_with_result(
     cancel_event: Any | None = None,
     speaker_by_subtitle: Mapping[int, str] | None = None,
     progress_callback: ProgressCallback | None = None,
+    completed_units: Mapping[str, Mapping[str, Any]] | None = None,
+    on_unit_completed: UnitCompletedCallback | None = None,
 ) -> CorrectionResult:
     """Correct an SRT file and return the corrected content plus file path."""
     srt_path = Path(srt_file)
@@ -710,6 +937,8 @@ def correct_srt_file_with_result(
         cancel_event=cancel_event,
         speaker_by_subtitle=speaker_by_subtitle,
         progress_callback=progress_callback,
+        completed_units=completed_units,
+        on_unit_completed=on_unit_completed,
     )
     output_path = Path(session_dir) / f"{srt_path.stem}_corrected.srt"
     _write_text_atomic(output_path, result.srt_content)
@@ -720,6 +949,7 @@ def correct_srt_file_with_result(
         output_path=str(output_path),
         cost_sources=result.cost_sources,
         usage=result.usage,
+        speaker_by_subtitle=result.speaker_by_subtitle,
     )
     logger.info(
         "Corrected subtitles written to %s (%d LLM response(s), cost %.6f).",
@@ -739,6 +969,8 @@ def correct_srt_file(
     completion_func: Callable[..., Any] | None = None,
     speaker_by_subtitle: Mapping[int, str] | None = None,
     progress_callback: ProgressCallback | None = None,
+    completed_units: Mapping[str, Mapping[str, Any]] | None = None,
+    on_unit_completed: UnitCompletedCallback | None = None,
 ) -> str:
     """Correct an SRT file and return the corrected file path."""
     return correct_srt_file_with_result(
@@ -749,4 +981,6 @@ def correct_srt_file(
         completion_func=completion_func,
         speaker_by_subtitle=speaker_by_subtitle,
         progress_callback=progress_callback,
+        completed_units=completed_units,
+        on_unit_completed=on_unit_completed,
     ).output_path

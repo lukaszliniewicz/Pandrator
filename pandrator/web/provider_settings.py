@@ -10,10 +10,13 @@ from sqlalchemy import select
 
 from pandrator.runtime import DataPaths
 
-from .credentials import DEFAULT_PROVIDER_ENVS, is_sensitive_field, resolve_provider_credential
+from .credentials import (
+    DEFAULT_PROVIDER_ENVS,
+    is_sensitive_field,
+    resolve_provider_credential,
+)
 from .database import Database
 from .models import Provider, ProviderModel
-
 
 LLM_PROVIDER_PROFILES: tuple[dict[str, Any], ...] = (
     {
@@ -120,12 +123,23 @@ LLM_PROVIDER_PROFILES: tuple[dict[str, Any], ...] = (
 
 
 def list_llm_provider_profiles() -> list[dict[str, Any]]:
-    return [dict(profile, options=dict(profile.get("options") or {})) for profile in LLM_PROVIDER_PROFILES]
+    return [
+        dict(profile, options=dict(profile.get("options") or {}))
+        for profile in LLM_PROVIDER_PROFILES
+    ]
 
 
 def _request_options(options: dict[str, Any] | None) -> dict[str, Any]:
     raw = dict((options or {}).get("request_options") or {})
-    reserved = {"model", "messages", "timeout", "api_key", "api_base", "temperature", "reasoning_effort"}
+    reserved = {
+        "model",
+        "messages",
+        "timeout",
+        "api_key",
+        "api_base",
+        "temperature",
+        "reasoning_effort",
+    }
     return {
         str(key): value
         for key, value in raw.items()
@@ -145,10 +159,16 @@ def build_llm_settings(
     with database.session() as session:
         providers = list(
             session.scalars(
-                select(Provider).where(Provider.kind == "llm", Provider.enabled.is_(True)).order_by(Provider.created_at)
+                select(Provider)
+                .where(Provider.kind == "llm", Provider.enabled.is_(True))
+                .order_by(Provider.created_at)
             ).all()
         )
-        model_rows = list(session.scalars(select(ProviderModel).order_by(ProviderModel.created_at)).all())
+        model_rows = list(
+            session.scalars(
+                select(ProviderModel).order_by(ProviderModel.created_at)
+            ).all()
+        )
 
     models_by_provider: dict[str, list[ProviderModel]] = {}
     for model in model_rows:
@@ -161,14 +181,27 @@ def build_llm_settings(
         # A default model is necessarily usable. Treat legacy/directly-created
         # rows that predate the activation flag the same way the API does when
         # it promotes a model to the application default.
-        rows = [row for row in models_by_provider.get(provider.id, []) if row.is_active or row.is_default]
+        rows = [
+            row
+            for row in models_by_provider.get(provider.id, [])
+            if row.is_active or row.is_default
+        ]
         if not rows:
             continue
-        fallback_env = str((provider.options_json or {}).get("api_key_env") or "").strip()
+        fallback_env = str(
+            (provider.options_json or {}).get("api_key_env") or ""
+        ).strip()
         if not fallback_env:
-            fallback_env = DEFAULT_PROVIDER_ENVS.get(str(provider.provider_key or "").strip().lower(), "")
-        profile_id = str((provider.options_json or {}).get("profile_id") or "").strip().lower()
-        share_credential = not bool((provider.options_json or {}).get("is_custom") or profile_id in {"custom-openai", "lm-studio", "ollama"})
+            fallback_env = DEFAULT_PROVIDER_ENVS.get(
+                str(provider.provider_key or "").strip().lower(), ""
+            )
+        profile_id = (
+            str((provider.options_json or {}).get("profile_id") or "").strip().lower()
+        )
+        share_credential = not bool(
+            (provider.options_json or {}).get("is_custom")
+            or profile_id in {"custom-openai", "lm-studio", "ollama"}
+        )
         credential = resolve_provider_credential(
             database,
             paths,
@@ -181,9 +214,15 @@ def build_llm_settings(
             (provider.options_json or {}).get("is_custom")
             or provider.provider_key not in {"openai", "gemini", "anthropic"}
         )
-        provider_id = str((provider.options_json or {}).get("provider_id") or provider.provider_key or provider.id)
+        provider_id = str(
+            (provider.options_json or {}).get("provider_id")
+            or provider.provider_key
+            or provider.id
+        )
         if is_custom:
-            provider_id = str((provider.options_json or {}).get("provider_id") or provider.id)
+            provider_id = str(
+                (provider.options_json or {}).get("provider_id") or provider.id
+            )
         records = [
             {
                 "id": row.model_id,
@@ -192,6 +231,8 @@ def build_llm_settings(
                 "input_cost_per_million": row.input_cost_per_million,
                 "cached_input_cost_per_million": row.cached_input_cost_per_million,
                 "output_cost_per_million": row.output_cost_per_million,
+                "context_window_tokens": row.context_window_tokens,
+                "max_output_tokens": row.max_output_tokens,
             }
             for row in rows
         ]
@@ -204,8 +245,12 @@ def build_llm_settings(
                     credential_payload = json.loads(credential_value)
                 except (TypeError, ValueError):
                     credential_payload = {}
-                if isinstance(credential_payload, dict) and credential_payload.get("project_id"):
-                    request_options.setdefault("vertex_project", str(credential_payload["project_id"]))
+                if isinstance(credential_payload, dict) and credential_payload.get(
+                    "project_id"
+                ):
+                    request_options.setdefault(
+                        "vertex_project", str(credential_payload["project_id"])
+                    )
             request_options.setdefault("vertex_location", "global")
             credential_value = ""
         provider_configs.append(
@@ -223,7 +268,9 @@ def build_llm_settings(
             }
         )
         default_row = next((row for row in rows if row.is_default), None)
-        matching_row = next((row for row in rows if row.model_id == selected_model), None)
+        matching_row = next(
+            (row for row in rows if row.model_id == selected_model), None
+        )
         if matching_row is not None:
             selected_model = (
                 f"custom:{provider_id}/{matching_row.model_id}"
@@ -239,7 +286,9 @@ def build_llm_settings(
 
     resolved_model = selected_model or default_model
     if not resolved_model:
-        raise ValueError("Configure an enabled LLM provider and select a default model before running this stage.")
+        raise ValueError(
+            "Configure an enabled LLM provider and select a default model before running this stage."
+        )
     return (
         SimpleNamespace(
             provider_configs=provider_configs,

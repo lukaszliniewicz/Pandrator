@@ -142,8 +142,9 @@
       service.voice_catalogues?.[selectedTtsModel] ?? []
     ).map(String);
     const qwenCloning =
-      selectedTtsServiceId === 'kobold_qwen' &&
-      selectedTtsModel.toLowerCase() === 'voice cloning';
+      service.model_voice_modes?.[selectedTtsModel] === 'cloning' ||
+      (selectedTtsServiceId === 'kobold_qwen' &&
+        selectedTtsModel.toLowerCase() === 'voice cloning');
     const providerVoicesAllowed =
       !service.supports_prebuilt_voices || qwenCloning;
     const published = providerVoicesAllowed
@@ -155,8 +156,27 @@
             : [];
         })
       : [];
+    const managedRegistrations = new Map(
+      libraryVoices.flatMap((voice) => {
+        const registration =
+          voice.metadata_json?.providers?.[selectedTtsServiceId];
+        return registration?.voice_id
+          ? [
+              [
+                String(registration.voice_id).toLowerCase(),
+                { registration, name: voice.name }
+              ] as const
+            ]
+          : [];
+      })
+    );
     const live = providerVoicesAllowed
-      ? Array.from(service.live_voices ?? []).map(String)
+      ? Array.from(service.live_voices ?? [])
+          .map(String)
+          .filter((voice) => {
+            const managed = managedRegistrations.get(voice.toLowerCase());
+            return !managed || managed.registration.status === 'ready';
+          })
       : [];
     const configured = catalogue.length
       ? catalogue
@@ -173,13 +193,23 @@
       new Set(
         [...configured, ...live, ...published, defaultVoice].filter(Boolean)
       )
-    ).map((voice) =>
-      describeVoice(
-        String(service.id ?? ttsSettings.service ?? ''),
-        voice,
-        service.voice_metadata?.[`${selectedTtsModel}:${voice}`]
-      )
-    );
+    ).map((voice) => {
+      const managed = managedRegistrations.get(voice.toLowerCase());
+      return {
+        ...describeVoice(
+          String(service.id ?? ttsSettings.service ?? ''),
+          voice,
+          service.voice_metadata?.[`${selectedTtsModel}:${voice}`]
+        ),
+        name:
+          managed?.name ??
+          describeVoice(
+            String(service.id ?? ttsSettings.service ?? ''),
+            voice,
+            service.voice_metadata?.[`${selectedTtsModel}:${voice}`]
+          ).name
+      };
+    });
   });
   const supportedSpeechLanguages = $derived.by(() => {
     const discovered = languagesForService(
@@ -455,9 +485,13 @@
     }
   }
 
+  function expandIfCollapsed() {
+    if (mode === 'collapsed') mode = 'half';
+  }
+
   function applyLoadResult(result: GenerationLoadResult) {
     selectedRunId = result.selectedRunId;
-    if (result.shouldExpand) mode = 'half';
+    if (result.shouldExpand) expandIfCollapsed();
   }
 
   async function patchSegment(
@@ -559,7 +593,7 @@
   ) {
     if (operation === 'rvc' && !rvcModel) {
       showRvc = true;
-      mode = 'half';
+      expandIfCollapsed();
       error = 'Choose an RVC model before converting audio.';
       return;
     }
@@ -589,7 +623,7 @@
       );
       generationStore.upsertRun(started);
       selectedRunId = started.id;
-      mode = 'half';
+      expandIfCollapsed();
       await load();
       void reconcileStartedRun(started.id);
     } catch (caught) {
@@ -965,6 +999,7 @@
 
 {#if payload.total > 0 || run}
   <aside
+    data-generation-layout={mode}
     class:full={mode === 'full'}
     class:half={mode === 'half'}
     class="generation-drawer fixed inset-x-3 bottom-3 z-50 overflow-hidden rounded-2xl md:left-[calc(var(--sidebar-offset,5rem)+.35rem)] md:right-[.35rem]"

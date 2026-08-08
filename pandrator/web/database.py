@@ -12,7 +12,7 @@ from alembic.config import Config
 from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
-SCHEMA_HEAD = "0026_generation_alignment_groups"
+SCHEMA_HEAD = "0027_durable_agentic_runs"
 
 
 def sqlite_url(path: Path) -> str:
@@ -43,7 +43,9 @@ class Database:
     def __init__(self, path: Path):
         self.path = path
         self.engine = create_database_engine(path)
-        self._factory = sessionmaker(bind=self.engine, expire_on_commit=False, future=True)
+        self._factory = sessionmaker(
+            bind=self.engine, expire_on_commit=False, future=True
+        )
 
     @contextmanager
     def session(self) -> Iterator[Session]:
@@ -84,7 +86,9 @@ def upgrade_database(path: Path) -> None:
     if path.is_file():
         try:
             connection = sqlite3.connect(path)
-            row = connection.execute("SELECT version_num FROM alembic_version LIMIT 1").fetchone()
+            row = connection.execute(
+                "SELECT version_num FROM alembic_version LIMIT 1"
+            ).fetchone()
             connection.close()
             if row and row[0] == SCHEMA_HEAD:
                 return

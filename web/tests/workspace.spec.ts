@@ -158,7 +158,7 @@ test('correction and translation cards expose independent reasoning levels', asy
   await expect(dialog.getByLabel('Reasoning level')).toHaveCount(0);
 });
 
-test('workflow version history loads older pages on demand', async ({
+test('workflow history and subtitle review load exact revisions on demand', async ({
   page
 }) => {
   await signIn(page);
@@ -173,6 +173,8 @@ test('workflow version history loads older pages on demand', async ({
   });
   expect(created.ok()).toBeTruthy();
   const session = await created.json();
+  const canonicalModel =
+    'custom:aff14ed0-c04f-4241-8034-61b6236a190a/google/gemini-3.6-flash';
   const stageArtifact = (version: number) => ({
     id: `artifact-${version}`,
     version,
@@ -183,7 +185,7 @@ test('workflow version history loads older pages on demand', async ({
     size_bytes: version,
     state: version === 15 ? 'current' : 'stale',
     settings_hash: null,
-    metadata_json: {},
+    metadata_json: { model: canonicalModel },
     parent_ids: [],
     created_at: `2026-01-${String(version).padStart(2, '0')}T12:00:00`,
     is_selected: version === 15
@@ -228,7 +230,17 @@ test('workflow version history loads older pages on demand', async ({
               job_id: null,
               progress: null,
               detail: null,
-              usage: null
+              usage: {
+                input_tokens: 1200,
+                cached_input_tokens: 0,
+                output_tokens: 300,
+                total_tokens: 1500,
+                cost_usd: 0.001,
+                model_id: canonicalModel,
+                model_ids: [canonicalModel],
+                event_count: 1,
+                created_at: '2026-01-15T12:00:00Z'
+              }
             }
           ]
         })
@@ -254,8 +266,92 @@ test('workflow version history loads older pages on demand', async ({
       });
     }
   );
+  const reviewCatalog = [15, 14].map((version) => ({
+    artifact_id: `artifact-${version}`,
+    role: 'transcription',
+    stage: 'transcription',
+    version,
+    document_id: `document-${version}`,
+    revision_id: `revision-${version}`,
+    revision: version,
+    reviewed: false,
+    language: 'de',
+    segment_count: 1,
+    state: version === 15 ? 'current' : 'stale',
+    created_at: `2026-01-${version}T12:00:00Z`
+  }));
+  const reviewRequests: string[][] = [];
+  await page.route(
+    `**/api/v1/sessions/${session.id}/subtitles/catalog`,
+    async (route) => {
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ session_id: session.id, items: reviewCatalog })
+      });
+    }
+  );
+  await page.route(
+    `**/api/v1/sessions/${session.id}/subtitles/review?*`,
+    async (route) => {
+      const artifactIds = new URL(route.request().url()).searchParams.getAll(
+        'artifact_id'
+      );
+      reviewRequests.push(artifactIds);
+      const segment = (artifactId: string) => ({
+        id: `segment-${artifactId}`,
+        ordinal: 0,
+        start_ms: 0,
+        end_ms: 2000,
+        text:
+          artifactId === 'artifact-15'
+            ? 'The newest transcription.'
+            : 'The alternate transcription.',
+        speaker: 'SPEAKER_0'
+      });
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          session_id: session.id,
+          primary_artifact_id: artifactIds[0],
+          columns: artifactIds.map((artifactId) => {
+            const item = reviewCatalog.find(
+              (candidate) => candidate.artifact_id === artifactId
+            )!;
+            return {
+              artifact_id: artifactId,
+              role: 'transcription',
+              stage: 'transcription',
+              document_id: item.document_id,
+              revision_id: item.revision_id,
+              revision: item.revision,
+              reviewed: false,
+              language: 'de',
+              segments: [segment(artifactId)]
+            };
+          }),
+          rows: [
+            {
+              start_ms: 0,
+              end_ms: 2000,
+              changed: artifactIds.length > 1,
+              cells: Object.fromEntries(
+                artifactIds.map((artifactId) => [
+                  artifactId,
+                  [segment(artifactId)]
+                ])
+              )
+            }
+          ]
+        })
+      });
+    }
+  );
 
   await page.goto(`/sessions/${session.id}`);
+  await expect(page.getByLabel('Model google/gemini-3.6-flash')).toBeVisible();
+  await expect(page.locator('body')).not.toContainText(
+    'aff14ed0-c04f-4241-8034-61b6236a190a'
+  );
   await expect(page.getByText('15 saved results')).toBeVisible();
   const versionSelect = page.getByLabel('Selected version');
   await expect(versionSelect.locator('option')).toHaveCount(10);
@@ -265,6 +361,42 @@ test('workflow version history loads older pages on demand', async ({
   await expect(
     page.getByRole('button', { name: 'Load earlier versions' })
   ).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'Preview selected' }).click();
+  const review = page.getByRole('dialog', { name: 'Compare and refine' });
+  await expect(review).toBeVisible();
+  await expect(
+    review.getByRole('button', { name: 'Changed only' })
+  ).toBeHidden();
+  await expect(
+    review.getByLabel('Find in transcription segments')
+  ).toBeHidden();
+  await review.getByText('Find, filter & compare', { exact: true }).click();
+  await expect(
+    review.getByRole('button', { name: 'Changed only' })
+  ).toBeVisible();
+  await expect(
+    review.locator('optgroup[label="Transcriptions"] option')
+  ).toHaveCount(1);
+  await review.getByLabel('Add a comparison').selectOption('artifact-14');
+  await review.getByRole('button', { name: 'Add', exact: true }).click();
+  await expect
+    .poll(() => reviewRequests)
+    .toEqual([['artifact-15'], ['artifact-15', 'artifact-14']]);
+  await expect(
+    review.getByRole('columnheader').filter({ hasText: 'transcription v15' })
+  ).toBeVisible();
+  await expect(
+    review.getByRole('columnheader').filter({ hasText: 'transcription v14' })
+  ).toBeVisible();
+  await expect(review.getByText('The alternate transcription.')).toBeVisible();
+
+  await review.getByText('Find, filter & compare', { exact: true }).click();
+  await review.getByRole('button', { name: 'Delete' }).focus();
+  await page.keyboard.press('Tab');
+  await expect(
+    review.getByRole('button', { name: 'Save revision' })
+  ).toBeFocused();
 });
 
 test('a selected correction checkpoint can fork a clean session branch', async ({
@@ -734,6 +866,145 @@ test('generation segment search and replace preserves partial words and saves ev
     'A dog waits.',
     'A catfish and dog.'
   ]);
+});
+
+test('generation drawer layout survives segment regeneration refreshes', async ({
+  page
+}) => {
+  let phase: 'completed' | 'running' = 'completed';
+  let revision = 0;
+  let failNextRegeneration = false;
+  const runId = 'layout-run';
+  await page.route('**/api/v1/events?after=*', (route) => route.abort());
+  await signIn(page);
+  const sessionId = await createGenerationPlan(page, [
+    { text: 'Synthetic generation segment.' }
+  ]);
+  const run = () => ({
+    id: runId,
+    session_id: sessionId,
+    plan_revision_id: 'layout-plan',
+    sequence_number: 1,
+    operation: 'regenerate',
+    label: 'Layout test run',
+    job_id: 'layout-job',
+    status: phase,
+    progress: phase === 'completed' ? 1 : 0.5
+  });
+  await page.route(
+    `**/api/v1/sessions/${sessionId}/generation-runs`,
+    async (route) => {
+      if (route.request().method() === 'POST') {
+        if (failNextRegeneration) {
+          failNextRegeneration = false;
+          await route.fulfill({
+            status: 500,
+            contentType: 'application/json',
+            body: JSON.stringify({ detail: 'Synthetic regeneration failure.' })
+          });
+          return;
+        }
+        phase = 'running';
+        await route.fulfill({
+          contentType: 'application/json',
+          body: JSON.stringify(run())
+        });
+        setTimeout(() => {
+          revision += 1;
+          phase = 'completed';
+        }, 100);
+        return;
+      }
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ items: [run()] })
+      });
+    }
+  );
+  await page.route(
+    `**/api/v1/sessions/${sessionId}/output-assemblies/latest`,
+    (route) =>
+      route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ item: null })
+      })
+  );
+  await page.route(
+    `**/api/v1/sessions/${sessionId}/generation-segments?*`,
+    (route) =>
+      route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          items: [
+            {
+              id: 'synthetic-segment',
+              ordinal: 0,
+              node_kind: 'paragraph',
+              paragraph_break_after: false,
+              text: `Synthetic generation segment revision ${revision}.`,
+              optimized_text: null,
+              speech_plan: {},
+              optimization_status: 'not_requested',
+              optimization_reviewed: false,
+              marked: false,
+              removed: false,
+              status: 'completed',
+              revision,
+              takes: []
+            }
+          ],
+          total: 1,
+          next_cursor: null,
+          plan_revision_id: 'layout-plan'
+        })
+      })
+  );
+
+  await page.goto(`/sessions/${sessionId}`);
+  const drawer = page.locator('[data-generation-layout]');
+  await expect(drawer).toHaveAttribute('data-generation-layout', 'collapsed');
+  await page.getByRole('button', { name: 'Generation', exact: true }).click();
+  await expect(drawer).toHaveAttribute('data-generation-layout', 'half');
+  await page.getByRole('button', { name: 'Use full height' }).click();
+  await expect(drawer).toHaveAttribute('data-generation-layout', 'full');
+
+  const regenerate = page.getByRole('button', {
+    name: 'Regenerate segment 1'
+  });
+  const segmentText = page.locator(
+    'tr[data-segment-id="synthetic-segment"] textarea'
+  );
+  await regenerate.click();
+  await expect(drawer).toHaveAttribute('data-generation-layout', 'full');
+  await expect(segmentText).toHaveValue(
+    'Synthetic generation segment revision 1.',
+    { timeout: 10_000 }
+  );
+  await expect(drawer).toHaveAttribute('data-generation-layout', 'full');
+
+  await page.getByRole('button', { name: 'Use half height' }).click();
+  await expect(drawer).toHaveAttribute('data-generation-layout', 'half');
+  await regenerate.click();
+  await expect(drawer).toHaveAttribute('data-generation-layout', 'half');
+  await expect(segmentText).toHaveValue(
+    'Synthetic generation segment revision 2.',
+    { timeout: 10_000 }
+  );
+  await expect(drawer).toHaveAttribute('data-generation-layout', 'half');
+
+  await page.getByRole('button', { name: 'Use full height' }).click();
+  failNextRegeneration = true;
+  await regenerate.click();
+  expect(failNextRegeneration).toBeFalsy();
+  await expect(drawer).toHaveAttribute('data-generation-layout', 'full');
+
+  const unrelatedSessionId = await createGenerationPlan(page, [
+    { text: 'Unrelated synthetic segment.' }
+  ]);
+  await page.goto(`/sessions/${unrelatedSessionId}`);
+  await expect(drawer).toHaveAttribute('data-generation-layout', 'collapsed');
+  await page.getByRole('button', { name: 'Generation', exact: true }).click();
+  await expect(drawer).toHaveAttribute('data-generation-layout', 'half');
 });
 
 test('generated segments return to the current filtered page after repeated regeneration', async ({

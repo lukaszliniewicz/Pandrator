@@ -30,7 +30,7 @@
             "type": "string"
           },
           "application_version": {
-            "default": "0.8.7",
+            "default": "0.8.8",
             "title": "Application Version",
             "type": "string"
           },
@@ -1070,6 +1070,12 @@
             "default": null,
             "title": "Cached Input Cost Per Million"
           },
+          "context_window_tokens": {
+            "default": 262144,
+            "minimum": 4096,
+            "title": "Context Window Tokens",
+            "type": "integer"
+          },
           "default_reasoning_effort": {
             "anyOf": [
               {
@@ -1117,6 +1123,19 @@
             "title": "Is Default",
             "type": "boolean"
           },
+          "max_output_tokens": {
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Max Output Tokens"
+          },
           "model_id": {
             "title": "Model Id",
             "type": "string"
@@ -1161,6 +1180,19 @@
             ],
             "default": null,
             "title": "Cached Input Cost Per Million"
+          },
+          "context_window_tokens": {
+            "anyOf": [
+              {
+                "minimum": 4096,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Context Window Tokens"
           },
           "default_reasoning_effort": {
             "anyOf": [
@@ -1222,6 +1254,19 @@
             ],
             "default": null,
             "title": "Is Default"
+          },
+          "max_output_tokens": {
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Max Output Tokens"
           },
           "model_id": {
             "anyOf": [
@@ -2436,6 +2481,18 @@
             "minItems": 1,
             "title": "Segments",
             "type": "array"
+          },
+          "source_artifact_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Source Artifact Id"
           }
         },
         "required": [
@@ -2705,6 +2762,19 @@
       "VoiceTranscriptReview": {
         "additionalProperties": false,
         "properties": {
+          "expected_voice_revision": {
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Voice Revision"
+          },
           "language": {
             "anyOf": [
               {
@@ -2728,6 +2798,52 @@
           "transcript"
         ],
         "title": "VoiceTranscriptReview",
+        "type": "object"
+      },
+      "VoiceUpdate": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Description"
+          },
+          "language": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Language"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Name"
+          }
+        },
+        "title": "VoiceUpdate",
         "type": "object"
       },
       "WorkError": {
@@ -3122,6 +3238,26 @@
         "responses": {
           "200": {
             "description": "Cleaning result accepted"
+          }
+        }
+      }
+    },
+    "/api/v1/agent-runs/{runId}/resume": {
+      "post": {
+        "operationId": "resumeAgentRun",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "runId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Resume an interrupted agentic operation from its durable checkpoint"
           }
         }
       }
@@ -5987,6 +6123,64 @@
         }
       }
     },
+    "/api/v1/sessions/{sessionId}/subtitles/catalog": {
+      "get": {
+        "operationId": "listSubtitleReviewArtifacts",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Reviewable subtitle artifact catalog"
+          }
+        }
+      }
+    },
+    "/api/v1/sessions/{sessionId}/subtitles/review": {
+      "get": {
+        "operationId": "getExactSubtitleReview",
+        "parameters": [
+          {
+            "explode": true,
+            "in": "query",
+            "name": "artifact_id",
+            "required": true,
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 4,
+              "minItems": 1,
+              "type": "array"
+            },
+            "style": "form"
+          },
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Exact immutable subtitle revisions aligned for review"
+          },
+          "422": {
+            "description": "Invalid artifact selection"
+          }
+        }
+      }
+    },
     "/api/v1/sessions/{sessionId}/subtitles/{stage}/review": {
       "post": {
         "operationId": "saveSubtitleReview",
@@ -6502,10 +6696,128 @@
         }
       }
     },
+    "/api/v1/voices/{voiceId}": {
+      "delete": {
+        "operationId": "deleteVoice",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "voiceId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted"
+          },
+          "409": {
+            "description": "Revision conflict or bundled voice"
+          }
+        }
+      },
+      "patch": {
+        "operationId": "updateVoice",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "voiceId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VoiceUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Updated"
+          },
+          "409": {
+            "description": "Revision conflict"
+          }
+        }
+      }
+    },
     "/api/v1/voices/{voiceId}/providers/{serviceId}": {
+      "delete": {
+        "operationId": "removeVoiceFromProvider",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "voiceId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "serviceId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Provider deletion queued"
+          },
+          "409": {
+            "description": "Revision conflict or unowned legacy registration"
+          },
+          "422": {
+            "description": "Provider deletion unsupported"
+          }
+        }
+      },
       "post": {
         "operationId": "publishVoiceToProvider",
         "parameters": [
+          {
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
           {
             "in": "path",
             "name": "voiceId",
@@ -6553,6 +6865,14 @@
         "operationId": "uploadVoiceSample",
         "parameters": [
           {
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "in": "path",
             "name": "voiceId",
             "required": true,
@@ -6564,6 +6884,87 @@
         "responses": {
           "202": {
             "description": "Queued"
+          },
+          "409": {
+            "description": "Revision conflict"
+          }
+        }
+      }
+    },
+    "/api/v1/voices/{voiceId}/samples/{sampleId}": {
+      "delete": {
+        "operationId": "deleteVoiceSample",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "voiceId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "sampleId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Deleted"
+          },
+          "409": {
+            "description": "Revision conflict or bundled voice"
+          }
+        }
+      }
+    },
+    "/api/v1/voices/{voiceId}/samples/{sampleId}/replace": {
+      "post": {
+        "operationId": "replaceVoiceSample",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "voiceId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "sampleId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Replacement queued"
+          },
+          "409": {
+            "description": "Revision conflict or bundled voice"
           }
         }
       }

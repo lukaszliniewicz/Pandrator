@@ -13,14 +13,29 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
-from flask import Flask, Response, g, jsonify, request, send_file, send_from_directory, session
+from flask import (
+    Flask,
+    Response,
+    g,
+    jsonify,
+    request,
+    send_file,
+    send_from_directory,
+    session,
+)
 from sqlalchemy import func, select
 from werkzeug.utils import secure_filename
 
 from pandrator.runtime import DataPaths
 from pandrator.version import PANDRATOR_VERSION
 
-from .artifact_selection import choose_artifact, clear_selection, rerun_impact, stage_history
+from .agentic_runs import AgenticRunStore
+from .artifact_selection import (
+    choose_artifact,
+    clear_selection,
+    rerun_impact,
+    stage_history,
+)
 from .artifacts import sha256_file
 from .auth import ALL_SCOPES, MCP_BOOTSTRAP_SCOPES, normalize_scopes
 from .automation_routes import register_automation_routes
@@ -50,6 +65,7 @@ from .credentials import (
 from .database import Database
 from .domain_blueprints import DomainBlueprints
 from .idempotency import IdempotencyConflict, IdempotencyInProgress
+from .knowledge import KnowledgeLedgerStore, KnowledgeValidationError
 from .managed_services import binding_for_provider, normalize_tts_provider_id
 from .manager_proxy import register_manager_routes
 from .models import (
@@ -126,13 +142,25 @@ from .schemas import (
     TtsVoicePreviewRequest,
     VoiceCreate,
     VoiceTranscriptReview,
+    VoiceUpdate,
 )
 from .sessions import RevisionConflict
 from .source_resolution import resolve_primary_source
-from .voice_library import ensure_bundled_voice
+from .voice_library import (
+    ensure_bundled_voice,
+    is_bundled_voice,
+    mark_provider_registrations_stale,
+    remove_managed_files,
+    retire_sample_artifact,
+    sample_file_status,
+    voice_payload,
+    voice_payloads,
+    voice_sample_payload,
+)
 from .workflow_plan_routes import register_workflow_plan_routes
 from .workspace import BUILTIN_DEFAULTS, SETTING_SECTIONS
 from .workspace import RevisionConflict as WorkspaceRevisionConflict
+
 
 def _is_loopback_address(value: object) -> bool:
     candidate = str(value or "").split("%", 1)[0]
@@ -152,14 +180,34 @@ def _model_dict(record, fields: tuple[str, ...]) -> dict[str, Any]:
     return payload
 
 
-def _provider_payload(provider: Provider, database: Database, paths: DataPaths) -> dict[str, Any]:
+def _provider_payload(
+    provider: Provider, database: Database, paths: DataPaths
+) -> dict[str, Any]:
     payload = _model_dict(
         provider,
-        ("id", "kind", "provider_key", "label", "enabled", "base_url", "secret_ref", "options_json", "revision"),
+        (
+            "id",
+            "kind",
+            "provider_key",
+            "label",
+            "enabled",
+            "base_url",
+            "secret_ref",
+            "options_json",
+            "revision",
+        ),
     )
-    fallback_env = str((provider.options_json or {}).get("api_key_env") or DEFAULT_PROVIDER_ENVS.get(provider.provider_key.lower(), ""))
-    profile_id = str((provider.options_json or {}).get("profile_id") or "").strip().lower()
-    share_credential = not bool((provider.options_json or {}).get("is_custom") or profile_id in {"custom-openai", "lm-studio", "ollama"})
+    fallback_env = str(
+        (provider.options_json or {}).get("api_key_env")
+        or DEFAULT_PROVIDER_ENVS.get(provider.provider_key.lower(), "")
+    )
+    profile_id = (
+        str((provider.options_json or {}).get("profile_id") or "").strip().lower()
+    )
+    share_credential = not bool(
+        (provider.options_json or {}).get("is_custom")
+        or profile_id in {"custom-openai", "lm-studio", "ollama"}
+    )
     payload.update(
         provider_credential_status(
             database,
@@ -179,15 +227,48 @@ def _provider_payload(provider: Provider, database: Database, paths: DataPaths) 
 def _session_payload(record) -> dict[str, Any]:
     return _model_dict(
         record,
-        ("id", "name", "storage_key", "workflow_kind", "source_language", "target_language", "workflow_preset", "included_stages_json", "status", "revision", "created_at", "updated_at"),
+        (
+            "id",
+            "name",
+            "storage_key",
+            "workflow_kind",
+            "source_language",
+            "target_language",
+            "workflow_preset",
+            "included_stages_json",
+            "status",
+            "revision",
+            "created_at",
+            "updated_at",
+        ),
     )
 
 
 def _job_payload(record) -> dict[str, Any]:
-    return redact_inline_secrets(_model_dict(
-        record,
-        ("id", "kind", "session_id", "workflow_run_id", "status", "payload_json", "result_json", "progress", "progress_detail", "error_code", "error_message", "attempts", "max_attempts", "created_at", "started_at", "finished_at", "updated_at"),
-    ))
+    return redact_inline_secrets(
+        _model_dict(
+            record,
+            (
+                "id",
+                "kind",
+                "session_id",
+                "workflow_run_id",
+                "status",
+                "payload_json",
+                "result_json",
+                "progress",
+                "progress_detail",
+                "error_code",
+                "error_message",
+                "attempts",
+                "max_attempts",
+                "created_at",
+                "started_at",
+                "finished_at",
+                "updated_at",
+            ),
+        )
+    )
 
 
 SSE_EVENT_FIELDS = {
@@ -263,17 +344,14 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     def mutation_idempotency_key():
         """Require retry identity for MCP principals, preserve browser UX."""
 
-        key = str(
-            request.headers.get("Idempotency-Key") or ""
-        ).strip()
+        key = str(request.headers.get("Idempotency-Key") or "").strip()
         principal = context.guards.principal()
         if key:
             return key, None
-        if (
-            principal is not None
-            and principal.kind
-            in {"automation_client", "manager_bootstrap"}
-        ):
+        if principal is not None and principal.kind in {
+            "automation_client",
+            "manager_bootstrap",
+        }:
             return None, error_response(
                 "idempotency_key_required",
                 "This automation write requires Idempotency-Key.",
@@ -323,8 +401,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             setting = db_session.get(AppSetting, "services.tts")
             value = (
                 dict(setting.value_json)
-                if setting is not None
-                and isinstance(setting.value_json, dict)
+                if setting is not None and isinstance(setting.value_json, dict)
                 else {}
             )
         selected_provider = normalize_tts_provider_id(
@@ -335,16 +412,13 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             if not isinstance(record, dict):
                 continue
             provider_id = normalize_tts_provider_id(
-                record.get("id")
-                or record.get("name")
-                or record.get("provider")
+                record.get("id") or record.get("name") or record.get("provider")
             )
             binding = binding_for_provider(provider_id)
             if (
                 binding is None
                 or binding.component_id not in removals
-                or str(record.get("connection_mode") or "external")
-                != "managed_local"
+                or str(record.get("connection_mode") or "external") != "managed_local"
             ):
                 continue
             impacts.append(
@@ -419,7 +493,9 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             {
                 "initialized": auth.initialized(),
                 "authenticated": authenticated(),
-                "csrf_token": session.get("csrf_token") if session.get("authenticated") else None,
+                "csrf_token": session.get("csrf_token")
+                if session.get("authenticated")
+                else None,
                 "principal": (
                     {
                         "subject": principal.subject,
@@ -441,7 +517,11 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         payload = BootstrapRequest.model_validate(request.get_json(silent=True) or {})
         grant = bootstrap.consume_grant(payload.token)
         if grant is None:
-            return error_response("invalid_bootstrap_token", "The local bootstrap token is invalid or expired.", 401)
+            return error_response(
+                "invalid_bootstrap_token",
+                "The local bootstrap token is invalid or expired.",
+                401,
+            )
         session.clear()
         session["authenticated"] = True
         session["csrf_token"] = secrets.token_urlsafe(24)
@@ -471,9 +551,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 503,
             )
         try:
-            credential_path = Path(credential_value).expanduser().resolve(
-                strict=True
-            )
+            credential_path = Path(credential_value).expanduser().resolve(strict=True)
             if credential_path.stat().st_size > 4096:
                 raise OSError("Manager credential file is unexpectedly large.")
             expected = credential_path.read_text(encoding="utf-8").strip()
@@ -485,9 +563,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             )
         authorization = request.headers.get("Authorization", "")
         supplied = (
-            authorization[7:].strip()
-            if authorization.startswith("Bearer ")
-            else ""
+            authorization[7:].strip() if authorization.startswith("Bearer ") else ""
         )
         if (
             not supplied
@@ -552,9 +628,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 "None of the requested scopes are allowed for Manager bootstrap.",
                 403,
             )
-        manager_instance_id = (
-            services.identity.manager_instance_id or "local-manager"
-        )
+        manager_instance_id = services.identity.manager_instance_id or "local-manager"
         return jsonify(
             {
                 "token": bootstrap.issue(
@@ -584,7 +658,9 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             response.headers["Retry-After"] = str(retry_after)
             return response, status
         if not auth.verify_password(payload.password):
-            retry_after = login_throttle.record_failure(client_key) if remote_access else 0
+            retry_after = (
+                login_throttle.record_failure(client_key) if remote_access else 0
+            )
             response, status = error_response(
                 "invalid_credentials",
                 "The password is incorrect.",
@@ -669,9 +745,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                     "subject": token.subject,
                     "scopes": list(token.scopes_json or []),
                     "expires_at": (
-                        token.expires_at.isoformat()
-                        if token.expires_at
-                        else None
+                        token.expires_at.isoformat() if token.expires_at else None
                     ),
                     "target_instance_id": token.target_instance_id,
                 }
@@ -727,8 +801,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     @require_auth
     def tts_services():
         payload, revision = tts_catalogue.snapshot(
-            refresh=request.args.get("refresh", "").lower()
-            in {"1", "true", "yes"}
+            refresh=request.args.get("refresh", "").lower() in {"1", "true", "yes"}
         )
         response = jsonify(payload)
         response.headers["ETag"] = f'"{revision}"'
@@ -740,10 +813,11 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         from pandrator.logic import tts_handler
         from pandrator.logic.tts_endpoint_discovery import discover_tts_endpoint
 
-        payload = TtsEndpointDiscoveryRequest.model_validate(request.get_json(silent=True) or {})
-        api_key = (
-            str(payload.api_key or "").strip()
-            or tts_catalogue.discovery_api_key(payload.service_id)
+        payload = TtsEndpointDiscoveryRequest.model_validate(
+            request.get_json(silent=True) or {}
+        )
+        api_key = str(payload.api_key or "").strip() or tts_catalogue.discovery_api_key(
+            payload.service_id
         )
         result = discover_tts_endpoint(payload.base_url, api_key=api_key)
         result["models"] = tts_handler.normalize_tts_model_catalog(
@@ -755,7 +829,9 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     @app.post("/api/v1/services/tts/<service_id>/preview")
     @require_auth
     def tts_voice_preview(service_id: str):
-        payload = TtsVoicePreviewRequest.model_validate(request.get_json(silent=True) or {})
+        payload = TtsVoicePreviewRequest.model_validate(
+            request.get_json(silent=True) or {}
+        )
         settings = tts_catalogue.preview_settings(
             service_id,
             model=payload.model,
@@ -775,7 +851,16 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     @app.get("/api/v1/sessions")
     @require_auth
     def session_list():
-        return jsonify({"items": [_session_payload(item) for item in sessions.list(include_trashed=request.args.get("include_trashed") == "true")]})
+        return jsonify(
+            {
+                "items": [
+                    _session_payload(item)
+                    for item in sessions.list(
+                        include_trashed=request.args.get("include_trashed") == "true"
+                    )
+                ]
+            }
+        )
 
     @app.get("/api/v1/defaults/<section>")
     @require_auth
@@ -784,9 +869,23 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             return error_response("not_found", "Settings section not found.", 404)
         with database.session() as db_session:
             record = db_session.get(AppSetting, f"defaults.{section}")
-            value = dict(record.value_json or {}) if record and isinstance(record.value_json, dict) else {}
+            value = (
+                dict(record.value_json or {})
+                if record and isinstance(record.value_json, dict)
+                else {}
+            )
             revision = record.revision if record else 0
-        response = jsonify(redact_inline_secrets({"section": section, "builtin": BUILTIN_DEFAULTS[section], "value": value, "effective": {**BUILTIN_DEFAULTS[section], **value}, "revision": revision}))
+        response = jsonify(
+            redact_inline_secrets(
+                {
+                    "section": section,
+                    "builtin": BUILTIN_DEFAULTS[section],
+                    "value": value,
+                    "effective": {**BUILTIN_DEFAULTS[section], **value},
+                    "revision": revision,
+                }
+            )
+        )
         response.headers["ETag"] = f'"{revision}"'
         return response
 
@@ -797,7 +896,14 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             record = db_session.get(AppSetting, setting_key)
             if record is None:
                 return error_response("not_found", "Setting not found.", 404)
-            response = jsonify({"key": record.key, "value": redact_inline_secrets(record.value_json), "revision": record.revision, "updated_at": record.updated_at.isoformat()})
+            response = jsonify(
+                {
+                    "key": record.key,
+                    "value": redact_inline_secrets(record.value_json),
+                    "revision": record.revision,
+                    "updated_at": record.updated_at.isoformat(),
+                }
+            )
             response.headers["ETag"] = f'"{record.revision}"'
             return response
 
@@ -813,14 +919,26 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 record = db_session.get(AppSetting, setting_key)
                 if record is None:
                     if raw_etag not in {"", "0", "*"}:
-                        return error_response("revision_conflict", "The setting does not exist at that revision.", 409)
+                        return error_response(
+                            "revision_conflict",
+                            "The setting does not exist at that revision.",
+                            409,
+                        )
                 else:
                     try:
                         expected = int(raw_etag)
                     except ValueError:
-                        return error_response("precondition_required", "If-Match must contain the current setting revision.", 428)
+                        return error_response(
+                            "precondition_required",
+                            "If-Match must contain the current setting revision.",
+                            428,
+                        )
                     if expected != record.revision:
-                        return error_response("revision_conflict", "The setting changed in another client.", 409)
+                        return error_response(
+                            "revision_conflict",
+                            "The setting changed in another client.",
+                            409,
+                        )
                 prepared_value = (
                     prepare_tts_settings_for_storage(
                         db_session,
@@ -832,18 +950,35 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                     if setting_key == "services.tts"
                     else payload.value
                 )
-                if setting_key != "services.tts" and contains_inline_secret(prepared_value):
-                    raise ValueError("API keys and other credentials must be saved in provider settings.")
+                if setting_key != "services.tts" and contains_inline_secret(
+                    prepared_value
+                ):
+                    raise ValueError(
+                        "API keys and other credentials must be saved in provider settings."
+                    )
                 if record is None:
-                    record = AppSetting(key=setting_key, value_json=prepared_value, revision=1)
+                    record = AppSetting(
+                        key=setting_key, value_json=prepared_value, revision=1
+                    )
                     db_session.add(record)
                 else:
-                    db_session.add(AppSettingHistory(key=record.key, value_json=record.value_json, revision=record.revision))
+                    db_session.add(
+                        AppSettingHistory(
+                            key=record.key,
+                            value_json=record.value_json,
+                            revision=record.revision,
+                        )
+                    )
                     record.value_json = prepared_value
                     record.revision += 1
                     record.updated_at = utcnow()
                 db_session.flush()
-                result = {"key": record.key, "value": redact_inline_secrets(record.value_json), "revision": record.revision, "updated_at": record.updated_at.isoformat()}
+                result = {
+                    "key": record.key,
+                    "value": redact_inline_secrets(record.value_json),
+                    "revision": record.revision,
+                    "updated_at": record.updated_at.isoformat(),
+                }
         except ValueError as error:
             return error_response("validation_error", str(error), 422)
         except (OSError, RuntimeError) as error:
@@ -856,9 +991,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     @require_auth
     def session_create():
         payload = SessionCreate.model_validate(request.get_json(silent=True) or {})
-        idempotency_key, idempotency_error = (
-            mutation_idempotency_key()
-        )
+        idempotency_key, idempotency_error = mutation_idempotency_key()
         if idempotency_error is not None:
             return idempotency_error
         if idempotency_key is not None:
@@ -884,13 +1017,9 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                         result, status_code = reservation.response
                         response = jsonify(result)
                         response.status_code = status_code
-                        response.headers[
-                            "Idempotency-Replayed"
-                        ] = "true"
+                        response.headers["Idempotency-Replayed"] = "true"
                         if result.get("revision") is not None:
-                            response.headers["ETag"] = (
-                                f'"{result["revision"]}"'
-                            )
+                            response.headers["ETag"] = f'"{result["revision"]}"'
                         return response
                     existing = sessions.find_active_by_name_in_session(
                         db_session,
@@ -898,8 +1027,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                     )
                     if (
                         existing is not None
-                        and payload.overwrite_session_id
-                        != existing.id
+                        and payload.overwrite_session_id != existing.id
                     ):
                         abandon_idempotency(
                             db_session,
@@ -909,16 +1037,10 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                             "duplicate_session",
                             f'A session named "{existing.name}" already exists.',
                             409,
-                            {
-                                "existing_session": _session_payload(
-                                    existing
-                                )
-                            },
+                            {"existing_session": _session_payload(existing)},
                         )
                     if payload.overwrite_session_id and (
-                        existing is None
-                        or existing.id
-                        != payload.overwrite_session_id
+                        existing is None or existing.id != payload.overwrite_session_id
                     ):
                         abandon_idempotency(
                             db_session,
@@ -973,9 +1095,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                         storage_key=storage_key,
                         db_session=db_session,
                     )
-                    created_directory = (
-                        paths.sessions / record.storage_key
-                    )
+                    created_directory = paths.sessions / record.storage_key
                     created_directory.mkdir(
                         parents=True,
                         exist_ok=False,
@@ -996,10 +1116,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 response.headers["ETag"] = f'"{result["revision"]}"'
                 return response
             except Exception:
-                if (
-                    created_directory is not None
-                    and created_directory.is_dir()
-                ):
+                if created_directory is not None and created_directory.is_dir():
                     try:
                         created_directory.rmdir()
                     except OSError:
@@ -1013,7 +1130,9 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 409,
                 {"existing_session": _session_payload(existing)},
             )
-        if payload.overwrite_session_id and (existing is None or existing.id != payload.overwrite_session_id):
+        if payload.overwrite_session_id and (
+            existing is None or existing.id != payload.overwrite_session_id
+        ):
             return error_response(
                 "overwrite_conflict",
                 "The session selected for replacement no longer matches this name. Review the current session list and try again.",
@@ -1062,9 +1181,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     @app.post("/api/v1/sessions/<session_id>/forks")
     @require_auth
     def session_fork(session_id: str):
-        payload = SessionForkRequest.model_validate(
-            request.get_json(silent=True) or {}
-        )
+        payload = SessionForkRequest.model_validate(request.get_json(silent=True) or {})
         idempotency_key, idempotency_error = mutation_idempotency_key()
         if idempotency_error is not None:
             return idempotency_error
@@ -1154,15 +1271,21 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         try:
             revision = int(raw_etag)
         except ValueError:
-            return error_response("precondition_required", "If-Match must contain the current revision.", 428)
+            return error_response(
+                "precondition_required",
+                "If-Match must contain the current revision.",
+                428,
+            )
         payload = SessionUpdate.model_validate(request.get_json(silent=True) or {})
         raw_changes = payload.model_dump(exclude_unset=True)
-        changes = {key: value for key, value in raw_changes.items() if value is not None or key == "target_language"}
+        changes = {
+            key: value
+            for key, value in raw_changes.items()
+            if value is not None or key == "target_language"
+        }
         if "included_stages" in changes:
             changes["included_stages_json"] = changes.pop("included_stages")
-        idempotency_key, idempotency_error = (
-            mutation_idempotency_key()
-        )
+        idempotency_key, idempotency_error = mutation_idempotency_key()
         if idempotency_error is not None:
             return idempotency_error
         if idempotency_key is not None:
@@ -1183,13 +1306,9 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                         result, status_code = reservation.response
                         response = jsonify(result)
                         response.status_code = status_code
-                        response.headers[
-                            "Idempotency-Replayed"
-                        ] = "true"
+                        response.headers["Idempotency-Replayed"] = "true"
                         if result.get("revision") is not None:
-                            response.headers["ETag"] = (
-                                f'"{result["revision"]}"'
-                            )
+                            response.headers["ETag"] = f'"{result["revision"]}"'
                         return response
                     current = db_session.get(
                         SessionRecord,
@@ -1212,14 +1331,9 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                         )
                         return error_response(
                             "revision_conflict",
-                            f"Expected revision {revision}, found "
-                            f"{current.revision}.",
+                            f"Expected revision {revision}, found {current.revision}.",
                             409,
-                            {
-                                "current_revision": (
-                                    current.revision
-                                )
-                            },
+                            {"current_revision": (current.revision)},
                         )
                     record = sessions.update(
                         session_id,
@@ -1271,11 +1385,24 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         try:
             revision = int(raw_etag)
         except ValueError:
-            return error_response("precondition_required", "If-Match must contain the current session revision.", 428)
+            return error_response(
+                "precondition_required",
+                "If-Match must contain the current session revision.",
+                428,
+            )
         with database.session() as db_session:
-            active = db_session.scalar(select(Job).where(Job.session_id == session_id, Job.status.in_(("queued", "running", "cancel_requested"))))
+            active = db_session.scalar(
+                select(Job).where(
+                    Job.session_id == session_id,
+                    Job.status.in_(("queued", "running", "cancel_requested")),
+                )
+            )
             if active is not None:
-                return error_response("session_busy", "Stop or cancel active work before moving this session to trash.", 409)
+                return error_response(
+                    "session_busy",
+                    "Stop or cancel active work before moving this session to trash.",
+                    409,
+                )
         try:
             record = sessions.trash(session_id, revision)
         except KeyError:
@@ -1293,7 +1420,11 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         try:
             revision = int(raw_etag)
         except ValueError:
-            return error_response("precondition_required", "If-Match must contain the current session revision.", 428)
+            return error_response(
+                "precondition_required",
+                "If-Match must contain the current session revision.",
+                428,
+            )
         try:
             record = sessions.restore(session_id, revision)
         except KeyError:
@@ -1311,7 +1442,9 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             sessions.get(session_id)
         except KeyError:
             return error_response("not_found", "Session not found.", 404)
-        return jsonify({"session_id": session_id, "reports": artifacts.reconcile(session_id)})
+        return jsonify(
+            {"session_id": session_id, "reports": artifacts.reconcile(session_id)}
+        )
 
     @app.get("/api/v1/sessions/<session_id>/settings/<section>")
     @require_auth
@@ -1329,17 +1462,21 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     @app.put("/api/v1/sessions/<session_id>/settings/<section>")
     @require_auth
     def session_settings_put(session_id: str, section: str):
-        payload = SessionSettingsUpdate.model_validate(request.get_json(silent=True) or {})
+        payload = SessionSettingsUpdate.model_validate(
+            request.get_json(silent=True) or {}
+        )
         if rejected := inline_credential_error(payload.value):
             return rejected
         raw_etag = request.headers.get("If-Match", "").strip('W/" ')
         try:
             expected = int(raw_etag)
         except ValueError:
-            return error_response("precondition_required", "If-Match must contain the current settings revision.", 428)
-        idempotency_key, idempotency_error = (
-            mutation_idempotency_key()
-        )
+            return error_response(
+                "precondition_required",
+                "If-Match must contain the current settings revision.",
+                428,
+            )
+        idempotency_key, idempotency_error = mutation_idempotency_key()
         if idempotency_error is not None:
             return idempotency_error
         if idempotency_key is not None:
@@ -1361,13 +1498,9 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                         result, status_code = reservation.response
                         response = jsonify(result)
                         response.status_code = status_code
-                        response.headers[
-                            "Idempotency-Replayed"
-                        ] = "true"
+                        response.headers["Idempotency-Replayed"] = "true"
                         if result.get("revision") is not None:
-                            response.headers["ETag"] = (
-                                f'"{result["revision"]}"'
-                            )
+                            response.headers["ETag"] = f'"{result["revision"]}"'
                         return response
                     session_record = db_session.get(
                         SessionRecord,
@@ -1387,11 +1520,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                         SessionSetting,
                         (session_id, section),
                     )
-                    current_revision = (
-                        current.revision
-                        if current is not None
-                        else 0
-                    )
+                    current_revision = current.revision if current is not None else 0
                     if current_revision != expected:
                         abandon_idempotency(
                             db_session,
@@ -1401,11 +1530,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                             "revision_conflict",
                             "Session settings changed in another client.",
                             409,
-                            {
-                                "current_revision": (
-                                    current_revision
-                                )
-                            },
+                            {"current_revision": (current_revision)},
                         )
                     result = workspace_settings.update(
                         session_id,
@@ -1440,7 +1565,9 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             response.headers["ETag"] = f'"{result["revision"]}"'
             return response
         try:
-            result = workspace_settings.update(session_id, section, expected, payload.value)
+            result = workspace_settings.update(
+                session_id, section, expected, payload.value
+            )
         except KeyError:
             return error_response("not_found", "Session not found.", 404)
         except WorkspaceRevisionConflict as error:
@@ -1455,12 +1582,18 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     @require_auth
     def session_settings_resolve(session_id: str):
         body = request.get_json(silent=True) or {}
-        sections = body.get("sections") if isinstance(body.get("sections"), list) else None
-        overrides = body.get("overrides") if isinstance(body.get("overrides"), dict) else {}
+        sections = (
+            body.get("sections") if isinstance(body.get("sections"), list) else None
+        )
+        overrides = (
+            body.get("overrides") if isinstance(body.get("overrides"), dict) else {}
+        )
         if rejected := inline_credential_error(overrides):
             return rejected
         try:
-            value, digest = workspace_settings.resolve(session_id, sections=sections, run_override=overrides)
+            value, digest = workspace_settings.resolve(
+                session_id, sections=sections, run_override=overrides
+            )
         except KeyError:
             return error_response("not_found", "Session not found.", 404)
         except ValueError as error:
@@ -1486,7 +1619,11 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         try:
             expected = int(raw_etag)
         except ValueError:
-            return error_response("precondition_required", "If-Match must contain the current outcome-plan revision.", 428)
+            return error_response(
+                "precondition_required",
+                "If-Match must contain the current outcome-plan revision.",
+                428,
+            )
         try:
             result = outcome_plans.update(session_id, expected, payload.value)
         except KeyError:
@@ -1500,19 +1637,33 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     @app.get("/api/v1/sources")
     @require_auth
     def source_library_list():
-        return jsonify({"items": source_library.list(include_trashed=request.args.get("include_trashed") == "true")})
+        return jsonify(
+            {
+                "items": source_library.list(
+                    include_trashed=request.args.get("include_trashed") == "true"
+                )
+            }
+        )
 
     @app.patch("/api/v1/sources/<source_asset_id>")
     @require_auth
     def source_library_update(source_asset_id: str):
-        payload = SourceUpdateRequest.model_validate(request.get_json(silent=True) or {})
+        payload = SourceUpdateRequest.model_validate(
+            request.get_json(silent=True) or {}
+        )
         raw_etag = request.headers.get("If-Match", "").strip('W/" ')
         try:
             expected = int(raw_etag)
         except ValueError:
-            return error_response("precondition_required", "If-Match must contain the current source revision.", 428)
+            return error_response(
+                "precondition_required",
+                "If-Match must contain the current source revision.",
+                428,
+            )
         try:
-            result = source_library.rename(source_asset_id, expected, payload.display_name)
+            result = source_library.rename(
+                source_asset_id, expected, payload.display_name
+            )
         except KeyError:
             return error_response("not_found", "Source asset not found.", 404)
         except WorkspaceRevisionConflict as error:
@@ -1528,7 +1679,11 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         try:
             expected = int(raw_etag)
         except ValueError:
-            return error_response("precondition_required", "If-Match must contain the current source revision.", 428)
+            return error_response(
+                "precondition_required",
+                "If-Match must contain the current source revision.",
+                428,
+            )
         try:
             result = source_library.set_state(source_asset_id, expected, "trashed")
         except KeyError:
@@ -1548,7 +1703,11 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         try:
             expected = int(raw_etag)
         except ValueError:
-            return error_response("precondition_required", "If-Match must contain the current source revision.", 428)
+            return error_response(
+                "precondition_required",
+                "If-Match must contain the current source revision.",
+                428,
+            )
         try:
             result = source_library.set_state(source_asset_id, expected, "current")
         except KeyError:
@@ -1571,10 +1730,10 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     @app.post("/api/v1/sessions/<session_id>/sources")
     @require_auth
     def session_source_attach(session_id: str):
-        payload = SourceAttachRequest.model_validate(request.get_json(silent=True) or {})
-        idempotency_key, idempotency_error = (
-            mutation_idempotency_key()
+        payload = SourceAttachRequest.model_validate(
+            request.get_json(silent=True) or {}
         )
+        idempotency_key, idempotency_error = mutation_idempotency_key()
         if idempotency_error is not None:
             return idempotency_error
         if idempotency_key is not None:
@@ -1599,29 +1758,18 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                         idempotency_key=idempotency_key,
                         payload={
                             "session_id": session_id,
-                            "source_asset_id": (
-                                payload.source_asset_id
-                            ),
+                            "source_asset_id": (payload.source_asset_id),
                             "role": payload.role,
-                            "expected_session_revision": (
-                                expected_session_revision
-                            ),
+                            "expected_session_revision": (expected_session_revision),
                         },
                     )
                     if reservation.response is not None:
                         result, status_code = reservation.response
                         response = jsonify(result)
                         response.status_code = status_code
-                        response.headers[
-                            "Idempotency-Replayed"
-                        ] = "true"
-                        if (
-                            result.get("session_revision")
-                            is not None
-                        ):
-                            response.headers["ETag"] = (
-                                f'"{result["session_revision"]}"'
-                            )
+                        response.headers["Idempotency-Replayed"] = "true"
+                        if result.get("session_revision") is not None:
+                            response.headers["ETag"] = f'"{result["session_revision"]}"'
                         return response
                     session_record = db_session.get(
                         SessionRecord,
@@ -1637,24 +1785,16 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                             "Session not found.",
                             404,
                         )
-                    if (
-                        session_record.revision
-                        != expected_session_revision
-                    ):
+                    if session_record.revision != expected_session_revision:
                         abandon_idempotency(
                             db_session,
                             reservation,
                         )
                         return error_response(
                             "revision_conflict",
-                            "The session changed before its source was "
-                            "attached.",
+                            "The session changed before its source was attached.",
                             409,
-                            {
-                                "current_revision": (
-                                    session_record.revision
-                                )
-                            },
+                            {"current_revision": (session_record.revision)},
                         )
                     if (
                         db_session.get(
@@ -1676,9 +1816,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                         session_id,
                         payload.source_asset_id,
                         role=payload.role,
-                        expected_session_revision=(
-                            expected_session_revision
-                        ),
+                        expected_session_revision=(expected_session_revision),
                         db_session=db_session,
                     )
                     services.idempotency.complete(
@@ -1705,14 +1843,16 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 return idempotency_failure(error)
             response = jsonify(result)
             response.status_code = 201
-            response.headers["ETag"] = (
-                f'"{result["session_revision"]}"'
-            )
+            response.headers["ETag"] = f'"{result["session_revision"]}"'
             return response
         try:
-            result = source_library.attach(session_id, payload.source_asset_id, role=payload.role)
+            result = source_library.attach(
+                session_id, payload.source_asset_id, role=payload.role
+            )
         except KeyError:
-            return error_response("not_found", "Session or source asset not found.", 404)
+            return error_response(
+                "not_found", "Session or source asset not found.", 404
+            )
         return jsonify(result), 201
 
     @app.delete("/api/v1/sessions/<session_id>/sources/<attachment_id>")
@@ -1722,11 +1862,17 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         try:
             expected = int(raw_etag)
         except ValueError:
-            return error_response("precondition_required", "If-Match must contain the attachment revision.", 428)
+            return error_response(
+                "precondition_required",
+                "If-Match must contain the attachment revision.",
+                428,
+            )
         try:
             source_library.detach(session_id, attachment_id, expected)
         except KeyError:
-            return error_response("not_found", "Session source attachment not found.", 404)
+            return error_response(
+                "not_found", "Session source attachment not found.", 404
+            )
         except WorkspaceRevisionConflict as error:
             return error_response("revision_conflict", str(error), 409)
         return "", 204
@@ -1737,40 +1883,75 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         with database.session() as db_session:
             if db_session.get(SessionRecord, session_id) is None:
                 return error_response("not_found", "Session not found.", 404)
-            documents = list(db_session.scalars(select(Document).where(Document.session_id == session_id).order_by(Document.created_at)).all())
+            documents = list(
+                db_session.scalars(
+                    select(Document)
+                    .where(Document.session_id == session_id)
+                    .order_by(Document.created_at)
+                ).all()
+            )
             revision_artifacts = {
                 str((item.metadata_json or {}).get("revision_id") or ""): item
-                for item in db_session.scalars(select(Artifact).where(Artifact.session_id == session_id)).all()
+                for item in db_session.scalars(
+                    select(Artifact).where(Artifact.session_id == session_id)
+                ).all()
                 if (item.metadata_json or {}).get("revision_id")
             }
             items = []
             for document in documents:
-                revisions = list(db_session.scalars(select(DocumentRevision).where(DocumentRevision.document_id == document.id).order_by(DocumentRevision.revision_number.desc())).all())
+                revisions = list(
+                    db_session.scalars(
+                        select(DocumentRevision)
+                        .where(DocumentRevision.document_id == document.id)
+                        .order_by(DocumentRevision.revision_number.desc())
+                    ).all()
+                )
                 revision_items = []
                 for revision in revisions:
                     segment_count, duration_ms = db_session.execute(
-                        select(func.count(Segment.id), func.max(Segment.end_ms)).where(Segment.revision_id == revision.id)
+                        select(func.count(Segment.id), func.max(Segment.end_ms)).where(
+                            Segment.revision_id == revision.id
+                        )
                     ).one()
                     artifact = revision_artifacts.get(revision.id)
-                    revision_items.append({
-                        "id": revision.id,
-                        "revision_number": revision.revision_number,
-                        "parent_revision_id": revision.parent_revision_id,
-                        "reviewed": revision.reviewed,
-                        "content_hash": revision.content_hash,
-                        "created_at": revision.created_at.isoformat(),
-                        "segment_count": int(segment_count or 0),
-                        "duration_ms": int(duration_ms or 0),
-                        "artifact": _model_dict(artifact, ("id", "kind", "role", "relative_path", "mime_type", "size_bytes", "state", "metadata_json", "created_at")) if artifact else None,
-                    })
-                items.append({
-                    "id": document.id,
-                    "stage": document.stage,
-                    "language": document.language,
-                    "active_revision_id": document.active_revision_id,
-                    "created_at": document.created_at.isoformat(),
-                    "revisions": revision_items,
-                })
+                    revision_items.append(
+                        {
+                            "id": revision.id,
+                            "revision_number": revision.revision_number,
+                            "parent_revision_id": revision.parent_revision_id,
+                            "reviewed": revision.reviewed,
+                            "content_hash": revision.content_hash,
+                            "created_at": revision.created_at.isoformat(),
+                            "segment_count": int(segment_count or 0),
+                            "duration_ms": int(duration_ms or 0),
+                            "artifact": _model_dict(
+                                artifact,
+                                (
+                                    "id",
+                                    "kind",
+                                    "role",
+                                    "relative_path",
+                                    "mime_type",
+                                    "size_bytes",
+                                    "state",
+                                    "metadata_json",
+                                    "created_at",
+                                ),
+                            )
+                            if artifact
+                            else None,
+                        }
+                    )
+                items.append(
+                    {
+                        "id": document.id,
+                        "stage": document.stage,
+                        "language": document.language,
+                        "active_revision_id": document.active_revision_id,
+                        "created_at": document.created_at.isoformat(),
+                        "revisions": revision_items,
+                    }
+                )
             return jsonify({"items": items})
 
     @app.get("/api/v1/document-revisions/<revision_id>/words")
@@ -1784,24 +1965,62 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         with database.session() as db_session:
             if db_session.get(DocumentRevision, revision_id) is None:
                 return error_response("not_found", "Document revision not found.", 404)
-            rows = list(db_session.scalars(select(TimedWord).where(TimedWord.revision_id == revision_id, TimedWord.ordinal >= cursor).order_by(TimedWord.ordinal).limit(limit + 1)).all())
+            rows = list(
+                db_session.scalars(
+                    select(TimedWord)
+                    .where(
+                        TimedWord.revision_id == revision_id,
+                        TimedWord.ordinal >= cursor,
+                    )
+                    .order_by(TimedWord.ordinal)
+                    .limit(limit + 1)
+                ).all()
+            )
             has_more = len(rows) > limit
             rows = rows[:limit]
-            return jsonify({
-                "items": [_model_dict(word, ("id", "revision_id", "segment_id", "ordinal", "text", "start_ms", "end_ms", "speaker", "confidence", "metadata_json")) for word in rows],
-                "next_cursor": rows[-1].ordinal + 1 if rows and has_more else None,
-            })
+            return jsonify(
+                {
+                    "items": [
+                        _model_dict(
+                            word,
+                            (
+                                "id",
+                                "revision_id",
+                                "segment_id",
+                                "ordinal",
+                                "text",
+                                "start_ms",
+                                "end_ms",
+                                "speaker",
+                                "confidence",
+                                "metadata_json",
+                            ),
+                        )
+                        for word in rows
+                    ],
+                    "next_cursor": rows[-1].ordinal + 1 if rows and has_more else None,
+                }
+            )
 
     @app.post("/api/v1/sessions/<session_id>/generation-plan")
     @require_auth
     def generation_plan_create(session_id: str):
-        payload = GenerationPlanCreate.model_validate(request.get_json(silent=True) or {})
+        payload = GenerationPlanCreate.model_validate(
+            request.get_json(silent=True) or {}
+        )
         if rejected := inline_credential_error(payload.settings):
             return rejected
         try:
-            result = generation.create_plan(session_id, source_revision_id=payload.source_revision_id, segments=[item.model_dump() for item in payload.segments], settings=payload.settings)
+            result = generation.create_plan(
+                session_id,
+                source_revision_id=payload.source_revision_id,
+                segments=[item.model_dump() for item in payload.segments],
+                settings=payload.settings,
+            )
         except KeyError:
-            return error_response("not_found", "Session or source revision not found.", 404)
+            return error_response(
+                "not_found", "Session or source revision not found.", 404
+            )
         except ValueError as error:
             return error_response("validation_error", str(error), 422)
         return jsonify(result), 201
@@ -1882,10 +2101,16 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     @app.patch("/api/v1/generation-segments/<segment_id>")
     @require_auth
     def generation_segment_update(segment_id: str):
-        payload = GenerationSegmentUpdate.model_validate(request.get_json(silent=True) or {})
+        payload = GenerationSegmentUpdate.model_validate(
+            request.get_json(silent=True) or {}
+        )
         changes = payload.model_dump(exclude_unset=True)
         clearable = {"optimized_text", "voice_id", "voice", "language"}
-        null_fields = [key for key, value in changes.items() if value is None and key not in clearable]
+        null_fields = [
+            key
+            for key, value in changes.items()
+            if value is None and key not in clearable
+        ]
         if null_fields:
             return error_response(
                 "validation_error",
@@ -1896,7 +2121,11 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         try:
             expected = int(raw_etag)
         except ValueError:
-            return error_response("precondition_required", "If-Match must contain the current segment revision.", 428)
+            return error_response(
+                "precondition_required",
+                "If-Match must contain the current segment revision.",
+                428,
+            )
         try:
             # Explicit null clears a segment override back to the inherited
             # session value; omitted fields remain unchanged.
@@ -1918,11 +2147,17 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         try:
             expected = int(raw_etag)
         except ValueError:
-            return error_response("precondition_required", "If-Match must contain the current segment revision.", 428)
+            return error_response(
+                "precondition_required",
+                "If-Match must contain the current segment revision.",
+                428,
+            )
         try:
             result = generation.select_take(segment_id, take_id, expected)
         except KeyError:
-            return error_response("not_found", "Generation segment or audio take not found.", 404)
+            return error_response(
+                "not_found", "Generation segment or audio take not found.", 404
+            )
         except WorkspaceRevisionConflict as error:
             return error_response("revision_conflict", str(error), 409)
         except ValueError as error:
@@ -1952,7 +2187,9 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     @app.post("/api/v1/sessions/<session_id>/generation-runs")
     @require_auth
     def generation_run_start(session_id: str):
-        payload = GenerationStartRequest.model_validate(request.get_json(silent=True) or {})
+        payload = GenerationStartRequest.model_validate(
+            request.get_json(silent=True) or {}
+        )
         if rejected := inline_credential_error(payload.run_override):
             return rejected
         try:
@@ -2020,7 +2257,9 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     @app.post("/api/v1/sessions/<session_id>/output-assemblies")
     @require_auth
     def output_assembly_create(session_id: str):
-        payload = OutputAssemblyCreateRequest.model_validate(request.get_json(silent=True) or {})
+        payload = OutputAssemblyCreateRequest.model_validate(
+            request.get_json(silent=True) or {}
+        )
         if rejected := inline_credential_error(payload.run_override):
             return rejected
         try:
@@ -2030,7 +2269,9 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 run_override=payload.run_override,
             )
         except KeyError:
-            return error_response("not_found", "Session or generation run not found.", 404)
+            return error_response(
+                "not_found", "Session or generation run not found.", 404
+            )
         except ValueError as error:
             return error_response("assembly_unavailable", str(error), 409)
         return jsonify(result), 202
@@ -2104,9 +2345,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 "dubbing_artifact_id": dubbing_artifact_id,
                 "start_seconds": payload.start_seconds,
                 "duration_seconds": payload.duration_seconds,
-                "settings": {
-                    field: getattr(payload, field) for field in mix_fields
-                },
+                "settings": {field: getattr(payload, field) for field in mix_fields},
             },
             session_id=session_id,
             resource_keys=[f"session:{session_id}"],
@@ -2123,22 +2362,51 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             requested_kind = str(request.args.get("kind") or "").strip()
             if requested_kind:
                 statement = statement.where(AgentRun.kind == requested_kind)
-            records = list(db_session.scalars(statement.order_by(AgentRun.created_at.desc())).all())
-            return jsonify({"items": [_model_dict(item, ("id", "kind", "session_id", "source_artifact_id", "result_artifact_id", "job_id", "status", "settings_json", "created_at", "updated_at")) for item in records]})
+            records = list(
+                db_session.scalars(statement.order_by(AgentRun.created_at.desc())).all()
+            )
+            return jsonify(
+                {
+                    "items": [
+                        _model_dict(
+                            item,
+                            (
+                                "id",
+                                "kind",
+                                "session_id",
+                                "source_artifact_id",
+                                "result_artifact_id",
+                                "job_id",
+                                "status",
+                                "source_content_hash",
+                                "settings_hash",
+                                "checkpoint_revision",
+                                "error_message",
+                                "settings_json",
+                                "created_at",
+                                "updated_at",
+                            ),
+                        )
+                        for item in records
+                    ]
+                }
+            )
 
     @app.post("/api/v1/sessions/<session_id>/agent-runs")
     @require_auth
     def agent_run_create(session_id: str):
-        payload = AgentRunCreateRequest.model_validate(request.get_json(silent=True) or {})
+        payload = AgentRunCreateRequest.model_validate(
+            request.get_json(silent=True) or {}
+        )
         if rejected := inline_credential_error(payload.settings):
             return rejected
         try:
             sessions.get(session_id)
-            source_artifact, source_path = artifacts.resolve(
-                payload.source_artifact_id
-            )
+            source_artifact, source_path = artifacts.resolve(payload.source_artifact_id)
         except KeyError:
-            return error_response("not_found", "Session or source artifact not found.", 404)
+            return error_response(
+                "not_found", "Session or source artifact not found.", 404
+            )
         attached_source = next(
             (
                 item
@@ -2168,8 +2436,27 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             )
         run_id = new_id()
         with database.session() as db_session:
-            db_session.add(AgentRun(id=run_id, kind="source_cleaning", session_id=session_id, source_artifact_id=payload.source_artifact_id, status="queued", settings_json={**payload.settings, "agentic": True}))
-        job = jobs.enqueue("source.clean", {"session_id": session_id, "source_artifact_id": payload.source_artifact_id, "agent_run_id": run_id, "settings": {**payload.settings, "agentic": True}}, session_id=session_id, resource_keys=[f"session:{session_id}", "service:llm"])
+            db_session.add(
+                AgentRun(
+                    id=run_id,
+                    kind="source_cleaning",
+                    session_id=session_id,
+                    source_artifact_id=payload.source_artifact_id,
+                    status="queued",
+                    settings_json={**payload.settings, "agentic": True},
+                )
+            )
+        job = jobs.enqueue(
+            "source.clean",
+            {
+                "session_id": session_id,
+                "source_artifact_id": payload.source_artifact_id,
+                "agent_run_id": run_id,
+                "settings": {**payload.settings, "agentic": True},
+            },
+            session_id=session_id,
+            resource_keys=[f"session:{session_id}", "service:llm"],
+        )
         with database.session() as db_session:
             run = db_session.get(AgentRun, run_id)
             run.job_id = job.id
@@ -2181,9 +2468,127 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     def agent_step_list(run_id: str):
         with database.session() as db_session:
             if db_session.get(AgentRun, run_id) is None:
-                return error_response("not_found", "Agentic cleaning run not found.", 404)
-            records = list(db_session.scalars(select(AgentStep).where(AgentStep.agent_run_id == run_id).order_by(AgentStep.ordinal)).all())
-            return jsonify({"items": [_model_dict(item, ("id", "agent_run_id", "ordinal", "phase", "status", "summary", "input_json", "output_json", "cost_usd", "created_at")) for item in records]})
+                return error_response(
+                    "not_found", "Agentic cleaning run not found.", 404
+                )
+            records = list(
+                db_session.scalars(
+                    select(AgentStep)
+                    .where(AgentStep.agent_run_id == run_id)
+                    .order_by(AgentStep.ordinal)
+                ).all()
+            )
+            return jsonify(
+                {
+                    "items": [
+                        _model_dict(
+                            item,
+                            (
+                                "id",
+                                "agent_run_id",
+                                "ordinal",
+                                "unit_key",
+                                "input_hash",
+                                "phase",
+                                "status",
+                                "summary",
+                                "input_json",
+                                "output_json",
+                                "cost_usd",
+                                "created_at",
+                                "updated_at",
+                            ),
+                        )
+                        for item in records
+                    ]
+                }
+            )
+
+    @app.post("/api/v1/agent-runs/<run_id>/resume")
+    @require_auth
+    def agent_run_resume(run_id: str):
+        store = AgenticRunStore(database)
+        try:
+            run, previous_job = store.prepare_resume(run_id)
+        except KeyError:
+            return error_response("not_found", "Agentic operation not found.", 404)
+        except ValueError as error:
+            return error_response("invalid_state", str(error), 409)
+        payload = dict(previous_job.payload_json or {})
+        run_ids = dict(payload.get("_agent_run_ids") or {})
+        run_ids[run.kind] = run.id
+        payload["_agent_run_ids"] = run_ids
+        payload["_agent_run_id"] = run.id
+        payload["agent_run_id"] = run.id
+        try:
+            job = jobs.enqueue(
+                previous_job.kind,
+                payload,
+                session_id=run.session_id,
+                workflow_run_id=previous_job.workflow_run_id,
+                max_attempts=previous_job.max_attempts,
+                resource_keys=list(previous_job.resource_keys_json or []),
+            )
+        except Exception as error:
+            store.fail(run.id, error)
+            raise
+        with database.session() as db_session:
+            managed = db_session.get(AgentRun, run.id)
+            if managed is not None:
+                managed.job_id = job.id
+                managed.status = "retrying"
+                managed.error_message = None
+                managed.updated_at = utcnow()
+        return jsonify({"id": run.id, "job_id": job.id, "status": "retrying"}), 202
+
+    @app.get("/api/v1/sessions/<session_id>/knowledge/<kind>")
+    @require_auth
+    def knowledge_get(session_id: str, kind: str):
+        try:
+            sessions.get(session_id)
+            result = KnowledgeLedgerStore(database).get(
+                session_id,
+                kind,
+                source_language=str(request.args.get("source_language") or "auto"),
+                target_language=str(request.args.get("target_language") or ""),
+            )
+        except KeyError:
+            return error_response("not_found", "Session not found.", 404)
+        except ValueError as error:
+            return error_response("validation_error", str(error), 422)
+        return jsonify(result)
+
+    @app.patch("/api/v1/knowledge/<ledger_id>")
+    @require_auth
+    def knowledge_update(ledger_id: str):
+        raw_etag = request.headers.get("If-Match", "").strip('W/" ')
+        try:
+            revision = int(raw_etag)
+        except ValueError:
+            return error_response(
+                "precondition_required",
+                "If-Match must contain the current ledger revision.",
+                428,
+            )
+        body = request.get_json(silent=True) or {}
+        payload = body.get("payload")
+        if not isinstance(payload, dict):
+            return error_response("validation_error", "payload must be an object.", 422)
+        try:
+            result = KnowledgeLedgerStore(database).replace(
+                ledger_id,
+                revision,
+                payload,
+            )
+        except KeyError:
+            return error_response("not_found", "Knowledge ledger not found.", 404)
+        except KnowledgeValidationError as error:
+            return error_response("validation_error", str(error), 422)
+        except ValueError as error:
+            return error_response("revision_conflict", str(error), 409)
+        response = jsonify(result)
+        response.headers["ETag"] = f'"{result["revision"]}"'
+        return response
 
     @app.post("/api/v1/agent-runs/<run_id>/accept")
     @require_auth
@@ -2191,28 +2596,44 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         with database.session() as db_session:
             run = db_session.get(AgentRun, run_id)
             if run is None:
-                return error_response("not_found", "Agentic cleaning run not found.", 404)
+                return error_response(
+                    "not_found", "Agentic cleaning run not found.", 404
+                )
             if run.status != "completed" or not run.result_artifact_id:
-                return error_response("invalid_state", "Only a completed cleaning result can be accepted.", 409)
+                return error_response(
+                    "invalid_state",
+                    "Only a completed cleaning result can be accepted.",
+                    409,
+                )
             run.status = "accepted"
             run.updated_at = utcnow()
-            return jsonify(_model_dict(run, ("id", "status", "result_artifact_id", "updated_at")))
+            return jsonify(
+                _model_dict(run, ("id", "status", "result_artifact_id", "updated_at"))
+            )
 
     @app.post("/api/v1/sessions/<session_id>/bundle")
     @require_auth
     def session_bundle_export(session_id: str):
-        payload = BundleExportRequest.model_validate(request.get_json(silent=True) or {})
+        payload = BundleExportRequest.model_validate(
+            request.get_json(silent=True) or {}
+        )
         try:
             sessions.get(session_id)
         except KeyError:
             return error_response("not_found", "Session not found.", 404)
-        job = jobs.enqueue("session.bundle.export", {"session_id": session_id, "include_sources": payload.include_sources}, session_id=session_id)
+        job = jobs.enqueue(
+            "session.bundle.export",
+            {"session_id": session_id, "include_sources": payload.include_sources},
+            session_id=session_id,
+        )
         return jsonify(_job_payload(job)), 202
 
     @app.post("/api/v1/session-bundles/import")
     @require_auth
     def session_bundle_import():
-        payload = BundleImportRequest.model_validate(request.get_json(silent=True) or {})
+        payload = BundleImportRequest.model_validate(
+            request.get_json(silent=True) or {}
+        )
         try:
             artifacts.resolve(payload.source_artifact_id)
         except KeyError:
@@ -2240,7 +2661,12 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         payload = JobCreate.model_validate(request.get_json(silent=True) or {})
         if rejected := inline_credential_error(payload.payload):
             return rejected
-        job = jobs.enqueue(payload.kind, payload.payload, session_id=payload.session_id, max_attempts=payload.max_attempts)
+        job = jobs.enqueue(
+            payload.kind,
+            payload.payload,
+            session_id=payload.session_id,
+            max_attempts=payload.max_attempts,
+        )
         return jsonify(_job_payload(job)), 202
 
     @app.get("/api/v1/jobs/<job_id>")
@@ -2282,9 +2708,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         values: list[str] = []
         for supplied in request.args.getlist(name):
             values.extend(
-                item.strip()
-                for item in str(supplied).split(",")
-                if item.strip()
+                item.strip() for item in str(supplied).split(",") if item.strip()
             )
         return tuple(values)
 
@@ -2435,24 +2859,38 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             sessions.get(session_id)
         except KeyError:
             return error_response("not_found", "Session not found.", 404)
-        return jsonify({"mismatches": workflow_handlers.settings_mismatches(session_id, stage_key)})
+        return jsonify(
+            {"mismatches": workflow_handlers.settings_mismatches(session_id, stage_key)}
+        )
 
     @app.put("/api/v1/sessions/<session_id>/stages/<stage_key>/selection")
     @require_auth
     def workflow_stage_selection(session_id: str, stage_key: str):
-        payload = StageSelectionUpdate.model_validate(request.get_json(silent=True) or {})
+        payload = StageSelectionUpdate.model_validate(
+            request.get_json(silent=True) or {}
+        )
         raw_etag = request.headers.get("If-Match", "").strip('W/" ')
         try:
             expected = int(raw_etag)
         except ValueError:
-            return error_response("precondition_required", "If-Match must contain the current selection revision.", 428)
+            return error_response(
+                "precondition_required",
+                "If-Match must contain the current selection revision.",
+                428,
+            )
         try:
             with database.session() as db_session:
                 history = stage_history(db_session, session_id, stage_key)
                 if int(history["revision"]) != expected:
-                    return error_response("revision_conflict", "The selected stage artifact changed in another client.", 409)
+                    return error_response(
+                        "revision_conflict",
+                        "The selected stage artifact changed in another client.",
+                        409,
+                    )
                 if payload.artifact_id:
-                    result = choose_artifact(db_session, session_id, stage_key, payload.artifact_id)
+                    result = choose_artifact(
+                        db_session, session_id, stage_key, payload.artifact_id
+                    )
                 else:
                     result = clear_selection(db_session, session_id, stage_key)
             return jsonify(result)
@@ -2466,7 +2904,9 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     def workflow_run_stage(session_id: str, stage_key: str):
         settings = request.get_json(silent=True) or {}
         if not isinstance(settings, dict):
-            return error_response("validation_error", "Stage settings must be an object.", 422)
+            return error_response(
+                "validation_error", "Stage settings must be an object.", 422
+            )
         if rejected := inline_credential_error(settings):
             return rejected
         try:
@@ -2484,18 +2924,46 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             sessions.get(session_id)
             return jsonify(subtitle_review.documents(session_id))
         except KeyError:
-            return error_response("not_found", "Session or subtitle document not found.", 404)
+            return error_response(
+                "not_found", "Session or subtitle document not found.", 404
+            )
+
+    @app.get("/api/v1/sessions/<session_id>/subtitles/catalog")
+    @require_auth
+    def subtitle_catalog(session_id: str):
+        try:
+            sessions.get(session_id)
+            return jsonify(subtitle_review.catalog(session_id))
+        except KeyError:
+            return error_response("not_found", "Session not found.", 404)
+
+    @app.get("/api/v1/sessions/<session_id>/subtitles/review")
+    @require_auth
+    def subtitle_review_exact(session_id: str):
+        try:
+            sessions.get(session_id)
+            artifact_ids = request.args.getlist("artifact_id")
+            return jsonify(subtitle_review.review(session_id, artifact_ids))
+        except KeyError:
+            return error_response(
+                "not_found", "Subtitle artifact not found in this session.", 404
+            )
+        except ValueError as error:
+            return error_response("validation_error", str(error), 422)
 
     @app.post("/api/v1/sessions/<session_id>/subtitles/<stage>/review")
     @require_auth
     def subtitle_save_review(session_id: str, stage: str):
-        payload = SubtitleReviewRequest.model_validate(request.get_json(silent=True) or {})
+        payload = SubtitleReviewRequest.model_validate(
+            request.get_json(silent=True) or {}
+        )
         try:
             result = subtitle_review.save_review(
                 session_id,
                 stage,
                 payload.expected_revision,
                 [item.model_dump() for item in payload.segments],
+                source_artifact_id=payload.source_artifact_id,
             )
         except KeyError:
             return error_response("not_found", "Subtitle document not found.", 404)
@@ -2530,10 +2998,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                     "items": [_session_payload(item) for item in sessions.list()]
                 },
                 "jobs": {
-                    "items": [
-                        _job_payload(item)
-                        for item in work.diagnostic_list(40)
-                    ]
+                    "items": [_job_payload(item) for item in work.diagnostic_list(40)]
                 },
                 "capabilities": capability_payload,
             }
@@ -2601,16 +3066,16 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                     if cursor > last_visible_id:
                         # Advance the browser reconnect cursor without exposing
                         # worker log records to every open tab.
-                        yield (
-                            f"id: {cursor}\n"
-                            "event: stream.cursor\n"
-                            "data: {}\n\n"
-                        )
+                        yield (f"id: {cursor}\nevent: stream.cursor\ndata: {{}}\n\n")
                 else:
                     yield ": heartbeat\n\n"
                 time.sleep(1)
 
-        return Response(stream(), mimetype="text/event-stream", headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
+        return Response(
+            stream(),
+            mimetype="text/event-stream",
+            headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+        )
 
     @app.post("/api/v1/uploads")
     @require_auth
@@ -2624,9 +3089,13 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         requested_session_id = str(request.form.get("session_id") or "") or None
         purpose = str(request.form.get("purpose") or "source").strip().lower()
         if purpose not in {"source", "cover"}:
-            return error_response("validation_error", "Unsupported upload purpose.", 422)
+            return error_response(
+                "validation_error", "Unsupported upload purpose.", 422
+            )
         if purpose == "cover" and not requested_session_id:
-            return error_response("validation_error", "Cover artwork must belong to a session.", 422)
+            return error_response(
+                "validation_error", "Cover artwork must belong to a session.", 422
+            )
         if requested_session_id:
             try:
                 sessions.get(requested_session_id)
@@ -2636,7 +3105,11 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             incoming.save(temporary)
             if purpose == "cover":
                 if temporary.stat().st_size > 25 * 1024 * 1024:
-                    return error_response("cover_too_large", "Cover artwork must be 25 MiB or smaller.", 413)
+                    return error_response(
+                        "cover_too_large",
+                        "Cover artwork must be 25 MiB or smaller.",
+                        413,
+                    )
                 try:
                     from PIL import Image
 
@@ -2645,10 +3118,16 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                             raise ValueError("Use JPEG, PNG, or WebP artwork.")
                         width, height = image.size
                         if width < 1 or height < 1 or width * height > 100_000_000:
-                            raise ValueError("Artwork dimensions are invalid or exceed 100 megapixels.")
+                            raise ValueError(
+                                "Artwork dimensions are invalid or exceed 100 megapixels."
+                            )
                         image.verify()
                 except Exception as error:
-                    return error_response("invalid_cover", f"Cover artwork is not a readable image: {error}", 422)
+                    return error_response(
+                        "invalid_cover",
+                        f"Cover artwork is not a readable image: {error}",
+                        422,
+                    )
             digest = sha256_file(temporary)
             os.replace(temporary, destination)
             artifact = artifacts.register(
@@ -2675,9 +3154,26 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             source_asset = None
             attachment = None
             if purpose == "source":
-                source_asset = source_library.ensure_for_artifact(artifact.id, display_name=incoming.filename, kind=Path(filename).suffix.lower().lstrip(".") or "file")
-                attachment = source_library.attach(requested_session_id, source_asset.id) if requested_session_id else None
-            return jsonify({"artifact_id": artifact.id, "source_asset_id": source_asset.id if source_asset else None, "attachment": attachment, "filename": filename, "size_bytes": destination.stat().st_size, "sha256": digest}), 201
+                source_asset = source_library.ensure_for_artifact(
+                    artifact.id,
+                    display_name=incoming.filename,
+                    kind=Path(filename).suffix.lower().lstrip(".") or "file",
+                )
+                attachment = (
+                    source_library.attach(requested_session_id, source_asset.id)
+                    if requested_session_id
+                    else None
+                )
+            return jsonify(
+                {
+                    "artifact_id": artifact.id,
+                    "source_asset_id": source_asset.id if source_asset else None,
+                    "attachment": attachment,
+                    "filename": filename,
+                    "size_bytes": destination.stat().st_size,
+                    "sha256": digest,
+                }
+            ), 201
         finally:
             if temporary.exists():
                 temporary.unlink()
@@ -2685,7 +3181,9 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     @app.post("/api/v1/uploads/init")
     @require_auth
     def chunk_upload_init():
-        payload = ChunkUploadInitialize.model_validate(request.get_json(silent=True) or {})
+        payload = ChunkUploadInitialize.model_validate(
+            request.get_json(silent=True) or {}
+        )
         try:
             result = chunk_uploads.initialize(
                 filename=payload.filename,
@@ -2694,7 +3192,9 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 session_id=payload.session_id,
                 expected_hash=payload.sha256,
                 chunk_size=payload.chunk_size,
-                max_size=int(app.config.get("MAX_UPLOAD_SIZE", 100 * 1024 * 1024 * 1024)),
+                max_size=int(
+                    app.config.get("MAX_UPLOAD_SIZE", 100 * 1024 * 1024 * 1024)
+                ),
             )
         except KeyError:
             return error_response("not_found", "Session not found.", 404)
@@ -2713,10 +3213,20 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     @app.put("/api/v1/uploads/<upload_id>/chunks/<int:index>")
     @require_auth
     def chunk_upload_write(upload_id: str, index: int):
-        if request.content_length is not None and request.content_length > 16 * 1024 * 1024:
-            return error_response("chunk_too_large", "Upload chunks may not exceed 16 MiB.", 413)
+        if (
+            request.content_length is not None
+            and request.content_length > 16 * 1024 * 1024
+        ):
+            return error_response(
+                "chunk_too_large", "Upload chunks may not exceed 16 MiB.", 413
+            )
         try:
-            result = chunk_uploads.write_chunk(upload_id, index, request.stream, supplied_hash=request.headers.get("X-Chunk-SHA256"))
+            result = chunk_uploads.write_chunk(
+                upload_id,
+                index,
+                request.stream,
+                supplied_hash=request.headers.get("X-Chunk-SHA256"),
+            )
         except KeyError:
             return error_response("not_found", "Upload not found.", 404)
         except ValueError as error:
@@ -2750,7 +3260,11 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         except KeyError:
             return error_response("not_found", "Session not found.", 404)
         payload = SourceUrlRequest.model_validate(request.get_json(silent=True) or {})
-        job = jobs.enqueue("source.download_url", {"session_id": session_id, "url": payload.url}, session_id=session_id)
+        job = jobs.enqueue(
+            "source.download_url",
+            {"session_id": session_id, "url": payload.url},
+            session_id=session_id,
+        )
         return jsonify(_job_payload(job)), 202
 
     @app.post("/api/v1/sessions/<session_id>/sources/reuse")
@@ -2764,8 +3278,14 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         try:
             artifacts.resolve(payload.artifact_id)
         except KeyError:
-            return error_response("not_found", "Reusable source artifact not found.", 404)
-        job = jobs.enqueue("source.reuse", {"session_id": session_id, "artifact_id": payload.artifact_id}, session_id=session_id)
+            return error_response(
+                "not_found", "Reusable source artifact not found.", 404
+            )
+        job = jobs.enqueue(
+            "source.reuse",
+            {"session_id": session_id, "artifact_id": payload.artifact_id},
+            session_id=session_id,
+        )
         return jsonify(_job_payload(job)), 202
 
     @app.get("/api/v1/artifacts")
@@ -2821,76 +3341,200 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         except ValueError as error:
             return error_response("invalid_artifact", str(error), 409)
         except OSError as error:
-            return error_response("artifact_delete_failed", f"The export file could not be removed: {error}", 409)
+            return error_response(
+                "artifact_delete_failed",
+                f"The export file could not be removed: {error}",
+                409,
+            )
         return jsonify(result)
 
     @app.post("/api/v1/artifacts/<artifact_id>/optimization-review")
     @require_auth
     def artifact_optimization_review(artifact_id: str):
-        payload = OptimizationReviewRequest.model_validate(request.get_json(silent=True) or {})
+        payload = OptimizationReviewRequest.model_validate(
+            request.get_json(silent=True) or {}
+        )
         try:
             source, source_path = artifacts.resolve(artifact_id)
         except KeyError:
-            return error_response("not_found", "Speech-optimized artifact not found.", 404)
+            return error_response(
+                "not_found", "Speech-optimized artifact not found.", 404
+            )
         if source.role != "tts_optimized" or source_path.suffix.lower() != ".json":
-            return error_response("validation_error", "Only JSON speech-optimization artifacts use this review endpoint.", 422)
+            return error_response(
+                "validation_error",
+                "Only JSON speech-optimization artifacts use this review endpoint.",
+                422,
+            )
         try:
             rows = json.loads(source_path.read_text(encoding="utf-8-sig"))
         except (OSError, json.JSONDecodeError) as error:
-            return error_response("artifact_invalid", f"The optimization artifact cannot be reviewed: {error}", 422)
+            return error_response(
+                "artifact_invalid",
+                f"The optimization artifact cannot be reviewed: {error}",
+                422,
+            )
         if not isinstance(rows, list):
-            return error_response("artifact_invalid", "The optimization artifact must contain a list.", 422)
+            return error_response(
+                "artifact_invalid",
+                "The optimization artifact must contain a list.",
+                422,
+            )
         edits = {item.index: item.text.strip() for item in payload.items}
         if set(edits) != set(range(len(rows))):
-            return error_response("validation_error", "Reviewed text must preserve every item index exactly once.", 422)
+            return error_response(
+                "validation_error",
+                "Reviewed text must preserve every item index exactly once.",
+                422,
+            )
         for index, row in enumerate(rows):
             if not isinstance(row, dict):
-                return error_response("artifact_invalid", "Every optimization item must be an object.", 422)
-            row["source_text"] = str(row.get("source_text") or row.get("original_sentence") or row.get("text") or "")
+                return error_response(
+                    "artifact_invalid",
+                    "Every optimization item must be an object.",
+                    422,
+                )
+            row["source_text"] = str(
+                row.get("source_text")
+                or row.get("original_sentence")
+                or row.get("text")
+                or ""
+            )
             row["text"] = edits[index]
             row["processed_sentence"] = edits[index]
             row["tts_optimized_sentence"] = edits[index]
             row["optimization_reviewed"] = True
         destination = source_path.parent / f"tts-optimized-reviewed-{new_id()}.json"
-        destination.write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
+        destination.write_text(
+            json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
         reviewed = artifacts.register(
             destination,
             kind="json",
             role="tts_optimized",
             session_id=source.session_id,
             parent_ids=[source.id],
-            metadata={**(source.metadata_json or {}), "reviewed": True, "reviewed_from": source.id},
+            metadata={
+                **(source.metadata_json or {}),
+                "reviewed": True,
+                "reviewed_from": source.id,
+            },
         )
-        return jsonify(_model_dict(reviewed, ("id", "session_id", "kind", "role", "relative_path", "mime_type", "size_bytes", "content_hash", "state", "metadata_json", "created_at"))), 201
+        return jsonify(
+            _model_dict(
+                reviewed,
+                (
+                    "id",
+                    "session_id",
+                    "kind",
+                    "role",
+                    "relative_path",
+                    "mime_type",
+                    "size_bytes",
+                    "content_hash",
+                    "state",
+                    "metadata_json",
+                    "created_at",
+                ),
+            )
+        ), 201
 
     @app.get("/api/v1/artifacts/<artifact_id>/context")
     @require_auth
     def artifact_context(artifact_id: str):
         """Return lightweight lineage metadata used by review and comparison UIs."""
-        fields = ("id", "session_id", "kind", "role", "relative_path", "mime_type", "size_bytes", "content_hash", "state", "metadata_json", "created_at")
+        fields = (
+            "id",
+            "session_id",
+            "kind",
+            "role",
+            "relative_path",
+            "mime_type",
+            "size_bytes",
+            "content_hash",
+            "state",
+            "metadata_json",
+            "created_at",
+        )
         with database.session() as db_session:
             artifact = db_session.get(Artifact, artifact_id)
             if artifact is None:
                 return error_response("not_found", "Artifact not found.", 404)
-            parent_ids = list(db_session.scalars(select(ArtifactEdge.parent_artifact_id).where(ArtifactEdge.child_artifact_id == artifact_id)).all())
-            parents = list(db_session.scalars(select(Artifact).where(Artifact.id.in_(parent_ids))).all()) if parent_ids else []
-            parents.sort(key=lambda item: (item.role != "extracted_text", item.created_at))
+            parent_ids = list(
+                db_session.scalars(
+                    select(ArtifactEdge.parent_artifact_id).where(
+                        ArtifactEdge.child_artifact_id == artifact_id
+                    )
+                ).all()
+            )
+            parents = (
+                list(
+                    db_session.scalars(
+                        select(Artifact).where(Artifact.id.in_(parent_ids))
+                    ).all()
+                )
+                if parent_ids
+                else []
+            )
+            parents.sort(
+                key=lambda item: (item.role != "extracted_text", item.created_at)
+            )
+            child_ids = list(
+                db_session.scalars(
+                    select(ArtifactEdge.child_artifact_id).where(
+                        ArtifactEdge.parent_artifact_id == artifact_id
+                    )
+                ).all()
+            )
+            children = (
+                list(
+                    db_session.scalars(
+                        select(Artifact).where(Artifact.id.in_(child_ids))
+                    ).all()
+                )
+                if child_ids
+                else []
+            )
+            children.sort(key=lambda item: (item.created_at, item.id))
             usage_artifact_ids = {artifact.id, *parent_ids}
-            events = list(db_session.scalars(select(UsageEvent).where(UsageEvent.artifact_id.in_(usage_artifact_ids))).all())
-            generation_run_id = str((artifact.metadata_json or {}).get("generation_run_id") or "")
-            output_assembly_id = str((artifact.metadata_json or {}).get("output_assembly_id") or "")
+            events = list(
+                db_session.scalars(
+                    select(UsageEvent).where(
+                        UsageEvent.artifact_id.in_(usage_artifact_ids)
+                    )
+                ).all()
+            )
+            generation_run_id = str(
+                (artifact.metadata_json or {}).get("generation_run_id") or ""
+            )
+            output_assembly_id = str(
+                (artifact.metadata_json or {}).get("output_assembly_id") or ""
+            )
             if output_assembly_id:
                 assembly = db_session.get(OutputAssembly, output_assembly_id)
-                generation_run_id = str(assembly.generation_run_id or "") if assembly is not None else generation_run_id
+                generation_run_id = (
+                    str(assembly.generation_run_id or "")
+                    if assembly is not None
+                    else generation_run_id
+                )
             if generation_run_id:
-                events.extend(db_session.scalars(select(UsageEvent).where(UsageEvent.generation_run_id == generation_run_id)).all())
+                events.extend(
+                    db_session.scalars(
+                        select(UsageEvent).where(
+                            UsageEvent.generation_run_id == generation_run_id
+                        )
+                    ).all()
+                )
             from .usage import usage_summary
 
-            return jsonify({
-                "artifact": _model_dict(artifact, fields),
-                "parents": [_model_dict(item, fields) for item in parents],
-                "usage": usage_summary(events),
-            })
+            return jsonify(
+                {
+                    "artifact": _model_dict(artifact, fields),
+                    "parents": [_model_dict(item, fields) for item in parents],
+                    "children": [_model_dict(item, fields) for item in children],
+                    "usage": usage_summary(events),
+                }
+            )
 
     @app.get("/api/v1/artifacts/<artifact_id>/content")
     @require_auth
@@ -2900,8 +3544,15 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         except KeyError:
             return error_response("not_found", "Artifact not found.", 404)
         if not path.is_file():
-            return error_response("artifact_missing", "The artifact file is missing.", 410)
-        return send_file(path, mimetype=artifact.mime_type, conditional=True, etag=artifact.content_hash)
+            return error_response(
+                "artifact_missing", "The artifact file is missing.", 410
+            )
+        return send_file(
+            path,
+            mimetype=artifact.mime_type,
+            conditional=True,
+            etag=artifact.content_hash,
+        )
 
     @app.get("/api/v1/artifacts/<artifact_id>/waveform")
     @require_auth
@@ -2927,10 +3578,18 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 peak_id = None
         if peak_id:
             _artifact, peak_path = artifacts.resolve(peak_id)
-            return send_file(peak_path, mimetype="application/json", conditional=True, etag=_artifact.content_hash)
+            return send_file(
+                peak_path,
+                mimetype="application/json",
+                conditional=True,
+                etag=_artifact.content_hash,
+            )
         job = jobs.enqueue(
             "audio.waveform",
-            {"source_artifact_id": artifact_id, "max_points": request.args.get("points", 1600, type=int)},
+            {
+                "source_artifact_id": artifact_id,
+                "max_points": request.args.get("points", 1600, type=int),
+            },
             session_id=source.session_id,
             resource_keys=[f"session:{source.session_id}"] if source.session_id else [],
         )
@@ -2946,7 +3605,9 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         except KeyError:
             return error_response("not_found", "Artifact not found.", 404)
         if path.suffix.lower() != ".pdf" or not path.is_file():
-            return error_response("invalid_pdf", "Artifact is not an available PDF.", 422)
+            return error_response(
+                "invalid_pdf", "Artifact is not an available PDF.", 422
+            )
         first_page_side = request.args.get("first_page_side", "right")
         try:
             return jsonify(inspect_pdf(path, first_page_side=first_page_side))
@@ -2976,8 +3637,16 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     @require_auth
     def provider_list():
         with database.session() as db_session:
-            providers = list(db_session.scalars(select(Provider).order_by(Provider.label)).all())
-            return jsonify({"items": [_provider_payload(item, database, paths) for item in providers]})
+            providers = list(
+                db_session.scalars(select(Provider).order_by(Provider.label)).all()
+            )
+            return jsonify(
+                {
+                    "items": [
+                        _provider_payload(item, database, paths) for item in providers
+                    ]
+                }
+            )
 
     @app.get("/api/v1/credential-backends")
     @require_auth
@@ -2997,24 +3666,49 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         payload = ProviderCreate.model_validate(request.get_json(silent=True) or {})
         try:
             validate_provider_options(payload.options)
-            if payload.provider_key.strip().lower() == "vertex_ai" and str(payload.api_key or "").strip():
+            if (
+                payload.provider_key.strip().lower() == "vertex_ai"
+                and str(payload.api_key or "").strip()
+            ):
                 validate_vertex_service_account_json(payload.api_key)
             if payload.credential_backend is not None and payload.secret_ref:
                 raise ValueError(
                     "Use the structured credential storage fields or a legacy secret_ref, not both."
                 )
-            if payload.secret_ref and credential_backend(payload.secret_ref) == "unavailable":
-                raise ValueError("The legacy secret_ref uses an unsupported credential scheme.")
+            if (
+                payload.secret_ref
+                and credential_backend(payload.secret_ref) == "unavailable"
+            ):
+                raise ValueError(
+                    "The legacy secret_ref uses an unsupported credential scheme."
+                )
         except ValueError as error:
             return error_response("validation_error", str(error), 422)
         try:
             with database.session() as db_session:
-                provider = Provider(kind=payload.kind, provider_key=payload.provider_key, label=payload.label, enabled=payload.enabled, base_url=payload.base_url, secret_ref=payload.secret_ref, options_json=payload.options)
+                provider = Provider(
+                    kind=payload.kind,
+                    provider_key=payload.provider_key,
+                    label=payload.label,
+                    enabled=payload.enabled,
+                    base_url=payload.base_url,
+                    secret_ref=payload.secret_ref,
+                    options_json=payload.options,
+                )
                 db_session.add(provider)
                 db_session.flush()
-                if payload.credential_backend is not None or str(payload.api_key or "").strip():
-                    key = llm_provider_credential_key(provider.provider_key, provider.id, provider.options_json)
-                    credential_kind = "credentials" if provider.provider_key.strip().lower() == "vertex_ai" else "API key"
+                if (
+                    payload.credential_backend is not None
+                    or str(payload.api_key or "").strip()
+                ):
+                    key = llm_provider_credential_key(
+                        provider.provider_key, provider.id, provider.options_json
+                    )
+                    credential_kind = (
+                        "credentials"
+                        if provider.provider_key.strip().lower() == "vertex_ai"
+                        else "API key"
+                    )
                     configured = configure_credential_reference(
                         db_session,
                         database,
@@ -3040,14 +3734,20 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         try:
             expected_revision = int(raw_etag)
         except ValueError:
-            return error_response("precondition_required", "If-Match must contain the current provider revision.", 428)
+            return error_response(
+                "precondition_required",
+                "If-Match must contain the current provider revision.",
+                428,
+            )
         payload = ProviderUpdate.model_validate(request.get_json(silent=True) or {})
         with database.session() as db_session:
             provider = db_session.get(Provider, provider_id)
             if provider is None:
                 return error_response("not_found", "Provider not found.", 404)
             if provider.revision != expected_revision:
-                return error_response("revision_conflict", "The provider changed in another client.", 409)
+                return error_response(
+                    "revision_conflict", "The provider changed in another client.", 409
+                )
             previous_secret_ref = str(provider.secret_ref or "")
             changes = payload.model_dump(exclude_unset=True)
             submitted_key = str(changes.pop("api_key", "") or "").strip()
@@ -3056,14 +3756,22 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             requested_locator = changes.pop("credential_reference", "")
             delete_previous = bool(changes.pop("delete_previous_credential", False))
             if submitted_key and clear_key:
-                return error_response("validation_error", "Choose either a replacement API key or remove the current key.", 422)
+                return error_response(
+                    "validation_error",
+                    "Choose either a replacement API key or remove the current key.",
+                    422,
+                )
             if requested_backend is not None and "secret_ref" in changes:
                 return error_response(
                     "validation_error",
                     "Use the structured credential storage fields or a legacy secret_ref, not both.",
                     422,
                 )
-            effective_provider_key = str(changes.get("provider_key") or provider.provider_key or "").strip().lower()
+            effective_provider_key = (
+                str(changes.get("provider_key") or provider.provider_key or "")
+                .strip()
+                .lower()
+            )
             if submitted_key and effective_provider_key == "vertex_ai":
                 try:
                     validate_vertex_service_account_json(submitted_key)
@@ -3075,8 +3783,16 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 except ValueError as error:
                     return error_response("validation_error", str(error), 422)
                 changes["options_json"] = changes.pop("options")
-            if "secret_ref" in changes and changes["secret_ref"] and credential_backend(changes["secret_ref"]) == "unavailable":
-                return error_response("validation_error", "The legacy secret_ref uses an unsupported credential scheme.", 422)
+            if (
+                "secret_ref" in changes
+                and changes["secret_ref"]
+                and credential_backend(changes["secret_ref"]) == "unavailable"
+            ):
+                return error_response(
+                    "validation_error",
+                    "The legacy secret_ref uses an unsupported credential scheme.",
+                    422,
+                )
             previous_retained = False
             configured_reference = None
             configured_reference_changed = False
@@ -3087,7 +3803,11 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                     provider.id,
                     effective_options,
                 )
-                credential_kind = "credentials" if effective_provider_key == "vertex_ai" else "API key"
+                credential_kind = (
+                    "credentials"
+                    if effective_provider_key == "vertex_ai"
+                    else "API key"
+                )
                 try:
                     configured = configure_credential_reference(
                         db_session,
@@ -3101,7 +3821,12 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                         secret_value=submitted_key,
                         delete_previous=delete_previous,
                     )
-                except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as error:
+                except (
+                    OSError,
+                    RuntimeError,
+                    ValueError,
+                    json.JSONDecodeError,
+                ) as error:
                     db_session.rollback()
                     return error_response("credential_unavailable", str(error), 422)
                 configured_reference = configured.reference
@@ -3136,22 +3861,41 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     @app.delete("/api/v1/providers/<provider_id>")
     @require_auth
     def provider_delete(provider_id: str):
-        replacement_id = str((request.get_json(silent=True) or {}).get("replacement_model_record_id") or "")
+        replacement_id = str(
+            (request.get_json(silent=True) or {}).get("replacement_model_record_id")
+            or ""
+        )
         with database.session() as db_session:
             provider = db_session.get(Provider, provider_id)
             if provider is None:
                 return error_response("not_found", "Provider not found.", 404)
-            active = db_session.scalar(select(ProviderModel).where(ProviderModel.provider_id == provider_id, ProviderModel.is_default.is_(True)))
+            active = db_session.scalar(
+                select(ProviderModel).where(
+                    ProviderModel.provider_id == provider_id,
+                    ProviderModel.is_default.is_(True),
+                )
+            )
             if active is not None:
-                replacement = db_session.get(ProviderModel, replacement_id) if replacement_id else None
+                replacement = (
+                    db_session.get(ProviderModel, replacement_id)
+                    if replacement_id
+                    else None
+                )
                 if replacement is None or replacement.provider_id == provider_id:
-                    return error_response("replacement_required", "Select a default model from another provider before removing this provider.", 409)
+                    return error_response(
+                        "replacement_required",
+                        "Select a default model from another provider before removing this provider.",
+                        409,
+                    )
                 replacement.is_active = True
                 replacement.is_default = True
             try:
                 delete_managed_reference(
                     db_session,
-                    str(provider.secret_ref or database_reference(provider_credential_key(provider.id))),
+                    str(
+                        provider.secret_ref
+                        or database_reference(provider_credential_key(provider.id))
+                    ),
                 )
             except RuntimeError as error:
                 return error_response("credential_unavailable", str(error), 422)
@@ -3172,10 +3916,41 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             if payload.is_default:
                 for existing in db_session.scalars(select(ProviderModel)):
                     existing.is_default = False
-            model = ProviderModel(provider_id=provider_id, model_id=payload.model_id, is_active=payload.is_active or payload.is_default, is_default=payload.is_default, default_temperature=payload.default_temperature, default_reasoning_effort=payload.default_reasoning_effort, input_cost_per_million=payload.input_cost_per_million, cached_input_cost_per_million=payload.cached_input_cost_per_million, output_cost_per_million=payload.output_cost_per_million, options_json=payload.options)
+            model = ProviderModel(
+                provider_id=provider_id,
+                model_id=payload.model_id,
+                is_active=payload.is_active or payload.is_default,
+                is_default=payload.is_default,
+                default_temperature=payload.default_temperature,
+                default_reasoning_effort=payload.default_reasoning_effort,
+                input_cost_per_million=payload.input_cost_per_million,
+                cached_input_cost_per_million=payload.cached_input_cost_per_million,
+                output_cost_per_million=payload.output_cost_per_million,
+                context_window_tokens=payload.context_window_tokens,
+                max_output_tokens=payload.max_output_tokens,
+                options_json=payload.options,
+            )
             db_session.add(model)
             db_session.flush()
-            result = _model_dict(model, ("id", "provider_id", "model_id", "is_active", "is_default", "default_temperature", "default_reasoning_effort", "input_cost_per_million", "cached_input_cost_per_million", "output_cost_per_million", "options_json", "revision"))
+            result = _model_dict(
+                model,
+                (
+                    "id",
+                    "provider_id",
+                    "model_id",
+                    "is_active",
+                    "is_default",
+                    "default_temperature",
+                    "default_reasoning_effort",
+                    "input_cost_per_million",
+                    "cached_input_cost_per_million",
+                    "output_cost_per_million",
+                    "context_window_tokens",
+                    "max_output_tokens",
+                    "options_json",
+                    "revision",
+                ),
+            )
         return jsonify(result), 201
 
     @app.post("/api/v1/providers/<provider_id>/test")
@@ -3185,21 +3960,59 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
 
         from .provider_settings import build_llm_settings
 
-        payload = ProviderTestRequest.model_validate(request.get_json(silent=True) or {})
+        payload = ProviderTestRequest.model_validate(
+            request.get_json(silent=True) or {}
+        )
         with database.session() as db_session:
             provider = db_session.get(Provider, provider_id)
             if provider is None:
                 return error_response("not_found", "Provider not found.", 404)
-            selected = payload.model_id or db_session.scalar(select(ProviderModel.model_id).where(ProviderModel.provider_id == provider_id, ProviderModel.is_active.is_(True), ProviderModel.is_default.is_(True)))
+            selected = payload.model_id or db_session.scalar(
+                select(ProviderModel.model_id).where(
+                    ProviderModel.provider_id == provider_id,
+                    ProviderModel.is_active.is_(True),
+                    ProviderModel.is_default.is_(True),
+                )
+            )
             if not selected:
-                selected = db_session.scalar(select(ProviderModel.model_id).where(ProviderModel.provider_id == provider_id, ProviderModel.is_active.is_(True)).order_by(ProviderModel.model_id))
+                selected = db_session.scalar(
+                    select(ProviderModel.model_id)
+                    .where(
+                        ProviderModel.provider_id == provider_id,
+                        ProviderModel.is_active.is_(True),
+                    )
+                    .order_by(ProviderModel.model_id)
+                )
             if not selected:
-                return error_response("validation_error", "Activate at least one model before testing this provider.", 422)
-        settings, model_name = build_llm_settings(database, paths, requested_model=selected)
-        result = chat_completion_with_metadata(messages=[{"role": "user", "content": "Reply with exactly OK."}], model_name=model_name, llm_settings=settings, max_tokens=8)
+                return error_response(
+                    "validation_error",
+                    "Activate at least one model before testing this provider.",
+                    422,
+                )
+        settings, model_name = build_llm_settings(
+            database, paths, requested_model=selected
+        )
+        result = chat_completion_with_metadata(
+            messages=[{"role": "user", "content": "Reply with exactly OK."}],
+            model_name=model_name,
+            llm_settings=settings,
+            max_tokens=8,
+        )
         if not result.content:
-            return error_response("provider_test_failed", "The provider returned no usable response. Check its URL, secret reference, and model ID.", 422)
-        return jsonify({"ok": True, "model": result.model or model_name, "response": result.content[:80], "cost": result.cost, "cost_source": result.cost_source})
+            return error_response(
+                "provider_test_failed",
+                "The provider returned no usable response. Check its URL, secret reference, and model ID.",
+                422,
+            )
+        return jsonify(
+            {
+                "ok": True,
+                "model": result.model or model_name,
+                "response": result.content[:80],
+                "cost": result.cost,
+                "cost_source": result.cost_source,
+            }
+        )
 
     @app.get("/api/v1/providers/<provider_id>/models")
     @require_auth
@@ -3207,8 +4020,39 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         with database.session() as db_session:
             if db_session.get(Provider, provider_id) is None:
                 return error_response("not_found", "Provider not found.", 404)
-            records = list(db_session.scalars(select(ProviderModel).where(ProviderModel.provider_id == provider_id).order_by(ProviderModel.model_id)).all())
-            return jsonify({"items": [_model_dict(item, ("id", "provider_id", "model_id", "is_active", "is_default", "default_temperature", "default_reasoning_effort", "input_cost_per_million", "cached_input_cost_per_million", "output_cost_per_million", "options_json", "revision")) for item in records]})
+            records = list(
+                db_session.scalars(
+                    select(ProviderModel)
+                    .where(ProviderModel.provider_id == provider_id)
+                    .order_by(ProviderModel.model_id)
+                ).all()
+            )
+            return jsonify(
+                {
+                    "items": [
+                        _model_dict(
+                            item,
+                            (
+                                "id",
+                                "provider_id",
+                                "model_id",
+                                "is_active",
+                                "is_default",
+                                "default_temperature",
+                                "default_reasoning_effort",
+                                "input_cost_per_million",
+                                "cached_input_cost_per_million",
+                                "output_cost_per_million",
+                                "context_window_tokens",
+                                "max_output_tokens",
+                                "options_json",
+                                "revision",
+                            ),
+                        )
+                        for item in records
+                    ]
+                }
+            )
 
     @app.patch("/api/v1/providers/<provider_id>/models/<model_record_id>")
     @require_auth
@@ -3217,17 +4061,29 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         try:
             expected_revision = int(raw_etag)
         except ValueError:
-            return error_response("precondition_required", "If-Match must contain the current model revision.", 428)
+            return error_response(
+                "precondition_required",
+                "If-Match must contain the current model revision.",
+                428,
+            )
         payload = ModelUpdate.model_validate(request.get_json(silent=True) or {})
         with database.session() as db_session:
             model = db_session.get(ProviderModel, model_record_id)
             if model is None or model.provider_id != provider_id:
                 return error_response("not_found", "Model not found.", 404)
             if model.revision != expected_revision:
-                return error_response("revision_conflict", "The model settings changed in another client.", 409)
+                return error_response(
+                    "revision_conflict",
+                    "The model settings changed in another client.",
+                    409,
+                )
             changes = payload.model_dump(exclude_unset=True)
             if changes.get("is_active") is False and model.is_default:
-                return error_response("validation_error", "Choose another application default before deactivating this model.", 422)
+                return error_response(
+                    "validation_error",
+                    "Choose another application default before deactivating this model.",
+                    422,
+                )
             if "options" in changes:
                 try:
                     validate_provider_options(changes["options"])
@@ -3243,7 +4099,25 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 setattr(model, key, value)
             model.revision += 1
             db_session.flush()
-            result = _model_dict(model, ("id", "provider_id", "model_id", "is_active", "is_default", "default_temperature", "default_reasoning_effort", "input_cost_per_million", "cached_input_cost_per_million", "output_cost_per_million", "options_json", "revision"))
+            result = _model_dict(
+                model,
+                (
+                    "id",
+                    "provider_id",
+                    "model_id",
+                    "is_active",
+                    "is_default",
+                    "default_temperature",
+                    "default_reasoning_effort",
+                    "input_cost_per_million",
+                    "cached_input_cost_per_million",
+                    "output_cost_per_million",
+                    "context_window_tokens",
+                    "max_output_tokens",
+                    "options_json",
+                    "revision",
+                ),
+            )
         response = jsonify(result)
         response.headers["ETag"] = f'"{result["revision"]}"'
         return response
@@ -3259,11 +4133,24 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             if model is None or model.provider_id != provider_id:
                 return error_response("not_found", "Model not found.", 404)
             if model.is_default:
-                replacement = db_session.get(ProviderModel, replacement_record_id) if replacement_record_id else None
+                replacement = (
+                    db_session.get(ProviderModel, replacement_record_id)
+                    if replacement_record_id
+                    else None
+                )
                 if replacement is None and replacement_model_id:
-                    replacement = db_session.scalar(select(ProviderModel).where(ProviderModel.provider_id == provider_id, ProviderModel.model_id == replacement_model_id))
+                    replacement = db_session.scalar(
+                        select(ProviderModel).where(
+                            ProviderModel.provider_id == provider_id,
+                            ProviderModel.model_id == replacement_model_id,
+                        )
+                    )
                 if replacement is None or replacement.id == model.id:
-                    return error_response("replacement_required", "Select a replacement before deleting the active default model.", 409)
+                    return error_response(
+                        "replacement_required",
+                        "Select a replacement before deleting the active default model.",
+                        409,
+                    )
                 replacement.is_active = True
                 replacement.is_default = True
             db_session.delete(model)
@@ -3278,9 +4165,22 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             provider = db_session.get(Provider, provider_id)
             if provider is None:
                 return error_response("not_found", "Provider not found.", 404)
-            existing = list(db_session.scalars(select(ProviderModel).where(ProviderModel.provider_id == provider_id)).all())
-            fallback_env = str((provider.options_json or {}).get("api_key_env") or DEFAULT_PROVIDER_ENVS.get(provider.provider_key.lower(), ""))
-            profile_id = str((provider.options_json or {}).get("profile_id") or "").strip().lower()
+            existing = list(
+                db_session.scalars(
+                    select(ProviderModel).where(
+                        ProviderModel.provider_id == provider_id
+                    )
+                ).all()
+            )
+            fallback_env = str(
+                (provider.options_json or {}).get("api_key_env")
+                or DEFAULT_PROVIDER_ENVS.get(provider.provider_key.lower(), "")
+            )
+            profile_id = (
+                str((provider.options_json or {}).get("profile_id") or "")
+                .strip()
+                .lower()
+            )
             share_credential = not bool(
                 (provider.options_json or {}).get("is_custom")
                 or profile_id in {"custom-openai", "lm-studio", "ollama"}
@@ -3293,13 +4193,15 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 fallback_environment_variable=fallback_env,
                 shared=share_credential,
             )
-            discovery = discover_provider_models({
-                "provider": provider.provider_key,
-                "api_base": provider.base_url,
-                "api_key_env": credential.environment_variable,
-                "api_key": credential.value,
-                "models": [item.model_id for item in existing],
-            })
+            discovery = discover_provider_models(
+                {
+                    "provider": provider.provider_key,
+                    "api_base": provider.base_url,
+                    "api_key_env": credential.environment_variable,
+                    "api_key": credential.value,
+                    "models": [item.model_id for item in existing],
+                }
+            )
             detected = list(discovery.models) if discovery.source != "preserved" else []
             known = {item.model_id for item in existing}
             added = []
@@ -3334,14 +4236,25 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     @app.put("/api/v1/credentials/<credential_id>")
     @require_auth
     def credential_update(credential_id: str):
-        profile = next((item for item in AUXILIARY_CREDENTIALS if item["id"] == credential_id), None)
+        profile = next(
+            (item for item in AUXILIARY_CREDENTIALS if item["id"] == credential_id),
+            None,
+        )
         if profile is None:
             return error_response("not_found", "Credential setting not found.", 404)
         payload = CredentialUpdate.model_validate(request.get_json(silent=True) or {})
         submitted_key = str(payload.api_key or "").strip()
         if submitted_key and payload.clear:
-            return error_response("validation_error", "Choose either a replacement API key or remove the current key.", 422)
-        if not submitted_key and not payload.clear and payload.credential_backend is None:
+            return error_response(
+                "validation_error",
+                "Choose either a replacement API key or remove the current key.",
+                422,
+            )
+        if (
+            not submitted_key
+            and not payload.clear
+            and payload.credential_backend is None
+        ):
             return error_response(
                 "validation_error",
                 "Enter an API key, choose an external credential backend, or remove the saved credential.",
@@ -3382,9 +4295,15 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                     )
         except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as error:
             return error_response("credential_unavailable", str(error), 422)
-        updated = next(item for item in auxiliary_profiles(database, paths) if item["id"] == credential_id)
+        updated = next(
+            item
+            for item in auxiliary_profiles(database, paths)
+            if item["id"] == credential_id
+        )
         if not payload.clear:
-            updated["previous_credential_retained"] = configured.previous_credential_retained
+            updated["previous_credential_retained"] = (
+                configured.previous_credential_retained
+            )
         return jsonify(updated)
 
     @app.get("/api/v1/pronunciations")
@@ -3406,7 +4325,9 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     @app.post("/api/v1/pronunciations")
     @require_auth
     def pronunciation_create():
-        payload = PronunciationCreate.model_validate(request.get_json(silent=True) or {})
+        payload = PronunciationCreate.model_validate(
+            request.get_json(silent=True) or {}
+        )
         try:
             created = pronunciations.create(payload.model_dump())
         except KeyError:
@@ -3429,7 +4350,9 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 "If-Match must contain the current pronunciation revision.",
                 428,
             )
-        payload = PronunciationUpdate.model_validate(request.get_json(silent=True) or {})
+        payload = PronunciationUpdate.model_validate(
+            request.get_json(silent=True) or {}
+        )
         try:
             updated = pronunciations.update(
                 entry_id,
@@ -3439,7 +4362,11 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         except KeyError:
             return error_response("not_found", "Pronunciation not found.", 404)
         except ValueError as error:
-            code = "revision_conflict" if "another client" in str(error) else "validation_error"
+            code = (
+                "revision_conflict"
+                if "another client" in str(error)
+                else "validation_error"
+            )
             status = 409 if code == "revision_conflict" else 422
             return error_response(code, str(error), status)
         response = jsonify(updated)
@@ -3470,8 +4397,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     @require_auth
     def audit_events():
         principal_subject = (
-            str(request.args.get("principal_subject") or "").strip()
-            or None
+            str(request.args.get("principal_subject") or "").strip() or None
         )
         return jsonify(
             {
@@ -3488,48 +4414,337 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         ensure_bundled_voice(database, paths, artifacts)
         with database.session() as db_session:
             records = list(db_session.scalars(select(Voice).order_by(Voice.name)).all())
-            return jsonify({"items": [_model_dict(item, ("id", "name", "language", "description", "rvc_model_ref", "metadata_json", "revision")) for item in records]})
+            return jsonify({"items": voice_payloads(db_session, paths, records)})
 
     @app.post("/api/v1/voices")
     @require_auth
     def voice_create():
         payload = VoiceCreate.model_validate(request.get_json(silent=True) or {})
+        name = payload.name.strip()
+        if not name:
+            return error_response("validation_error", "Voice name is required.", 422)
         with database.session() as db_session:
-            if db_session.scalar(select(Voice).where(Voice.name == payload.name)) is not None:
-                return error_response("already_exists", "A voice with that name already exists.", 409)
-            voice = Voice(name=payload.name, language=payload.language, description=payload.description)
+            if db_session.scalar(select(Voice).where(Voice.name == name)) is not None:
+                return error_response(
+                    "already_exists", "A voice with that name already exists.", 409
+                )
+            voice = Voice(
+                name=name,
+                language=str(payload.language or "").strip() or None,
+                description=str(payload.description or "").strip() or None,
+            )
             db_session.add(voice)
             db_session.flush()
-            result = _model_dict(voice, ("id", "name", "language", "description", "rvc_model_ref", "metadata_json", "revision"))
-        return jsonify(result), 201
+            result = voice_payload(db_session, paths, voice)
+        response = jsonify(result)
+        response.headers["ETag"] = f'"{result["revision"]}"'
+        return response, 201
+
+    @app.patch("/api/v1/voices/<voice_id>")
+    @require_auth
+    def voice_update(voice_id: str):
+        raw_etag = request.headers.get("If-Match", "").strip('W/" ')
+        try:
+            expected_revision = int(raw_etag)
+        except ValueError:
+            return error_response(
+                "precondition_required",
+                "If-Match must contain the current voice revision.",
+                428,
+            )
+        payload = VoiceUpdate.model_validate(request.get_json(silent=True) or {})
+        changes = payload.model_dump(exclude_unset=True)
+        with database.session() as db_session:
+            voice = db_session.get(Voice, voice_id)
+            if voice is None:
+                return error_response("not_found", "Voice not found.", 404)
+            if is_bundled_voice(voice):
+                return error_response(
+                    "bundled_voice_protected",
+                    "The bundled reference voice cannot be edited.",
+                    409,
+                )
+            if voice.revision != expected_revision:
+                return error_response(
+                    "revision_conflict",
+                    "The voice changed in another client.",
+                    409,
+                )
+            if "name" in changes:
+                name = str(changes["name"] or "").strip()
+                if not name:
+                    return error_response(
+                        "validation_error",
+                        "Voice name cannot be blank.",
+                        422,
+                    )
+                owner = db_session.scalar(
+                    select(Voice).where(Voice.name == name, Voice.id != voice.id)
+                )
+                if owner is not None:
+                    return error_response(
+                        "already_exists",
+                        "A voice with that name already exists.",
+                        409,
+                    )
+                voice.name = name
+            if "language" in changes:
+                voice.language = str(changes["language"] or "").strip() or None
+            if "description" in changes:
+                voice.description = str(changes["description"] or "").strip() or None
+            if changes:
+                voice.revision += 1
+                voice.updated_at = utcnow()
+            result = voice_payload(db_session, paths, voice)
+        response = jsonify(result)
+        response.headers["ETag"] = f'"{result["revision"]}"'
+        return response
+
+    @app.delete("/api/v1/voices/<voice_id>")
+    @require_auth
+    def voice_delete(voice_id: str):
+        raw_etag = request.headers.get("If-Match", "").strip('W/" ')
+        try:
+            expected_revision = int(raw_etag)
+        except ValueError:
+            return error_response(
+                "precondition_required",
+                "If-Match must contain the current voice revision.",
+                428,
+            )
+        removable: list[Path] = []
+        with database.session() as db_session:
+            voice = db_session.get(Voice, voice_id)
+            if voice is None:
+                return error_response("not_found", "Voice not found.", 404)
+            if is_bundled_voice(voice):
+                return error_response(
+                    "bundled_voice_protected",
+                    "The bundled reference voice cannot be deleted.",
+                    409,
+                )
+            if voice.revision != expected_revision:
+                return error_response(
+                    "revision_conflict",
+                    "The voice changed in another client.",
+                    409,
+                )
+            active_voice_job = next(
+                (
+                    job
+                    for job in db_session.scalars(
+                        select(Job).where(
+                            Job.status.in_(("queued", "running", "cancel_requested"))
+                        )
+                    ).all()
+                    if f"voice:{voice_id}" in (job.resource_keys_json or [])
+                ),
+                None,
+            )
+            if active_voice_job is not None:
+                return error_response(
+                    "voice_busy",
+                    "Wait for the provider voice operation to finish before "
+                    "deleting the local voice.",
+                    409,
+                )
+            samples = list(
+                db_session.scalars(
+                    select(VoiceSample).where(VoiceSample.voice_id == voice.id)
+                ).all()
+            )
+            for sample in samples:
+                path = retire_sample_artifact(db_session, paths, sample)
+                if path is not None:
+                    removable.append(path)
+                db_session.delete(sample)
+            db_session.delete(voice)
+        remove_managed_files(removable)
+        return "", 204
 
     @app.get("/api/v1/voices/<voice_id>/samples")
     @require_auth
     def voice_sample_list(voice_id: str):
         with database.session() as db_session:
-            if db_session.get(Voice, voice_id) is None:
+            voice = db_session.get(Voice, voice_id)
+            if voice is None:
                 return error_response("not_found", "Voice not found.", 404)
-            records = list(db_session.scalars(select(VoiceSample).where(VoiceSample.voice_id == voice_id).order_by(VoiceSample.created_at.desc())).all())
-            return jsonify({"items": [_model_dict(item, ("id", "voice_id", "artifact_id", "transcript", "transcript_language", "transcript_reviewed", "created_at")) for item in records]})
+            records = list(
+                db_session.scalars(
+                    select(VoiceSample)
+                    .where(VoiceSample.voice_id == voice_id)
+                    .order_by(VoiceSample.created_at.desc())
+                ).all()
+            )
+            return jsonify(
+                {
+                    "items": [
+                        voice_sample_payload(
+                            db_session,
+                            paths,
+                            item,
+                            voice_revision=voice.revision,
+                        )
+                        for item in records
+                    ],
+                    "voice_revision": voice.revision,
+                }
+            )
 
     @app.post("/api/v1/voices/<voice_id>/samples")
     @require_auth
     def voice_sample_upload(voice_id: str):
         incoming = request.files.get("file")
         if incoming is None or not incoming.filename:
-            return error_response("missing_file", "An audio recording is required.", 400)
+            return error_response(
+                "missing_file", "An audio recording is required.", 400
+            )
         with database.session() as db_session:
-            if db_session.get(Voice, voice_id) is None:
+            voice = db_session.get(Voice, voice_id)
+            if voice is None:
                 return error_response("not_found", "Voice not found.", 404)
+            if is_bundled_voice(voice):
+                return error_response(
+                    "bundled_voice_protected",
+                    "Samples cannot be added to the bundled reference voice.",
+                    409,
+                )
+            expected_revision = request.form.get("expected_revision", type=int)
+            if expected_revision is None:
+                raw_etag = request.headers.get("If-Match", "").strip('W/" ')
+                try:
+                    expected_revision = int(raw_etag)
+                except ValueError:
+                    return error_response(
+                        "precondition_required",
+                        "Provide the current voice revision before adding a sample.",
+                        428,
+                    )
+            if voice.revision != expected_revision:
+                return error_response(
+                    "revision_conflict",
+                    "The voice changed in another client.",
+                    409,
+                )
         suffix = Path(secure_filename(incoming.filename)).suffix or ".webm"
         temporary = paths.temporary / f"voice-{uuid.uuid4()}{suffix}"
         incoming.save(temporary)
-        source_artifact = artifacts.register(temporary, kind="audio", role="recording_upload")
+        source_artifact = artifacts.register(
+            temporary, kind="audio", role="recording_upload"
+        )
         job = jobs.enqueue(
             "voice.normalize_recording",
-            {"voice_id": voice_id, "source_artifact_id": source_artifact.id, "ffmpeg_executable": shutil.which("ffmpeg") or "ffmpeg"},
+            {
+                "voice_id": voice_id,
+                "source_artifact_id": source_artifact.id,
+                "ffmpeg_executable": shutil.which("ffmpeg") or "ffmpeg",
+                "expected_voice_revision": expected_revision,
+            },
         )
         return jsonify(_job_payload(job)), 202
+
+    @app.post("/api/v1/voices/<voice_id>/samples/<sample_id>/replace")
+    @require_auth
+    def voice_sample_replace(voice_id: str, sample_id: str):
+        raw_etag = request.headers.get("If-Match", "").strip('W/" ')
+        try:
+            expected_revision = int(raw_etag)
+        except ValueError:
+            return error_response(
+                "precondition_required",
+                "If-Match must contain the current voice revision.",
+                428,
+            )
+        incoming = request.files.get("file")
+        if incoming is None or not incoming.filename:
+            return error_response(
+                "missing_file", "An audio recording is required.", 400
+            )
+        with database.session() as db_session:
+            voice = db_session.get(Voice, voice_id)
+            sample = db_session.get(VoiceSample, sample_id)
+            if voice is None or sample is None or sample.voice_id != voice_id:
+                return error_response("not_found", "Voice sample not found.", 404)
+            if is_bundled_voice(voice):
+                return error_response(
+                    "bundled_voice_protected",
+                    "The bundled reference sample cannot be replaced.",
+                    409,
+                )
+            if voice.revision != expected_revision:
+                return error_response(
+                    "revision_conflict",
+                    "The voice changed in another client.",
+                    409,
+                )
+        suffix = Path(secure_filename(incoming.filename)).suffix or ".webm"
+        temporary = paths.temporary / f"voice-{uuid.uuid4()}{suffix}"
+        incoming.save(temporary)
+        source_artifact = artifacts.register(
+            temporary,
+            kind="audio",
+            role="recording_upload",
+        )
+        job = jobs.enqueue(
+            "voice.normalize_recording",
+            {
+                "voice_id": voice_id,
+                "replace_sample_id": sample_id,
+                "source_artifact_id": source_artifact.id,
+                "ffmpeg_executable": shutil.which("ffmpeg") or "ffmpeg",
+                "expected_voice_revision": expected_revision,
+            },
+        )
+        return jsonify(_job_payload(job)), 202
+
+    @app.delete("/api/v1/voices/<voice_id>/samples/<sample_id>")
+    @require_auth
+    def voice_sample_delete(voice_id: str, sample_id: str):
+        raw_etag = request.headers.get("If-Match", "").strip('W/" ')
+        try:
+            expected_revision = int(raw_etag)
+        except ValueError:
+            return error_response(
+                "precondition_required",
+                "If-Match must contain the current voice revision.",
+                428,
+            )
+        removable: list[Path] = []
+        with database.session() as db_session:
+            voice = db_session.get(Voice, voice_id)
+            sample = db_session.get(VoiceSample, sample_id)
+            if voice is None or sample is None or sample.voice_id != voice_id:
+                return error_response("not_found", "Voice sample not found.", 404)
+            if is_bundled_voice(voice):
+                return error_response(
+                    "bundled_voice_protected",
+                    "The bundled reference sample cannot be deleted.",
+                    409,
+                )
+            if voice.revision != expected_revision:
+                return error_response(
+                    "revision_conflict",
+                    "The voice changed in another client.",
+                    409,
+                )
+            path = retire_sample_artifact(db_session, paths, sample)
+            if path is not None:
+                removable.append(path)
+            db_session.delete(sample)
+            mark_provider_registrations_stale(
+                voice,
+                "A local reference sample was removed.",
+                sample_id=sample.id,
+            )
+            voice.revision += 1
+            voice.updated_at = utcnow()
+            next_revision = voice.revision
+        remove_managed_files(removable)
+        response = jsonify(
+            {"id": sample_id, "status": "deleted", "voice_revision": next_revision}
+        )
+        response.headers["ETag"] = f'"{next_revision}"'
+        return response
 
     @app.post("/api/v1/voices/<voice_id>/providers/<service_id>")
     @require_auth
@@ -3537,33 +4752,179 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         """Upload a managed reference to a supported cloning provider."""
         from pandrator.logic import tts_handler
 
+        raw_etag = request.headers.get("If-Match", "").strip('W/" ')
+        try:
+            expected_revision = int(raw_etag)
+        except ValueError:
+            return error_response(
+                "precondition_required",
+                "If-Match must contain the current voice revision.",
+                428,
+            )
         with database.session() as db_session:
             voice = db_session.get(Voice, voice_id)
             if voice is None:
                 return error_response("not_found", "Voice not found.", 404)
-            sample_count = db_session.scalar(
-                select(VoiceSample).where(VoiceSample.voice_id == voice_id).with_only_columns(func.count())
+            if voice.revision != expected_revision:
+                return error_response(
+                    "revision_conflict",
+                    "The voice changed in another client.",
+                    409,
+                )
+            voice_samples = list(
+                db_session.scalars(
+                    select(VoiceSample)
+                    .where(VoiceSample.voice_id == voice_id)
+                    .order_by(VoiceSample.created_at.desc())
+                ).all()
+            )
+            sample_count = sum(
+                sample_file_status(db_session, paths, item)[0] == "ready"
+                for item in voice_samples
+            )
+            preferred_sample = next(
+                (
+                    item
+                    for item in voice_samples
+                    if sample_file_status(db_session, paths, item)[0] == "ready"
+                ),
+                None,
             )
             connections = db_session.get(AppSetting, "services.tts")
             defaults = db_session.get(AppSetting, "defaults.tts")
-            connection_value = dict(connections.value_json or {}) if connections and isinstance(connections.value_json, dict) else {}
-            default_value = dict(defaults.value_json or {}) if defaults and isinstance(defaults.value_json, dict) else {}
+            connection_value = (
+                dict(connections.value_json or {})
+                if connections and isinstance(connections.value_json, dict)
+                else {}
+            )
+            default_value = (
+                dict(defaults.value_json or {})
+                if defaults and isinstance(defaults.value_json, dict)
+                else {}
+            )
         if not sample_count:
-            return error_response("missing_sample", "Add a voice sample before uploading this voice.", 422)
-        service = tts_handler.get_service_config({**default_value, **connection_value}, service_id)
+            return error_response(
+                "missing_sample",
+                "Add or replace a readable voice sample before uploading this voice.",
+                422,
+            )
+        service = tts_handler.get_service_config(
+            {**default_value, **connection_value}, service_id
+        )
         if service is None:
             return error_response("not_found", "TTS service not found.", 404)
         if not bool(service.get("supports_voice_cloning")):
-            return error_response("unsupported", "This TTS service does not support managed voice uploads.", 422)
+            return error_response(
+                "unsupported",
+                "This TTS service does not support managed voice uploads.",
+                422,
+            )
         resolved_service_id = str(service.get("id") or service_id)
+        if (
+            str(service.get("voice_reference_text") or "ignored") == "required"
+            and preferred_sample is not None
+            and not (
+                preferred_sample.transcript_reviewed
+                and str(preferred_sample.transcript or "").strip()
+            )
+        ):
+            return error_response(
+                "reviewed_transcript_required",
+                f"{service.get('name') or resolved_service_id} requires a reviewed "
+                "sample transcript before this voice can be used.",
+                422,
+            )
         job = jobs.enqueue(
             "voice.publish",
             {
                 "voice_id": voice_id,
                 "service_id": resolved_service_id,
                 "service": str(service.get("name") or resolved_service_id),
+                "expected_voice_revision": expected_revision,
             },
-            resource_keys=[f"service:tts:{resolved_service_id}"],
+            resource_keys=[
+                f"voice:{voice_id}",
+                f"service:tts:{resolved_service_id}",
+            ],
+        )
+        return jsonify(_job_payload(job)), 202
+
+    @app.delete("/api/v1/voices/<voice_id>/providers/<service_id>")
+    @require_auth
+    def voice_remove_from_provider(voice_id: str, service_id: str):
+        """Delete a Pandrator-owned voice copy from a configured provider."""
+        from pandrator.logic import tts_handler
+
+        raw_etag = request.headers.get("If-Match", "").strip('W/" ')
+        try:
+            expected_revision = int(raw_etag)
+        except ValueError:
+            return error_response(
+                "precondition_required",
+                "If-Match must contain the current voice revision.",
+                428,
+            )
+        with database.session() as db_session:
+            voice = db_session.get(Voice, voice_id)
+            if voice is None:
+                return error_response("not_found", "Voice not found.", 404)
+            if voice.revision != expected_revision:
+                return error_response(
+                    "revision_conflict",
+                    "The voice changed in another client.",
+                    409,
+                )
+            registration = dict(
+                ((voice.metadata_json or {}).get("providers") or {}).get(service_id)
+                or {}
+            )
+            connections = db_session.get(AppSetting, "services.tts")
+            defaults = db_session.get(AppSetting, "defaults.tts")
+            connection_value = (
+                dict(connections.value_json or {})
+                if connections and isinstance(connections.value_json, dict)
+                else {}
+            )
+            default_value = (
+                dict(defaults.value_json or {})
+                if defaults and isinstance(defaults.value_json, dict)
+                else {}
+            )
+        if not registration:
+            return error_response(
+                "not_found", "This voice is not registered with that service.", 404
+            )
+        if registration.get("managed_by") != "pandrator":
+            return error_response(
+                "legacy_registration",
+                "This older registration has no ownership proof, so Pandrator will "
+                "not delete it automatically.",
+                409,
+            )
+        service = tts_handler.get_service_config(
+            {**default_value, **connection_value}, service_id
+        )
+        if service is None:
+            return error_response("not_found", "TTS service not found.", 404)
+        if not bool(service.get("supports_voice_deletion")):
+            return error_response(
+                "unsupported",
+                "This TTS service does not advertise provider-side voice deletion.",
+                422,
+            )
+        resolved_service_id = str(service.get("id") or service_id)
+        job = jobs.enqueue(
+            "voice.unpublish",
+            {
+                "voice_id": voice_id,
+                "service_id": resolved_service_id,
+                "service": str(service.get("name") or resolved_service_id),
+                "expected_voice_revision": expected_revision,
+            },
+            resource_keys=[
+                f"voice:{voice_id}",
+                f"service:tts:{resolved_service_id}",
+            ],
         )
         return jsonify(_job_payload(job)), 202
 
@@ -3578,24 +4939,82 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             artifact_id = sample.artifact_id
         job = jobs.enqueue(
             "voice.transcribe",
-            {"voice_id": voice_id, "sample_id": sample_id, "sample_artifact_id": artifact_id, "settings": settings},
-            resource_keys=[f"stt:{str(settings.get('stt_compute_backend') or 'auto')}"] + ([f"gpu:{str(settings.get('stt_compute_backend'))}"] if str(settings.get("stt_compute_backend") or "").lower() in {"cuda", "vulkan", "metal"} else []),
+            {
+                "voice_id": voice_id,
+                "sample_id": sample_id,
+                "sample_artifact_id": artifact_id,
+                "settings": settings,
+            },
+            resource_keys=[f"stt:{str(settings.get('stt_compute_backend') or 'auto')}"]
+            + (
+                [f"gpu:{str(settings.get('stt_compute_backend'))}"]
+                if str(settings.get("stt_compute_backend") or "").lower()
+                in {"cuda", "vulkan", "metal"}
+                else []
+            ),
         )
         return jsonify(_job_payload(job)), 202
 
     @app.patch("/api/v1/voices/<voice_id>/samples/<sample_id>/transcript")
     @require_auth
     def voice_sample_transcript(voice_id: str, sample_id: str):
-        payload = VoiceTranscriptReview.model_validate(request.get_json(silent=True) or {})
+        payload = VoiceTranscriptReview.model_validate(
+            request.get_json(silent=True) or {}
+        )
         with database.session() as db_session:
+            voice = db_session.get(Voice, voice_id)
             sample = db_session.get(VoiceSample, sample_id)
-            if sample is None or sample.voice_id != voice_id:
+            if voice is None or sample is None or sample.voice_id != voice_id:
                 return error_response("not_found", "Voice sample not found.", 404)
+            if is_bundled_voice(voice):
+                return error_response(
+                    "bundled_voice_protected",
+                    "The bundled reference transcript cannot be edited.",
+                    409,
+                )
+            raw_etag = request.headers.get("If-Match", "").strip('W/" ')
+            expected_revision = payload.expected_voice_revision
+            if expected_revision is None and raw_etag:
+                try:
+                    expected_revision = int(raw_etag)
+                except ValueError:
+                    return error_response(
+                        "precondition_required",
+                        "If-Match must contain the current voice revision.",
+                        428,
+                    )
+            if expected_revision is None:
+                return error_response(
+                    "precondition_required",
+                    "Provide the current voice revision before editing a transcript.",
+                    428,
+                )
+            if voice.revision != expected_revision:
+                return error_response(
+                    "revision_conflict",
+                    "The voice changed in another client.",
+                    409,
+                )
             sample.transcript = payload.transcript
             sample.transcript_language = payload.language
             sample.transcript_reviewed = True
-            result = _model_dict(sample, ("id", "voice_id", "artifact_id", "transcript", "transcript_language", "transcript_reviewed", "created_at"))
-        return jsonify(result)
+            mark_provider_registrations_stale(
+                voice,
+                "The reviewed transcript changed.",
+                sample_id=sample.id,
+                reference_text_only=True,
+            )
+            voice.revision += 1
+            voice.updated_at = utcnow()
+            result = voice_sample_payload(
+                db_session,
+                paths,
+                sample,
+                voice_revision=voice.revision,
+            )
+        response = jsonify(result)
+        response.headers["ETag"] = f'"{result["voice_revision"]}"'
+        return response
 
     @app.get("/api/v1/rvc/models")
     @require_auth
@@ -3603,19 +5022,32 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         from pandrator.logic import rvc_handler
 
         available = rvc_handler.is_rvc_available()
-        return jsonify({"available": available, "items": rvc_handler.get_rvc_models(str(paths.models / "rvc")) if available else []})
+        return jsonify(
+            {
+                "available": available,
+                "items": rvc_handler.get_rvc_models(str(paths.models / "rvc"))
+                if available
+                else [],
+            }
+        )
 
     @app.post("/api/v1/rvc/models")
     @require_auth
     def rvc_model_upload():
-        payload = RvcModelUploadRequest.model_validate(request.get_json(silent=True) or {})
+        payload = RvcModelUploadRequest.model_validate(
+            request.get_json(silent=True) or {}
+        )
         for artifact_id in (payload.pth_artifact_id, payload.index_artifact_id):
             try:
                 _record, source = artifacts.resolve(artifact_id)
             except KeyError:
-                return error_response("not_found", "An RVC upload artifact was not found.", 404)
+                return error_response(
+                    "not_found", "An RVC upload artifact was not found.", 404
+                )
             if not source.is_file():
-                return error_response("artifact_missing", "An RVC upload artifact is missing.", 410)
+                return error_response(
+                    "artifact_missing", "An RVC upload artifact is missing.", 410
+                )
         job = jobs.enqueue("rvc.model.upload", payload.model_dump())
         return jsonify(_job_payload(job)), 202
 
@@ -3630,27 +5062,72 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             if payload.session_id:
                 sessions.get(payload.session_id)
         except KeyError:
-            return error_response("not_found", "The requested session or source artifact was not found.", 404)
-        job = jobs.enqueue("rvc.convert", payload.model_dump(), session_id=payload.session_id, resource_keys=["service:rvc", "gpu:default"])
+            return error_response(
+                "not_found",
+                "The requested session or source artifact was not found.",
+                404,
+            )
+        job = jobs.enqueue(
+            "rvc.convert",
+            payload.model_dump(),
+            session_id=payload.session_id,
+            resource_keys=["service:rvc", "gpu:default"],
+        )
         return jsonify(_job_payload(job)), 202
 
     @app.get("/api/v1/training")
     @require_auth
     def training_list():
         with database.session() as db_session:
-            records = list(db_session.scalars(select(TrainingRun).order_by(TrainingRun.created_at.desc()).limit(200)).all())
+            records = list(
+                db_session.scalars(
+                    select(TrainingRun)
+                    .order_by(TrainingRun.created_at.desc())
+                    .limit(200)
+                ).all()
+            )
             for record in records:
                 job = db_session.get(Job, record.job_id) if record.job_id else None
-                if record.status in {"queued", "running", "cancel_requested"} and job is not None and job.status in {"failed", "canceled", "interrupted"}:
+                if (
+                    record.status in {"queued", "running", "cancel_requested"}
+                    and job is not None
+                    and job.status in {"failed", "canceled", "interrupted"}
+                ):
                     record.status = job.status
                     record.error_message = job.error_message
                     record.updated_at = utcnow()
-            return jsonify({"items": [_model_dict(item, ("id", "kind", "voice_id", "job_id", "source_artifact_id", "source_text_artifact_id", "output_artifact_id", "model_name", "status", "settings_json", "error_message", "created_at", "updated_at")) for item in records]})
+            return jsonify(
+                {
+                    "items": [
+                        _model_dict(
+                            item,
+                            (
+                                "id",
+                                "kind",
+                                "voice_id",
+                                "job_id",
+                                "source_artifact_id",
+                                "source_text_artifact_id",
+                                "output_artifact_id",
+                                "model_name",
+                                "status",
+                                "settings_json",
+                                "error_message",
+                                "created_at",
+                                "updated_at",
+                            ),
+                        )
+                        for item in records
+                    ]
+                }
+            )
 
     @app.post("/api/v1/training")
     @require_auth
     def training_create():
-        payload = TrainingCreateRequest.model_validate(request.get_json(silent=True) or {})
+        payload = TrainingCreateRequest.model_validate(
+            request.get_json(silent=True) or {}
+        )
         if rejected := inline_credential_error(payload.settings):
             return rejected
         try:
@@ -3658,7 +5135,9 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             if payload.source_text_artifact_id:
                 artifacts.resolve(payload.source_text_artifact_id)
         except KeyError:
-            return error_response("not_found", "A training source artifact was not found.", 404)
+            return error_response(
+                "not_found", "A training source artifact was not found.", 404
+            )
         training_id = new_id()
         with database.session() as db_session:
             if payload.voice_id and db_session.get(Voice, payload.voice_id) is None:
@@ -3701,7 +5180,11 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             if previous is None:
                 return error_response("not_found", "Training run not found.", 404)
             if previous.status not in {"failed", "canceled", "interrupted"}:
-                return error_response("training_active", "Only failed, canceled, or interrupted training can be retried.", 409)
+                return error_response(
+                    "training_active",
+                    "Only failed, canceled, or interrupted training can be retried.",
+                    409,
+                )
             retry_id = new_id()
             db_session.add(
                 TrainingRun(
@@ -3753,7 +5236,9 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 jobs.request_cancel(job_id)
             except KeyError:
                 pass
-        return jsonify({"id": training_id, "job_id": job_id, "status": "cancel_requested"}), 202
+        return jsonify(
+            {"id": training_id, "job_id": job_id, "status": "cancel_requested"}
+        ), 202
 
     @app.get("/_app/<path:asset_path>")
     def frontend_asset(asset_path: str):
@@ -3768,7 +5253,11 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             return error_response("not_found", "API route not found.", 404)
         index = static_dir / "index.html"
         if not index.is_file():
-            return Response("Pandrator web assets have not been built. Run the frontend build first.", status=503, mimetype="text/plain")
+            return Response(
+                "Pandrator web assets have not been built. Run the frontend build first.",
+                status=503,
+                mimetype="text/plain",
+            )
         response = send_file(index)
         response.headers["Cache-Control"] = "no-store"
         return response

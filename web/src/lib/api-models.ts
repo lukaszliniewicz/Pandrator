@@ -274,8 +274,15 @@ export type SubtitleSegment = {
   speaker?: string | null;
 };
 
-type SubtitleStage = {
+export type SubtitleReviewColumn = {
+  artifact_id: string;
+  role: string;
+  stage: string;
+  document_id: string;
+  revision_id: string;
   revision: number;
+  reviewed: boolean;
+  language?: string | null;
   segments: SubtitleSegment[];
 };
 
@@ -283,14 +290,33 @@ export type SubtitleComparisonRow = {
   start_ms: number;
   end_ms: number;
   changed: boolean;
-  transcription?: SubtitleSegment[];
-  correction?: SubtitleSegment[];
-  translation?: SubtitleSegment[];
-  tts_optimization?: SubtitleSegment[];
+  cells: Record<string, SubtitleSegment[]>;
+};
+
+export type SubtitleReviewCatalogItem = {
+  artifact_id: string;
+  role: string;
+  stage: string;
+  version: number;
+  document_id: string;
+  revision_id: string;
+  revision: number;
+  reviewed: boolean;
+  language?: string | null;
+  segment_count: number;
+  state: string;
+  created_at: string;
+};
+
+export type SubtitleReviewCatalog = {
+  session_id: string;
+  items: SubtitleReviewCatalogItem[];
 };
 
 export type SubtitleReviewPayload = {
-  stages: Record<string, SubtitleStage>;
+  session_id: string;
+  primary_artifact_id: string;
+  columns: SubtitleReviewColumn[];
   rows: SubtitleComparisonRow[];
 };
 
@@ -324,6 +350,8 @@ export type WorkflowStage = {
   artifact_history_has_more?: boolean;
   artifact_history_next_before_version?: number | null;
   job_id?: string | null;
+  agent_run_id?: string | null;
+  resumable?: boolean;
   progress?: number | null;
   detail?: string | null;
   usage?: WorkflowUsage | null;
@@ -367,9 +395,15 @@ export type GlobalDefaultsPayload = {
   [key: string]: unknown;
 };
 
-type VoiceProviderRegistration = {
+export type VoiceProviderRegistration = {
   status?: string;
   voice_id?: string;
+  sample_id?: string;
+  managed_by?: string;
+  protocol?: string;
+  resource_kind?: string;
+  endpoint_fingerprint?: string;
+  stale_reason?: string;
   [key: string]: unknown;
 };
 
@@ -382,7 +416,12 @@ export type VoiceRecord = {
     providers?: Record<string, VoiceProviderRegistration>;
     [key: string]: unknown;
   };
-  revision?: number;
+  revision: number;
+  bundled?: boolean;
+  sample_count?: number;
+  available_sample_count?: number;
+  preferred_sample_id?: string | null;
+  preferred_sample_transcript_reviewed?: boolean;
 };
 
 type TtsLanguage = {
@@ -454,7 +493,10 @@ export type TtsService = {
   default_voices_by_language?: Record<string, Record<string, string>>;
   generation_prompt_models?: string[];
   supports_voice_cloning?: boolean;
+  supports_voice_deletion?: boolean;
   supports_prebuilt_voices?: boolean;
+  voice_reference_text?: 'required' | 'optional' | 'ignored';
+  model_voice_modes?: Record<string, 'prebuilt' | 'cloning' | 'hybrid'>;
   supports_batch_synthesis?: boolean;
   batch_synthesis?: {
     supported?: boolean;
@@ -691,6 +733,20 @@ export type UsageSummary = {
   commercial?: boolean;
   estimated?: boolean;
   has_unpriced_usage?: boolean;
+  input_tokens?: number;
+  cached_input_tokens?: number;
+  output_tokens?: number;
+  total_tokens?: number;
+  model_ids?: string[];
+  stages?: Array<{
+    stage: string;
+    cost_usd: number;
+    event_count: number;
+    priced_event_count: number;
+    input_tokens: number;
+    cached_input_tokens: number;
+    output_tokens: number;
+  }>;
   [key: string]: unknown;
 };
 

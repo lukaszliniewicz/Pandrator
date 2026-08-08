@@ -39,6 +39,9 @@ def create_app(
         capability_ttl_seconds=capability_ttl_seconds,
         public_origin=public_origin,
     )
+    # Repair interrupted job/domain transitions once at startup. Normal API
+    # reads stay lock-free; terminal transitions update only their owner.
+    services.jobs.reconcile()
     static_dir = Path(__file__).with_name("static")
     app = Flask(
         __name__,
@@ -52,8 +55,7 @@ def create_app(
         SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SAMESITE="Lax",
         SESSION_COOKIE_SECURE=secure_cookies,
-        TRUSTED_HOSTS=trusted_hosts
-        or ["localhost", "127.0.0.1", "[::1]"],
+        TRUSTED_HOSTS=trusted_hosts or ["localhost", "127.0.0.1", "[::1]"],
     )
     if proxy_hops:
         app.wsgi_app = ProxyFix(
@@ -82,9 +84,7 @@ def create_app(
     )
 
     maintenance_enabled = (
-        not testing
-        if background_maintenance is None
-        else background_maintenance
+        not testing if background_maintenance is None else background_maintenance
     )
     if maintenance_enabled:
         services.startup_maintenance.start()

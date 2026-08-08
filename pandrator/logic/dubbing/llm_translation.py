@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -31,6 +32,7 @@ DEEPL_MAX_REQUEST_BYTES = 120 * 1024
 DEFAULT_TRANSLATION_STRUCTURED_ATTEMPTS = 3
 DEFAULT_TRANSLATION_RECOVERY_SPLIT_DEPTH = 3
 ProgressCallback = Callable[[float, str | None], None]
+UnitCompletedCallback = Callable[[str, dict[str, Any]], None]
 DEEPL_LANGUAGE_MAP = {
     "english": "EN-US",
     "en": "EN-US",
@@ -100,8 +102,8 @@ Instructions:
 9. Use correct punctuation that enhances a natural flow of speech for optimal speech generation.
 10. Do not add ANY comments, confirmations, explanations, or questions. Output only the translation formatted like the original JSON array.
 11. Before outputting your answer, validate its formatting. Return EXACTLY {subtitle_count} subtitles with the same structure as the input.
-12. Speaker identity is managed separately by Pandrator. Do not add speaker names, speaker numbers, or bracketed speaker labels to translated text.
-13. Cue context fields such as `speaker`, timings, gaps, and overlap are non-spoken evidence. Speaker IDs may change at ASR chunk seams: never copy context into translated text or assume that a changed ID always means a new person.
+12. Do not add speaker names, speaker numbers, or bracketed speaker labels to translated text. Preserve each supplied `speaker` by default. If the discourse clearly reveals a diarization mistake, return a corrected `speaker` using only one of these known IDs: {known_speakers}. Omit `speaker` when no speaker was supplied.
+13. Cue context fields such as `speaker`, timings, gaps, and overlap are non-spoken evidence. Speaker IDs may change at ASR chunk seams: use the discourse to correct a likely mistake, but never copy context into translated text or invent an ID.
 14. Overlapping cues from different speakers can be legitimate simultaneous speech. Preserve meaningful speech. You may mark a very short, inconsequential interjection as `[REMOVE]` only when it obscures a longer utterance, and remove one copy of clearly duplicated near-identical ASR text that occupies the same time span.
 """
 
@@ -128,6 +130,7 @@ class TranslationResult:
     output_path: str = ""
     cost_sources: tuple[str, ...] = ()
     usage: dict[str, Any] = field(default_factory=dict)
+    speaker_by_subtitle: dict[int, str] = field(default_factory=dict)
 
 
 def _report_progress(
@@ -144,7 +147,9 @@ def get_deepl_language_code(language: str) -> str:
     normalized = str(language or "").strip()
     if not normalized:
         return ""
-    return DEEPL_LANGUAGE_MAP.get(normalized.lower(), normalized.upper() if len(normalized) <= 5 else normalized)
+    return DEEPL_LANGUAGE_MAP.get(
+        normalized.lower(), normalized.upper() if len(normalized) <= 5 else normalized
+    )
 
 
 def _build_deepl_translator(auth_key: str) -> Any:
@@ -154,7 +159,9 @@ def _build_deepl_translator(auth_key: str) -> Any:
     try:
         import deepl
     except ImportError as error:  # pragma: no cover - depends on runtime environment
-        raise RuntimeError("DeepL translation requires the 'deepl' package to be installed.") from error
+        raise RuntimeError(
+            "DeepL translation requires the 'deepl' package to be installed."
+        ) from error
 
     return deepl.Translator(auth_key)
 
@@ -194,8 +201,14 @@ def translate_blocks_deepl(
     cancel_event: Any | None = None,
     progress_callback: ProgressCallback | None = None,
 ) -> list[dict[str, Any]]:
-    del source_language  # DeepL can auto-detect here; keep the argument for provider parity.
-    translator = translator_factory(auth_key) if translator_factory is not None else _build_deepl_translator(auth_key)
+    del (
+        source_language
+    )  # DeepL can auto-detect here; keep the argument for provider parity.
+    translator = (
+        translator_factory(auth_key)
+        if translator_factory is not None
+        else _build_deepl_translator(auth_key)
+    )
     target_code = get_deepl_language_code(target_language)
     request_texts = _split_deepl_request_texts(translation_blocks)
 
@@ -219,7 +232,9 @@ def translate_blocks_deepl(
             f"Completed DeepL request {request_index} of {request_count}",
         )
 
-    translated_units = [part.strip() for part in "\n\n".join(translated_parts).split("\n\n")]
+    translated_units = [
+        part.strip() for part in "\n\n".join(translated_parts).split("\n\n")
+    ]
     expected_count = sum(len(block) for block in translation_blocks)
     if len(translated_units) != expected_count:
         raise ValueError(
@@ -229,7 +244,9 @@ def translate_blocks_deepl(
     translated_responses: list[dict[str, Any]] = []
     translated_index = 0
     for block in translation_blocks:
-        block_translations = translated_units[translated_index: translated_index + len(block)]
+        block_translations = translated_units[
+            translated_index : translated_index + len(block)
+        ]
         translated_index += len(block)
         translated_responses.append(
             {
@@ -256,9 +273,58 @@ def load_glossary(session_dir: str | os.PathLike[str]) -> dict[str, str]:
     return {str(key): str(value) for key, value in payload.items()}
 
 
+def normalize_glossary(value: object) -> dict[str, str]:
+    """Normalize saved, manual, or research glossary values into one mapping."""
+    if value is None:
+        return {}
+    if isinstance(value, Mapping):
+        return {
+            str(source).strip(): str(target).strip()
+            for source, target in value.items()
+            if str(source).strip() and str(target).strip()
+        }
+    if isinstance(value, (list, tuple)):
+        normalized: dict[str, str] = {}
+        for item in value:
+            if not isinstance(item, Mapping):
+                continue
+            source = str(item.get("source") or item.get("term") or "").strip()
+            target = str(
+                item.get("target") or item.get("translation") or item.get("value") or ""
+            ).strip()
+            if source and target:
+                normalized[source] = target
+        return normalized
+    text = str(value or "").strip()
+    if not text:
+        return {}
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return parse_glossary_entries(text)
+    return normalize_glossary(payload)
+
+
+def merge_glossaries(*values: object) -> dict[str, str]:
+    """Merge glossary sources deterministically; later sources win case-insensitively."""
+    merged: dict[str, str] = {}
+    key_by_casefold: dict[str, str] = {}
+    for value in values:
+        for source, target in normalize_glossary(value).items():
+            folded = source.casefold()
+            previous_key = key_by_casefold.get(folded)
+            if previous_key is not None and previous_key != source:
+                merged.pop(previous_key, None)
+            key_by_casefold[folded] = source
+            merged[source] = target
+    return merged
+
+
 def _write_json_atomic(path: Path, payload: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temp_path = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+    fd, temp_path = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
+    )
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             json.dump(payload, handle, ensure_ascii=False, indent=2)
@@ -274,7 +340,9 @@ def _write_json_atomic(path: Path, payload: object) -> None:
 
 def _write_text_atomic(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temp_path = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+    fd, temp_path = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
+    )
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(text)
@@ -287,7 +355,9 @@ def _write_text_atomic(path: Path, text: str) -> None:
                 pass
 
 
-def save_glossary(session_dir: str | os.PathLike[str], glossary: dict[str, str]) -> None:
+def save_glossary(
+    session_dir: str | os.PathLike[str], glossary: dict[str, str]
+) -> None:
     _write_json_atomic(Path(session_dir) / "translation_glossary.json", glossary)
 
 
@@ -310,6 +380,22 @@ def parse_translation_response(
     *,
     expected_numbers: list[int] | None = None,
 ) -> tuple[list[str], dict[str, str]]:
+    translations, glossary, _speakers = parse_translation_response_details(
+        response_text,
+        expected_count,
+        expected_numbers=expected_numbers,
+    )
+    return translations, glossary
+
+
+def parse_translation_response_details(
+    response_text: str,
+    expected_count: int | None = None,
+    *,
+    expected_numbers: list[int] | None = None,
+    known_speakers: set[str] | None = None,
+) -> tuple[list[str], dict[str, str], list[str | None]]:
+    """Parse translated text plus optional, validated speaker corrections."""
     if expected_numbers is None:
         if expected_count is None:
             raise ValueError("Expected subtitle identifiers are required.")
@@ -321,7 +407,9 @@ def parse_translation_response(
     if len(set(expected_numbers)) != len(expected_numbers):
         raise ValueError("Expected subtitle identifiers must be unique.")
 
-    translation_text, _separator, glossary_text = str(response_text or "").partition("[GLOSSARY]")
+    translation_text, _separator, glossary_text = str(response_text or "").partition(
+        "[GLOSSARY]"
+    )
     payload = extract_json_payload(translation_text)
     if not isinstance(payload, list):
         raise ValueError("Translation response must be a JSON array.")
@@ -332,9 +420,15 @@ def parse_translation_response(
         )
 
     translations_by_number: dict[int, str] = {}
+    speakers_by_number: dict[int, str | None] = {}
+    known_by_casefold = {
+        speaker.casefold(): speaker for speaker in (known_speakers or set())
+    }
     for item in payload:
         if not isinstance(item, dict) or "number" not in item or "text" not in item:
-            raise ValueError("Translation response items must contain 'number' and 'text'.")
+            raise ValueError(
+                "Translation response items must contain 'number' and 'text'."
+            )
         raw_number = item["number"]
         if isinstance(raw_number, bool):
             raise ValueError("Translation response identifiers must be integers.")
@@ -345,14 +439,36 @@ def parse_translation_response(
         else:
             raise ValueError("Translation response identifiers must be integers.")
         if number in translations_by_number:
-            raise ValueError(f"Translation response repeated subtitle identifier {number}.")
+            raise ValueError(
+                f"Translation response repeated subtitle identifier {number}."
+            )
         if number not in expected_numbers:
-            raise ValueError(f"Translation response returned unexpected subtitle identifier {number}.")
+            raise ValueError(
+                f"Translation response returned unexpected subtitle identifier {number}."
+            )
         if not isinstance(item["text"], str):
-            raise ValueError(f"Translation text for subtitle {number} must be a string.")
+            raise ValueError(
+                f"Translation text for subtitle {number} must be a string."
+            )
         translations_by_number[number] = split_speaker_label(item["text"].strip())[1]
+        raw_speaker = str(item.get("speaker") or "").strip()
+        if raw_speaker:
+            if (
+                known_speakers is not None
+                and raw_speaker.casefold() not in known_by_casefold
+            ):
+                raise ValueError(
+                    f"Translation response returned unknown speaker ID {raw_speaker!r}."
+                )
+            speakers_by_number[number] = known_by_casefold.get(
+                raw_speaker.casefold(), raw_speaker
+            )
+        else:
+            speakers_by_number[number] = None
 
-    missing = [number for number in expected_numbers if number not in translations_by_number]
+    missing = [
+        number for number in expected_numbers if number not in translations_by_number
+    ]
     if missing:
         raise ValueError(
             "Translation response omitted subtitle identifier(s): "
@@ -362,6 +478,7 @@ def parse_translation_response(
     return (
         [translations_by_number[number] for number in expected_numbers],
         parse_glossary_entries(glossary_text),
+        [speakers_by_number[number] for number in expected_numbers],
     )
 
 
@@ -377,6 +494,7 @@ def build_translation_prompt(
     no_remove_subtitles: bool = False,
     include_timing_context: bool = False,
     substantial_gap_ms: int = 2000,
+    known_speakers: set[str] | None = None,
 ) -> str:
     prompt_template = TRANSLATION_PROMPT_TEMPLATE
     if no_remove_subtitles:
@@ -389,9 +507,16 @@ def build_translation_prompt(
         source_lang=source_language,
         target_lang=target_language,
         subtitle_count=len(block),
+        known_speakers=(
+            ", ".join(sorted(known_speakers, key=str.casefold))
+            if known_speakers
+            else "none (do not add speaker assignments)"
+        ),
     )
     if translation_instructions:
-        prompt += f"\n\nAdditional context and instructions:\n{translation_instructions}"
+        prompt += (
+            f"\n\nAdditional context and instructions:\n{translation_instructions}"
+        )
 
     if include_timing_context:
         prompt += (
@@ -412,12 +537,16 @@ def build_translation_prompt(
         )
 
     if previous_response:
-        prompt += "\n" + CONTEXT_PROMPT_TEMPLATE.format(context_previous_response=previous_response)
+        prompt += "\n" + CONTEXT_PROMPT_TEMPLATE.format(
+            context_previous_response=previous_response
+        )
 
     if next_block:
         next_subtitles = next_block[:2]
         if next_subtitles:
-            next_text = "\n".join(f'- "{subtitle["text"]}"' for subtitle in next_subtitles)
+            next_text = "\n".join(
+                f'- "{subtitle["text"]}"' for subtitle in next_subtitles
+            )
             prompt += (
                 f"\n\nFor additional context, here are the next {len(next_subtitles)} subtitle(s) from the following block. "
                 "DO NOT TRANSLATE THEM. They are only provided to help with continuity.\n"
@@ -457,9 +586,121 @@ def _merge_completion_usage(totals: dict[str, Any], result: Any) -> None:
     raw = getattr(result, "usage", {})
     if hasattr(raw, "model_dump"):
         raw = raw.model_dump(mode="json")
-    normalized = llm_handler.normalize_usage_tokens(raw if isinstance(raw, dict) else {})
-    for key in ("prompt_tokens", "completion_tokens", "total_tokens", "cached_prompt_tokens", "uncached_prompt_tokens"):
+    normalized = llm_handler.normalize_usage_tokens(
+        raw if isinstance(raw, dict) else {}
+    )
+    for key in (
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
+        "cached_prompt_tokens",
+        "uncached_prompt_tokens",
+    ):
         totals[key] = int(totals.get(key) or 0) + int(normalized.get(key) or 0)
+
+
+def translation_unit_key(unit: list[dict[str, Any]]) -> str:
+    """Return a stable key for a translation block or recovery split leaf."""
+    indices = [int(subtitle["index"]) for subtitle in unit]
+    digest = hashlib.sha256(
+        json.dumps(indices, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()[:12]
+    return f"translation:{indices[0]}-{indices[-1]}:{digest}"
+
+
+@dataclass(slots=True)
+class _TranslationUnitResult:
+    translations: list[str]
+    speakers: list[str]
+    glossary: dict[str, str]
+    context: str
+    cost: float = 0.0
+    response_count: int = 0
+    cost_sources: list[str] = field(default_factory=list)
+    usage: dict[str, Any] = field(default_factory=dict)
+
+    def merged_with(self, other: _TranslationUnitResult) -> _TranslationUnitResult:
+        usage = dict(self.usage)
+        for key, value in other.usage.items():
+            usage[key] = int(usage.get(key) or 0) + int(value or 0)
+        return _TranslationUnitResult(
+            translations=[*self.translations, *other.translations],
+            speakers=[*self.speakers, *other.speakers],
+            glossary=merge_glossaries(self.glossary, other.glossary),
+            context=other.context or self.context,
+            cost=self.cost + other.cost,
+            response_count=self.response_count + other.response_count,
+            cost_sources=list(dict.fromkeys([*self.cost_sources, *other.cost_sources])),
+            usage=usage,
+        )
+
+
+def _restore_translation_unit(
+    unit: list[dict[str, Any]],
+    completed_units: Mapping[str, Mapping[str, Any]] | None,
+) -> _TranslationUnitResult | None:
+    if not completed_units:
+        return None
+    key = translation_unit_key(unit)
+    raw = completed_units.get(key)
+    if raw is None:
+        return None
+    expected_indices = [int(subtitle["index"]) for subtitle in unit]
+    if [int(value) for value in raw.get("original_indices", [])] != expected_indices:
+        raise ValueError(
+            f"Translation checkpoint {key} does not match its source unit."
+        )
+    translations = raw.get("translations")
+    speakers = raw.get("speakers")
+    if not isinstance(translations, list) or len(translations) != len(unit):
+        raise ValueError(f"Translation checkpoint {key} has invalid translations.")
+    if not isinstance(speakers, list) or len(speakers) != len(unit):
+        raise ValueError(f"Translation checkpoint {key} has invalid speakers.")
+    normalized_translations = [str(text or "").strip() for text in translations]
+    if any(not text for text in normalized_translations):
+        raise ValueError(f"Translation checkpoint {key} has an empty translation.")
+    try:
+        cost = float(raw.get("cost") or 0.0)
+        response_count = int(raw.get("response_count") or 0)
+    except (TypeError, ValueError) as error:
+        raise ValueError(
+            f"Translation checkpoint {key} has invalid metrics."
+        ) from error
+    raw_usage = raw.get("usage")
+    return _TranslationUnitResult(
+        translations=normalized_translations,
+        speakers=[str(speaker or "").strip() for speaker in speakers],
+        glossary=normalize_glossary(raw.get("glossary")),
+        context=str(raw.get("context") or ""),
+        cost=cost,
+        response_count=response_count,
+        cost_sources=[
+            str(source) for source in raw.get("cost_sources", []) if str(source or "")
+        ],
+        usage=dict(raw_usage) if isinstance(raw_usage, Mapping) else {},
+    )
+
+
+def _has_translation_descendant(
+    unit: list[dict[str, Any]],
+    completed_units: Mapping[str, Mapping[str, Any]] | None,
+) -> bool:
+    if not completed_units:
+        return False
+    expected = [int(subtitle["index"]) for subtitle in unit]
+    expected_set = set(expected)
+    for raw in completed_units.values():
+        try:
+            indices = [int(value) for value in raw.get("original_indices", [])]
+        except (AttributeError, TypeError, ValueError):
+            continue
+        if (
+            indices
+            and len(indices) < len(expected)
+            and set(indices).issubset(expected_set)
+        ):
+            return True
+    return False
 
 
 def translation_responses_to_srt(
@@ -476,7 +717,10 @@ def translation_responses_to_srt(
     for response in translated_responses:
         translations = response.get("translation", [])
         indices = response.get("original_indices", [])
-        for translated_text, original_index in zip(translations, indices):
+        response_speakers = response.get("speakers", [])
+        for position, (translated_text, original_index) in enumerate(
+            zip(translations, indices)
+        ):
             if remove_marked_subtitles and str(translated_text).strip() == "[REMOVE]":
                 continue
             original = segments_by_index.get(int(original_index))
@@ -489,7 +733,14 @@ def translation_responses_to_srt(
                     end_ms=original.end_ms,
                     text=str(translated_text).strip(),
                     speaker=str(
-                        (speaker_by_subtitle or {}).get(original.index)
+                        (
+                            response_speakers[position]
+                            if isinstance(response_speakers, list)
+                            and position < len(response_speakers)
+                            and response_speakers[position]
+                            else None
+                        )
+                        or (speaker_by_subtitle or {}).get(original.index)
                         or original.speaker
                         or ""
                     ).strip(),
@@ -509,6 +760,8 @@ def translate_srt_content(
     cancel_event: Any | None = None,
     speaker_by_subtitle: Mapping[int, str] | None = None,
     progress_callback: ProgressCallback | None = None,
+    completed_units: Mapping[str, Mapping[str, Any]] | None = None,
+    on_unit_completed: UnitCompletedCallback | None = None,
 ) -> TranslationResult:
     source_language = str(
         settings.get("original_language")
@@ -526,12 +779,19 @@ def translate_srt_content(
         configured_gap = settings.get("timing_context_gap_ms")
         substantial_gap_ms = max(
             0,
-            int(2000 if configured_gap is None or configured_gap == "" else configured_gap),
+            int(
+                2000
+                if configured_gap is None or configured_gap == ""
+                else configured_gap
+            ),
         )
     except (TypeError, ValueError):
         substantial_gap_ms = 2000
-    use_glossary = bool(settings.get("glossary_enabled", False))
-    active_glossary = dict(glossary or {}) if use_glossary else {}
+    manual_glossary = normalize_glossary(settings.get("glossary"))
+    use_glossary = bool(settings.get("glossary_enabled", False) or glossary)
+    active_glossary = (
+        merge_glossaries(glossary, manual_glossary) if use_glossary else {}
+    )
     try:
         workers = max(1, min(16, int(settings.get("llm_concurrent_calls") or 1)))
     except (TypeError, ValueError):
@@ -551,6 +811,7 @@ def translate_srt_content(
     total_subtitles = sum(len(block) for block in blocks)
     completed_subtitle_ids: set[int] = set()
     progress_lock = Lock()
+    checkpoint_lock = Lock()
     resolved = resolve_dubbing_llm_settings(settings, stage="translation")
     completion = completion_func or llm_handler.chat_completion_with_metadata
     translated_responses: list[dict[str, Any]] = []
@@ -558,6 +819,12 @@ def translate_srt_content(
     response_count = 0
     cost_sources: list[str] = []
     usage: dict[str, Any] = {}
+    known_speakers = {
+        str(subtitle.get("speaker") or "").strip()
+        for block in blocks
+        for subtitle in block
+        if str(subtitle.get("speaker") or "").strip()
+    }
     try:
         structured_attempts = max(
             1,
@@ -578,36 +845,67 @@ def translate_srt_content(
             min(
                 6,
                 int(
-                    settings.get("translation_recovery_split_depth")
-                    if settings.get("translation_recovery_split_depth") is not None
-                    else DEFAULT_TRANSLATION_RECOVERY_SPLIT_DEPTH
+                    str(
+                        settings.get("translation_recovery_split_depth")
+                        if settings.get("translation_recovery_split_depth") is not None
+                        else DEFAULT_TRANSLATION_RECOVERY_SPLIT_DEPTH
+                    )
                 ),
             ),
         )
     except (TypeError, ValueError):
         recovery_split_depth = DEFAULT_TRANSLATION_RECOVERY_SPLIT_DEPTH
 
-    BlockResult = tuple[
-        list[str],
-        dict[str, str],
-        str,
-        float,
-        int,
-        list[str],
-        dict[str, Any],
-    ]
-
     def translate_block(
         index: int,
         block: list[dict[str, Any]],
         previous_context: str,
         glossary_snapshot: dict[str, str],
-    ) -> BlockResult:
-        block_cost = 0.0
-        block_response_count = 0
-        block_cost_sources: list[str] = []
-        block_usage: dict[str, Any] = {}
+    ) -> _TranslationUnitResult:
         local_glossary = dict(glossary_snapshot)
+
+        def update_local_glossary(new_values: object) -> None:
+            nonlocal local_glossary
+            if use_glossary:
+                # Explicit manual entries are the user's decision and stay
+                # authoritative over research/model-proposed additions.
+                local_glossary = merge_glossaries(
+                    local_glossary,
+                    new_values,
+                    manual_glossary,
+                )
+
+        def context_for(
+            unit: list[dict[str, Any]],
+            translations: list[str],
+            speakers: list[str],
+        ) -> str:
+            return json.dumps(
+                [
+                    {
+                        "number": int(subtitle["index"]),
+                        "text": translated_text,
+                        "speaker": speaker or None,
+                    }
+                    for subtitle, translated_text, speaker in zip(
+                        unit, translations, speakers, strict=True
+                    )
+                ],
+                ensure_ascii=False,
+            )
+
+        def report_unit_complete(unit: list[dict[str, Any]], *, restored: bool) -> None:
+            expected_numbers = [int(subtitle["index"]) for subtitle in unit]
+            with progress_lock:
+                completed_subtitle_ids.update(expected_numbers)
+                _report_progress(
+                    progress_callback,
+                    len(completed_subtitle_ids) / total_subtitles,
+                    (
+                        f"{'Restored' if restored else 'Translated'} "
+                        f"{len(completed_subtitle_ids)} of {total_subtitles} subtitles"
+                    ),
+                )
 
         def translate_unit(
             unit: list[dict[str, Any]],
@@ -616,8 +914,66 @@ def translate_srt_content(
             next_context: list[dict[str, Any]] | None,
             label: str,
             split_depth: int = 0,
-        ) -> tuple[list[str], dict[str, str], str]:
-            nonlocal block_cost, block_response_count
+            carried_metrics: _TranslationUnitResult | None = None,
+        ) -> _TranslationUnitResult:
+            if cancel_event is not None and cancel_event.is_set():
+                raise RuntimeError("LLM translation was canceled.")
+            restored = _restore_translation_unit(unit, completed_units)
+            if restored is not None:
+                unknown_speakers = [
+                    speaker
+                    for speaker in restored.speakers
+                    if speaker
+                    and speaker.casefold()
+                    not in {known.casefold() for known in known_speakers}
+                ]
+                if unknown_speakers:
+                    raise ValueError(
+                        f"Translation checkpoint {translation_unit_key(unit)} contains "
+                        f"unknown speaker ID(s): {unknown_speakers}."
+                    )
+                update_local_glossary(restored.glossary)
+                if carried_metrics is not None:
+                    restored.cost += carried_metrics.cost
+                    restored.response_count += carried_metrics.response_count
+                    restored.cost_sources = list(
+                        dict.fromkeys(
+                            [*carried_metrics.cost_sources, *restored.cost_sources]
+                        )
+                    )
+                    for key, value in carried_metrics.usage.items():
+                        restored.usage[key] = int(restored.usage.get(key) or 0) + int(
+                            value or 0
+                        )
+                report_unit_complete(unit, restored=True)
+                return restored
+
+            if len(unit) > 1 and _has_translation_descendant(unit, completed_units):
+                midpoint = len(unit) // 2
+                left = unit[:midpoint]
+                right = unit[midpoint:]
+                left_result = translate_unit(
+                    left,
+                    previous_unit_context=previous_unit_context,
+                    next_context=right,
+                    label=f"{label}.1",
+                    split_depth=split_depth + 1,
+                    carried_metrics=carried_metrics,
+                )
+                right_result = translate_unit(
+                    right,
+                    previous_unit_context=left_result.context,
+                    next_context=next_context,
+                    label=f"{label}.2",
+                    split_depth=split_depth + 1,
+                )
+                combined = left_result.merged_with(right_result)
+                combined.context = context_for(
+                    unit, combined.translations, combined.speakers
+                )
+                return combined
+
+            metrics = carried_metrics or _TranslationUnitResult([], [], {}, "")
             prompt = build_translation_prompt(
                 unit,
                 source_language=source_language,
@@ -629,6 +985,7 @@ def translate_srt_content(
                 no_remove_subtitles=no_remove_subtitles,
                 include_timing_context=include_timing_context,
                 substantial_gap_ms=substantial_gap_ms,
+                known_speakers=known_speakers,
             )
             expected_numbers = [int(subtitle["index"]) for subtitle in unit]
             last_error: ValueError | None = None
@@ -636,7 +993,7 @@ def translate_srt_content(
             for attempt in range(1, structured_attempts + 1):
                 if cancel_event is not None and cancel_event.is_set():
                     raise RuntimeError("LLM translation was canceled.")
-                request_number = block_response_count + 1
+                request_number = metrics.response_count + 1
                 with progress_lock:
                     _report_progress(
                         progress_callback,
@@ -663,7 +1020,7 @@ def translate_srt_content(
                             ),
                         }
                     )
-                completion_kwargs = {
+                completion_kwargs: dict[str, Any] = {
                     "messages": messages,
                     "model_name": resolved.model_name,
                     "llm_settings": resolved.llm_settings,
@@ -672,18 +1029,21 @@ def translate_srt_content(
                     completion_kwargs["cancel_event"] = cancel_event
                 result = completion(**completion_kwargs)
                 content, cost, cost_source = _coerce_completion_content_and_cost(result)
-                _merge_completion_usage(block_usage, result)
-                block_cost += cost
-                block_response_count += 1
-                if cost_source and cost_source not in block_cost_sources:
-                    block_cost_sources.append(cost_source)
+                _merge_completion_usage(metrics.usage, result)
+                metrics.cost += cost
+                metrics.response_count += 1
+                if cost_source and cost_source not in metrics.cost_sources:
+                    metrics.cost_sources.append(cost_source)
 
                 try:
                     if not content:
                         raise ValueError("the model returned an empty response")
-                    translated_texts, new_glossary = parse_translation_response(
-                        content,
-                        expected_numbers=expected_numbers,
+                    translated_texts, new_glossary, returned_speakers = (
+                        parse_translation_response_details(
+                            content,
+                            expected_numbers=expected_numbers,
+                            known_speakers=known_speakers,
+                        )
                     )
                 except ValueError as error:
                     last_error = error
@@ -698,29 +1058,42 @@ def translate_srt_content(
                         continue
                     break
 
-                if use_glossary:
-                    local_glossary.update(new_glossary)
-                context_response = json.dumps(
-                    [
-                        {"number": number, "text": translated_text}
-                        for number, translated_text in zip(
-                            expected_numbers,
-                            translated_texts,
-                        )
-                    ],
-                    ensure_ascii=False,
-                )
-                with progress_lock:
-                    completed_subtitle_ids.update(expected_numbers)
-                    _report_progress(
-                        progress_callback,
-                        len(completed_subtitle_ids) / total_subtitles,
-                        (
-                            f"Translated {len(completed_subtitle_ids)} of "
-                            f"{total_subtitles} subtitles"
-                        ),
+                update_local_glossary(new_glossary)
+                speakers = [
+                    returned_speaker or str(subtitle.get("speaker") or "").strip()
+                    for subtitle, returned_speaker in zip(
+                        unit, returned_speakers, strict=True
                     )
-                return translated_texts, new_glossary, context_response
+                ]
+                context_response = context_for(unit, translated_texts, speakers)
+                unit_result = _TranslationUnitResult(
+                    translations=translated_texts,
+                    speakers=speakers,
+                    glossary=new_glossary,
+                    context=context_response,
+                    cost=metrics.cost,
+                    response_count=metrics.response_count,
+                    cost_sources=metrics.cost_sources,
+                    usage=metrics.usage,
+                )
+                if on_unit_completed is not None:
+                    payload = {
+                        "version": 1,
+                        "kind": "translation",
+                        "original_indices": expected_numbers,
+                        "translations": translated_texts,
+                        "speakers": speakers,
+                        "glossary": new_glossary,
+                        "context": context_response,
+                        "cost": unit_result.cost,
+                        "response_count": unit_result.response_count,
+                        "cost_sources": unit_result.cost_sources,
+                        "usage": unit_result.usage,
+                    }
+                    with checkpoint_lock:
+                        on_unit_completed(translation_unit_key(unit), payload)
+                report_unit_complete(unit, restored=False)
+                return unit_result
 
             assert last_error is not None
             if len(unit) > 1 and split_depth < recovery_split_depth:
@@ -733,33 +1106,26 @@ def translate_srt_content(
                     len(left),
                     len(right),
                 )
-                left_texts, left_glossary, left_context = translate_unit(
+                left_result = translate_unit(
                     left,
                     previous_unit_context=previous_unit_context,
                     next_context=right,
                     label=f"{label}.1",
                     split_depth=split_depth + 1,
+                    carried_metrics=metrics,
                 )
-                right_texts, right_glossary, _right_context = translate_unit(
+                right_result = translate_unit(
                     right,
-                    previous_unit_context=left_context,
+                    previous_unit_context=left_result.context,
                     next_context=next_context,
                     label=f"{label}.2",
                     split_depth=split_depth + 1,
                 )
-                combined_texts = [*left_texts, *right_texts]
-                combined_glossary = {**left_glossary, **right_glossary}
-                combined_context = json.dumps(
-                    [
-                        {"number": number, "text": translated_text}
-                        for number, translated_text in zip(
-                            expected_numbers,
-                            combined_texts,
-                        )
-                    ],
-                    ensure_ascii=False,
+                combined = left_result.merged_with(right_result)
+                combined.context = context_for(
+                    unit, combined.translations, combined.speakers
                 )
-                return combined_texts, combined_glossary, combined_context
+                return combined
 
             raise ValueError(
                 f"Failed to translate {label} after {structured_attempts} structured "
@@ -767,44 +1133,37 @@ def translate_srt_content(
             ) from last_error
 
         next_block = blocks[index + 1] if index < len(blocks) - 1 else None
-        translated_texts, new_glossary, context_response = translate_unit(
+        return translate_unit(
             block,
             previous_unit_context=previous_context,
             next_context=next_block,
             label=f"subtitle block {index + 1}",
         )
-        return (
-            translated_texts,
-            new_glossary,
-            context_response,
-            block_cost,
-            block_response_count,
-            block_cost_sources,
-            block_usage,
-        )
 
-    def append_block_result(index: int, result: BlockResult) -> str:
+    def append_block_result(index: int, result: _TranslationUnitResult) -> str:
         nonlocal total_cost, response_count
-        translated_texts, new_glossary, context, cost, count, sources, block_usage = result
         if use_glossary:
-            active_glossary.update(new_glossary)
-        total_cost += cost
-        response_count += count
-        for source in sources:
+            merged = merge_glossaries(active_glossary, result.glossary, manual_glossary)
+            active_glossary.clear()
+            active_glossary.update(merged)
+        total_cost += result.cost
+        response_count += result.response_count
+        for source in result.cost_sources:
             if source and source not in cost_sources:
                 cost_sources.append(source)
-        for key, value in block_usage.items():
+        for key, value in result.usage.items():
             usage[key] = int(usage.get(key) or 0) + int(value or 0)
         translated_responses.append(
             {
-                "translation": translated_texts,
+                "translation": result.translations,
+                "speakers": result.speakers,
                 "new_glossary": "\n".join(
-                    f"{key} = {value}" for key, value in new_glossary.items()
+                    f"{key} = {value}" for key, value in result.glossary.items()
                 ),
                 "original_indices": [subtitle["index"] for subtitle in blocks[index]],
             }
         )
-        return context
+        return result.context
 
     if workers == 1 or len(blocks) == 1:
         previous_response = ""
@@ -815,7 +1174,7 @@ def translate_srt_content(
             )
     else:
         base_glossary = dict(active_glossary)
-        ordered: dict[int, BlockResult] = {}
+        ordered: dict[int, _TranslationUnitResult] = {}
         executor = ThreadPoolExecutor(max_workers=min(workers, len(blocks)))
         futures = {
             executor.submit(translate_block, index, block, "", base_glossary): index
@@ -834,18 +1193,39 @@ def translate_srt_content(
         for index in range(len(blocks)):
             append_block_result(index, ordered[index])
 
+    translated_srt = translation_responses_to_srt(
+        translated_responses,
+        srt_content,
+        speaker_by_subtitle=speaker_by_subtitle,
+    )
+    translated_speakers: dict[int, str] = {}
+    output_index = 0
+    for response in translated_responses:
+        response_speakers = response.get("speakers", [])
+        for position, translated_text in enumerate(response.get("translation", [])):
+            if (
+                not str(translated_text or "").strip()
+                or str(translated_text).strip() == "[REMOVE]"
+            ):
+                continue
+            output_index += 1
+            speaker = (
+                str(response_speakers[position] or "").strip()
+                if isinstance(response_speakers, list)
+                and position < len(response_speakers)
+                else ""
+            )
+            if speaker:
+                translated_speakers[output_index] = speaker
     return TranslationResult(
-        srt_content=translation_responses_to_srt(
-            translated_responses,
-            srt_content,
-            speaker_by_subtitle=speaker_by_subtitle,
-        ),
+        srt_content=translated_srt,
         block_responses=translated_responses,
         glossary=active_glossary,
         cost=total_cost,
         response_count=response_count,
         cost_sources=tuple(cost_sources),
         usage=usage,
+        speaker_by_subtitle=translated_speakers,
     )
 
 
@@ -855,31 +1235,41 @@ def translate_srt_file_with_result(
     settings: dict[str, Any],
     translation_instructions: str = "",
     *,
+    glossary: object | None = None,
     completion_func: Callable[..., Any] | None = None,
     cancel_event: Any | None = None,
     speaker_by_subtitle: Mapping[int, str] | None = None,
     progress_callback: ProgressCallback | None = None,
+    completed_units: Mapping[str, Mapping[str, Any]] | None = None,
+    on_unit_completed: UnitCompletedCallback | None = None,
 ) -> TranslationResult:
     session_path = Path(session_dir)
     srt_path = Path(srt_file)
     with srt_path.open("r", encoding="utf-8-sig") as handle:
         srt_content = handle.read()
 
-    glossary = load_glossary(session_path) if settings.get("glossary_enabled") else {}
+    saved_glossary = (
+        load_glossary(session_path) if settings.get("glossary_enabled") else {}
+    )
+    glossary_seed = merge_glossaries(saved_glossary, glossary)
     result = translate_srt_content(
         srt_content,
         settings,
         translation_instructions=translation_instructions,
-        glossary=glossary,
+        glossary=glossary_seed,
         completion_func=completion_func,
         cancel_event=cancel_event,
         speaker_by_subtitle=speaker_by_subtitle,
         progress_callback=progress_callback,
+        completed_units=completed_units,
+        on_unit_completed=on_unit_completed,
     )
 
     target_language = str(settings.get("target_language") or "en")
     output_path = session_path / f"{srt_path.stem}_{target_language}.srt"
-    final_blocks_path = session_path / f"{srt_path.stem}_{target_language}_final_blocks.json"
+    final_blocks_path = (
+        session_path / f"{srt_path.stem}_{target_language}_final_blocks.json"
+    )
     _write_text_atomic(output_path, result.srt_content)
     _write_json_atomic(final_blocks_path, result.block_responses)
     if settings.get("glossary_enabled"):
@@ -894,6 +1284,7 @@ def translate_srt_file_with_result(
         output_path=str(output_path),
         cost_sources=result.cost_sources,
         usage=result.usage,
+        speaker_by_subtitle=result.speaker_by_subtitle,
     )
     logger.info(
         "Translated subtitles written to %s (%d LLM response(s), cost %.6f).",
@@ -910,18 +1301,24 @@ def translate_srt_file(
     settings: dict[str, Any],
     translation_instructions: str = "",
     *,
+    glossary: object | None = None,
     completion_func: Callable[..., Any] | None = None,
     speaker_by_subtitle: Mapping[int, str] | None = None,
     progress_callback: ProgressCallback | None = None,
+    completed_units: Mapping[str, Mapping[str, Any]] | None = None,
+    on_unit_completed: UnitCompletedCallback | None = None,
 ) -> str:
     return translate_srt_file_with_result(
         session_dir=session_dir,
         srt_file=srt_file,
         settings=settings,
         translation_instructions=translation_instructions,
+        glossary=glossary,
         completion_func=completion_func,
         speaker_by_subtitle=speaker_by_subtitle,
         progress_callback=progress_callback,
+        completed_units=completed_units,
+        on_unit_completed=on_unit_completed,
     ).output_path
 
 
@@ -960,6 +1357,7 @@ def translate_srt_content_deepl(
         cancel_event=cancel_event,
         progress_callback=progress_callback,
     )
+    source_segments = parse_srt(srt_content)
     return TranslationResult(
         srt_content=translation_responses_to_srt(
             translated_responses,
@@ -971,6 +1369,17 @@ def translate_srt_content_deepl(
         glossary={},
         cost=0.0,
         response_count=len(translated_responses),
+        speaker_by_subtitle={
+            output_index: speaker
+            for output_index, segment in enumerate(source_segments, start=1)
+            if (
+                speaker := str(
+                    (speaker_by_subtitle or {}).get(segment.index)
+                    or segment.speaker
+                    or ""
+                ).strip()
+            )
+        },
     )
 
 
@@ -990,7 +1399,12 @@ def translate_srt_file_deepl_with_result(
     with srt_path.open("r", encoding="utf-8-sig") as handle:
         srt_content = handle.read()
 
-    resolved_auth_key = str(auth_key or settings.get("deepl_api_key") or os.environ.get("DEEPL_API_KEY") or "").strip()
+    resolved_auth_key = str(
+        auth_key
+        or settings.get("deepl_api_key")
+        or os.environ.get("DEEPL_API_KEY")
+        or ""
+    ).strip()
     result = translate_srt_content_deepl(
         srt_content,
         settings,
@@ -1003,7 +1417,9 @@ def translate_srt_file_deepl_with_result(
 
     target_language = str(settings.get("target_language") or "en")
     output_path = session_path / f"{srt_path.stem}_{target_language}.srt"
-    final_blocks_path = session_path / f"{srt_path.stem}_{target_language}_final_blocks.json"
+    final_blocks_path = (
+        session_path / f"{srt_path.stem}_{target_language}_final_blocks.json"
+    )
     _write_text_atomic(output_path, result.srt_content)
     _write_json_atomic(final_blocks_path, result.block_responses)
 
@@ -1015,6 +1431,8 @@ def translate_srt_file_deepl_with_result(
         response_count=result.response_count,
         output_path=str(output_path),
         cost_sources=result.cost_sources,
+        usage=result.usage,
+        speaker_by_subtitle=result.speaker_by_subtitle,
     )
     logger.info(
         "Translated subtitles written to %s (%d DeepL response block(s)).",

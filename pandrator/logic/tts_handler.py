@@ -67,6 +67,7 @@ def _get_litellm_speech_client():
 
     return _litellm_speech
 
+
 # XTTS default URLs
 XTTS_API_BASE_URL = "http://127.0.0.1:8020"
 
@@ -168,6 +169,17 @@ VOICE_CLONING_SERVICE_IDS = {
     "chatterbox",
     "kobold_qwen",
 }
+# These first-party wrappers expose idempotent deletion for uploaded reference
+# voices. Keep this separate from cloning support so custom/external services do
+# not inherit destructive capabilities merely because they accept uploads.
+VOICE_DELETION_SERVICE_IDS = set(VOICE_CLONING_SERVICE_IDS)
+VOICE_REFERENCE_TEXT_MODES = {
+    "xtts": "ignored",
+    "voxcpm": "optional",
+    "fishs2": "required",
+    "chatterbox": "ignored",
+    "kobold_qwen": "ignored",
+}
 FISHS2_DEFAULT_TOP_P = 0.7
 FISHS2_DEFAULT_CHUNK_LENGTH = 200
 FISHS2_DEFAULT_LATENCY = "balanced"
@@ -243,7 +255,6 @@ KOKORO_TTS_VOICES = [
     "zm_yunxia",
     "zm_yunyang",
 ]
-
 
 
 def normalize_kokoro_language_code(language_value: str | None) -> str:
@@ -332,8 +343,7 @@ def infer_kokoro_voice_language_code(voice_id: str | None) -> str:
         return ""
 
     language_codes = [
-        _infer_kokoro_voice_component_language_code(part)
-        for part in parts
+        _infer_kokoro_voice_component_language_code(part) for part in parts
     ]
     language_codes = [code for code in language_codes if code]
     if not language_codes:
@@ -344,6 +354,7 @@ def infer_kokoro_voice_language_code(voice_id: str | None) -> str:
         return first_language
 
     return ""
+
 
 OPENAI_AUDIO_DEFAULT_MODEL = "gpt-4o-mini-tts"
 OPENAI_AUDIO_DEFAULT_VOICE = "alloy"
@@ -641,21 +652,65 @@ def _default_service_configs() -> list[dict[str, object]]:
     ]
     local_catalogues: dict[str, tuple[list[str], str, list[str], str, bool]] = {
         "xtts": ([XTTS_DEFAULT_MODEL], XTTS_DEFAULT_MODEL, [], "", False),
-        "voxcpm": (list(VOXCPM_TTS_MODELS), VOXCPM_DEFAULT_MODEL, [VOXCPM_DEFAULT_VOICE], VOXCPM_DEFAULT_VOICE, False),
+        "voxcpm": (
+            list(VOXCPM_TTS_MODELS),
+            VOXCPM_DEFAULT_MODEL,
+            [VOXCPM_DEFAULT_VOICE],
+            VOXCPM_DEFAULT_VOICE,
+            False,
+        ),
         # Fish's API advertises several compatibility aliases, but all of
         # them address the same S2 Pro model. Quantization is a service
         # configuration choice, not a per-request model.
-        "fishs2": ([FISHS2_DEFAULT_MODEL], FISHS2_DEFAULT_MODEL, [FISHS2_DEFAULT_VOICE], FISHS2_DEFAULT_VOICE, False),
-        "voxtral": (list(VOXTRAL_TTS_MODELS), VOXTRAL_DEFAULT_MODEL, [VOXTRAL_DEFAULT_VOICE], VOXTRAL_DEFAULT_VOICE, True),
-        "kokoro": (list(KOKORO_TTS_MODELS), KOKORO_DEFAULT_MODEL, list(KOKORO_TTS_VOICES), KOKORO_DEFAULT_VOICE, True),
-        "magpie": (list(MAGPIE_TTS_MODELS), MAGPIE_TTS_MODELS[0], magpie_voice_catalog(), magpie_voice_catalog()[0], True),
+        "fishs2": (
+            [FISHS2_DEFAULT_MODEL],
+            FISHS2_DEFAULT_MODEL,
+            [FISHS2_DEFAULT_VOICE],
+            FISHS2_DEFAULT_VOICE,
+            False,
+        ),
+        "voxtral": (
+            list(VOXTRAL_TTS_MODELS),
+            VOXTRAL_DEFAULT_MODEL,
+            [VOXTRAL_DEFAULT_VOICE],
+            VOXTRAL_DEFAULT_VOICE,
+            True,
+        ),
+        "kokoro": (
+            list(KOKORO_TTS_MODELS),
+            KOKORO_DEFAULT_MODEL,
+            list(KOKORO_TTS_VOICES),
+            KOKORO_DEFAULT_VOICE,
+            True,
+        ),
+        "magpie": (
+            list(MAGPIE_TTS_MODELS),
+            MAGPIE_TTS_MODELS[0],
+            magpie_voice_catalog(),
+            magpie_voice_catalog()[0],
+            True,
+        ),
         "silero": (list(SILERO_TTS_MODELS), SILERO_DEFAULT_MODEL, [], "", True),
-        "chatterbox": (list(CHATTERBOX_TTS_MODELS), CHATTERBOX_DEFAULT_MODEL, [], "", False),
-        "kobold_qwen": (list(KOBOLD_QWEN_TTS_MODELS), KOBOLD_QWEN_DEFAULT_MODEL, list(KOBOLD_QWEN_TTS_VOICES), KOBOLD_QWEN_DEFAULT_VOICE, True),
+        "chatterbox": (
+            list(CHATTERBOX_TTS_MODELS),
+            CHATTERBOX_DEFAULT_MODEL,
+            [],
+            "",
+            False,
+        ),
+        "kobold_qwen": (
+            list(KOBOLD_QWEN_TTS_MODELS),
+            KOBOLD_QWEN_DEFAULT_MODEL,
+            list(KOBOLD_QWEN_TTS_VOICES),
+            KOBOLD_QWEN_DEFAULT_VOICE,
+            True,
+        ),
     }
     configs: list[dict[str, object]] = []
     for service_id, api_base in local_services:
-        models, default_model, voices, default_voice, prebuilt = local_catalogues[service_id]
+        models, default_model, voices, default_voice, prebuilt = local_catalogues[
+            service_id
+        ]
         record = {
             "id": service_id,
             "name": FIRST_CLASS_SERVICE_NAMES[service_id],
@@ -666,9 +721,18 @@ def _default_service_configs() -> list[dict[str, object]]:
             "voices": voices,
             "default_voice": default_voice,
             "voice_catalogues": {default_model: voices} if default_model else {},
-            "default_voices": {default_model: default_voice} if default_model and default_voice else {},
+            "default_voices": {default_model: default_voice}
+            if default_model and default_voice
+            else {},
             PREBUILT_VOICE_PROVIDER_FIELD: prebuilt,
             "supports_voice_cloning": service_id in VOICE_CLONING_SERVICE_IDS,
+            "supports_voice_deletion": service_id in VOICE_DELETION_SERVICE_IDS,
+            "voice_reference_text": VOICE_REFERENCE_TEXT_MODES.get(
+                service_id, "ignored"
+            ),
+            "model_voice_modes": {
+                model: "prebuilt" if prebuilt else "cloning" for model in models
+            },
         }
         if service_id == "kobold_qwen":
             # Qwen exposes two different model capabilities through one API.
@@ -683,6 +747,10 @@ def _default_service_configs() -> list[dict[str, object]]:
             record["default_voices"] = {
                 KOBOLD_QWEN_DEFAULT_MODEL: KOBOLD_QWEN_DEFAULT_VOICE,
                 "Voice Cloning": KOBOLD_QWEN_SAMPLE_VOICE,
+            }
+            record["model_voice_modes"] = {
+                KOBOLD_QWEN_DEFAULT_MODEL: "prebuilt",
+                "Voice Cloning": "cloning",
             }
             record[GENERATION_PROMPT_MODELS_FIELD] = list(
                 KOBOLD_QWEN_GENERATION_PROMPT_MODELS
@@ -805,11 +873,20 @@ def _merge_service_config(
     for key in ("request_fields", "request_defaults"):
         if isinstance(raw_record.get(key), dict):
             record[key] = copy.deepcopy(raw_record[key])
-    for key in ("settings", "voice_catalogues", "voice_metadata", "default_voices", "default_voices_by_language", "pricing"):
+    for key in (
+        "settings",
+        "voice_catalogues",
+        "voice_metadata",
+        "default_voices",
+        "default_voices_by_language",
+        "pricing",
+    ):
         if isinstance(raw_record.get(key), dict):
             record[key] = copy.deepcopy(raw_record[key])
     if PREBUILT_VOICE_PROVIDER_FIELD in raw_record:
-        record[PREBUILT_VOICE_PROVIDER_FIELD] = bool(raw_record[PREBUILT_VOICE_PROVIDER_FIELD])
+        record[PREBUILT_VOICE_PROVIDER_FIELD] = bool(
+            raw_record[PREBUILT_VOICE_PROVIDER_FIELD]
+        )
 
     models = _parse_model_list(raw_record.get("models", []), provider_key)
     if models:
@@ -844,11 +921,12 @@ def _merge_service_config(
 
 def get_service_configs(tts_settings) -> list[dict[str, object]]:
     services = {
-        str(item["id"]): copy.deepcopy(item)
-        for item in _default_service_configs()
+        str(item["id"]): copy.deepcopy(item) for item in _default_service_configs()
     }
 
-    legacy_raw_json = str(_read_setting(tts_settings, "openai_audio_endpoints_json", "") or "")
+    legacy_raw_json = str(
+        _read_setting(tts_settings, "openai_audio_endpoints_json", "") or ""
+    )
     for legacy_record in _legacy_endpoints_to_provider_configs(legacy_raw_json):
         service_id = _normalize_service_id(
             legacy_record.get("id") or legacy_record.get("name")
@@ -889,7 +967,9 @@ def get_service_configs(tts_settings) -> list[dict[str, object]]:
     return first_class
 
 
-def get_service_config(tts_settings, service_name_or_id: str) -> dict[str, object] | None:
+def get_service_config(
+    tts_settings, service_name_or_id: str
+) -> dict[str, object] | None:
     service_id = _normalize_service_id(service_name_or_id)
     for service in get_service_configs(tts_settings):
         if str(service.get("id") or "") == service_id:
@@ -897,7 +977,9 @@ def get_service_config(tts_settings, service_name_or_id: str) -> dict[str, objec
     return None
 
 
-def estimate_tts_usage(text: str, duration_ms: int, tts_settings) -> dict[str, object] | None:
+def estimate_tts_usage(
+    text: str, duration_ms: int, tts_settings
+) -> dict[str, object] | None:
     """Estimate billable TTS usage for a configured commercial service.
 
     Speech endpoints return audio bytes without token or price metadata.  The
@@ -909,36 +991,54 @@ def estimate_tts_usage(text: str, duration_ms: int, tts_settings) -> dict[str, o
     if service is None:
         return None
     configured_pricing = _read_setting(tts_settings, "pricing", None)
-    pricing = configured_pricing if isinstance(configured_pricing, dict) else service.get("pricing")
+    pricing = (
+        configured_pricing
+        if isinstance(configured_pricing, dict)
+        else service.get("pricing")
+    )
     if not isinstance(pricing, dict):
         pricing = {}
     model = str(
-        _read_setting(tts_settings, "model", "")
-        or service.get("default_model")
-        or ""
+        _read_setting(tts_settings, "model", "") or service.get("default_model") or ""
     ).strip()
     model_pricing = pricing.get(model)
     if not isinstance(model_pricing, dict):
         model_pricing = {}
-    commercial = str(service.get("kind") or "").lower() == "commercial" or bool(model_pricing)
+    commercial = str(service.get("kind") or "").lower() == "commercial" or bool(
+        model_pricing
+    )
     if not commercial:
         return None
 
     characters = len(str(text or ""))
     input_tokens = max(0, round(characters / 4))
     audio_seconds = max(0.0, float(duration_ms or 0) / 1000.0)
-    audio_tokens_per_second = max(0.0, float(model_pricing.get("audio_tokens_per_second") or 0))
+    audio_tokens_per_second = max(
+        0.0, float(model_pricing.get("audio_tokens_per_second") or 0)
+    )
     output_audio_tokens = round(audio_seconds * audio_tokens_per_second)
     cost = 0.0
     priced = False
     if model_pricing.get("input_cost_per_million_characters") is not None:
-        cost += characters * float(model_pricing["input_cost_per_million_characters"]) / 1_000_000
+        cost += (
+            characters
+            * float(model_pricing["input_cost_per_million_characters"])
+            / 1_000_000
+        )
         priced = True
     if model_pricing.get("input_cost_per_million_tokens") is not None:
-        cost += input_tokens * float(model_pricing["input_cost_per_million_tokens"]) / 1_000_000
+        cost += (
+            input_tokens
+            * float(model_pricing["input_cost_per_million_tokens"])
+            / 1_000_000
+        )
         priced = True
     if model_pricing.get("output_cost_per_million_audio_tokens") is not None:
-        cost += output_audio_tokens * float(model_pricing["output_cost_per_million_audio_tokens"]) / 1_000_000
+        cost += (
+            output_audio_tokens
+            * float(model_pricing["output_cost_per_million_audio_tokens"])
+            / 1_000_000
+        )
         priced = True
     return {
         "provider": str(service.get("provider") or service.get("id") or service_name),
@@ -946,7 +1046,9 @@ def estimate_tts_usage(text: str, duration_ms: int, tts_settings) -> dict[str, o
         "commercial": True,
         "estimated": True,
         "cost_usd": cost if priced else None,
-        "cost_source": "configured_tts_pricing" if configured_pricing else "public_list_price",
+        "cost_source": "configured_tts_pricing"
+        if configured_pricing
+        else "public_list_price",
         "input_characters": characters,
         "input_tokens": input_tokens,
         "output_audio_tokens": output_audio_tokens,
@@ -969,7 +1071,9 @@ def resolve_service_base_url(tts_settings, service_name_or_id: str) -> str:
     if (
         requested_service
         and requested_service == active_service
-        and _coerce_bool(_read_setting(tts_settings, "use_external_server", False), False)
+        and _coerce_bool(
+            _read_setting(tts_settings, "use_external_server", False), False
+        )
     ):
         external_url = _normalize_base_url(
             _read_setting(tts_settings, "external_server_url", ""),
@@ -991,7 +1095,11 @@ def save_service_config(
 ) -> tuple[bool, list[dict[str, object]], str]:
     service_id = _normalize_service_id(service_name_or_id)
     if service_id not in FIRST_CLASS_SERVICE_IDS:
-        return False, get_service_configs(tts_settings), "Select a first-class TTS service."
+        return (
+            False,
+            get_service_configs(tts_settings),
+            "Select a first-class TTS service.",
+        )
 
     normalized_api_base = _normalize_base_url(api_base, "")
     if not normalized_api_base:
@@ -1103,9 +1211,14 @@ def get_provider_configs(tts_settings) -> list[dict[str, object]]:
             if not isinstance(raw_provider, dict):
                 continue
 
-            raw_id = str(raw_provider.get("id") or raw_provider.get("name") or "").strip()
+            raw_id = str(
+                raw_provider.get("id") or raw_provider.get("name") or ""
+            ).strip()
             provider_id = _normalize_provider_id(raw_id)
-            if not provider_id or _normalize_service_id(provider_id) in FIRST_CLASS_SERVICE_IDS:
+            if (
+                not provider_id
+                or _normalize_service_id(provider_id) in FIRST_CLASS_SERVICE_IDS
+            ):
                 continue
 
             api_base = _normalize_base_url(
@@ -1122,7 +1235,8 @@ def get_provider_configs(tts_settings) -> list[dict[str, object]]:
                 continue
             record = {
                 "id": provider_id,
-                "name": str(raw_provider.get("name") or provider_id).strip() or provider_id,
+                "name": str(raw_provider.get("name") or provider_id).strip()
+                or provider_id,
                 "provider": provider_key,
                 "api_base": api_base,
                 "api_key_env": str(raw_provider.get("api_key_env") or "").strip(),
@@ -1143,11 +1257,7 @@ def get_provider_configs(tts_settings) -> list[dict[str, object]]:
             if default_model and default_model not in models:
                 models.insert(0, default_model)
 
-            if (
-                not models
-                and adapter == OPENAI_COMPAT_ADAPTER
-                and not profile_id
-            ):
+            if not models and adapter == OPENAI_COMPAT_ADAPTER and not profile_id:
                 builtin_models = _provider_model_catalog(provider_key)
                 models = list(builtin_models)
 
@@ -1170,11 +1280,7 @@ def get_provider_configs(tts_settings) -> list[dict[str, object]]:
             if default_voice and default_voice not in voices:
                 voices.insert(0, default_voice)
 
-            if (
-                not voices
-                and adapter == OPENAI_COMPAT_ADAPTER
-                and not profile_id
-            ):
+            if not voices and adapter == OPENAI_COMPAT_ADAPTER and not profile_id:
                 voices = _provider_voice_catalog(provider_key, default_model)
 
             if not default_voice:
@@ -1199,13 +1305,21 @@ def get_provider_configs(tts_settings) -> list[dict[str, object]]:
                 raw_supports_prebuilt,
                 bool(record["voices"]),
             )
-            for key in ("settings", "voice_catalogues", "default_voices", "default_voices_by_language", "pricing"):
+            for key in (
+                "settings",
+                "voice_catalogues",
+                "default_voices",
+                "default_voices_by_language",
+                "pricing",
+            ):
                 if isinstance(raw_provider.get(key), dict):
                     record[key] = copy.deepcopy(raw_provider[key])
 
             custom_configs[provider_id] = record
 
-    legacy_raw_json = str(_read_setting(tts_settings, "openai_audio_endpoints_json", "") or "")
+    legacy_raw_json = str(
+        _read_setting(tts_settings, "openai_audio_endpoints_json", "") or ""
+    )
     for legacy_provider in _legacy_endpoints_to_provider_configs(legacy_raw_json):
         provider_id = str(legacy_provider.get("id") or "")
         if not provider_id:
@@ -1236,11 +1350,21 @@ def save_provider(
 ) -> tuple[bool, list[dict[str, object]], str, str]:
     display_name = str(provider_name or "").strip()
     if not display_name:
-        return False, get_provider_configs(tts_settings), "", "Provider name is required."
+        return (
+            False,
+            get_provider_configs(tts_settings),
+            "",
+            "Provider name is required.",
+        )
 
     normalized_provider_id = _normalize_provider_id(provider_id or display_name)
     if not normalized_provider_id:
-        return False, get_provider_configs(tts_settings), "", "Provider name must include letters or numbers."
+        return (
+            False,
+            get_provider_configs(tts_settings),
+            "",
+            "Provider name must include letters or numbers.",
+        )
     if (
         _normalize_service_id(normalized_provider_id) in FIRST_CLASS_SERVICE_IDS
         or _normalize_service_id(display_name) in FIRST_CLASS_SERVICE_IDS
@@ -1254,11 +1378,21 @@ def save_provider(
 
     normalized_provider_type = _normalize_audio_provider(provider_type)
     if not normalized_provider_type:
-        return False, get_provider_configs(tts_settings), "", "Provider type must be OpenAI or Gemini compatible."
+        return (
+            False,
+            get_provider_configs(tts_settings),
+            "",
+            "Provider type must be OpenAI or Gemini compatible.",
+        )
 
     normalized_api_base = _normalize_base_url(api_base, "")
     if not normalized_api_base:
-        return False, get_provider_configs(tts_settings), "", "API base URL is required."
+        return (
+            False,
+            get_provider_configs(tts_settings),
+            "",
+            "API base URL is required.",
+        )
 
     provider_configs = get_provider_configs(tts_settings)
     existing = next(
@@ -1277,14 +1411,29 @@ def save_provider(
     adapter = str(normalized_adapter_config["adapter"])
     if adapter == GENERIC_JSON_ADAPTER:
         if not str(normalized_adapter_config.get("speech_path") or "").strip():
-            return False, provider_configs, "", "A discovered speech path is required for generic JSON endpoints."
+            return (
+                False,
+                provider_configs,
+                "",
+                "A discovered speech path is required for generic JSON endpoints.",
+            )
         request_fields = normalized_adapter_config.get("request_fields", {})
-        if not isinstance(request_fields, dict) or not str(request_fields.get("text") or "").strip():
-            return False, provider_configs, "", "A text request field is required for generic JSON endpoints."
+        if (
+            not isinstance(request_fields, dict)
+            or not str(request_fields.get("text") or "").strip()
+        ):
+            return (
+                False,
+                provider_configs,
+                "",
+                "A text request field is required for generic JSON endpoints.",
+            )
 
     parsed_models = _parse_model_list(models or [], normalized_provider_type)
     if not parsed_models and existing is not None:
-        parsed_models = _parse_model_list(existing.get("models", []), normalized_provider_type)
+        parsed_models = _parse_model_list(
+            existing.get("models", []), normalized_provider_type
+        )
     profile_id = str(normalized_adapter_config.get("profile_id") or "")
     if not parsed_models and adapter == OPENAI_COMPAT_ADAPTER and not profile_id:
         parsed_models = list(_provider_model_catalog(normalized_provider_type))
@@ -1301,9 +1450,13 @@ def save_provider(
 
     parsed_voices = _parse_voice_list(voices or [], normalized_provider_type)
     if not parsed_voices and existing is not None:
-        parsed_voices = _parse_voice_list(existing.get("voices", []), normalized_provider_type)
+        parsed_voices = _parse_voice_list(
+            existing.get("voices", []), normalized_provider_type
+        )
     if not parsed_voices and adapter == OPENAI_COMPAT_ADAPTER and not profile_id:
-        parsed_voices = list(_provider_voice_catalog(normalized_provider_type, default_model))
+        parsed_voices = list(
+            _provider_voice_catalog(normalized_provider_type, default_model)
+        )
 
     default_voice = (
         parsed_voices[0]
@@ -1367,20 +1520,30 @@ def remove_custom_provider(
 ) -> tuple[bool, list[dict[str, object]], str]:
     provider_id = _normalize_provider_id(provider_name_or_id)
     if not provider_id:
-        return False, get_provider_configs(tts_settings), "Select a custom provider first."
+        return (
+            False,
+            get_provider_configs(tts_settings),
+            "Select a custom provider first.",
+        )
 
     if _normalize_service_id(provider_id) in FIRST_CLASS_SERVICE_IDS:
-        return False, get_provider_configs(tts_settings), "First-class TTS services cannot be removed."
+        return (
+            False,
+            get_provider_configs(tts_settings),
+            "First-class TTS services cannot be removed.",
+        )
 
     provider_configs = get_provider_configs(tts_settings)
     updated_provider_configs = [
-        item
-        for item in provider_configs
-        if str(item.get("id") or "") != provider_id
+        item for item in provider_configs if str(item.get("id") or "") != provider_id
     ]
 
     if len(updated_provider_configs) == len(provider_configs):
-        return False, provider_configs, f"Provider '{provider_name_or_id}' was not found."
+        return (
+            False,
+            provider_configs,
+            f"Provider '{provider_name_or_id}' was not found.",
+        )
 
     return True, updated_provider_configs, ""
 
@@ -1390,7 +1553,9 @@ def _normalize_base_url(base_url: str | None, fallback: str) -> str:
     return normalized or fallback
 
 
-def _openai_auth_headers(api_key: str = XTTS_OPENAI_PLACEHOLDER_API_KEY) -> dict[str, str]:
+def _openai_auth_headers(
+    api_key: str = XTTS_OPENAI_PLACEHOLDER_API_KEY,
+) -> dict[str, str]:
     return {"Authorization": f"Bearer {api_key}"}
 
 
@@ -1402,7 +1567,9 @@ def _configured_endpoint_url(base_url: str, path: str) -> str:
         return normalized_path
 
     parsed = urlparse(str(base_url or "").strip())
-    origin = urlunparse(parsed._replace(path="", params="", query="", fragment="")).rstrip("/")
+    origin = urlunparse(
+        parsed._replace(path="", params="", query="", fragment="")
+    ).rstrip("/")
     return urljoin(f"{origin}/", normalized_path.lstrip("/"))
 
 
@@ -1545,7 +1712,9 @@ def _is_xtts_target(model_name: str, endpoint: dict[str, str] | None = None) -> 
     return _looks_like_xtts_model(model_name) or _looks_like_xtts_endpoint(endpoint)
 
 
-def _build_xtts_instructions_payload(tts_settings: dict, existing_instructions: str) -> str:
+def _build_xtts_instructions_payload(
+    tts_settings: dict, existing_instructions: str
+) -> str:
     payload = _try_parse_json_object(existing_instructions) or {}
     xtts_overrides = _build_xtts_overrides(tts_settings)
 
@@ -1571,7 +1740,9 @@ def _build_xtts_instructions_payload(tts_settings: dict, existing_instructions: 
     return json.dumps(payload, ensure_ascii=False)
 
 
-def _normalize_voxcpm_model(model_name: str, fallback: str = VOXCPM_DEFAULT_MODEL) -> str:
+def _normalize_voxcpm_model(
+    model_name: str, fallback: str = VOXCPM_DEFAULT_MODEL
+) -> str:
     normalized = str(model_name or "").strip()
     if not normalized:
         return fallback
@@ -1582,7 +1753,9 @@ def _normalize_voxcpm_model(model_name: str, fallback: str = VOXCPM_DEFAULT_MODE
     return normalized
 
 
-def _normalize_fishs2_model(model_name: str, fallback: str = FISHS2_DEFAULT_MODEL) -> str:
+def _normalize_fishs2_model(
+    model_name: str, fallback: str = FISHS2_DEFAULT_MODEL
+) -> str:
     normalized = str(model_name or "").strip()
     if not normalized:
         return fallback
@@ -1607,10 +1780,7 @@ def normalize_tts_model_catalog(
     normalized_service = _normalize_service_id(service_id)
     if normalized_service == "fishs2":
         return _dedupe_ordered(
-            [
-                _normalize_fishs2_model(str(model), fallback="")
-                for model in models
-            ]
+            [_normalize_fishs2_model(str(model), fallback="") for model in models]
         )
     return _dedupe_ordered([str(model) for model in models])
 
@@ -1695,7 +1865,11 @@ def _build_fishs2_options(tts_settings: dict) -> dict[str, object]:
     )
     chunk_length = min(300, max(100, chunk_length))
 
-    latency = str(tts_settings.get("fishs2_latency") or FISHS2_DEFAULT_LATENCY).strip().lower()
+    latency = (
+        str(tts_settings.get("fishs2_latency") or FISHS2_DEFAULT_LATENCY)
+        .strip()
+        .lower()
+    )
     if latency not in {"normal", "balanced"}:
         latency = FISHS2_DEFAULT_LATENCY
 
@@ -1728,7 +1902,9 @@ def _build_fishs2_options(tts_settings: dict) -> dict[str, object]:
     }
 
 
-def _normalize_voxtral_model(model_name: str, fallback: str = VOXTRAL_DEFAULT_MODEL) -> str:
+def _normalize_voxtral_model(
+    model_name: str, fallback: str = VOXTRAL_DEFAULT_MODEL
+) -> str:
     normalized = str(model_name or "").strip().lower()
     if "/" in normalized:
         normalized = normalized.rsplit("/", 1)[-1]
@@ -1742,10 +1918,16 @@ def _build_voxtral_options(tts_settings: dict) -> dict[str, object]:
         "max_frames": _coerce_int(tts_settings.get("voxtral_max_frames"), 1024),
         "euler_steps": _coerce_int(tts_settings.get("voxtral_euler_steps"), 8),
         "chunk": _coerce_bool(tts_settings.get("voxtral_chunk"), False),
-        "max_chunk_chars": _coerce_int(tts_settings.get("voxtral_max_chunk_chars"), 500),
-        "chunk_silence_ms": _coerce_int(tts_settings.get("voxtral_chunk_silence_ms"), 0),
+        "max_chunk_chars": _coerce_int(
+            tts_settings.get("voxtral_max_chunk_chars"), 500
+        ),
+        "chunk_silence_ms": _coerce_int(
+            tts_settings.get("voxtral_chunk_silence_ms"), 0
+        ),
         "strip_quotes": _coerce_bool(tts_settings.get("voxtral_strip_quotes"), False),
-        "strip_diacritics": _coerce_bool(tts_settings.get("voxtral_strip_diacritics"), False),
+        "strip_diacritics": _coerce_bool(
+            tts_settings.get("voxtral_strip_diacritics"), False
+        ),
         "level_audio": _coerce_bool(tts_settings.get("voxtral_level_audio"), False),
     }
 
@@ -1770,7 +1952,9 @@ def _parse_voxtral_instructions_options(instructions: str) -> dict[str, object]:
     return payload
 
 
-def _build_voxtral_instructions_payload(tts_settings: dict, existing_instructions: str) -> str:
+def _build_voxtral_instructions_payload(
+    tts_settings: dict, existing_instructions: str
+) -> str:
     payload = _parse_voxtral_instructions_options(existing_instructions)
     options = _build_voxtral_options(tts_settings)
 
@@ -1811,7 +1995,9 @@ def _normalize_audio_provider(raw_provider: str | None) -> str:
     return provider if provider in SUPPORTED_AUDIO_PROVIDERS else ""
 
 
-def _infer_audio_provider(name: str, base_url: str, raw_provider: str | None = None) -> str:
+def _infer_audio_provider(
+    name: str, base_url: str, raw_provider: str | None = None
+) -> str:
     explicit = _normalize_audio_provider(raw_provider)
     if explicit:
         return explicit
@@ -1873,8 +2059,12 @@ def _service_audio_endpoint(tts_settings, provider: str) -> dict[str, str]:
         "api_key_env": str(service.get("api_key_env") or ""),
         "secret_ref": str(service.get("secret_ref") or ""),
         "provider": normalized_provider,
-        "default_model": str(service.get("default_model") or _provider_default_model(normalized_provider)),
-        "default_voice": str(service.get("default_voice") or _provider_default_voice(normalized_provider)),
+        "default_model": str(
+            service.get("default_model") or _provider_default_model(normalized_provider)
+        ),
+        "default_voice": str(
+            service.get("default_voice") or _provider_default_voice(normalized_provider)
+        ),
         "models": list(service.get("models") or []),
         "voices": list(service.get("voices") or []),
     }
@@ -1907,10 +2097,7 @@ def _normalize_voice_for_provider(voice_name: str, provider: str) -> str:
     if not normalized:
         return ""
 
-    voice_map = {
-        voice.lower(): voice
-        for voice in _provider_voice_catalog(provider)
-    }
+    voice_map = {voice.lower(): voice for voice in _provider_voice_catalog(provider)}
     return voice_map.get(normalized.lower(), normalized)
 
 
@@ -1923,7 +2110,9 @@ def _to_litellm_model_name(provider: str, model_name: str) -> str:
     return f"{provider}/{normalized}"
 
 
-def _merge_catalog_with_discovered(preferred: list[str], discovered: list[str]) -> list[str]:
+def _merge_catalog_with_discovered(
+    preferred: list[str], discovered: list[str]
+) -> list[str]:
     return _dedupe_ordered(preferred + discovered)
 
 
@@ -1983,7 +2172,9 @@ def _openai_capabilities_urls(base_url: str) -> list[str]:
     return _openai_url_candidates(base_url, "capabilities")
 
 
-def _configured_openai_urls(endpoint: dict[str, object], path_key: str, fallback_urls: list[str]) -> list[str]:
+def _configured_openai_urls(
+    endpoint: dict[str, object], path_key: str, fallback_urls: list[str]
+) -> list[str]:
     configured_path = str(endpoint.get(path_key) or "").strip()
     configured_urls = (
         [_configured_endpoint_url(str(endpoint.get("base_url") or ""), configured_path)]
@@ -2048,10 +2239,7 @@ def _extract_voices_from_openai_payload(payload) -> list[str]:
     for voice in candidates:
         if isinstance(voice, dict):
             voice_id = str(
-                voice.get("voice_id")
-                or voice.get("id")
-                or voice.get("name")
-                or ""
+                voice.get("voice_id") or voice.get("id") or voice.get("name") or ""
             ).strip()
             if voice_id:
                 discovered.append(voice_id)
@@ -2096,7 +2284,9 @@ def _extract_models_from_voxtral_payload(payload) -> list[str]:
         return []
 
     models: list[str] = []
-    default_model = _normalize_voxtral_model(payload.get("default_model", ""), fallback="")
+    default_model = _normalize_voxtral_model(
+        payload.get("default_model", ""), fallback=""
+    )
     if default_model:
         models.append(default_model)
 
@@ -2235,7 +2425,9 @@ def list_openai_audio_endpoint_names(tts_settings: dict) -> list[str]:
     return sorted(_parse_openai_audio_endpoints(tts_settings).keys())
 
 
-def resolve_openai_audio_endpoint(tts_settings: dict) -> tuple[dict[str, object] | None, str]:
+def resolve_openai_audio_endpoint(
+    tts_settings: dict,
+) -> tuple[dict[str, object] | None, str]:
     """Resolves the selected custom audio endpoint from settings."""
     endpoints = _parse_openai_audio_endpoints(tts_settings)
 
@@ -2250,7 +2442,10 @@ def resolve_openai_audio_endpoint(tts_settings: dict) -> tuple[dict[str, object]
     if selected_name:
         endpoint = endpoints.get(selected_name)
         if endpoint is None:
-            return None, f"Custom audio endpoint '{selected_name}' is not defined in config."
+            return (
+                None,
+                f"Custom audio endpoint '{selected_name}' is not defined in config.",
+            )
         return endpoint, ""
 
     first_name = sorted(endpoints.keys())[0]
@@ -2307,7 +2502,9 @@ def _configured_endpoint_auth_headers(endpoint: dict[str, object]) -> dict[str, 
     return _openai_auth_headers(explicit_key)
 
 
-def _resolve_service_api_key(tts_settings: dict | None, service_id: str, default_env: str) -> str:
+def _resolve_service_api_key(
+    tts_settings: dict | None, service_id: str, default_env: str
+) -> str:
     service = get_service_config(tts_settings or {}, service_id) or {}
     key_env = str(service.get("api_key_env") or default_env).strip()
     if key_env:
@@ -2347,7 +2544,10 @@ def check_openai_audio_connection(tts_settings: dict) -> tuple[bool, str]:
     if _normalize_custom_adapter(endpoint.get("adapter")) == GENERIC_JSON_ADAPTER:
         speech_path = str(endpoint.get("speech_path") or "").strip()
         if not speech_path:
-            return False, f"Endpoint '{endpoint['name']}' has no configured speech route."
+            return (
+                False,
+                f"Endpoint '{endpoint['name']}' has no configured speech route.",
+            )
         try:
             response = requests.get(
                 _configured_endpoint_url(str(endpoint["base_url"]), speech_path),
@@ -2413,7 +2613,10 @@ def check_openai_audio_connection(tts_settings: dict) -> tuple[bool, str]:
                 timeout=8,
             )
             if response.status_code not in {404, 501} and response.status_code < 500:
-                return True, f"Connected to endpoint '{endpoint['name']}' at {speech_path}."
+                return (
+                    True,
+                    f"Connected to endpoint '{endpoint['name']}' at {speech_path}.",
+                )
         except requests.exceptions.RequestException:
             pass
 
@@ -2452,7 +2655,9 @@ def _resolve_openai_audio_provider_context(
 
 def get_openai_audio_models_fallback(tts_settings: dict) -> list[str]:
     """Returns fallback model suggestions for custom audio providers."""
-    endpoint, provider, default_model, _ = _resolve_openai_audio_provider_context(tts_settings)
+    endpoint, provider, default_model, _ = _resolve_openai_audio_provider_context(
+        tts_settings
+    )
     if endpoint is None:
         return []
 
@@ -2464,13 +2669,17 @@ def get_openai_audio_models_fallback(tts_settings: dict) -> list[str]:
         )
         else []
     )
-    preferred_models = [default_model] + list(endpoint.get("models") or []) + builtin_models
+    preferred_models = (
+        [default_model] + list(endpoint.get("models") or []) + builtin_models
+    )
     return _dedupe_ordered(preferred_models)
 
 
 def get_openai_audio_voices_fallback(tts_settings: dict) -> list[str]:
     """Returns fallback voice suggestions for custom audio providers."""
-    endpoint, provider, default_model, default_voice = _resolve_openai_audio_provider_context(tts_settings)
+    endpoint, provider, default_model, default_voice = (
+        _resolve_openai_audio_provider_context(tts_settings)
+    )
     if endpoint is None:
         return []
 
@@ -2485,7 +2694,9 @@ def get_openai_audio_voices_fallback(tts_settings: dict) -> list[str]:
         )
         else []
     )
-    preferred_voices = [default_voice] + list(endpoint.get("voices") or []) + builtin_voices
+    preferred_voices = (
+        [default_voice] + list(endpoint.get("voices") or []) + builtin_voices
+    )
     return _dedupe_ordered(preferred_voices)
 
 
@@ -2512,7 +2723,9 @@ def _extract_generic_catalog(payload, kind: str) -> list[str]:
     values: list[str] = []
     for item in candidates:
         if isinstance(item, dict):
-            item = next((item.get(key) for key in id_keys if item.get(key) is not None), "")
+            item = next(
+                (item.get(key) for key in id_keys if item.get(key) is not None), ""
+            )
         normalized = str(item or "").strip()
         if normalized:
             values.append(normalized)
@@ -2521,7 +2734,9 @@ def _extract_generic_catalog(payload, kind: str) -> list[str]:
 
 def get_openai_audio_models(tts_settings: dict) -> list[str]:
     """Fetches model IDs from the configured custom audio endpoint."""
-    endpoint, provider, default_model, _ = _resolve_openai_audio_provider_context(tts_settings)
+    endpoint, provider, default_model, _ = _resolve_openai_audio_provider_context(
+        tts_settings
+    )
     if endpoint is None:
         return []
 
@@ -2536,9 +2751,13 @@ def get_openai_audio_models(tts_settings: dict) -> list[str]:
                     timeout=8,
                 )
                 response.raise_for_status()
-                models = _dedupe_ordered(models + _extract_generic_catalog(response.json(), "models"))
+                models = _dedupe_ordered(
+                    models + _extract_generic_catalog(response.json(), "models")
+                )
             except (requests.exceptions.RequestException, ValueError) as e:
-                logging.debug("Could not list models for endpoint '%s': %s", endpoint["name"], e)
+                logging.debug(
+                    "Could not list models for endpoint '%s': %s", endpoint["name"], e
+                )
         return models
 
     models: list[str] = []
@@ -2564,18 +2783,26 @@ def get_openai_audio_models(tts_settings: dict) -> list[str]:
             models = [m for m in models if "tts" in m.lower()]
             break
         except (requests.exceptions.RequestException, ValueError) as e:
-            logging.error("Failed to list models for endpoint '%s': %s", endpoint["name"], e)
+            logging.error(
+                "Failed to list models for endpoint '%s': %s", endpoint["name"], e
+            )
             continue
 
-    builtin_models = [] if endpoint.get("profile_id") else _provider_model_catalog(provider)
-    preferred_models = [default_model] + list(endpoint.get("models") or []) + builtin_models
+    builtin_models = (
+        [] if endpoint.get("profile_id") else _provider_model_catalog(provider)
+    )
+    preferred_models = (
+        [default_model] + list(endpoint.get("models") or []) + builtin_models
+    )
 
     return _merge_catalog_with_discovered(preferred_models, models)
 
 
 def get_openai_audio_voices(tts_settings: dict) -> list[str]:
     """Fetches voice IDs from the configured custom audio endpoint."""
-    endpoint, provider, default_model, default_voice = _resolve_openai_audio_provider_context(tts_settings)
+    endpoint, provider, default_model, default_voice = (
+        _resolve_openai_audio_provider_context(tts_settings)
+    )
     if endpoint is None:
         return []
 
@@ -2590,9 +2817,13 @@ def get_openai_audio_voices(tts_settings: dict) -> list[str]:
                     timeout=8,
                 )
                 response.raise_for_status()
-                voices = _dedupe_ordered(voices + _extract_generic_catalog(response.json(), "voices"))
+                voices = _dedupe_ordered(
+                    voices + _extract_generic_catalog(response.json(), "voices")
+                )
             except (requests.exceptions.RequestException, ValueError) as e:
-                logging.debug("Could not list voices for endpoint '%s': %s", endpoint["name"], e)
+                logging.debug(
+                    "Could not list voices for endpoint '%s': %s", endpoint["name"], e
+                )
         return voices
 
     voices: list[str] = []
@@ -2617,7 +2848,9 @@ def get_openai_audio_voices(tts_settings: dict) -> list[str]:
             ]
             break
         except (requests.exceptions.RequestException, ValueError) as e:
-            logging.debug("Could not list voices for endpoint '%s': %s", endpoint["name"], e)
+            logging.debug(
+                "Could not list voices for endpoint '%s': %s", endpoint["name"], e
+            )
             continue
 
     selected_model = str(tts_settings.get("xtts_model") or "").strip()
@@ -2626,9 +2859,13 @@ def get_openai_audio_voices(tts_settings: dict) -> list[str]:
     selected_model = _normalize_model_for_provider(selected_model, provider)
 
     builtin_voices = (
-        [] if endpoint.get("profile_id") else _provider_voice_catalog(provider, selected_model)
+        []
+        if endpoint.get("profile_id")
+        else _provider_voice_catalog(provider, selected_model)
     )
-    preferred_voices = [default_voice] + list(endpoint.get("voices") or []) + builtin_voices
+    preferred_voices = (
+        [default_voice] + list(endpoint.get("voices") or []) + builtin_voices
+    )
 
     return _merge_catalog_with_discovered(preferred_voices, voices)
 
@@ -2959,7 +3196,9 @@ def get_kobold_qwen_models(base_url: str = KOBOLD_QWEN_API_BASE_URL) -> list[str
     return _merge_catalog_with_discovered(KOBOLD_QWEN_TTS_MODELS, discovered_models)
 
 
-def get_kobold_qwen_voice_catalog(base_url: str = KOBOLD_QWEN_API_BASE_URL, api_key: str = "") -> list[dict[str, str]]:
+def get_kobold_qwen_voice_catalog(
+    base_url: str = KOBOLD_QWEN_API_BASE_URL, api_key: str = ""
+) -> list[dict[str, str]]:
     """Fetch Qwen voices while retaining the API's cloned/preset model metadata."""
     normalized_base_url = _normalize_base_url(base_url, KOBOLD_QWEN_API_BASE_URL)
     api_key = str(api_key or "").strip() or _resolve_kobold_qwen_api_key()
@@ -2986,7 +3225,11 @@ def get_kobold_qwen_voice_catalog(base_url: str = KOBOLD_QWEN_API_BASE_URL, api_
                 candidates = payload
             elif isinstance(payload, dict):
                 candidates = next(
-                    (payload.get(key) for key in ("data", "voices", "items") if isinstance(payload.get(key), list)),
+                    (
+                        payload.get(key)
+                        for key in ("data", "voices", "items")
+                        if isinstance(payload.get(key), list)
+                    ),
                     [],
                 )
             else:
@@ -2994,10 +3237,7 @@ def get_kobold_qwen_voice_catalog(base_url: str = KOBOLD_QWEN_API_BASE_URL, api_
             for item in candidates:
                 if isinstance(item, dict):
                     voice_id = str(
-                        item.get("voice_id")
-                        or item.get("id")
-                        or item.get("name")
-                        or ""
+                        item.get("voice_id") or item.get("id") or item.get("name") or ""
                     ).strip()
                     if not voice_id:
                         continue
@@ -3006,14 +3246,19 @@ def get_kobold_qwen_voice_catalog(base_url: str = KOBOLD_QWEN_API_BASE_URL, api_
                     if not voice_type:
                         voice_type = (
                             "preset"
-                            if voice_id.lower() in {voice.lower() for voice in KOBOLD_QWEN_TTS_VOICES}
+                            if voice_id.lower()
+                            in {voice.lower() for voice in KOBOLD_QWEN_TTS_VOICES}
                             else "cloned"
                         )
-                    discovered.append({"id": voice_id, "type": voice_type, "model": model})
+                    discovered.append(
+                        {"id": voice_id, "type": voice_type, "model": model}
+                    )
                 else:
                     voice_id = str(item or "").strip()
                     if voice_id:
-                        discovered.append({"id": voice_id, "type": "cloned", "model": "Voice Cloning"})
+                        discovered.append(
+                            {"id": voice_id, "type": "cloned", "model": "Voice Cloning"}
+                        )
             if discovered:
                 break
         except (requests.exceptions.RequestException, ValueError) as e:
@@ -3106,7 +3351,9 @@ def get_voxtral_models(base_url: str = VOXTRAL_API_BASE_URL) -> list[str]:
             continue
 
     if discovered_models:
-        return _merge_catalog_with_discovered([VOXTRAL_DEFAULT_MODEL], discovered_models)
+        return _merge_catalog_with_discovered(
+            [VOXTRAL_DEFAULT_MODEL], discovered_models
+        )
 
     preferred_models = [VOXTRAL_DEFAULT_MODEL] + VOXTRAL_TTS_MODELS
     return _dedupe_ordered(preferred_models)
@@ -3282,28 +3529,38 @@ def get_magpie_models(base_url: str = MAGPIE_API_BASE_URL) -> list[str]:
     normalized_base_url = _normalize_base_url(base_url, MAGPIE_API_BASE_URL)
     try:
         import json
+
         response = requests.get(f"{normalized_base_url}/v1/models", timeout=8)
         response.raise_for_status()
         payload = response.json()
-        discovered = [str(m["id"]) for m in payload.get("data", []) if isinstance(m, dict)]
+        discovered = [
+            str(m["id"]) for m in payload.get("data", []) if isinstance(m, dict)
+        ]
         if discovered:
             return discovered
     except (requests.exceptions.RequestException, ValueError, json.JSONDecodeError):
         pass
     from ..constants import MAGPIE_TTS_MODELS
+
     return list(MAGPIE_TTS_MODELS)
 
 
 def get_magpie_voices(base_url: str = MAGPIE_API_BASE_URL) -> list[str]:
     """Returns the predefined Magpie TTS voice catalog."""
     from ..constants import magpie_voice_catalog
+
     return magpie_voice_catalog()
 
 
-def _request_magpie_audio(text: str, tts_settings: dict, magpie_base_url: str) -> requests.Response:
+def _request_magpie_audio(
+    text: str, tts_settings: dict, magpie_base_url: str
+) -> requests.Response:
     """Sends a TTS request to the Magpie TTS server."""
 
-    voice = str(tts_settings.get("speaker") or "").strip() or "Magpie-Multilingual.EN-US.Aria"
+    voice = (
+        str(tts_settings.get("speaker") or "").strip()
+        or "Magpie-Multilingual.EN-US.Aria"
+    )
     normalized_base_url = _normalize_base_url(magpie_base_url, MAGPIE_API_BASE_URL)
 
     payload = {
@@ -3332,7 +3589,9 @@ def _request_magpie_audio(text: str, tts_settings: dict, magpie_base_url: str) -
     if last_response is not None:
         return last_response
 
-    raise RuntimeError(f"No Magpie speech endpoint could be resolved for '{normalized_base_url}'.")
+    raise RuntimeError(
+        f"No Magpie speech endpoint could be resolved for '{normalized_base_url}'."
+    )
 
 
 # XTTS Functions
@@ -3388,6 +3647,7 @@ def get_xtts_speakers(base_url: str = XTTS_API_BASE_URL) -> list[str]:
 
     return _dedupe_ordered(discovered_voice_ids + discovered_file_ids)
 
+
 def get_xtts_models(base_url: str = XTTS_API_BASE_URL) -> list[str]:
     """Fetches available XTTS models from server."""
     normalized_base_url = _normalize_base_url(base_url, XTTS_API_BASE_URL)
@@ -3441,10 +3701,7 @@ def _normalize_upload_wav_paths(wav_file_path: str | list[str]) -> list[str]:
 def _extract_uploaded_identifier(payload: object) -> str:
     if isinstance(payload, dict):
         return str(
-            payload.get("id")
-            or payload.get("voice_id")
-            or payload.get("name")
-            or ""
+            payload.get("id") or payload.get("voice_id") or payload.get("name") or ""
         ).strip()
 
     if isinstance(payload, list):
@@ -3476,7 +3733,9 @@ def _upload_speaker_voice_openai_compatible(
     normalized_mode = str(mode or "").strip().lower()
     first_voice_filename = os.path.basename(wav_file_paths[0])
     fallback_voice_name = os.path.splitext(first_voice_filename)[0]
-    resolved_voice_id = str(voice_id or fallback_voice_name).strip() or fallback_voice_name
+    resolved_voice_id = (
+        str(voice_id or fallback_voice_name).strip() or fallback_voice_name
+    )
 
     try:
         # Preferred path: ecosystem voice endpoint (/v1/audio/voices).
@@ -3619,9 +3878,8 @@ def _upload_speaker_voice_openai_compatible(
                 )
                 return uploaded_file_id
 
-        if (
-            last_voice_response is not None
-            and _should_try_next_openai_candidate(last_voice_response.status_code)
+        if last_voice_response is not None and _should_try_next_openai_candidate(
+            last_voice_response.status_code
         ):
             logging.debug(
                 "%s server at %s does not expose /audio/voices upload; tried /files fallback.",
@@ -3629,9 +3887,8 @@ def _upload_speaker_voice_openai_compatible(
                 normalized_base_url,
             )
 
-        if (
-            last_response is not None
-            and _should_try_next_openai_candidate(last_response.status_code)
+        if last_response is not None and _should_try_next_openai_candidate(
+            last_response.status_code
         ):
             raise RuntimeError(
                 f"{service_name} server at {normalized_base_url} does not support voice upload endpoints (/audio/voices or /files)."
@@ -3644,6 +3901,112 @@ def _upload_speaker_voice_openai_compatible(
         ) from e
     except OSError as e:
         raise RuntimeError(f"Could not read WAV file for upload: {e}") from e
+
+
+def _remote_voice_exists(
+    voice_id: str,
+    *,
+    base_url: str,
+    api_key: str = "",
+) -> bool | None:
+    """Verify a remote voice after an idempotent or unsupported DELETE."""
+
+    expected = str(voice_id or "").strip().casefold()
+    for voices_url in _openai_voice_catalog_urls(base_url):
+        try:
+            response = requests.get(
+                voices_url,
+                headers=_openai_auth_headers(api_key),
+                timeout=8,
+            )
+        except requests.exceptions.RequestException:
+            continue
+        if _should_try_next_openai_candidate(response.status_code):
+            continue
+        if response.status_code >= 400:
+            continue
+        try:
+            discovered = _extract_voices_from_openai_payload(response.json())
+        except ValueError:
+            continue
+        return any(str(item).strip().casefold() == expected for item in discovered)
+    return None
+
+
+def _delete_speaker_voice_openai_compatible(
+    voice_id: str,
+    *,
+    base_url: str,
+    fallback_base_url: str,
+    service_name: str,
+    api_key: str = "",
+) -> bool:
+    """Delete an uploaded voice without confusing an absent route with an absent voice."""
+
+    normalized_voice_id = str(voice_id or "").strip()
+    if not normalized_voice_id:
+        raise ValueError("Provider voice deletion requires a voice ID.")
+    if (
+        len(normalized_voice_id) > 255
+        or normalized_voice_id in {".", ".."}
+        or any(character in normalized_voice_id for character in ("/", "\\", "\x00"))
+        or any(ord(character) < 32 for character in normalized_voice_id)
+    ):
+        raise ValueError("Provider voice ID is not safe to delete.")
+    normalized_base_url = _normalize_base_url(base_url, fallback_base_url)
+    encoded_voice_id = quote(normalized_voice_id, safe="")
+    unsupported_responses = 0
+    missing_responses = 0
+
+    try:
+        for collection_url in _openai_voice_catalog_urls(normalized_base_url):
+            response = requests.delete(
+                f"{collection_url.rstrip('/')}/{encoded_voice_id}",
+                headers=_openai_auth_headers(api_key),
+                timeout=30,
+            )
+            if 200 <= response.status_code < 300:
+                return True
+            if response.status_code in {404, 410}:
+                missing_responses += 1
+                continue
+            if response.status_code in {405, 501}:
+                unsupported_responses += 1
+                continue
+            raise RuntimeError(
+                f"{service_name} voice deletion failed ({response.status_code}): "
+                f"{response.text}"
+            )
+    except requests.exceptions.RequestException as error:
+        raise RuntimeError(
+            f"Failed deleting voice from {service_name} server "
+            f"{normalized_base_url}: {error}"
+        ) from error
+
+    remote_exists = _remote_voice_exists(
+        normalized_voice_id,
+        base_url=normalized_base_url,
+        api_key=api_key,
+    )
+    if remote_exists is False:
+        # A prior deletion or manual cleanup is success from the caller's point
+        # of view. The follow-up catalogue check keeps this from silently
+        # accepting a 404 caused by an unimplemented route.
+        return False
+    if remote_exists is True:
+        raise RuntimeError(
+            f"{service_name} still lists voice '{normalized_voice_id}' and does "
+            "not appear to support provider-side deletion."
+        )
+    detail = (
+        "did not expose a supported voice deletion endpoint"
+        if unsupported_responses
+        else "returned a missing response that could not be verified"
+    )
+    raise RuntimeError(
+        f"{service_name} {detail} for voice '{normalized_voice_id}' "
+        f"({missing_responses} missing response(s))."
+    )
 
 
 def upload_xtts_speaker_voice(
@@ -3786,7 +4149,14 @@ def upload_speaker_voice(
             voice_id=voice_id,
         )
 
-    if normalized_service in {"qwen3 tts", "qwen3-tts", "qwen3", "qwen", "kobold-qwen", "kobold_qwen"}:
+    if normalized_service in {
+        "qwen3 tts",
+        "qwen3-tts",
+        "qwen3",
+        "qwen",
+        "kobold-qwen",
+        "kobold_qwen",
+    }:
         return upload_kobold_qwen_speaker_voice(
             wav_file_path,
             base_url=base_url,
@@ -3801,8 +4171,57 @@ def upload_speaker_voice(
     )
 
 
+def delete_speaker_voice(
+    voice_id: str,
+    base_url: str = XTTS_API_BASE_URL,
+    *,
+    service: str = "XTTS",
+    api_key: str = "",
+) -> bool:
+    """Delete an uploaded voice from a first-party OpenAI-compatible wrapper."""
+
+    normalized_service = str(service or "XTTS").strip().lower()
+    if normalized_service in {"voxcpm", "voxcpm2"}:
+        fallback_base_url = VOXCPM_API_BASE_URL
+        service_name = "VoxCPM"
+        resolved_key = str(api_key or "").strip() or _resolve_voxcpm_api_key()
+    elif normalized_service in {"fishs2", "fish-s2", "fishs2-cpp", "fishs2cpp"}:
+        fallback_base_url = FISHS2_API_BASE_URL
+        service_name = "FishS2"
+        resolved_key = str(api_key or "").strip() or _resolve_fishs2_api_key()
+    elif normalized_service in {"chatterbox", "chatterbox-turbo"}:
+        fallback_base_url = CHATTERBOX_API_BASE_URL
+        service_name = "Chatterbox"
+        resolved_key = str(api_key or "").strip()
+    elif normalized_service in {
+        "qwen3 tts",
+        "qwen3-tts",
+        "qwen3",
+        "qwen",
+        "kobold-qwen",
+        "kobold_qwen",
+    }:
+        fallback_base_url = KOBOLD_QWEN_API_BASE_URL
+        service_name = "Qwen3 TTS"
+        resolved_key = str(api_key or "").strip() or _resolve_kobold_qwen_api_key()
+    else:
+        fallback_base_url = XTTS_API_BASE_URL
+        service_name = "XTTS"
+        resolved_key = str(api_key or "").strip() or XTTS_OPENAI_PLACEHOLDER_API_KEY
+
+    return _delete_speaker_voice_openai_compatible(
+        voice_id,
+        base_url=base_url,
+        fallback_base_url=fallback_base_url,
+        service_name=service_name,
+        api_key=resolved_key,
+    )
+
+
 # Silero Functions
-def set_silero_language(language_code: str, base_url: str = SILERO_API_BASE_URL) -> bool:
+def set_silero_language(
+    language_code: str, base_url: str = SILERO_API_BASE_URL
+) -> bool:
     """Compatibility no-op; the new service receives language per request."""
     del language_code
     return check_silero_connection(base_url)
@@ -3811,13 +4230,31 @@ def set_silero_language(language_code: str, base_url: str = SILERO_API_BASE_URL)
 def normalize_silero_language_code(value: object) -> str:
     normalized = str(value or "").strip().lower().replace("_", "-")
     aliases = {
-        "hy": "hye", "ka": "kat", "ky": "kir", "tt": "tat", "uk": "ukr",
-        "ua": "ukr", "uz": "uzb", "ba": "bak", "be": "bel", "cv": "chv",
-        "kk": "kaz", "tg": "tgk", "sah": "sah", "xal": "xal",
-        "english (v3)": "en", "english indic (v3)": "en-in", "german (v3)": "de",
-        "spanish (v3)": "es", "french (v3)": "fr", "indic (v3)": "indic",
-        "russian (v3.1)": "ru", "tatar (v3)": "tat", "ukrainian (v3)": "ukr",
-        "uzbek (v3)": "uzb", "kalmyk (v3)": "xal",
+        "hy": "hye",
+        "ka": "kat",
+        "ky": "kir",
+        "tt": "tat",
+        "uk": "ukr",
+        "ua": "ukr",
+        "uz": "uzb",
+        "ba": "bak",
+        "be": "bel",
+        "cv": "chv",
+        "kk": "kaz",
+        "tg": "tgk",
+        "sah": "sah",
+        "xal": "xal",
+        "english (v3)": "en",
+        "english indic (v3)": "en-in",
+        "german (v3)": "de",
+        "spanish (v3)": "es",
+        "french (v3)": "fr",
+        "indic (v3)": "indic",
+        "russian (v3.1)": "ru",
+        "tatar (v3)": "tat",
+        "ukrainian (v3)": "ukr",
+        "uzbek (v3)": "uzb",
+        "kalmyk (v3)": "xal",
     }
     if normalized in aliases:
         return aliases[normalized]
@@ -3837,7 +4274,9 @@ def get_silero_model_catalog(base_url: str = SILERO_API_BASE_URL) -> list[dict]:
         response.raise_for_status()
         payload = response.json()
         data = payload.get("data", []) if isinstance(payload, dict) else []
-        return [dict(item) for item in data if isinstance(item, dict) and item.get("id")]
+        return [
+            dict(item) for item in data if isinstance(item, dict) and item.get("id")
+        ]
     except (requests.exceptions.RequestException, ValueError) as exc:
         logging.error("Failed to fetch Silero models: %s", exc)
         return []
@@ -3882,7 +4321,9 @@ def get_silero_voice_catalog(
         response.raise_for_status()
         payload = response.json()
         data = payload.get("data", []) if isinstance(payload, dict) else []
-        return [dict(item) for item in data if isinstance(item, dict) and item.get("id")]
+        return [
+            dict(item) for item in data if isinstance(item, dict) and item.get("id")
+        ]
     except (requests.exceptions.RequestException, ValueError) as exc:
         logging.error("Failed to fetch Silero voices: %s", exc)
         return []
@@ -3906,7 +4347,10 @@ def get_silero_speakers(
 
 
 def _build_xtts_openai_payload(text: str, tts_settings: dict) -> dict:
-    model = str(tts_settings.get("xtts_model") or XTTS_DEFAULT_MODEL).strip() or XTTS_DEFAULT_MODEL
+    model = (
+        str(tts_settings.get("xtts_model") or XTTS_DEFAULT_MODEL).strip()
+        or XTTS_DEFAULT_MODEL
+    )
     speaker = str(tts_settings.get("speaker") or "").strip()
     language = str(tts_settings.get("language") or "en").strip() or "en"
     instructions = _build_xtts_instructions_payload(
@@ -3925,7 +4369,9 @@ def _build_xtts_openai_payload(text: str, tts_settings: dict) -> dict:
     }
 
 
-def _request_xtts_audio(text: str, tts_settings: dict, xtts_base_url: str) -> requests.Response:
+def _request_xtts_audio(
+    text: str, tts_settings: dict, xtts_base_url: str
+) -> requests.Response:
     normalized_base_url = _normalize_base_url(xtts_base_url, XTTS_API_BASE_URL)
     payload = _build_xtts_openai_payload(text, tts_settings)
     last_response = None
@@ -3945,7 +4391,9 @@ def _request_xtts_audio(text: str, tts_settings: dict, xtts_base_url: str) -> re
     if last_response is not None:
         return last_response
 
-    raise RuntimeError(f"No XTTS speech endpoint could be resolved for '{normalized_base_url}'.")
+    raise RuntimeError(
+        f"No XTTS speech endpoint could be resolved for '{normalized_base_url}'."
+    )
 
 
 def _build_voxcpm_payload(text: str, tts_settings: dict) -> dict:
@@ -3996,7 +4444,9 @@ def _is_voxcpm_prompt_pairing_error(response: requests.Response) -> bool:
     )
 
 
-def _request_voxcpm_audio(text: str, tts_settings: dict, voxcpm_base_url: str) -> requests.Response:
+def _request_voxcpm_audio(
+    text: str, tts_settings: dict, voxcpm_base_url: str
+) -> requests.Response:
     normalized_base_url = _normalize_base_url(voxcpm_base_url, VOXCPM_API_BASE_URL)
     api_key = _resolve_voxcpm_api_key(tts_settings)
     payload = _build_voxcpm_payload(text, tts_settings)
@@ -4035,7 +4485,9 @@ def _request_voxcpm_audio(text: str, tts_settings: dict, voxcpm_base_url: str) -
     if last_response is not None:
         return last_response
 
-    raise RuntimeError(f"No VoxCPM speech endpoint could be resolved for '{normalized_base_url}'.")
+    raise RuntimeError(
+        f"No VoxCPM speech endpoint could be resolved for '{normalized_base_url}'."
+    )
 
 
 def _build_fishs2_payload(text: str, tts_settings: dict) -> dict:
@@ -4045,7 +4497,11 @@ def _build_fishs2_payload(text: str, tts_settings: dict) -> dict:
     )
     voice = str(tts_settings.get("speaker") or "").strip() or FISHS2_DEFAULT_VOICE
     fishs2_options = _build_fishs2_options(tts_settings)
-    prosody = fishs2_options.get("prosody") if isinstance(fishs2_options.get("prosody"), dict) else {}
+    prosody = (
+        fishs2_options.get("prosody")
+        if isinstance(fishs2_options.get("prosody"), dict)
+        else {}
+    )
 
     payload = {
         "model": model,
@@ -4063,7 +4519,9 @@ def _build_fishs2_payload(text: str, tts_settings: dict) -> dict:
     return payload
 
 
-def _request_fishs2_audio(text: str, tts_settings: dict, fishs2_base_url: str) -> requests.Response:
+def _request_fishs2_audio(
+    text: str, tts_settings: dict, fishs2_base_url: str
+) -> requests.Response:
     normalized_base_url = _normalize_base_url(fishs2_base_url, FISHS2_API_BASE_URL)
     api_key = _resolve_fishs2_api_key(tts_settings)
     payload = _build_fishs2_payload(text, tts_settings)
@@ -4085,11 +4543,15 @@ def _request_fishs2_audio(text: str, tts_settings: dict, fishs2_base_url: str) -
     if last_response is not None:
         return last_response
 
-    raise RuntimeError(f"No FishS2 speech endpoint could be resolved for '{normalized_base_url}'.")
+    raise RuntimeError(
+        f"No FishS2 speech endpoint could be resolved for '{normalized_base_url}'."
+    )
 
 
 def _build_voxtral_payload(text: str, tts_settings: dict) -> dict:
-    model = _normalize_voxtral_model(tts_settings.get("xtts_model", ""), fallback=VOXTRAL_DEFAULT_MODEL)
+    model = _normalize_voxtral_model(
+        tts_settings.get("xtts_model", ""), fallback=VOXTRAL_DEFAULT_MODEL
+    )
     voice = str(tts_settings.get("speaker") or "").strip() or VOXTRAL_DEFAULT_VOICE
     instructions = _build_voxtral_instructions_payload(
         tts_settings,
@@ -4124,7 +4586,9 @@ def _build_kokoro_payload(text: str, tts_settings: dict) -> dict:
     return payload
 
 
-def _request_voxtral_audio(text: str, tts_settings: dict, voxtral_base_url: str) -> requests.Response:
+def _request_voxtral_audio(
+    text: str, tts_settings: dict, voxtral_base_url: str
+) -> requests.Response:
     normalized_base_url = _normalize_base_url(voxtral_base_url, VOXTRAL_API_BASE_URL)
     api_key = _resolve_voxtral_api_key(tts_settings)
     payload = _build_voxtral_payload(text, tts_settings)
@@ -4145,10 +4609,14 @@ def _request_voxtral_audio(text: str, tts_settings: dict, voxtral_base_url: str)
     if last_response is not None:
         return last_response
 
-    raise RuntimeError(f"No Voxtral speech endpoint could be resolved for '{normalized_base_url}'.")
+    raise RuntimeError(
+        f"No Voxtral speech endpoint could be resolved for '{normalized_base_url}'."
+    )
 
 
-def _request_kokoro_audio(text: str, tts_settings: dict, kokoro_base_url: str) -> requests.Response:
+def _request_kokoro_audio(
+    text: str, tts_settings: dict, kokoro_base_url: str
+) -> requests.Response:
     normalized_base_url = _normalize_base_url(kokoro_base_url, KOKORO_API_BASE_URL)
     api_key = _resolve_kokoro_api_key(tts_settings)
     payload = _build_kokoro_payload(text, tts_settings)
@@ -4169,7 +4637,9 @@ def _request_kokoro_audio(text: str, tts_settings: dict, kokoro_base_url: str) -
     if last_response is not None:
         return last_response
 
-    raise RuntimeError(f"No Kokoro speech endpoint could be resolved for '{normalized_base_url}'.")
+    raise RuntimeError(
+        f"No Kokoro speech endpoint could be resolved for '{normalized_base_url}'."
+    )
 
 
 def _build_openai_compatible_audio_payload(
@@ -4185,12 +4655,16 @@ def _build_openai_compatible_audio_payload(
 
     model_name = str(tts_settings.get("xtts_model") or "").strip()
     if not model_name:
-        model_name = str(endpoint.get("default_model", "")).strip() or _provider_default_model(provider)
+        model_name = str(
+            endpoint.get("default_model", "")
+        ).strip() or _provider_default_model(provider)
     model_name = _normalize_model_for_provider(model_name, provider)
 
     voice_name = str(tts_settings.get("speaker") or "").strip()
     if not voice_name:
-        voice_name = str(endpoint.get("default_voice", "")).strip() or _provider_default_voice(provider)
+        voice_name = str(
+            endpoint.get("default_voice", "")
+        ).strip() or _provider_default_voice(provider)
     voice_name = _normalize_voice_for_provider(voice_name, provider)
 
     payload = {
@@ -4201,7 +4675,9 @@ def _build_openai_compatible_audio_payload(
         "speed": _coerce_float(tts_settings.get("speed"), 1.0),
     }
 
-    legacy_instructions = str(tts_settings.get("openai_audio_instructions") or "").strip()
+    legacy_instructions = str(
+        tts_settings.get("openai_audio_instructions") or ""
+    ).strip()
     generation_prompt = str(tts_settings.get("generation_prompt") or "").strip()
     if _is_xtts_target(model_name, endpoint):
         payload["instructions"] = _build_xtts_instructions_payload(
@@ -4260,7 +4736,9 @@ def _litellm_response_to_requests_response(litellm_response) -> requests.Respons
     return response
 
 
-def _request_litellm_audio(payload: dict, endpoint: dict[str, str]) -> requests.Response:
+def _request_litellm_audio(
+    payload: dict, endpoint: dict[str, str]
+) -> requests.Response:
     litellm_speech = _get_litellm_speech_client()
     if litellm_speech is None:
         detail = ""
@@ -4280,10 +4758,16 @@ def _request_litellm_audio(payload: dict, endpoint: dict[str, str]) -> requests.
         raw_provider=endpoint.get("provider", ""),
     )
     if provider not in SUPPORTED_AUDIO_PROVIDERS:
-        raise RuntimeError(f"Provider '{provider}' is not supported for LiteLLM speech routing.")
+        raise RuntimeError(
+            f"Provider '{provider}' is not supported for LiteLLM speech routing."
+        )
 
-    model_name = str(payload.get("model") or "").strip() or _provider_default_model(provider)
-    voice_name = str(payload.get("voice") or "").strip() or _provider_default_voice(provider)
+    model_name = str(payload.get("model") or "").strip() or _provider_default_model(
+        provider
+    )
+    voice_name = str(payload.get("voice") or "").strip() or _provider_default_voice(
+        provider
+    )
     api_base = endpoint.get("base_url") or None
     if provider == GEMINI_PROVIDER:
         api_base = None
@@ -4317,7 +4801,9 @@ def _request_litellm_audio(payload: dict, endpoint: dict[str, str]) -> requests.
     return _litellm_response_to_requests_response(litellm_response)
 
 
-def _request_openai_compatible_audio(text: str, tts_settings: dict) -> requests.Response:
+def _request_openai_compatible_audio(
+    text: str, tts_settings: dict
+) -> requests.Response:
     endpoint, error = resolve_openai_audio_endpoint(tts_settings)
     if endpoint is None:
         raise RuntimeError(error)
@@ -4331,12 +4817,18 @@ def _request_openai_compatible_audio(text: str, tts_settings: dict) -> requests.
 
         text_field = str(request_fields.get("text") or "").strip()
         if not text_field:
-            raise RuntimeError(f"Endpoint '{endpoint['name']}' has no configured text request field.")
+            raise RuntimeError(
+                f"Endpoint '{endpoint['name']}' has no configured text request field."
+            )
         payload[text_field] = text
 
         mapped_values = {
-            "model": str(tts_settings.get("xtts_model") or endpoint.get("default_model") or "").strip(),
-            "voice": str(tts_settings.get("speaker") or endpoint.get("default_voice") or "").strip(),
+            "model": str(
+                tts_settings.get("xtts_model") or endpoint.get("default_model") or ""
+            ).strip(),
+            "voice": str(
+                tts_settings.get("speaker") or endpoint.get("default_voice") or ""
+            ).strip(),
             "speed": tts_settings.get("speed"),
             "format": "wav",
         }
@@ -4347,7 +4839,9 @@ def _request_openai_compatible_audio(text: str, tts_settings: dict) -> requests.
 
         speech_path = str(endpoint.get("speech_path") or "").strip()
         if not speech_path:
-            raise RuntimeError(f"Endpoint '{endpoint['name']}' has no configured speech route.")
+            raise RuntimeError(
+                f"Endpoint '{endpoint['name']}' has no configured speech route."
+            )
         return requests.post(
             _configured_endpoint_url(str(endpoint["base_url"]), speech_path),
             headers=_configured_endpoint_auth_headers(endpoint),
@@ -4400,7 +4894,9 @@ def _request_openai_compatible_audio(text: str, tts_settings: dict) -> requests.
     if last_response is not None:
         return last_response
 
-    raise RuntimeError(f"No speech endpoint could be resolved for '{endpoint['name']}'.")
+    raise RuntimeError(
+        f"No speech endpoint could be resolved for '{endpoint['name']}'."
+    )
 
 
 def _vertex_access_token(service: dict[str, object]) -> tuple[str, str]:
@@ -4419,7 +4915,9 @@ def _vertex_access_token(service: dict[str, object]) -> tuple[str, str]:
         try:
             credential_info = json.loads(credential_json)
         except json.JSONDecodeError as error:
-            raise ValueError("Vertex credentials must be valid service-account JSON.") from error
+            raise ValueError(
+                "Vertex credentials must be valid service-account JSON."
+            ) from error
         credentials = service_account.Credentials.from_service_account_info(
             credential_info,
             scopes=scopes,
@@ -4437,7 +4935,9 @@ def _vertex_access_token(service: dict[str, object]) -> tuple[str, str]:
         credentials.refresh(GoogleAuthRequest())
     token = str(credentials.token or "").strip()
     if not token:
-        raise RuntimeError("Google authentication did not return a Vertex access token.")
+        raise RuntimeError(
+            "Google authentication did not return a Vertex access token."
+        )
     return token, project_id
 
 
@@ -4454,7 +4954,9 @@ def _pcm_to_wav_bytes(pcm: bytes, *, sample_rate: int = 24000) -> bytes:
 def _request_vertex_ai_audio(text: str, tts_settings: dict) -> requests.Response:
     service = get_service_config(tts_settings, VERTEX_PROVIDER) or {}
     token, project_id = _vertex_access_token(service)
-    location = str(service.get("vertex_location") or VERTEX_AUDIO_DEFAULT_LOCATION).strip()
+    location = str(
+        service.get("vertex_location") or VERTEX_AUDIO_DEFAULT_LOCATION
+    ).strip()
     model = str(
         tts_settings.get("xtts_model")
         or tts_settings.get("model")
@@ -4474,7 +4976,11 @@ def _request_vertex_ai_audio(text: str, tts_settings: dict) -> requests.Response
         f"publishers/google/models/{quote(model, safe='')}:generateContent"
     )
     generation_prompt = str(tts_settings.get("generation_prompt") or "").strip()
-    prompt_text = _build_guided_speech_prompt(text, generation_prompt) if generation_prompt else text
+    prompt_text = (
+        _build_guided_speech_prompt(text, generation_prompt)
+        if generation_prompt
+        else text
+    )
     payload = {
         "contents": [{"role": "user", "parts": [{"text": prompt_text}]}],
         "generationConfig": {
@@ -4488,7 +4994,10 @@ def _request_vertex_ai_audio(text: str, tts_settings: dict) -> requests.Response
     }
     response = requests.post(
         endpoint,
-        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
         json=payload,
         timeout=TTS_GENERATION_TIMEOUT_SECONDS,
     )
@@ -4513,17 +5022,26 @@ def _request_vertex_ai_audio(text: str, tts_settings: dict) -> requests.Response
 def _decode_audio_response(response: requests.Response) -> AudioSegment:
     content_type = (response.headers.get("Content-Type") or "").lower()
     if not response.content:
-        raise RuntimeError("The speech service returned an empty response instead of audio.")
+        raise RuntimeError(
+            "The speech service returned an empty response instead of audio."
+        )
     if "json" in content_type or content_type.startswith("text/"):
         try:
             payload = response.json()
         except ValueError:
             payload = response.text.strip()
         if isinstance(payload, dict):
-            detail = payload.get("detail") or payload.get("error") or payload.get("message") or payload
+            detail = (
+                payload.get("detail")
+                or payload.get("error")
+                or payload.get("message")
+                or payload
+            )
         else:
             detail = payload
-        raise RuntimeError(f"The speech service returned an error instead of audio: {detail}")
+        raise RuntimeError(
+            f"The speech service returned an error instead of audio: {detail}"
+        )
     format_hint = "wav"
     if "mpeg" in content_type or "mp3" in content_type:
         format_hint = "mp3"
@@ -4544,7 +5062,9 @@ def _decode_audio_response(response: requests.Response) -> AudioSegment:
 
 def _decode_audio_bytes(audio: bytes, *, format_hint: str = "wav") -> AudioSegment:
     if not audio:
-        raise RuntimeError("The speech service returned an empty response instead of audio.")
+        raise RuntimeError(
+            "The speech service returned an empty response instead of audio."
+        )
     audio_data = io.BytesIO(audio)
     try:
         return AudioSegment.from_file(audio_data, format=format_hint)
@@ -4553,9 +5073,13 @@ def _decode_audio_bytes(audio: bytes, *, format_hint: str = "wav") -> AudioSegme
         return AudioSegment.from_file(audio_data)
 
 
-def _request_chatterbox_audio(text: str, tts_settings: dict, chatterbox_base_url: str) -> requests.Response:
-    normalized_base_url = _normalize_base_url(chatterbox_base_url, CHATTERBOX_API_BASE_URL)
-    
+def _request_chatterbox_audio(
+    text: str, tts_settings: dict, chatterbox_base_url: str
+) -> requests.Response:
+    normalized_base_url = _normalize_base_url(
+        chatterbox_base_url, CHATTERBOX_API_BASE_URL
+    )
+
     # Map to proper model id if alias is used
     model = str(tts_settings.get("xtts_model", CHATTERBOX_DEFAULT_MODEL) or "").strip()
     if model.lower() in {"turbo", "chatterbox-turbo"}:
@@ -4566,7 +5090,7 @@ def _request_chatterbox_audio(text: str, tts_settings: dict, chatterbox_base_url
         model = "chatterbox-en"
     else:
         model = CHATTERBOX_DEFAULT_MODEL
-        
+
     payload = {
         "model": model,
         "input": text,
@@ -4574,7 +5098,7 @@ def _request_chatterbox_audio(text: str, tts_settings: dict, chatterbox_base_url
         "speed": _coerce_float(tts_settings.get("speed"), 1.0),
         "language": normalize_chatterbox_language_code(tts_settings.get("language")),
     }
-    
+
     # Pass optional advanced parameters
     payload["temperature"] = _coerce_float(
         tts_settings.get("chatterbox_temperature")
@@ -4617,7 +5141,7 @@ def _request_chatterbox_audio(text: str, tts_settings: dict, chatterbox_base_url
         tts_settings.get("chatterbox_norm_loudness"),
         True,
     )
-            
+
     last_response = None
     for speech_url in _openai_audio_speech_urls(normalized_base_url):
         response = requests.post(
@@ -4635,7 +5159,9 @@ def _request_chatterbox_audio(text: str, tts_settings: dict, chatterbox_base_url
     if last_response is not None:
         return last_response
 
-    raise RuntimeError(f"No Chatterbox speech endpoint could be resolved for '{normalized_base_url}'.")
+    raise RuntimeError(
+        f"No Chatterbox speech endpoint could be resolved for '{normalized_base_url}'."
+    )
 
 
 def _kobold_qwen_cloning_model_from_metadata(tts_settings: dict, voice: str) -> str:
@@ -4651,9 +5177,7 @@ def _kobold_qwen_cloning_model_from_metadata(tts_settings: dict, voice: str) -> 
             if (
                 isinstance(item, dict)
                 and _normalize_service_id(
-                    item.get("id")
-                    or item.get("name")
-                    or item.get("provider")
+                    item.get("id") or item.get("name") or item.get("provider")
                 )
                 == "kobold_qwen"
             )
@@ -4678,7 +5202,9 @@ def _kobold_qwen_cloning_model_from_metadata(tts_settings: dict, voice: str) -> 
     return ""
 
 
-def resolve_kobold_qwen_model(tts_settings: dict, fallback: str = KOBOLD_QWEN_DEFAULT_MODEL) -> str:
+def resolve_kobold_qwen_model(
+    tts_settings: dict, fallback: str = KOBOLD_QWEN_DEFAULT_MODEL
+) -> str:
     """Resolve Qwen's current model field before its legacy XTTS alias.
 
     A voice catalogue can identify a cloned reference even when no model was
@@ -4780,7 +5306,10 @@ def _build_kobold_qwen_payload(text: str, tts_settings: dict) -> dict[str, objec
             f"Qwen voice '{voice}' is pre-built and cannot be used with Voice Cloning. "
             "Choose a provider-uploaded reference voice instead."
         )
-    if normalized_model in {"prebuilt voices", "qwen3-tts-customvoice"} and voice.lower() not in preset_ids:
+    if (
+        normalized_model in {"prebuilt voices", "qwen3-tts-customvoice"}
+        and voice.lower() not in preset_ids
+    ):
         raise ValueError(
             f"Qwen voice '{voice}' is a cloning reference and cannot be used with Prebuilt Voices."
         )
@@ -4800,8 +5329,12 @@ def _build_kobold_qwen_payload(text: str, tts_settings: dict) -> dict[str, objec
     return payload
 
 
-def _request_kobold_qwen_audio(text: str, tts_settings: dict, kobold_qwen_base_url: str) -> requests.Response:
-    normalized_base_url = _normalize_base_url(kobold_qwen_base_url, KOBOLD_QWEN_API_BASE_URL)
+def _request_kobold_qwen_audio(
+    text: str, tts_settings: dict, kobold_qwen_base_url: str
+) -> requests.Response:
+    normalized_base_url = _normalize_base_url(
+        kobold_qwen_base_url, KOBOLD_QWEN_API_BASE_URL
+    )
     api_key = _resolve_kobold_qwen_api_key(tts_settings)
     payload = _build_kobold_qwen_payload(text, tts_settings)
 
@@ -4822,7 +5355,9 @@ def _request_kobold_qwen_audio(text: str, tts_settings: dict, kobold_qwen_base_u
     if last_response is not None:
         return last_response
 
-    raise RuntimeError(f"No Qwen3 TTS speech endpoint could be resolved for '{normalized_base_url}'.")
+    raise RuntimeError(
+        f"No Qwen3 TTS speech endpoint could be resolved for '{normalized_base_url}'."
+    )
 
 
 def get_kobold_qwen_batch_capabilities(
@@ -4856,7 +5391,9 @@ def get_kobold_qwen_batch_capabilities(
             return fallback
         try:
             default_size = max(1, min(32, int(batch.get("default_batch_size") or 1)))
-            maximum_size = max(default_size, min(32, int(batch.get("max_batch_size") or default_size)))
+            maximum_size = max(
+                default_size, min(32, int(batch.get("max_batch_size") or default_size))
+            )
             parallelism = max(1, int(batch.get("parallelism") or 1))
         except (TypeError, ValueError):
             return fallback
@@ -5063,7 +5600,9 @@ def text_to_audio(
     # also makes direct callers consistent with dubbing speech blocks.
     text = re.sub(r"\s+", " ", str(text or "")).strip()
     service = tts_settings.get("service", "XTTS")
-    normalized_silero_base_url = _normalize_base_url(silero_base_url, SILERO_API_BASE_URL)
+    normalized_silero_base_url = _normalize_base_url(
+        silero_base_url, SILERO_API_BASE_URL
+    )
 
     max_attempts = max(1, min(20, int(max_attempts or 1)))
     try:
@@ -5077,7 +5616,11 @@ def text_to_audio(
     recovery_cycles = 0
     while attempt < max_attempts:
         if cancel_event is not None and cancel_event.is_set():
-            logging.info("TTS generation canceled before attempt %d/%d", attempt + 1, max_attempts)
+            logging.info(
+                "TTS generation canceled before attempt %d/%d",
+                attempt + 1,
+                max_attempts,
+            )
             return None
         attempt += 1
         try:
@@ -5092,9 +5635,13 @@ def text_to_audio(
             elif service == "Kokoro":
                 response = _request_kokoro_audio(text, tts_settings, kokoro_base_url)
             elif service == "Chatterbox":
-                response = _request_chatterbox_audio(text, tts_settings, chatterbox_base_url)
+                response = _request_chatterbox_audio(
+                    text, tts_settings, chatterbox_base_url
+                )
             elif service == "Qwen3 TTS":
-                response = _request_kobold_qwen_audio(text, tts_settings, kobold_qwen_base_url)
+                response = _request_kobold_qwen_audio(
+                    text, tts_settings, kobold_qwen_base_url
+                )
             elif service == "Magpie":
                 response = _request_magpie_audio(text, tts_settings, magpie_base_url)
             elif service in {
@@ -5116,11 +5663,15 @@ def text_to_audio(
                     ),
                     "input": text,
                     "voice": str(tts_settings.get("speaker") or ""),
-                    "language": normalize_silero_language_code(tts_settings.get("language")),
+                    "language": normalize_silero_language_code(
+                        tts_settings.get("language")
+                    ),
                     "response_format": "wav",
                     "speed": _coerce_float(tts_settings.get("speed"), 1.0),
                     "sample_rate": int(tts_settings.get("silero_sample_rate") or 48000),
-                    "stress_mode": str(tts_settings.get("silero_stress_mode") or "auto"),
+                    "stress_mode": str(
+                        tts_settings.get("silero_stress_mode") or "auto"
+                    ),
                 }
                 response = requests.post(
                     f"{normalized_silero_base_url}/v1/audio/speech",
@@ -5150,9 +5701,14 @@ def text_to_audio(
             )
             response = getattr(e, "response", None)
             if response is not None:
-                logging.warning("Server response: %s", str(getattr(response, "text", ""))[:4000])
+                logging.warning(
+                    "Server response: %s", str(getattr(response, "text", ""))[:4000]
+                )
             if not retryable_error(e):
-                logging.error("TTS request is not retryable%s.", f" (HTTP {status})" if status else "")
+                logging.error(
+                    "TTS request is not retryable%s.",
+                    f" (HTTP {status})" if status else "",
+                )
                 break
             retry_after = retry_after_seconds(e)
 
@@ -5178,7 +5734,9 @@ def text_to_audio(
                     maximum_recovery_cycles,
                 )
                 if recovery_callback is not None:
-                    recovery_callback(recovery_cycles, maximum_recovery_cycles, recovery_timeout)
+                    recovery_callback(
+                        recovery_cycles, maximum_recovery_cycles, recovery_timeout
+                    )
                 recovered = _wait_for_kobold_qwen_recovery(
                     kobold_qwen_base_url,
                     api_key=_resolve_kobold_qwen_api_key(tts_settings),
@@ -5187,7 +5745,9 @@ def text_to_audio(
                     cancel_event=cancel_event,
                 )
                 if cancel_event is not None and cancel_event.is_set():
-                    logging.info("TTS generation canceled while waiting for Qwen3 TTS recovery.")
+                    logging.info(
+                        "TTS generation canceled while waiting for Qwen3 TTS recovery."
+                    )
                     return None
                 if recovered:
                     # Infrastructure recovery is bounded separately from real
@@ -5200,26 +5760,54 @@ def text_to_audio(
                         max_attempts,
                     )
                     continue
-                logging.warning("Qwen3 TTS did not recover within %.1f seconds.", recovery_timeout)
+                logging.warning(
+                    "Qwen3 TTS did not recover within %.1f seconds.", recovery_timeout
+                )
 
         if attempt >= max_attempts:
             break
         try:
-            maximum_retry_delay = max(1.0, min(300.0, float(tts_settings.get("retry_max_delay_seconds") or 90)))
+            maximum_retry_delay = max(
+                1.0,
+                min(300.0, float(tts_settings.get("retry_max_delay_seconds") or 90)),
+            )
         except (TypeError, ValueError):
             maximum_retry_delay = 90.0
+        # Google documents Vertex 429s as transient shared-capacity pressure
+        # and recommends truncated exponential backoff with jitter.  A 0.5 s
+        # base exhausted all five attempts in roughly eight seconds on a real
+        # German TTS run, never allowing the quota/capacity window to recover.
+        google_rate_limit = status == 429 and service in {
+            VERTEX_SERVICE,
+            GEMINI_SERVICE,
+            LEGACY_GEMINI_SERVICE,
+        }
+        try:
+            configured_base_delay = float(
+                tts_settings.get("rate_limit_retry_base_delay_seconds")
+                or (5.0 if google_rate_limit else 0.5)
+            )
+        except (TypeError, ValueError):
+            configured_base_delay = 5.0 if google_rate_limit else 0.5
         delay = retry_delay_seconds(
             attempt,
             retry_after=retry_after,
-            base_delay=0.5,
+            base_delay=max(0.1, min(60.0, configured_base_delay)),
             maximum_delay=maximum_retry_delay,
         )
         if retry_callback is not None:
             retry_callback(attempt + 1, max_attempts, delay)
-        logging.info("Retrying TTS generation in %.1f seconds (attempt %d/%d).", delay, attempt + 1, max_attempts)
+        logging.info(
+            "Retrying TTS generation in %.1f seconds (attempt %d/%d).",
+            delay,
+            attempt + 1,
+            max_attempts,
+        )
         if not wait_for_retry(delay, cancel_event):
             logging.info("TTS generation canceled while waiting to retry.")
             return None
 
-    logging.error("Failed to generate TTS audio after %d attempts: '%s...'", attempt, text[:50])
+    logging.error(
+        "Failed to generate TTS audio after %d attempts: '%s...'", attempt, text[:50]
+    )
     return None

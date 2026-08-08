@@ -316,6 +316,29 @@ export const voiceApi = {
     typedApiJson<'/api/v1/voices', 'post', T>('/api/v1/voices', 'post', {
       body
     }),
+  update: <T>(
+    voiceId: string,
+    revision: number,
+    body: ApiSchema<'VoiceUpdate'>
+  ) =>
+    typedApiJson<'/api/v1/voices/{voiceId}', 'patch', T>(
+      '/api/v1/voices/{voiceId}',
+      'patch',
+      {
+        path: { voiceId },
+        headers: { 'If-Match': `"${revision}"` },
+        body
+      }
+    ),
+  delete: (voiceId: string, revision: number) =>
+    typedApiJson<'/api/v1/voices/{voiceId}', 'delete', void>(
+      '/api/v1/voices/{voiceId}',
+      'delete',
+      {
+        path: { voiceId },
+        headers: { 'If-Match': `"${revision}"` }
+      }
+    ),
   samples: <T>(voiceId: string) =>
     typedApiJson<'/api/v1/voices/{voiceId}/samples', 'get', ItemPage<T>>(
       '/api/v1/voices/{voiceId}/samples',
@@ -324,15 +347,40 @@ export const voiceApi = {
         path: { voiceId }
       }
     ),
-  uploadSample: (voiceId: string, body: FormData) =>
+  uploadSample: (voiceId: string, revision: number, body: FormData) =>
     typedApiJson<'/api/v1/voices/{voiceId}/samples', 'post', JobRecord>(
       '/api/v1/voices/{voiceId}/samples',
       'post',
       {
         path: { voiceId },
+        headers: { 'If-Match': `"${revision}"` },
         body
       }
     ),
+  replaceSample: (
+    voiceId: string,
+    sampleId: string,
+    revision: number,
+    body: FormData
+  ) =>
+    typedApiJson<
+      '/api/v1/voices/{voiceId}/samples/{sampleId}/replace',
+      'post',
+      JobRecord
+    >('/api/v1/voices/{voiceId}/samples/{sampleId}/replace', 'post', {
+      path: { voiceId, sampleId },
+      headers: { 'If-Match': `"${revision}"` },
+      body
+    }),
+  deleteSample: (voiceId: string, sampleId: string, revision: number) =>
+    typedApiJson<
+      '/api/v1/voices/{voiceId}/samples/{sampleId}',
+      'delete',
+      { id: string; status: string; voice_revision: number }
+    >('/api/v1/voices/{voiceId}/samples/{sampleId}', 'delete', {
+      path: { voiceId, sampleId },
+      headers: { 'If-Match': `"${revision}"` }
+    }),
   transcribeSample: (
     voiceId: string,
     sampleId: string,
@@ -359,13 +407,23 @@ export const voiceApi = {
       path: { voiceId, sampleId },
       body
     }),
-  publish: (voiceId: string, serviceId: string) =>
+  publish: (voiceId: string, serviceId: string, revision: number) =>
     typedApiJson<
       '/api/v1/voices/{voiceId}/providers/{serviceId}',
       'post',
       JobRecord
     >('/api/v1/voices/{voiceId}/providers/{serviceId}', 'post', {
-      path: { voiceId, serviceId }
+      path: { voiceId, serviceId },
+      headers: { 'If-Match': `"${revision}"` }
+    }),
+  unpublish: (voiceId: string, serviceId: string, revision: number) =>
+    typedApiJson<
+      '/api/v1/voices/{voiceId}/providers/{serviceId}',
+      'delete',
+      JobRecord
+    >('/api/v1/voices/{voiceId}/providers/{serviceId}', 'delete', {
+      path: { voiceId, serviceId },
+      headers: { 'If-Match': `"${revision}"` }
     })
 };
 

@@ -9,20 +9,27 @@ import time
 import traceback
 from collections.abc import Callable, Mapping
 from datetime import timedelta
-from typing import Any
+from typing import Any, ClassVar
 
 from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from .credentials import SecretRedactor
 from .database import Database
-from .models import Job, JobEvent, ResourceClaim, utcnow
+from .models import AgentRun, GenerationRun, Job, JobEvent, ResourceClaim, utcnow
 
-JobHandler = Callable[[dict[str, Any], Callable[[float, str | None], None], threading.Event], dict[str, Any] | None]
+JobHandler = Callable[
+    [dict[str, Any], Callable[[float, str | None], None], threading.Event],
+    dict[str, Any] | None,
+]
 
 
 class JobQueue:
-    TERMINAL_EVENT_TYPES = {"job.succeeded", "job.failed", "job.canceled"}
+    TERMINAL_EVENT_TYPES: ClassVar[set[str]] = {
+        "job.succeeded",
+        "job.failed",
+        "job.canceled",
+    }
     EVENT_SCOPE_IDS = (
         "generation_run_id",
         "output_assembly_id",
@@ -39,6 +46,28 @@ class JobQueue:
         "document_id",
         "model_id",
     )
+    GENERATION_ACTIVE_STATUSES = frozenset(
+        {
+            "queued",
+            "running",
+            "pausing",
+            "pause_requested",
+            "cancel_requested",
+        }
+    )
+    GENERATION_JOB_TERMINAL_STATUS: ClassVar[dict[str, str]] = {
+        "succeeded": "completed",
+        "failed": "failed",
+        "canceled": "canceled",
+        "interrupted": "canceled",
+    }
+    AGENT_RUN_ACTIVE_STATUSES = frozenset({"queued", "running", "retrying"})
+    AGENT_JOB_TERMINAL_STATUS: ClassVar[dict[str, str]] = {
+        "succeeded": "failed",
+        "failed": "failed",
+        "canceled": "interrupted",
+        "interrupted": "interrupted",
+    }
 
     def __init__(
         self,
@@ -65,7 +94,8 @@ class JobQueue:
             # terminal-only to avoid progress-event fan-out.
             if (
                 kind.startswith("generation.")
-                or kind in {
+                or kind
+                in {
                     "audiobook.generate_audio",
                     "dubbing.generate_audio",
                     "workflow.continue",
@@ -85,7 +115,8 @@ class JobQueue:
             entities.add("sources")
         if (
             kind.startswith("generation.")
-            or kind in {
+            or kind
+            in {
                 "text.prepare",
                 "text.optimize_tts",
                 "audiobook.generate_audio",
@@ -103,15 +134,15 @@ class JobQueue:
             entities.add("training")
         return sorted(entities)
 
-    def _event(self, session, job_id: str | None, event_type: str, payload: dict | None = None) -> JobEvent:
-        event_payload = self.redact_diagnostic(payload) if isinstance(payload, dict) else {}
+    def _event(
+        self, session, job_id: str | None, event_type: str, payload: dict | None = None
+    ) -> JobEvent:
+        event_payload = (
+            self.redact_diagnostic(payload) if isinstance(payload, dict) else {}
+        )
         job = session.get(Job, job_id) if job_id else None
         if job is not None:
-            job_payload = (
-                job.payload_json
-                if isinstance(job.payload_json, dict)
-                else {}
-            )
+            job_payload = job.payload_json if isinstance(job.payload_json, dict) else {}
             for key in self.EVENT_SCOPE_IDS:
                 value = job_payload.get(key)
                 if isinstance(value, (str, int)) and value != "":
@@ -129,7 +160,9 @@ class JobQueue:
             if job.progress_detail and "detail" not in event_payload:
                 event_payload["detail"] = job.progress_detail
         event_payload = self.redact_diagnostic(event_payload)
-        event = JobEvent(job_id=job_id, event_type=event_type, payload_json=event_payload)
+        event = JobEvent(
+            job_id=job_id, event_type=event_type, payload_json=event_payload
+        )
         session.add(event)
         return event
 
@@ -200,9 +233,7 @@ class JobQueue:
         """Close jobs whose worker lease vanished instead of leaving them running forever."""
         now = utcnow()
         records = list(
-            session.scalars(
-                select(Job).where(self._stale_filter(now))
-            ).all()
+            session.scalars(select(Job).where(self._stale_filter(now))).all()
         )
         terminal_job_ids: list[str] = []
         for job in records:
@@ -212,12 +243,16 @@ class JobQueue:
                 job.lease_owner = None
                 job.lease_expires_at = None
                 job.updated_at = now
-                self._event(session, job.id, "job.canceled", {"reason": "worker_lease_expired"})
+                self._event(
+                    session, job.id, "job.canceled", {"reason": "worker_lease_expired"}
+                )
                 terminal_job_ids.append(job.id)
             elif job.attempts >= job.max_attempts or job.lease_expires_at is None:
                 job.status = "failed"
                 job.error_code = job.error_code or "worker_lease_expired"
-                job.error_message = job.error_message or "The worker stopped before this job completed."
+                job.error_message = (
+                    job.error_message or "The worker stopped before this job completed."
+                )
                 job.finished_at = now
                 job.lease_owner = None
                 job.lease_expires_at = None
@@ -233,6 +268,191 @@ class JobQueue:
             session.execute(
                 delete(ResourceClaim).where(ResourceClaim.job_id.in_(terminal_job_ids))
             )
+            self._reconcile_generation_runs_for_jobs_locked(
+                session,
+                terminal_job_ids,
+            )
+            self._reconcile_agent_runs_for_jobs_locked(session, terminal_job_ids)
+
+    @staticmethod
+    def _is_generation_owner(run: GenerationRun, job: Job) -> bool:
+        payload = job.payload_json if isinstance(job.payload_json, dict) else {}
+        return bool(
+            job.kind == "generation.run"
+            and job.session_id == run.session_id
+            and str(payload.get("generation_run_id") or "") == run.id
+        )
+
+    def _apply_generation_job_status(
+        self,
+        run: GenerationRun,
+        job: Job,
+    ) -> bool:
+        """Project one safely linked terminal job onto its generation run."""
+
+        status = self.GENERATION_JOB_TERMINAL_STATUS.get(str(job.status or ""))
+        if status is None or not self._is_generation_owner(run, job):
+            return False
+        run.status = status
+        run.cancel_requested = False
+        run.pause_requested = False
+        run.updated_at = utcnow()
+        return True
+
+    def _reconcile_generation_run_for_job_locked(
+        self,
+        session: Session,
+        job: Job,
+    ) -> None:
+        """Reconcile only the domain record owned by a normal job transition."""
+
+        if job.kind != "generation.run":
+            return
+        run_id = str(
+            (job.payload_json or {}).get("generation_run_id")
+            if isinstance(job.payload_json, dict)
+            else ""
+        )
+        if not run_id:
+            return
+        run = session.scalar(
+            select(GenerationRun).where(
+                GenerationRun.id == run_id,
+                GenerationRun.job_id == job.id,
+                GenerationRun.status.in_(self.GENERATION_ACTIVE_STATUSES),
+            )
+        )
+        if run is not None:
+            self._apply_generation_job_status(run, job)
+
+    def _reconcile_generation_runs_for_jobs_locked(
+        self,
+        session: Session,
+        job_ids: list[str],
+    ) -> None:
+        """Bulk-project a small set of terminal job transitions."""
+
+        if not job_ids:
+            return
+        pairs = session.execute(
+            select(GenerationRun, Job)
+            .join(Job, GenerationRun.job_id == Job.id)
+            .where(
+                GenerationRun.job_id.in_(job_ids),
+                GenerationRun.status.in_(self.GENERATION_ACTIVE_STATUSES),
+            )
+        ).all()
+        for run, job in pairs:
+            self._apply_generation_job_status(run, job)
+
+    def _repair_generation_runs_locked(self, session: Session) -> None:
+        """One startup repair for terminal jobs and every broken job link.
+
+        Normal reads remain lock-free.  The outer join intentionally detects
+        both NULL job IDs and dangling non-NULL IDs left by old databases or a
+        partially restored backup.
+        """
+
+        pairs = session.execute(
+            select(GenerationRun, Job)
+            .outerjoin(Job, GenerationRun.job_id == Job.id)
+            .where(GenerationRun.status.in_(self.GENERATION_ACTIVE_STATUSES))
+        ).all()
+        repaired_at = utcnow()
+        for run, job in pairs:
+            if job is None:
+                run.status = (
+                    "canceled" if run.status == "cancel_requested" else "failed"
+                )
+                run.cancel_requested = False
+                run.pause_requested = False
+                run.updated_at = repaired_at
+                continue
+            if self._apply_generation_job_status(run, job):
+                continue
+            if not self._is_generation_owner(run, job):
+                # A non-generation job (or a mismatched session/payload) can
+                # never drive this run. Keeping it active would strand the UI.
+                run.status = "failed"
+                run.cancel_requested = False
+                run.pause_requested = False
+                run.updated_at = repaired_at
+
+    @staticmethod
+    def _is_agent_run_owner(run: AgentRun, job: Job) -> bool:
+        return bool(
+            run.job_id == job.id
+            and (job.session_id is None or job.session_id == run.session_id)
+        )
+
+    def _apply_agent_job_status(self, run: AgentRun, job: Job) -> bool:
+        """Project a terminal job onto an unfinished durable agent run."""
+
+        status = self.AGENT_JOB_TERMINAL_STATUS.get(str(job.status or ""))
+        if status is None or not self._is_agent_run_owner(run, job):
+            return False
+        run.status = status
+        if status == "failed" and not run.error_message:
+            run.error_message = (
+                job.error_message
+                or "The job ended before the agentic operation was finalized."
+            )
+        run.updated_at = utcnow()
+        return True
+
+    def _reconcile_agent_runs_for_jobs_locked(
+        self,
+        session: Session,
+        job_ids: list[str],
+    ) -> None:
+        if not job_ids:
+            return
+        pairs = session.execute(
+            select(AgentRun, Job)
+            .join(Job, AgentRun.job_id == Job.id)
+            .where(
+                AgentRun.job_id.in_(job_ids),
+                AgentRun.status.in_(self.AGENT_RUN_ACTIVE_STATUSES),
+            )
+        ).all()
+        for run, job in pairs:
+            self._apply_agent_job_status(run, job)
+
+    def _repair_agent_runs_locked(self, session: Session) -> None:
+        """Make interrupted checkpoints resumable after a process crash."""
+
+        pairs = session.execute(
+            select(AgentRun, Job)
+            .outerjoin(Job, AgentRun.job_id == Job.id)
+            .where(AgentRun.status.in_(self.AGENT_RUN_ACTIVE_STATUSES))
+        ).all()
+        repaired_at = utcnow()
+        for run, job in pairs:
+            if job is None:
+                run.status = "interrupted"
+                run.error_message = (
+                    run.error_message
+                    or "The owning job disappeared before this operation completed."
+                )
+                run.updated_at = repaired_at
+                continue
+            if self._apply_agent_job_status(run, job):
+                continue
+            if not self._is_agent_run_owner(run, job):
+                run.status = "failed"
+                run.error_message = (
+                    run.error_message
+                    or "The operation was linked to a job from another session."
+                )
+                run.updated_at = repaired_at
+
+    def reconcile(self) -> None:
+        """Run the serialized startup repair once before serving requests."""
+
+        with self.database.immediate_session() as session:
+            self._reconcile_stale_locked(session)
+            self._repair_generation_runs_locked(session)
+            self._repair_agent_runs_locked(session)
 
     def _reconcile_stale(self) -> None:
         """Serialize the uncommon stale-job transition without locking normal reads."""
@@ -289,7 +509,9 @@ class JobQueue:
             session_id=session_id,
             workflow_run_id=workflow_run_id,
             max_attempts=max(1, int(max_attempts)),
-            resource_keys_json=sorted({str(key) for key in (resource_keys or []) if str(key).strip()}),
+            resource_keys_json=sorted(
+                {str(key) for key in (resource_keys or []) if str(key).strip()}
+            ),
         )
         session.add(job)
         session.flush()
@@ -440,7 +662,13 @@ class JobQueue:
     def list(self, limit: int = 100) -> list[Job]:
         self._reconcile_stale()
         with self.database.session() as session:
-            jobs = list(session.scalars(select(Job).order_by(Job.created_at.desc()).limit(max(1, min(limit, 500)))).all())
+            jobs = list(
+                session.scalars(
+                    select(Job)
+                    .order_by(Job.created_at.desc())
+                    .limit(max(1, min(limit, 500)))
+                ).all()
+            )
             for job in jobs:
                 session.expunge(job)
             return jobs
@@ -486,7 +714,10 @@ class JobQueue:
                         self._available_filter(now),
                         and_(Job.status == "running", Job.lease_expires_at <= now),
                     ),
-                    or_(Job.session_id.is_(None), Job.session_id.not_in(running_session_ids)),
+                    or_(
+                        Job.session_id.is_(None),
+                        Job.session_id.not_in(running_session_ids),
+                    ),
                     Job.attempts < Job.max_attempts,
                 )
                 .order_by(Job.created_at.asc())
@@ -601,19 +832,17 @@ class JobQueue:
             job.finished_at = utcnow()
             event_type = "job.canceled"
         elif job.status in {"running", "cancel_requested"}:
-            # Cancellation is a terminal state immediately. The worker's
-            # monitor notices it independently of progress callbacks and
-            # prevents any later result from replacing this state.
-            self._event(session, job.id, "job.cancel_requested")
-            job.status = "canceled"
-            job.finished_at = utcnow()
-            job.lease_owner = None
-            job.lease_expires_at = None
-            event_type = "job.canceled"
+            # The lease owner must acknowledge cancellation.  Clearing its
+            # lease here used to make that acknowledgement impossible and left
+            # linked generation runs in cancel_requested forever.
+            job.status = "cancel_requested"
+            event_type = "job.cancel_requested"
         else:
             event_type = "job.cancel_ignored"
         job.updated_at = utcnow()
         self._event(session, job.id, event_type)
+        self._reconcile_generation_run_for_job_locked(session, job)
+        self._reconcile_agent_runs_for_jobs_locked(session, [job.id])
         session.flush()
         return job
 
@@ -643,6 +872,8 @@ class JobQueue:
             job.finished_at = utcnow()
             job.updated_at = job.finished_at
             self._event(session, job.id, "job.succeeded", job.result_json)
+            self._reconcile_generation_run_for_job_locked(session, job)
+            self._reconcile_agent_runs_for_jobs_locked(session, [job.id])
 
     def fail(
         self,
@@ -662,9 +893,7 @@ class JobQueue:
             job.status = "queued" if retry else "failed"
             if retry:
                 job.progress = 0.0
-                job.progress_detail = (
-                    f"Retry scheduled after attempt {job.attempts} of {job.max_attempts}"
-                )
+                job.progress_detail = f"Retry scheduled after attempt {job.attempts} of {job.max_attempts}"
             safe_code = self.secret_redactor.redact(code)
             safe_message = self.secret_redactor.redact(message)
             safe_trace = self.secret_redactor.redact(trace) if trace else ""
@@ -680,6 +909,24 @@ class JobQueue:
                 "job.retry_scheduled" if retry else "job.failed",
                 {"code": safe_code, "message": safe_message, "trace": safe_trace},
             )
+            if not retry:
+                self._reconcile_generation_run_for_job_locked(session, job)
+                self._reconcile_agent_runs_for_jobs_locked(session, [job.id])
+            else:
+                # Handlers persist their own failure before the queue schedules
+                # another attempt. Keep the run non-resumable while that retry
+                # is already pending, then the next handler invocation will
+                # restore its accepted checkpoints.
+                session.execute(
+                    update(AgentRun)
+                    .where(
+                        AgentRun.job_id == job.id,
+                        AgentRun.status.in_(
+                            (*self.AGENT_RUN_ACTIVE_STATUSES, "failed", "interrupted")
+                        ),
+                    )
+                    .values(status="retrying", updated_at=utcnow())
+                )
             return True
 
     def cancel_owned(
@@ -691,7 +938,12 @@ class JobQueue:
     ) -> bool:
         with self.database.immediate_session() as session:
             job = session.get(Job, job_id)
-            if not self._owns_lease(job, worker_id, lease_generation):
+            if not self._owns_lease(
+                job,
+                worker_id,
+                lease_generation,
+                require_running=False,
+            ) or job.status not in {"running", "cancel_requested"}:
                 return False
             job.status = "canceled"
             job.lease_owner = None
@@ -699,13 +951,18 @@ class JobQueue:
             job.finished_at = utcnow()
             job.updated_at = job.finished_at
             self._event(session, job.id, "job.canceled")
+            self._reconcile_generation_run_for_job_locked(session, job)
+            self._reconcile_agent_runs_for_jobs_locked(session, [job.id])
             return True
 
     def events_after(self, event_id: int = 0, limit: int = 250) -> list[JobEvent]:
         with self.database.session() as session:
             events = list(
                 session.scalars(
-                    select(JobEvent).where(JobEvent.id > max(0, event_id)).order_by(JobEvent.id.asc()).limit(limit)
+                    select(JobEvent)
+                    .where(JobEvent.id > max(0, event_id))
+                    .order_by(JobEvent.id.asc())
+                    .limit(limit)
                 ).all()
             )
             for event in events:
@@ -759,7 +1016,11 @@ class _JobLogHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
-            trace = logging.Formatter().formatException(record.exc_info) if record.exc_info else ""
+            trace = (
+                logging.Formatter().formatException(record.exc_info)
+                if record.exc_info
+                else ""
+            )
             self.queue.log(
                 self.job_id,
                 record.levelname,
@@ -810,16 +1071,38 @@ class Worker:
         """Update a linked agent run only while this claim is still current."""
         payload = job.payload_json if isinstance(job.payload_json, dict) else {}
         agent_run_id = str(payload.get("agent_run_id") or "")
-        if not agent_run_id:
-            return
         from .models import AgentRun
 
         with self.queue.database.immediate_session() as session:
             current_job = session.get(Job, job.id)
-            if current_job is None or current_job.lease_generation != lease_generation:
+            if (
+                current_job is None
+                or current_job.lease_generation != lease_generation
+                or current_job.lease_owner != self.worker_id
+            ):
                 return
-            agent_run = session.get(AgentRun, agent_run_id)
-            if agent_run is not None:
+            active_statuses = {"queued", "running", "retrying"}
+            if agent_run_id:
+                candidate = session.get(AgentRun, agent_run_id)
+                agent_runs = (
+                    [candidate]
+                    if candidate is not None and candidate.status in active_statuses
+                    else []
+                )
+            else:
+                # Transformation handlers create their AgentRun after the job
+                # begins, so its ID cannot be present in the immutable payload.
+                # Recover every active run owned by this exact job without
+                # touching completed stages from an earlier workflow step.
+                agent_runs = list(
+                    session.scalars(
+                        select(AgentRun).where(
+                            AgentRun.job_id == job.id,
+                            AgentRun.status.in_(active_statuses),
+                        )
+                    ).all()
+                )
+            for agent_run in agent_runs:
                 agent_run.status = status
                 agent_run.updated_at = utcnow()
 
@@ -962,7 +1245,9 @@ class Worker:
                     safe_message,
                 )
             else:
-                logging.error("Worker job %s failed: %s\n%s", job.id, safe_message, safe_trace)
+                logging.error(
+                    "Worker job %s failed: %s\n%s", job.id, safe_message, safe_trace
+                )
             self._update_agent_run_status(
                 job,
                 "canceled" if canceled else "failed",
@@ -1082,7 +1367,9 @@ class Worker:
                 self.stop_event.wait(max(0.05, poll_interval))
 
 
-def noop_handler(payload: dict[str, Any], progress, cancel_event: threading.Event) -> dict[str, Any]:
+def noop_handler(
+    payload: dict[str, Any], progress, cancel_event: threading.Event
+) -> dict[str, Any]:
     duration = max(0.0, min(float(payload.get("duration", 0.0) or 0.0), 30.0))
     if duration:
         steps = max(1, int(duration * 4))
@@ -1092,4 +1379,3 @@ def noop_handler(payload: dict[str, Any], progress, cancel_event: threading.Even
             time.sleep(duration / steps)
             progress((index + 1) / steps, "Checking the worker pipeline")
     return {"echo": payload.get("echo"), "worker": "ready"}
-

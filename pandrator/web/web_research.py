@@ -5,7 +5,9 @@ from __future__ import annotations
 import hashlib
 import ipaddress
 import json
+import math
 import re
+from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, field
 from datetime import timedelta
 from typing import Any
@@ -22,7 +24,9 @@ from .models import ResearchCacheEntry, utcnow
 SEARCH_ROOT = "https://s.jina.ai/"
 READER_ROOT = "https://r.jina.ai/"
 URL_RE = re.compile(r"https?://[^\s<>\])}\"']+", re.IGNORECASE)
-URL_SOURCE_RE = re.compile(r"^\s*URL Source:\s*(https?://\S+)\s*$", re.IGNORECASE | re.MULTILINE)
+URL_SOURCE_RE = re.compile(
+    r"^\s*URL Source:\s*(https?://\S+)\s*$", re.IGNORECASE | re.MULTILINE
+)
 TITLE_RE = re.compile(r"^\s*Title:\s*(.+?)\s*$", re.IGNORECASE | re.MULTILINE)
 
 
@@ -43,6 +47,8 @@ class ResearchAgentConfig:
     max_tokens: int = 4096
     preferred_domains: tuple[str, ...] = ()
     blocked_domains: tuple[str, ...] = ()
+    context_window_tokens: int = 262_144
+    context_input_fraction: float = 0.8
 
 
 @dataclass(slots=True)
@@ -60,6 +66,137 @@ class WebResearchResult:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
+class ResearchSourceBatch:
+    index: int
+    start_char: int
+    end_char: int
+    text: str
+    estimated_tokens: int
+
+
+ResearchCheckpointCallback = Callable[[dict[str, Any]], None]
+
+
+def estimate_research_tokens(value: str) -> int:
+    """Conservatively estimate mixed-language prompt tokens without model imports."""
+    text = str(value or "")
+    if not text:
+        return 0
+    ascii_chars = sum(1 for char in text if ord(char) < 128)
+    non_ascii_chars = len(text) - ascii_chars
+    return max(1, math.ceil(ascii_chars / 4) + non_ascii_chars)
+
+
+def research_source_token_budget(
+    context_window_tokens: int = 262_144,
+    *,
+    input_fraction: float = 0.8,
+    reserved_prompt_tokens: int = 8_192,
+) -> int:
+    """Return the source budget while keeping prompts/tools inside the 80% cap."""
+    context = max(16_384, int(context_window_tokens or 262_144))
+    fraction = max(0.1, min(0.8, float(input_fraction or 0.8)))
+    return max(1_000, int(context * fraction) - max(1_000, reserved_prompt_tokens))
+
+
+def batch_research_source(
+    source_text: str,
+    *,
+    context_window_tokens: int = 262_144,
+    input_fraction: float = 0.8,
+    reserved_prompt_tokens: int = 8_192,
+) -> list[ResearchSourceBatch]:
+    """Partition all source text into deterministic, paragraph-aware context batches."""
+    source = str(source_text or "")
+    if not source:
+        return []
+    budget = research_source_token_budget(
+        context_window_tokens,
+        input_fraction=input_fraction,
+        reserved_prompt_tokens=reserved_prompt_tokens,
+    )
+    batches: list[ResearchSourceBatch] = []
+    cursor = 0
+    source_length = len(source)
+    while cursor < source_length:
+        low = cursor + 1
+        high = source_length
+        best = low
+        while low <= high:
+            midpoint = (low + high) // 2
+            if estimate_research_tokens(source[cursor:midpoint]) <= budget:
+                best = midpoint
+                low = midpoint + 1
+            else:
+                high = midpoint - 1
+        end = best
+        if end < source_length:
+            minimum_boundary = cursor + max(1, int((end - cursor) * 0.6))
+            paragraph_boundary = source.rfind("\n\n", minimum_boundary, end)
+            line_boundary = source.rfind("\n", minimum_boundary, end)
+            chosen = paragraph_boundary if paragraph_boundary >= 0 else line_boundary
+            if chosen > cursor:
+                end = chosen + (2 if chosen == paragraph_boundary else 1)
+        text = source[cursor:end]
+        batches.append(
+            ResearchSourceBatch(
+                index=len(batches),
+                start_char=cursor,
+                end_char=end,
+                text=text,
+                estimated_tokens=estimate_research_tokens(text),
+            )
+        )
+        cursor = end
+    return batches
+
+
+def merge_web_research_results(
+    results: list[WebResearchResult],
+) -> WebResearchResult:
+    """Merge batched or compounded research ledgers in stable source order."""
+    merged = WebResearchResult()
+    evidence_order: list[tuple[str, str]] = []
+    evidence_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    glossary_by_source: dict[str, dict[str, str]] = {}
+    summaries: list[str] = []
+    cost_sources: list[str] = []
+    for result in results:
+        for item in result.evidence:
+            key = (
+                str(item.get("source_url") or ""),
+                str(item.get("term") or item.get("recommendation") or "").casefold(),
+            )
+            if key not in evidence_by_key:
+                evidence_order.append(key)
+            evidence_by_key[key] = dict(item)
+        for item in result.glossary:
+            source = str(item.get("source") or "").strip()
+            target = str(item.get("target") or "").strip()
+            if source and target:
+                glossary_by_source[source.casefold()] = {
+                    "source": source,
+                    "target": target,
+                }
+        if result.summary and result.summary not in summaries:
+            summaries.append(result.summary)
+        merged.tool_trace.extend(result.tool_trace)
+        merged.warnings.extend(result.warnings)
+        merged.llm_calls.extend(result.llm_calls)
+        merged.cost += result.cost
+        merged.response_count += result.response_count
+        _merge_usage(merged.usage, result.usage)
+        for source in result.cost_sources:
+            if source and source not in cost_sources:
+                cost_sources.append(source)
+    merged.evidence = [evidence_by_key[key] for key in evidence_order]
+    merged.glossary = list(glossary_by_source.values())
+    merged.summary = " ".join(summaries)[:4_000]
+    merged.cost_sources = tuple(cost_sources)
+    return merged
 
 
 def parse_domain_list(value: object) -> tuple[str, ...]:
@@ -91,13 +228,14 @@ def _safe_public_url(value: object, blocked_domains: tuple[str, ...] = ()) -> st
     raw = str(value or "").strip()
     parsed = urlsplit(raw)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-        raise ValueError("Research extraction accepts only absolute HTTP or HTTPS URLs.")
+        raise ValueError(
+            "Research extraction accepts only absolute HTTP or HTTPS URLs."
+        )
     if parsed.username or parsed.password:
         raise ValueError("Research URLs may not include embedded credentials.")
     hostname = parsed.hostname.lower().rstrip(".")
-    if (
-        hostname in {"localhost", "localhost.localdomain"}
-        or hostname.endswith((".local", ".internal"))
+    if hostname in {"localhost", "localhost.localdomain"} or hostname.endswith(
+        (".local", ".internal")
     ):
         raise ValueError("Local URLs are not allowed in web research.")
     try:
@@ -105,10 +243,14 @@ def _safe_public_url(value: object, blocked_domains: tuple[str, ...] = ()) -> st
     except ValueError:
         address = None
     if address is not None and not address.is_global:
-        raise ValueError("Private, loopback, and reserved IP addresses are not allowed.")
+        raise ValueError(
+            "Private, loopback, and reserved IP addresses are not allowed."
+        )
     if any(_domain_matches(hostname, domain) for domain in blocked_domains):
         raise ValueError(f"Research access to {hostname} is blocked by settings.")
-    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path or "/", parsed.query, ""))
+    return urlunsplit(
+        (parsed.scheme, parsed.netloc, parsed.path or "/", parsed.query, "")
+    )
 
 
 def _trim(value: object, limit: int) -> tuple[str, bool]:
@@ -198,7 +340,9 @@ def _extract_sources(content: str, *, limit: int = 20) -> list[dict[str, str]]:
         seen.add(normalized)
         title = ""
         source_offset = content.find(url)
-        prior_titles = [match for match in title_matches if match.start() < source_offset]
+        prior_titles = [
+            match for match in title_matches if match.start() < source_offset
+        ]
         if prior_titles:
             title = prior_titles[-1].group(1).strip()
         sources.append(
@@ -273,10 +417,18 @@ class JinaResearchProvider:
                 return response.text
             data = payload.get("data") if isinstance(payload, dict) else None
             if isinstance(data, dict):
-                return str(data.get("content") or data.get("text") or json.dumps(data, ensure_ascii=False))
+                return str(
+                    data.get("content")
+                    or data.get("text")
+                    or json.dumps(data, ensure_ascii=False)
+                )
             if isinstance(data, list):
                 return "\n\n".join(
-                    str(item.get("content") or item.get("text") or json.dumps(item, ensure_ascii=False))
+                    str(
+                        item.get("content")
+                        or item.get("text")
+                        or json.dumps(item, ensure_ascii=False)
+                    )
                     if isinstance(item, dict)
                     else str(item)
                     for item in data
@@ -299,22 +451,30 @@ class JinaResearchProvider:
             raise ValueError("Search query cannot be empty.")
         normalized_domains = parse_domain_list(domains)
         blocked = parse_domain_list(blocked_domains)
+        effective_limit = max(1, min(int(limit), 10))
+        effective_max_chars = max(1000, min(int(max_chars), 50_000))
         request_payload = {
             "query": normalized_query,
             "language": str(language or "").strip(),
             "domains": list(normalized_domains),
-            "limit": max(1, min(int(limit), 10)),
-            "max_chars": max(1000, min(int(max_chars), 50_000)),
+            "limit": effective_limit,
+            "max_chars": effective_max_chars,
         }
-        cached = self.cache.get(self.provider_id, "search_web", request_payload) if self.cache else None
+        cached = (
+            self.cache.get(self.provider_id, "search_web", request_payload)
+            if self.cache
+            else None
+        )
         if cached is not None:
             return {**cached, "cached": True}
         query_text = normalized_query
         if language:
             query_text = f"{query_text} (research language: {language})"
         params = [("site", domain) for domain in normalized_domains]
-        content = self._get(SEARCH_ROOT + quote(query_text, safe=""), params=params or None)
-        trimmed, truncated = _trim(content, request_payload["max_chars"])
+        content = self._get(
+            SEARCH_ROOT + quote(query_text, safe=""), params=params or None
+        )
+        trimmed, truncated = _trim(content, effective_max_chars)
         sources = [
             source
             for source in _extract_sources(content)
@@ -322,7 +482,7 @@ class JinaResearchProvider:
                 _domain_matches(urlsplit(source["url"]).hostname or "", domain)
                 for domain in blocked
             )
-        ][: request_payload["limit"]]
+        ][:effective_limit]
         result = {
             "query": normalized_query,
             "content": trimmed,
@@ -331,7 +491,9 @@ class JinaResearchProvider:
             "cached": False,
         }
         if self.cache:
-            self.cache.put(self.provider_id, "search_web", request_payload, result, ttl_days=7)
+            self.cache.put(
+                self.provider_id, "search_web", request_payload, result, ttl_days=7
+            )
         return result
 
     def read_url(
@@ -343,29 +505,38 @@ class JinaResearchProvider:
         max_chars: int = 16_000,
     ) -> dict[str, Any]:
         safe_url = _safe_public_url(url, parse_domain_list(blocked_domains))
+        effective_max_chars = max(1000, min(int(max_chars), 60_000))
         request_payload = {
             "url": safe_url,
             "max_tokens": max(500, min(int(max_tokens), 20_000)),
-            "max_chars": max(1000, min(int(max_chars), 60_000)),
+            "max_chars": effective_max_chars,
         }
-        cached = self.cache.get(self.provider_id, "read_url", request_payload) if self.cache else None
+        cached = (
+            self.cache.get(self.provider_id, "read_url", request_payload)
+            if self.cache
+            else None
+        )
         if cached is not None:
             return {**cached, "cached": True}
         content = self._get(
             READER_ROOT + safe_url,
             headers={"X-Max-Tokens": str(request_payload["max_tokens"])},
         )
-        trimmed, truncated = _trim(content, request_payload["max_chars"])
+        trimmed, truncated = _trim(content, effective_max_chars)
         title_match = TITLE_RE.search(content)
         result = {
             "url": safe_url,
-            "title": title_match.group(1).strip() if title_match else (urlsplit(safe_url).hostname or safe_url),
+            "title": title_match.group(1).strip()
+            if title_match
+            else (urlsplit(safe_url).hostname or safe_url),
             "content": trimmed,
             "truncated": truncated,
             "cached": False,
         }
         if self.cache:
-            self.cache.put(self.provider_id, "read_url", request_payload, result, ttl_days=30)
+            self.cache.put(
+                self.provider_id, "read_url", request_payload, result, ttl_days=30
+            )
         return result
 
 
@@ -427,8 +598,7 @@ def _research_system_prompt(stage: str) -> str:
         "geography, quotations, or likely transcription/OCR errors. Do not use web results "
         "to rewrite style or introduce new facts."
         if stage == "correction"
-        else
-        "For translation, research only terminology, official organization or product names, "
+        else "For translation, research only terminology, official organization or product names, "
         "established translations, transliteration, and domain vocabulary. Do not translate "
         "the subtitles in this research loop."
     )
@@ -509,7 +679,11 @@ def _research_tools(stage: str) -> list[dict[str, Any]]:
                 "name": "finish",
                 "description": (
                     "Finish the bounded research loop and return only supported evidence"
-                    + (" and translation terminology." if stage == "translation" else ".")
+                    + (
+                        " and translation terminology."
+                        if stage == "translation"
+                        else "."
+                    )
                 ),
                 "parameters": {
                     "type": "object",
@@ -590,7 +764,9 @@ def _valid_finish_items(
             warnings.append("Discarded evidence with an invalid or blocked source URL.")
             continue
         if source_url not in allowed_urls:
-            warnings.append("Discarded evidence whose URL was not returned by a research tool.")
+            warnings.append(
+                "Discarded evidence whose URL was not returned by a research tool."
+            )
             continue
         recommendation = " ".join(str(raw.get("recommendation") or "").split())
         claim = " ".join(str(raw.get("claim") or "").split())
@@ -603,7 +779,9 @@ def _valid_finish_items(
                 "recommendation": recommendation[:600],
                 "claim": claim[:1000],
                 "source_url": source_url,
-                "source_title": " ".join(str(raw.get("source_title") or "").split())[:500],
+                "source_title": " ".join(str(raw.get("source_title") or "").split())[
+                    :500
+                ],
                 "excerpt": " ".join(str(raw.get("excerpt") or "").split())[:800],
             }
         )
@@ -615,7 +793,82 @@ def _valid_finish_items(
         target = " ".join(str(raw.get("target") or "").split())
         if source and target:
             glossary.append({"source": source[:300], "target": target[:300]})
-    return evidence[:20], glossary[:30], warnings
+    # The tool budget already bounds each research turn.  Do not silently drop
+    # valid findings here: global research may span several context batches and
+    # every later batch must receive the complete accumulated ledger.
+    return evidence, glossary, warnings
+
+
+def _research_result_from_dict(value: object) -> WebResearchResult:
+    raw = value if isinstance(value, Mapping) else {}
+    try:
+        cost = float(raw.get("cost") or 0.0)
+        response_count = int(raw.get("response_count") or 0)
+    except (TypeError, ValueError) as error:
+        raise ValueError("The web-research checkpoint has invalid metrics.") from error
+    usage = raw.get("usage")
+    return WebResearchResult(
+        evidence=[
+            dict(item) for item in raw.get("evidence", []) if isinstance(item, Mapping)
+        ],
+        glossary=[
+            {
+                "source": str(item.get("source") or ""),
+                "target": str(item.get("target") or ""),
+            }
+            for item in raw.get("glossary", [])
+            if isinstance(item, Mapping)
+        ],
+        summary=str(raw.get("summary") or ""),
+        tool_trace=[
+            dict(item)
+            for item in raw.get("tool_trace", [])
+            if isinstance(item, Mapping)
+        ],
+        warnings=[str(item) for item in raw.get("warnings", [])],
+        llm_calls=[
+            dict(item) for item in raw.get("llm_calls", []) if isinstance(item, Mapping)
+        ],
+        cost=cost,
+        response_count=response_count,
+        cost_sources=tuple(
+            str(item) for item in raw.get("cost_sources", []) if str(item or "")
+        ),
+        usage=dict(usage) if isinstance(usage, Mapping) else {},
+    )
+
+
+def _emit_research_checkpoint(
+    callback: ResearchCheckpointCallback | None,
+    *,
+    source_hash: str,
+    config: ResearchAgentConfig,
+    iteration: int,
+    conversation: list[dict[str, Any]],
+    search_count: int,
+    extraction_count: int,
+    allowed_urls: set[str],
+    result: WebResearchResult,
+    completed: bool,
+) -> None:
+    if callback is None:
+        return
+    checkpoint = {
+        "version": 1,
+        "kind": "web_research",
+        "stage": config.stage,
+        "source_hash": source_hash,
+        "iteration": iteration,
+        "conversation": conversation,
+        "search_count": search_count,
+        "extraction_count": extraction_count,
+        "allowed_urls": sorted(allowed_urls),
+        "result": result.to_dict(),
+        "completed": completed,
+    }
+    # Provider assistant messages can contain custom mapping/scalar types.
+    # Round-trip them now so persistence callbacks always receive plain JSON.
+    callback(json.loads(json.dumps(checkpoint, ensure_ascii=False, default=str)))
 
 
 def run_web_research_agent(
@@ -628,18 +881,56 @@ def run_web_research_agent(
     completion_func: Any | None = None,
     cancel_event: Any | None = None,
     progress_callback: Any | None = None,
+    resume_state: Mapping[str, Any] | None = None,
+    on_checkpoint: ResearchCheckpointCallback | None = None,
+    initial_ledger: WebResearchResult | Mapping[str, Any] | None = None,
 ) -> WebResearchResult:
     """Let the selected stage model request a small, host-enforced research trace."""
     if config.stage not in {"correction", "translation"}:
         raise ValueError("Web research supports correction and translation only.")
     completion = completion_func or llm_handler.chat_completion_with_metadata
-    result = WebResearchResult()
+    if isinstance(initial_ledger, WebResearchResult):
+        prior_ledger = initial_ledger
+    elif isinstance(initial_ledger, Mapping):
+        prior_ledger = _research_result_from_dict(initial_ledger)
+    else:
+        prior_ledger = WebResearchResult()
+    source_hash = hashlib.sha256(
+        json.dumps(
+            {
+                "source": str(source_text or ""),
+                "prior_evidence": prior_ledger.evidence,
+                "prior_glossary": prior_ledger.glossary,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        ).encode("utf-8")
+    ).hexdigest()
+    if resume_state:
+        if int(resume_state.get("version") or 0) != 1:
+            raise ValueError("Unsupported web-research checkpoint version.")
+        if str(resume_state.get("stage") or "") != config.stage:
+            raise ValueError("Web-research checkpoint stage does not match this run.")
+        if str(resume_state.get("source_hash") or "") != source_hash:
+            raise ValueError("Web-research checkpoint source does not match this run.")
+        result = _research_result_from_dict(resume_state.get("result"))
+        if bool(resume_state.get("completed")):
+            return result
+    else:
+        result = WebResearchResult()
     preferred = parse_domain_list(config.preferred_domains)
     blocked = parse_domain_list(config.blocked_domains)
-    search_count = 0
-    extraction_count = 0
-    allowed_urls: set[str] = set()
-    conversation: list[dict[str, Any]] = [
+    search_count = int(resume_state.get("search_count") or 0) if resume_state else 0
+    extraction_count = (
+        int(resume_state.get("extraction_count") or 0) if resume_state else 0
+    )
+    allowed_urls: set[str] = (
+        {str(url) for url in resume_state.get("allowed_urls", [])}
+        if resume_state
+        else set()
+    )
+    initial_conversation: list[dict[str, Any]] = [
         {"role": "system", "content": _research_system_prompt(config.stage)},
         {
             "role": "user",
@@ -655,6 +946,15 @@ def run_web_research_agent(
                         "searches": max(0, config.max_searches),
                         "page_extractions": max(0, config.max_extractions),
                     },
+                    "prior_ledger": {
+                        "instruction": (
+                            "Extend this accumulated ledger. Retain supported items, "
+                            "and return a corrected replacement when later evidence "
+                            "changes a recommendation."
+                        ),
+                        "evidence": prior_ledger.evidence,
+                        "glossary": prior_ledger.glossary,
+                    },
                     "source_excerpt": _source_excerpt(
                         source_text, max(1000, config.max_source_chars)
                     ),
@@ -664,8 +964,21 @@ def run_web_research_agent(
             ),
         },
     ]
+    if resume_state:
+        raw_conversation = resume_state.get("conversation")
+        if not isinstance(raw_conversation, list) or not raw_conversation:
+            raise ValueError("Web-research checkpoint has no conversation state.")
+        conversation = [
+            dict(message)
+            for message in raw_conversation
+            if isinstance(message, Mapping)
+        ]
+        if len(conversation) != len(raw_conversation):
+            raise ValueError("Web-research checkpoint contains an invalid message.")
+    else:
+        conversation = initial_conversation
 
-    cost_sources: list[str] = []
+    cost_sources: list[str] = list(result.cost_sources)
     iterations = max(
         1,
         min(
@@ -673,7 +986,8 @@ def run_web_research_agent(
             max(2, int(config.max_searches) + int(config.max_extractions) + 3),
         ),
     )
-    for iteration in range(1, iterations + 1):
+    start_iteration = int(resume_state.get("iteration") or 0) + 1 if resume_state else 1
+    for iteration in range(start_iteration, iterations + 1):
         if cancel_event is not None and cancel_event.is_set():
             raise RuntimeError("Web research was canceled.")
         if progress_callback:
@@ -700,6 +1014,7 @@ def run_web_research_agent(
         _merge_usage(result.usage, usage)
         if cost_source and cost_source not in cost_sources:
             cost_sources.append(cost_source)
+        result.cost_sources = tuple(cost_sources)
         result.llm_calls.append(
             {
                 "iteration": iteration,
@@ -719,6 +1034,18 @@ def run_web_research_agent(
             result.warnings.append(warning)
             result.summary = warning
             result.cost_sources = tuple(cost_sources)
+            _emit_research_checkpoint(
+                on_checkpoint,
+                source_hash=source_hash,
+                config=config,
+                iteration=iteration,
+                conversation=conversation,
+                search_count=search_count,
+                extraction_count=extraction_count,
+                allowed_urls=allowed_urls,
+                result=result,
+                completed=True,
+            )
             return result
         commands: list[dict[str, Any]] = []
         if native_calls:
@@ -757,6 +1084,18 @@ def run_web_research_agent(
                             "content": "Invalid response. Call exactly one available research function.",
                         },
                     ]
+                )
+                _emit_research_checkpoint(
+                    on_checkpoint,
+                    source_hash=source_hash,
+                    config=config,
+                    iteration=iteration,
+                    conversation=conversation,
+                    search_count=search_count,
+                    extraction_count=extraction_count,
+                    allowed_urls=allowed_urls,
+                    result=result,
+                    completed=False,
                 )
                 continue
             if parse_warning:
@@ -898,18 +1237,44 @@ def run_web_research_agent(
             # Gemini thought signatures, then answer every call in one group.
             conversation.append(assistant_message)
             conversation.extend(tool_messages)
+        _emit_research_checkpoint(
+            on_checkpoint,
+            source_hash=source_hash,
+            config=config,
+            iteration=iteration,
+            conversation=conversation,
+            search_count=search_count,
+            extraction_count=extraction_count,
+            allowed_urls=allowed_urls,
+            result=result,
+            completed=finish_command is not None,
+        )
         if finish_command is not None:
             result.cost_sources = tuple(cost_sources)
             return result
 
-    result.summary = "Web research stopped at its iteration limit without a final evidence ledger."
+    result.summary = (
+        "Web research stopped at its iteration limit without a final evidence ledger."
+    )
     result.warnings.append(result.summary)
     result.cost_sources = tuple(cost_sources)
+    _emit_research_checkpoint(
+        on_checkpoint,
+        source_hash=source_hash,
+        config=config,
+        iteration=iterations,
+        conversation=conversation,
+        search_count=search_count,
+        extraction_count=extraction_count,
+        allowed_urls=allowed_urls,
+        result=result,
+        completed=True,
+    )
     return result
 
 
 def evidence_prompt(evidence: list[dict[str, Any]], *, stage: str) -> str:
-    """Render a bounded ledger for the existing correction/translation prompt."""
+    """Render the complete validated ledger for each transformation prompt."""
     if not evidence:
         return ""
     records = [
@@ -920,14 +1285,13 @@ def evidence_prompt(evidence: list[dict[str, Any]], *, stage: str) -> str:
             "source_title": item.get("source_title"),
             "source_url": item.get("source_url"),
         }
-        for item in evidence[:20]
+        for item in evidence
     ]
     instruction = (
         "Use this evidence only to verify spelling, names, titles, institutions, "
         "geography, and likely transcription/OCR errors. Do not add citations to subtitles."
         if stage == "correction"
-        else
-        "Use this evidence only for terminology, established names/translations, "
+        else "Use this evidence only for terminology, established names/translations, "
         "transliteration, and domain vocabulary. Do not add citations to subtitles."
     )
     return (

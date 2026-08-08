@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -28,6 +29,41 @@ except ModuleNotFoundError:  # Direct ``python scripts/...`` execution.
         run_appimagetool,
         sha256_file,
     )
+
+
+MAXIMUM_MANAGER_BUILD_GLIBC = (2, 35)
+
+
+def _glibc_version() -> tuple[int, int] | None:
+    implementation, raw_version = platform.libc_ver()
+    if implementation.lower() != "glibc" or not raw_version:
+        return None
+    try:
+        major, minor, *_rest = (int(part) for part in raw_version.split("."))
+    except ValueError:
+        return None
+    return major, minor
+
+
+def qualify_linux_build_host() -> None:
+    """Reject release builds whose glibc floor is newer than Ubuntu 22.04."""
+
+    if not sys.platform.startswith("linux"):
+        return
+    detected = _glibc_version()
+    if detected is None:
+        raise RuntimeError(
+            "Could not identify the glibc build baseline. Build the manager "
+            "AppImage in the qualified Ubuntu 22.04 environment."
+        )
+    if detected > MAXIMUM_MANAGER_BUILD_GLIBC:
+        detected_label = ".".join(str(item) for item in detected)
+        maximum_label = ".".join(str(item) for item in MAXIMUM_MANAGER_BUILD_GLIBC)
+        raise RuntimeError(
+            f"glibc {detected_label} is too new for a portable manager "
+            f"AppImage (maximum qualified build baseline: {maximum_label}). "
+            "Build on Ubuntu 22.04 or an older manylinux-compatible image."
+        )
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -262,7 +298,9 @@ def smoke_test_appimage(appimage: Path, repo_root: Path) -> dict[str, Any]:
     try:
         report = json.loads(result.stdout)
     except json.JSONDecodeError as error:
-        raise RuntimeError("Manager AppImage self-check returned invalid JSON.") from error
+        raise RuntimeError(
+            "Manager AppImage self-check returned invalid JSON."
+        ) from error
     if (
         not report.get("ok")
         or not report.get("frozen")
@@ -284,6 +322,7 @@ def write_checksum(artifact: Path) -> tuple[Path, str]:
 def main(argv: list[str] | None = None) -> int:
     if not sys.platform.startswith("linux"):
         raise RuntimeError("The manager AppImage must be built on Linux.")
+    qualify_linux_build_host()
     args = parse_args(argv)
     if args.bootstrap is not None and (
         args.wheel is not None or args.wheel_dir is not None
@@ -314,9 +353,7 @@ def main(argv: list[str] | None = None) -> int:
         output_dir = repo_root / output_dir
     output_dir = output_dir.resolve(strict=False)
     if not _within(repo_root, output_dir):
-        raise RuntimeError(
-            "Manager AppImage output must remain inside the repository."
-        )
+        raise RuntimeError("Manager AppImage output must remain inside the repository.")
     sys.path.insert(0, str(repo_root))
     from pandrator_manager import __version__
 

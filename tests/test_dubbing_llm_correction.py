@@ -9,7 +9,6 @@ from unittest.mock import patch
 from pandrator.logic import dubbing_handler, llm_handler
 from pandrator.logic.dubbing import llm_correction, srt_utils
 
-
 SAMPLE_SRT = """1
 00:00:00,000 --> 00:00:01,000
 hello
@@ -53,7 +52,9 @@ class DubbingLLMCorrectionTests(unittest.TestCase):
             [{"action": "edit", "ids": [1], "texts": ["Hello."]}],
         )
 
-    def test_parse_correction_operations_rejects_malformed_entries_instead_of_skipping(self):
+    def test_parse_correction_operations_rejects_malformed_entries_instead_of_skipping(
+        self,
+    ):
         with self.assertRaisesRegex(ValueError, "unsupported action"):
             llm_correction.parse_correction_operations(
                 '{"operations":[{"action":"rewrite","ids":[1],"texts":["Hello."]}]}'
@@ -76,13 +77,18 @@ class DubbingLLMCorrectionTests(unittest.TestCase):
             ],
         )
 
-        self.assertEqual([subtitle["text"] for subtitle in corrected], ["Hello world.", "One.", "Two."])
+        self.assertEqual(
+            [subtitle["text"] for subtitle in corrected],
+            ["Hello world.", "One.", "Two."],
+        )
         self.assertEqual(corrected[0]["start"], 0.0)
         self.assertEqual(corrected[0]["end"], 2.0)
         self.assertEqual(corrected[1]["start"], 2.1)
         self.assertEqual(corrected[2]["end"], 4.1)
 
-    def test_apply_correction_operations_rejects_ambiguous_shapes_and_removes_visual_line_breaks(self):
+    def test_apply_correction_operations_rejects_ambiguous_shapes_and_removes_visual_line_breaks(
+        self,
+    ):
         block = [
             {"index": 1, "start": 0.0, "end": 1.0, "text": "first"},
             {"index": 2, "start": 1.0, "end": 2.0, "text": "second"},
@@ -96,7 +102,9 @@ class DubbingLLMCorrectionTests(unittest.TestCase):
             ],
         )
 
-        self.assertEqual([subtitle["text"] for subtitle in corrected], ["First corrected.", "second"])
+        self.assertEqual(
+            [subtitle["text"] for subtitle in corrected], ["First corrected.", "second"]
+        )
 
     def test_correction_prompt_delegates_visual_layout_to_finalization(self):
         prompt = llm_correction.build_correction_prompt(
@@ -104,7 +112,9 @@ class DubbingLLMCorrectionTests(unittest.TestCase):
             max_line_length=18,
         )
 
-        self.assertIn("visual wrapping, and line layout are handled by Pandrator", prompt)
+        self.assertIn(
+            "visual wrapping, and line layout are handled by Pandrator", prompt
+        )
         self.assertIn("Do not insert line breaks", prompt)
         self.assertNotIn("max 2 lines", prompt)
         self.assertNotIn('"char_count"', prompt)
@@ -152,7 +162,9 @@ class DubbingLLMCorrectionTests(unittest.TestCase):
         self.assertEqual(2100, cue["gap_from_previous_ms"])
         self.assertIn("A gap of 2000 ms or more", prompt)
 
-    def test_structured_speakers_are_non_spoken_prompt_evidence_and_block_cross_speaker_merge(self):
+    def test_structured_speakers_are_non_spoken_prompt_evidence_and_block_cross_speaker_merge(
+        self,
+    ):
         content = """1
 00:00:00,000 --> 00:00:01,000
 An unfinished thought,
@@ -322,7 +334,9 @@ three
             srt_content,
             settings,
             completion_func=fake_completion,
-            progress_callback=lambda value, detail=None: progress_updates.append((value, detail)),
+            progress_callback=lambda value, detail=None: progress_updates.append(
+                (value, detail)
+            ),
         )
 
         self.assertEqual(prompt_batch_sizes, [2, 2, 1])
@@ -384,7 +398,9 @@ three
 
         self.assertEqual(2, result.response_count)
         self.assertAlmostEqual(0.03, result.cost)
-        self.assertIn("previous response was rejected", calls[1]["messages"][2]["content"])
+        self.assertIn(
+            "previous response was rejected", calls[1]["messages"][2]["content"]
+        )
         self.assertEqual("Hello.", srt_utils.parse_srt(result.srt_content)[0].text)
 
     def test_next_batch_context_contains_corrected_cues_not_prior_operations(self):
@@ -399,10 +415,14 @@ three
                 )
             return llm_handler.ChatCompletionResult(content='{"operations":[]}')
 
-        llm_correction.correct_srt_content(SAMPLE_SRT, settings, completion_func=fake_completion)
+        llm_correction.correct_srt_content(
+            SAMPLE_SRT, settings, completion_func=fake_completion
+        )
 
         self.assertGreater(len(prompts), 1)
-        context = prompts[1].split("Prior corrected cues", 1)[1].split("The subtitles:", 1)[0]
+        context = (
+            prompts[1].split("Prior corrected cues", 1)[1].split("The subtitles:", 1)[0]
+        )
         self.assertIn('["Hello."]', context)
         self.assertNotIn('"action"', context)
 
@@ -453,6 +473,76 @@ three
             self.assertTrue(os.path.exists(result.output_path))
             self.assertEqual(result.cost, 0.03)
             self.assertEqual(result.response_count, 1)
+
+    def test_completed_correction_unit_is_restored_without_another_request(self):
+        checkpoints = {}
+        first_calls = []
+
+        class CheckpointSaved(RuntimeError):
+            pass
+
+        def stop_after_checkpoint(key, payload):
+            checkpoints[key] = payload
+            raise CheckpointSaved
+
+        with self.assertRaisesRegex(
+            RuntimeError, "persist the completed correction unit"
+        ):
+            llm_correction.correct_srt_content(
+                SAMPLE_SRT,
+                {**_settings(), "max_subtitles_per_call": 1},
+                completion_func=lambda **kwargs: (
+                    first_calls.append(kwargs)
+                    or llm_handler.ChatCompletionResult(
+                        content='{"operations":[{"action":"edit","ids":[1],"texts":["Hello fixed."]}]}'
+                    )
+                ),
+                on_unit_completed=stop_after_checkpoint,
+            )
+
+        resumed_calls = []
+        result = llm_correction.correct_srt_content(
+            SAMPLE_SRT,
+            {**_settings(), "max_subtitles_per_call": 1},
+            completion_func=lambda **kwargs: (
+                resumed_calls.append(kwargs)
+                or llm_handler.ChatCompletionResult(content='{"operations":[]}')
+            ),
+            completed_units=checkpoints,
+        )
+
+        self.assertEqual(1, len(first_calls))
+        self.assertEqual(2, len(resumed_calls))
+        self.assertEqual(
+            ["Hello fixed.", "uh", "one two"],
+            [segment.text for segment in srt_utils.parse_srt(result.srt_content)],
+        )
+
+    def test_explicit_known_speaker_allows_cross_speaker_merge(self):
+        content = """1
+00:00:00,000 --> 00:00:01,000
+First half,
+
+2
+00:00:01,050 --> 00:00:02,000
+same person after all.
+"""
+        result = llm_correction.correct_srt_content(
+            content,
+            _settings(),
+            speaker_by_subtitle={1: "Speaker 0", 2: "Speaker 1"},
+            completion_func=lambda **_kwargs: llm_handler.ChatCompletionResult(
+                content=(
+                    '{"operations":[{"action":"merge","ids":[1,2],'
+                    '"texts":["First half, same person after all."],'
+                    '"speakers":["Speaker 0"]}]}'
+                )
+            ),
+        )
+
+        segments = srt_utils.parse_srt(result.srt_content)
+        self.assertEqual(1, len(segments))
+        self.assertEqual({1: "Speaker 0"}, result.speaker_by_subtitle)
 
 
 if __name__ == "__main__":

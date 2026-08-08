@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import time
 from copy import deepcopy
 from dataclasses import replace
@@ -26,8 +27,8 @@ from pandrator.logic.dubbing.transcript_normalization import load_transcript
 from pandrator.runtime import DataPaths
 
 from .artifact_selection import canonical_stage_key, selected_artifacts
-from .audio_verification import add_run_rms_warning, run_rms_outliers, verify_audio
 from .artifacts import ArtifactService
+from .audio_verification import add_run_rms_warning, run_rms_outliers, verify_audio
 from .credentials import (
     auxiliary_credential_key,
     database_reference,
@@ -46,9 +47,9 @@ from .models import (
     AudioTake,
     Document,
     DocumentRevision,
-    GenerationRun,
     GenerationPlan,
     GenerationPlanRevision,
+    GenerationRun,
     GenerationSegment,
     OutcomePlan,
     OutputAssembly,
@@ -56,8 +57,8 @@ from .models import (
     SegmentLineage,
     SessionRecord,
     SourceRecord,
-    TrainingRun,
     TimedWord,
+    TrainingRun,
     UsageEvent,
     Voice,
     VoiceSample,
@@ -66,6 +67,12 @@ from .models import (
 )
 from .output_settings_snapshot import build_output_settings_snapshot
 from .source_resolution import resolve_primary_source
+from .voice_library import (
+    mark_provider_registrations_stale,
+    remove_managed_files,
+    retire_sample_artifact,
+    sample_file_status,
+)
 
 if TYPE_CHECKING:
     from .manager_proxy import LocalManagerProxy
@@ -150,7 +157,9 @@ def _source_cleaning_progress_callback(
             completed_budget = sum(budgets[:current_phase])
             last_fraction = max(last_fraction, completed_budget / total_budget)
         else:
-            turn_match = re.search(r"\bLLM turn\s+(\d+)\s*/\s*(\d+)", detail, re.IGNORECASE)
+            turn_match = re.search(
+                r"\bLLM turn\s+(\d+)\s*/\s*(\d+)", detail, re.IGNORECASE
+            )
             if turn_match and names:
                 turn = max(1, int(turn_match.group(1)))
                 phase_budget = budgets[current_phase]
@@ -201,7 +210,9 @@ def _hash_segments(segments) -> str:
         }
         for segment in segments
     ]
-    return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+    return hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()
 
 
 def _next_available_path(path: Path) -> Path:
@@ -215,7 +226,9 @@ def _next_available_path(path: Path) -> Path:
     raise RuntimeError(f"Could not allocate a new output filename for {path.name}.")
 
 
-def _stage_settings_fingerprint(stage_key: str, settings: dict[str, Any]) -> dict[str, Any]:
+def _stage_settings_fingerprint(
+    stage_key: str, settings: dict[str, Any]
+) -> dict[str, Any]:
     """Semantic identity of a stage's settings, independent of submission shape.
 
     Only values that can change the produced artifact are included.  Raw hashes
@@ -285,7 +298,9 @@ def _stage_settings_fingerprint(stage_key: str, settings: dict[str, Any]) -> dic
         research = _research_fingerprint(settings)
         return {**result, **({"web_research": research} if research else {})}
     if stage_key == "correct":
-        model = _model("correction_model", "correct_model", "model_name") or _text("llm_default_model")
+        model = _model("correction_model", "correct_model", "model_name") or _text(
+            "llm_default_model"
+        )
         result = {
             "model": model,
             "instructions": _text("custom_correction_prompt", "instructions"),
@@ -312,14 +327,32 @@ def _research_fingerprint(settings: dict[str, Any]) -> dict[str, Any]:
     if not bool(settings.get("web_research_enabled", False)):
         # Keep pre-feature artifact fingerprints reusable when research is off.
         return {}
+    try:
+        context_fraction = min(
+            0.8,
+            max(0.1, float(settings.get("web_research_context_fraction") or 0.8)),
+        )
+    except (TypeError, ValueError):
+        context_fraction = 0.8
     return {
         "enabled": True,
-        "provider": str(settings.get("web_research_provider") or "jina").strip().lower(),
+        "provider": str(settings.get("web_research_provider") or "jina")
+        .strip()
+        .lower(),
+        "model": str(settings.get("web_research_model_name") or "").strip(),
+        "mode": str(settings.get("web_research_mode") or "global").strip().lower(),
+        "context_fraction": context_fraction,
         "language": str(settings.get("web_research_language") or "").strip().lower(),
         "max_searches": max(0, int(settings.get("web_research_max_searches") or 3)),
-        "max_extractions": max(0, int(settings.get("web_research_max_extractions") or 2)),
-        "preferred_domains": str(settings.get("web_research_preferred_domains") or "").strip(),
-        "blocked_domains": str(settings.get("web_research_blocked_domains") or "").strip(),
+        "max_extractions": max(
+            0, int(settings.get("web_research_max_extractions") or 2)
+        ),
+        "preferred_domains": str(
+            settings.get("web_research_preferred_domains") or ""
+        ).strip(),
+        "blocked_domains": str(
+            settings.get("web_research_blocked_domains") or ""
+        ).strip(),
     }
 
 
@@ -380,8 +413,12 @@ def _generation_segmentation_settings(settings: dict[str, Any]) -> dict[str, Any
         "speech_block_merge_threshold": merge_threshold,
         "speech_block_continuation_threshold_ms": continuation_threshold,
         "speech_block_max_internal_gap_ms": max_internal_gap,
-        "paragraph_silence_ms": settings.get("paragraph_silence_ms", settings.get("silence_for_paragraphs", 700)),
-        "sentence_silence_ms": settings.get("sentence_silence_ms", settings.get("silence_between_sentences", 250)),
+        "paragraph_silence_ms": settings.get(
+            "paragraph_silence_ms", settings.get("silence_for_paragraphs", 700)
+        ),
+        "sentence_silence_ms": settings.get(
+            "sentence_silence_ms", settings.get("silence_between_sentences", 250)
+        ),
         "clause_pause_ratio": CLAUSE_PAUSE_RATIO,
     }
 
@@ -417,13 +454,26 @@ def _default_silence_after_ms(
 
     sentence_silence = max(
         0,
-        int(settings.get("sentence_silence_ms", settings.get("silence_between_sentences", 250)) or 0),
+        int(
+            settings.get(
+                "sentence_silence_ms", settings.get("silence_between_sentences", 250)
+            )
+            or 0
+        ),
     )
-    is_paragraph = bool(record.get("paragraph_break_after")) or str(record.get("paragraph") or "").lower() == "yes"
+    is_paragraph = (
+        bool(record.get("paragraph_break_after"))
+        or str(record.get("paragraph") or "").lower() == "yes"
+    )
     if is_paragraph:
         return max(
             0,
-            int(settings.get("paragraph_silence_ms", settings.get("silence_for_paragraphs", 700)) or 0),
+            int(
+                settings.get(
+                    "paragraph_silence_ms", settings.get("silence_for_paragraphs", 700)
+                )
+                or 0
+            ),
         )
     if _record_continues_sentence(record):
         return max(0, round(sentence_silence * CLAUSE_PAUSE_RATIO))
@@ -446,6 +496,17 @@ def _apply_segment_tts_overrides(
         # and OpenAI-compatible adapters consume ``voice``.
         resolved.update({"voice": voice, "speaker": voice})
     return resolved
+
+
+def _provider_endpoint_fingerprint(base_url: str) -> str:
+    normalized = str(base_url or "").strip().rstrip("/").casefold()
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def _managed_provider_voice_id(voice: Voice) -> str:
+    label = re.sub(r"[^a-z0-9]+", "-", voice.name.casefold()).strip("-")
+    label = label[:40].rstrip("-") or "voice"
+    return f"pandrator-{label}-{voice.id.replace('-', '')[:10]}"
 
 
 class WorkflowHandlers:
@@ -489,11 +550,16 @@ class WorkflowHandlers:
                     .where(AudioTake.generation_run_id == run_id)
                 ).all()
             )
-            grouped: dict[tuple[str, str], list[tuple[AudioTake, Artifact, dict[str, Any]]]] = {}
+            grouped: dict[
+                tuple[str, str], list[tuple[AudioTake, Artifact, dict[str, Any]]]
+            ] = {}
             for take, artifact in rows:
                 metadata = dict(artifact.metadata_json or {})
                 verification = metadata.get("audio_verification")
-                if not isinstance(verification, dict) or verification.get("mode") != "signal":
+                if (
+                    not isinstance(verification, dict)
+                    or verification.get("mode") != "signal"
+                ):
                     continue
                 if verification.get("status") != "passed":
                     marked_segment_ids.add(take.generation_segment_id)
@@ -502,13 +568,14 @@ class WorkflowHandlers:
 
             for entries in grouped.values():
                 values = [
-                    (entry[2].get("metrics") or {}).get("rms_dbfs")
-                    for entry in entries
+                    (entry[2].get("metrics") or {}).get("rms_dbfs") for entry in entries
                 ]
                 for index, detail in run_rms_outliers(values).items():
                     take, artifact, verification = entries[index]
                     metadata = dict(artifact.metadata_json or {})
-                    metadata["audio_verification"] = add_run_rms_warning(verification, detail)
+                    metadata["audio_verification"] = add_run_rms_warning(
+                        verification, detail
+                    )
                     artifact.metadata_json = metadata
                     artifact.updated_at = utcnow()
                     marked_segment_ids.add(take.generation_segment_id)
@@ -544,9 +611,15 @@ class WorkflowHandlers:
         service_id = str(settings.get("preview_service_id") or "").lower()
         api_base = str(settings.get("preview_api_base") or "").strip()
         url_key = {
-            "xtts": "xtts_base_url", "voxcpm": "voxcpm_base_url", "fishs2": "fishs2_base_url",
-            "voxtral": "voxtral_base_url", "kokoro": "kokoro_base_url", "silero": "silero_base_url",
-            "chatterbox": "chatterbox_base_url", "kobold_qwen": "kobold_qwen_base_url", "magpie": "magpie_base_url",
+            "xtts": "xtts_base_url",
+            "voxcpm": "voxcpm_base_url",
+            "fishs2": "fishs2_base_url",
+            "voxtral": "voxtral_base_url",
+            "kokoro": "kokoro_base_url",
+            "silero": "silero_base_url",
+            "chatterbox": "chatterbox_base_url",
+            "kobold_qwen": "kobold_qwen_base_url",
+            "magpie": "magpie_base_url",
         }.get(service_id)
         if url_key and api_base:
             urls[url_key] = api_base
@@ -580,7 +653,9 @@ class WorkflowHandlers:
             "language": str(settings.get("language") or ""),
         }
         preview_key = hashlib.sha256(
-            json.dumps(preview_identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            json.dumps(preview_identity, sort_keys=True, separators=(",", ":")).encode(
+                "utf-8"
+            )
         ).hexdigest()
         target_dir = self.paths.artifacts / "tts-previews"
         target_dir.mkdir(parents=True, exist_ok=True)
@@ -618,14 +693,23 @@ class WorkflowHandlers:
         parsed = urlparse(str(raw_url or "").strip())
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
             raise ValueError("Source URL must use http or https.")
-        for _family, _type, _proto, _canon, address in socket.getaddrinfo(parsed.hostname, parsed.port or 443):
+        for _family, _type, _proto, _canon, address in socket.getaddrinfo(
+            parsed.hostname, parsed.port or 443
+        ):
             ip = ipaddress.ip_address(address[0])
-            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
+            if (
+                ip.is_private
+                or ip.is_loopback
+                or ip.is_link_local
+                or ip.is_reserved
+                or ip.is_multicast
+            ):
                 raise ValueError("Source URL resolves to a non-public network address.")
         return parsed.geturl()
 
     def download_source_url(self, payload, progress, cancel_event):
         import yt_dlp
+
         from .workspace import SourceLibraryService
 
         session_id = str(payload.get("session_id") or "")
@@ -639,7 +723,11 @@ class WorkflowHandlers:
         last_reported_at = 0.0
 
         def download_progress(status: dict[str, Any]) -> None:
-            nonlocal download_fraction, last_reported_fraction, last_reported_bytes, last_reported_at
+            nonlocal \
+                download_fraction, \
+                last_reported_fraction, \
+                last_reported_bytes, \
+                last_reported_at
             if cancel_event.is_set():
                 raise yt_dlp.utils.DownloadError("Source download was canceled.")
             state = str(status.get("status") or "")
@@ -662,7 +750,10 @@ class WorkflowHandlers:
                 should_report = (
                     last_reported_fraction < 0
                     or (total and download_fraction - last_reported_fraction >= 0.005)
-                    or (not total and downloaded - last_reported_bytes >= 4 * 1024 * 1024)
+                    or (
+                        not total
+                        and downloaded - last_reported_bytes >= 4 * 1024 * 1024
+                    )
                     or now - last_reported_at >= 1.0
                 )
                 if not should_report:
@@ -694,7 +785,9 @@ class WorkflowHandlers:
         if cancel_event.is_set():
             return {}
         if destination_dir.resolve() not in output.parents or not output.is_file():
-            raise RuntimeError("Downloaded source was not created in the managed session directory.")
+            raise RuntimeError(
+                "Downloaded source was not created in the managed session directory."
+            )
         progress(0.93, "Registering downloaded source")
         source_metadata = {
             "original_filename": output.name,
@@ -709,15 +802,29 @@ class WorkflowHandlers:
             metadata=source_metadata,
         )
         with self.database.session() as session:
-            session.add(SourceRecord(session_id=session_id, kind=output.suffix.lower().lstrip(".") or "url", display_name=output.name, artifact_id=artifact.id, content_hash=artifact.content_hash, metadata_json={"url": url, "downloader": "yt-dlp"}))
+            session.add(
+                SourceRecord(
+                    session_id=session_id,
+                    kind=output.suffix.lower().lstrip(".") or "url",
+                    display_name=output.name,
+                    artifact_id=artifact.id,
+                    content_hash=artifact.content_hash,
+                    metadata_json={"url": url, "downloader": "yt-dlp"},
+                )
+            )
         library = SourceLibraryService(self.database)
-        asset = library.ensure_for_artifact(artifact.id, display_name=output.name, kind=output.suffix.lower().lstrip(".") or "url")
+        asset = library.ensure_for_artifact(
+            artifact.id,
+            display_name=output.name,
+            kind=output.suffix.lower().lstrip(".") or "url",
+        )
         library.attach(session_id, asset.id)
         progress(1.0, "Source download ready")
         return {"artifact_id": artifact.id, "filename": output.name}
 
     def reuse_source(self, payload, progress, cancel_event):
         from .workspace import SourceLibraryService
+
         session_id = str(payload.get("session_id") or "")
         source, source_path = self._resolve_input(str(payload.get("artifact_id") or ""))
         destination_dir = self._session_dir(session_id) / "sources"
@@ -728,23 +835,47 @@ class WorkflowHandlers:
         if cancel_event.is_set():
             destination.unlink(missing_ok=True)
             return {}
-        artifact = self.artifacts.register(destination, kind="source", role="upload", session_id=session_id, parent_ids=[source.id], metadata={"original_filename": source_path.name, "reused_from": source.id})
+        artifact = self.artifacts.register(
+            destination,
+            kind="source",
+            role="upload",
+            session_id=session_id,
+            parent_ids=[source.id],
+            metadata={"original_filename": source_path.name, "reused_from": source.id},
+        )
         with self.database.session() as session:
-            session.add(SourceRecord(session_id=session_id, kind=destination.suffix.lower().lstrip(".") or "file", display_name=source_path.name, artifact_id=artifact.id, content_hash=artifact.content_hash, metadata_json={"reused_from": source.id}))
+            session.add(
+                SourceRecord(
+                    session_id=session_id,
+                    kind=destination.suffix.lower().lstrip(".") or "file",
+                    display_name=source_path.name,
+                    artifact_id=artifact.id,
+                    content_hash=artifact.content_hash,
+                    metadata_json={"reused_from": source.id},
+                )
+            )
         library = SourceLibraryService(self.database)
-        asset = library.ensure_for_artifact(artifact.id, display_name=source_path.name, kind=destination.suffix.lower().lstrip(".") or "file")
+        asset = library.ensure_for_artifact(
+            artifact.id,
+            display_name=source_path.name,
+            kind=destination.suffix.lower().lstrip(".") or "file",
+        )
         library.attach(session_id, asset.id)
         progress(1.0, "Reusable source ready")
         return {"artifact_id": artifact.id, "filename": source_path.name}
 
-    def _latest_stage_input(self, session_id: str, prerequisite_roles: tuple[str, ...]) -> Artifact | None:
+    def _latest_stage_input(
+        self, session_id: str, prerequisite_roles: tuple[str, ...]
+    ) -> Artifact | None:
         with self.database.session() as session:
             candidates = list(
                 session.scalars(
-                    select(Artifact).where(
+                    select(Artifact)
+                    .where(
                         Artifact.session_id == session_id,
                         Artifact.role.in_(prerequisite_roles),
-                    ).order_by(Artifact.created_at.desc())
+                    )
+                    .order_by(Artifact.created_at.desc())
                 ).all()
             )
             selected = selected_artifacts(session, session_id, candidates)
@@ -758,7 +889,9 @@ class WorkflowHandlers:
             for item in candidates:
                 if item.state == "current" and item.role != "upload":
                     by_role.setdefault(item.role, item)
-            result = next((by_role[role] for role in prerequisite_roles if role in by_role), None)
+            result = next(
+                (by_role[role] for role in prerequisite_roles if role in by_role), None
+            )
             if result is not None:
                 session.expunge(result)
             return result
@@ -770,26 +903,58 @@ class WorkflowHandlers:
         session_id = str(payload.get("session_id") or "")
         target_key = str(payload.get("target_stage") or "generate_audio")
         record = self._session_record(session_id)
-        definitions = AUDIOBOOK_STAGES if record.workflow_kind == "audiobook" else DUBBING_STAGES
+        definitions = (
+            AUDIOBOOK_STAGES if record.workflow_kind == "audiobook" else DUBBING_STAGES
+        )
         is_srt_source = False
         if record.workflow_kind != "audiobook":
             upload = self._latest_stage_input(session_id, ("upload",))
-            filename = str((upload.metadata_json or {}).get("original_filename") or upload.relative_path).lower() if upload else ""
+            filename = (
+                str(
+                    (upload.metadata_json or {}).get("original_filename")
+                    or upload.relative_path
+                ).lower()
+                if upload
+                else ""
+            )
             is_srt_source = filename.endswith(".srt")
             if is_srt_source:
-                definitions = tuple(item for item in definitions if item.key != "transcribe")
-        target_index = next((index for index, item in enumerate(definitions) if item.key == target_key), None)
+                definitions = tuple(
+                    item for item in definitions if item.key != "transcribe"
+                )
+        target_index = next(
+            (index for index, item in enumerate(definitions) if item.key == target_key),
+            None,
+        )
         if target_index is None:
             raise ValueError(f"Unknown continuation stage: {target_key}")
         included = set(record.included_stages_json or [])
         with self.database.session() as session:
-            outcome = session.scalar(select(OutcomePlan).where(OutcomePlan.session_id == session_id))
+            outcome = session.scalar(
+                select(OutcomePlan).where(OutcomePlan.session_id == session_id)
+            )
             outcome_value = dict(outcome.value_json or {}) if outcome else {}
-        input_choices = outcome_value.get("inputs") if isinstance(outcome_value.get("inputs"), dict) else {}
-        transformations = outcome_value.get("transformations") if isinstance(outcome_value.get("transformations"), dict) else {}
-        stage_settings = payload.get("stage_settings") if isinstance(payload.get("stage_settings"), dict) else {}
-        direct_settings = payload.get("settings") if isinstance(payload.get("settings"), dict) else {}
-        reuse_stages = {str(value) for value in (payload.get("reuse_stages") or []) if str(value)}
+        input_choices = (
+            outcome_value.get("inputs")
+            if isinstance(outcome_value.get("inputs"), dict)
+            else {}
+        )
+        transformations = (
+            outcome_value.get("transformations")
+            if isinstance(outcome_value.get("transformations"), dict)
+            else {}
+        )
+        stage_settings = (
+            payload.get("stage_settings")
+            if isinstance(payload.get("stage_settings"), dict)
+            else {}
+        )
+        direct_settings = (
+            payload.get("settings") if isinstance(payload.get("settings"), dict) else {}
+        )
+        reuse_stages = {
+            str(value) for value in (payload.get("reuse_stages") or []) if str(value)
+        }
         required = self._continuation_required_stages(
             record.workflow_kind,
             target_key,
@@ -798,8 +963,12 @@ class WorkflowHandlers:
             transformations,
         )
         runnable = [
-            item for index, item in enumerate(definitions)
-            if index <= target_index and item.executable and item.job_kind and (item.key in included or item.key in required)
+            item
+            for index, item in enumerate(definitions)
+            if index <= target_index
+            and item.executable
+            and item.job_kind
+            and (item.key in included or item.key in required)
         ]
         produced: list[dict[str, Any]] = []
         handlers = self.handler_registry
@@ -820,29 +989,55 @@ class WorkflowHandlers:
         for index, definition in enumerate(runnable):
             if cancel_event.is_set():
                 return {"artifacts": produced}
-            settings = stage_settings.get(definition.key) if isinstance(stage_settings.get(definition.key), dict) else {}
+            settings = (
+                stage_settings.get(definition.key)
+                if isinstance(stage_settings.get(definition.key), dict)
+                else {}
+            )
             if definition.key == target_key:
                 settings = {**settings, **direct_settings}
             if definition.key == "generate_audio":
-                settings["llm_tts_optimization"] = bool(transformations.get("llm_tts_optimization"))
+                settings["llm_tts_optimization"] = bool(
+                    transformations.get("llm_tts_optimization")
+                )
             expected_settings_hash = hashlib.sha256(
-                json.dumps(settings, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+                json.dumps(
+                    settings,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    default=str,
+                ).encode("utf-8")
             ).hexdigest()
             with self.database.session() as session:
-                existing = selected_artifacts(session, session_id).get(
-                    canonical_stage_key(definition.key)
-                ) if definition.output_role else None
+                existing = (
+                    selected_artifacts(session, session_id).get(
+                        canonical_stage_key(definition.key)
+                    )
+                    if definition.output_role
+                    else None
+                )
             input_roles = definition.prerequisite_roles
             if definition.key == "translate":
-                translation_parent = str(input_choices.get("translation") or "correction")
-                input_roles = ("correction",) if translation_parent == "correction" else ("transcription", "upload")
+                translation_parent = str(
+                    input_choices.get("translation") or "correction"
+                )
+                input_roles = (
+                    ("correction",)
+                    if translation_parent == "correction"
+                    else ("transcription", "upload")
+                )
             elif definition.key in {"optimize_document", "generate_audio"}:
-                if definition.key == "generate_audio" and bool(transformations.get("llm_tts_document_optimization")):
+                if definition.key == "generate_audio" and bool(
+                    transformations.get("llm_tts_document_optimization")
+                ):
                     input_roles = ("tts_optimized",)
                 elif record.workflow_kind == "audiobook":
                     input_roles = ("prepared_text",)
                 else:
-                    generation_parent = str(input_choices.get("generation") or "translation")
+                    generation_parent = str(
+                        input_choices.get("generation") or "translation"
+                    )
                     input_roles = {
                         "translation": ("translation",),
                         "correction": ("correction",),
@@ -850,20 +1045,35 @@ class WorkflowHandlers:
                     }.get(generation_parent, definition.prerequisite_roles)
             source = self._latest_stage_input(session_id, input_roles)
             if definition.prerequisite_roles and source is None:
-                raise ValueError(f"Stage '{definition.key}' is missing a required input artifact.")
+                raise ValueError(
+                    f"Stage '{definition.key}' is missing a required input artifact."
+                )
             expected_hashes = {expected_settings_hash}
-            existing_metadata = existing.metadata_json if existing is not None and isinstance(existing.metadata_json, dict) else {}
+            existing_metadata = (
+                existing.metadata_json
+                if existing is not None and isinstance(existing.metadata_json, dict)
+                else {}
+            )
             raw_settings_match = bool(
                 existing is not None
                 and (
                     existing.settings_hash == expected_settings_hash
-                    or str(existing_metadata.get("requested_settings_hash") or "") == expected_settings_hash
+                    or str(existing_metadata.get("requested_settings_hash") or "")
+                    == expected_settings_hash
                 )
             )
-            if existing is not None and not raw_settings_match and definition.key in {"correct", "translate"}:
-                stage_alias = "correction" if definition.key == "correct" else "translation"
+            if (
+                existing is not None
+                and not raw_settings_match
+                and definition.key in {"correct", "translate"}
+            ):
+                stage_alias = (
+                    "correction" if definition.key == "correct" else "translation"
+                )
                 try:
-                    hydrated = self._with_database_llm_settings(dict(settings), stage_alias)
+                    hydrated = self._with_database_llm_settings(
+                        dict(settings), stage_alias
+                    )
                 except ValueError:
                     # A reusable artifact must remain usable even if its former
                     # provider is no longer configured. A rerun will surface
@@ -872,7 +1082,13 @@ class WorkflowHandlers:
                 if hydrated is not None:
                     expected_hashes.add(
                         hashlib.sha256(
-                            json.dumps(hydrated, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+                            json.dumps(
+                                hydrated,
+                                ensure_ascii=False,
+                                sort_keys=True,
+                                separators=(",", ":"),
+                                default=str,
+                            ).encode("utf-8")
                         ).hexdigest()
                     )
             if existing is not None and definition.key != target_key:
@@ -885,7 +1101,8 @@ class WorkflowHandlers:
                 else:
                     settings_match = (
                         existing.settings_hash in expected_hashes
-                        or str(metadata.get("requested_settings_hash") or "") == expected_settings_hash
+                        or str(metadata.get("requested_settings_hash") or "")
+                        == expected_settings_hash
                     )
                     if definition.key in {"correct", "translate"}:
                         settings_match = self._fingerprint_settings_match(
@@ -896,24 +1113,29 @@ class WorkflowHandlers:
                         )
                 source_match = source is None
                 if source is not None:
-                    source_match = (
-                        str(metadata.get("source_artifact_id") or "") == source.id
-                        or (
-                            bool(source.content_hash)
-                            and str(metadata.get("source_content_hash") or "") == source.content_hash
-                        )
+                    source_match = str(
+                        metadata.get("source_artifact_id") or ""
+                    ) == source.id or (
+                        bool(source.content_hash)
+                        and str(metadata.get("source_content_hash") or "")
+                        == source.content_hash
                     )
                     if not source_match:
                         with self.database.session() as session:
-                            source_match = session.get(ArtifactEdge, (source.id, existing.id)) is not None
+                            source_match = (
+                                session.get(ArtifactEdge, (source.id, existing.id))
+                                is not None
+                            )
                 if settings_match and source_match:
                     continue
             handler = handlers[definition.job_kind]
             width = weights[index] / weight_total
             start = completed_weight / weight_total
-            stage_progress = lambda value, detail=None, start=start, width=width: progress(
-                min(0.99, start + max(0.0, min(1.0, float(value))) * width),
-                detail,
+            stage_progress = lambda value, detail=None, start=start, width=width: (
+                progress(
+                    min(0.99, start + max(0.0, min(1.0, float(value))) * width),
+                    detail,
+                )
             )
             handler_payload = {
                 "session_id": session_id,
@@ -921,6 +1143,17 @@ class WorkflowHandlers:
                 "settings": settings,
                 "_job_id": str(payload.get("_job_id") or "") or None,
             }
+            requested_agent_runs = payload.get("_agent_run_ids")
+            if isinstance(requested_agent_runs, dict):
+                run_kind = {
+                    "correct": "correction",
+                    "translate": "translation",
+                    "optimize_document": "tts_optimization",
+                }.get(definition.key)
+                if run_kind and requested_agent_runs.get(run_kind):
+                    handler_payload["_agent_run_id"] = str(
+                        requested_agent_runs[run_kind]
+                    )
             if definition.key == "export":
                 handler_payload["export_contract"] = payload.get("export_contract")
                 handler_payload["resolved_settings_snapshot"] = payload.get(
@@ -940,7 +1173,9 @@ class WorkflowHandlers:
             if result:
                 produced.append({"stage": definition.key, **result})
             completed_weight += weights[index]
-            if definition.key == "generate_audio" and str((result or {}).get("status") or "") in {"paused", "canceled"}:
+            if definition.key == "generate_audio" and str(
+                (result or {}).get("status") or ""
+            ) in {"paused", "canceled"}:
                 return {"artifacts": produced, "target_stage": target_key}
         progress(1.0, "Workflow continuation finished")
         return {"artifacts": produced, "target_stage": target_key}
@@ -961,16 +1196,27 @@ class WorkflowHandlers:
                 required.add("transcribe")
             translation_parent = str(input_choices.get("translation") or "correction")
             generation_parent = str(input_choices.get("generation") or "translation")
-            translation_required = bool(transformations.get("translation")) or generation_parent == "translation"
-            if bool(transformations.get("correction")) or generation_parent == "correction" or (translation_required and translation_parent == "correction"):
+            translation_required = (
+                bool(transformations.get("translation"))
+                or generation_parent == "translation"
+            )
+            if (
+                bool(transformations.get("correction"))
+                or generation_parent == "correction"
+                or (translation_required and translation_parent == "correction")
+            ):
                 required.add("correct")
             if translation_required:
                 required.add("translate")
-        if bool(transformations.get("llm_tts_document_optimization")) and target_key in {"generate_audio", "export"}:
+        if bool(
+            transformations.get("llm_tts_document_optimization")
+        ) and target_key in {"generate_audio", "export"}:
             required.add("optimize_document")
         return required
 
-    def _current_stage_fingerprint(self, stage_key: str, settings: dict[str, Any]) -> dict[str, Any] | None:
+    def _current_stage_fingerprint(
+        self, stage_key: str, settings: dict[str, Any]
+    ) -> dict[str, Any] | None:
         """Fingerprint of the settings a stage would run with right now.
 
         LLM-backed stages are hydrated first so the effective (default) model
@@ -978,7 +1224,11 @@ class WorkflowHandlers:
         fingerprint cannot be computed (for example the provider is no longer
         configured), in which case the artifact must simply be reused.
         """
-        backend = str(settings.get("translation_backend") or settings.get("backend") or "llm").strip().lower()
+        backend = (
+            str(settings.get("translation_backend") or settings.get("backend") or "llm")
+            .strip()
+            .lower()
+        )
         if stage_key == "translate" and backend == "deepl":
             return _stage_settings_fingerprint(stage_key, settings)
         stage_alias = "correction" if stage_key == "correct" else "translation"
@@ -1006,7 +1256,9 @@ class WorkflowHandlers:
             return True
         return stored == current
 
-    def settings_mismatches(self, session_id: str, target_stage: str = "generate_audio") -> list[dict[str, Any]]:
+    def settings_mismatches(
+        self, session_id: str, target_stage: str = "generate_audio"
+    ) -> list[dict[str, Any]]:
         """Report included prerequisites whose stored settings fingerprint no
         longer matches the settings they would run with today.  Used to ask
         the user before an automatic rerun instead of rerunning silently."""
@@ -1016,16 +1268,37 @@ class WorkflowHandlers:
         if record.workflow_kind == "audiobook":
             return []
         upload = self._latest_stage_input(session_id, ("upload",))
-        filename = str((upload.metadata_json or {}).get("original_filename") or upload.relative_path).lower() if upload else ""
+        filename = (
+            str(
+                (upload.metadata_json or {}).get("original_filename")
+                or upload.relative_path
+            ).lower()
+            if upload
+            else ""
+        )
         with self.database.session() as session:
-            outcome = session.scalar(select(OutcomePlan).where(OutcomePlan.session_id == session_id))
+            outcome = session.scalar(
+                select(OutcomePlan).where(OutcomePlan.session_id == session_id)
+            )
             outcome_value = dict(outcome.value_json or {}) if outcome else {}
             fingerprints = {
-                stage_key: dict(artifact.metadata_json or {}).get("settings_fingerprint")
-                for stage_key, artifact in selected_artifacts(session, session_id).items()
+                stage_key: dict(artifact.metadata_json or {}).get(
+                    "settings_fingerprint"
+                )
+                for stage_key, artifact in selected_artifacts(
+                    session, session_id
+                ).items()
             }
-        input_choices = outcome_value.get("inputs") if isinstance(outcome_value.get("inputs"), dict) else {}
-        transformations = outcome_value.get("transformations") if isinstance(outcome_value.get("transformations"), dict) else {}
+        input_choices = (
+            outcome_value.get("inputs")
+            if isinstance(outcome_value.get("inputs"), dict)
+            else {}
+        )
+        transformations = (
+            outcome_value.get("transformations")
+            if isinstance(outcome_value.get("transformations"), dict)
+            else {}
+        )
         required = self._continuation_required_stages(
             record.workflow_kind,
             target_stage,
@@ -1034,7 +1307,10 @@ class WorkflowHandlers:
             transformations,
         )
         included = set(record.included_stages_json or [])
-        section_map = {"correct": ("correction", "subtitles"), "translate": ("translation", "subtitles")}
+        section_map = {
+            "correct": ("correction", "subtitles"),
+            "translate": ("translation", "subtitles"),
+        }
         settings_service = WorkspaceSettingsService(self.database)
         mismatches: list[dict[str, Any]] = []
         for stage_key, sections in section_map.items():
@@ -1046,11 +1322,17 @@ class WorkflowHandlers:
             resolved, _ = settings_service.resolve(session_id, list(sections))
             current_raw: dict[str, Any] = {}
             for section in sections:
-                current_raw.update(adapt_runtime_settings(section, resolved.get(section, {})))
+                current_raw.update(
+                    adapt_runtime_settings(section, resolved.get(section, {}))
+                )
             current = self._current_stage_fingerprint(stage_key, current_raw)
             if current is None or current == stored:
                 continue
-            changed = sorted(key for key in set(stored) | set(current) if stored.get(key) != current.get(key))
+            changed = sorted(
+                key
+                for key in set(stored) | set(current)
+                if stored.get(key) != current.get(key)
+            )
             mismatches.append(
                 {
                     "stage": stage_key,
@@ -1093,12 +1375,16 @@ class WorkflowHandlers:
     @staticmethod
     def _is_subtitle_generation_record(record: dict[str, Any]) -> bool:
         """Identify generation units whose timing comes from subtitle cues."""
-        return str(record.get("node_kind") or "") == "subtitle_cue" or bool(record.get("subtitles"))
+        return str(record.get("node_kind") or "") == "subtitle_cue" or bool(
+            record.get("subtitles")
+        )
 
     @staticmethod
     def _usable_language(value: Any) -> str:
         normalized = str(value or "").strip()
-        return "" if normalized.lower() in {"", "auto", "und", "unknown"} else normalized
+        return (
+            "" if normalized.lower() in {"", "auto", "und", "unknown"} else normalized
+        )
 
     def _generation_language(
         self,
@@ -1107,28 +1393,42 @@ class WorkflowHandlers:
         settings: dict[str, Any],
     ) -> str:
         """Resolve TTS language from the artifact actually selected for generation."""
-        language = self._usable_language((source_artifact.metadata_json or {}).get("language"))
+        language = self._usable_language(
+            (source_artifact.metadata_json or {}).get("language")
+        )
         role = str(source_artifact.role or "")
 
         # Whole-document speech optimization preserves the language and role of
         # its source. Older JSON optimization artifacts did not copy language,
         # so follow their explicit source link once for compatibility.
         if not language and role == "tts_optimized":
-            parent_id = str((source_artifact.metadata_json or {}).get("source_artifact_id") or "")
+            parent_id = str(
+                (source_artifact.metadata_json or {}).get("source_artifact_id") or ""
+            )
             if parent_id:
                 with self.database.session() as session:
                     parent = session.get(Artifact, parent_id)
                     if parent is not None:
-                        language = self._usable_language((parent.metadata_json or {}).get("language"))
+                        language = self._usable_language(
+                            (parent.metadata_json or {}).get("language")
+                        )
                         role = str(parent.role or role)
 
         record = self._session_record(session_id)
         if not language and role == "translation":
             language = self._usable_language(record.target_language)
-        if not language and role in {"transcription", "correction", "upload", "prepared_text", "source"}:
+        if not language and role in {
+            "transcription",
+            "correction",
+            "upload",
+            "prepared_text",
+            "source",
+        }:
             language = self._usable_language(record.source_language)
         if not language:
-            language = self._usable_language(settings.get("language") or settings.get("target_language"))
+            language = self._usable_language(
+                settings.get("language") or settings.get("target_language")
+            )
         return language or "en"
 
     def _subtitle_speaker_map(
@@ -1142,9 +1442,14 @@ class WorkflowHandlers:
         with self.database.session() as session:
             managed = session.get(Artifact, artifact.id)
             revision_id = str(
-                ((managed.metadata_json if managed is not None else artifact.metadata_json) or {}).get(
-                    "revision_id"
-                )
+                (
+                    (
+                        managed.metadata_json
+                        if managed is not None
+                        else artifact.metadata_json
+                    )
+                    or {}
+                ).get("revision_id")
                 or ""
             )
         if revision_id:
@@ -1171,7 +1476,9 @@ class WorkflowHandlers:
                     if segment.speaker and segment.index not in mapping:
                         mapping[segment.index] = segment.speaker
         except (KeyError, OSError):
-            logger.warning("Could not resolve speaker metadata for artifact %s", artifact.id)
+            logger.warning(
+                "Could not resolve speaker metadata for artifact %s", artifact.id
+            )
         return mapping
 
     def _subtitle_generation_records(
@@ -1239,9 +1546,7 @@ class WorkflowHandlers:
                             for position, row in enumerate(plan_rows):
                                 if isinstance(row, dict):
                                     try:
-                                        plan_position = int(
-                                            row.get("index", position)
-                                        )
+                                        plan_position = int(row.get("index", position))
                                     except (TypeError, ValueError):
                                         plan_position = position
                                     plan_by_position[plan_position] = dict(
@@ -1253,9 +1558,7 @@ class WorkflowHandlers:
             display_path,
         )
         if display_segments is None:
-            display_segments = parse_srt(
-                display_path.read_text(encoding="utf-8-sig")
-            )
+            display_segments = parse_srt(display_path.read_text(encoding="utf-8-sig"))
         blocks = create_speech_blocks(
             display_path.read_text(encoding="utf-8-sig"),
             target_language=language,
@@ -1320,9 +1623,9 @@ class WorkflowHandlers:
                     }
             records.append(record)
 
-        source_revision_id = str(
-            (display_artifact.metadata_json or {}).get("revision_id") or ""
-        ) or None
+        source_revision_id = (
+            str((display_artifact.metadata_json or {}).get("revision_id") or "") or None
+        )
         return records, source_revision_id, display_artifact
 
     def _materialize_subtitle_generation_plan(
@@ -1336,9 +1639,7 @@ class WorkflowHandlers:
         """Create a new versioned plan revision only when its topology changed."""
         with self.database.session() as session:
             plan = session.scalar(
-                select(GenerationPlan).where(
-                    GenerationPlan.session_id == session_id
-                )
+                select(GenerationPlan).where(GenerationPlan.session_id == session_id)
             )
             previous_revision_id = plan.active_revision_id if plan else None
 
@@ -1413,18 +1714,14 @@ class WorkflowHandlers:
                 if isinstance(outcome_value.get("transformations"), dict)
                 else {}
             )
-            generation_input = str(
-                inputs.get("generation") or "translation"
-            ).strip().lower()
+            generation_input = (
+                str(inputs.get("generation") or "translation").strip().lower()
+            )
             has_explicit_source_choice = bool(
                 str(inputs.get("generation") or "").strip()
-            ) or bool(
-                transformations.get("llm_tts_document_optimization")
-            )
+            ) or bool(transformations.get("llm_tts_document_optimization"))
             plan = session.scalar(
-                select(GenerationPlan).where(
-                    GenerationPlan.session_id == session_id
-                )
+                select(GenerationPlan).where(GenerationPlan.session_id == session_id)
             )
             active = (
                 session.get(GenerationPlanRevision, plan.active_revision_id)
@@ -1479,9 +1776,10 @@ class WorkflowHandlers:
                     ).all()
                 )
                 for candidate in candidates:
-                    if str(
-                        (candidate.metadata_json or {}).get("revision_id") or ""
-                    ) == source_revision_id:
+                    if (
+                        str((candidate.metadata_json or {}).get("revision_id") or "")
+                        == source_revision_id
+                    ):
                         session.expunge(candidate)
                         return candidate
         return None
@@ -1537,6 +1835,7 @@ class WorkflowHandlers:
         *,
         language: str | None = None,
         parent_artifact: Artifact | None = None,
+        speaker_overrides: dict[int, str] | None = None,
     ) -> tuple[str, str]:
         from pandrator.logic.dubbing.srt_utils import parse_srt
 
@@ -1584,20 +1883,30 @@ class WorkflowHandlers:
                 else []
             )
             speaker_candidates: list[Any] = parents or parent_file_segments
-            resolved_segments = [
-                replace(
-                    item,
-                    speaker=(
-                        item.speaker
-                        or _dominant_speaker(
-                            item.start_ms,
-                            item.end_ms,
-                            speaker_candidates,
-                        )
-                    ),
+            resolved_segments = []
+            speaker_sources: list[str] = []
+            for item in segments:
+                reviewed_speaker = str(
+                    (speaker_overrides or {}).get(item.index) or ""
+                ).strip()
+                inherited_speaker = str(
+                    item.speaker
+                    or _dominant_speaker(
+                        item.start_ms,
+                        item.end_ms,
+                        speaker_candidates,
+                    )
+                    or ""
+                ).strip()
+                resolved_segments.append(
+                    replace(
+                        item,
+                        speaker=reviewed_speaker or inherited_speaker,
+                    )
                 )
-                for item in segments
-            ]
+                speaker_sources.append(
+                    "model_reviewed" if reviewed_speaker else "timing_inherited"
+                )
             document = Document(session_id=session_id, stage=stage, language=language)
             session.add(document)
             session.flush()
@@ -1617,6 +1926,9 @@ class WorkflowHandlers:
                     end_ms=item.end_ms,
                     text=item.text,
                     speaker=item.speaker or None,
+                    metadata_json={
+                        "speaker_source": speaker_sources[ordinal],
+                    },
                 )
                 session.add(child)
                 child_records.append(child)
@@ -1631,7 +1943,8 @@ class WorkflowHandlers:
                     and child.end_ms is not None
                     and parent.start_ms is not None
                     and parent.end_ms is not None
-                    and min(child.end_ms, parent.end_ms) > max(child.start_ms, parent.start_ms)
+                    and min(child.end_ms, parent.end_ms)
+                    > max(child.start_ms, parent.start_ms)
                 ]
                 for sequence, parent in enumerate(overlaps):
                     session.add(
@@ -1657,6 +1970,9 @@ class WorkflowHandlers:
                 "language": language,
                 "has_speaker_metadata": bool(speakers),
                 "speaker_count": len(speakers),
+                "speaker_reviewed_by_model": any(
+                    source == "model_reviewed" for source in speaker_sources
+                ),
             }
             return document.id, revision.id
 
@@ -1713,9 +2029,7 @@ class WorkflowHandlers:
 
             speaker_candidates: list[Any] = [
                 word for word in transcript.words if word.speaker
-            ] or [
-                item for item in transcript.segments if item.speaker
-            ]
+            ] or [item for item in transcript.segments if item.speaker]
             for segment in segments:
                 if segment.start_ms is None or segment.end_ms is None:
                     continue
@@ -1732,10 +2046,17 @@ class WorkflowHandlers:
         return len(words)
 
     @staticmethod
-    def _llm_usage_is_commercial(settings: dict[str, Any], model: str, has_price: bool) -> bool:
+    def _llm_usage_is_commercial(
+        settings: dict[str, Any], model: str, has_price: bool
+    ) -> bool:
         if has_price:
             return True
-        if str(settings.get("translation_backend") or settings.get("backend") or "").lower() == "deepl":
+        if (
+            str(
+                settings.get("translation_backend") or settings.get("backend") or ""
+            ).lower()
+            == "deepl"
+        ):
             return True
         provider = model.split("/", 1)[0].lower() if "/" in model else ""
         if provider in {"ollama", "lm_studio", "local", "custom_local"}:
@@ -1762,41 +2083,78 @@ class WorkflowHandlers:
         job_id: str | None = None,
         artifact_id: str | None = None,
         generation_run_id: str | None = None,
+        agent_run_id: str | None = None,
+        request_key: str | None = None,
     ) -> None:
         sources = tuple(getattr(result, "cost_sources", ()) or ())
         single_source = str(getattr(result, "cost_source", "") or "")
         if single_source and single_source not in sources:
             sources = (*sources, single_source)
         raw_cost = getattr(result, "cost", None)
-        cost = float(raw_cost) if raw_cost is not None and (sources or float(raw_cost) != 0.0) else None
+        cost = (
+            float(raw_cost)
+            if raw_cost is not None and (sources or float(raw_cost) != 0.0)
+            else None
+        )
         response_count = int(getattr(result, "response_count", 0) or 0)
         raw_usage = getattr(result, "usage", {})
         usage = raw_usage if isinstance(raw_usage, dict) else {}
         if cost is None and not response_count and not usage:
             return
-        model = str(settings.get(f"{stage}_model") or settings.get("default_model") or "default")
-        if stage == "translation" and str(settings.get("translation_backend") or settings.get("backend") or "").lower() == "deepl":
+        model = str(
+            settings.get(f"{stage}_model")
+            or settings.get("model_name")
+            or settings.get("llm_default_model")
+            or settings.get("default_model")
+            or "default"
+        )
+        if (
+            stage == "translation"
+            and str(
+                settings.get("translation_backend") or settings.get("backend") or ""
+            ).lower()
+            == "deepl"
+        ):
             model = "deepl"
         provider = model.split("/", 1)[0] if "/" in model else "default"
         commercial = self._llm_usage_is_commercial(settings, model, cost is not None)
         with self.database.session() as session:
-            session.add(
-                UsageEvent(
+            event = None
+            if agent_run_id and request_key:
+                event = session.scalar(
+                    select(UsageEvent).where(
+                        UsageEvent.agent_run_id == agent_run_id,
+                        UsageEvent.request_key == request_key,
+                    )
+                )
+            if event is None:
+                event = UsageEvent(
                     session_id=session_id,
                     stage=stage,
                     job_id=job_id or None,
                     artifact_id=artifact_id or None,
                     generation_run_id=generation_run_id or None,
+                    agent_run_id=agent_run_id or None,
+                    request_key=request_key or None,
                     provider_key=provider,
                     model_id=model,
-                    input_tokens=int(usage.get("prompt_tokens") or 0),
-                    cached_input_tokens=int(usage.get("cached_prompt_tokens") or 0),
-                    output_tokens=int(usage.get("completion_tokens") or 0),
-                    cost_usd=cost,
-                    cost_source=",".join(sources) or None,
-                    raw_usage_json={"response_count": response_count, "commercial": commercial, "estimated": False, **usage},
                 )
-            )
+                session.add(event)
+            event.job_id = job_id or event.job_id
+            event.artifact_id = artifact_id or event.artifact_id
+            event.provider_key = provider
+            event.model_id = model
+            event.input_tokens = int(usage.get("prompt_tokens") or 0)
+            event.cached_input_tokens = int(usage.get("cached_prompt_tokens") or 0)
+            event.output_tokens = int(usage.get("completion_tokens") or 0)
+            event.cost_usd = cost
+            event.cost_source = ",".join(sources) or None
+            event.raw_usage_json = {
+                "response_count": response_count,
+                "commercial": commercial,
+                "estimated": False,
+                **usage,
+            }
 
     def _record_tts_usage(
         self,
@@ -1854,7 +2212,9 @@ class WorkflowHandlers:
             raw_usage_json=usage,
         )
 
-    def _with_database_llm_settings(self, settings: dict[str, Any], stage: str) -> dict[str, Any]:
+    def _with_database_llm_settings(
+        self, settings: dict[str, Any], stage: str
+    ) -> dict[str, Any]:
         from .provider_settings import build_llm_settings
 
         aliases = {
@@ -1883,10 +2243,14 @@ class WorkflowHandlers:
         return hydrated
 
     def transcribe(self, payload, progress, cancel_event):
-        from pandrator.logic.dubbing.transcription import transcribe_source_file_with_metadata
+        from pandrator.logic.dubbing.transcription import (
+            transcribe_source_file_with_metadata,
+        )
 
         session_id = str(payload.get("session_id") or "")
-        source_artifact, source_path = self._resolve_input(str(payload.get("source_artifact_id") or ""))
+        source_artifact, source_path = self._resolve_input(
+            str(payload.get("source_artifact_id") or "")
+        )
         session_dir = self._operation_dir(session_id, "transcribe")
         progress(0.05, "Preparing transcription")
         if cancel_event.is_set():
@@ -1911,9 +2275,16 @@ class WorkflowHandlers:
             metadata={
                 "engine": transcription_result.engine,
                 "model": transcription_result.engine,
-                "model_quantization": str((payload.get("settings") or {}).get("stt_model_quantization") or "f16"),
+                "model_quantization": str(
+                    (payload.get("settings") or {}).get("stt_model_quantization")
+                    or "f16"
+                ),
                 "compute_backend": transcription_result.compute_backend,
-                "language": str((payload.get("settings") or {}).get("original_language") or (payload.get("settings") or {}).get("stt_language") or "auto"),
+                "language": str(
+                    (payload.get("settings") or {}).get("original_language")
+                    or (payload.get("settings") or {}).get("stt_language")
+                    or "auto"
+                ),
             },
         )
         timing_artifact = self.artifacts.register(
@@ -1932,14 +2303,23 @@ class WorkflowHandlers:
             session_id,
             artifact,
             "transcription",
-            language=str((payload.get("settings") or {}).get("original_language") or (payload.get("settings") or {}).get("stt_language") or "") or None,
+            language=str(
+                (payload.get("settings") or {}).get("original_language")
+                or (payload.get("settings") or {}).get("stt_language")
+                or ""
+            )
+            or None,
         )
-        word_count = self._store_timed_words(revision_id, Path(transcription_result.word_timestamps_path))
+        word_count = self._store_timed_words(
+            revision_id, Path(transcription_result.word_timestamps_path)
+        )
         speaker_by_subtitle = self._subtitle_speaker_map(artifact, output_path)
         with self.database.session() as session:
             managed = session.get(Artifact, artifact.id)
             if managed is not None:
-                speakers = {speaker.casefold() for speaker in speaker_by_subtitle.values()}
+                speakers = {
+                    speaker.casefold() for speaker in speaker_by_subtitle.values()
+                }
                 managed.metadata_json = {
                     **(managed.metadata_json or {}),
                     "has_speaker_metadata": bool(speakers),
@@ -1952,9 +2332,124 @@ class WorkflowHandlers:
             "word_timestamps_artifact_id": timing_artifact.id,
             "word_timestamps_path": timing_artifact.relative_path,
             "word_count": word_count,
-            "speaker_count": len({speaker.casefold() for speaker in speaker_by_subtitle.values()}),
+            "speaker_count": len(
+                {speaker.casefold() for speaker in speaker_by_subtitle.values()}
+            ),
             "revision_id": revision_id,
         }
+
+    def _begin_agentic_operation(
+        self,
+        *,
+        payload: dict[str, Any],
+        kind: str,
+        source_artifact: Artifact,
+        requested_settings: dict[str, Any],
+        instructions: str,
+        usage_settings: dict[str, Any],
+    ):
+        """Start or resume a transform and return its durable checkpoint sink."""
+        from types import SimpleNamespace
+
+        from .agentic_runs import AgenticRunStore, stable_payload_hash
+
+        store = AgenticRunStore(self.database)
+        resolved_execution = {
+            "model": str(
+                usage_settings.get(f"{kind}_model")
+                or usage_settings.get("model_name")
+                or usage_settings.get("llm_default_model")
+                or ""
+            ),
+            "backend": str(
+                usage_settings.get("translation_backend")
+                or usage_settings.get("backend")
+                or "llm"
+            ),
+            "reasoning_effort": str(
+                usage_settings.get("reasoning_effort")
+                or usage_settings.get(f"{kind}_reasoning_effort")
+                or ""
+            ),
+        }
+        settings_hash = stable_payload_hash(
+            {
+                "kind": kind,
+                "settings": requested_settings,
+                "instructions": instructions,
+                "resolved_execution": resolved_execution,
+            }
+        )
+        started = store.start(
+            kind=kind,
+            session_id=str(payload.get("session_id") or ""),
+            source_artifact=source_artifact,
+            settings_hash=settings_hash,
+            settings={
+                "settings": requested_settings,
+                "instructions": instructions,
+                "resolved_execution": resolved_execution,
+            },
+            job_id=str(payload.get("_job_id") or "") or None,
+            requested_run_id=str(payload.get("_agent_run_id") or "") or None,
+        )
+        checkpoint_lock = threading.Lock()
+        known_keys = set(started.completed_units)
+        next_ordinal = [len(known_keys)]
+
+        def persist_checkpoint(
+            unit_key: str,
+            output: dict[str, Any],
+            *,
+            phase: str = "transform",
+            usage_stage: str = kind,
+            usage_settings: dict[str, Any] = usage_settings,
+        ) -> None:
+            with checkpoint_lock:
+                is_new = unit_key not in known_keys
+                store.checkpoint(
+                    started.id,
+                    unit_key=unit_key,
+                    ordinal=next_ordinal[0],
+                    input_value={
+                        "kind": output.get("kind"),
+                        "stage": output.get("stage"),
+                        "source_hash": output.get("source_hash"),
+                        "original_indices": output.get("original_indices", []),
+                    },
+                    output=output,
+                    phase=phase,
+                    summary=(f"Saved {phase.replace('_', ' ')} checkpoint {unit_key}."),
+                    cost_usd=(
+                        float(output.get("cost") or 0.0)
+                        if output.get("cost_sources")
+                        else None
+                    ),
+                )
+                if is_new:
+                    known_keys.add(unit_key)
+                    next_ordinal[0] += 1
+            usage_result = SimpleNamespace(
+                cost=float(output.get("cost") or 0.0),
+                response_count=int(output.get("response_count") or 0),
+                cost_sources=tuple(output.get("cost_sources") or ()),
+                usage=(
+                    dict(output.get("usage") or {})
+                    if isinstance(output.get("usage"), dict)
+                    else {}
+                ),
+            )
+            self._record_usage(
+                str(payload.get("session_id") or ""),
+                usage_stage,
+                usage_settings,
+                usage_result,
+                job_id=str(payload.get("_job_id") or "") or None,
+                agent_run_id=started.id,
+                request_key=unit_key,
+            )
+
+        return store, started, persist_checkpoint
 
     def _run_stage_web_research(
         self,
@@ -1966,16 +2461,21 @@ class WorkflowHandlers:
         settings: dict[str, Any],
         progress,
         cancel_event,
-        job_id: str | None,
+        completed_units: dict[str, dict[str, Any]],
+        persist_checkpoint,
     ):
         if not bool(settings.get("web_research_enabled", False)):
-            return None, ""
-        provider_id = str(settings.get("web_research_provider") or "jina").strip().lower()
+            return None
+        provider_id = (
+            str(settings.get("web_research_provider") or "jina").strip().lower()
+        )
         if provider_id != "jina":
             raise ValueError(f"Unsupported web research provider: {provider_id}")
         if (
             stage == "translation"
-            and str(settings.get("translation_backend") or settings.get("backend") or "llm").lower()
+            and str(
+                settings.get("translation_backend") or settings.get("backend") or "llm"
+            ).lower()
             != "llm"
         ):
             raise ValueError(
@@ -1983,14 +2483,17 @@ class WorkflowHandlers:
                 "Choose the LLM backend or disable web research."
             )
 
-        from types import SimpleNamespace
-
         from pandrator.logic.dubbing.srt_utils import parse_srt
 
+        from .context_budget import ContextBudgetService
+        from .knowledge import KnowledgeLedgerStore
+        from .provider_settings import build_llm_settings
         from .web_research import (
             JinaResearchProvider,
             PersistentResearchCache,
             ResearchAgentConfig,
+            WebResearchResult,
+            merge_web_research_results,
             parse_domain_list,
             run_web_research_agent,
         )
@@ -2007,40 +2510,137 @@ class WorkflowHandlers:
             timeout_seconds=int(settings.get("web_research_timeout_seconds") or 90),
         )
         model_key = "correction_model" if stage == "correction" else "translation_model"
-        model_name = str(settings.get(model_key) or settings.get("llm_default_model") or "")
-        llm_settings = SimpleNamespace(
-            provider_configs=settings["llm_provider_configs"],
-            default_model=settings["llm_default_model"],
-            request_timeout_seconds=settings["request_timeout_seconds"],
+        task_model = str(
+            settings.get(model_key) or settings.get("llm_default_model") or ""
+        )
+        requested_researcher = str(
+            settings.get("web_research_model_name") or ""
+        ).strip()
+        llm_settings, model_name = build_llm_settings(
+            self.database,
+            self.paths,
+            requested_model=requested_researcher or task_model,
+            request_timeout_seconds=int(
+                settings.get("web_research_timeout_seconds")
+                or settings.get("request_timeout_seconds")
+                or 600
+            ),
+        )
+        source_language = str(
+            settings.get("original_language")
+            or settings.get("source_language")
+            or "auto"
+        )
+        target_language = (
+            str(settings.get("target_language") or "") if stage == "translation" else ""
+        )
+        knowledge = KnowledgeLedgerStore(self.database)
+        saved_research = knowledge.get(
+            session_id,
+            "research",
+            source_language=source_language,
+            target_language=target_language,
+        )["payload"]
+        saved_glossary = knowledge.get(
+            session_id,
+            "glossary",
+            source_language=source_language,
+            target_language=target_language,
+        )["payload"]
+        accumulated = WebResearchResult(
+            evidence=[
+                dict(item)
+                for item in saved_research.get("evidence", [])
+                if isinstance(item, dict)
+            ],
+            glossary=[
+                {
+                    "source": str(item.get("source") or ""),
+                    "target": str(item.get("target") or ""),
+                }
+                for item in saved_glossary.get("entries", [])
+                if isinstance(item, dict)
+                and str(item.get("status") or "active") != "disabled"
+            ],
+            summary=str(saved_research.get("summary") or ""),
+            warnings=[str(item) for item in saved_research.get("warnings", [])],
         )
         try:
             cues = parse_srt(source_path.read_text(encoding="utf-8-sig"))
-            research_source = json.dumps(
-                [{"id": cue.index, "text": cue.text} for cue in cues],
-                ensure_ascii=False,
-            )
+            speaker_map = self._subtitle_speaker_map(source_artifact, source_path)
+            records = [
+                {
+                    "id": cue.index,
+                    "start_ms": cue.start_ms,
+                    "end_ms": cue.end_ms,
+                    "speaker": str(speaker_map.get(cue.index) or cue.speaker or ""),
+                    "text": cue.text,
+                }
+                for cue in cues
+            ]
         except (OSError, ValueError):
-            research_source = source_path.read_text(encoding="utf-8-sig")
+            records = [
+                {"id": index, "text": text}
+                for index, text in enumerate(
+                    source_path.read_text(encoding="utf-8-sig").splitlines(),
+                    start=1,
+                )
+                if text.strip()
+            ]
 
-        run_id = new_id()
+        mode = str(settings.get("web_research_mode") or "global").strip().lower()
+        if mode not in {"global", "per_chunk"}:
+            raise ValueError("Web research mode must be 'global' or 'per_chunk'.")
+        context_fraction = min(
+            0.8,
+            max(0.1, float(settings.get("web_research_context_fraction") or 0.8)),
+        )
+        budget = ContextBudgetService(self.database).resolve(
+            model_name,
+            fraction=context_fraction,
+            fixed_prompt={
+                "stage": stage,
+                "source_language": source_language,
+                "target_language": target_language,
+                "instruction": "Research terminology and uncertain proper names using bounded web tools.",
+            },
+            ledger={
+                "evidence": accumulated.evidence,
+                "glossary": accumulated.glossary,
+            },
+            tools=["search_web", "read_url", "finish"],
+        )
+        partitioner = ContextBudgetService.partition
+        if mode == "global":
+            record_groups = partitioner(
+                records,
+                model=model_name,
+                budget_tokens=budget.input_budget_tokens,
+            )
+        else:
+            chunk_size = max(1, int(settings.get("max_subtitles_per_call") or 40))
+            record_groups = []
+            for offset in range(0, len(records), chunk_size):
+                record_groups.extend(
+                    partitioner(
+                        records[offset : offset + chunk_size],
+                        model=model_name,
+                        budget_tokens=budget.input_budget_tokens,
+                    )
+                )
+
         run_settings = {
             "stage": stage,
             "provider": provider_id,
             "model": model_name,
-            "source_language": str(
-                settings.get("original_language")
-                or settings.get("source_language")
-                or "auto"
-            ),
-            "target_language": (
-                str(settings.get("target_language") or "")
-                if stage == "translation"
-                else ""
-            ),
+            "mode": mode,
+            "context_window_tokens": budget.context_window_tokens,
+            "context_fraction": budget.fraction,
+            "input_budget_tokens": budget.input_budget_tokens,
+            "source_language": source_language,
+            "target_language": target_language,
             "research_language": str(settings.get("web_research_language") or ""),
-            "max_searches": max(
-                0, int(settings.get("web_research_max_searches") or 3)
-            ),
+            "max_searches": max(0, int(settings.get("web_research_max_searches") or 3)),
             "max_extractions": max(
                 0, int(settings.get("web_research_max_extractions") or 2)
             ),
@@ -2051,37 +2651,45 @@ class WorkflowHandlers:
                 parse_domain_list(settings.get("web_research_blocked_domains"))
             ),
         }
-        with self.database.session() as session:
-            session.add(
-                AgentRun(
-                    id=run_id,
-                    kind=f"{stage}_research",
-                    session_id=session_id,
-                    source_artifact_id=source_artifact.id,
-                    job_id=job_id,
-                    status="running",
-                    settings_json=run_settings,
-                )
-            )
-
         configured_iterations = max(
             2,
             int(settings.get("web_research_max_iterations") or 8),
         )
-        effective_iterations = max(
-            1,
-            min(
-                configured_iterations,
-                max(
-                    2,
-                    run_settings["max_searches"]
-                    + run_settings["max_extractions"]
-                    + 3,
-                ),
-            ),
-        )
         progress(0.02, f"Preparing {stage} web research")
-        try:
+        results = [accumulated]
+        total_batches = max(1, len(record_groups))
+        for batch_index, group in enumerate(record_groups):
+            research_source = json.dumps(group, ensure_ascii=False)
+            unit_key = f"research:{mode}:{batch_index}"
+            resume_state = completed_units.get(unit_key)
+
+            def save_research_state(
+                state: dict[str, Any],
+                *,
+                checkpoint_key: str = unit_key,
+            ) -> None:
+                checkpoint_result = (
+                    state.get("result") if isinstance(state.get("result"), dict) else {}
+                )
+                persist_checkpoint(
+                    checkpoint_key,
+                    {
+                        **state,
+                        "cost": checkpoint_result.get("cost", 0.0),
+                        "response_count": checkpoint_result.get("response_count", 0),
+                        "cost_sources": checkpoint_result.get("cost_sources", []),
+                        "usage": checkpoint_result.get("usage", {}),
+                    },
+                    phase="web_research",
+                    usage_stage="web_research",
+                    usage_settings={
+                        **settings,
+                        "web_research_model": model_name,
+                    },
+                )
+
+            batch_start = 0.02 + (0.16 * batch_index / total_batches)
+            batch_end = 0.02 + (0.16 * (batch_index + 1) / total_batches)
             result = run_web_research_agent(
                 research_source,
                 provider=research_provider,
@@ -2095,115 +2703,53 @@ class WorkflowHandlers:
                     max_searches=run_settings["max_searches"],
                     max_extractions=run_settings["max_extractions"],
                     max_iterations=configured_iterations,
-                    max_source_chars=max(
-                        2000,
-                        int(settings.get("web_research_source_chars") or 14000),
-                    ),
+                    max_source_chars=max(2_000, len(research_source) + 1),
                     max_tool_result_chars=max(
-                        2000,
-                        int(settings.get("web_research_result_chars") or 10000),
+                        2_000,
+                        int(settings.get("web_research_result_chars") or 10_000),
                     ),
+                    max_tokens=min(12_000, budget.max_output_tokens),
                     preferred_domains=tuple(run_settings["preferred_domains"]),
                     blocked_domains=tuple(run_settings["blocked_domains"]),
+                    context_window_tokens=budget.context_window_tokens,
+                    context_input_fraction=budget.fraction,
                 ),
                 cancel_event=cancel_event,
                 progress_callback=_fraction_message_callback(
                     progress,
-                    0.02,
-                    0.18,
+                    batch_start,
+                    batch_end,
                 ),
+                resume_state=resume_state,
+                on_checkpoint=save_research_state,
+                initial_ledger=merge_web_research_results(results),
             )
-        except Exception:
-            with self.database.session() as session:
-                run = session.get(AgentRun, run_id)
-                if run is not None:
-                    run.status = "failed"
-                    run.updated_at = utcnow()
-            raise
+            results.append(result)
+        result = merge_web_research_results(results)
         progress(
             0.2,
             (
-                f"Web research complete after {result.response_count} of "
-                f"{effective_iterations} allowed turns"
+                f"Web research complete across {len(record_groups)} context batch(es) "
+                f"after {result.response_count} model turn(s)"
             ),
         )
-
-        with self.database.session() as session:
-            for ordinal, trace in enumerate(result.tool_trace):
-                observation = (
-                    trace.get("observation")
-                    if isinstance(trace.get("observation"), dict)
-                    else {"value": trace.get("observation")}
-                )
-                session.add(
-                    AgentStep(
-                        agent_run_id=run_id,
-                        ordinal=ordinal,
-                        phase=str(trace.get("action") or "research"),
-                        status=(
-                            "failed"
-                            if isinstance(observation, dict) and observation.get("error")
-                            else "completed"
-                        ),
-                        summary=(
-                            str(observation.get("error"))
-                            if isinstance(observation, dict) and observation.get("error")
-                            else f"Completed {str(trace.get('action') or 'research')}."
-                        ),
-                        input_json=(
-                            trace.get("arguments")
-                            if isinstance(trace.get("arguments"), dict)
-                            else {}
-                        ),
-                        output_json=observation,
-                    )
-                )
-            session.add(
-                AgentStep(
-                    agent_run_id=run_id,
-                    ordinal=len(result.tool_trace),
-                    phase="evidence_ledger",
-                    status="completed",
-                    summary=result.summary
-                    or f"Collected {len(result.evidence)} evidence item(s).",
-                    input_json={"warnings": result.warnings},
-                    output_json={
-                        "evidence": result.evidence,
-                        "glossary": result.glossary,
-                        "usage": result.usage,
-                    },
-                    cost_usd=result.cost if result.cost_sources else None,
-                )
-            )
-            run = session.get(AgentRun, run_id)
-            if run is not None:
-                run.status = "researched"
-                run.updated_at = utcnow()
-        self._record_usage(
+        knowledge.merge_research(
             session_id,
-            "web_research",
-            {**settings, "web_research_model": model_name},
-            result,
-            job_id=job_id,
+            source_language=source_language,
+            target_language=target_language,
+            evidence=result.evidence,
+            warnings=result.warnings,
+            summary=result.summary,
         )
-        return result, run_id
-
-    def _finish_stage_web_research(
-        self,
-        run_id: str,
-        *,
-        artifact_id: str | None = None,
-        failed: bool = False,
-    ) -> None:
-        if not run_id:
-            return
-        with self.database.session() as session:
-            run = session.get(AgentRun, run_id)
-            if run is None:
-                return
-            run.result_artifact_id = artifact_id
-            run.status = "failed" if failed else "completed"
-            run.updated_at = utcnow()
+        if result.glossary:
+            knowledge.merge_glossary(
+                session_id,
+                source_language=source_language,
+                target_language=target_language,
+                entries=result.glossary,
+                origin="research",
+            )
+        return result
 
     @staticmethod
     def _research_metadata(result, run_id: str) -> dict[str, Any] | None:
@@ -2233,38 +2779,58 @@ class WorkflowHandlers:
 
     def correct(self, payload, progress, cancel_event):
         from pandrator.logic.dubbing.llm_correction import correct_srt_file_with_result
+
         from .web_research import evidence_prompt
 
         session_id = str(payload.get("session_id") or "")
-        source_artifact, source_path = self._resolve_input(str(payload.get("source_artifact_id") or ""))
+        source_artifact, source_path = self._resolve_input(
+            str(payload.get("source_artifact_id") or "")
+        )
         speaker_by_subtitle = self._subtitle_speaker_map(source_artifact, source_path)
         session_dir = self._operation_dir(session_id, "correct")
         requested_settings = dict(payload.get("settings") or {})
         requested_settings_hash = hashlib.sha256(
-            json.dumps(requested_settings, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+            json.dumps(
+                requested_settings,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            ).encode("utf-8")
         ).hexdigest()
         settings = self._with_database_llm_settings(requested_settings, "correction")
-        research_result, research_run_id = self._run_stage_web_research(
-            stage="correction",
-            session_id=session_id,
-            source_artifact=source_artifact,
-            source_path=source_path,
-            settings=settings,
-            progress=progress,
-            cancel_event=cancel_event,
-            job_id=str(payload.get("_job_id") or "") or None,
-        )
-        instructions = str(
+        base_instructions = str(
             payload.get("instructions") or settings.get("instructions") or ""
         )
-        if research_result is not None:
-            instructions += evidence_prompt(
-                research_result.evidence,
-                stage="correction",
-            )
-        processing_start = 0.2 if research_result is not None else 0.05
-        progress(processing_start, "Preparing subtitle correction requests")
+        run_store, agent_run, persist_checkpoint = self._begin_agentic_operation(
+            payload=payload,
+            kind="correction",
+            source_artifact=source_artifact,
+            requested_settings=requested_settings,
+            instructions=base_instructions,
+            usage_settings=settings,
+        )
+        research_result = None
         try:
+            research_result = self._run_stage_web_research(
+                stage="correction",
+                session_id=session_id,
+                source_artifact=source_artifact,
+                source_path=source_path,
+                settings=settings,
+                progress=progress,
+                cancel_event=cancel_event,
+                completed_units=agent_run.completed_units,
+                persist_checkpoint=persist_checkpoint,
+            )
+            instructions = base_instructions
+            if research_result is not None:
+                instructions += evidence_prompt(
+                    research_result.evidence,
+                    stage="correction",
+                )
+            processing_start = 0.2 if research_result is not None else 0.05
+            progress(processing_start, "Preparing subtitle correction requests")
             result = correct_srt_file_with_result(
                 session_dir,
                 source_path,
@@ -2272,82 +2838,118 @@ class WorkflowHandlers:
                 correction_instructions=instructions,
                 cancel_event=cancel_event,
                 speaker_by_subtitle=speaker_by_subtitle,
+                completed_units=agent_run.completed_units,
+                on_unit_completed=lambda key, output: persist_checkpoint(
+                    key,
+                    output,
+                    phase="correction",
+                    usage_stage="correction",
+                    usage_settings=settings,
+                ),
                 progress_callback=_scaled_progress_callback(
                     progress,
                     processing_start,
                     0.9,
                 ),
             )
-        except Exception:
-            self._finish_stage_web_research(research_run_id, failed=True)
+            if cancel_event.is_set():
+                raise RuntimeError("Subtitle correction was canceled.")
+            progress(0.92, "Correction requests complete; preparing artifact")
+            settings_fingerprint = _stage_settings_fingerprint("correct", settings)
+            artifact = self.artifacts.register(
+                Path(result.output_path),
+                kind="srt",
+                role="correction",
+                session_id=session_id,
+                parent_ids=[source_artifact.id],
+                settings=settings,
+                metadata={
+                    "source_artifact_id": source_artifact.id,
+                    "source_content_hash": source_artifact.content_hash,
+                    "requested_settings_hash": requested_settings_hash,
+                    "settings_fingerprint": settings_fingerprint,
+                    "model": settings_fingerprint["model"],
+                    "language": str(
+                        settings.get("original_language")
+                        or settings.get("source_language")
+                        or "auto"
+                    ),
+                    "agent_run_id": agent_run.id,
+                    **(
+                        {
+                            "research": self._research_metadata(
+                                research_result, agent_run.id
+                            )
+                        }
+                        if research_result is not None
+                        else {}
+                    ),
+                },
+            )
+            progress(0.97, "Registering corrected subtitle document")
+            self._store_srt_document(
+                session_id,
+                artifact,
+                "correction",
+                language=str(
+                    settings.get("original_language")
+                    or settings.get("source_language")
+                    or ""
+                )
+                or None,
+                parent_artifact=source_artifact,
+                speaker_overrides=result.speaker_by_subtitle,
+            )
+            run_store.finish(agent_run.id, artifact_id=artifact.id)
+        except Exception as error:
+            run_store.fail(agent_run.id, error)
             raise
-        if cancel_event.is_set():
-            self._finish_stage_web_research(research_run_id, failed=True)
-            return {}
-        progress(0.92, "Correction requests complete; preparing artifact")
-        settings_fingerprint = _stage_settings_fingerprint("correct", settings)
-        artifact = self.artifacts.register(
-            Path(result.output_path),
-            kind="srt",
-            role="correction",
-            session_id=session_id,
-            parent_ids=[source_artifact.id],
-            settings=settings,
-            metadata={
-                "source_artifact_id": source_artifact.id,
-                "source_content_hash": source_artifact.content_hash,
-                "requested_settings_hash": requested_settings_hash,
-                "settings_fingerprint": settings_fingerprint,
-                "model": settings_fingerprint["model"],
-                "language": str(settings.get("original_language") or settings.get("source_language") or "auto"),
-                **(
-                    {"research": self._research_metadata(research_result, research_run_id)}
-                    if research_result is not None
-                    else {}
-                ),
-            },
-        )
-        self._finish_stage_web_research(
-            research_run_id,
-            artifact_id=artifact.id,
-        )
-        progress(0.97, "Registering corrected subtitle document")
-        self._store_srt_document(
-            session_id,
-            artifact,
-            "correction",
-            language=str(settings.get("original_language") or settings.get("source_language") or "") or None,
-            parent_artifact=source_artifact,
-        )
-        self._record_usage(session_id, "correction", settings, result, job_id=str(payload.get("_job_id") or "") or None, artifact_id=artifact.id)
         progress(1.0, "Correction ready")
-        return {"artifact_id": artifact.id, "path": artifact.relative_path, "cost": result.cost}
+        return {
+            "artifact_id": artifact.id,
+            "path": artifact.relative_path,
+            "cost": result.cost,
+            "agent_run_id": agent_run.id,
+            "resumed": agent_run.resumed,
+        }
 
     def translate(self, payload, progress, cancel_event):
         from pandrator.logic.dubbing.llm_translation import (
+            normalize_glossary,
             translate_srt_file_deepl_with_result,
             translate_srt_file_with_result,
         )
+
         from .web_research import evidence_prompt
 
         session_id = str(payload.get("session_id") or "")
-        source_artifact, source_path = self._resolve_input(str(payload.get("source_artifact_id") or ""))
+        source_artifact, source_path = self._resolve_input(
+            str(payload.get("source_artifact_id") or "")
+        )
         speaker_by_subtitle = self._subtitle_speaker_map(source_artifact, source_path)
         session_dir = self._operation_dir(session_id, "translate")
-        settings = dict(payload.get("settings") or {})
+        requested_settings = dict(payload.get("settings") or {})
         requested_settings_hash = hashlib.sha256(
-            json.dumps(settings, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+            json.dumps(
+                requested_settings,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            ).encode("utf-8")
         ).hexdigest()
+        settings = requested_settings
         research_result = None
-        research_run_id = ""
+        run_store = None
+        agent_run = None
+        base_instructions = str(
+            payload.get("instructions") or settings.get("instructions") or ""
+        )
         translation_backend = str(
-            settings.get("translation_backend")
-            or settings.get("backend")
-            or "llm"
+            settings.get("translation_backend") or settings.get("backend") or "llm"
         ).lower()
-        if (
-            translation_backend == "deepl"
-            and bool(settings.get("web_research_enabled"))
+        if translation_backend == "deepl" and bool(
+            settings.get("web_research_enabled")
         ):
             raise ValueError(
                 "Web research currently augments LLM translation only. "
@@ -2377,85 +2979,185 @@ class WorkflowHandlers:
             )
         else:
             settings = self._with_database_llm_settings(settings, "translation")
-            research_result, research_run_id = self._run_stage_web_research(
-                stage="translation",
-                session_id=session_id,
+            run_store, agent_run, persist_checkpoint = self._begin_agentic_operation(
+                payload=payload,
+                kind="translation",
                 source_artifact=source_artifact,
-                source_path=source_path,
-                settings=settings,
-                progress=progress,
-                cancel_event=cancel_event,
-                job_id=str(payload.get("_job_id") or "") or None,
+                requested_settings=requested_settings,
+                instructions=base_instructions,
+                usage_settings=settings,
             )
-            instructions = str(
-                payload.get("instructions") or settings.get("instructions") or ""
-            )
-            if research_result is not None:
-                instructions += evidence_prompt(
-                    research_result.evidence,
-                    stage="translation",
-                )
-            processing_start = 0.2 if research_result is not None else 0.05
-            progress(processing_start, "Preparing subtitle translation requests")
             try:
+                research_result = self._run_stage_web_research(
+                    stage="translation",
+                    session_id=session_id,
+                    source_artifact=source_artifact,
+                    source_path=source_path,
+                    settings=settings,
+                    progress=progress,
+                    cancel_event=cancel_event,
+                    completed_units=agent_run.completed_units,
+                    persist_checkpoint=persist_checkpoint,
+                )
+                instructions = base_instructions
+                if research_result is not None:
+                    instructions += evidence_prompt(
+                        research_result.evidence,
+                        stage="translation",
+                    )
+                from .knowledge import KnowledgeLedgerStore
+
+                glossary_store = KnowledgeLedgerStore(self.database)
+                manual_glossary = normalize_glossary(settings.get("glossary"))
+                if manual_glossary:
+                    glossary_store.merge_glossary(
+                        session_id,
+                        source_language=str(
+                            settings.get("original_language")
+                            or settings.get("source_language")
+                            or "auto"
+                        ),
+                        target_language=str(settings.get("target_language") or ""),
+                        entries=[
+                            {"source": source, "target": target}
+                            for source, target in manual_glossary.items()
+                        ],
+                        origin="manual",
+                        locked=True,
+                    )
+                glossary_payload = glossary_store.get(
+                    session_id,
+                    "glossary",
+                    source_language=str(
+                        settings.get("original_language")
+                        or settings.get("source_language")
+                        or "auto"
+                    ),
+                    target_language=str(settings.get("target_language") or ""),
+                )["payload"]
+                glossary_seed = [
+                    dict(item)
+                    for item in glossary_payload.get("entries", [])
+                    if isinstance(item, dict)
+                    and str(item.get("status") or "active") != "disabled"
+                ]
+                if research_result is not None:
+                    glossary_seed.extend(research_result.glossary)
+                processing_start = 0.2 if research_result is not None else 0.05
+                progress(processing_start, "Preparing subtitle translation requests")
                 result = translate_srt_file_with_result(
                     session_dir,
                     source_path,
                     settings,
                     translation_instructions=instructions,
+                    glossary=glossary_seed,
                     cancel_event=cancel_event,
                     speaker_by_subtitle=speaker_by_subtitle,
+                    completed_units=agent_run.completed_units,
+                    on_unit_completed=lambda key, output: persist_checkpoint(
+                        key,
+                        output,
+                        phase="translation",
+                        usage_stage="translation",
+                        usage_settings=settings,
+                    ),
                     progress_callback=_scaled_progress_callback(
                         progress,
                         processing_start,
                         0.9,
                     ),
                 )
-            except Exception:
-                self._finish_stage_web_research(research_run_id, failed=True)
+                if result.glossary:
+                    glossary_store.merge_glossary(
+                        session_id,
+                        source_language=str(
+                            settings.get("original_language")
+                            or settings.get("source_language")
+                            or "auto"
+                        ),
+                        target_language=str(settings.get("target_language") or ""),
+                        entries=[
+                            {"source": source, "target": target}
+                            for source, target in result.glossary.items()
+                        ],
+                        origin="translation",
+                    )
+            except Exception as error:
+                run_store.fail(agent_run.id, error)
                 raise
         if cancel_event.is_set():
-            self._finish_stage_web_research(research_run_id, failed=True)
-            return {}
-        progress(0.92, "Translation requests complete; preparing artifact")
-        settings_fingerprint = _stage_settings_fingerprint("translate", settings)
-        artifact = self.artifacts.register(
-            Path(result.output_path),
-            kind="srt",
-            role="translation",
-            session_id=session_id,
-            parent_ids=[source_artifact.id],
-            settings=settings,
-            metadata={
-                "source_artifact_id": source_artifact.id,
-                "source_content_hash": source_artifact.content_hash,
-                "requested_settings_hash": requested_settings_hash,
-                "settings_fingerprint": settings_fingerprint,
-                "backend": settings_fingerprint["backend"],
-                "model": settings_fingerprint["model"],
-                "language": settings_fingerprint["target_language"],
-                **(
-                    {"research": self._research_metadata(research_result, research_run_id)}
-                    if research_result is not None
-                    else {}
-                ),
-            },
-        )
-        self._finish_stage_web_research(
-            research_run_id,
-            artifact_id=artifact.id,
-        )
-        progress(0.97, "Registering translated subtitle document")
-        self._store_srt_document(
-            session_id,
-            artifact,
-            "translation",
-            language=str(settings.get("target_language") or "") or None,
-            parent_artifact=source_artifact,
-        )
-        self._record_usage(session_id, "translation", settings, result, job_id=str(payload.get("_job_id") or "") or None, artifact_id=artifact.id)
+            cancel_error = RuntimeError("Subtitle translation was canceled.")
+            if run_store is not None and agent_run is not None:
+                run_store.fail(agent_run.id, cancel_error)
+            raise cancel_error
+        try:
+            progress(0.92, "Translation requests complete; preparing artifact")
+            settings_fingerprint = _stage_settings_fingerprint("translate", settings)
+            artifact = self.artifacts.register(
+                Path(result.output_path),
+                kind="srt",
+                role="translation",
+                session_id=session_id,
+                parent_ids=[source_artifact.id],
+                settings=settings,
+                metadata={
+                    "source_artifact_id": source_artifact.id,
+                    "source_content_hash": source_artifact.content_hash,
+                    "requested_settings_hash": requested_settings_hash,
+                    "settings_fingerprint": settings_fingerprint,
+                    "backend": settings_fingerprint["backend"],
+                    "model": settings_fingerprint["model"],
+                    "language": settings_fingerprint["target_language"],
+                    **({"agent_run_id": agent_run.id} if agent_run is not None else {}),
+                    **(
+                        {
+                            "research": self._research_metadata(
+                                research_result, agent_run.id
+                            )
+                        }
+                        if research_result is not None and agent_run is not None
+                        else {}
+                    ),
+                },
+            )
+            progress(0.97, "Registering translated subtitle document")
+            self._store_srt_document(
+                session_id,
+                artifact,
+                "translation",
+                language=str(settings.get("target_language") or "") or None,
+                parent_artifact=source_artifact,
+                speaker_overrides=getattr(result, "speaker_by_subtitle", {}),
+            )
+            if run_store is not None and agent_run is not None:
+                run_store.finish(agent_run.id, artifact_id=artifact.id)
+            else:
+                self._record_usage(
+                    session_id,
+                    "translation",
+                    settings,
+                    result,
+                    job_id=str(payload.get("_job_id") or "") or None,
+                    artifact_id=artifact.id,
+                )
+        except Exception as error:
+            if run_store is not None and agent_run is not None:
+                run_store.fail(agent_run.id, error)
+            raise
         progress(1.0, "Translation ready")
-        return {"artifact_id": artifact.id, "path": artifact.relative_path, "cost": result.cost}
+        return {
+            "artifact_id": artifact.id,
+            "path": artifact.relative_path,
+            "cost": result.cost,
+            **(
+                {
+                    "agent_run_id": agent_run.id,
+                    "resumed": agent_run.resumed,
+                }
+                if agent_run is not None
+                else {}
+            ),
+        }
 
     def optimize_tts(self, payload, progress, cancel_event):
         """Create a separate, previewable text revision optimized only for speech."""
@@ -2468,23 +3170,51 @@ class WorkflowHandlers:
         from .tts_optimization import optimize_texts
 
         session_id = str(payload.get("session_id") or "")
-        source_artifact, source_path = self._resolve_input(str(payload.get("source_artifact_id") or ""))
+        source_artifact, source_path = self._resolve_input(
+            str(payload.get("source_artifact_id") or "")
+        )
         requested_settings = dict(payload.get("settings") or {})
         requested_settings_hash = hashlib.sha256(
-            json.dumps(requested_settings, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+            json.dumps(
+                requested_settings,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            ).encode("utf-8")
         ).hexdigest()
-        settings = self._with_database_llm_settings(requested_settings, "tts_optimization")
+        settings = self._with_database_llm_settings(
+            requested_settings, "tts_optimization"
+        )
         settings["llm_tts_batch_size"] = max(
             1,
-            int(settings.get("llm_tts_document_batch_size") or settings.get("llm_tts_batch_size") or 8),
+            int(
+                settings.get("llm_tts_document_batch_size")
+                or settings.get("llm_tts_batch_size")
+                or 8
+            ),
         )
         llm_settings = SimpleNamespace(
             provider_configs=settings["llm_provider_configs"],
             default_model=settings["llm_default_model"],
             request_timeout_seconds=settings["request_timeout_seconds"],
         )
-        model_name = str(settings.get("tts_optimization_model") or settings["llm_default_model"])
-        speech_mode = str(settings.get("speech_optimization_mode") or "").strip().lower()
+        model_name = str(
+            settings.get("tts_optimization_model") or settings["llm_default_model"]
+        )
+        run_store, agent_run, persist_checkpoint = self._begin_agentic_operation(
+            payload=payload,
+            kind="tts_optimization",
+            source_artifact=source_artifact,
+            requested_settings=requested_settings,
+            instructions=str(
+                payload.get("instructions") or settings.get("instructions") or ""
+            ),
+            usage_settings=settings,
+        )
+        speech_mode = (
+            str(settings.get("speech_optimization_mode") or "").strip().lower()
+        )
         structured_mode = speech_mode in {"guarded", "flexible"}
         default_language = str(
             settings.get("language")
@@ -2513,15 +3243,19 @@ class WorkflowHandlers:
         ):
             nonlocal speech_plans
             speech_plans = [{} for _ in source_texts]
-            known_by_index = {
-                index: pronunciation_library.resolve(
-                    text,
-                    session_id=session_id,
-                    language=languages[index],
-                    backend=backend,
-                )
-                for index, text in enumerate(source_texts)
-            } if structured_mode else {}
+            known_by_index = (
+                {
+                    index: pronunciation_library.resolve(
+                        text,
+                        session_id=session_id,
+                        language=languages[index],
+                        backend=backend,
+                    )
+                    for index, text in enumerate(source_texts)
+                }
+                if structured_mode
+                else {}
+            )
 
             def resolve_known(text: str, language: str) -> list[dict[str, Any]]:
                 for index, source_text in enumerate(source_texts):
@@ -2544,18 +3278,32 @@ class WorkflowHandlers:
                         plan["proposals"] = []
                     speech_plans[index] = plan
 
-            return optimize_texts(
-                source_texts,
-                settings,
-                llm_settings,
-                model_name,
-                cancel_event,
-                _scaled_progress_callback(progress, 0.05, 0.9),
-                on_plan_batch=keep_plans if structured_mode else None,
-                known_pronunciation_resolver=resolve_known if structured_mode else None,
-                languages=languages,
-                voice_languages=[voice_language for _ in source_texts],
-            )
+            try:
+                return optimize_texts(
+                    source_texts,
+                    settings,
+                    llm_settings,
+                    model_name,
+                    cancel_event,
+                    _scaled_progress_callback(progress, 0.05, 0.9),
+                    on_plan_batch=keep_plans if structured_mode else None,
+                    known_pronunciation_resolver=resolve_known
+                    if structured_mode
+                    else None,
+                    languages=languages,
+                    voice_languages=[voice_language for _ in source_texts],
+                    completed_units=agent_run.completed_units,
+                    on_unit_completed=lambda key, output: persist_checkpoint(
+                        key,
+                        output,
+                        phase="tts_optimization",
+                        usage_stage="tts_optimization",
+                        usage_settings=settings,
+                    ),
+                )
+            except Exception as error:
+                run_store.fail(agent_run.id, error)
+                raise
 
         suffix = source_path.suffix.lower()
         progress(0.02, "Preparing speech optimization preview")
@@ -2572,13 +3320,17 @@ class WorkflowHandlers:
                 replace(segment, text=text)
                 for segment, text in zip(segments, optimized, strict=True)
             ]
-            destination = self._session_dir(session_id) / f"tts-optimized-{new_id()}.srt"
+            destination = (
+                self._session_dir(session_id) / f"tts-optimized-{new_id()}.srt"
+            )
             destination.write_text(compose_srt(segments), encoding="utf-8")
             kind = "srt"
         elif suffix == ".json":
             rows = json.loads(source_path.read_text(encoding="utf-8"))
             if not isinstance(rows, list):
-                raise ValueError("Speech optimization JSON input must contain a list of generation units.")
+                raise ValueError(
+                    "Speech optimization JSON input must contain a list of generation units."
+                )
             source_texts = [
                 str(
                     row.get("source_text")
@@ -2587,7 +3339,8 @@ class WorkflowHandlers:
                     or row.get("original_sentence")
                     or ""
                 )
-                if isinstance(row, dict) else str(row)
+                if isinstance(row, dict)
+                else str(row)
                 for row in rows
             ]
             languages = [
@@ -2599,32 +3352,39 @@ class WorkflowHandlers:
             optimized, usage = optimize_units(source_texts, languages)
             if cancel_event.is_set():
                 return {}
-            for index, (row, text) in enumerate(
-                zip(rows, optimized, strict=True)
-            ):
+            for index, (row, text) in enumerate(zip(rows, optimized, strict=True)):
                 if isinstance(row, dict):
-                    row["source_text"] = str(row.get("source_text") or row.get("text") or row.get("processed_sentence") or row.get("original_sentence") or "")
+                    row["source_text"] = str(
+                        row.get("source_text")
+                        or row.get("text")
+                        or row.get("processed_sentence")
+                        or row.get("original_sentence")
+                        or ""
+                    )
                     row["tts_optimized_sentence"] = text
                     if structured_mode:
                         row["speech_plan"] = speech_plans[index]
-            destination = self._session_dir(session_id) / f"tts-optimized-{new_id()}.json"
-            destination.write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
+            destination = (
+                self._session_dir(session_id) / f"tts-optimized-{new_id()}.json"
+            )
+            destination.write_text(
+                json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
             kind = "json"
         else:
             source_text = source_path.read_text(encoding="utf-8-sig")
             optimized, usage = optimize_units([source_text], [default_language])
             if cancel_event.is_set():
                 return {}
-            destination = self._session_dir(session_id) / f"tts-optimized-{new_id()}.txt"
+            destination = (
+                self._session_dir(session_id) / f"tts-optimized-{new_id()}.txt"
+            )
             destination.write_text(optimized[0], encoding="utf-8")
             kind = "text"
         progress(0.92, "Speech optimization complete; preparing preview artifact")
         speech_plan_artifact_id = ""
         if structured_mode and any(speech_plans):
-            plan_path = (
-                self._session_dir(session_id)
-                / f"speech-plans-{new_id()}.json"
-            )
+            plan_path = self._session_dir(session_id) / f"speech-plans-{new_id()}.json"
             plan_path.write_text(
                 json.dumps(
                     [
@@ -2677,6 +3437,7 @@ class WorkflowHandlers:
                 "speech_plan_count": len([plan for plan in speech_plans if plan]),
                 "batch_size": settings["llm_tts_batch_size"],
                 "requested_settings_hash": requested_settings_hash,
+                "agent_run_id": agent_run.id,
             },
         )
         if suffix == ".srt":
@@ -2684,17 +3445,13 @@ class WorkflowHandlers:
                 session_id,
                 artifact,
                 "tts_optimization",
-                language=str((source_artifact.metadata_json or {}).get("language") or "") or None,
+                language=str(
+                    (source_artifact.metadata_json or {}).get("language") or ""
+                )
+                or None,
                 parent_artifact=source_artifact,
             )
-        self._record_usage(
-            session_id,
-            "tts_optimization",
-            settings,
-            usage,
-            job_id=str(payload.get("_job_id") or "") or None,
-            artifact_id=artifact.id,
-        )
+        run_store.finish(agent_run.id, artifact_id=artifact.id)
         progress(1.0, "Speech optimization preview ready")
         input_tokens = int(usage.usage.get("prompt_tokens") or 0)
         output_tokens = int(usage.usage.get("completion_tokens") or 0)
@@ -2702,9 +3459,13 @@ class WorkflowHandlers:
             "artifact_id": artifact.id,
             "path": artifact.relative_path,
             "cost": usage.cost,
+            "agent_run_id": agent_run.id,
+            "resumed": agent_run.resumed,
             "usage": {
                 "input_tokens": input_tokens,
-                "cached_input_tokens": int(usage.usage.get("cached_prompt_tokens") or 0),
+                "cached_input_tokens": int(
+                    usage.usage.get("cached_prompt_tokens") or 0
+                ),
                 "output_tokens": output_tokens,
                 "total_tokens": input_tokens + output_tokens,
                 "response_count": usage.response_count,
@@ -2712,10 +3473,16 @@ class WorkflowHandlers:
         }
 
     def transcribe_voice(self, payload, progress, cancel_event):
-        from pandrator.logic.dubbing.transcription import transcribe_source_file_with_metadata
+        from pandrator.logic.dubbing.transcription import (
+            transcribe_source_file_with_metadata,
+        )
 
-        sample_artifact, sample_path = self._resolve_input(str(payload.get("sample_artifact_id") or ""))
-        operation_dir = self.paths.voices / str(payload.get("voice_id") or "transcription")
+        sample_artifact, sample_path = self._resolve_input(
+            str(payload.get("sample_artifact_id") or "")
+        )
+        operation_dir = self.paths.voices / str(
+            payload.get("voice_id") or "transcription"
+        )
         operation_dir.mkdir(parents=True, exist_ok=True)
         progress(0.05, "Preparing reference transcription")
         transcription_result = transcribe_source_file_with_metadata(
@@ -2748,7 +3515,9 @@ class WorkflowHandlers:
         # independent from subtitle layout and structured speaker metadata.
         transcript = " ".join(
             segment.text.replace("\n", " ").strip()
-            for segment in load_transcript(transcription_result.word_timestamps_path).segments
+            for segment in load_transcript(
+                transcription_result.word_timestamps_path
+            ).segments
         )
         progress(1.0, "Reference transcription ready for review")
         return {
@@ -2761,27 +3530,98 @@ class WorkflowHandlers:
 
     def normalize_voice_recording(self, payload, progress, cancel_event):
         voice_id = str(payload.get("voice_id") or "")
-        source_artifact, source_path = self._resolve_input(str(payload.get("source_artifact_id") or ""))
+        replace_sample_id = str(payload.get("replace_sample_id") or "") or None
+        expected_raw = payload.get("expected_voice_revision")
+        expected_revision = int(expected_raw) if expected_raw is not None else None
+        source_artifact, source_path = self._resolve_input(
+            str(payload.get("source_artifact_id") or "")
+        )
         with self.database.session() as session:
-            if session.get(Voice, voice_id) is None:
+            voice = session.get(Voice, voice_id)
+            if voice is None:
                 raise ValueError("Voice not found.")
+            if expected_revision is not None and voice.revision != expected_revision:
+                raise ValueError("The voice changed before the sample could be saved.")
+            if replace_sample_id:
+                existing = session.get(VoiceSample, replace_sample_id)
+                if existing is None or existing.voice_id != voice_id:
+                    raise ValueError("Voice sample not found.")
         voice_dir = self.paths.voices / voice_id
         voice_dir.mkdir(parents=True, exist_ok=True)
         destination = voice_dir / f"sample-{source_artifact.id}.wav"
         progress(0.1, "Normalizing recording")
-        command = [str(payload.get("ffmpeg_executable") or "ffmpeg"), "-y", "-i", str(source_path), "-ac", "1", "-ar", "24000", "-c:a", "pcm_s16le", str(destination)]
+        command = [
+            str(payload.get("ffmpeg_executable") or "ffmpeg"),
+            "-y",
+            "-i",
+            str(source_path),
+            "-ac",
+            "1",
+            "-ar",
+            "24000",
+            "-c:a",
+            "pcm_s16le",
+            str(destination),
+        ]
         subprocess.run(command, check=True, capture_output=True, text=True)
         if cancel_event.is_set():
             destination.unlink(missing_ok=True)
             return {}
-        artifact = self.artifacts.register(destination, kind="audio", role="voice_sample", parent_ids=[source_artifact.id])
+        prepared = self.artifacts.prepare_registration(destination)
+        removable: list[Path] = []
         with self.database.session() as session:
-            sample = VoiceSample(voice_id=voice_id, artifact_id=artifact.id)
-            session.add(sample)
+            voice = session.get(Voice, voice_id)
+            if voice is None:
+                destination.unlink(missing_ok=True)
+                raise ValueError("Voice was removed before the sample could be saved.")
+            if expected_revision is not None and voice.revision != expected_revision:
+                destination.unlink(missing_ok=True)
+                raise ValueError("The voice changed before the sample could be saved.")
+            artifact = self.artifacts.register_in_session(
+                session,
+                destination,
+                kind="audio",
+                role="voice_sample",
+                parent_ids=[source_artifact.id],
+                _prepared=prepared,
+            )
+            if replace_sample_id:
+                sample = session.get(VoiceSample, replace_sample_id)
+                if sample is None or sample.voice_id != voice_id:
+                    destination.unlink(missing_ok=True)
+                    raise ValueError(
+                        "Voice sample was removed before it could be replaced."
+                    )
+                old_path = retire_sample_artifact(session, self.paths, sample)
+                if old_path is not None:
+                    removable.append(old_path)
+                sample.artifact_id = artifact.id
+                sample.transcript = None
+                sample.transcript_language = None
+                sample.transcript_reviewed = False
+                sample.created_at = utcnow()
+            else:
+                sample = VoiceSample(voice_id=voice_id, artifact_id=artifact.id)
+                session.add(sample)
             session.flush()
             sample_id = sample.id
+            mark_provider_registrations_stale(
+                voice,
+                "The local reference audio changed.",
+                sample_id=replace_sample_id,
+            )
+            voice.revision += 1
+            voice.updated_at = utcnow()
+            voice_revision = voice.revision
+        remove_managed_files(removable)
         progress(1.0, "Voice sample ready")
-        return {"sample_id": sample_id, "artifact_id": artifact.id, "path": artifact.relative_path}
+        return {
+            "sample_id": sample_id,
+            "artifact_id": artifact.id,
+            "path": artifact.relative_path,
+            "voice_revision": voice_revision,
+            "replaced": bool(replace_sample_id),
+        }
 
     def publish_voice(self, payload, progress, cancel_event):
         """Upload the newest managed sample and persist the provider's voice ID."""
@@ -2790,10 +3630,14 @@ class WorkflowHandlers:
         voice_id = str(payload.get("voice_id") or "")
         service_id = str(payload.get("service_id") or "").strip()
         service_name = str(payload.get("service") or service_id).strip()
+        expected_raw = payload.get("expected_voice_revision")
+        expected_revision = int(expected_raw) if expected_raw is not None else None
         with self.database.session() as session:
             voice = session.get(Voice, voice_id)
             if voice is None:
                 raise ValueError("Voice not found.")
+            if expected_revision is not None and voice.revision != expected_revision:
+                raise ValueError("The voice changed before provider upload began.")
             samples = list(
                 session.scalars(
                     select(VoiceSample)
@@ -2801,15 +3645,27 @@ class WorkflowHandlers:
                     .order_by(VoiceSample.created_at.desc())
                 ).all()
             )
-            if not samples:
-                raise ValueError("Add a voice sample before uploading this voice.")
-            sample = samples[0]
+            sample = next(
+                (
+                    item
+                    for item in samples
+                    if sample_file_status(session, self.paths, item)[0] == "ready"
+                ),
+                None,
+            )
+            if sample is None:
+                raise ValueError(
+                    "Add or replace a readable voice sample before uploading this voice."
+                )
             provider_records = dict((voice.metadata_json or {}).get("providers") or {})
             existing = dict(provider_records.get(service_id) or {})
-            requested_provider_voice_id = str(existing.get("voice_id") or voice.name).strip()
+            requested_provider_voice_id = str(
+                existing.get("voice_id") or _managed_provider_voice_id(voice)
+            ).strip()
             voice_name = voice.name
+            source_voice_revision = voice.revision
 
-        _artifact, sample_path = self._resolve_input(sample.artifact_id)
+        sample_artifact, sample_path = self._resolve_input(sample.artifact_id)
         if sample_path.suffix.lower() != ".wav":
             raise ValueError("Provider voice uploads require a normalized WAV sample.")
         if cancel_event.is_set():
@@ -2818,8 +3674,16 @@ class WorkflowHandlers:
         with self.database.session() as session:
             connections = session.get(AppSetting, "services.tts")
             defaults = session.get(AppSetting, "defaults.tts")
-            connection_value = dict(connections.value_json or {}) if connections and isinstance(connections.value_json, dict) else {}
-            default_value = dict(defaults.value_json or {}) if defaults and isinstance(defaults.value_json, dict) else {}
+            connection_value = (
+                dict(connections.value_json or {})
+                if connections and isinstance(connections.value_json, dict)
+                else {}
+            )
+            default_value = (
+                dict(defaults.value_json or {})
+                if defaults and isinstance(defaults.value_json, dict)
+                else {}
+            )
         runtime_settings = hydrate_tts_settings(
             self.database,
             self.paths,
@@ -2830,52 +3694,235 @@ class WorkflowHandlers:
             },
             manager_bridge=self.manager_bridge,
         )
-        service_config = tts_handler.get_service_config(
-            runtime_settings,
-            service_id,
-        ) or {}
-        normalized_service_id = str(service_config.get("id") or service_id).strip().lower().replace("-", "_")
+        service_config = (
+            tts_handler.get_service_config(
+                runtime_settings,
+                service_id,
+            )
+            or {}
+        )
+        normalized_service_id = (
+            str(service_config.get("id") or service_id)
+            .strip()
+            .lower()
+            .replace("-", "_")
+        )
         base_url = str(service_config.get("api_base") or "").strip()
         service_name = str(service_config.get("name") or service_name).strip()
+        reference_text_mode = str(
+            service_config.get("voice_reference_text") or "ignored"
+        )
+        reviewed_transcript = (
+            str(sample.transcript or "").strip() if sample.transcript_reviewed else ""
+        )
+        if reference_text_mode == "required" and not reviewed_transcript:
+            raise ValueError(
+                f"{service_name} requires a reviewed sample transcript before "
+                "this voice can be used."
+            )
+        uploaded_reference_text = (
+            reviewed_transcript
+            if reference_text_mode in {"required", "optional"}
+            else ""
+        )
         provider_voice_id = self.tts_providers.upload_voice(
             normalized_service_id,
             str(sample_path),
             base_url=base_url,
             service=service_name,
-            prompt_text=sample.transcript if sample.transcript_reviewed else None,
+            prompt_text=uploaded_reference_text or None,
             voice_id=requested_provider_voice_id,
             api_key=str(service_config.get("api_key") or ""),
         )
-        if cancel_event.is_set():
-            return {}
+        # A remote mutation has happened. Persist its ownership record even if
+        # cancellation was requested in the meantime; otherwise the provider
+        # copy becomes an unmanageable orphan.
         with self.database.session() as session:
             voice = session.get(Voice, voice_id)
             if voice is None:
                 raise ValueError("Voice was removed while it was being uploaded.")
             metadata = deepcopy(voice.metadata_json or {})
             providers = dict(metadata.get("providers") or {})
+            current_sample = session.get(VoiceSample, sample.id)
+            still_current = bool(
+                voice.revision == source_voice_revision
+                and current_sample is not None
+                and current_sample.artifact_id == sample.artifact_id
+            )
             providers[service_id] = {
                 "voice_id": provider_voice_id,
                 "sample_id": sample.id,
-                "status": "ready",
+                "status": "ready" if still_current else "stale",
                 "updated_at": utcnow().isoformat(),
+                "managed_by": "pandrator",
+                "protocol": "pandrator-voices-v1",
+                "resource_kind": "uploaded_reference",
+                "endpoint_fingerprint": _provider_endpoint_fingerprint(base_url),
+                "source_audio_hash": sample_artifact.content_hash,
+                "reference_text_mode": reference_text_mode,
+                "reference_text_hash": (
+                    hashlib.sha256(uploaded_reference_text.encode("utf-8")).hexdigest()
+                    if uploaded_reference_text
+                    else None
+                ),
+                **(
+                    {}
+                    if still_current
+                    else {
+                        "stale_reason": (
+                            "The local reference changed while it was being uploaded."
+                        )
+                    }
+                ),
             }
             metadata["providers"] = providers
             voice.metadata_json = metadata
             voice.revision += 1
             voice.updated_at = utcnow()
+            next_voice_revision = voice.revision
         progress(1.0, f"{voice_name} is ready in {service_name}")
         return {
             "voice_id": voice_id,
             "service_id": service_id,
             "provider_voice_id": provider_voice_id,
+            "voice_revision": next_voice_revision,
+            "cancellation_requested_after_upload": cancel_event.is_set(),
+        }
+
+    def unpublish_voice(self, payload, progress, cancel_event):
+        """Remove a Pandrator-owned provider voice and then clear registration."""
+        from pandrator.logic import tts_handler
+
+        voice_id = str(payload.get("voice_id") or "")
+        service_id = str(payload.get("service_id") or "").strip()
+        service_name = str(payload.get("service") or service_id).strip()
+        expected_raw = payload.get("expected_voice_revision")
+        expected_revision = int(expected_raw) if expected_raw is not None else None
+        with self.database.session() as session:
+            voice = session.get(Voice, voice_id)
+            if voice is None:
+                raise ValueError("Voice not found.")
+            if expected_revision is not None and voice.revision != expected_revision:
+                raise ValueError("The voice changed before provider removal began.")
+            registration = dict(
+                ((voice.metadata_json or {}).get("providers") or {}).get(service_id)
+                or {}
+            )
+            if not registration:
+                return {
+                    "voice_id": voice_id,
+                    "service_id": service_id,
+                    "already_absent": True,
+                    "voice_revision": voice.revision,
+                }
+            if registration.get("managed_by") != "pandrator":
+                raise ValueError(
+                    "The provider registration has no Pandrator ownership proof."
+                )
+            provider_voice_id = str(registration.get("voice_id") or "").strip()
+            if not provider_voice_id:
+                raise ValueError("The provider registration has no remote voice ID.")
+
+            connections = session.get(AppSetting, "services.tts")
+            defaults = session.get(AppSetting, "defaults.tts")
+            connection_value = (
+                dict(connections.value_json or {})
+                if connections and isinstance(connections.value_json, dict)
+                else {}
+            )
+            default_value = (
+                dict(defaults.value_json or {})
+                if defaults and isinstance(defaults.value_json, dict)
+                else {}
+            )
+
+        runtime_settings = hydrate_tts_settings(
+            self.database,
+            self.paths,
+            {
+                **default_value,
+                **connection_value,
+                "service": service_id,
+            },
+            manager_bridge=self.manager_bridge,
+        )
+        service_config = (
+            tts_handler.get_service_config(runtime_settings, service_id) or {}
+        )
+        if not bool(service_config.get("supports_voice_deletion")):
+            raise ValueError(
+                f"{service_name} does not advertise provider-side voice deletion."
+            )
+        normalized_service_id = (
+            str(service_config.get("id") or service_id)
+            .strip()
+            .lower()
+            .replace("-", "_")
+        )
+        base_url = str(service_config.get("api_base") or "").strip()
+        current_fingerprint = _provider_endpoint_fingerprint(base_url)
+        if registration.get("endpoint_fingerprint") != current_fingerprint:
+            raise ValueError(
+                "The service endpoint changed since this voice was uploaded; "
+                "automatic removal was stopped to avoid deleting the wrong resource."
+            )
+        if cancel_event.is_set():
+            return {}
+        progress(0.1, f"Removing {provider_voice_id} from {service_name}")
+        remote_deleted = self.tts_providers.delete_voice(
+            normalized_service_id,
+            provider_voice_id,
+            base_url=base_url,
+            service=str(service_config.get("name") or service_name),
+            api_key=str(service_config.get("api_key") or ""),
+        )
+        # As with upload, once the remote side effect starts we reconcile local
+        # state even if cancellation arrives during the request.
+        with self.database.session() as session:
+            voice = session.get(Voice, voice_id)
+            if voice is None:
+                return {
+                    "voice_id": voice_id,
+                    "service_id": service_id,
+                    "provider_voice_id": provider_voice_id,
+                    "remote_deleted": remote_deleted,
+                    "local_voice_missing": True,
+                }
+            metadata = deepcopy(voice.metadata_json or {})
+            providers = dict(metadata.get("providers") or {})
+            current = dict(providers.get(service_id) or {})
+            if (
+                current.get("voice_id") != provider_voice_id
+                or current.get("endpoint_fingerprint") != current_fingerprint
+            ):
+                raise ValueError(
+                    "The provider registration changed while removal was running."
+                )
+            providers.pop(service_id, None)
+            metadata["providers"] = providers
+            voice.metadata_json = metadata
+            voice.revision += 1
+            voice.updated_at = utcnow()
+            next_revision = voice.revision
+        progress(1.0, f"{service_name} copy removed")
+        return {
+            "voice_id": voice_id,
+            "service_id": service_id,
+            "provider_voice_id": provider_voice_id,
+            "remote_deleted": remote_deleted,
+            "voice_revision": next_revision,
+            "cancellation_requested_after_delete": cancel_event.is_set(),
         }
 
     def upload_rvc_model(self, payload, progress, cancel_event):
         from pandrator.logic import rvc_handler
 
-        pth_artifact, pth_path = self._resolve_input(str(payload.get("pth_artifact_id") or ""))
-        index_artifact, index_path = self._resolve_input(str(payload.get("index_artifact_id") or ""))
+        pth_artifact, pth_path = self._resolve_input(
+            str(payload.get("pth_artifact_id") or "")
+        )
+        index_artifact, index_path = self._resolve_input(
+            str(payload.get("index_artifact_id") or "")
+        )
         if pth_path.suffix.lower() != ".pth":
             raise ValueError("The RVC weights artifact must be a .pth file.")
         if index_path.suffix.lower() not in {".index", ".idx"}:
@@ -2885,7 +3932,9 @@ class WorkflowHandlers:
         progress(0.15, "Installing RVC model")
         model_root = self.paths.models / "rvc"
         model_root.mkdir(parents=True, exist_ok=True)
-        model_name = rvc_handler.upload_rvc_model(str(pth_path), str(index_path), str(model_root))
+        model_name = rvc_handler.upload_rvc_model(
+            str(pth_path), str(index_path), str(model_root)
+        )
         if cancel_event.is_set():
             return {}
         manifest = model_root / model_name / "pandrator-model.json"
@@ -2910,13 +3959,20 @@ class WorkflowHandlers:
             metadata={"model_name": model_name},
         )
         progress(1.0, "RVC model ready")
-        return {"model_name": model_name, "artifact_id": artifact.id, "path": artifact.relative_path}
+        return {
+            "model_name": model_name,
+            "artifact_id": artifact.id,
+            "path": artifact.relative_path,
+        }
 
     def convert_with_rvc(self, payload, progress, cancel_event):
         from pydub import AudioSegment
+
         from pandrator.logic import rvc_handler
 
-        source_artifact, source_path = self._resolve_input(str(payload.get("source_artifact_id") or ""))
+        source_artifact, source_path = self._resolve_input(
+            str(payload.get("source_artifact_id") or "")
+        )
         session_id = str(payload.get("session_id") or "") or source_artifact.session_id
         settings = dict(payload.get("settings") or {})
         if not str(settings.get("rvc_model") or "").strip():
@@ -2928,10 +3984,19 @@ class WorkflowHandlers:
         if cancel_event.is_set():
             return {}
         progress(0.3, "Converting voice with RVC")
-        converted = rvc_handler.process_with_rvc(audio, {**settings, "raise_on_error": True})
-        destination_dir = self._session_dir(session_id) if session_id else self.paths.artifacts / "rvc"
+        converted = rvc_handler.process_with_rvc(
+            audio, {**settings, "raise_on_error": True}
+        )
+        destination_dir = (
+            self._session_dir(session_id)
+            if session_id
+            else self.paths.artifacts / "rvc"
+        )
         destination_dir.mkdir(parents=True, exist_ok=True)
-        destination = destination_dir / f"{source_path.stem}-rvc-{hashlib.sha256(json.dumps(settings, sort_keys=True).encode()).hexdigest()[:10]}.wav"
+        destination = (
+            destination_dir
+            / f"{source_path.stem}-rvc-{hashlib.sha256(json.dumps(settings, sort_keys=True).encode()).hexdigest()[:10]}.wav"
+        )
         converted.export(destination, format="wav")
         artifact = self.artifacts.register(
             destination,
@@ -2943,20 +4008,28 @@ class WorkflowHandlers:
             metadata={"rvc_model": settings["rvc_model"]},
         )
         progress(1.0, "RVC audio ready")
-        return {"artifact_id": artifact.id, "path": artifact.relative_path, "model_name": settings["rvc_model"]}
+        return {
+            "artifact_id": artifact.id,
+            "path": artifact.relative_path,
+            "model_name": settings["rvc_model"],
+        }
 
     def train_xtts(self, payload, progress, cancel_event):
         from pandrator.logic import xtts_trainer_handler
 
         training_id = str(payload.get("training_id") or "")
-        source_artifact, source_path = self._resolve_input(str(payload.get("source_artifact_id") or ""))
+        source_artifact, source_path = self._resolve_input(
+            str(payload.get("source_artifact_id") or "")
+        )
         source_text_path = ""
         source_text_id = str(payload.get("source_text_artifact_id") or "")
         if source_text_id:
             _text_artifact, text_path = self._resolve_input(source_text_id)
             source_text_path = str(text_path)
         settings = dict(payload.get("settings") or {})
-        model_name = str(payload.get("model_name") or settings.get("model_name") or "").strip()
+        model_name = str(
+            payload.get("model_name") or settings.get("model_name") or ""
+        ).strip()
         if not model_name:
             raise ValueError("An XTTS model name is required.")
         with self.database.session() as session:
@@ -2992,9 +4065,7 @@ class WorkflowHandlers:
                 )
                 # Training logs vary between zero- and one-based epoch labels.
                 completed_before = (
-                    raw_epoch
-                    if zero_based_epochs
-                    else max(0, raw_epoch - 1)
+                    raw_epoch if zero_based_epochs else max(0, raw_epoch - 1)
                 )
                 within_epoch = (
                     max(0.0, min(100.0, float(percent_match.group(1)))) / 100
@@ -3009,7 +4080,9 @@ class WorkflowHandlers:
                     reported_total,
                     raw_epoch + 1 if zero_based_epochs else max(1, raw_epoch),
                 )
-                detail = f"Training epoch {display_epoch} of {reported_total} — {detail}"
+                detail = (
+                    f"Training epoch {display_epoch} of {reported_total} — {detail}"
+                )
             elif percent_match and total_epochs == 1:
                 last_training_fraction = max(
                     last_training_fraction,
@@ -3055,14 +4128,19 @@ class WorkflowHandlers:
             manifest_dir.mkdir(parents=True, exist_ok=True)
             manifest = manifest_dir / "pandrator-training.json"
             manifest.write_text(
-                json.dumps({"kind": "xtts", "model_name": model_name, "message": message}, indent=2) + "\n",
+                json.dumps(
+                    {"kind": "xtts", "model_name": model_name, "message": message},
+                    indent=2,
+                )
+                + "\n",
                 encoding="utf-8",
             )
             artifact = self.artifacts.register(
                 manifest,
                 kind="model",
                 role="xtts_model",
-                parent_ids=[source_artifact.id] + ([source_text_id] if source_text_id else []),
+                parent_ids=[source_artifact.id]
+                + ([source_text_id] if source_text_id else []),
                 settings=settings,
                 metadata={"model_name": model_name},
             )
@@ -3072,22 +4150,56 @@ class WorkflowHandlers:
                 training.output_artifact_id = artifact.id
                 training.updated_at = utcnow()
                 defaults = session.get(AppSetting, "services.tts")
-                value = dict(defaults.value_json or {}) if defaults and isinstance(defaults.value_json, dict) else {}
-                providers = [dict(item) for item in value.get("provider_configs", []) if isinstance(item, dict)]
-                xtts = next((item for item in providers if str(item.get("id") or "").lower() == "xtts"), None)
+                value = (
+                    dict(defaults.value_json or {})
+                    if defaults and isinstance(defaults.value_json, dict)
+                    else {}
+                )
+                providers = [
+                    dict(item)
+                    for item in value.get("provider_configs", [])
+                    if isinstance(item, dict)
+                ]
+                xtts = next(
+                    (
+                        item
+                        for item in providers
+                        if str(item.get("id") or "").lower() == "xtts"
+                    ),
+                    None,
+                )
                 if xtts is None:
                     xtts = {"id": "xtts", "name": "XTTS", "models": []}
                     providers.append(xtts)
-                xtts["models"] = list(dict.fromkeys([*(xtts.get("models") or []), model_name]))
+                xtts["models"] = list(
+                    dict.fromkeys([*(xtts.get("models") or []), model_name])
+                )
                 if defaults is None:
-                    session.add(AppSetting(key="services.tts", value_json={**value, "provider_configs": providers}, revision=1))
+                    session.add(
+                        AppSetting(
+                            key="services.tts",
+                            value_json={**value, "provider_configs": providers},
+                            revision=1,
+                        )
+                    )
                 else:
-                    session.add(AppSettingHistory(key=defaults.key, value_json=defaults.value_json, revision=defaults.revision))
+                    session.add(
+                        AppSettingHistory(
+                            key=defaults.key,
+                            value_json=defaults.value_json,
+                            revision=defaults.revision,
+                        )
+                    )
                     defaults.value_json = {**value, "provider_configs": providers}
                     defaults.revision += 1
                     defaults.updated_at = utcnow()
             progress(1.0, "XTTS model ready")
-            return {"training_id": training_id, "artifact_id": artifact.id, "model_name": model_name, "message": message}
+            return {
+                "training_id": training_id,
+                "artifact_id": artifact.id,
+                "model_name": model_name,
+                "message": message,
+            }
         except Exception as error:
             with self.database.session() as session:
                 training = session.get(TrainingRun, training_id)
@@ -3099,8 +4211,7 @@ class WorkflowHandlers:
 
     def clean_source(self, payload, progress, cancel_event):
         """Run deterministic extraction and the optional auditable agentic pipeline."""
-        from pandrator.logic import file_handler
-        from pandrator.logic import source_cleaning
+        from pandrator.logic import file_handler, source_cleaning
 
         session_id = str(payload.get("session_id") or "")
         agent_run_id = str(payload.get("agent_run_id") or "")
@@ -3110,7 +4221,9 @@ class WorkflowHandlers:
                 if run is not None:
                     run.status = "running"
                     run.updated_at = utcnow()
-        source_artifact, source_path = self._resolve_input(str(payload.get("source_artifact_id") or ""))
+        source_artifact, source_path = self._resolve_input(
+            str(payload.get("source_artifact_id") or "")
+        )
         settings = dict(payload.get("settings") or {})
         pdf_config = source_cleaning.PDFIngestionConfig(
             ocr_mode=str(settings.get("pdf_ocr_mode") or "auto"),
@@ -3146,12 +4259,18 @@ class WorkflowHandlers:
                 document,
                 remove_footnotes=bool(settings.get("remove_footnotes", False)),
                 remove_toc=bool(settings.get("pdf_remove_toc", True)),
-                remove_repeated_marginals=bool(settings.get("pdf_remove_repeated_marginals", True)),
+                remove_repeated_marginals=bool(
+                    settings.get("pdf_remove_repeated_marginals", True)
+                ),
             )
             baseline_text = document.plain_text()
-            cleaned_text = source_cleaning.apply_cleaning_operations(document, deterministic_operations).cleaned_text
+            cleaned_text = source_cleaning.apply_cleaning_operations(
+                document, deterministic_operations
+            ).cleaned_text
         elif extension in {".docx", ".mobi"}:
-            extracted = self._session_dir(session_id) / f"{source_path.stem}_extracted.txt"
+            extracted = (
+                self._session_dir(session_id) / f"{source_path.stem}_extracted.txt"
+            )
             if not file_handler.convert_doc_to_text(str(source_path), str(extracted)):
                 raise RuntimeError(f"Could not extract text from {source_path.name}.")
             cleaned_text = extracted.read_text(encoding="utf-8-sig")
@@ -3172,7 +4291,9 @@ class WorkflowHandlers:
                     str(source_path),
                     pdf_config=pdf_config if extension == ".pdf" else None,
                     extracted_text=cleaned_text if extension == ".epub" else None,
-                    artifact_dir=str(self._session_dir(session_id) / "source_ingestion"),
+                    artifact_dir=str(
+                        self._session_dir(session_id) / "source_ingestion"
+                    ),
                     progress_callback=_fraction_message_callback(
                         progress,
                         0.4,
@@ -3180,7 +4301,9 @@ class WorkflowHandlers:
                     ),
                 )
             else:
-                from pandrator.logic.source_cleaning.pdf_text_adapter import build_source_document_from_text
+                from pandrator.logic.source_cleaning.pdf_text_adapter import (
+                    build_source_document_from_text,
+                )
 
                 document = build_source_document_from_text(
                     cleaned_text,
@@ -3190,8 +4313,12 @@ class WorkflowHandlers:
             llm_settings, model_name = build_llm_settings(
                 self.database,
                 self.paths,
-                requested_model=str(settings.get("model_name") or settings.get("default_model") or ""),
-                request_timeout_seconds=int(settings.get("request_timeout_seconds") or 600),
+                requested_model=str(
+                    settings.get("model_name") or settings.get("default_model") or ""
+                ),
+                request_timeout_seconds=int(
+                    settings.get("request_timeout_seconds") or 600
+                ),
             )
             total_iterations = max(1, int(settings.get("max_iterations") or 53))
             phase_iterations = settings.get("phase_max_iterations")
@@ -3214,7 +4341,9 @@ class WorkflowHandlers:
                     remove_footnotes=bool(settings.get("remove_footnotes", False)),
                     filter_citations=bool(settings.get("filter_citations", True)),
                     total_max_iterations=total_iterations,
-                    phase_max_iterations=phase_iterations if isinstance(phase_iterations, dict) else None,
+                    phase_max_iterations=phase_iterations
+                    if isinstance(phase_iterations, dict)
+                    else None,
                     phase_names=requested_phase_names,
                 ),
                 progress_callback=_source_cleaning_progress_callback(
@@ -3230,7 +4359,9 @@ class WorkflowHandlers:
                 return {}
             progress(0.9, "Source-cleaning analysis complete")
             all_operations = [*deterministic_operations, *pipeline.all_operations]
-            cleaning_result = source_cleaning.apply_cleaning_operations(document, all_operations)
+            cleaning_result = source_cleaning.apply_cleaning_operations(
+                document, all_operations
+            )
             validation = source_cleaning.validate_cleaning_result(
                 document,
                 cleaning_result,
@@ -3241,7 +4372,9 @@ class WorkflowHandlers:
                 **cleaning_result.report,
                 "pipeline": pipeline.to_dict(),
                 "validation": validation.to_dict(),
-                "warnings": pipeline.warnings + validation.warnings + cleaning_result.warnings,
+                "warnings": pipeline.warnings
+                + validation.warnings
+                + cleaning_result.warnings,
             }
             audit_dir = self._session_dir(session_id) / "source_cleaning"
             source_cleaning.write_cleaning_artifacts(
@@ -3252,18 +4385,28 @@ class WorkflowHandlers:
             )
             usage = pipeline.llm_usage
             models = list(usage.get("models") or [])
-            details = usage.get("token_details") if isinstance(usage.get("token_details"), dict) else {}
+            details = (
+                usage.get("token_details")
+                if isinstance(usage.get("token_details"), dict)
+                else {}
+            )
             with self.database.session() as session:
                 session.add(
                     UsageEvent(
                         session_id=session_id,
                         stage="source_cleaning",
-                        provider_key=(models[0].split("/", 1)[0] if models else model_name.split("/", 1)[0]),
+                        provider_key=(
+                            models[0].split("/", 1)[0]
+                            if models
+                            else model_name.split("/", 1)[0]
+                        ),
                         model_id=(models[0] if models else model_name),
                         input_tokens=int(usage.get("prompt_tokens") or 0),
                         cached_input_tokens=int(details.get("cached_tokens") or 0),
                         output_tokens=int(usage.get("completion_tokens") or 0),
-                        cost_usd=float(usage["cost_usd"]) if usage.get("cost_usd") is not None else None,
+                        cost_usd=float(usage["cost_usd"])
+                        if usage.get("cost_usd") is not None
+                        else None,
                         cost_source=",".join(usage.get("cost_sources") or []) or None,
                         raw_usage_json=usage,
                     )
@@ -3282,7 +4425,10 @@ class WorkflowHandlers:
             parent_ids=[source_artifact.id],
             metadata={"comparison_source": True, "source_filename": source_path.name},
         )
-        destination = self._operation_dir(session_id, "clean-source") / f"{source_path.stem}_cleaned.txt"
+        destination = (
+            self._operation_dir(session_id, "clean-source")
+            / f"{source_path.stem}_cleaned.txt"
+        )
         destination.write_text(cleaned_text, encoding="utf-8", newline="\n")
         artifact = self.artifacts.register(
             destination,
@@ -3294,8 +4440,16 @@ class WorkflowHandlers:
             metadata={"extraction": extraction, "report": report},
         )
         if agent_run_id:
-            pipeline_report = report.get("pipeline") if isinstance(report.get("pipeline"), dict) else {}
-            phases = pipeline_report.get("phases") if isinstance(pipeline_report.get("phases"), list) else []
+            pipeline_report = (
+                report.get("pipeline")
+                if isinstance(report.get("pipeline"), dict)
+                else {}
+            )
+            phases = (
+                pipeline_report.get("phases")
+                if isinstance(pipeline_report.get("phases"), list)
+                else []
+            )
             with self.database.session() as session:
                 run = session.get(AgentRun, agent_run_id)
                 if run is not None:
@@ -3303,9 +4457,19 @@ class WorkflowHandlers:
                     run.result_artifact_id = artifact.id
                     run.updated_at = utcnow()
                     for ordinal, phase in enumerate(phases):
-                        safe_phase = phase if isinstance(phase, dict) else {"name": str(phase)}
-                        operations = safe_phase.get("operations") if isinstance(safe_phase.get("operations"), list) else []
-                        warnings = safe_phase.get("warnings") if isinstance(safe_phase.get("warnings"), list) else []
+                        safe_phase = (
+                            phase if isinstance(phase, dict) else {"name": str(phase)}
+                        )
+                        operations = (
+                            safe_phase.get("operations")
+                            if isinstance(safe_phase.get("operations"), list)
+                            else []
+                        )
+                        warnings = (
+                            safe_phase.get("warnings")
+                            if isinstance(safe_phase.get("warnings"), list)
+                            else []
+                        )
                         operation_types = sorted(
                             {
                                 str(item.get("type") or item.get("operation") or "edit")
@@ -3317,22 +4481,39 @@ class WorkflowHandlers:
                             AgentStep(
                                 agent_run_id=agent_run_id,
                                 ordinal=ordinal,
-                                phase=str(safe_phase.get("name") or safe_phase.get("phase") or f"Phase {ordinal + 1}"),
+                                phase=str(
+                                    safe_phase.get("name")
+                                    or safe_phase.get("phase")
+                                    or f"Phase {ordinal + 1}"
+                                ),
                                 status=str(safe_phase.get("status") or "completed"),
-                                summary=str(safe_phase.get("summary") or f"{len(operations)} proposed operation(s), {len(warnings)} warning(s)."),
+                                summary=str(
+                                    safe_phase.get("summary")
+                                    or f"{len(operations)} proposed operation(s), {len(warnings)} warning(s)."
+                                ),
                                 input_json={"operation_count": len(operations)},
-                                output_json={"warnings": warnings, "operation_types": operation_types},
+                                output_json={
+                                    "warnings": warnings,
+                                    "operation_types": operation_types,
+                                },
                             )
                         )
         progress(0.98, "Cleaned source artifacts registered")
         progress(1.0, "Source text ready")
-        return {"artifact_id": artifact.id, "path": artifact.relative_path, "characters": len(cleaned_text), "report": report}
+        return {
+            "artifact_id": artifact.id,
+            "path": artifact.relative_path,
+            "characters": len(cleaned_text),
+            "report": report,
+        }
 
     def prepare_text(self, payload, progress, cancel_event):
         from pandrator.logic.text_preprocessor import preprocess_text
 
         session_id = str(payload.get("session_id") or "")
-        source_artifact, source_path = self._resolve_input(str(payload.get("source_artifact_id") or ""))
+        source_artifact, source_path = self._resolve_input(
+            str(payload.get("source_artifact_id") or "")
+        )
         settings = dict(payload.get("settings") or {})
         if source_path.suffix.lower() not in {".txt", ".md"}:
             raise ValueError("Prepare narration requires a cleaned text artifact.")
@@ -3351,11 +4532,19 @@ class WorkflowHandlers:
                 # selects the shared multilingual sentence tokenizer only.
                 "tts_service": "XTTS",
                 "max_sentence_length": int(settings.get("max_sentence_length") or 160),
-                "enable_sentence_splitting": bool(settings.get("enable_sentence_splitting", True)),
-                "enable_sentence_appending": bool(settings.get("enable_sentence_appending", True)),
-                "enable_nemo_normalization": bool(settings.get("enable_nemo_normalization", True)),
+                "enable_sentence_splitting": bool(
+                    settings.get("enable_sentence_splitting", True)
+                ),
+                "enable_sentence_appending": bool(
+                    settings.get("enable_sentence_appending", True)
+                ),
+                "enable_nemo_normalization": bool(
+                    settings.get("enable_nemo_normalization", True)
+                ),
                 "remove_diacritics": bool(settings.get("remove_diacritics", False)),
-                "remove_quotation_marks": bool(settings.get("remove_quotation_marks", False)),
+                "remove_quotation_marks": bool(
+                    settings.get("remove_quotation_marks", False)
+                ),
                 "normalize_all_caps": bool(settings.get("normalize_all_caps", False)),
             },
             progress_callback=_scaled_progress_callback(progress, 0.1, 0.85),
@@ -3363,8 +4552,12 @@ class WorkflowHandlers:
         if cancel_event.is_set():
             return {}
         progress(0.9, "Saving narration segments")
-        destination = self._operation_dir(session_id, "prepare-text") / "prepared_narration.json"
-        destination.write_text(json.dumps(prepared, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        destination = (
+            self._operation_dir(session_id, "prepare-text") / "prepared_narration.json"
+        )
+        destination.write_text(
+            json.dumps(prepared, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
         artifact = self.artifacts.register(
             destination,
             kind="json",
@@ -3378,11 +4571,19 @@ class WorkflowHandlers:
             session_id,
             prepared,
             settings=settings,
-            source_revision_id=str((source_artifact.metadata_json or {}).get("revision_id") or "") or None,
+            source_revision_id=str(
+                (source_artifact.metadata_json or {}).get("revision_id") or ""
+            )
+            or None,
             source_artifact_id=artifact.id,
         )
         progress(1.0, "Narration segments ready")
-        return {"artifact_id": artifact.id, "path": artifact.relative_path, "segments": len(prepared), "generation_plan_revision_id": generation_revision_id}
+        return {
+            "artifact_id": artifact.id,
+            "path": artifact.relative_path,
+            "segments": len(prepared),
+            "generation_plan_revision_id": generation_revision_id,
+        }
 
     def _store_generation_plan(
         self,
@@ -3393,7 +4594,11 @@ class WorkflowHandlers:
         source_revision_id: str | None = None,
         source_artifact_id: str | None = None,
     ) -> tuple[str, list[str]]:
-        clean = [item for item in records if str(item.get("text") or item.get("original_sentence") or "").strip()]
+        clean = [
+            item
+            for item in records
+            if str(item.get("text") or item.get("original_sentence") or "").strip()
+        ]
         digest = hashlib.sha256(
             json.dumps(
                 {
@@ -3408,7 +4613,9 @@ class WorkflowHandlers:
             ).encode("utf-8")
         ).hexdigest()
         with self.database.session() as session:
-            plan = session.scalar(select(GenerationPlan).where(GenerationPlan.session_id == session_id))
+            plan = session.scalar(
+                select(GenerationPlan).where(GenerationPlan.session_id == session_id)
+            )
             if plan is not None and plan.active_revision_id:
                 active = session.get(GenerationPlanRevision, plan.active_revision_id)
                 if active is not None and active.content_hash == digest:
@@ -3427,7 +4634,14 @@ class WorkflowHandlers:
                 plan = GenerationPlan(session_id=session_id)
                 session.add(plan)
                 session.flush()
-            maximum = session.scalar(select(func.max(GenerationPlanRevision.revision_number)).where(GenerationPlanRevision.plan_id == plan.id)) or 0
+            maximum = (
+                session.scalar(
+                    select(func.max(GenerationPlanRevision.revision_number)).where(
+                        GenerationPlanRevision.plan_id == plan.id
+                    )
+                )
+                or 0
+            )
             stored_settings = dict(settings)
             if source_artifact_id:
                 stored_settings["_source_artifact_id"] = source_artifact_id
@@ -3443,20 +4657,44 @@ class WorkflowHandlers:
             segment_ids = []
             for ordinal, record in enumerate(clean):
                 is_subtitle = self._is_subtitle_generation_record(record)
-                explicit_language = self._usable_language(record.get("language")) or None
+                explicit_language = (
+                    self._usable_language(record.get("language")) or None
+                )
                 explicit_voice = str(record.get("voice") or "").strip() or None
                 segment = GenerationSegment(
                     plan_revision_id=revision.id,
                     ordinal=ordinal,
-                    source_segment_ids_json=list(record.get("source_segment_ids") or record.get("subtitles") or []),
-                    alignment_group=str(record.get("alignment_group") or "").strip() or None,
-                    node_kind=str(record.get("node_kind") or ("subtitle_cue" if is_subtitle else "chapter_marker" if str(record.get("chapter") or "").lower() == "yes" else "paragraph")),
-                    paragraph_break_after=False if is_subtitle else bool(record.get("paragraph_break_after", str(record.get("paragraph") or "").lower() == "yes")),
+                    source_segment_ids_json=list(
+                        record.get("source_segment_ids")
+                        or record.get("subtitles")
+                        or []
+                    ),
+                    alignment_group=str(record.get("alignment_group") or "").strip()
+                    or None,
+                    node_kind=str(
+                        record.get("node_kind")
+                        or (
+                            "subtitle_cue"
+                            if is_subtitle
+                            else "chapter_marker"
+                            if str(record.get("chapter") or "").lower() == "yes"
+                            else "paragraph"
+                        )
+                    ),
+                    paragraph_break_after=False
+                    if is_subtitle
+                    else bool(
+                        record.get(
+                            "paragraph_break_after",
+                            str(record.get("paragraph") or "").lower() == "yes",
+                        )
+                    ),
                     speaker=str(record.get("speaker") or "").strip() or None,
-                    text=str(record.get("text") or record.get("original_sentence") or "").strip(),
+                    text=str(
+                        record.get("text") or record.get("original_sentence") or ""
+                    ).strip(),
                     optimized_text=(
-                        str(record.get("tts_optimized_sentence") or "").strip()
-                        or None
+                        str(record.get("tts_optimized_sentence") or "").strip() or None
                     ),
                     speech_plan_json=dict(record.get("speech_plan") or {}),
                     optimization_status=(
@@ -3476,7 +4714,9 @@ class WorkflowHandlers:
                         else None
                     ),
                     optimization_model=(
-                        str((record.get("speech_plan") or {}).get("model") or "").strip()
+                        str(
+                            (record.get("speech_plan") or {}).get("model") or ""
+                        ).strip()
                         or None
                     ),
                     voice_id=record.get("voice_id"),
@@ -3484,7 +4724,9 @@ class WorkflowHandlers:
                     # A missing value is meaningful: it follows the session TTS
                     # language and remains responsive to later settings changes.
                     language=explicit_language,
-                    silence_after_ms=_default_silence_after_ms(record, settings, is_subtitle=is_subtitle),
+                    silence_after_ms=_default_silence_after_ms(
+                        record, settings, is_subtitle=is_subtitle
+                    ),
                     marked=bool(record.get("marked", False)),
                 )
                 session.add(segment)
@@ -3506,7 +4748,11 @@ class WorkflowHandlers:
                 ("kokoro_base_url", "kokoro_base_url", "http://127.0.0.1:8880"),
                 ("silero_base_url", "silero_base_url", "http://127.0.0.1:8001"),
                 ("chatterbox_base_url", "chatterbox_base_url", "http://127.0.0.1:8040"),
-                ("kobold_qwen_base_url", "kobold_qwen_base_url", "http://127.0.0.1:8042"),
+                (
+                    "kobold_qwen_base_url",
+                    "kobold_qwen_base_url",
+                    "http://127.0.0.1:8042",
+                ),
                 ("magpie_base_url", "magpie_base_url", "http://127.0.0.1:8030"),
             )
         }
@@ -3531,10 +4777,7 @@ class WorkflowHandlers:
             settings,
             **tts_urls,
         )
-        if not (
-            capabilities.batch_synthesis
-            and capabilities.streaming_batch
-        ):
+        if not (capabilities.batch_synthesis and capabilities.streaming_batch):
             return 1
         return min(requested, max(1, capabilities.max_batch_size))
 
@@ -3586,10 +4829,7 @@ class WorkflowHandlers:
             or tts_handler.KOBOLD_QWEN_SAMPLE_VOICE
         ).strip()
         voice_key = requested_voice.removesuffix(".wav").lower()
-        if (
-            not voice_key
-            or voice_key == tts_handler.KOBOLD_QWEN_SAMPLE_VOICE.lower()
-        ):
+        if not voice_key or voice_key == tts_handler.KOBOLD_QWEN_SAMPLE_VOICE.lower():
             return
         if voice_key in verified:
             return
@@ -3626,9 +4866,11 @@ class WorkflowHandlers:
                         "qwen3_tts",
                     } or not isinstance(record, dict):
                         continue
-                    provider_voice = str(
-                        record.get("voice_id") or managed_voice.name
-                    ).removesuffix(".wav").lower()
+                    provider_voice = (
+                        str(record.get("voice_id") or managed_voice.name)
+                        .removesuffix(".wav")
+                        .lower()
+                    )
                     if provider_voice == voice_key:
                         managed_voice_id = managed_voice.id
                         metadata_service_id = str(provider_id)
@@ -3781,8 +5023,7 @@ class WorkflowHandlers:
                             and segment.optimized_text
                             and segment.optimization_source_hash
                             == self._optimization_text_hash(text)
-                            and segment.optimization_status
-                            in {"optimized", "reviewed"}
+                            and segment.optimization_status in {"optimized", "reviewed"}
                         ):
                             output[position] = segment.optimized_text
                             model_name = model_name or str(
@@ -3803,8 +5044,12 @@ class WorkflowHandlers:
             default_model=resolved["llm_default_model"],
             request_timeout_seconds=resolved["request_timeout_seconds"],
         )
-        model_name = str(resolved.get("tts_optimization_model") or resolved["llm_default_model"])
-        speech_mode = str(resolved.get("speech_optimization_mode") or "guarded").strip().lower()
+        model_name = str(
+            resolved.get("tts_optimization_model") or resolved["llm_default_model"]
+        )
+        speech_mode = (
+            str(resolved.get("speech_optimization_mode") or "guarded").strip().lower()
+        )
         structured_mode = speech_mode in {"guarded", "flexible"}
         default_language = str(
             resolved.get("language")
@@ -3887,7 +5132,9 @@ class WorkflowHandlers:
                         and planned_known_signature == current_known_signature
                     )
                 else:
-                    reusable = not plan and state.get("optimization_model") == model_name
+                    reusable = (
+                        not plan and state.get("optimization_model") == model_name
+                    )
             if reusable:
                 output[position] = str(state["optimized_text"])
                 continue
@@ -3919,7 +5166,9 @@ class WorkflowHandlers:
                         continue
                     segment.optimized_text = revised
                     segment.optimization_status = "optimized"
-                    segment.optimization_source_hash = self._optimization_text_hash(texts[position])
+                    segment.optimization_source_hash = self._optimization_text_hash(
+                        texts[position]
+                    )
                     segment.optimization_reviewed = False
                     segment.optimization_model = model_name
                     segment.updated_at = utcnow()
@@ -4004,7 +5253,18 @@ class WorkflowHandlers:
         )
         return output, model_name
 
-    def _generate_audio(self, session_id: str, source_artifact: Artifact, source_path: Path, settings: dict[str, Any], progress, cancel_event, *, role: str, job_id: str | None = None) -> dict[str, Any]:
+    def _generate_audio(
+        self,
+        session_id: str,
+        source_artifact: Artifact,
+        source_path: Path,
+        settings: dict[str, Any],
+        progress,
+        cancel_event,
+        *,
+        role: str,
+        job_id: str | None = None,
+    ) -> dict[str, Any]:
         from .audio_assembly import (
             AudioAssemblyPart,
             assemble_audio_plan,
@@ -4021,14 +5281,22 @@ class WorkflowHandlers:
         )
 
         if source_path.suffix.lower() != ".json":
-            raise ValueError("Audio generation requires segmented narration. Run Segment narration first.")
+            raise ValueError(
+                "Audio generation requires segmented narration. Run Segment narration first."
+            )
         try:
             records = json.loads(source_path.read_text(encoding="utf-8-sig"))
         except json.JSONDecodeError as error:
-            raise ValueError("The segmented narration artifact is invalid JSON. Run Segment narration again.") from error
+            raise ValueError(
+                "The segmented narration artifact is invalid JSON. Run Segment narration again."
+            ) from error
         if not isinstance(records, list) or not records:
             raise ValueError("No narration segments were found.")
-        records = [record for record in records if str(record.get("text") or record.get("original_sentence") or "").strip()]
+        records = [
+            record
+            for record in records
+            if str(record.get("text") or record.get("original_sentence") or "").strip()
+        ]
         if not records:
             raise ValueError("No non-empty narration segments were found.")
         assembly_inputs: list[tuple[Path, int, int]] = []
@@ -4037,9 +5305,23 @@ class WorkflowHandlers:
         generation_segment_ids: list[str] = []
         if source_artifact.role == "prepared_text":
             with self.database.session() as session:
-                plan = session.scalar(select(GenerationPlan).where(GenerationPlan.session_id == session_id))
+                plan = session.scalar(
+                    select(GenerationPlan).where(
+                        GenerationPlan.session_id == session_id
+                    )
+                )
                 if plan and plan.active_revision_id:
-                    segments = list(session.scalars(select(GenerationSegment).where(GenerationSegment.plan_revision_id == plan.active_revision_id, GenerationSegment.removed.is_(False)).order_by(GenerationSegment.ordinal)).all())
+                    segments = list(
+                        session.scalars(
+                            select(GenerationSegment)
+                            .where(
+                                GenerationSegment.plan_revision_id
+                                == plan.active_revision_id,
+                                GenerationSegment.removed.is_(False),
+                            )
+                            .order_by(GenerationSegment.ordinal)
+                        ).all()
+                    )
                     if segments:
                         revision_id = plan.active_revision_id
                         generation_segment_ids = [segment.id for segment in segments]
@@ -4061,10 +5343,16 @@ class WorkflowHandlers:
                 session_id,
                 records,
                 settings=settings,
-                source_revision_id=str((source_artifact.metadata_json or {}).get("revision_id") or "") or None,
+                source_revision_id=str(
+                    (source_artifact.metadata_json or {}).get("revision_id") or ""
+                )
+                or None,
                 source_artifact_id=source_artifact.id,
             )
-        source_texts = [str(record.get("text") or record.get("original_sentence") or "").strip() for record in records]
+        source_texts = [
+            str(record.get("text") or record.get("original_sentence") or "").strip()
+            for record in records
+        ]
         optimization_share = 0.25 if bool(settings.get("llm_tts_optimization")) else 0.0
         optimized_texts, optimization_model = self._optimize_generation_texts(
             session_id,
@@ -4072,7 +5360,9 @@ class WorkflowHandlers:
             source_texts,
             settings,
             cancel_event,
-            lambda value, detail=None: progress(float(value) * optimization_share, detail),
+            lambda value, detail=None: progress(
+                float(value) * optimization_share, detail
+            ),
             job_id=job_id,
         )
         verified_qwen_voices: set[str] = set()
@@ -4131,11 +5421,16 @@ class WorkflowHandlers:
         ):
             if cancel_event.is_set():
                 return {}
-            text = str(record.get("text") or record.get("original_sentence") or "").strip()
+            text = str(
+                record.get("text") or record.get("original_sentence") or ""
+            ).strip()
             if not text:
                 continue
             synthesis_share = 1.0 - optimization_share
-            progress(optimization_share + ((index - 1) / len(records)) * synthesis_share, f"Generating segment {index} of {len(records)}")
+            progress(
+                optimization_share + ((index - 1) / len(records)) * synthesis_share,
+                f"Generating segment {index} of {len(records)}",
+            )
             batch_context = batch_contexts.get(generation_segment_id)
             if batch_context is not None:
                 synthesized_text = str(batch_context["synthesized_text"])
@@ -4163,20 +5458,16 @@ class WorkflowHandlers:
                 return self.tts_providers.synthesize(
                     text_to_synthesize,
                     settings_for_segment,
-                    max_attempts=int(
-                        settings_for_segment.get("max_attempts") or 5
-                    ),
+                    max_attempts=int(settings_for_segment.get("max_attempts") or 5),
                     cancel_event=cancel_event,
                     retry_callback=lambda attempt, total, delay: progress(
                         optimization_share
-                        + ((segment_index - 1) / len(records))
-                        * synthesis_share,
+                        + ((segment_index - 1) / len(records)) * synthesis_share,
                         f"Retrying segment {segment_index} ({attempt}/{total}) in {delay:.1f}s",
                     ),
                     recovery_callback=lambda cycle, total, timeout: progress(
                         optimization_share
-                        + ((segment_index - 1) / len(records))
-                        * synthesis_share,
+                        + ((segment_index - 1) / len(records)) * synthesis_share,
                         f"Waiting for Qwen3 TTS before segment {segment_index} ({cycle}/{total}, up to {timeout:.0f}s)",
                     ),
                     **tts_urls,
@@ -4212,7 +5503,12 @@ class WorkflowHandlers:
                 synthesized_text,
                 segment_tts_settings,
             )
-            take_dir = self._session_dir(session_id) / "generation" / revision_id / generation_segment_id
+            take_dir = (
+                self._session_dir(session_id)
+                / "generation"
+                / revision_id
+                / generation_segment_id
+            )
             take_dir.mkdir(parents=True, exist_ok=True)
             sentence_path = take_dir / f"tts-{new_id()}.wav"
             exported = audio.export(sentence_path, format="wav")
@@ -4231,7 +5527,11 @@ class WorkflowHandlers:
                     "synthesized_text": synthesized_text,
                     "llm_optimized": synthesized_text != text,
                     "llm_model": optimization_model or None,
-                    **({"audio_verification": verification} if verification is not None else {}),
+                    **(
+                        {"audio_verification": verification}
+                        if verification is not None
+                        else {}
+                    ),
                 },
             )
             take_artifact_ids.append(take_artifact.id)
@@ -4248,26 +5548,55 @@ class WorkflowHandlers:
                 segment.status = "completed"
                 if verification is not None and verification.get("status") != "passed":
                     segment.marked = True
-                session.add(AudioTake(generation_segment_id=generation_segment_id, artifact_id=take_artifact.id, kind="tts", status="completed", settings_hash=take_artifact.settings_hash, duration_ms=len(audio), is_active=True))
+                session.add(
+                    AudioTake(
+                        generation_segment_id=generation_segment_id,
+                        artifact_id=take_artifact.id,
+                        kind="tts",
+                        status="completed",
+                        settings_hash=take_artifact.settings_hash,
+                        duration_ms=len(audio),
+                        is_active=True,
+                    )
+                )
             silence_after = _default_silence_after_ms(
                 record,
                 settings,
-                is_subtitle=source_artifact.role == "speech_blocks" or self._is_subtitle_generation_record(record),
+                is_subtitle=source_artifact.role == "speech_blocks"
+                or self._is_subtitle_generation_record(record),
             )
             assembly_inputs.append((sentence_path, len(audio), silence_after))
-            progress(optimization_share + (index / len(records)) * synthesis_share, f"Generated segment {index} of {len(records)}")
+            progress(
+                optimization_share + (index / len(records)) * synthesis_share,
+                f"Generated segment {index} of {len(records)}",
+            )
         if not assembly_inputs:
             raise RuntimeError("The speech service returned no audio.")
 
-        destination = self._operation_dir(session_id, "generate-audio") / ("dubbing_audio.wav" if role == "dubbing_audio" else "audiobook_audio.wav")
-        fade_enabled = bool(settings.get("fade_enabled", settings.get("enable_fade", False)))
+        destination = self._operation_dir(session_id, "generate-audio") / (
+            "dubbing_audio.wav" if role == "dubbing_audio" else "audiobook_audio.wav"
+        )
+        fade_enabled = bool(
+            settings.get("fade_enabled", settings.get("enable_fade", False))
+        )
         fade_in_ms = (
-            max(0, int(settings.get("fade_in_ms", settings.get("fade_in_duration", 0)) or 0))
+            max(
+                0,
+                int(
+                    settings.get("fade_in_ms", settings.get("fade_in_duration", 0)) or 0
+                ),
+            )
             if fade_enabled
             else 0
         )
         fade_out_ms = (
-            max(0, int(settings.get("fade_out_ms", settings.get("fade_out_duration", 0)) or 0))
+            max(
+                0,
+                int(
+                    settings.get("fade_out_ms", settings.get("fade_out_duration", 0))
+                    or 0
+                ),
+            )
             if fade_enabled
             else 0
         )
@@ -4288,7 +5617,9 @@ class WorkflowHandlers:
                     fade_in_ms=fade_in_ms,
                     fade_out_ms=fade_out_ms,
                 )
-                for index, (path, duration_ms, silence_after_ms) in enumerate(assembly_inputs)
+                for index, (path, duration_ms, silence_after_ms) in enumerate(
+                    assembly_inputs
+                )
             ],
             output_format="wav",
             sample_rate_hz=sample_rate_hz,
@@ -4311,29 +5642,38 @@ class WorkflowHandlers:
             settings=settings,
             metadata={
                 "segment_count": len(records),
-                "service": settings.get("service") or settings.get("tts_service") or "XTTS",
+                "service": settings.get("service")
+                or settings.get("tts_service")
+                or "XTTS",
                 "duration_ms": assembly_result.duration_ms,
                 "assembly_backend": assembly_result.backend,
             },
         )
         progress(1.0, "Audio ready")
-        return {"artifact_id": artifact.id, "path": artifact.relative_path, "segments": len(records), "generation_plan_revision_id": revision_id}
+        return {
+            "artifact_id": artifact.id,
+            "path": artifact.relative_path,
+            "segments": len(records),
+            "generation_plan_revision_id": revision_id,
+        }
 
     def generate_dubbing_audio(self, payload, progress, cancel_event):
         from pandrator.logic.dubbing.speech_blocks import generate_speech_blocks_file
 
         session_id = str(payload.get("session_id") or "")
-        source_artifact, source_path = self._resolve_input(str(payload.get("source_artifact_id") or ""))
+        source_artifact, source_path = self._resolve_input(
+            str(payload.get("source_artifact_id") or "")
+        )
         settings = dict(payload.get("settings") or {})
         if source_path.suffix.lower() != ".srt":
-            raise ValueError("Dubbing audio requires a transcription, correction, or translation SRT artifact.")
+            raise ValueError(
+                "Dubbing audio requires a transcription, correction, or translation SRT artifact."
+            )
         language = self._generation_language(session_id, source_artifact, settings)
         settings = {**settings, "language": language, "target_language": language}
         speaker_by_subtitle = self._subtitle_speaker_map(source_artifact, source_path)
         speaker_options = (
-            {"speaker_by_subtitle": speaker_by_subtitle}
-            if speaker_by_subtitle
-            else {}
+            {"speaker_by_subtitle": speaker_by_subtitle} if speaker_by_subtitle else {}
         )
         (
             min_chars,
@@ -4363,15 +5703,37 @@ class WorkflowHandlers:
             parent_ids=[source_artifact.id],
             settings=settings,
         )
-        return self._generate_audio(session_id, blocks_artifact, blocks_path, settings, progress, cancel_event, role="dubbing_audio", job_id=str(payload.get("_job_id") or "") or None)
+        return self._generate_audio(
+            session_id,
+            blocks_artifact,
+            blocks_path,
+            settings,
+            progress,
+            cancel_event,
+            role="dubbing_audio",
+            job_id=str(payload.get("_job_id") or "") or None,
+        )
 
     def generate_audiobook_audio(self, payload, progress, cancel_event):
         session_id = str(payload.get("session_id") or "")
-        source_artifact, source_path = self._resolve_input(str(payload.get("source_artifact_id") or ""))
+        source_artifact, source_path = self._resolve_input(
+            str(payload.get("source_artifact_id") or "")
+        )
         settings = dict(payload.get("settings") or {})
         if source_artifact.role not in {"prepared_text", "tts_optimized"}:
-            raise ValueError("Audiobook generation requires a current Segment narration artifact or its reviewed speech-optimized revision.")
-        return self._generate_audio(session_id, source_artifact, source_path, settings, progress, cancel_event, role="audiobook_audio", job_id=str(payload.get("_job_id") or "") or None)
+            raise ValueError(
+                "Audiobook generation requires a current Segment narration artifact or its reviewed speech-optimized revision."
+            )
+        return self._generate_audio(
+            session_id,
+            source_artifact,
+            source_path,
+            settings,
+            progress,
+            cancel_event,
+            role="audiobook_audio",
+            job_id=str(payload.get("_job_id") or "") or None,
+        )
 
     def _run_reviewable_generation(
         self,
@@ -4392,7 +5754,9 @@ class WorkflowHandlers:
         output assembly remains an explicit review action.
         """
         session_id = str(payload.get("session_id") or "")
-        source_artifact, source_path = self._resolve_input(str(payload.get("source_artifact_id") or ""))
+        source_artifact, source_path = self._resolve_input(
+            str(payload.get("source_artifact_id") or "")
+        )
         settings = dict(payload.get("settings") or {})
         language = self._generation_language(session_id, source_artifact, settings)
         settings = {**settings, "language": language, "target_language": language}
@@ -4412,7 +5776,11 @@ class WorkflowHandlers:
             # user made in the drawer. A separately reviewed optimization
             # artifact, however, is a new source and therefore a new plan.
             with self.database.session() as session:
-                plan = session.scalar(select(GenerationPlan).where(GenerationPlan.session_id == session_id))
+                plan = session.scalar(
+                    select(GenerationPlan).where(
+                        GenerationPlan.session_id == session_id
+                    )
+                )
                 if source_artifact.role == "prepared_text" and plan is not None:
                     plan_revision_id = plan.active_revision_id
             if not plan_revision_id:
@@ -4423,16 +5791,25 @@ class WorkflowHandlers:
                     session_id,
                     records,
                     settings=settings,
-                    source_revision_id=str((source_artifact.metadata_json or {}).get("revision_id") or "") or None,
+                    source_revision_id=str(
+                        (source_artifact.metadata_json or {}).get("revision_id") or ""
+                    )
+                    or None,
                     source_artifact_id=source_artifact.id,
                 )
         else:
-            raise ValueError("Audio generation requires subtitle cues or segmented narration.")
+            raise ValueError(
+                "Audio generation requires subtitle cues or segmented narration."
+            )
 
         if not plan_revision_id:
-            raise ValueError("Create generation segments before starting audio generation.")
+            raise ValueError(
+                "Create generation segments before starting audio generation."
+            )
 
-        snapshot = deepcopy(resolved_snapshot) if isinstance(resolved_snapshot, dict) else {}
+        snapshot = (
+            deepcopy(resolved_snapshot) if isinstance(resolved_snapshot, dict) else {}
+        )
         # The resolved sections are the immutable source of truth. Merge the
         # flattened stage values as compatibility aliases so direct Run Now
         # choices (service, model, voice, and language) cannot be lost.
@@ -4445,10 +5822,26 @@ class WorkflowHandlers:
         }
         snapshot["source_artifact_id"] = source_artifact.id
         frozen_hash = hashlib.sha256(
-            json.dumps(snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+            json.dumps(
+                snapshot,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            ).encode("utf-8")
         ).hexdigest()
         with self.database.session() as session:
-            sequence_number = int(session.scalar(select(func.max(GenerationRun.sequence_number)).where(GenerationRun.session_id == session_id)) or 0) + 1
+            sequence_number = (
+                int(
+                    session.scalar(
+                        select(func.max(GenerationRun.sequence_number)).where(
+                            GenerationRun.session_id == session_id
+                        )
+                    )
+                    or 0
+                )
+                + 1
+            )
             run = GenerationRun(
                 session_id=session_id,
                 plan_revision_id=plan_revision_id,
@@ -4466,8 +5859,14 @@ class WorkflowHandlers:
         progress(0.03, "Generation segments ready")
         try:
             return self.run_generation(
-                {"generation_run_id": run_id, "segment_ids": [], "operation": "generate"},
-                lambda value, detail=None: progress(0.03 + max(0.0, min(1.0, float(value))) * 0.97, detail),
+                {
+                    "generation_run_id": run_id,
+                    "segment_ids": [],
+                    "operation": "generate",
+                },
+                lambda value, detail=None: progress(
+                    0.03 + max(0.0, min(1.0, float(value))) * 0.97, detail
+                ),
                 cancel_event,
             )
         except Exception:
@@ -4481,10 +5880,13 @@ class WorkflowHandlers:
     def run_generation(self, payload, progress, cancel_event):
         """Generate immutable per-segment takes with safe pause and resume boundaries."""
         from pydub import AudioSegment
+
         from pandrator.logic import rvc_handler
 
         run_id = str(payload.get("generation_run_id") or "")
-        selected_ids = {str(value) for value in (payload.get("segment_ids") or []) if str(value)}
+        selected_ids = {
+            str(value) for value in (payload.get("segment_ids") or []) if str(value)
+        }
         operation = str(payload.get("operation") or "generate")
         with self.database.session() as session:
             run = session.get(GenerationRun, run_id)
@@ -4498,10 +5900,14 @@ class WorkflowHandlers:
             run_sequence_number = run.sequence_number
             job_id = run.job_id or str(payload.get("_job_id") or "") or None
 
-        statement = select(GenerationSegment).where(
-            GenerationSegment.plan_revision_id == plan_revision_id,
-            GenerationSegment.removed.is_(False),
-        ).order_by(GenerationSegment.ordinal)
+        statement = (
+            select(GenerationSegment)
+            .where(
+                GenerationSegment.plan_revision_id == plan_revision_id,
+                GenerationSegment.removed.is_(False),
+            )
+            .order_by(GenerationSegment.ordinal)
+        )
         if selected_ids:
             statement = statement.where(GenerationSegment.id.in_(selected_ids))
         with self.database.session() as session:
@@ -4530,7 +5936,9 @@ class WorkflowHandlers:
 
         tts_settings = {
             **adapt_runtime_settings("tts", dict(settings_snapshot.get("tts") or {})),
-            **adapt_runtime_settings("audio", dict(settings_snapshot.get("audio") or {})),
+            **adapt_runtime_settings(
+                "audio", dict(settings_snapshot.get("audio") or {})
+            ),
         }
         tts_settings = hydrate_tts_settings(
             self.database,
@@ -4538,10 +5946,16 @@ class WorkflowHandlers:
             tts_settings,
             manager_bridge=self.manager_bridge,
         )
-        text_settings = adapt_runtime_settings("text", dict(settings_snapshot.get("text") or {}))
+        text_settings = adapt_runtime_settings(
+            "text", dict(settings_snapshot.get("text") or {})
+        )
         optimization_model = ""
         optimized_by_id: dict[str, str] = {}
-        optimization_share = 0.2 if operation != "rvc" and bool(text_settings.get("llm_tts_optimization")) else 0.0
+        optimization_share = (
+            0.2
+            if operation != "rvc" and bool(text_settings.get("llm_tts_optimization"))
+            else 0.0
+        )
         if operation != "rvc":
             try:
                 optimized, optimization_model = self._optimize_generation_texts(
@@ -4550,13 +5964,13 @@ class WorkflowHandlers:
                     source_texts,
                     {**text_settings, **tts_settings},
                     cancel_event,
-                    lambda value, detail=None: progress(float(value) * optimization_share, detail),
+                    lambda value, detail=None: progress(
+                        float(value) * optimization_share, detail
+                    ),
                     job_id=job_id,
                     generation_run_id=run_id,
                 )
-                optimized_by_id = dict(
-                    zip(segment_ids, optimized, strict=True)
-                )
+                optimized_by_id = dict(zip(segment_ids, optimized, strict=True))
             except Exception:
                 with self.database.session() as session:
                     run = session.get(GenerationRun, run_id)
@@ -4564,15 +5978,23 @@ class WorkflowHandlers:
                         run.status = "failed"
                         run.updated_at = utcnow()
                 raise
-        rvc_settings = adapt_runtime_settings("rvc", dict(settings_snapshot.get("rvc") or {}))
+        rvc_settings = adapt_runtime_settings(
+            "rvc", dict(settings_snapshot.get("rvc") or {})
+        )
         rvc_source_sequence = None
         if operation == "rvc":
             source_run_id = str(rvc_settings.get("source_run_id") or "").strip()
             if source_run_id:
                 with self.database.session() as session:
                     source_run = session.get(GenerationRun, source_run_id)
-                    if source_run is None or source_run.session_id != session_id or source_run.plan_revision_id != plan_revision_id:
-                        raise ValueError("The selected source generation run is unavailable.")
+                    if (
+                        source_run is None
+                        or source_run.session_id != session_id
+                        or source_run.plan_revision_id != plan_revision_id
+                    ):
+                        raise ValueError(
+                            "The selected source generation run is unavailable."
+                        )
                     rvc_source_sequence = source_run.sequence_number
         generated = 0
         skipped = 0
@@ -4633,15 +6055,24 @@ class WorkflowHandlers:
                 if run.cancel_requested or cancel_event.is_set():
                     run.status = "canceled"
                     run.updated_at = utcnow()
-                    return {"generation_run_id": run_id, "status": "canceled", "generated": generated}
+                    return {
+                        "generation_run_id": run_id,
+                        "status": "canceled",
+                        "generated": generated,
+                    }
                 if run.pause_requested:
                     run.status = "paused"
                     run.updated_at = utcnow()
-                    return {"generation_run_id": run_id, "status": "paused", "generated": generated}
+                    return {
+                        "generation_run_id": run_id,
+                        "status": "paused",
+                        "generated": generated,
+                    }
                 if operation == "resume" and segment.status == "completed":
                     skipped += 1
                     progress(
-                        optimization_share + ((index + 1) / len(segment_ids)) * (1.0 - optimization_share),
+                        optimization_share
+                        + ((index + 1) / len(segment_ids)) * (1.0 - optimization_share),
                         f"Kept completed segment {index + 1} of {len(segment_ids)}",
                     )
                     continue
@@ -4652,7 +6083,8 @@ class WorkflowHandlers:
                 segment_language = self._usable_language(segment.language)
                 segment_voice = str(segment.voice or "").strip() or None
             progress(
-                optimization_share + (index / len(segment_ids)) * (1.0 - optimization_share),
+                optimization_share
+                + (index / len(segment_ids)) * (1.0 - optimization_share),
                 f"Generating segment {index + 1} of {len(segment_ids)}",
             )
             take_path: Path | None = None
@@ -4663,15 +6095,26 @@ class WorkflowHandlers:
                     with self.database.session() as session:
                         source_take = session.scalar(
                             select(AudioTake)
-                            .join(GenerationRun, AudioTake.generation_run_id == GenerationRun.id)
+                            .join(
+                                GenerationRun,
+                                AudioTake.generation_run_id == GenerationRun.id,
+                            )
                             .where(
                                 AudioTake.generation_segment_id == segment_id,
                                 AudioTake.status.in_(("completed", "stale")),
                                 GenerationRun.session_id == session_id,
                                 GenerationRun.plan_revision_id == plan_revision_id,
-                                GenerationRun.sequence_number <= (rvc_source_sequence if rvc_source_sequence is not None else run_sequence_number - 1),
+                                GenerationRun.sequence_number
+                                <= (
+                                    rvc_source_sequence
+                                    if rvc_source_sequence is not None
+                                    else run_sequence_number - 1
+                                ),
                             )
-                            .order_by(GenerationRun.sequence_number.desc(), AudioTake.created_at.desc())
+                            .order_by(
+                                GenerationRun.sequence_number.desc(),
+                                AudioTake.created_at.desc(),
+                            )
                         )
                         if source_take is None:
                             source_take = session.scalar(
@@ -4685,7 +6128,9 @@ class WorkflowHandlers:
                                 .order_by(AudioTake.created_at.desc())
                             )
                         if source_take is None or source_take.artifact_id is None:
-                            raise ValueError("The selected segment has no active audio take for RVC.")
+                            raise ValueError(
+                                "The selected segment has no active audio take for RVC."
+                            )
                         source_artifact = session.get(Artifact, source_take.artifact_id)
                         source_take_id = source_take.id
                     source_path = self.paths.managed_path(source_artifact.relative_path)
@@ -4698,12 +6143,8 @@ class WorkflowHandlers:
                     batch_context = batch_contexts.get(segment_id)
                     if batch_context is not None:
                         text = str(batch_context["text"])
-                        synthesized_text = str(
-                            batch_context["synthesized_text"]
-                        )
-                        segment_tts_settings = dict(
-                            batch_context["settings"]
-                        )
+                        synthesized_text = str(batch_context["synthesized_text"])
+                        segment_tts_settings = dict(batch_context["settings"])
                     else:
                         synthesized_text = optimized_by_id.get(segment_id, text)
                         segment_tts_settings = _apply_segment_tts_overrides(
@@ -4779,7 +6220,12 @@ class WorkflowHandlers:
                     synthesized_text,
                     {**tts_settings, **take_settings},
                 )
-                take_dir = self._session_dir(session_id) / "generation" / plan_revision_id / segment_id
+                take_dir = (
+                    self._session_dir(session_id)
+                    / "generation"
+                    / plan_revision_id
+                    / segment_id
+                )
                 take_dir.mkdir(parents=True, exist_ok=True)
                 take_path = take_dir / f"{take_kind}-{new_id()}.wav"
                 exported = audio.export(take_path, format="wav")
@@ -4807,11 +6253,7 @@ class WorkflowHandlers:
                         kind="audio",
                         role="generation_take",
                         session_id=session_id,
-                        parent_ids=(
-                            [source_artifact.id]
-                            if operation == "rvc"
-                            else []
-                        ),
+                        parent_ids=([source_artifact.id] if operation == "rvc" else []),
                         settings=take_settings,
                         metadata={
                             "generation_segment_id": segment_id,
@@ -4821,8 +6263,7 @@ class WorkflowHandlers:
                             "source_text": text,
                             "synthesized_text": synthesized_text,
                             "llm_optimized": (
-                                operation != "rvc"
-                                and synthesized_text != text
+                                operation != "rvc" and synthesized_text != text
                             ),
                             "llm_model": optimization_model or None,
                             **(
@@ -4850,9 +6291,7 @@ class WorkflowHandlers:
                         AudioTake.is_active.is_(True),
                     )
                     if existing_take is not None:
-                        deactivate = deactivate.where(
-                            AudioTake.id != existing_take.id
-                        )
+                        deactivate = deactivate.where(AudioTake.id != existing_take.id)
                     session.execute(
                         deactivate.values(
                             is_active=False,
@@ -4860,19 +6299,25 @@ class WorkflowHandlers:
                         ).execution_options(synchronize_session=False)
                     )
                     if existing_take is None:
-                        session.add(AudioTake(
-                            generation_segment_id=segment_id,
-                            generation_run_id=run_id,
-                            artifact_id=artifact.id,
-                            parent_take_id=parent_take_id,
-                            kind=take_kind,
-                            status="completed",
-                            settings_hash=artifact.settings_hash,
-                            duration_ms=len(audio),
-                            is_active=True,
-                        ))
+                        session.add(
+                            AudioTake(
+                                generation_segment_id=segment_id,
+                                generation_run_id=run_id,
+                                artifact_id=artifact.id,
+                                parent_take_id=parent_take_id,
+                                kind=take_kind,
+                                status="completed",
+                                settings_hash=artifact.settings_hash,
+                                duration_ms=len(audio),
+                                is_active=True,
+                            )
+                        )
                     else:
-                        previous_artifact = session.get(Artifact, existing_take.artifact_id) if existing_take.artifact_id else None
+                        previous_artifact = (
+                            session.get(Artifact, existing_take.artifact_id)
+                            if existing_take.artifact_id
+                            else None
+                        )
                         if previous_artifact is not None:
                             previous_artifact.state = "stale"
                             previous_artifact.metadata_json = {
@@ -4880,7 +6325,9 @@ class WorkflowHandlers:
                                 "superseded_by_artifact_id": artifact.id,
                             }
                             previous_artifact.updated_at = utcnow()
-                            self.artifacts._mark_descendants_stale(session, previous_artifact.id)
+                            self.artifacts._mark_descendants_stale(
+                                session, previous_artifact.id
+                            )
                         existing_take.artifact_id = artifact.id
                         existing_take.parent_take_id = parent_take_id
                         existing_take.status = "completed"
@@ -4890,14 +6337,20 @@ class WorkflowHandlers:
                         existing_take.revision += 1
                         existing_take.created_at = utcnow()
                     segment.status = "completed"
-                    if verification is not None and verification.get("status") != "passed":
+                    if (
+                        verification is not None
+                        and verification.get("status") != "passed"
+                    ):
                         segment.marked = True
                     segment.updated_at = utcnow()
-                    mark_output_assemblies_stale(session, session_id, generation_run_id=run_id)
+                    mark_output_assemblies_stale(
+                        session, session_id, generation_run_id=run_id
+                    )
                 take_committed = True
                 generated += 1
                 progress(
-                    optimization_share + ((index + 1) / len(segment_ids)) * (1.0 - optimization_share),
+                    optimization_share
+                    + ((index + 1) / len(segment_ids)) * (1.0 - optimization_share),
                     f"Generated segment {index + 1} of {len(segment_ids)}",
                 )
             except Exception:
@@ -4939,7 +6392,12 @@ class WorkflowHandlers:
             final_status = "partial" if incomplete else "completed"
             run.status = final_status
             run.updated_at = utcnow()
-        progress(1.0, "Generation run complete" if final_status == "completed" else f"Generation saved; {incomplete} segment(s) remain")
+        progress(
+            1.0,
+            "Generation run complete"
+            if final_status == "completed"
+            else f"Generation saved; {incomplete} segment(s) remain",
+        )
         return {
             "generation_run_id": run_id,
             "status": final_status,
@@ -4953,6 +6411,9 @@ class WorkflowHandlers:
         """Assemble the current selected takes in plan order into an immutable artifact."""
         import tempfile
 
+        from pandrator.logic.dubbing.audio_sync import align_audio_blocks
+        from pandrator.logic.dubbing.models import AudioAlignmentBlock
+
         from .audio_assembly import (
             AudioAssemblyPart,
             assemble_audio_plan,
@@ -4961,8 +6422,6 @@ class WorkflowHandlers:
             resolve_assembly_backend,
         )
         from .media_process import MediaProcessCancelled, probe_audio_stream
-        from pandrator.logic.dubbing.audio_sync import align_audio_blocks
-        from pandrator.logic.dubbing.models import AudioAlignmentBlock
 
         assembly_id = str(payload.get("output_assembly_id") or "")
         destination: Path | None = None
@@ -4977,19 +6436,27 @@ class WorkflowHandlers:
             session_id = assembly.session_id
             settings_container = dict(assembly.settings_json or {})
             plan_revision_id = str(settings_container.get("plan_revision_id") or "")
-            resolved = settings_container.get("resolved") if isinstance(settings_container.get("resolved"), dict) else {}
+            resolved = (
+                settings_container.get("resolved")
+                if isinstance(settings_container.get("resolved"), dict)
+                else {}
+            )
             audio_settings = dict(resolved.get("audio") or {})
             output_settings = dict(resolved.get("output") or {})
-            selected_run = session.get(GenerationRun, assembly.generation_run_id) if assembly.generation_run_id else None
-            selected_run_sequence = selected_run.sequence_number if selected_run else None
+            selected_run = (
+                session.get(GenerationRun, assembly.generation_run_id)
+                if assembly.generation_run_id
+                else None
+            )
+            selected_run_sequence = (
+                selected_run.sequence_number if selected_run else None
+            )
             plan_revision = session.get(
                 GenerationPlanRevision,
                 plan_revision_id,
             )
             source_revision_id = (
-                plan_revision.source_revision_id
-                if plan_revision is not None
-                else None
+                plan_revision.source_revision_id if plan_revision is not None else None
             )
 
         try:
@@ -5028,8 +6495,7 @@ class WorkflowHandlers:
                             AudioTake.status.in_(("completed", "stale")),
                             GenerationRun.session_id == session_id,
                             GenerationRun.plan_revision_id == plan_revision_id,
-                            GenerationRun.sequence_number
-                            <= selected_run_sequence,
+                            GenerationRun.sequence_number <= selected_run_sequence,
                         )
                         .subquery()
                     )
@@ -5050,14 +6516,12 @@ class WorkflowHandlers:
                         )
                         .join(
                             GenerationSegment,
-                            AudioTake.generation_segment_id
-                            == GenerationSegment.id,
+                            AudioTake.generation_segment_id == GenerationSegment.id,
                         )
                         .where(
                             AudioTake.is_active.is_(True),
                             AudioTake.status == "completed",
-                            GenerationSegment.plan_revision_id
-                            == plan_revision_id,
+                            GenerationSegment.plan_revision_id == plan_revision_id,
                             GenerationSegment.removed.is_(False),
                         )
                         .subquery()
@@ -5068,8 +6532,7 @@ class WorkflowHandlers:
                         .outerjoin(
                             ranked_takes,
                             and_(
-                                ranked_takes.c.segment_id
-                                == GenerationSegment.id,
+                                ranked_takes.c.segment_id == GenerationSegment.id,
                                 ranked_takes.c.take_rank == 1,
                             ),
                         )
@@ -5082,8 +6545,7 @@ class WorkflowHandlers:
                             Artifact.id == AudioTake.artifact_id,
                         )
                         .where(
-                            GenerationSegment.plan_revision_id
-                            == plan_revision_id,
+                            GenerationSegment.plan_revision_id == plan_revision_id,
                             GenerationSegment.removed.is_(False),
                         )
                         .order_by(GenerationSegment.ordinal)
@@ -5091,18 +6553,32 @@ class WorkflowHandlers:
                 )
                 selected: list[tuple[GenerationSegment, AudioTake, Artifact]] = []
                 for segment, take, artifact in selected_rows:
-                    allowed_statuses = {"completed", "stale"} if selected_run is not None else {"completed"}
-                    if take is None or take.status not in allowed_statuses or not take.artifact_id:
+                    allowed_statuses = (
+                        {"completed", "stale"}
+                        if selected_run is not None
+                        else {"completed"}
+                    )
+                    if (
+                        take is None
+                        or take.status not in allowed_statuses
+                        or not take.artifact_id
+                    ):
                         if selected_run is None:
-                            raise ValueError(f"Segment {segment.ordinal + 1} has no current completed audio take.")
+                            raise ValueError(
+                                f"Segment {segment.ordinal + 1} has no current completed audio take."
+                            )
                         raise ValueError(
                             f"Segment {segment.ordinal + 1} has no available audio take in Run {selected_run.sequence_number}."
                         )
                     if artifact is None or artifact.state != "current":
-                        raise ValueError(f"Segment {segment.ordinal + 1} references an unavailable audio artifact.")
+                        raise ValueError(
+                            f"Segment {segment.ordinal + 1} references an unavailable audio artifact."
+                        )
                     selected.append((segment, take, artifact))
             if not selected:
-                raise ValueError("No active generation segments are available for assembly.")
+                raise ValueError(
+                    "No active generation segments are available for assembly."
+                )
 
             loaded: list[tuple[GenerationSegment, AudioTake, Artifact, Path, int]] = []
             manifest: list[dict[str, Any]] = []
@@ -5123,10 +6599,18 @@ class WorkflowHandlers:
                 )
                 path = self.paths.managed_path(artifact.relative_path)
                 if not path.is_file():
-                    raise ValueError(f"Audio take file is missing for segment {segment.ordinal + 1}.")
-                duration_ms = int(take.duration_ms or (artifact.metadata_json or {}).get("duration_ms") or 0)
+                    raise ValueError(
+                        f"Audio take file is missing for segment {segment.ordinal + 1}."
+                    )
+                duration_ms = int(
+                    take.duration_ms
+                    or (artifact.metadata_json or {}).get("duration_ms")
+                    or 0
+                )
                 if duration_ms <= 0:
-                    duration_ms = probe_audio_stream(path, cancel_event=cancel_event).duration_ms
+                    duration_ms = probe_audio_stream(
+                        path, cancel_event=cancel_event
+                    ).duration_ms
                 loaded.append((segment, take, artifact, path, duration_ms))
                 parent_ids.append(artifact.id)
             progress(0.2, f"Validated {len(loaded)} audio segments")
@@ -5157,7 +6641,9 @@ class WorkflowHandlers:
             destination = assemblies_dir / f"assembly-{assembly_id}.{output_format}"
             backend = resolve_assembly_backend()
             fade_enabled = bool(
-                audio_settings.get("fade_enabled", audio_settings.get("enable_fade", False))
+                audio_settings.get(
+                    "fade_enabled", audio_settings.get("enable_fade", False)
+                )
             )
             fade_in_ms = (
                 max(
@@ -5200,7 +6686,13 @@ class WorkflowHandlers:
                     dir=assemblies_dir,
                 ) as temporary:
                     temporary_path = Path(temporary)
-                    for index, (segment, take, artifact, source_path, duration_ms) in enumerate(loaded):
+                    for index, (
+                        segment,
+                        take,
+                        artifact,
+                        source_path,
+                        duration_ms,
+                    ) in enumerate(loaded):
                         timings = sorted(
                             {
                                 source_timing_by_ref[str(reference)]
@@ -5242,7 +6734,9 @@ class WorkflowHandlers:
                             audio_files=[input_path],
                             subtitles=[value[2] for value in timings],
                         )
-                        alignment_group = str(segment.alignment_group or "").strip() or None
+                        alignment_group = (
+                            str(segment.alignment_group or "").strip() or None
+                        )
                         same_explicit_group = bool(
                             alignment_blocks
                             and alignment_group
@@ -5292,7 +6786,9 @@ class WorkflowHandlers:
                             0.2 + 0.25 * ((index + 1) / len(loaded)),
                             f"Prepared timing block {index + 1} of {len(loaded)}",
                         )
-                    raw_speed = float(audio_settings.get("synchronization_speed") or 1.0)
+                    raw_speed = float(
+                        audio_settings.get("synchronization_speed") or 1.0
+                    )
                     speed_up_percent = int(
                         round(raw_speed * 100 if raw_speed <= 10 else raw_speed)
                     )
@@ -5308,9 +6804,7 @@ class WorkflowHandlers:
                         max(
                             0,
                             int(
-                                audio_settings.get(
-                                    "synchronization_sentence_gap_ms"
-                                )
+                                audio_settings.get("synchronization_sentence_gap_ms")
                                 or 100
                             ),
                         ),
@@ -5326,10 +6820,7 @@ class WorkflowHandlers:
                             delay_start_ms=max(
                                 0,
                                 int(
-                                    audio_settings.get(
-                                        "synchronization_delay_ms"
-                                    )
-                                    or 0
+                                    audio_settings.get("synchronization_delay_ms") or 0
                                 ),
                             ),
                             speed_up_percent=max(100, speed_up_percent),
@@ -5379,18 +6870,10 @@ class WorkflowHandlers:
                 logger.info(
                     "Assembly %s synchronization applied speed-up to %d/%d blocks (max effective %.3fx, final drift %dms)",
                     assembly_id,
-                    int(
-                        alignment_diagnostics.get(
-                            "speed_adjusted_block_count"
-                        )
-                        or 0
-                    ),
+                    int(alignment_diagnostics.get("speed_adjusted_block_count") or 0),
                     int(alignment_diagnostics.get("block_count") or 0),
                     float(
-                        alignment_diagnostics.get(
-                            "max_effective_speed_factor"
-                        )
-                        or 1.0
+                        alignment_diagnostics.get("max_effective_speed_factor") or 1.0
                     ),
                     int(alignment_diagnostics.get("final_drift_ms") or 0),
                 )
@@ -5482,14 +6965,25 @@ class WorkflowHandlers:
                     "genre": str(output_settings.get("genre") or ""),
                     "language": str(output_settings.get("language") or ""),
                 }
-                cover_artifact_id = str(output_settings.get("cover_artifact_id") or "").strip()
+                cover_artifact_id = str(
+                    output_settings.get("cover_artifact_id") or ""
+                ).strip()
                 if cover_artifact_id:
                     cover_artifact, candidate = self._resolve_input(cover_artifact_id)
-                    if cover_artifact.state != "current" or not candidate.is_file() or not str(cover_artifact.mime_type or "").startswith("image/"):
-                        raise ValueError("The selected cover artifact is not an available image.")
+                    if (
+                        cover_artifact.state != "current"
+                        or not candidate.is_file()
+                        or not str(cover_artifact.mime_type or "").startswith("image/")
+                    ):
+                        raise ValueError(
+                            "The selected cover artifact is not an available image."
+                        )
                     cover_path = candidate
                     parent_ids.append(cover_artifact.id)
-                from pandrator.logic.audio_processor import _add_chapters_to_m4b, _save_metadata_and_cover
+                from pandrator.logic.audio_processor import (
+                    _add_chapters_to_m4b,
+                    _save_metadata_and_cover,
+                )
 
                 _save_metadata_and_cover(
                     str(destination),
@@ -5526,7 +7020,11 @@ class WorkflowHandlers:
                 role="assembled_audio",
                 session_id=session_id,
                 parent_ids=parent_ids,
-                settings={"audio": audio_settings, "output": output_settings, "takes": manifest},
+                settings={
+                    "audio": audio_settings,
+                    "output": output_settings,
+                    "takes": manifest,
+                },
                 metadata={
                     "output_assembly_id": assembly_id,
                     "duration_ms": assembly_result.duration_ms,
@@ -5536,7 +7034,10 @@ class WorkflowHandlers:
                     "assembly_backend": assembly_result.backend,
                     "metadata": metadata,
                     "cover_artifact_id": cover_artifact_id or None,
-                    "chapters": [{"start_ms": int(start * 1000), "title": title} for start, title in chapter_markers],
+                    "chapters": [
+                        {"start_ms": int(start * 1000), "title": title}
+                        for start, title in chapter_markers
+                    ],
                     "takes": manifest,
                     "synchronization": alignment_diagnostics,
                     "output_settings": output_settings_snapshot,
@@ -5596,9 +7097,15 @@ class WorkflowHandlers:
         from .media_process import MediaProcessCancelled
         from .waveform import generate_waveform_peaks
 
-        source, source_path = self._resolve_input(str(payload.get("source_artifact_id") or ""))
+        source, source_path = self._resolve_input(
+            str(payload.get("source_artifact_id") or "")
+        )
         max_points = max(128, min(5000, int(payload.get("max_points") or 1600)))
-        destination_dir = self._session_dir(source.session_id) if source.session_id else self.paths.artifacts / "waveforms"
+        destination_dir = (
+            self._session_dir(source.session_id)
+            if source.session_id
+            else self.paths.artifacts / "waveforms"
+        )
         destination_dir.mkdir(parents=True, exist_ok=True)
         progress(0.1, "Downsampling audio for waveform")
         try:
@@ -5707,10 +7214,13 @@ class WorkflowHandlers:
                     automatic_start_method = "audio_detection"
         except MediaProcessCancelled:
             return {}
-        available_seconds = min(
-            source_info.duration_ms,
-            dubbing_info.duration_ms,
-        ) / 1000.0
+        available_seconds = (
+            min(
+                source_info.duration_ms,
+                dubbing_info.duration_ms,
+            )
+            / 1000.0
+        )
         remaining_seconds = available_seconds - requested_start
         if remaining_seconds < 0.25:
             raise ValueError(
@@ -5805,9 +7315,16 @@ class WorkflowHandlers:
         """Create immutable, managed exports from the explicitly selected inputs."""
         from werkzeug.utils import secure_filename
 
+        from pandrator.logic.dubbing.audio_sync import (
+            build_mix_audio_command,
+            build_mix_video_audio_command,
+            media_has_audio_stream,
+        )
         from pandrator.logic.dubbing.bilingual_ass import write_bilingual_ass
-        from pandrator.logic.dubbing.audio_sync import build_mix_audio_command, build_mix_video_audio_command, media_has_audio_stream
-        from pandrator.logic.dubbing.srt_utils import concatenate_subtitle_text, srt_to_vtt
+        from pandrator.logic.dubbing.srt_utils import (
+            concatenate_subtitle_text,
+            srt_to_vtt,
+        )
         from pandrator.logic.dubbing.subtitle_finalization import finalize_srt_file
         from pandrator.logic.dubbing.video_muxing import (
             build_add_subtitles_command,
@@ -5822,8 +7339,12 @@ class WorkflowHandlers:
         session_id = str(payload.get("session_id") or "")
         settings = dict(payload.get("settings") or {})
         raw_export_contract = payload.get("export_contract")
-        if raw_export_contract is not None and not isinstance(raw_export_contract, dict):
-            raise ValueError("The queued export contract is malformed; submit the export again.")
+        if raw_export_contract is not None and not isinstance(
+            raw_export_contract, dict
+        ):
+            raise ValueError(
+                "The queued export contract is malformed; submit the export again."
+            )
         resolved_settings_snapshot = payload.get("resolved_settings_snapshot")
         output_settings_snapshot = build_output_settings_snapshot(
             settings,
@@ -5845,7 +7366,13 @@ class WorkflowHandlers:
             )
         record = self._session_record(session_id)
         with self.database.session() as session:
-            current = list(session.scalars(select(Artifact).where(Artifact.session_id == session_id, Artifact.state == "current")).all())
+            current = list(
+                session.scalars(
+                    select(Artifact).where(
+                        Artifact.session_id == session_id, Artifact.state == "current"
+                    )
+                ).all()
+            )
             selected_text = selected_artifacts(session, session_id)
             contract_source_id = (
                 str(raw_export_contract.get("source_artifact_id") or "")
@@ -5862,7 +7389,10 @@ class WorkflowHandlers:
                 expected_source_hash = str(
                     raw_export_contract.get("source_content_hash") or ""
                 )
-                if expected_source_hash and contract_source.content_hash != expected_source_hash:
+                if (
+                    expected_source_hash
+                    and contract_source.content_hash != expected_source_hash
+                ):
                     raise ValueError(
                         "The source captured by this export contract changed. Submit the export again."
                     )
@@ -5872,10 +7402,16 @@ class WorkflowHandlers:
                 # session is edited before the queued worker starts.
                 attached_sources = []
             else:
-                compatibility_source = resolve_primary_source(session, session_id).artifact
-                attached_sources = [compatibility_source] if compatibility_source else []
+                compatibility_source = resolve_primary_source(
+                    session, session_id
+                ).artifact
+                attached_sources = (
+                    [compatibility_source] if compatibility_source else []
+                )
             known_ids = {item.id for item in current}
-            current.extend(item for item in attached_sources if item.id not in known_ids)
+            current.extend(
+                item for item in attached_sources if item.id not in known_ids
+            )
             selected_assembly = None
             selected_audio = None
             selected_run_id = str(settings.get("generation_run_id") or "").strip()
@@ -5907,10 +7443,14 @@ class WorkflowHandlers:
                             raise ValueError(
                                 "Synchronization or output settings changed after this audio version was assembled. Reassemble it before exporting."
                             )
-                    raise ValueError("Assemble the selected generation run before exporting it.")
+                    raise ValueError(
+                        "Assemble the selected generation run before exporting it."
+                    )
                 selected_audio = session.get(Artifact, selected_assembly.artifact_id)
                 if selected_audio is None:
-                    raise ValueError("The selected generation run assembly is unavailable.")
+                    raise ValueError(
+                        "The selected generation run assembly is unavailable."
+                    )
         by_role: dict[str, Artifact] = {}
         for item in current:
             by_role.setdefault(item.role, item)
@@ -5923,22 +7463,46 @@ class WorkflowHandlers:
         produced: list[Artifact] = []
 
         if record.workflow_kind == "audiobook":
-            audio = selected_audio if selected_assembly is not None else by_role.get("assembled_audio") or by_role.get("audiobook_audio")
+            audio = (
+                selected_audio
+                if selected_assembly is not None
+                else by_role.get("assembled_audio") or by_role.get("audiobook_audio")
+            )
             if audio is None:
                 raise ValueError("Audiobook export requires generated audio.")
             _audio_record, audio_path = self._resolve_input(audio.id)
-            destination = _next_available_path(output_dir / f"{export_name}{audio_path.suffix.lower()}")
+            destination = _next_available_path(
+                output_dir / f"{export_name}{audio_path.suffix.lower()}"
+            )
             progress(0.25, "Copying assembled audiobook")
             shutil.copy2(audio_path, destination)
             progress(0.9, "Registering audiobook export")
-            produced.append(self.artifacts.register(destination, kind="export", role="export", session_id=session_id, parent_ids=[audio.id], settings=settings))
+            produced.append(
+                self.artifacts.register(
+                    destination,
+                    kind="export",
+                    role="export",
+                    session_id=session_id,
+                    parent_ids=[audio.id],
+                    settings=settings,
+                )
+            )
         else:
             upload_media = next(
                 (
                     item
                     for item in attached_sources
                     if Path(item.relative_path).suffix.lower()
-                    in {".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v", ".mpeg", ".mpg"}
+                    in {
+                        ".mp4",
+                        ".mkv",
+                        ".mov",
+                        ".avi",
+                        ".webm",
+                        ".m4v",
+                        ".mpeg",
+                        ".mpg",
+                    }
                 ),
                 None,
             )
@@ -5947,7 +7511,16 @@ class WorkflowHandlers:
                     item
                     for item in attached_sources
                     if Path(item.relative_path).suffix.lower()
-                    in {".wav", ".mp3", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".wma"}
+                    in {
+                        ".wav",
+                        ".mp3",
+                        ".flac",
+                        ".m4a",
+                        ".aac",
+                        ".ogg",
+                        ".opus",
+                        ".wma",
+                    }
                 ),
                 None,
             )
@@ -5964,8 +7537,14 @@ class WorkflowHandlers:
                     None,
                 )
             )
-            export_mode = str(settings.get("export_mode") or ("subtitles" if record.workflow_kind == "subtitles" else "media")).lower()
-            if record.workflow_kind == "subtitles" and export_mode not in {"subtitles", "text"}:
+            export_mode = str(
+                settings.get("export_mode")
+                or ("subtitles" if record.workflow_kind == "subtitles" else "media")
+            ).lower()
+            if record.workflow_kind == "subtitles" and export_mode not in {
+                "subtitles",
+                "text",
+            }:
                 export_mode = "subtitles"
             if export_mode not in {"media", "subtitles", "text"}:
                 export_mode = "media"
@@ -5985,17 +7564,48 @@ class WorkflowHandlers:
                 subtitle_format = "srt"
             subtitle_mode = str(settings.get("subtitle_mode") or "none").lower()
             subtitle_mode = {"burn": "burned"}.get(subtitle_mode, subtitle_mode)
-            subtitle_selection = str(settings.get("subtitle_selection") or ("dual" if translated and source_subtitle else "translation")).lower()
-            subtitle_selection = {"both": "dual"}.get(subtitle_selection, subtitle_selection)
-            if subtitle_selection == "translation" and translated is None and source_subtitle is not None:
+            subtitle_selection = str(
+                settings.get("subtitle_selection")
+                or ("dual" if translated and source_subtitle else "translation")
+            ).lower()
+            subtitle_selection = {"both": "dual"}.get(
+                subtitle_selection, subtitle_selection
+            )
+            if (
+                subtitle_selection == "translation"
+                and translated is None
+                and source_subtitle is not None
+            ):
                 subtitle_selection = "source"
-            elif subtitle_selection == "source" and source_subtitle is None and translated is not None:
+            elif (
+                subtitle_selection == "source"
+                and source_subtitle is None
+                and translated is not None
+            ):
                 subtitle_selection = "translation"
-            selected_subtitles = ([source_subtitle] if source_subtitle and subtitle_selection in {"source", "dual"} else []) + ([translated] if translated and subtitle_selection in {"translation", "dual"} else [])
+            selected_subtitles = (
+                [source_subtitle]
+                if source_subtitle and subtitle_selection in {"source", "dual"}
+                else []
+            ) + (
+                [translated]
+                if translated and subtitle_selection in {"translation", "dual"}
+                else []
+            )
             # "No subtitles" only suppresses tracks on a media render. A
             # subtitle/text-only request still uses the selected document.
-            selected_subtitles = [item for item in selected_subtitles if item] if export_mode != "media" or subtitle_mode != "none" or upload_media is None else []
-            dubbing_audio = selected_audio if selected_assembly is not None else by_role.get("assembled_audio") or by_role.get("dubbing_audio")
+            selected_subtitles = (
+                [item for item in selected_subtitles if item]
+                if export_mode != "media"
+                or subtitle_mode != "none"
+                or upload_media is None
+                else []
+            )
+            dubbing_audio = (
+                selected_audio
+                if selected_assembly is not None
+                else by_role.get("assembled_audio") or by_role.get("dubbing_audio")
+            )
             if record.workflow_kind == "voiceover" and export_mode == "media":
                 canonical_audio_mode = (
                     contract.audio_mode
@@ -6016,7 +7626,11 @@ class WorkflowHandlers:
                 }[canonical_audio_mode]
             else:
                 audio_mode = "source"
-            if export_mode == "media" and audio_mode in {"dubbed", "mixed"} and dubbing_audio is None:
+            if (
+                export_mode == "media"
+                and audio_mode in {"dubbed", "mixed"}
+                and dubbing_audio is None
+            ):
                 raise ValueError(
                     "This media export requires assembled generated audio. Select a completed audio version and assemble it before exporting."
                 )
@@ -6064,7 +7678,9 @@ class WorkflowHandlers:
             for index, item in enumerate(selected_subtitles, start=1):
                 _subtitle_record, subtitle_path = self._resolve_input(item.id)
                 track_name = "translation" if item.role == "translation" else "source"
-                finalized_path = _next_available_path(output_dir / f"{record.storage_key}_{track_name}_final.srt")
+                finalized_path = _next_available_path(
+                    output_dir / f"{record.storage_key}_{track_name}_final.srt"
+                )
                 finalize_srt_file(subtitle_path, finalized_path, settings)
                 finalized = self.artifacts.register(
                     finalized_path,
@@ -6099,14 +7715,19 @@ class WorkflowHandlers:
             selected_subtitles = finalized_subtitles
 
             def is_translation_track(item: Artifact) -> bool:
-                return str((item.metadata_json or {}).get("source_role") or item.role) == "translation"
+                return (
+                    str((item.metadata_json or {}).get("source_role") or item.role)
+                    == "translation"
+                )
 
             def track_details(item: Artifact) -> tuple[str, str, str, bool]:
                 translation_track = is_translation_track(item)
                 track_name = "translation" if translation_track else "source"
                 language = _effective_subtitle_language(
                     (item.metadata_json or {}).get("language"),
-                    record.target_language if translation_track else record.source_language,
+                    record.target_language
+                    if translation_track
+                    else record.source_language,
                     (
                         settings.get("target_language")
                         if translation_track
@@ -6120,7 +7741,9 @@ class WorkflowHandlers:
 
             if export_mode in {"subtitles", "text"}:
                 if not selected_subtitles:
-                    raise ValueError("No subtitle artifact is available for this export.")
+                    raise ValueError(
+                        "No subtitle artifact is available for this export."
+                    )
                 for index, item in enumerate(selected_subtitles, start=1):
                     progress(
                         0.35 + 0.5 * ((index - 1) / len(selected_subtitles)),
@@ -6129,18 +7752,26 @@ class WorkflowHandlers:
                     _artifact, subtitle_path = self._resolve_input(item.id)
                     track_name, language, title, _default = track_details(item)
                     if export_mode == "text":
-                        destination = _next_available_path(output_dir / f"{export_name}_{track_name}.txt")
+                        destination = _next_available_path(
+                            output_dir / f"{export_name}_{track_name}.txt"
+                        )
                         destination.write_text(
-                            concatenate_subtitle_text(subtitle_path.read_text(encoding="utf-8-sig")),
+                            concatenate_subtitle_text(
+                                subtitle_path.read_text(encoding="utf-8-sig")
+                            ),
                             encoding="utf-8",
                         )
                         kind = "text"
                         role = f"export_text_{track_name}"
                     else:
-                        destination = _next_available_path(output_dir / f"{export_name}_{track_name}.{subtitle_format}")
+                        destination = _next_available_path(
+                            output_dir / f"{export_name}_{track_name}.{subtitle_format}"
+                        )
                         if subtitle_format == "vtt":
                             destination.write_text(
-                                srt_to_vtt(subtitle_path.read_text(encoding="utf-8-sig")),
+                                srt_to_vtt(
+                                    subtitle_path.read_text(encoding="utf-8-sig")
+                                ),
                                 encoding="utf-8",
                             )
                         else:
@@ -6155,7 +7786,13 @@ class WorkflowHandlers:
                             session_id=session_id,
                             parent_ids=[item.id],
                             settings=settings,
-                            metadata={"language": language, "title": title, "source_role": (item.metadata_json or {}).get("source_role")},
+                            metadata={
+                                "language": language,
+                                "title": title,
+                                "source_role": (item.metadata_json or {}).get(
+                                    "source_role"
+                                ),
+                            },
                         )
                     )
                     progress(
@@ -6168,16 +7805,19 @@ class WorkflowHandlers:
                 working_video = media_path
                 audio_parent_ids: list[str] = [upload_media.id]
                 temporary_video: Path | None = None
-                ffmpeg_executable = str(os.environ.get("PANDRATOR_FFMPEG_EXE") or shutil.which("ffmpeg") or "ffmpeg")
+                ffmpeg_executable = str(
+                    os.environ.get("PANDRATOR_FFMPEG_EXE")
+                    or shutil.which("ffmpeg")
+                    or "ffmpeg"
+                )
                 video_audio_bitrate = str(
                     settings.get("burn_audio_bitrate") or "192k"
                 ).strip()
-                video_audio_codec = str(
-                    settings.get("burn_audio_codec") or "copy"
-                ).strip().lower()
+                video_audio_codec = (
+                    str(settings.get("burn_audio_codec") or "copy").strip().lower()
+                )
                 if (
-                    audio_mode in {"dubbed", "mixed"}
-                    or video_audio_codec == "aac"
+                    audio_mode in {"dubbed", "mixed"} or video_audio_codec == "aac"
                 ) and not re.fullmatch(
                     r"[1-9][0-9]*(?:[kKmM])?",
                     video_audio_bitrate,
@@ -6185,7 +7825,9 @@ class WorkflowHandlers:
                     raise ValueError("Video AAC bitrate must look like 192k or 2M.")
                 if dubbing_audio and audio_mode in {"dubbed", "mixed"}:
                     _audio_record, audio_path = self._resolve_input(dubbing_audio.id)
-                    audio_video = output_dir / f".{record.storage_key}-audio-{new_id()}.mp4"
+                    audio_video = (
+                        output_dir / f".{record.storage_key}-audio-{new_id()}.mp4"
+                    )
                     if audio_mode == "dubbed":
                         command = build_replace_video_audio_command(
                             str(media_path),
@@ -6218,9 +7860,9 @@ class WorkflowHandlers:
                 video_transcode = bool(settings.get("video_transcode")) or (
                     subtitle_mode == "burned" and bool(selected_subtitles)
                 )
-                video_encoder = str(
-                    settings.get("burn_video_encoder") or "libx264"
-                ).strip().lower()
+                video_encoder = (
+                    str(settings.get("burn_video_encoder") or "libx264").strip().lower()
+                )
                 output_video_resolution = (
                     normalize_video_resolution(
                         settings.get("burn_video_resolution", "source")
@@ -6234,19 +7876,44 @@ class WorkflowHandlers:
                 render_audio_codec = (
                     video_audio_codec if audio_mode == "source" else "copy"
                 )
-                variant = f"_{subtitle_mode}" if subtitle_mode in {"soft", "burned"} and selected_subtitles else ""
-                destination = _next_available_path(output_dir / f"{export_name}{variant}.mp4")
-                render_destination = output_dir / f".{record.storage_key}-render-{new_id()}.mp4"
+                variant = (
+                    f"_{subtitle_mode}"
+                    if subtitle_mode in {"soft", "burned"} and selected_subtitles
+                    else ""
+                )
+                destination = _next_available_path(
+                    output_dir / f"{export_name}{variant}.mp4"
+                )
+                render_destination = (
+                    output_dir / f".{record.storage_key}-render-{new_id()}.mp4"
+                )
                 video_track_artifacts: list[Artifact] = []
                 try:
                     if subtitle_mode == "soft" and selected_subtitles:
                         tracks = []
                         for index, item in enumerate(selected_subtitles, start=1):
                             _subtitle, subtitle_path = self._resolve_input(item.id)
-                            track_name, language, title, is_default = track_details(item)
-                            tracks.append({"path": str(subtitle_path), "language": language, "title": title, "default": is_default})
-                            vtt_path = _next_available_path(output_dir / f"{record.storage_key}_{track_name}_player.vtt")
-                            vtt_path.write_text(srt_to_vtt(subtitle_path.read_text(encoding="utf-8-sig")), encoding="utf-8")
+                            track_name, language, title, is_default = track_details(
+                                item
+                            )
+                            tracks.append(
+                                {
+                                    "path": str(subtitle_path),
+                                    "language": language,
+                                    "title": title,
+                                    "default": is_default,
+                                }
+                            )
+                            vtt_path = _next_available_path(
+                                output_dir
+                                / f"{record.storage_key}_{track_name}_player.vtt"
+                            )
+                            vtt_path.write_text(
+                                srt_to_vtt(
+                                    subtitle_path.read_text(encoding="utf-8-sig")
+                                ),
+                                encoding="utf-8",
+                            )
                             video_track_artifacts.append(
                                 self.artifacts.register(
                                     vtt_path,
@@ -6255,14 +7922,22 @@ class WorkflowHandlers:
                                     session_id=session_id,
                                     parent_ids=[item.id],
                                     settings=settings,
-                                    metadata={"language": language, "title": title, "default": is_default},
+                                    metadata={
+                                        "language": language,
+                                        "title": title,
+                                        "default": is_default,
+                                    },
                                 )
                             )
                             progress(
                                 0.58 + 0.06 * (index / len(selected_subtitles)),
                                 f"Prepared selectable subtitle track {index} of {len(selected_subtitles)}",
                             )
-                        if video_transcode and video_encoder not in ffmpeg_video_encoder_ids(ffmpeg_executable):
+                        if (
+                            video_transcode
+                            and video_encoder
+                            not in ffmpeg_video_encoder_ids(ffmpeg_executable)
+                        ):
                             raise RuntimeError(
                                 f"The selected FFmpeg build does not provide the {video_encoder} video encoder."
                             )
@@ -6275,7 +7950,9 @@ class WorkflowHandlers:
                             video_encoder=video_encoder,
                             video_resolution=output_video_resolution,
                             video_quality=settings.get("burn_video_quality", 18),
-                            video_speed=str(settings.get("burn_video_speed") or "balanced"),
+                            video_speed=str(
+                                settings.get("burn_video_speed") or "balanced"
+                            ),
                             audio_codec=render_audio_codec,
                             audio_bitrate=video_audio_bitrate,
                         )
@@ -6285,16 +7962,25 @@ class WorkflowHandlers:
                             if video_transcode
                             else "Rendering media with selectable subtitles",
                         )
-                        subprocess.run(command, check=True, capture_output=True, text=True)
+                        subprocess.run(
+                            command, check=True, capture_output=True, text=True
+                        )
                     elif subtitle_mode == "burned" and selected_subtitles:
-                        subtitle_paths = [self._resolve_input(item.id)[1] for item in selected_subtitles]
+                        subtitle_paths = [
+                            self._resolve_input(item.id)[1]
+                            for item in selected_subtitles
+                        ]
                         burn_path = subtitle_paths[-1]
                         if len(subtitle_paths) == 2:
                             burn_path = Path(
                                 write_bilingual_ass(
                                     str(subtitle_paths[0]),
                                     str(subtitle_paths[1]),
-                                    str(_next_available_path(output_dir / "bilingual_subtitles.ass")),
+                                    str(
+                                        _next_available_path(
+                                            output_dir / "bilingual_subtitles.ass"
+                                        )
+                                    ),
                                 )
                             )
                             self.artifacts.register(
@@ -6307,32 +7993,54 @@ class WorkflowHandlers:
                             )
                         burn_ffmpeg = resolve_ffmpeg_for_burned_subtitles()
                         if not burn_ffmpeg:
-                            raise RuntimeError("Burned subtitles require an FFmpeg build with the subtitles/libass filter. Install or select Pandrator's bundled FFmpeg, or use soft subtitles.")
+                            raise RuntimeError(
+                                "Burned subtitles require an FFmpeg build with the subtitles/libass filter. Install or select Pandrator's bundled FFmpeg, or use soft subtitles."
+                            )
                         if video_encoder not in ffmpeg_video_encoder_ids(burn_ffmpeg):
-                            raise RuntimeError(f"The selected FFmpeg build does not provide the {video_encoder} video encoder.")
+                            raise RuntimeError(
+                                f"The selected FFmpeg build does not provide the {video_encoder} video encoder."
+                            )
                         command = build_add_subtitles_command(
                             str(working_video),
                             str(burn_path),
                             str(render_destination),
                             subtitle_mode="burned",
-                            subtitle_language=str(settings.get("target_language") or "und"),
+                            subtitle_language=str(
+                                settings.get("target_language") or "und"
+                            ),
                             ffmpeg_executable=burn_ffmpeg,
                             video_encoder=video_encoder,
                             video_resolution=output_video_resolution,
                             video_quality=settings.get("burn_video_quality", 18),
-                            video_speed=str(settings.get("burn_video_speed") or "balanced"),
+                            video_speed=str(
+                                settings.get("burn_video_speed") or "balanced"
+                            ),
                             audio_codec=render_audio_codec,
                             audio_bitrate=video_audio_bitrate,
                         )
                         progress(0.65, "Rendering burned subtitles into video")
                         try:
-                            subprocess.run(command, check=True, capture_output=True, text=True)
+                            subprocess.run(
+                                command, check=True, capture_output=True, text=True
+                            )
                         except subprocess.CalledProcessError as error:
-                            detail = str(error.stderr or error.stdout or "").strip().splitlines()
-                            reason = detail[-1] if detail else "FFmpeg returned a non-zero exit status."
-                            raise RuntimeError(f"Burned-subtitle transcoding with {video_encoder} failed: {reason}") from error
+                            detail = (
+                                str(error.stderr or error.stdout or "")
+                                .strip()
+                                .splitlines()
+                            )
+                            reason = (
+                                detail[-1]
+                                if detail
+                                else "FFmpeg returned a non-zero exit status."
+                            )
+                            raise RuntimeError(
+                                f"Burned-subtitle transcoding with {video_encoder} failed: {reason}"
+                            ) from error
                     elif video_transcode:
-                        if video_encoder not in ffmpeg_video_encoder_ids(ffmpeg_executable):
+                        if video_encoder not in ffmpeg_video_encoder_ids(
+                            ffmpeg_executable
+                        ):
                             raise RuntimeError(
                                 f"The selected FFmpeg build does not provide the {video_encoder} video encoder."
                             )
@@ -6343,16 +8051,28 @@ class WorkflowHandlers:
                             video_encoder=video_encoder,
                             video_resolution=output_video_resolution,
                             video_quality=settings.get("burn_video_quality", 18),
-                            video_speed=str(settings.get("burn_video_speed") or "balanced"),
+                            video_speed=str(
+                                settings.get("burn_video_speed") or "balanced"
+                            ),
                             audio_codec=render_audio_codec,
                             audio_bitrate=video_audio_bitrate,
                         )
                         progress(0.65, "Transcoding video output")
                         try:
-                            subprocess.run(command, check=True, capture_output=True, text=True)
+                            subprocess.run(
+                                command, check=True, capture_output=True, text=True
+                            )
                         except subprocess.CalledProcessError as error:
-                            detail = str(error.stderr or error.stdout or "").strip().splitlines()
-                            reason = detail[-1] if detail else "FFmpeg returned a non-zero exit status."
+                            detail = (
+                                str(error.stderr or error.stdout or "")
+                                .strip()
+                                .splitlines()
+                            )
+                            reason = (
+                                detail[-1]
+                                if detail
+                                else "FFmpeg returned a non-zero exit status."
+                            )
                             raise RuntimeError(
                                 f"Video transcoding with {video_encoder} failed: {reason}"
                             ) from error
@@ -6369,8 +8089,12 @@ class WorkflowHandlers:
                 subtitle_track_metadata = [
                     {
                         "artifact_id": item.id,
-                        "language": str((item.metadata_json or {}).get("language") or "und"),
-                        "title": str((item.metadata_json or {}).get("title") or "Subtitles"),
+                        "language": str(
+                            (item.metadata_json or {}).get("language") or "und"
+                        ),
+                        "title": str(
+                            (item.metadata_json or {}).get("title") or "Subtitles"
+                        ),
                         "default": bool((item.metadata_json or {}).get("default")),
                     }
                     for item in video_track_artifacts
@@ -6383,7 +8107,9 @@ class WorkflowHandlers:
                         kind="export",
                         role="export",
                         session_id=session_id,
-                        parent_ids=audio_parent_ids + [item.id for item in selected_subtitles] + [item.id for item in video_track_artifacts],
+                        parent_ids=audio_parent_ids
+                        + [item.id for item in selected_subtitles]
+                        + [item.id for item in video_track_artifacts],
                         settings=settings,
                         metadata={
                             "audio_mode": audio_mode,
@@ -6399,13 +8125,17 @@ class WorkflowHandlers:
                             ),
                             "subtitle_tracks": subtitle_track_metadata,
                             "mix": {
-                                "source_gain_db": settings.get("mix_source_gain_db", 0.0),
+                                "source_gain_db": settings.get(
+                                    "mix_source_gain_db", 0.0
+                                ),
                                 "voice_gain_db": settings.get("mix_voice_gain_db", 0.0),
                                 "voice_lufs": settings.get("mix_voice_lufs", -16.0),
                                 "ducking": settings.get("mix_ducking", "strong"),
                                 "attack_ms": settings.get("mix_attack_ms", 25),
                                 "release_ms": settings.get("mix_release_ms", 350),
-                            } if audio_mode == "mixed" else None,
+                            }
+                            if audio_mode == "mixed"
+                            else None,
                         },
                     )
                 )
@@ -6419,7 +8149,9 @@ class WorkflowHandlers:
                     )
                     _artifact, item_path = self._resolve_input(item.id)
                     track_name, language, title, _default = track_details(item)
-                    destination = _next_available_path(output_dir / f"{export_name}_{track_name}.srt")
+                    destination = _next_available_path(
+                        output_dir / f"{export_name}_{track_name}.srt"
+                    )
                     shutil.copy2(item_path, destination)
                     produced.append(
                         self.artifacts.register(
@@ -6429,7 +8161,13 @@ class WorkflowHandlers:
                             session_id=session_id,
                             parent_ids=[item.id],
                             settings=settings,
-                            metadata={"language": language, "title": title, "source_role": (item.metadata_json or {}).get("source_role")},
+                            metadata={
+                                "language": language,
+                                "title": title,
+                                "source_role": (item.metadata_json or {}).get(
+                                    "source_role"
+                                ),
+                            },
                         )
                     )
                     progress(
@@ -6438,19 +8176,40 @@ class WorkflowHandlers:
                     )
                 if upload_audio and audio_mode == "source":
                     progress(0.7, "Copying source audio")
-                    _source_record, source_audio_path = self._resolve_input(upload_audio.id)
-                    destination = _next_available_path(output_dir / f"{export_name}{source_audio_path.suffix.lower()}")
+                    _source_record, source_audio_path = self._resolve_input(
+                        upload_audio.id
+                    )
+                    destination = _next_available_path(
+                        output_dir / f"{export_name}{source_audio_path.suffix.lower()}"
+                    )
                     shutil.copy2(source_audio_path, destination)
-                    produced.append(self.artifacts.register(destination, kind="export", role="export_source_audio", session_id=session_id, parent_ids=[upload_audio.id], settings=settings))
+                    produced.append(
+                        self.artifacts.register(
+                            destination,
+                            kind="export",
+                            role="export_source_audio",
+                            session_id=session_id,
+                            parent_ids=[upload_audio.id],
+                            settings=settings,
+                        )
+                    )
                 elif dubbing_audio and audio_mode != "source":
                     _artifact, item_path = self._resolve_input(dubbing_audio.id)
                     if upload_audio and audio_mode == "mixed":
-                        _source_record, source_audio_path = self._resolve_input(upload_audio.id)
+                        _source_record, source_audio_path = self._resolve_input(
+                            upload_audio.id
+                        )
                         output_format = str(settings.get("format") or "wav").lower()
                         if output_format not in {"wav", "mp3", "opus", "flac"}:
                             output_format = "wav"
-                        destination = _next_available_path(output_dir / f"{export_name}_mixed.{output_format}")
-                        ffmpeg_executable = str(os.environ.get("PANDRATOR_FFMPEG_EXE") or shutil.which("ffmpeg") or "ffmpeg")
+                        destination = _next_available_path(
+                            output_dir / f"{export_name}_mixed.{output_format}"
+                        )
+                        ffmpeg_executable = str(
+                            os.environ.get("PANDRATOR_FFMPEG_EXE")
+                            or shutil.which("ffmpeg")
+                            or "ffmpeg"
+                        )
                         command = build_mix_audio_command(
                             str(source_audio_path),
                             str(item_path),
@@ -6464,19 +8223,34 @@ class WorkflowHandlers:
                             ffmpeg_executable=ffmpeg_executable,
                         )
                         progress(0.7, "Mixing standalone audio")
-                        subprocess.run(command, check=True, capture_output=True, text=True)
+                        subprocess.run(
+                            command, check=True, capture_output=True, text=True
+                        )
                         parents = [upload_audio.id, dubbing_audio.id]
                         role = "export_mixed_audio"
                     else:
                         progress(0.7, "Copying generated speech audio")
-                        destination = _next_available_path(output_dir / f"{export_name}{item_path.suffix.lower()}")
+                        destination = _next_available_path(
+                            output_dir / f"{export_name}{item_path.suffix.lower()}"
+                        )
                         shutil.copy2(item_path, destination)
                         parents = [dubbing_audio.id]
                         role = f"export_{dubbing_audio.role}"
-                    produced.append(self.artifacts.register(destination, kind="export", role=role, session_id=session_id, parent_ids=parents, settings=settings))
+                    produced.append(
+                        self.artifacts.register(
+                            destination,
+                            kind="export",
+                            role=role,
+                            session_id=session_id,
+                            parent_ids=parents,
+                            settings=settings,
+                        )
+                    )
                     progress(0.92, "Standalone audio export ready")
                 if not produced:
-                    raise ValueError("No subtitle or audio artifact is available to export.")
+                    raise ValueError(
+                        "No subtitle or audio artifact is available to export."
+                    )
         with self.database.session() as session:
             for produced_artifact in produced:
                 managed = session.get(Artifact, produced_artifact.id)
@@ -6486,18 +8260,30 @@ class WorkflowHandlers:
                     **dict(managed.metadata_json or {}),
                     "output_settings": output_settings_snapshot,
                 }
-        progress(0.98, f"Registered {len(produced)} export artifact{'s' if len(produced) != 1 else ''}")
+        progress(
+            0.98,
+            f"Registered {len(produced)} export artifact{'s' if len(produced) != 1 else ''}",
+        )
         progress(1.0, "Export ready")
-        return {"artifact_ids": [item.id for item in produced], "paths": [item.relative_path for item in produced]}
+        return {
+            "artifact_ids": [item.id for item in produced],
+            "paths": [item.relative_path for item in produced],
+        }
 
     def apply_pdf_edits(self, payload, progress, cancel_event):
         from .pdf_editor import PdfEditPlan, apply_pdf_edit_plan
 
-        source_artifact, source_path = self._resolve_input(str(payload.get("source_artifact_id") or ""))
+        source_artifact, source_path = self._resolve_input(
+            str(payload.get("source_artifact_id") or "")
+        )
         if source_path.suffix.lower() != ".pdf":
             raise ValueError("PDF edit jobs require a PDF source artifact.")
-        session_id = str(payload.get("session_id") or source_artifact.session_id or "") or None
-        output_dir = self._session_dir(session_id) if session_id else self.paths.artifacts
+        session_id = (
+            str(payload.get("session_id") or source_artifact.session_id or "") or None
+        )
+        output_dir = (
+            self._session_dir(session_id) if session_id else self.paths.artifacts
+        )
         output_path = output_dir / f"{source_path.stem}_edited.pdf"
         suffix = 2
         while output_path.exists():
@@ -6520,7 +8306,9 @@ class WorkflowHandlers:
             role="pdf_edited",
             session_id=session_id,
             parent_ids=[source_artifact.id],
-            metadata={"provenance_manifest": self.paths.relative_managed_path(manifest)},
+            metadata={
+                "provenance_manifest": self.paths.relative_managed_path(manifest)
+            },
         )
         manifest_artifact = self.artifacts.register(
             manifest,
@@ -6541,7 +8329,11 @@ class WorkflowHandlers:
 
         session_id = str(payload.get("session_id") or "")
         record = self._session_record(session_id)
-        destination = self._session_dir(session_id) / "exports" / f"{record.storage_key}.pandrator-session"
+        destination = (
+            self._session_dir(session_id)
+            / "exports"
+            / f"{record.storage_key}.pandrator-session"
+        )
         progress(0.02, "Preparing session bundle export")
         result = SessionBundleService(self.database, self.paths).export_bundle(
             session_id,
@@ -6552,14 +8344,18 @@ class WorkflowHandlers:
         if cancel_event.is_set():
             return {}
         progress(0.97, "Registering session bundle")
-        artifact = self.artifacts.register(destination, kind="bundle", role="session_bundle", session_id=session_id)
+        artifact = self.artifacts.register(
+            destination, kind="bundle", role="session_bundle", session_id=session_id
+        )
         progress(1.0, "Session bundle ready")
         return {**result, "artifact_id": artifact.id}
 
     def import_session_bundle(self, payload, progress, cancel_event):
         from .bundles import SessionBundleService
 
-        _artifact, source = self._resolve_input(str(payload.get("source_artifact_id") or ""))
+        _artifact, source = self._resolve_input(
+            str(payload.get("source_artifact_id") or "")
+        )
         progress(0.02, "Preparing session bundle import")
         if cancel_event.is_set():
             return {}

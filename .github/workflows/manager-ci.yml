@@ -129,6 +129,17 @@ jobs:
           python scripts/build_manager_appimage.py
           --bootstrap dist/PandratorManagerBootstrap
 
+      - name: Qualify AppImage on the glibc 2.35 release floor
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          docker run --rm \
+            -e APPIMAGE_EXTRACT_AND_RUN=1 \
+            -v "$PWD:/workspace:ro" \
+            --workdir /workspace \
+            ubuntu:22.04 \
+            /workspace/dist/PandratorManager-x86_64.AppImage self-check
+
       - name: Exercise bootstrap, signed handoff, and uninstall
         run: python scripts/qualify_manager_lifecycle.py
 
