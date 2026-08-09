@@ -1,10 +1,9 @@
-"""Command-line and GUI application entry points."""
+"""Legacy headless installer compatibility entry points."""
 
 import argparse
 import logging
 import os
 import sys
-import tempfile
 
 from .catalog import COMPONENTS, PACKAGING_COMPONENT_PATHS
 from .models import DEFAULT_QWEN_MODEL_SIZE
@@ -13,10 +12,10 @@ from .platforms import (
     normalized_system,
     pixi_binary_name,
     pixi_manifest_platform,
-    resolve_launcher_workspace,
 )
 from .service import HeadlessInstaller
 from .subprocess_env import external_subprocess_environment
+
 
 def parse_headless_components(raw_components):
     parsed_components = set()
@@ -26,14 +25,15 @@ def parse_headless_components(raw_components):
             parsed_components.add(normalized)
     return parsed_components
 
+
 def parse_launcher_cli_args(argv=None):
     parser = argparse.ArgumentParser(
-        description="Pandrator installer GUI and headless automation entrypoint.",
+        description="Pandrator headless installer compatibility entry point.",
     )
     parser.add_argument(
         '--headless-install',
         action='store_true',
-        help='Run installation without showing the GUI.',
+        help='Run legacy source preparation without a user interface.',
     )
     parser.add_argument(
         '--workspace',
@@ -86,19 +86,15 @@ def parse_launcher_cli_args(argv=None):
     parser.add_argument(
         '--self-check',
         action='store_true',
-        help='Validate packaged launcher imports and component metadata, then exit.',
-    )
-    parser.add_argument(
-        '--gui-smoke-check',
-        action='store_true',
-        help='Instantiate the installer GUI offscreen, then exit.',
+        help='Validate compatibility entry point imports and component metadata, then exit.',
     )
     parser.add_argument(
         '--tls-self-check',
         action='store_true',
-        help='Verify packaged OpenSSL and CA certificates with an HTTPS request, then exit.',
+        help='Verify OpenSSL and CA certificates with an HTTPS request, then exit.',
     )
     return parser.parse_args(argv)
+
 
 def run_headless_install_from_cli(args):
     if not args.workspace:
@@ -129,373 +125,6 @@ def run_headless_install_from_cli(args):
         if not completed:
             installer.shutdown_apps()
         installer.shutdown_logging()
-
-def run_gui_app(args=None):
-    # Import needed modules
-    from PyQt6.QtGui import QColor, QPalette
-    from PyQt6.QtWidgets import QApplication
-    from .gui.main_window import PandratorInstaller
-
-    # Set up application style
-    app = QApplication(sys.argv)
-    app.setStyle('Fusion')  # Use Fusion style for a modern look
-
-    # Define pastel purple color
-    pastel_purple = QColor('#7e57c2')  # Main button color
-    pastel_purple_hover = QColor('#9575cd')  # Lighter for hover
-    pastel_purple_pressed = QColor('#5e35b1')  # Darker for pressed state
-
-    # Create dark palette
-    dark_palette = QPalette()
-    # Set colors using the QPalette.ColorRole enum
-    dark_palette.setColor(QPalette.ColorRole.Window, QColor(45, 45, 48))
-    dark_palette.setColor(QPalette.ColorRole.WindowText, QColor(255, 255, 255))
-    dark_palette.setColor(QPalette.ColorRole.Base, QColor(30, 30, 30))
-    dark_palette.setColor(QPalette.ColorRole.AlternateBase, QColor(45, 45, 48))
-    dark_palette.setColor(QPalette.ColorRole.ToolTipBase, QColor(255, 255, 255))
-    dark_palette.setColor(QPalette.ColorRole.ToolTipText, QColor(255, 255, 255))
-    dark_palette.setColor(QPalette.ColorRole.Text, QColor(255, 255, 255))
-    dark_palette.setColor(QPalette.ColorRole.Button, QColor(45, 45, 48))
-    dark_palette.setColor(QPalette.ColorRole.ButtonText, QColor(255, 255, 255))
-    dark_palette.setColor(QPalette.ColorRole.BrightText, QColor(255, 0, 0))
-    dark_palette.setColor(QPalette.ColorRole.Link, QColor(0, 155, 255))
-    dark_palette.setColor(QPalette.ColorRole.Highlight, pastel_purple)  # Changed to match buttons
-    dark_palette.setColor(QPalette.ColorRole.HighlightedText, QColor(255, 255, 255))
-    app.setPalette(dark_palette)
-
-    # Set stylesheet for custom styling with pastel purple buttons and clearer disabled states
-    app.setStyleSheet(f"""
-        QMainWindow {{
-            background-color: #2D2D30;
-        }}
-        QWidget {{
-            background-color: #2D2D30;
-            color: #FFFFFF;
-        }}
-        QLabel,
-        QCheckBox {{
-            background-color: transparent;
-        }}
-        QScrollArea#installerScrollArea,
-        QScrollArea#installerScrollArea > QWidget > QWidget {{
-            background-color: #29292C;
-            border: none;
-        }}
-        QLabel#titleLabel {{
-            color: #F4F1FA;
-        }}
-        QLabel#introLabel {{
-            color: #D0CDD7;
-            padding: 2px 4px;
-        }}
-        QLabel#mutedLabel {{
-            color: #AAA6B2;
-            font-size: 11px;
-        }}
-        QLabel#voiceCapabilityBadge[supported="true"] {{
-            background-color: #48405E;
-            border: 1px solid #695B88;
-            border-radius: 8px;
-            color: #E2D8F3;
-            font-size: 10px;
-            font-weight: bold;
-            padding: 3px 7px;
-        }}
-        QLabel#voiceCapabilityBadge[supported="false"] {{
-            background-color: #2D2D31;
-            border: 1px solid #3F3E44;
-            border-radius: 8px;
-            color: #737078;
-            font-size: 10px;
-            padding: 3px 7px;
-        }}
-        QLabel#backendRuntimeStatus {{
-            background-color: #264A3D;
-            border: 1px solid #3D8268;
-            border-radius: 8px;
-            color: #BDF2DA;
-            font-size: 10px;
-            font-weight: bold;
-            padding: 3px 8px;
-        }}
-        QLabel#statusLabel {{
-            background-color: #28282B;
-            border: 1px solid #414147;
-            border-radius: 7px;
-            color: #D9D5E0;
-            padding: 6px 10px;
-        }}
-        QFrame#optionCard {{
-            background-color: #343438;
-            border: 1px solid #48484F;
-            border-radius: 11px;
-        }}
-        QFrame#optionCard:hover {{
-            background-color: #37363B;
-            border-color: #635A77;
-        }}
-        QFrame#optionCard[expanded="true"] {{
-            background-color: #37363B;
-            border-color: #766795;
-        }}
-        QFrame#optionCardSummary {{
-            background-color: transparent;
-            border: none;
-        }}
-        QFrame#optionCardDetails {{
-            background-color: #303035;
-            border: none;
-            border-top: 1px solid #48474E;
-            border-bottom-left-radius: 10px;
-            border-bottom-right-radius: 10px;
-        }}
-        QLabel#optionCardEyebrow {{
-            color: #A594C3;
-            font-size: 9px;
-            font-weight: bold;
-        }}
-        QLabel#optionCardLanguages,
-        QLabel#optionCardModels {{
-            color: #DDD9E2;
-            font-size: 11px;
-        }}
-        QToolButton#optionCardChevron {{
-            background-color: transparent;
-            border: none;
-            border-radius: 7px;
-            color: #B4A8C8;
-            min-width: 24px;
-            min-height: 24px;
-            padding: 2px;
-        }}
-        QToolButton#optionCardChevron:hover {{
-            background-color: #45404E;
-        }}
-        QFrame#installLocationRow {{
-            background-color: #303034;
-            border: 1px solid #45454B;
-            border-radius: 9px;
-        }}
-        QLabel#installLocationHeading {{
-            color: #9F90B9;
-            font-size: 9px;
-            font-weight: bold;
-        }}
-        QLabel#installLocationPath {{
-            color: #D5D1D9;
-            font-size: 11px;
-            padding-left: 6px;
-        }}
-        QPushButton#linkButton {{
-            background-color: transparent;
-            border: none;
-            color: #C9B4ED;
-            font-weight: bold;
-            padding: 4px 7px;
-        }}
-        QPushButton#linkButton:hover {{
-            background-color: #3C3745;
-            border: none;
-            color: #FFFFFF;
-        }}
-        QPushButton {{
-            background-color: #49494F;
-            color: white;
-            border: 1px solid #5A5A62;
-            padding: 8px 16px;
-            border-radius: 6px;
-        }}
-        QPushButton:hover {{
-            background-color: #585860;
-            border-color: #6B6B75;
-        }}
-        QPushButton:pressed {{
-            background-color: #414147;
-        }}
-        QPushButton:disabled {{
-            background-color: #38383C;
-            border-color: #414147;
-            color: #77777E;
-        }}
-        QPushButton#primaryButton,
-        QPushButton#installButton {{
-            background-color: {pastel_purple.name()};
-            border-color: {pastel_purple.name()};
-            font-weight: bold;
-        }}
-        QPushButton#primaryButton:hover,
-        QPushButton#installButton:hover {{
-            background-color: {pastel_purple_hover.name()};
-            border-color: {pastel_purple_hover.name()};
-        }}
-        QPushButton#primaryButton:pressed,
-        QPushButton#installButton:pressed {{
-            background-color: {pastel_purple_pressed.name()};
-            border-color: {pastel_purple_pressed.name()};
-        }}
-        QPushButton#installButton:disabled {{
-            background-color: #44444A;
-            border-color: #52525A;
-            color: #FFFFFF;
-        }}
-        QPushButton#githubButton {{
-            background-color: transparent;
-            border: 1px solid transparent;
-            color: #D8C9F1;
-            padding: 6px 9px;
-        }}
-        QPushButton#githubButton:hover {{
-            background-color: #3A3543;
-            border-color: #554A68;
-            color: #FFFFFF;
-        }}
-        QPushButton#githubButton:pressed {{
-            background-color: #302B38;
-        }}
-        QCheckBox {{
-            spacing: 8px;
-        }}
-        QCheckBox:disabled {{
-            color: #8A8A8A;
-        }}
-        QCheckBox::indicator {{
-            width: 16px;
-            height: 16px;
-            border: 1px solid #85858D;
-            border-radius: 4px;
-        }}
-        QCheckBox::indicator:checked {{
-            background-color: {pastel_purple.name()};
-            border: 1px solid {pastel_purple_hover.name()};
-        }}
-        QCheckBox::indicator:unchecked {{
-            background-color: #29292D;
-            border: 1px solid #85858D;
-        }}
-        QCheckBox::indicator:disabled {{
-            border: 1px solid #7A7A7A;
-            background-color: transparent;
-        }}
-        QCheckBox::indicator:checked:disabled {{
-            background-color: #544372;
-            border: 1px solid #7A7A7A;
-        }}
-        QCheckBox::indicator:unchecked:disabled {{
-            background-color: transparent;
-            border: 1px solid #7A7A7A;
-        }}
-        QGroupBox {{
-            background-color: #303034;
-            border: 1px solid #45454B;
-            border-radius: 9px;
-            font-weight: bold;
-            margin-top: 14px;
-            padding-top: 16px;
-        }}
-        QGroupBox::title {{
-            subcontrol-origin: margin;
-            subcontrol-position: top left;
-            padding: 0 7px;
-            color: #D6C8EE;
-        }}
-        QTabWidget::pane {{
-            background-color: #29292C;
-            border: 1px solid #414147;
-            border-radius: 8px;
-        }}
-        QTabBar::tab {{
-            background-color: #2D2D30;
-            color: #FFFFFF;
-            border: 1px solid #414147;
-            border-bottom: none;
-            border-top-left-radius: 7px;
-            border-top-right-radius: 7px;
-            padding: 9px 20px;
-        }}
-        QTabBar::tab:selected {{
-            background-color: {pastel_purple.name()};
-        }}
-        QTabBar::tab:hover:!selected {{
-            background-color: #3D3D40;
-        }}
-        QProgressBar {{
-            background-color: #29292D;
-            border: 1px solid #414147;
-            border-radius: 4px;
-            text-align: center;
-            height: 7px;
-        }}
-        QProgressBar::chunk {{
-            background-color: {pastel_purple.name()};
-            border-radius: 3px;
-        }}
-        QScrollBar:vertical {{
-            background: transparent;
-            border: none;
-            margin: 2px;
-            width: 10px;
-        }}
-        QScrollBar:horizontal {{
-            background: transparent;
-            border: none;
-            height: 10px;
-            margin: 2px;
-        }}
-        QScrollBar::handle:vertical {{
-            background-color: #5B5B63;
-            border-radius: 4px;
-            min-height: 32px;
-        }}
-        QScrollBar::handle:horizontal {{
-            background-color: #5B5B63;
-            border-radius: 4px;
-            min-width: 32px;
-        }}
-        QScrollBar::handle:hover {{
-            background-color: #777780;
-        }}
-        QScrollBar::add-line,
-        QScrollBar::sub-line {{
-            background: transparent;
-            border: none;
-            height: 0px;
-            width: 0px;
-        }}
-        QScrollBar::add-page,
-        QScrollBar::sub-page {{
-            background: transparent;
-        }}
-    """)
-
-    # Create and show the main window
-    workspace = resolve_launcher_workspace(args.workspace if args else None)
-    window = PandratorInstaller(working_dir=workspace)
-    window.show()
-
-    return app.exec()
-
-
-def run_gui_smoke_check(args=None):
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-
-    from PyQt6.QtWidgets import QApplication
-    from .gui.main_window import PandratorInstaller
-
-    app = QApplication.instance() or QApplication(["pandrator-installer-gui-smoke"])
-    with tempfile.TemporaryDirectory(prefix="pandrator-gui-smoke-") as temp_dir:
-        workspace_value = args.workspace if args and args.workspace else temp_dir
-        workspace = resolve_launcher_workspace(workspace_value)
-        window = PandratorInstaller(
-            working_dir=workspace,
-            skip_space_warning=True,
-        )
-        window.show()
-        app.processEvents()
-        window.close()
-        window.shutdown_apps()
-
-    print("Pandrator installer GUI smoke-check passed.")
-    return 0
 
 
 def run_self_check():
@@ -584,7 +213,7 @@ def run_self_check():
 
 
 def run_tls_self_check(url="https://github.com/"):
-    """Verify that the packaged runtime can complete a trusted TLS request."""
+    """Verify that the compatibility runtime can complete a trusted TLS request."""
 
     import ssl
     import urllib.request
@@ -620,8 +249,6 @@ def main(argv=None):
         return run_self_check()
     if cli_args.tls_self_check:
         return run_tls_self_check()
-    if cli_args.gui_smoke_check:
-        return run_gui_smoke_check(cli_args)
     if cli_args.headless_install:
         try:
             run_headless_install_from_cli(cli_args)
@@ -629,4 +256,10 @@ def main(argv=None):
             print(f"Headless installation failed: {error}")
             return 1
         return 0
-    return run_gui_app(cli_args)
+
+    print(
+        "No installer command specified. Use --headless-install for legacy source preparation "
+        "or pandrator-installer --help for lifecycle commands.",
+        file=sys.stderr,
+    )
+    return 2

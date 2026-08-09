@@ -263,23 +263,32 @@ libraries or providers are involved.
 
 ## Running from source
 
-Packaged Manager releases are the easiest way to use Pandrator. Development
-from source requires Python 3.11 or 3.12, Node.js 24, and
-[Pixi](https://pixi.sh/):
+Packaged Manager releases are the easiest way to use Pandrator. For source
+development, install [Pixi](https://pixi.sh/) and use the committed lockfile:
 
 ```bash
 git clone https://github.com/lukaszliniewicz/Pandrator.git
 cd Pandrator
-pixi install
-pixi run -e web-build web-build
+pixi install --locked
+pixi install --environment web-build --locked
+pixi run --environment web-build web-build
 pixi run serve-web
 ```
 
-Run the worker in a second terminal:
+The default (`dev`) environment supplies Python 3.11, the editable workspace
+packages, and development tools. `web-build` supplies the locked Node.js toolchain; its
+`web-build` task uses `npm ci`. Run the worker in a second terminal:
 
 ```bash
 pixi run run-worker
 ```
+
+### Test lanes
+
+Validate the test-lane manifest with `pixi run check-test-lanes`.
+`test-fast` runs the measured fast lane with two file-affinity workers;
+`test-full` is the authoritative serial suite. Use `test-profile` for the
+serial suite with the 30 slowest tests reported.
 
 Use `pandrator --help` for command-line session, workflow, provider, voice,
 export, authentication, migration, and diagnostic commands. Add `--json` when

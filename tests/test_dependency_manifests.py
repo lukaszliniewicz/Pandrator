@@ -19,7 +19,7 @@ class DependencyManifestTests(unittest.TestCase):
 
         self.assertEqual(
             manifest["pypi-dependencies"]["pandrator"],
-            {"path": ".", "editable": True},
+            {"path": ".", "editable": True, "extras": ["dev"]},
         )
         conda_dependencies = set(manifest["dependencies"])
         self.assertTrue(

@@ -2,13 +2,14 @@
 name = "pandrator"
 channels = ["conda-forge"]
 platforms = ["win-64", "linux-64"]
+requires-pixi = "==0.72.0"
 
 [dependencies]
 python = "3.11.*"
 ffmpeg = "*"
 
 [pypi-dependencies]
-pandrator = { path = ".", editable = true }
+pandrator = { path = ".", editable = true, extras = ["dev"] }
 
 [tasks]
 test-dubbing = "python -m unittest tests.test_dubbing_subtitle_logic tests.test_dubbing_speech_blocks_integration tests.test_dubbing_llm_correction tests.test_dubbing_llm_translation tests.test_dubbing_transcription tests.test_dubbing_audio_sync tests.test_dubbing_boundary_correction tests.test_dubbing_manual_timing tests.test_dubbing_run_usage tests.test_dubbing_artifacts tests.test_dubbing_credentials tests.test_dubbing_settings tests.test_llm_handler tests.test_state_db_handler"
@@ -19,32 +20,35 @@ generate-web-contract = "python scripts/generate_web_contract.py"
 check-web-contract = "python scripts/generate_web_contract.py && npm --prefix web run generate-api && git diff --exit-code -- openapi.json web/src/lib/api.generated.ts"
 generate-requirements = "python scripts/generate_requirements.py"
 check-requirements = "python scripts/generate_requirements.py --check"
+check-test-lanes = "python scripts/test_lanes.py check"
+test-fast = { cmd = "python scripts/test_lanes.py run fast-xdist", depends-on = ["check-test-lanes"] }
+test-full = { cmd = "python -m pytest -q tests", depends-on = ["check-test-lanes"] }
+test-profile = { cmd = "python -m pytest -q tests --durations=30 --durations-min=0.5", depends-on = ["check-test-lanes"] }
 
 [feature.smoke.tasks]
 smoke-dubbing-local = "python scripts/dubbing_live_smoke.py"
 
-[feature.installer-build.pypi-dependencies]
-PyInstaller = "==6.20.0"
-PyQt6 = "==6.7.1"
-requests = "*"
-psutil = "*"
-dulwich = "*"
-certifi = "*"
-packaging = "*"
-cryptography = ">=43,<46"
+[feature.dev.dependencies]
+packaging = ">=24,<26"
 
-[feature.installer-build.tasks]
-build-installer = "python scripts/build_installer.py"
+[feature.dev.pypi-dependencies]
+pandrator-manager = { path = "./pandrator_manager", editable = true, extras = ["dev"] }
+pandrator-mcp = { path = "./pandrator_mcp", editable = true, extras = ["dev"] }
+pandrator-installer = { path = "./pandrator_installer", editable = true }
+mypy = ">=1.17,<2"
+vulture = ">=2.14,<3"
+pydeps = ">=3,<4"
 
 [feature.web-build.dependencies]
 nodejs = ">=24,<25"
 
 [feature.web-build.tasks]
-web-install = { cmd = "npm install", cwd = "web" }
+web-install = { cmd = "npm ci", cwd = "web" }
 web-check = { cmd = "npm run check", cwd = "web", depends-on = ["web-install"] }
 web-build = { cmd = "npm run build", cwd = "web", depends-on = ["web-install"] }
 
 [environments]
+default = ["dev"]
+dev = ["dev"]
 smoke = ["smoke"]
-installer-build = ["installer-build"]
 web-build = ["web-build"]

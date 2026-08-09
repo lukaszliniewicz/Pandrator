@@ -1,4 +1,4 @@
-"""Progress reporting adapters for GUI workers and headless runs."""
+"""Progress reporting adapters for installer operations and headless runs."""
 
 from __future__ import annotations
 

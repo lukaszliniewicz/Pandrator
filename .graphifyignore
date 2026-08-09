@@ -1,4 +1,5 @@
 pandrator/web/static/
 web/.svelte-kit/
 web/node_modules/
+web/tests/__screenshots__/
 graphify-out/

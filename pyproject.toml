@@ -46,7 +46,9 @@ ocr = ["onnxruntime>=1.20,<2", "paddleocr==3.7.0"]
 text-normalization = ["nemo-text-processing==1.2.0"]
 credential-stores = ["keyring>=25,<26"]
 dev = [
+  "build>=1.2,<2",
   "pytest>=8.3,<9",
+  "pytest-xdist==3.8.0",
 ]
 
 [project.scripts]
@@ -67,4 +69,4 @@ include = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-
+addopts = "--strict-markers"

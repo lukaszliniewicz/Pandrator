@@ -185,6 +185,73 @@ class InstallerUpdateMigrationTests(unittest.TestCase):
             installer.ensure_update_runtime_stopped(os.path.abspath("C:/Pandrator"))
 
     @patch("pandrator_installer.components.psutil.process_iter")
+    def test_process_enumeration_retries_an_iterator_failure(self, process_iter):
+        def disappearing_processes():
+            yield from ()
+            raise FileNotFoundError("process disappeared during enumeration")
+
+        installation_root = os.path.abspath("C:/Pandrator")
+        process_iter.side_effect = [
+            disappearing_processes(),
+            [
+                SimpleNamespace(
+                    pid=1234,
+                    info={
+                        "name": "python.exe",
+                        "exe": os.path.join(
+                            installation_root,
+                            "envs",
+                            "pandrator_installer",
+                            "python.exe",
+                        ),
+                        "create_time": 100.0,
+                    },
+                )
+            ],
+        ]
+
+        running = HeadlessInstaller(working_dir="workspace").get_running_installation_processes(
+            installation_root
+        )
+
+        self.assertEqual(2, process_iter.call_count)
+        self.assertEqual(
+            [
+                {
+                    "pid": 1234,
+                    "name": ("python.exe",),
+                    "exe": os.path.join(
+                        installation_root,
+                        "envs",
+                        "pandrator_installer",
+                        "python.exe",
+                    ),
+                    "create_time": 100.0,
+                }
+            ],
+            running,
+        )
+
+    @patch("pandrator_installer.components.psutil.process_iter")
+    def test_update_fails_closed_when_process_enumeration_never_completes(self, process_iter):
+        def disappearing_processes():
+            yield from ()
+            raise ProcessLookupError("process disappeared during enumeration")
+
+        process_iter.side_effect = [
+            disappearing_processes(),
+            disappearing_processes(),
+            disappearing_processes(),
+        ]
+
+        with self.assertRaisesRegex(RuntimeError, "Unable to enumerate processes safely"):
+            HeadlessInstaller(working_dir="workspace").ensure_update_runtime_stopped(
+                os.path.abspath("C:/Pandrator")
+            )
+
+        self.assertEqual(3, process_iter.call_count)
+
+    @patch("pandrator_installer.components.psutil.process_iter")
     def test_current_installer_process_never_blocks_its_own_update(self, process_iter):
         installer = HeadlessInstaller(working_dir="workspace")
         process_iter.return_value = [

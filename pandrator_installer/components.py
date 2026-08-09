@@ -1,8 +1,9 @@
 """Component-specific installation and bootstrap operations."""
 
-import logging
+import errno
 import hashlib
 import json
+import logging
 import os
 import platform
 import shutil
@@ -171,7 +172,25 @@ class ComponentOperationsMixin:
         running_processes = []
         seen_pids = set()
 
-        for process in psutil.process_iter(['pid', 'name', 'exe', 'create_time']):
+        processes = None
+        enumeration_error = None
+        for _attempt in range(3):
+            try:
+                processes = list(psutil.process_iter(['pid', 'name', 'exe', 'create_time']))
+                break
+            except (FileNotFoundError, ProcessLookupError) as error:
+                enumeration_error = error
+            except OSError as error:
+                if error.errno != errno.ENOENT:
+                    raise
+                enumeration_error = error
+        if processes is None:
+            raise RuntimeError(
+                "Unable to enumerate processes safely; refusing to determine whether "
+                "Pandrator is running."
+            ) from enumeration_error
+
+        for process in processes:
             try:
                 if process.pid in protected_pids:
                     continue

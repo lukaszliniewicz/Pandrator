@@ -43,13 +43,15 @@
   },
   "dependencies": {
     "@lucide/svelte": "^0.562.0",
-    "pdfjs-dist": "^5.4.394"
+    "pdfjs-dist": "6.2.108"
   },
   "allowScripts": {
     "esbuild@0.28.1": true
   },
   "overrides": {
     "brace-expansion": "5.0.9",
-    "cookie": "0.7.2"
+    "cookie": "0.7.2",
+    "js-yaml": "4.3.1",
+    "nanoid": "3.3.18"
   }
 }

@@ -77,7 +77,7 @@ class OperationsMixin:
                     pass
 
     def initialize_logging(self):
-        """Initialize robust file, console, and GUI logging."""
+        """Initialize robust file and console logging for installer operations."""
         pandrator_path = os.path.join(self.initial_working_dir, 'Pandrator')
         os.makedirs(pandrator_path, exist_ok=True)
         logs_path = os.path.join(pandrator_path, 'Logs')

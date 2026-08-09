@@ -1,4 +1,4 @@
-"""Typed input models shared by GUI and headless installer flows."""
+"""Typed input models shared by installer lifecycle and headless preparation flows."""
 
 from __future__ import annotations
 

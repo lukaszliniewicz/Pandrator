@@ -11,76 +11,202 @@ permissions:
   contents: read
 
 jobs:
-  preview:
+  python-lanes:
+    name: Python tests (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest]
-    runs-on: ${{ matrix.os }}
+        include:
+          - name: ubuntu-fast-xdist
+            os: ubuntu-latest
+            lanes: fast-xdist
+          - name: ubuntu-web-01
+            os: ubuntu-latest
+            lanes: web-01-serial
+          - name: ubuntu-web-02
+            os: ubuntu-latest
+            lanes: web-02-serial
+          - name: ubuntu-web-03
+            os: ubuntu-latest
+            lanes: web-03-serial
+          - name: ubuntu-web-04
+            os: ubuntu-latest
+            lanes: web-04-serial
+          - name: ubuntu-remainder
+            os: ubuntu-latest
+            lanes: >-
+              web-05-serial installer-serial manager-serial mcp-serial
+              system-media-serial
+          - name: windows-fast-xdist
+            os: windows-latest
+            lanes: fast-xdist
+          - name: windows-web-a
+            os: windows-latest
+            lanes: web-01-serial web-03-serial
+          - name: windows-web-b
+            os: windows-latest
+            lanes: web-02-serial web-04-serial
+          - name: windows-remainder
+            os: windows-latest
+            lanes: >-
+              web-05-serial installer-serial manager-serial mcp-serial
+              system-media-serial
+
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            pandrator_installer/pyproject.toml
+            pandrator_manager/pyproject.toml
+            pandrator_mcp/pyproject.toml
+      - name: Install Linux FFmpeg
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install --yes ffmpeg
+      - name: Install Windows FFmpeg
+        if: runner.os == 'Windows'
+        run: choco install ffmpeg --yes --no-progress
+      - name: Install Python lane dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          -e ".[dev]"
+          -e "./pandrator_installer"
+          -e "./pandrator_manager[dev]"
+          -e "./pandrator_mcp[dev]"
+      - name: Check Python test lanes
+        run: python scripts/test_lanes.py check
+      - name: Prepare JUnit result directory
+        run: python -c "from pathlib import Path; Path('test-results').mkdir(exist_ok=True)"
+      - name: Run Python test lanes
+        run: >-
+          python scripts/test_lanes.py run ${{ matrix.lanes }}
+          --junitxml test-results/${{ matrix.name }}.xml
+      - name: Upload Python lane JUnit result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pandrator-web-preview-junit-${{ matrix.name }}
+          path: test-results/${{ matrix.name }}.xml
+          if-no-files-found: warn
+
+  frontend-contract:
+    name: Frontend and contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: pyproject.toml
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
           cache: npm
           cache-dependency-path: web/package-lock.json
-      - name: Install Linux Qt runtime libraries
-        if: runner.os == 'Linux'
+      - name: Install frontend and contract dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes \
-            ffmpeg \
-            libdbus-1-3 \
-            libegl1 \
-            libfontconfig1 \
-            libgl1 \
-            libx11-xcb1 \
-            libxcb-cursor0 \
-            libxcb-icccm4 \
-            libxcb-keysyms1 \
-            libxcb-randr0 \
-            libxcb-render-util0 \
-            libxcb-shape0 \
-            libxcb-xinerama0 \
-            libxcb-xkb1 \
-            libxkbcommon-x11-0
-      - name: Install Windows FFmpeg
-        if: runner.os == 'Windows'
-        run: choco install ffmpeg --yes --no-progress
-      - name: Install Python preview dependencies
-        run: >-
-          python -m pip install -e ".[dev]" -e "./pandrator_installer[gui]"
-          -e "./pandrator_manager" build
-      - name: Install frontend dependencies
-        run: npm ci --prefix web
+          python -m pip install --disable-pip-version-check -e ".[dev]"
+          npm ci --prefix web
       - name: Check generated API contract
-        shell: bash
         run: |
           python scripts/generate_web_contract.py
           npm --prefix web run generate-api
           git diff --exit-code -- openapi.json web/src/lib/api.generated.ts
-      - name: Check and build frontend
+      - name: Run frontend quality checks
+        run: npm --prefix web run quality
+      - name: Build production frontend
+        run: npm --prefix web run build
+      - name: Verify tracked static build output
+        shell: bash
         run: |
-          npm --prefix web run check
-          npm --prefix web run build
-      - name: Run Python tests
-        run: python -m pytest -q tests
-      - name: Install Playwright browsers
-        run: npx --prefix web playwright install chromium firefox
-      - name: Run Chromium and Firefox workflows
-        run: npm --prefix web run test:e2e
-      - name: Build Pandrator and installer wheels
-        run: |
-          python -m build
-          python -m build pandrator_installer
-      - uses: actions/upload-artifact@v4
+          git status --porcelain -- pandrator/web/static
+          test -z "$(git status --porcelain -- pandrator/web/static)"
+
+  e2e:
+    name: E2E (${{ matrix.os }}, ${{ matrix.browser }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        browser: [chromium, firefox]
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
-          name: pandrator-web-preview-${{ matrix.os }}
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install E2E Python dependencies
+        run: python -m pip install --disable-pip-version-check -e ".[dev]"
+      - name: Install frontend dependencies
+        run: npm ci --prefix web
+      - name: Install Linux FFmpeg and selected browser
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes ffmpeg
+          npx --prefix web playwright install --with-deps ${{ matrix.browser }}
+      - name: Install Windows FFmpeg
+        if: runner.os == 'Windows'
+        run: choco install ffmpeg --yes --no-progress
+      - name: Install selected Windows browser
+        if: runner.os == 'Windows'
+        run: npx --prefix web playwright install ${{ matrix.browser }}
+      - name: Run selected Playwright project
+        run: npm --prefix web run test:e2e -- --project=${{ matrix.browser }}
+      - name: Upload Playwright diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pandrator-web-preview-playwright-${{ matrix.os }}-${{ matrix.browser }}
           path: |
-            dist/*.whl
-            pandrator_installer/dist/*.whl
+            web/playwright-report
+            web/test-results
+          if-no-files-found: warn
+
+  wheels:
+    name: Wheels (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            pandrator_installer/pyproject.toml
+      - name: Install build tool
+        run: python -m pip install --disable-pip-version-check build
+      - name: Build Pandrator and headless installer wheels
+        run: |
+          python -m build --wheel --outdir wheel-dist/pandrator .
+          python -m build --wheel --outdir wheel-dist/pandrator-installer pandrator_installer
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: pandrator-web-preview-wheels-${{ matrix.os }}
+          path: wheel-dist/
           if-no-files-found: error

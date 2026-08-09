@@ -86,6 +86,33 @@ test('correction and translation cards expose independent reasoning levels', asy
   expect(created.ok()).toBeTruthy();
   const session = await created.json();
 
+  const translationSource = {
+    artifact_id: 'correction-v1',
+    role: 'correction',
+    stage: 'correction',
+    version: 1,
+    document_id: 'document-correction-v1',
+    revision_id: 'revision-correction-v1',
+    revision: 1,
+    reviewed: false,
+    language: 'de',
+    segment_count: 1,
+    state: 'current',
+    created_at: '2026-01-01T12:00:00Z'
+  };
+  await page.route(
+    `**/api/v1/sessions/${session.id}/subtitles/catalog`,
+    async (route) => {
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          session_id: session.id,
+          items: [translationSource]
+        })
+      });
+    }
+  );
+
   await page.goto(`/sessions/${session.id}`);
   const correctionCard = page
     .getByRole('heading', { name: 'Correct', exact: true })
@@ -140,6 +167,9 @@ test('correction and translation cards expose independent reasoning levels', asy
   dialog = page.getByRole('dialog');
   await expect(dialog.getByLabel('Reasoning level')).toHaveValue('');
   await dialog.getByLabel('Reasoning level').selectOption('low');
+  await dialog
+    .getByLabel('Translate from')
+    .selectOption(translationSource.artifact_id);
   await dialog.getByRole('button', { name: 'Save settings' }).click();
   await expect(dialog).toHaveCount(0);
 

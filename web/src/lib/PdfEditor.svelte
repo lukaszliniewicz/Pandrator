@@ -17,7 +17,7 @@
   import { onMount } from 'svelte';
   import * as pdfjs from 'pdfjs-dist';
   import type { PDFDocumentProxy } from 'pdfjs-dist';
-  import type { PageViewport } from 'pdfjs-dist/types/src/display/display_utils';
+  import type { PageViewport } from 'pdfjs-dist/types/src/display/page_viewport';
   import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
   import GuidedTour from './GuidedTour.svelte';
   import PdfPageThumbnail from './PdfPageThumbnail.svelte';

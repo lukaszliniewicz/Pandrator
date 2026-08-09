@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from scripts.build_linux_appimage import (
+    from scripts.appimage_utils import (
         make_executable,
         normalized_machine,
         resolve_appimagetool,
@@ -22,7 +22,7 @@ try:
         sha256_file,
     )
 except ModuleNotFoundError:  # Direct ``python scripts/...`` execution.
-    from build_linux_appimage import (  # type: ignore[no-redef]
+    from appimage_utils import (  # type: ignore[no-redef]
         make_executable,
         normalized_machine,
         resolve_appimagetool,

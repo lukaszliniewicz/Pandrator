@@ -25,8 +25,6 @@ package_release/
 .eggs/
 pip-wheel-metadata/
 *.spec
-!pandrator_installer_launcher.spec
-!pandrator_installer_launcher_linux.spec
 !pandrator_manager_bootstrap.spec
 
 # Test and tooling caches

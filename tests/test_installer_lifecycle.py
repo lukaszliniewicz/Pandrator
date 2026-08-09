@@ -239,6 +239,15 @@ class InstallerLifecycleTests(unittest.TestCase):
         self.assertTrue(parsed.headless_install)
         self.assertEqual(parsed.components, "whisperx")
 
+    def test_legacy_compatibility_entrypoint_requires_an_explicit_command(self):
+        output = io.StringIO()
+        with contextlib.redirect_stderr(output):
+            code = launcher_main([])
+
+        self.assertEqual(code, 2)
+        self.assertIn("--headless-install", output.getvalue())
+        self.assertIn("pandrator-installer --help", output.getvalue())
+
     def test_successful_legacy_headless_alias_does_not_repeat_process_shutdown(self):
         with tempfile.TemporaryDirectory() as workspace, mock.patch("pandrator_installer.cli.HeadlessInstaller") as factory:
             args = parse_launcher_cli_args([

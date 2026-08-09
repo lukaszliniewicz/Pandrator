@@ -70,7 +70,7 @@ TARGETS = (
     (
         ROOT / "requirements-installer.txt",
         ROOT / "pandrator_installer" / "pyproject.toml",
-        ("gui", "build"),
+        (),
     ),
 )
 

@@ -18,12 +18,6 @@ from pandrator_installer.catalog import (
 )
 from pandrator_installer.cli import parse_launcher_cli_args, run_self_check
 from pandrator_installer.cli import run_tls_self_check
-from pandrator_installer.build_support import (
-    resolve_linux_expat_runtime_library,
-    resolve_openssl_runtime_pair,
-    resolve_windows_ctypes_runtime_library,
-    resolve_windows_runtime_libraries,
-)
 from pandrator_installer.models import (
     InstallSelection,
     LaunchSelection,
@@ -371,90 +365,6 @@ class InstallerArchitectureTests(unittest.TestCase):
 
         get_external_subprocess_env.assert_called_once_with()
         self.assertIs(run.call_args.kwargs["env"], sanitized_environment)
-
-    def test_appimage_openssl_pair_supports_lib64_and_rejects_split_pairs(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            lib = root / "lib"
-            lib64 = root / "lib64"
-            lib.mkdir()
-            lib64.mkdir()
-            (lib64 / "libssl.so.3").write_bytes(b"ssl")
-            (lib64 / "libcrypto.so.3").write_bytes(b"crypto")
-
-            ssl_library, crypto_library = resolve_openssl_runtime_pair((lib, lib64))
-
-            self.assertTrue(os.path.samefile(ssl_library.parent, lib64))
-            self.assertTrue(os.path.samefile(crypto_library.parent, lib64))
-
-            (lib64 / "libcrypto.so.3").unlink()
-            (lib / "libcrypto.so.3").write_bytes(b"different-runtime")
-            with self.assertRaisesRegex(RuntimeError, "matched libssl.so.3/libcrypto.so.3 pair"):
-                resolve_openssl_runtime_pair((lib, lib64))
-
-    def test_appimage_expat_runtime_prefers_the_versioned_soname(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            runtime = Path(temp_dir)
-            unversioned = runtime / "libexpat.so"
-            versioned = runtime / "libexpat.so.1"
-            unversioned.write_bytes(b"unversioned")
-            versioned.write_bytes(b"versioned")
-
-            self.assertTrue(
-                os.path.samefile(
-                    resolve_linux_expat_runtime_library((runtime,)),
-                    versioned,
-                )
-            )
-
-    def test_windows_ctypes_runtime_resolves_conda_and_cpython_libffi_names(self):
-        with tempfile.TemporaryDirectory() as directory:
-            runtime = Path(directory)
-            conda_libffi = runtime / "ffi-8.dll"
-            conda_libffi.write_bytes(b"ffi")
-            self.assertTrue(
-                os.path.samefile(
-                    resolve_windows_ctypes_runtime_library((runtime,)),
-                    conda_libffi,
-                )
-            )
-
-            conda_libffi.unlink()
-            cpython_libffi = runtime / "libffi-8.dll"
-            cpython_libffi.write_bytes(b"libffi")
-            self.assertTrue(
-                os.path.samefile(
-                    resolve_windows_ctypes_runtime_library((runtime,)),
-                    cpython_libffi,
-                )
-            )
-
-    def test_windows_runtime_libraries_resolve_from_one_python_prefix(self):
-        with tempfile.TemporaryDirectory() as directory:
-            runtime = Path(directory)
-            names = {
-                "ffi-8.dll",
-                "libssl-3-x64.dll",
-                "libcrypto-3-x64.dll",
-                "liblzma.dll",
-                "libbz2.dll",
-                "libexpat.dll",
-                "sqlite3.dll",
-            }
-            for name in names:
-                (runtime / name).write_bytes(name.encode("ascii"))
-
-            resolved = resolve_windows_runtime_libraries((runtime,))
-
-            self.assertEqual({path.name for path in resolved}, names)
-
-    def test_windows_runtime_libraries_report_every_missing_group(self):
-        with tempfile.TemporaryDirectory() as directory:
-            runtime = Path(directory)
-            (runtime / "ffi-8.dll").write_bytes(b"ffi")
-
-            with self.assertRaisesRegex(RuntimeError, "libssl-.*sqlite3"):
-                resolve_windows_runtime_libraries((runtime,))
 
     def test_launch_selection_preserves_backend_priority(self):
         selection = LaunchSelection(voxcpm=True, chatterbox=True, rvc=True)
@@ -1213,13 +1123,13 @@ class InstallerArchitectureTests(unittest.TestCase):
             with patch.object(installer, "resolve_espeak_paths", return_value=("", "")):
                 self.assertTrue(installer.install_espeak_ng_direct("install-root"))
 
-    def test_headless_entry_imports_without_pyqt(self):
+    def test_headless_compatibility_entry_imports(self):
         command = [
             sys.executable,
             "-c",
             (
-                "import sys; import pandrator_installer_launcher; "
-                "assert not any(name == 'PyQt6' or name.startswith('PyQt6.') for name in sys.modules)"
+                "import pandrator_installer_launcher; "
+                "assert callable(pandrator_installer_launcher.main)"
             ),
         ]
         subprocess.run(command, check=True)
@@ -1414,11 +1324,6 @@ class InstallerArchitectureTests(unittest.TestCase):
     def test_tls_self_check_cli_flag(self):
         args = parse_launcher_cli_args(["--tls-self-check"])
         self.assertTrue(args.tls_self_check)
-
-    def test_gui_smoke_check_cli_flag(self):
-        args = parse_launcher_cli_args(["--gui-smoke-check"])
-        self.assertTrue(args.gui_smoke_check)
-
 
 if __name__ == "__main__":
     unittest.main()
