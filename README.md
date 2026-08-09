@@ -91,7 +91,9 @@ You can begin with one component and add the others whenever you need them.
 
 ### Subtitles and voiceovers
 
-- Start from SRT subtitles or common audio and video files.
+- Start from SRT subtitle files or common audio and video files. WebVTT, ASS,
+  and SSA uploads are recognized as subtitle sources, while the current
+  subtitle-editing pipeline uses SRT as its working input.
 - Transcribe speech with word timestamps and optional diarization.
 - Correct, translate, split, merge, and retime subtitles in a side-by-side
   editor.
@@ -145,7 +147,8 @@ on CPU.
 | Category | Supported formats |
 |---|---|
 | Documents | TXT, PDF, EPUB, DOCX, MOBI, or pasted text |
-| Subtitles | SRT |
+| Subtitle sources | SRT working input; WebVTT, ASS, and SSA are also recognized as subtitle sources |
+| Subtitle output | SRT or WebVTT |
 | Audio input | AAC, AIFF, FLAC, M4A/MKA, MP3, OGG, Opus, WAV, WMA |
 | Video input | MP4, MKV, WebM, AVI, MOV |
 | Audiobook and audio output | M4B, MP3, Opus, FLAC, WAV |

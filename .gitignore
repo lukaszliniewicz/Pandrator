@@ -74,13 +74,8 @@ tts_voices/voice_library.json
 .env.*
 !.env.example
 
-# Local planning, architecture, and qualification notes
-*[Pp][Ll][Aa][Nn]*.md
-/BACKEND_ARCHITECTURE.md
-/FRONTEND_ARCHITECTURE.md
-/INSTALLER_MANAGER_ARCHITECTURE.md
-/AGENTIC_TEXT_AND_SPEECH.md
-/FUTURE_TTS_OPTIMIZATION_NOTES.md
+# Local planning, architecture, research, and qualification notes
+/.local-notes/
 
 # Local development and research scratch files
 /inspect_db.py
@@ -97,10 +92,5 @@ tts_voices/voice_library.json
 Thumbs.db
 desktop.ini
 
-# Linux compatibility documentation (untracked locally)
-LINUX_COMPATIBILITY.md
-
-# Local documentation and qualification records
-docs/
 web/playwright-report/
 web/test-results/

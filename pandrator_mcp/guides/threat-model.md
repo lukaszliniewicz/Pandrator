@@ -55,7 +55,7 @@ instruction. Tool catalogs and next actions are registered server-side.
 review-first plans, target-side maximum policy, explicit confirmations, and
 auditable work records provide independent enforcement layers.
 
-## Phase acceptance criteria
+## Security and release acceptance criteria
 
 1. The standalone package has no import path to Pandrator database, ORM, queue,
    or application-service modules.
