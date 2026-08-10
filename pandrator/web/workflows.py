@@ -688,7 +688,10 @@ class WorkflowService:
                     )
                 prerequisite = (
                     explicit_prerequisite
-                    if configured_translation_source_id
+                    if (
+                        definition.key == "translate"
+                        and configured_translation_source_id
+                    )
                     else explicit_prerequisite
                     or next(
                         (

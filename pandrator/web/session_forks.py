@@ -211,6 +211,33 @@ class SessionForkService:
             [],
         )
 
+    @staticmethod
+    def _remap_translation_source_setting(
+        setting: SessionSetting | None,
+        old_to_new_artifact_ids: dict[str, str],
+    ) -> None:
+        """Keep a copied translation source inside the forked checkpoint path.
+
+        ``translation.source_artifact_id`` is the only persisted settings field
+        that participates in subtitle checkpoint lineage. Other settings may
+        contain values that look like IDs but do not belong to the checkpoint
+        clone, so they must remain untouched. If the configured source was not
+        cloned, removing the override lets the fork select a local prerequisite
+        instead of retaining a foreign-session artifact ID.
+        """
+        if setting is None or not isinstance(setting.value_json, dict):
+            return
+        source_id = str(setting.value_json.get("source_artifact_id") or "")
+        if not source_id:
+            return
+        value = dict(setting.value_json)
+        remapped_source_id = old_to_new_artifact_ids.get(source_id)
+        if remapped_source_id:
+            value["source_artifact_id"] = remapped_source_id
+        else:
+            value.pop("source_artifact_id", None)
+        setting.value_json = value
+
     def fork_in_session(
         self,
         session: Session,
@@ -264,18 +291,20 @@ class SessionForkService:
                 db_session=session,
             )
 
+            copied_translation_setting: SessionSetting | None = None
             for setting in session.scalars(
                 select(SessionSetting).where(
                     SessionSetting.session_id == source_session_id
                 )
             ).all():
-                session.add(
-                    SessionSetting(
-                        session_id=record.id,
-                        section=setting.section,
-                        value_json=deepcopy(setting.value_json or {}),
-                    )
+                copied_setting = SessionSetting(
+                    session_id=record.id,
+                    section=setting.section,
+                    value_json=deepcopy(setting.value_json or {}),
                 )
+                session.add(copied_setting)
+                if copied_setting.section == "translation":
+                    copied_translation_setting = copied_setting
             outcome = session.get(OutcomePlan, source_session_id)
             if outcome is not None:
                 session.add(
@@ -315,6 +344,7 @@ class SessionForkService:
                 source_parent_id = source_asset.artifact_id if source_asset else None
 
             old_to_new_segments: dict[str, str] = {}
+            old_to_new_artifact_ids: dict[str, str] = {}
             previous_artifact_id = source_parent_id
             copied_artifacts: dict[str, Artifact] = {}
             for artifact, source_path in checkpoint_sources:
@@ -416,7 +446,13 @@ class SessionForkService:
                 )
                 cloned.settings_hash = artifact.settings_hash
                 copied_artifacts[artifact.role] = cloned
+                old_to_new_artifact_ids[artifact.id] = cloned.id
                 previous_artifact_id = cloned.id
+
+            self._remap_translation_source_setting(
+                copied_translation_setting,
+                old_to_new_artifact_ids,
+            )
 
             if old_to_new_segments:
                 old_ids = tuple(old_to_new_segments)

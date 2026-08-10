@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from pathlib import Path
 
 from sqlalchemy import select
 
@@ -7,9 +8,11 @@ from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.models import (
     Artifact,
+    ArtifactEdge,
     Document,
     Job,
     OutcomePlan,
+    SessionRecord,
     SessionSetting,
     SessionSource,
 )
@@ -94,7 +97,10 @@ class WebSessionForkTests(unittest.TestCase):
                 SessionSetting(
                     session_id=self.record["id"],
                     section="translation",
-                    value_json={"reasoning_effort": "high"},
+                    value_json={
+                        "reasoning_effort": "high",
+                        "source_artifact_id": self.correction.id,
+                    },
                 )
             )
             session.add(
@@ -121,19 +127,29 @@ class WebSessionForkTests(unittest.TestCase):
         self.database.dispose()
         self.temporary.cleanup()
 
-    def _checkpoint(self, role: str, text: str, parent: Artifact):
-        path = self.session_dir / f"{role}.srt"
+    def _checkpoint(
+        self,
+        role: str,
+        text: str,
+        parent: Artifact,
+        *,
+        session_id: str | None = None,
+        session_dir: Path | None = None,
+    ) -> Artifact:
+        session_id = session_id or self.record["id"]
+        session_dir = session_dir or self.session_dir
+        path = session_dir / f"{role}.srt"
         path.write_text(SRT.format(text), encoding="utf-8")
         artifact = self.artifacts.register(
             path,
             kind="srt",
             role=role,
-            session_id=self.record["id"],
+            session_id=session_id,
             parent_ids=[parent.id],
             metadata={"language": "pl" if role == "translation" else "en"},
         )
         self.handlers._store_srt_document(
-            self.record["id"],
+            session_id,
             artifact,
             role,
             language="pl" if role == "translation" else "en",
@@ -203,7 +219,15 @@ class WebSessionForkTests(unittest.TestCase):
                 [item.stage for item in documents],
             )
             self.assertEqual(
-                {"reasoning_effort": "high"},
+                {
+                    "reasoning_effort": "high",
+                    "source_artifact_id": session.scalar(
+                        select(Artifact.id).where(
+                            Artifact.session_id == forked["id"],
+                            Artifact.role == "correction",
+                        )
+                    ),
+                },
                 session.get(SessionSetting, (forked["id"], "translation")).value_json,
             )
             self.assertEqual(
@@ -237,8 +261,10 @@ class WebSessionForkTests(unittest.TestCase):
             forked["checkpoint_artifact_id"],
             stages["translate"]["selected_artifact_id"],
         )
+        self.assertEqual("completed", stages["translate"]["status"])
+        self.assertEqual("ready", stages["generate_audio"]["status"])
 
-    def test_correction_fork_stops_before_translation(self):
+    def test_correction_fork_accepts_child_translation(self):
         response = self.client.post(
             f"/api/v1/sessions/{self.record['id']}/forks",
             json={"checkpoint_artifact_id": self.correction.id},
@@ -253,7 +279,74 @@ class WebSessionForkTests(unittest.TestCase):
                     select(Artifact.role).where(Artifact.session_id == forked["id"])
                 ).all()
             )
+            child_correction_id = session.scalar(
+                select(Artifact.id).where(
+                    Artifact.session_id == forked["id"],
+                    Artifact.role == "correction",
+                )
+            )
+            child_storage_key = session.get(SessionRecord, forked["id"]).storage_key
+            child_setting_value = dict(
+                session.get(
+                    SessionSetting,
+                    (forked["id"], "translation"),
+                ).value_json
+            )
         self.assertEqual({"transcription", "correction"}, roles)
+        self.assertEqual(
+            {
+                "reasoning_effort": "high",
+                "source_artifact_id": child_correction_id,
+            },
+            child_setting_value,
+        )
+
+        child_correction, _path = self.artifacts.resolve(child_correction_id)
+        child_translation = self._checkpoint(
+            "translation",
+            "Dzień dobry!",
+            child_correction,
+            session_id=forked["id"],
+            session_dir=self.paths.sessions / child_storage_key,
+        )
+        with self.database.session() as session:
+            self.assertIsNotNone(
+                session.get(ArtifactEdge, (child_correction.id, child_translation.id))
+            )
+
+        workflow = self.client.get(
+            f"/api/v1/sessions/{forked['id']}/workflow"
+        ).get_json()
+        stages = {item["key"]: item for item in workflow["stages"]}
+        self.assertEqual("completed", stages["translate"]["status"])
+        self.assertEqual("ready", stages["generate_audio"]["status"])
+
+    def test_fork_drops_uncloned_translation_source_override(self):
+        with self.database.session() as session:
+            setting = session.get(
+                SessionSetting,
+                (self.record["id"], "translation"),
+            )
+            setting.value_json = {
+                "reasoning_effort": "high",
+                "source_artifact_id": self.source.id,
+            }
+
+        response = self.client.post(
+            f"/api/v1/sessions/{self.record['id']}/forks",
+            json={"checkpoint_artifact_id": self.correction.id},
+            headers=self.headers,
+        )
+        self.assertEqual(201, response.status_code, response.get_json())
+        forked = response.get_json()
+        with self.database.session() as session:
+            child_setting_value = dict(
+                session.get(
+                    SessionSetting,
+                    (forked["id"], "translation"),
+                ).value_json
+            )
+        self.assertEqual({"reasoning_effort": "high"}, child_setting_value)
 
     def test_non_checkpoint_artifacts_are_rejected(self):
         response = self.client.post(
