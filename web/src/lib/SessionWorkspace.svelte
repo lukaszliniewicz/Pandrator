@@ -25,6 +25,7 @@
     SessionRecord,
     SettingsPayload,
     StageRerunImpact,
+    StageSettingsMismatch,
     SubtitleReviewCatalogItem,
     TtsCatalogue,
     TtsService,
@@ -87,7 +88,7 @@
   );
   let pendingSettingsMismatch = $state<{
     stage: Stage;
-    mismatches: { stage: string; changed_fields: string[] }[];
+    mismatches: StageSettingsMismatch['mismatches'];
   } | null>(null);
   let historyLoading = $state<Record<string, boolean>>({});
   let settingsStage = $state<Stage | null>(null);
@@ -328,6 +329,40 @@
     return `${label} · ${timing} · ${readiness}`;
   };
 
+  async function generationServiceProblem() {
+    let configuredServiceId = String(
+      stageSettings.generate_audio?.tts_service ??
+        stageSettings.generate_audio?.service ??
+        ''
+    ).trim();
+    if (!configuredServiceId) {
+      try {
+        const stored = await sessionApi.settings(session.id, 'tts');
+        configuredServiceId = String(
+          stored.effective?.tts_service ?? stored.effective?.service ?? ''
+        ).trim();
+      } catch {
+        /* the catalogue check below still catches a missing selection */
+      }
+    }
+    await loadSpeechCatalogues();
+    configuredServiceId ||= ttsService;
+    const configured = ttsCatalogue.services.find((service) =>
+      [service.id, service.name].some(
+        (value) =>
+          String(value ?? '').toLowerCase() ===
+          configuredServiceId.toLowerCase()
+      )
+    );
+    if (configured?.available === true) return '';
+    return (
+      configured?.availability_reason ||
+      (configured
+        ? `${configured.name} is unavailable. Refresh service availability or choose an available provider in Generation settings.`
+        : 'Choose an available TTS service in Generation settings before starting audio generation.')
+    );
+  }
+
   async function run(
     stage: Stage,
     confirmed = false,
@@ -340,6 +375,13 @@
     if (stage.key === 'export') {
       location.href = `/sessions/${session.id}/output`;
       return;
+    }
+    if (stage.key === 'generate_audio') {
+      const serviceProblem = await generationServiceProblem();
+      if (serviceProblem) {
+        error = serviceProblem;
+        return;
+      }
     }
     if (!confirmed && stage.artifact && (stage.artifacts?.length ?? 0) > 0) {
       try {
@@ -659,6 +701,11 @@
     normalizeAllCaps = Boolean(saved.normalize_all_caps ?? true);
     removeDiacritics = Boolean(saved.remove_diacritics ?? false);
     removeQuotationMarks = Boolean(saved.remove_quotation_marks ?? false);
+    const explicitlySelectedServiceId = String(
+      storedSettings?.override?.tts_service ??
+        storedSettings?.override?.service ??
+        ''
+    ).trim();
     const configuredServiceId = String(
       saved.tts_service ??
         saved.service ??
@@ -673,9 +720,10 @@
       )
     );
     const activeService =
-      (configuredService?.online
+      (explicitlySelectedServiceId ? configuredService : null) ??
+      (configuredService?.available
         ? configuredService
-        : ttsCatalogue.services.find((item) => item.online)) ??
+        : ttsCatalogue.services.find((item) => item.available)) ??
       configuredService;
     ttsService = String(activeService?.id ?? configuredServiceId);
     ttsModel =
@@ -855,9 +903,9 @@
       );
       const active =
         (preserveSelection ? preserved : null) ??
-        (configured?.online
+        (configured?.available
           ? configured
-          : catalogue.find((item) => item.online)) ??
+          : catalogue.find((item) => item.available)) ??
         configured ??
         catalogue[0];
       if (active) {
@@ -962,7 +1010,8 @@
                 new Set([...(discovered.voices ?? []), ...(item.voices ?? [])])
               ),
               live_voices: Array.from(new Set(discovered.voices ?? [])),
-              online: true
+              online: true,
+              available: true
             }
           : item
       );
@@ -1053,6 +1102,26 @@
         .map((value) => String(value ?? '').toLowerCase())
         .includes(ttsService.toLowerCase())
     )
+  );
+  const selectedTtsServiceAvailable = $derived(
+    selectedTtsService?.available === true
+  );
+  const compareLabels = (left: string, right: string) =>
+    left.localeCompare(right, undefined, { sensitivity: 'base' });
+  const serviceLabel = (service: TtsService) =>
+    String(service.name || service.id);
+  const compareServices = (left: TtsService, right: TtsService) =>
+    compareLabels(serviceLabel(left), serviceLabel(right)) ||
+    compareLabels(left.id, right.id);
+  const availableTtsServices = $derived(
+    [...ttsCatalogue.services]
+      .filter((service) => service.available === true)
+      .sort(compareServices)
+  );
+  const unavailableTtsServices = $derived(
+    [...ttsCatalogue.services]
+      .filter((service) => service.available !== true)
+      .sort(compareServices)
   );
   const ttsModels = $derived(selectedTtsService?.models ?? []);
   const selectedLlmModel = $derived(
@@ -1199,12 +1268,87 @@
               ''
           ).toLowerCase() === voice.toLowerCase()
       );
+      const descriptor = describeVoice(selectedTtsServiceId, voice);
       return {
-        ...describeVoice(selectedTtsServiceId, voice),
-        name: managed?.name ?? describeVoice(selectedTtsServiceId, voice).name
+        ...descriptor,
+        name: managed?.name ?? descriptor.name,
+        managedLanguage: managed?.language
       };
     })
   );
+  type VoiceLanguageGroup = {
+    key: string;
+    label: string;
+    unspecified: boolean;
+    voices: (typeof clonedVoiceDescriptors)[number][];
+  };
+  const normalizeVoiceLanguage = (value: string | null | undefined) => {
+    const raw = String(value ?? '').trim();
+    if (!raw) return null;
+    const normalized = raw
+      .replaceAll(/\s+/g, '')
+      .replaceAll('_', '-')
+      .toLowerCase();
+    const option = LANGUAGE_OPTIONS.find((item) => {
+      const optionValue = String(item.value)
+        .replaceAll(/\s+/g, '')
+        .replaceAll('_', '-')
+        .toLowerCase();
+      const optionLabel = item.label.replaceAll(/\s+/g, '').toLowerCase();
+      return optionValue === normalized || optionLabel === normalized;
+    });
+    if (option)
+      return {
+        key: String(option.value),
+        label: option.label,
+        unspecified: false
+      };
+    const baseCode = normalized.split('-')[0];
+    const baseOption = LANGUAGE_OPTIONS.find(
+      (item) => String(item.value).toLowerCase() === baseCode
+    );
+    if (baseOption)
+      return {
+        key: String(baseOption.value),
+        label: baseOption.label,
+        unspecified: false
+      };
+    return { key: normalized, label: raw, unspecified: false };
+  };
+  const targetVoiceLanguage = $derived(
+    normalizeVoiceLanguage(targetLanguage)?.key ?? targetLanguage
+  );
+  const clonedVoiceGroups = $derived.by(() => {
+    const groups = new Map<string, VoiceLanguageGroup>();
+    for (const voice of clonedVoiceDescriptors) {
+      const language = normalizeVoiceLanguage(voice.managedLanguage) ??
+        normalizeVoiceLanguage(voice.languageCode) ?? {
+          key: 'unspecified',
+          label: 'Multilingual / language not set',
+          unspecified: true
+        };
+      const existing = groups.get(language.key) ?? { ...language, voices: [] };
+      existing.voices.push(voice);
+      groups.set(language.key, existing);
+    }
+    return [...groups.values()]
+      .map((group) => ({
+        ...group,
+        voices: [...group.voices].sort(
+          (left, right) =>
+            compareLabels(left.name, right.name) ||
+            compareLabels(left.id, right.id)
+        )
+      }))
+      .sort(
+        (left, right) =>
+          Number(left.key !== targetVoiceLanguage) -
+            Number(right.key !== targetVoiceLanguage) ||
+          Number(left.unspecified) - Number(right.unspecified) ||
+          compareLabels(left.label, right.label) ||
+          compareLabels(left.key, right.key)
+      );
+  });
   const showClonedVoices = $derived(
     Boolean(
       supportsCloningVoices &&
@@ -1705,6 +1849,12 @@
       error = 'Wait for the selected library voice to finish uploading.';
       return;
     }
+    if (key === 'generate_audio' && !selectedTtsServiceAvailable) {
+      error =
+        selectedTtsService?.availability_reason ||
+        'Choose an available TTS service before saving generation settings.';
+      return;
+    }
     if (
       key === 'generate_audio' &&
       showClonedVoices &&
@@ -1765,6 +1915,11 @@
       (item) => item.key === 'generate_audio'
     );
     if (!stage) return;
+    const serviceProblem = await generationServiceProblem();
+    if (serviceProblem) {
+      error = serviceProblem;
+      return;
+    }
     try {
       const preflight = await sessionApi.stageSettingsMismatches(
         session.id,
@@ -1773,16 +1928,10 @@
       const mismatches = preflight?.mismatches ?? [];
       if (mismatches.length) {
         const names = mismatches
-          .map((item) =>
-            item.stage === 'translate' ? 'translation' : 'correction'
-          )
+          .map((item) => item.stage.replaceAll('_', ' '))
           .join(' and ');
-        sourceMessage = `Reusing the existing ${names} even though its settings changed; run the stage manually to update it.`;
-        await run(
-          stage,
-          true,
-          mismatches.map((item) => String(item.stage))
-        );
+        sourceMessage = `Rerunning stale ${names} before audio generation. Use Review mode if you want to keep selected prerequisite outputs instead.`;
+        await run(stage, true);
         return;
       }
     } catch {
@@ -2811,8 +2960,7 @@
         {#if settingsStage.key === 'generate_audio'}
           <div class="grid gap-2">
             <div class="flex items-center justify-between gap-3">
-              <span class="text-sm font-semibold">Active TTS service</span
-              ><button
+              <span class="text-sm font-semibold">TTS service</span><button
                 type="button"
                 onclick={refreshSpeechServices}
                 disabled={refreshingTtsServices}
@@ -2820,30 +2968,41 @@
                 ><RefreshCw
                   size={14}
                   class={refreshingTtsServices ? 'animate-spin' : ''}
-                /> Refresh active backends</button
+                /> Refresh service availability</button
               >
             </div>
             <select
               value={ttsService}
               onchange={(event) => chooseTtsService(event.currentTarget.value)}
               class="w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
-              >{#each ttsCatalogue.services ?? [] as service}<option
-                  value={service.id}
-                  >{service.name}{service.online === true
-                    ? ' · running'
-                    : service.online === false
-                      ? ' · offline'
-                      : ''}</option
-                >{/each}</select
-            ><span class="muted text-xs"
-              >Refresh checks every configured backend without stopping another
-              running service.</span
+              aria-label="TTS service"
+              >{#if availableTtsServices.length}<optgroup label="Available"
+                  >{#each availableTtsServices as service}<option
+                      value={service.id}>{service.name} · available</option
+                    >{/each}</optgroup
+                >{/if}{#if unavailableTtsServices.length}<optgroup
+                  label="Unavailable"
+                  >{#each unavailableTtsServices as service}<option
+                      value={service.id}
+                      disabled
+                      class="text-[var(--muted)]"
+                      >{service.name} · unavailable</option
+                    >{/each}</optgroup
+                >{/if}</select
+            >{#if selectedTtsService && !selectedTtsServiceAvailable}<span
+                class="text-xs font-semibold text-red-500"
+                role="status"
+                >{selectedTtsService.availability_reason ||
+                  `${selectedTtsService.name} is unavailable. Refresh availability or choose another provider.`}</span
+              >{/if}<span class="muted text-xs"
+              >Available means Pandrator can use the provider. Cloud providers
+              can be available without a local process.</span
             >
           </div>
           <div class="flex flex-wrap items-center justify-between gap-3">
             <p class="muted text-xs">
-              The running configured service is selected automatically. Its live
-              catalogue is refreshed when available.
+              The preferred available service is selected automatically. Your
+              selected unavailable service remains visible until it is ready.
             </p>
             <button
               type="button"
@@ -2886,12 +3045,12 @@
                           ? ` · ${voice.gender}`
                           : ''}</option
                       >{/each}</optgroup
-                  >{/if}{#if showClonedVoices}<optgroup
-                    label="Voices ready in provider"
-                    >{#each clonedVoiceDescriptors as voice}<option
-                        value={voice.id}>{voice.name}</option
-                      >{/each}</optgroup
-                  >{/if}</select
+                  >{/if}{#if showClonedVoices}{#each clonedVoiceGroups as group}
+                    <optgroup label={group.label}
+                      >{#each group.voices as voice}<option value={voice.id}
+                          >{voice.name}</option
+                        >{/each}</optgroup
+                    >{/each}{/if}</select
               ></label
             >
             <div class="flex flex-wrap items-center justify-between gap-3">
@@ -3261,7 +3420,9 @@
           ><RotateCcw size={15} /> Revert to defaults</button
         ><button
           onclick={() => saveSettings('defaults')}
-          disabled={Boolean(publishingLibraryVoiceId)}
+          disabled={Boolean(publishingLibraryVoiceId) ||
+            (settingsStage.key === 'generate_audio' &&
+              !selectedTtsServiceAvailable)}
           class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-4 py-2.5 text-sm font-semibold disabled:opacity-40"
           ><Save size={15} /> Save as defaults</button
         ><button
@@ -3271,7 +3432,10 @@
         ><button
           onclick={() => saveSettings('session')}
           disabled={Boolean(publishingLibraryVoiceId) ||
-            (settingsStage.key === 'translate' && !translationSourceArtifactId)}
+            (settingsStage.key === 'translate' &&
+              !translationSourceArtifactId) ||
+            (settingsStage.key === 'generate_audio' &&
+              !selectedTtsServiceAvailable)}
           class="rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40"
           >Save settings</button
         >

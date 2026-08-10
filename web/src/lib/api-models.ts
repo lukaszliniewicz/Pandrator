@@ -356,6 +356,16 @@ export type WorkflowStage = {
   detail?: string | null;
   usage?: WorkflowUsage | null;
   run_metrics?: WorkflowRunMetrics | null;
+  resolved_input?: {
+    artifact_id: string;
+    role: string;
+    stage_key?: string | null;
+    version?: number | null;
+    label: string;
+    origin?: string | null;
+    selection_stage?: string | null;
+    selected_artifact_id?: string | null;
+  } | null;
 };
 
 export type WorkflowSnapshot = {
@@ -593,6 +603,7 @@ export type StageSettingsMismatch = {
   mismatches: {
     stage: string;
     changed_fields: string[];
+    reasons?: string[];
   }[];
   [key: string]: unknown;
 };

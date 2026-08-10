@@ -12,7 +12,7 @@ from alembic.config import Config
 from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
-SCHEMA_HEAD = "0027_durable_agentic_runs"
+SCHEMA_HEAD = "0028_repair_fork_translation_sources"
 
 
 def sqlite_url(path: Path) -> str:

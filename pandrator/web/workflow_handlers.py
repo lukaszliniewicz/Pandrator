@@ -56,6 +56,9 @@ from .models import (
     Segment,
     SegmentLineage,
     SessionRecord,
+    SessionSetting,
+    SessionSource,
+    SourceAsset,
     SourceRecord,
     TimedWord,
     TrainingRun,
@@ -896,6 +899,76 @@ class WorkflowHandlers:
                 session.expunge(result)
             return result
 
+    def _persisted_translation_input(
+        self, session_id: str, artifact_id: str
+    ) -> Artifact | None:
+        """Return a safe persisted translation input, never a foreign artifact.
+
+        Forked sessions may use a source attached from the source library, but
+        no other cross-session artifact is a valid workflow input.  Invalid
+        legacy settings deliberately fall back to the ordinary local
+        prerequisite path instead of leaking an artifact across sessions.
+        """
+
+        if not artifact_id:
+            return None
+        with self.database.session() as session:
+            candidate = session.get(Artifact, artifact_id)
+            attached_ids = set(
+                session.scalars(
+                    select(Artifact.id)
+                    .join(SourceAsset, SourceAsset.artifact_id == Artifact.id)
+                    .join(
+                        SessionSource,
+                        SessionSource.source_asset_id == SourceAsset.id,
+                    )
+                    .where(SessionSource.session_id == session_id)
+                ).all()
+            )
+            if (
+                candidate is None
+                or candidate.state == "deleted"
+                or candidate.role not in {"transcription", "correction", "upload"}
+                or Path(candidate.relative_path).suffix.lower() != ".srt"
+                or (
+                    candidate.session_id != session_id
+                    and candidate.id not in attached_ids
+                )
+            ):
+                return None
+            session.expunge(candidate)
+            return candidate
+
+    @staticmethod
+    def _continuation_input_roles(
+        definition_key: str,
+        default_roles: tuple[str, ...],
+        workflow_kind: str,
+        input_choices: dict[str, Any],
+        transformations: dict[str, Any],
+    ) -> tuple[str, ...]:
+        if definition_key == "translate":
+            translation_parent = str(input_choices.get("translation") or "correction")
+            return (
+                ("correction",)
+                if translation_parent == "correction"
+                else ("transcription", "upload")
+            )
+        if definition_key not in {"optimize_document", "generate_audio"}:
+            return default_roles
+        if definition_key == "generate_audio" and bool(
+            transformations.get("llm_tts_document_optimization")
+        ):
+            return ("tts_optimized",)
+        if workflow_kind == "audiobook":
+            return ("prepared_text",)
+        generation_parent = str(input_choices.get("generation") or "translation")
+        return {
+            "translation": ("translation",),
+            "correction": ("correction",),
+            "source": ("transcription", "upload"),
+        }.get(generation_parent, default_roles)
+
     def continue_workflow(self, payload, progress, cancel_event):
         """Run only missing/stale included prerequisites, then the requested outcome stage."""
         from .workflows import AUDIOBOOK_STAGES, DUBBING_STAGES
@@ -934,6 +1007,16 @@ class WorkflowHandlers:
                 select(OutcomePlan).where(OutcomePlan.session_id == session_id)
             )
             outcome_value = dict(outcome.value_json or {}) if outcome else {}
+            translation_setting = session.get(
+                SessionSetting,
+                (session_id, "translation"),
+            )
+            persisted_translation_settings = (
+                dict(translation_setting.value_json or {})
+                if translation_setting is not None
+                and isinstance(translation_setting.value_json, dict)
+                else {}
+            )
         input_choices = (
             outcome_value.get("inputs")
             if isinstance(outcome_value.get("inputs"), dict)
@@ -1000,15 +1083,6 @@ class WorkflowHandlers:
                 settings["llm_tts_optimization"] = bool(
                     transformations.get("llm_tts_optimization")
                 )
-            expected_settings_hash = hashlib.sha256(
-                json.dumps(
-                    settings,
-                    ensure_ascii=False,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                    default=str,
-                ).encode("utf-8")
-            ).hexdigest()
             with self.database.session() as session:
                 existing = (
                     selected_artifacts(session, session_id).get(
@@ -1017,126 +1091,56 @@ class WorkflowHandlers:
                     if definition.output_role
                     else None
                 )
-            input_roles = definition.prerequisite_roles
+            input_roles = self._continuation_input_roles(
+                definition.key,
+                definition.prerequisite_roles,
+                record.workflow_kind,
+                input_choices,
+                transformations,
+            )
+            source = None
             if definition.key == "translate":
-                translation_parent = str(
-                    input_choices.get("translation") or "correction"
-                )
-                input_roles = (
-                    ("correction",)
-                    if translation_parent == "correction"
-                    else ("transcription", "upload")
-                )
-            elif definition.key in {"optimize_document", "generate_audio"}:
-                if definition.key == "generate_audio" and bool(
-                    transformations.get("llm_tts_document_optimization")
+                for persisted_source_id in (
+                    str(settings.get("source_artifact_id") or ""),
+                    str(persisted_translation_settings.get("source_artifact_id") or ""),
                 ):
-                    input_roles = ("tts_optimized",)
-                elif record.workflow_kind == "audiobook":
-                    input_roles = ("prepared_text",)
-                else:
-                    generation_parent = str(
-                        input_choices.get("generation") or "translation"
-                    )
-                    input_roles = {
-                        "translation": ("translation",),
-                        "correction": ("correction",),
-                        "source": ("transcription", "upload"),
-                    }.get(generation_parent, definition.prerequisite_roles)
-            source = self._latest_stage_input(session_id, input_roles)
+                    if source is None and persisted_source_id:
+                        source = self._persisted_translation_input(
+                            session_id,
+                            persisted_source_id,
+                        )
+            if source is None:
+                source = self._latest_stage_input(session_id, input_roles)
             if definition.prerequisite_roles and source is None:
                 raise ValueError(
                     f"Stage '{definition.key}' is missing a required input artifact."
                 )
-            expected_hashes = {expected_settings_hash}
-            existing_metadata = (
-                existing.metadata_json
-                if existing is not None and isinstance(existing.metadata_json, dict)
-                else {}
-            )
-            raw_settings_match = bool(
-                existing is not None
-                and (
-                    existing.settings_hash == expected_settings_hash
-                    or str(existing_metadata.get("requested_settings_hash") or "")
-                    == expected_settings_hash
-                )
-            )
-            if (
-                existing is not None
-                and not raw_settings_match
-                and definition.key in {"correct", "translate"}
-            ):
-                stage_alias = (
-                    "correction" if definition.key == "correct" else "translation"
-                )
-                try:
-                    hydrated = self._with_database_llm_settings(
-                        dict(settings), stage_alias
-                    )
-                except ValueError:
-                    # A reusable artifact must remain usable even if its former
-                    # provider is no longer configured. A rerun will surface
-                    # the provider error when settings or source really differ.
-                    hydrated = None
-                if hydrated is not None:
-                    expected_hashes.add(
-                        hashlib.sha256(
-                            json.dumps(
-                                hydrated,
-                                ensure_ascii=False,
-                                sort_keys=True,
-                                separators=(",", ":"),
-                                default=str,
-                            ).encode("utf-8")
-                        ).hexdigest()
-                    )
             if existing is not None and definition.key != target_key:
-                metadata = existing_metadata
                 if definition.key in reuse_stages:
                     # The caller explicitly chose to keep the current artifact
-                    # even though its settings changed. Source freshness is
-                    # still enforced below.
-                    settings_match = True
-                else:
-                    settings_match = (
-                        existing.settings_hash in expected_hashes
-                        or str(metadata.get("requested_settings_hash") or "")
-                        == expected_settings_hash
-                    )
-                    if definition.key in {"correct", "translate"}:
-                        settings_match = self._fingerprint_settings_match(
-                            definition.key,
-                            settings,
-                            metadata,
-                            fallback=settings_match,
-                        )
-                source_match = source is None
-                if source is not None:
-                    source_match = str(
-                        metadata.get("source_artifact_id") or ""
-                    ) == source.id or (
-                        bool(source.content_hash)
-                        and str(metadata.get("source_content_hash") or "")
-                        == source.content_hash
-                    )
-                    if not source_match:
-                        with self.database.session() as session:
-                            source_match = (
-                                session.get(ArtifactEdge, (source.id, existing.id))
-                                is not None
-                            )
-                if settings_match and source_match:
+                    # even though settings or source lineage changed. This is
+                    # meaningful only for prerequisites; the target stage is
+                    # always run by the continuation request.
+                    continue
+                freshness = self._continuation_freshness(
+                    session_id,
+                    definition.key,
+                    settings,
+                    existing,
+                    source,
+                )
+                if freshness["settings_match"] and freshness["source_match"]:
                     continue
             handler = handlers[definition.job_kind]
             width = weights[index] / weight_total
             start = completed_weight / weight_total
-            stage_progress = lambda value, detail=None, start=start, width=width: (
+
+            def stage_progress(value, detail=None, start=start, width=width):
                 progress(
                     min(0.99, start + max(0.0, min(1.0, float(value))) * width),
                     detail,
                 )
-            )
+
             handler_payload = {
                 "session_id": session_id,
                 "source_artifact_id": source.id if source else None,
@@ -1238,35 +1242,136 @@ class WorkflowHandlers:
             return None
         return _stage_settings_fingerprint(stage_key, hydrated)
 
-    def _fingerprint_settings_match(
+    def _continuation_freshness(
         self,
+        session_id: str,
         stage_key: str,
         settings: dict[str, Any],
-        metadata: dict[str, Any],
-        *,
-        fallback: bool,
-    ) -> bool:
-        """Compare semantic fingerprints when one was stored; else keep legacy hashes."""
+        existing: Artifact | None,
+        source: Artifact | None,
+    ) -> dict[str, Any]:
+        """Return the exact prerequisite-reuse decision and its UI reasons."""
+
+        if existing is None:
+            return {
+                "settings_match": False,
+                "source_match": False,
+                "reasons": ["missing_artifact"],
+                "changed_fields": [],
+                "stored": None,
+                "current": None,
+            }
+        expected_settings_hash = hashlib.sha256(
+            json.dumps(
+                settings,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            ).encode("utf-8")
+        ).hexdigest()
+        metadata = (
+            existing.metadata_json if isinstance(existing.metadata_json, dict) else {}
+        )
+        expected_hashes = {expected_settings_hash}
+        raw_settings_match = bool(
+            existing.settings_hash == expected_settings_hash
+            or str(metadata.get("requested_settings_hash") or "")
+            == expected_settings_hash
+        )
+        if not raw_settings_match and stage_key in {"correct", "translate"}:
+            stage_alias = "correction" if stage_key == "correct" else "translation"
+            try:
+                hydrated = self._with_database_llm_settings(dict(settings), stage_alias)
+            except ValueError:
+                hydrated = None
+            if hydrated is not None:
+                expected_hashes.add(
+                    hashlib.sha256(
+                        json.dumps(
+                            hydrated,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                            default=str,
+                        ).encode("utf-8")
+                    ).hexdigest()
+                )
+        fallback = bool(
+            existing.settings_hash in expected_hashes
+            or str(metadata.get("requested_settings_hash") or "")
+            == expected_settings_hash
+        )
         stored = metadata.get("settings_fingerprint")
-        if not isinstance(stored, dict) or not stored:
-            return fallback
-        current = self._current_stage_fingerprint(stage_key, settings)
-        if current is None:
-            # Cannot prove a change; reuse rather than spend on a rerun.
-            return True
-        return stored == current
+        current = None
+        changed_fields: list[str] = []
+        settings_match = fallback
+        settings_reason = None
+        if (
+            stage_key in {"correct", "translate"}
+            and isinstance(stored, dict)
+            and stored
+        ):
+            current = self._current_stage_fingerprint(stage_key, settings)
+            if current is None:
+                # Keep the current artifact if the old provider configuration
+                # cannot be reconstructed. This is the continuation behavior
+                # that preflight must mirror.
+                settings_match = True
+            else:
+                settings_match = stored == current
+                if not settings_match:
+                    settings_reason = "settings_changed"
+                    changed_fields = sorted(
+                        key
+                        for key in set(stored) | set(current)
+                        if stored.get(key) != current.get(key)
+                    )
+        elif not settings_match:
+            # A legacy artifact can still be safely reused when its exact raw
+            # hash matches. Without that evidence, continuation will rerun it.
+            settings_reason = "settings_unverifiable"
+
+        source_match = source is None
+        if source is not None:
+            source_match = str(
+                metadata.get("source_artifact_id") or ""
+            ) == source.id or (
+                stage_key != "translate"
+                and bool(source.content_hash)
+                and str(metadata.get("source_content_hash") or "")
+                == source.content_hash
+            )
+            if not source_match:
+                with self.database.session() as session:
+                    source_match = (
+                        session.get(ArtifactEdge, (source.id, existing.id)) is not None
+                    )
+        reasons = [reason for reason in (settings_reason,) if reason]
+        if not source_match:
+            reasons.append("source_lineage_changed")
+        return {
+            "settings_match": settings_match,
+            "source_match": source_match,
+            "reasons": reasons,
+            "changed_fields": changed_fields,
+            "stored": stored if isinstance(stored, dict) else None,
+            "current": current,
+        }
 
     def settings_mismatches(
         self, session_id: str, target_stage: str = "generate_audio"
     ) -> list[dict[str, Any]]:
-        """Report included prerequisites whose stored settings fingerprint no
-        longer matches the settings they would run with today.  Used to ask
-        the user before an automatic rerun instead of rerunning silently."""
+        """Report every prerequisite that continuation would rerun today.
+
+        The response preserves the legacy ``stage`` and ``changed_fields``
+        contract, while ``reasons`` distinguishes semantic changes from a
+        legacy hash that cannot prove freshness and from broken source lineage.
+        """
+        from .workflows import AUDIOBOOK_STAGES, DUBBING_STAGES
         from .workspace import WorkspaceSettingsService, adapt_runtime_settings
 
         record = self._session_record(session_id)
-        if record.workflow_kind == "audiobook":
-            return []
         upload = self._latest_stage_input(session_id, ("upload",))
         filename = (
             str(
@@ -1276,19 +1381,41 @@ class WorkflowHandlers:
             if upload
             else ""
         )
+        definitions = (
+            AUDIOBOOK_STAGES if record.workflow_kind == "audiobook" else DUBBING_STAGES
+        )
+        if record.workflow_kind != "audiobook" and filename.endswith(".srt"):
+            definitions = tuple(
+                definition
+                for definition in definitions
+                if definition.key != "transcribe"
+            )
+        target_index = next(
+            (
+                index
+                for index, definition in enumerate(definitions)
+                if definition.key == target_stage
+            ),
+            None,
+        )
+        if target_index is None:
+            raise ValueError(f"Unknown continuation stage: {target_stage}")
         with self.database.session() as session:
             outcome = session.scalar(
                 select(OutcomePlan).where(OutcomePlan.session_id == session_id)
             )
             outcome_value = dict(outcome.value_json or {}) if outcome else {}
-            fingerprints = {
-                stage_key: dict(artifact.metadata_json or {}).get(
-                    "settings_fingerprint"
-                )
-                for stage_key, artifact in selected_artifacts(
-                    session, session_id
-                ).items()
-            }
+            selected = selected_artifacts(session, session_id)
+            translation_setting = session.get(
+                SessionSetting,
+                (session_id, "translation"),
+            )
+            persisted_translation_settings = (
+                dict(translation_setting.value_json or {})
+                if translation_setting is not None
+                and isinstance(translation_setting.value_json, dict)
+                else {}
+            )
         input_choices = (
             outcome_value.get("inputs")
             if isinstance(outcome_value.get("inputs"), dict)
@@ -1307,38 +1434,79 @@ class WorkflowHandlers:
             transformations,
         )
         included = set(record.included_stages_json or [])
-        section_map = {
+        runnable = [
+            definition
+            for index, definition in enumerate(definitions)
+            if index < target_index
+            and definition.executable
+            and definition.job_kind
+            and (definition.key in included or definition.key in required)
+        ]
+        section_map: dict[str, tuple[str, ...]] = {
+            "clean_source": ("source_cleaning", "text"),
+            "transcribe": ("stt", "subtitles"),
             "correct": ("correction", "subtitles"),
             "translate": ("translation", "subtitles"),
+            "optimize_document": ("text",),
+            "prepare_text": ("text", "audio"),
+            "generate_audio": ("text", "tts", "audio", "rvc", "output"),
+            "export": ("output", "audio", "subtitles"),
         }
         settings_service = WorkspaceSettingsService(self.database)
+        sections = list(
+            dict.fromkeys(
+                section
+                for definition in runnable
+                for section in section_map.get(definition.key, ())
+            )
+        )
+        resolved, _ = settings_service.resolve(session_id, sections)
         mismatches: list[dict[str, Any]] = []
-        for stage_key, sections in section_map.items():
-            if stage_key not in required and stage_key not in included:
-                continue
-            stored = fingerprints.get(canonical_stage_key(stage_key))
-            if not isinstance(stored, dict) or not stored:
-                continue
-            resolved, _ = settings_service.resolve(session_id, list(sections))
-            current_raw: dict[str, Any] = {}
-            for section in sections:
-                current_raw.update(
+        for definition in runnable:
+            stage_settings: dict[str, Any] = {}
+            for section in section_map.get(definition.key, ()):
+                stage_settings.update(
                     adapt_runtime_settings(section, resolved.get(section, {}))
                 )
-            current = self._current_stage_fingerprint(stage_key, current_raw)
-            if current is None or current == stored:
-                continue
-            changed = sorted(
-                key
-                for key in set(stored) | set(current)
-                if stored.get(key) != current.get(key)
+            input_roles = self._continuation_input_roles(
+                definition.key,
+                definition.prerequisite_roles,
+                record.workflow_kind,
+                input_choices,
+                transformations,
             )
+            source = None
+            if definition.key == "translate":
+                for persisted_source_id in (
+                    str(stage_settings.get("source_artifact_id") or ""),
+                    str(persisted_translation_settings.get("source_artifact_id") or ""),
+                ):
+                    if source is None and persisted_source_id:
+                        source = self._persisted_translation_input(
+                            session_id,
+                            persisted_source_id,
+                        )
+            if source is None:
+                source = self._latest_stage_input(session_id, input_roles)
+            existing = selected.get(canonical_stage_key(definition.key))
+            if existing is None:
+                continue
+            freshness = self._continuation_freshness(
+                session_id,
+                definition.key,
+                stage_settings,
+                existing,
+                source,
+            )
+            if freshness["settings_match"] and freshness["source_match"]:
+                continue
             mismatches.append(
                 {
-                    "stage": stage_key,
-                    "changed_fields": changed,
-                    "stored": stored,
-                    "current": current,
+                    "stage": definition.key,
+                    "changed_fields": freshness["changed_fields"],
+                    "reasons": freshness["reasons"],
+                    "stored": freshness["stored"],
+                    "current": freshness["current"],
                 }
             )
         return mismatches

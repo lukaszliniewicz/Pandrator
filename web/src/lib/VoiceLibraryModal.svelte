@@ -45,7 +45,7 @@
         aria-label="Close Voice Library"><X size={19} /></button
       >
     </header>
-    <div class="min-h-0 flex-1 overflow-hidden p-4 sm:p-6">
+    <div class="modal-scroll min-h-0 flex-1 p-4 sm:p-6">
       <VoiceManager
         onback={onclose}
         {initialView}

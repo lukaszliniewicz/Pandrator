@@ -139,6 +139,24 @@
           {stage.explanation}
         </p>
 
+        {#if stage.key === 'generate_audio' && stage.resolved_input}
+          <div
+            class="mt-3 max-w-2xl rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] px-3.5 py-3 text-sm"
+            aria-label={`Generation input: ${stage.resolved_input.label}${stage.resolved_input.version ? ` v${stage.resolved_input.version}` : ''}`}
+          >
+            <strong
+              >Generate from: {stage.resolved_input.label}{stage.resolved_input
+                .version
+                ? ` v${stage.resolved_input.version}`
+                : ''}</strong
+            >
+            <p class="muted mt-1 text-xs leading-relaxed">
+              Change the input role in Customize workflow. Choose the exact
+              version with that stage's Selected version control.
+            </p>
+          </div>
+        {/if}
+
         {#if stage.status === 'running' && stage.progress != null}
           {@const percent = progressPercent(stage.progress)}
           <div class="mt-3 max-w-md">

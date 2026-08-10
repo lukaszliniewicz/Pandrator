@@ -44,7 +44,22 @@
     })[field] ?? field;
 
   const mismatchStageLabel = (key: string) =>
-    key === 'translate' ? 'Translation' : 'Correction';
+    ({
+      clean_source: 'Source cleanup',
+      transcribe: 'Transcription',
+      correct: 'Correction',
+      translate: 'Translation',
+      optimize_document: 'Document optimization',
+      optimize_tts: 'Speech optimization',
+      prepare_text: 'Text preparation'
+    })[key] ?? key.replaceAll('_', ' ');
+
+  const mismatchReasonLabel = (reason: string) =>
+    ({
+      settings_changed: 'Settings changed',
+      settings_unverifiable: 'Legacy output has no comparable settings history',
+      source_lineage_changed: 'Selected output lineage changed'
+    })[reason] ?? reason.replaceAll('_', ' ');
 </script>
 
 {#if pendingRun}
@@ -139,7 +154,7 @@
         <div>
           <div class="eyebrow">Before generation</div>
           <h2 id="mismatch-title" class="mt-1 text-2xl font-semibold">
-            Prerequisite settings changed
+            Choose prerequisite outputs
           </h2>
         </div>
         <button
@@ -149,9 +164,10 @@
         >
       </div>
       <p class="muted mt-4 text-sm leading-relaxed">
-        These stages already produced output with different settings. Recreating
-        it spends LLM usage; reusing it keeps the current text, takes, and
-        assembled output intact.
+        A prerequisite may have different settings, point to a different
+        selected-output lineage, or be a legacy result without comparable
+        history. Reusing selected outputs skips reruns for the listed stages;
+        rerunning prerequisites creates updated outputs before audio generation.
       </p>
       <div class="mt-4 space-y-2">
         {#each pendingMismatch.mismatches as mismatch}
@@ -167,6 +183,11 @@
                 .map(mismatchFieldLabel)
                 .join(', ')}
             </span>
+            {#if mismatch.reasons?.length}
+              <div class="muted mt-1 text-xs">
+                {mismatch.reasons.map(mismatchReasonLabel).join(' · ')}
+              </div>
+            {/if}
           </div>
         {/each}
       </div>
@@ -179,13 +200,14 @@
         <button
           onclick={() => onreuse(pendingMismatch)}
           class="rounded-xl border border-[var(--line)] px-4 py-2.5 text-sm font-semibold"
-          >Use current output</button
+          aria-label="Reuse all listed prerequisite outputs without rerunning them"
+          >Reuse selected outputs</button
         >
         <button
           onclick={() => onrefresh(pendingMismatch)}
           class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white"
         >
-          <RefreshCw size={16} /> Rerun
+          <RefreshCw size={16} /> Rerun prerequisites
         </button>
       </div>
     </section>

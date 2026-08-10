@@ -57,6 +57,19 @@ def _attached_source_artifacts(
     return [source.artifact] if source.artifact else []
 
 
+def _attached_source_artifact_ids(db_session, session_id: str) -> set[str]:
+    """All library artifacts attached to a session, including non-current ones."""
+
+    return set(
+        db_session.scalars(
+            select(Artifact.id)
+            .join(SourceAsset, SourceAsset.artifact_id == Artifact.id)
+            .join(SessionSource, SessionSource.source_asset_id == SourceAsset.id)
+            .where(SessionSource.session_id == session_id)
+        ).all()
+    )
+
+
 def _latest_current_artifacts_by_role(
     db_session,
     session_id: str,
@@ -401,6 +414,24 @@ class WorkflowService:
             return extension == ".srt"
         return True
 
+    def _valid_translation_source(
+        self,
+        definition: StageDefinition,
+        artifact: Artifact | None,
+        workflow_kind: str,
+        session_id: str,
+        attached_source_ids: set[str],
+    ) -> bool:
+        return bool(
+            artifact is not None
+            and artifact.state != "deleted"
+            and artifact.role in {"transcription", "correction", "upload"}
+            and (
+                artifact.session_id == session_id or artifact.id in attached_source_ids
+            )
+            and self._usable_input(definition, artifact, workflow_kind)
+        )
+
     def snapshot(self, session_id: str) -> dict[str, Any]:
         with self.database.session() as session:
             record_row = session.execute(
@@ -427,6 +458,7 @@ class WorkflowService:
                 or ""
             )
             attached_sources = _attached_source_artifacts(session, session_id)
+            attached_source_ids = _attached_source_artifact_ids(session, session_id)
             provisional_definitions = self.definitions(record, attached_sources)
             relevant_roles = {
                 role
@@ -652,7 +684,6 @@ class WorkflowService:
                             effective_definition.prerequisite_roles,
                         )
                 explicit_prerequisite = None
-                configured_translation_source_missing = False
                 if definition.key == "translate":
                     recorded_source_id = (
                         str(
@@ -670,46 +701,28 @@ class WorkflowService:
                         if explicit_source_id
                         else None
                     )
-                    if (
-                        candidate is not None
-                        and candidate.session_id == session_id
-                        and candidate.state != "deleted"
-                        and candidate.role in {"transcription", "correction", "upload"}
-                        and self._usable_input(
-                            effective_definition,
-                            candidate,
-                            record.workflow_kind,
-                        )
+                    if self._valid_translation_source(
+                        effective_definition,
+                        candidate,
+                        record.workflow_kind,
+                        session_id,
+                        attached_source_ids,
                     ):
                         explicit_prerequisite = candidate
-                    configured_translation_source_missing = bool(
-                        configured_translation_source_id
-                        and explicit_prerequisite is None
-                    )
-                prerequisite = (
-                    explicit_prerequisite
-                    if (
-                        definition.key == "translate"
-                        and configured_translation_source_id
-                    )
-                    else explicit_prerequisite
-                    or next(
-                        (
-                            roles[role]
-                            for role in prerequisite_roles
-                            if role in roles
-                            and self._usable_input(
-                                effective_definition,
-                                roles[role],
-                                record.workflow_kind,
-                            )
-                        ),
-                        None,
-                    )
+                prerequisite = explicit_prerequisite or next(
+                    (
+                        roles[role]
+                        for role in prerequisite_roles
+                        if role in roles
+                        and self._usable_input(
+                            effective_definition,
+                            roles[role],
+                            record.workflow_kind,
+                        )
+                    ),
+                    None,
                 )
-                artifact_matches_prerequisite = (
-                    not configured_translation_source_missing
-                )
+                artifact_matches_prerequisite = True
                 if artifact is not None and prerequisite is not None:
                     metadata = (
                         artifact.metadata_json
@@ -878,86 +891,140 @@ class WorkflowService:
                         ),
                         "duration_seconds": duration_seconds,
                     }
-                stages.append(
-                    {
-                        "number": index,
-                        "key": definition.key,
-                        "title": definition.title,
-                        "explanation": definition.explanation,
-                        "status": status,
-                        "executable": bool(document_optimization_enabled)
-                        if definition.key == "optimize_tts"
-                        else definition.executable,
-                        "toggle": definition.key == "optimize_tts",
-                        "toggle_only": definition.key == "optimize_tts"
-                        and not document_optimization_enabled,
-                        "enabled": stage_enabled,
-                        "optimization_timing": "document"
-                        if document_optimization_enabled
-                        else "generation",
-                        "included": definition.key in record.included_stages_json,
-                        "required": definition.key == "transcribe"
-                        and any(
-                            key in record.included_stages_json
-                            for key in ("correct", "translate", "generate_audio")
+                resolved_generation_input = None
+                if definition.key == "generate_audio" and prerequisite is not None:
+                    input_stage = {
+                        "transcription": "transcribe",
+                        "correction": "correct",
+                        "translation": "translate",
+                        "tts_optimized": "optimize_tts",
+                    }.get(prerequisite.role, "source")
+                    input_history = histories.get(input_stage)
+                    input_item = next(
+                        (
+                            item
+                            for item in (input_history or {}).get("items", [])
+                            if item.get("id") == prerequisite.id
                         ),
-                        "artifact": {
-                            "id": artifact.id,
-                            "role": artifact.role,
-                            "path": artifact.relative_path,
-                            "relative_path": artifact.relative_path,
-                            "kind": artifact.kind,
-                            "mime_type": artifact.mime_type,
-                            "size_bytes": artifact.size_bytes,
-                            "state": artifact.state,
-                            "metadata_json": artifact.metadata_json or {},
-                        }
-                        if artifact
-                        else None,
-                        "artifacts": history["items"] if history else [],
-                        "selected_artifact_id": history["selected_artifact_id"]
-                        if history
-                        else (artifact.id if artifact else None),
-                        "selection_revision": history["revision"] if history else 0,
-                        "artifact_history_total": history["total"]
-                        if history
-                        else (1 if artifact else 0),
-                        "artifact_history_has_more": history["has_more"]
-                        if history
-                        else False,
-                        "artifact_history_next_before_version": history[
-                            "next_before_version"
-                        ]
-                        if history
-                        else None,
-                        "job_id": active.id if active else None,
-                        "agent_run_id": known_agent_run_id,
-                        "resumable": bool(
-                            status == "failed"
-                            and agent_run is not None
-                            and agent_run.status in {"failed", "interrupted"}
+                        None,
+                    )
+                    is_current_attachment = prerequisite.id in {
+                        item.id for item in attached_sources
+                    }
+                    source_origin = (
+                        "attached"
+                        if prerequisite.id in attached_source_ids
+                        else "current"
+                        if prerequisite.role == "upload"
+                        else "stage"
+                    )
+                    label = {
+                        "transcription": "Transcription",
+                        "correction": "Correction",
+                        "translation": "Translation",
+                        "tts_optimized": "Speech-optimized subtitles",
+                    }.get(prerequisite.role, "Current source")
+                    if source_origin == "attached":
+                        label = (
+                            "Current attached source"
+                            if is_current_attachment
+                            else "Attached source"
+                        )
+                    resolved_generation_input = {
+                        "artifact_id": prerequisite.id,
+                        "role": prerequisite.role,
+                        "stage_key": input_stage,
+                        "version": input_item.get("version") if input_item else None,
+                        "label": label,
+                        "origin": source_origin,
+                        "selection_stage": input_stage,
+                        "selected_artifact_id": (
+                            input_history.get("selected_artifact_id")
+                            if input_history
+                            else prerequisite.id
                         ),
-                        "progress": active.progress
-                        if active and status in {"running", "failed"}
-                        else None,
-                        "detail": (
-                            active.error_message
-                            if active and status == "failed"
-                            else (
-                                active.progress_detail
-                                or (
-                                    "Waiting for an available worker"
-                                    if active.status == "queued"
-                                    else None
-                                )
-                                if active and status == "running"
+                    }
+                stage = {
+                    "number": index,
+                    "key": definition.key,
+                    "title": definition.title,
+                    "explanation": definition.explanation,
+                    "status": status,
+                    "executable": bool(document_optimization_enabled)
+                    if definition.key == "optimize_tts"
+                    else definition.executable,
+                    "toggle": definition.key == "optimize_tts",
+                    "toggle_only": definition.key == "optimize_tts"
+                    and not document_optimization_enabled,
+                    "enabled": stage_enabled,
+                    "optimization_timing": "document"
+                    if document_optimization_enabled
+                    else "generation",
+                    "included": definition.key in record.included_stages_json,
+                    "required": definition.key == "transcribe"
+                    and any(
+                        key in record.included_stages_json
+                        for key in ("correct", "translate", "generate_audio")
+                    ),
+                    "artifact": {
+                        "id": artifact.id,
+                        "role": artifact.role,
+                        "path": artifact.relative_path,
+                        "relative_path": artifact.relative_path,
+                        "kind": artifact.kind,
+                        "mime_type": artifact.mime_type,
+                        "size_bytes": artifact.size_bytes,
+                        "state": artifact.state,
+                        "metadata_json": artifact.metadata_json or {},
+                    }
+                    if artifact
+                    else None,
+                    "artifacts": history["items"] if history else [],
+                    "selected_artifact_id": history["selected_artifact_id"]
+                    if history
+                    else (artifact.id if artifact else None),
+                    "selection_revision": history["revision"] if history else 0,
+                    "artifact_history_total": history["total"]
+                    if history
+                    else (1 if artifact else 0),
+                    "artifact_history_has_more": history["has_more"]
+                    if history
+                    else False,
+                    "artifact_history_next_before_version": history[
+                        "next_before_version"
+                    ]
+                    if history
+                    else None,
+                    "job_id": active.id if active else None,
+                    "agent_run_id": known_agent_run_id,
+                    "resumable": bool(
+                        status == "failed"
+                        and agent_run is not None
+                        and agent_run.status in {"failed", "interrupted"}
+                    ),
+                    "progress": active.progress
+                    if active and status in {"running", "failed"}
+                    else None,
+                    "detail": (
+                        active.error_message
+                        if active and status == "failed"
+                        else (
+                            active.progress_detail
+                            or (
+                                "Waiting for an available worker"
+                                if active.status == "queued"
                                 else None
                             )
-                        ),
-                        "usage": None,
-                        "run_metrics": run_metrics,
-                    }
-                )
+                            if active and status == "running"
+                            else None
+                        )
+                    ),
+                    "usage": None,
+                    "run_metrics": run_metrics,
+                }
+                if definition.key == "generate_audio":
+                    stage["resolved_input"] = resolved_generation_input
+                stages.append(stage)
 
             artifact_ids = {
                 scope["artifact_id"]
@@ -1233,6 +1300,7 @@ class WorkflowService:
         requested_source_artifact_id = str(
             run_values.pop("source_artifact_id", "") or ""
         )
+        explicit_requested_source = bool(requested_source_artifact_id)
         provided_stage_settings = run_values.pop("stage_settings", {})
         reuse_stages = [
             str(value)
@@ -1307,6 +1375,7 @@ class WorkflowService:
                 [primary_source.artifact] if primary_source.artifact else []
             )
             attached_ids = {artifact.id for artifact in attached_sources}
+            attached_source_ids = _attached_source_artifact_ids(session, session_id)
             all_artifacts = [
                 *attached_sources,
                 *(
@@ -1376,29 +1445,29 @@ class WorkflowService:
             source = None
             if requested_source_artifact_id:
                 requested = session.get(Artifact, requested_source_artifact_id)
-                attached_ids = {artifact.id for artifact in attached_sources}
-                if requested is None or (
-                    requested.session_id != session_id
-                    and requested.id not in attached_ids
-                ):
-                    raise ValueError(
-                        "The selected input artifact does not belong to this session."
-                    )
                 allowed_requested_roles = (
                     {"transcription", "correction", "upload"}
                     if stage_key == "translate"
                     else set(prerequisite_roles)
                 )
                 if (
-                    requested.role not in allowed_requested_roles
+                    requested is None
+                    or requested.state == "deleted"
+                    or requested.role not in allowed_requested_roles
+                    or (
+                        requested.session_id != session_id
+                        and requested.id not in attached_source_ids
+                    )
                     or not self._usable_input(
                         definition, requested, record.workflow_kind
                     )
                 ):
-                    raise ValueError(
-                        f"The selected artifact cannot be used by stage '{stage_key}'."
-                    )
-                source = requested
+                    if explicit_requested_source:
+                        raise ValueError(
+                            f"The selected artifact cannot be used by stage '{stage_key}'."
+                        )
+                else:
+                    source = requested
             if source is None:
                 source = next(
                     (

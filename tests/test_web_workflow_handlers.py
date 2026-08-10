@@ -17,7 +17,7 @@ from pandrator.web.artifacts import ArtifactService
 from pandrator.web.database import Database
 from pandrator.web.credentials import auxiliary_credential_key, upsert_credential
 from pandrator.web.jobs import JobQueue
-from pandrator.web.models import Artifact, ArtifactEdge, AudioTake, GenerationPlan, GenerationPlanRevision, GenerationRun, GenerationSegment, OutputAssembly, PronunciationEntry, SessionRecord, UsageEvent
+from pandrator.web.models import Artifact, ArtifactEdge, AudioTake, GenerationPlan, GenerationPlanRevision, GenerationRun, GenerationSegment, OutputAssembly, PronunciationEntry, SessionRecord, SessionSetting, SessionStageSelection, UsageEvent
 from pandrator.web.sessions import SessionService
 from pandrator.web.tts_providers import TtsBatchResult, TtsCapabilities
 from pandrator.web.workflow_handlers import (
@@ -26,7 +26,7 @@ from pandrator.web.workflow_handlers import (
     _source_cleaning_progress_callback,
 )
 from pandrator.web.tts_optimization import OptimizationUsage
-from pandrator.web.workspace import GenerationService, OutcomePlanService, WorkspaceSettingsService, mark_output_assemblies_stale
+from pandrator.web.workspace import GenerationService, OutcomePlanService, WorkspaceSettingsService, adapt_runtime_settings, mark_output_assemblies_stale
 from tests.web_test_support import prepare_web_test_data_root
 
 
@@ -455,6 +455,56 @@ class WebWorkflowHandlerTests(unittest.TestCase):
         translate = self._continue_generation({"target_language": "de"}, reuse_stages=("translate",))
         translate.assert_not_called()
 
+    def test_reuse_translation_bypasses_selected_parent_lineage_change(self):
+        with self.database.session() as session:
+            session.get(SessionRecord, self.session.id).workflow_kind = "voiceover"
+        source_path = self.paths.uploads / "lineage-source.srt"
+        source_path.write_text("1\n00:00:00,000 --> 00:00:01,000\nHello\n", encoding="utf-8")
+        source = self.artifacts.register(source_path, kind="srt", role="upload", session_id=self.session.id, metadata={"original_filename": source_path.name})
+        parent_path = self.session_dir / "translation-parent.srt"
+        parent_path.write_text("1\n00:00:00,000 --> 00:00:01,000\nParent\n", encoding="utf-8")
+        translation_parent = self.artifacts.register(parent_path, kind="srt", role="correction", session_id=self.session.id, parent_ids=[source.id])
+        translation_path = self.session_dir / "lineage-translation.srt"
+        translation_path.write_text("1\n00:00:00,000 --> 00:00:01,000\nCześć\n", encoding="utf-8")
+        translation = self.artifacts.register(translation_path, kind="srt", role="translation", session_id=self.session.id, parent_ids=[translation_parent.id], metadata={"source_artifact_id": translation_parent.id})
+        selected_path = self.session_dir / "selected-correction.srt"
+        selected_path.write_text("1\n00:00:00,000 --> 00:00:01,000\nSelected\n", encoding="utf-8")
+        selected_correction = self.artifacts.register(selected_path, kind="srt", role="correction", session_id=self.session.id, parent_ids=[source.id])
+        outcome = OutcomePlanService(self.database)
+        current = outcome.get(self.session.id)
+        value = current["value"]
+        value["transformations"] = {**value.get("transformations", {}), "translation": True, "generate_audio": True}
+        value["inputs"] = {**value.get("inputs", {}), "translation": "correction", "generation": "translation"}
+        outcome.update(self.session.id, current["revision"], value)
+        with self.database.session() as session:
+            session.get(SessionStageSelection, (self.session.id, "correct")).artifact_id = selected_correction.id
+            session.get(SessionStageSelection, (self.session.id, "translate")).artifact_id = translation.id
+
+        with mock.patch.object(self.handlers, "translate") as translate, mock.patch.object(
+            self.handlers,
+            "_run_reviewable_generation",
+            return_value={"generation_run_id": "fixture", "status": "completed"},
+        ):
+            self.handlers.continue_workflow(
+                {
+                    "session_id": self.session.id,
+                    "target_stage": "generate_audio",
+                    "stage_settings": {"translate": {"source_artifact_id": selected_correction.id}},
+                    "reuse_stages": ["correct", "translate"],
+                },
+                self.progress,
+                threading.Event(),
+            )
+
+        translate.assert_not_called()
+
+    def _resolved_translation_settings(self):
+        resolved, _ = WorkspaceSettingsService(self.database).resolve(self.session.id, ["translation", "subtitles"])
+        settings = {}
+        for section in ("translation", "subtitles"):
+            settings.update(adapt_runtime_settings(section, resolved.get(section, {})))
+        return settings
+
     def test_settings_mismatches_detects_translation_target_language_change(self):
         self._voiceover_session_with_translation(
             {"backend": "llm", "target_language": "pl", "model": "mock/default-model", "instructions": ""}
@@ -467,20 +517,39 @@ class WebWorkflowHandlerTests(unittest.TestCase):
         self.assertEqual("translate", mismatches[0]["stage"])
         self.assertIn("target_language", mismatches[0]["changed_fields"])
 
-    def test_settings_mismatches_ignores_matching_or_legacy_artifacts(self):
-        # A legacy artifact without a stored fingerprint cannot be compared and
-        # must not produce a prompt.
-        self._voiceover_session_with_translation(None)
+    def test_settings_mismatches_reports_legacy_rerun_and_keeps_matching_raw_hash_quiet(self):
+        _source, translation = self._voiceover_session_with_translation(None)
         with mock.patch.object(self.handlers, "_with_database_llm_settings", side_effect=self._fake_llm_hydration):
-            self.assertEqual([], self.handlers.settings_mismatches(self.session.id, "generate_audio"))
-        # A fingerprint that still matches the resolved settings is quiet too.
-        self._voiceover_session_with_translation(
-            {"backend": "llm", "target_language": "pl", "model": "mock/default-model", "instructions": ""}
-        )
+            mismatches = self.handlers.settings_mismatches(self.session.id, "generate_audio")
+        self.assertEqual(["translate"], [item["stage"] for item in mismatches])
+        self.assertEqual(["settings_unverifiable"], mismatches[0]["reasons"])
+        settings = self._resolved_translation_settings()
         with self.database.session() as session:
-            session.get(SessionRecord, self.session.id).target_language = "pl"
+            current = session.get(Artifact, translation.id)
+            current.settings_hash = hashlib.sha256(json.dumps(settings, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")).hexdigest()
         with mock.patch.object(self.handlers, "_with_database_llm_settings", side_effect=self._fake_llm_hydration):
             self.assertEqual([], self.handlers.settings_mismatches(self.session.id, "generate_audio"))
+
+    def test_settings_mismatches_reports_translation_source_lineage_change(self):
+        source, translation = self._voiceover_session_with_translation(None)
+        next_source_path = self.paths.uploads / "next-lineage-source.srt"
+        next_source_path.write_text("1\n00:00:00,000 --> 00:00:01,000\nHello\n", encoding="utf-8")
+        next_source = self.artifacts.register(next_source_path, kind="srt", role="upload", session_id=self.session.id, metadata={"original_filename": next_source_path.name})
+        self.assertEqual(source.content_hash, next_source.content_hash)
+        with self.database.session() as session:
+            session.add(SessionSetting(session_id=self.session.id, section="translation", value_json={"source_artifact_id": next_source.id}))
+            session.get(SessionStageSelection, (self.session.id, "translate")).artifact_id = translation.id
+        settings = self._resolved_translation_settings()
+        with self.database.session() as session:
+            current = session.get(Artifact, translation.id)
+            current.settings_hash = hashlib.sha256(json.dumps(settings, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")).hexdigest()
+        with mock.patch.object(self.handlers, "_with_database_llm_settings", side_effect=self._fake_llm_hydration):
+            mismatches = self.handlers.settings_mismatches(self.session.id, "generate_audio")
+        self.assertEqual("translate", mismatches[0]["stage"])
+        self.assertEqual(["source_lineage_changed"], mismatches[0]["reasons"])
+        self.assertEqual(source.id, translation.metadata_json["source_artifact_id"])
+        translate = self._continue_generation({})
+        translate.assert_called_once()
 
     def test_generation_plan_reuses_revision_for_identical_content(self):
         records = [{"text": "First sentence.", "paragraph": "yes"}, {"text": "Second sentence."}]
