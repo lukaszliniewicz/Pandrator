@@ -15,7 +15,7 @@ computer. Cloud language and speech providers are optional.
 ## Quick start
 
 The current release is
-[Pandrator 0.8.10](https://github.com/lukaszliniewicz/Pandrator/releases/tag/v.0.8.10)
+[Pandrator 0.8.11](https://github.com/lukaszliniewicz/Pandrator/releases/tag/v.0.8.11)
 with Pandrator Manager 0.9.14. The Manager installs Pandrator, launches it, and
 lets you add or remove speech components later. Docker and WSL are not
 required.
@@ -23,14 +23,14 @@ required.
 ### Windows
 
 1. Download
-   [PandratorManager-0.9.14-windows-x86_64.exe](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.8.10/PandratorManager-0.9.14-windows-x86_64.exe).
+   [PandratorManager-0.9.14-windows-x86_64.exe](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.8.11/PandratorManager-0.9.14-windows-x86_64.exe).
 2. Run it and choose the parent folder for your installation.
 3. Let the Manager install Pandrator, then open the browser interface.
 4. Under **Providers & services**, install only the local models you want.
 
 The Windows executable is not Authenticode-signed, so Windows may show
 **Unknown publisher** or a SmartScreen warning. The
-[release page](https://github.com/lukaszliniewicz/Pandrator/releases/tag/v.0.8.10)
+[release page](https://github.com/lukaszliniewicz/Pandrator/releases/tag/v.0.8.11)
 collects the checksums for all downloadable files in one `SHA256SUMS` file.
 
 ### Linux
@@ -141,6 +141,29 @@ capabilities reported by each installed service.
 Hardware needs vary with model size, quantization, input length, and compute
 backend. A GPU makes many models faster, but several useful configurations run
 on CPU.
+
+### Fine-tuned XTTS model bundles
+
+Pandrator can install a complete fine-tuned XTTS bundle and make it available
+in the **Model** picker. First update Pandrator and, on an existing
+installation, update or repair **XTTS v2** in Pandrator Manager as well. The
+XTTS service must support model uploads; the upload screen explains this if an
+older installed component does not.
+
+In a session's **Generate audio** settings, select **XTTS**, enter a friendly
+model ID, and choose these four files together from one flat bundle directory:
+
+- `config.json`
+- `model.pth`
+- `speakers_xtts.pth`
+- `vocab.json`
+
+The selection must contain exactly those four names. Training run directories,
+nested checkpoint folders, and incomplete exports are rejected. Pandrator
+streams the bundle to XTTS and installs it under managed user data, so do not
+place models in a versioned service source directory. Installed model IDs
+cannot be overwritten in this release; choose a new ID when importing a newer
+bundle.
 
 ## Files and exports
 

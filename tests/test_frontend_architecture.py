@@ -165,3 +165,22 @@ def test_large_coordinators_delegate_presentation_and_avoid_transport():
     transport_import = re.compile(r"from\s+['\"](?:\$lib/|\./)api['\"]")
     assert not transport_import.search(session_workspace)
     assert not transport_import.search(generation_drawer)
+
+
+def test_xtts_model_upload_is_exposed_by_source_and_compiled_shell():
+    workspace = source(WEB_SOURCE / "lib" / "SessionWorkspace.svelte")
+    api_client = source(WEB_SOURCE / "lib" / "domain-api.ts")
+    static_root = ROOT / "pandrator" / "web" / "static"
+    compiled = "\n".join(
+        path.read_text(encoding="utf-8") for path in static_root.rglob("*.js")
+    )
+
+    assert "Add a fine-tuned XTTS model" in workspace
+    assert "config.json" in workspace
+    assert "uploadXttsModel" in workspace
+    assert "/api/v1/services/tts/xtts/models" in api_client
+    assert "/api/v1/services/tts/xtts/models" in compiled
+    assert "Add a fine-tuned XTTS model" in compiled
+    assert re.search(r"Upload and\s+select", compiled)
+    assert "ttsModel = uploaded.id" in workspace
+    assert "xtts_model: ttsModel" in workspace

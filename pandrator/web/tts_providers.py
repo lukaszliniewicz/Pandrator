@@ -49,6 +49,17 @@ def normalize_service_id(value: object) -> str:
     }.get(normalized, normalized)
 
 
+def _dedupe_catalogue_values(values: list[object]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        normalized = str(value or "").strip()
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            result.append(normalized)
+    return result
+
+
 @dataclass(frozen=True, slots=True)
 class TtsHealth:
     online: bool
@@ -61,6 +72,7 @@ class TtsCapabilities:
     synthesis: bool = True
     health: bool = True
     dynamic_catalog: bool = False
+    model_upload: bool = False
     voice_upload: bool = False
     voice_delete: bool = False
     batch_synthesis: bool = False
@@ -317,6 +329,80 @@ class LegacyTtsAdapter:
         )
 
 
+class XttsAdapter(LegacyTtsAdapter):
+    """Expose XTTS' server-side model and voice catalogues to the UI."""
+
+    def capabilities(
+        self,
+        service: dict[str, Any],
+    ) -> TtsCapabilities:
+        return TtsCapabilities(
+            dynamic_catalog=True,
+            model_upload=True,
+            voice_upload=bool(service.get("supports_voice_cloning")),
+            voice_delete=bool(service.get("supports_voice_deletion")),
+        )
+
+    def enrich_catalog(
+        self,
+        service: dict[str, Any],
+        *,
+        api_key: str = "",
+    ) -> dict[str, Any]:
+        del api_key
+        base_url = str(service.get("api_base") or tts_handler.XTTS_API_BASE_URL)
+        models = _dedupe_catalogue_values(
+            [
+                *list(service.get("models") or []),
+                *tts_handler.get_xtts_models(base_url),
+            ]
+        )
+        voices = _dedupe_catalogue_values(
+            [
+                *list(service.get("voices") or []),
+                *tts_handler.get_xtts_speakers(base_url),
+            ]
+        )
+        catalogues = {
+            str(model): _dedupe_catalogue_values(
+                [
+                    *list(
+                        (service.get("voice_catalogues") or {}).get(model, [])
+                        if isinstance(service.get("voice_catalogues"), dict)
+                        else []
+                    ),
+                    *voices,
+                ]
+            )
+            for model in models
+        }
+        default_model = str(
+            service.get("default_model") or tts_handler.XTTS_DEFAULT_MODEL
+        )
+        if default_model not in models:
+            default_model = (
+                tts_handler.XTTS_DEFAULT_MODEL
+                if tts_handler.XTTS_DEFAULT_MODEL in models
+                else (models[0] if models else "")
+            )
+        default_voice = str(service.get("default_voice") or "")
+        if default_voice and default_voice not in voices:
+            voices.append(default_voice)
+            for catalogue in catalogues.values():
+                if default_voice not in catalogue:
+                    catalogue.append(default_voice)
+        result: dict[str, Any] = {
+            "models": models,
+            "voices": voices,
+            "voice_catalogues": catalogues,
+        }
+        if default_model:
+            result["default_model"] = default_model
+        if default_voice:
+            result["default_voice"] = default_voice
+        return result
+
+
 class KoboldQwenAdapter(LegacyTtsAdapter):
     def capabilities(
         self,
@@ -558,6 +644,7 @@ class TtsProviderRegistry:
         self._adapters: dict[str, TtsProviderAdapter] = {}
         for service_id in self.BUILTIN_SERVICE_IDS:
             self.register(LegacyTtsAdapter(service_id))
+        self.replace(XttsAdapter("xtts"))
         self.replace(SileroAdapter("silero"))
         self.replace(KoboldQwenAdapter("kobold_qwen"))
 
@@ -1081,6 +1168,10 @@ class TtsCatalogueService:
         )
         for service in services:
             self._decorate_credentials(service)
+            if normalize_service_id(service.get("id") or service.get("name")) == "xtts":
+                capabilities = self.providers.capabilities(service)
+                service["supports_dynamic_catalog"] = capabilities.dynamic_catalog
+                service["supports_model_upload"] = capabilities.model_upload
         if refresh:
             self._refresh(services)
         payload = {

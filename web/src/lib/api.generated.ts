@@ -1125,6 +1125,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/services/tts/xtts/models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["uploadXttsModel"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/services/tts/{serviceId}/preview": {
         parameters: {
             query?: never;
@@ -2174,7 +2190,7 @@ export interface components {
             api_version?: string;
             /**
              * Application Version
-             * @default 0.8.10
+             * @default 0.8.11
              */
             application_version?: string;
             /** Canonical Origin */
@@ -5189,6 +5205,38 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    uploadXttsModel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": {
+                    files: string[];
+                    model_id: string;
+                };
+            };
+        };
+        responses: {
+            /** @description XTTS model uploaded and installed */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        bytes: number;
+                        id: string;
+                        object: string;
+                        owned_by: string;
+                    };
+                };
             };
         };
     };

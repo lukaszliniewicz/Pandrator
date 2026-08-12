@@ -5,14 +5,18 @@ from __future__ import annotations
 import ipaddress
 import json
 import os
+import re
 import secrets
 import shutil
 import time
 import uuid
+from collections.abc import Iterator
 from datetime import timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Self
+from urllib.parse import urlsplit
 
+import requests
 from flask import (
     Flask,
     Response,
@@ -161,6 +165,17 @@ from .workflow_plan_routes import register_workflow_plan_routes
 from .workspace import BUILTIN_DEFAULTS, SETTING_SECTIONS
 from .workspace import RevisionConflict as WorkspaceRevisionConflict
 
+XTTS_MODEL_BUNDLE_FILENAMES = (
+    "config.json",
+    "model.pth",
+    "speakers_xtts.pth",
+    "vocab.json",
+)
+_XTTS_MODEL_BUNDLE_FILENAME_SET = frozenset(XTTS_MODEL_BUNDLE_FILENAMES)
+_XTTS_MODEL_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_XTTS_MODEL_UPLOAD_CHUNK_BYTES = 1024 * 1024
+_XTTS_MODEL_UPLOAD_TIMEOUT_SECONDS = 60 * 60
+
 
 def _is_loopback_address(value: object) -> bool:
     candidate = str(value or "").split("%", 1)[0]
@@ -170,6 +185,124 @@ def _is_loopback_address(value: object) -> bool:
         return False
     mapped = getattr(address, "ipv4_mapped", None)
     return bool(address.is_loopback or (mapped and mapped.is_loopback))
+
+
+def _xtts_uploaded_file_size(uploaded_file: Any) -> int:
+    """Return a spooled multipart file's size without materializing its body."""
+
+    stream = uploaded_file.stream
+    try:
+        stream.seek(0, os.SEEK_END)
+        size = stream.tell()
+        stream.seek(0)
+    except (AttributeError, OSError, ValueError) as error:
+        raise ValueError(
+            f"Could not stream '{uploaded_file.filename}' to the XTTS service."
+        ) from error
+    if size < 1:
+        raise ValueError(f"'{uploaded_file.filename}' must not be empty.")
+    return int(size)
+
+
+class _SizedMultipartStream:
+    """Expose a single-pass multipart iterator with a known content length."""
+
+    def __init__(self, chunks: Iterator[bytes], content_length: int):
+        self._chunks = chunks
+        self._content_length = content_length
+
+    def __iter__(self) -> Self:
+        return self
+
+    def __next__(self) -> bytes:
+        return next(self._chunks)
+
+    def __len__(self) -> int:
+        return self._content_length
+
+
+def _xtts_model_bundle_upload_parts(
+    model_id: str,
+    uploaded_files: list[Any],
+) -> tuple[str, Iterator[bytes]]:
+    """Build a bounded-memory multipart stream for the first-party wrapper."""
+
+    boundary = f"----PandratorXtts{secrets.token_hex(16)}"
+    field_part = (
+        f"--{boundary}\r\n"
+        'Content-Disposition: form-data; name="model_id"\r\n\r\n'
+        f"{model_id}\r\n"
+    ).encode()
+    file_parts: list[tuple[bytes, Any, int]] = []
+    total_size = len(field_part)
+    content_types = {
+        "config.json": "application/json",
+        "model.pth": "application/octet-stream",
+        "speakers_xtts.pth": "application/octet-stream",
+        "vocab.json": "application/json",
+    }
+    for uploaded_file in uploaded_files:
+        filename = str(uploaded_file.filename)
+        header = (
+            f"--{boundary}\r\n"
+            'Content-Disposition: form-data; name="files"; '
+            f'filename="{filename}"\r\n'
+            f"Content-Type: {content_types[filename]}\r\n\r\n"
+        ).encode()
+        size = _xtts_uploaded_file_size(uploaded_file)
+        file_parts.append((header, uploaded_file, size))
+        total_size += len(header) + size + len(b"\r\n")
+    final_part = f"--{boundary}--\r\n".encode("ascii")
+    total_size += len(final_part)
+
+    def stream() -> Iterator[bytes]:
+        yield field_part
+        for header, uploaded_file, _size in file_parts:
+            yield header
+            file_stream = uploaded_file.stream
+            file_stream.seek(0)
+            while chunk := file_stream.read(_XTTS_MODEL_UPLOAD_CHUNK_BYTES):
+                yield chunk
+            yield b"\r\n"
+        yield final_part
+
+    return boundary, _SizedMultipartStream(stream(), total_size)
+
+
+def _xtts_upload_endpoint(base_url: str) -> str:
+    parsed = urlsplit(str(base_url or "").strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("The configured XTTS endpoint is invalid.")
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ValueError("The configured XTTS endpoint is invalid.")
+    base = str(base_url).strip().rstrip("/")
+    if parsed.path.rstrip("/").endswith("/v1"):
+        base = base[: -len("/v1")]
+    return f"{base}/v1/models"
+
+
+def _xtts_wrapper_error_message(response: requests.Response) -> str:
+    try:
+        payload = response.json()
+    except ValueError:
+        return "The XTTS model service rejected the upload."
+    error = payload.get("error") if isinstance(payload, dict) else None
+    if isinstance(error, dict):
+        message = error.get("message")
+        if isinstance(message, str) and message.strip():
+            return message.strip()[:1000]
+    detail = payload.get("detail") if isinstance(payload, dict) else None
+    if isinstance(detail, str) and detail.strip():
+        return detail.strip()[:1000]
+    if isinstance(detail, list):
+        messages = [
+            str(item.get("msg") or "").strip()
+            for item in detail
+            if isinstance(item, dict) and str(item.get("msg") or "").strip()
+        ]
+        if messages:
+            return "; ".join(messages[:5])[:1000]
+    return "The XTTS model service rejected the upload."
 
 
 def _model_dict(record, fields: tuple[str, ...]) -> dict[str, Any]:
@@ -806,6 +939,164 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         response = jsonify(payload)
         response.headers["ETag"] = f'"{revision}"'
         return response
+
+    @app.post("/api/v1/services/tts/xtts/models")
+    @require_auth
+    def xtts_model_upload():
+        if set(request.form.keys()) != {"model_id"}:
+            return error_response(
+                "validation_error",
+                "Upload exactly one model_id field with the XTTS bundle.",
+                422,
+            )
+        model_ids = [
+            str(value or "").strip() for value in request.form.getlist("model_id")
+        ]
+        if len(model_ids) != 1 or not _XTTS_MODEL_ID_PATTERN.fullmatch(model_ids[0]):
+            return error_response(
+                "validation_error",
+                "model_id must use 1–128 letters, numbers, dots, hyphens, or underscores and start with a letter or number.",
+                422,
+            )
+        if set(request.files.keys()) != {"files"}:
+            return error_response(
+                "validation_error",
+                "Upload the XTTS bundle as repeated 'files' fields.",
+                422,
+            )
+        uploaded_files = request.files.getlist("files")
+        filenames = [
+            str(uploaded_file.filename or "") for uploaded_file in uploaded_files
+        ]
+        if (
+            len(uploaded_files) != len(XTTS_MODEL_BUNDLE_FILENAMES)
+            or set(filenames) != _XTTS_MODEL_BUNDLE_FILENAME_SET
+        ):
+            return error_response(
+                "validation_error",
+                "XTTS model bundles must contain exactly config.json, model.pth, speakers_xtts.pth, and vocab.json. Nested folders and incomplete training outputs are not supported.",
+                422,
+            )
+        try:
+            boundary, body = _xtts_model_bundle_upload_parts(
+                model_ids[0],
+                uploaded_files,
+            )
+        except ValueError as error:
+            return error_response("validation_error", str(error), 422)
+
+        catalogue, _revision = tts_catalogue.snapshot()
+        xtts_service = next(
+            (
+                service
+                for service in catalogue.get("services", [])
+                if str(service.get("id") or "").strip().lower() == "xtts"
+            ),
+            None,
+        )
+        if not isinstance(xtts_service, dict):
+            return error_response(
+                "xtts_service_unavailable",
+                "The XTTS service is not configured.",
+                503,
+            )
+        endpoint_base = str(xtts_service.get("api_base") or "").strip()
+        if str(xtts_service.get("connection_mode") or "") == "managed_local":
+            managed = xtts_service.get("manager_service")
+            endpoint_base = (
+                str(managed.get("endpoint") or "").strip()
+                if isinstance(managed, dict)
+                else ""
+            )
+            if not endpoint_base:
+                return error_response(
+                    "xtts_service_unavailable",
+                    "Pandrator Manager has not provided an XTTS endpoint for model upload.",
+                    503,
+                )
+        try:
+            endpoint = _xtts_upload_endpoint(endpoint_base)
+        except ValueError as error:
+            return error_response("xtts_service_unavailable", str(error), 503)
+
+        try:
+            wrapper_response = requests.post(
+                endpoint,
+                data=body,
+                headers={
+                    "Accept": "application/json",
+                    "Authorization": "Bearer sk-placeholder",
+                    "Content-Type": f"multipart/form-data; boundary={boundary}",
+                },
+                timeout=(10, _XTTS_MODEL_UPLOAD_TIMEOUT_SECONDS),
+            )
+        except requests.Timeout:
+            return error_response(
+                "xtts_model_upload_timeout",
+                "The XTTS model service did not finish the upload before the one-hour timeout.",
+                504,
+            )
+        except requests.ConnectionError:
+            return error_response(
+                "xtts_service_unavailable",
+                "Could not connect to the selected XTTS service.",
+                503,
+            )
+        except requests.RequestException:
+            return error_response(
+                "xtts_model_upload_failed",
+                "The XTTS model service could not accept the upload.",
+                502,
+            )
+
+        if wrapper_response.status_code >= 400:
+            if wrapper_response.status_code in {404, 405}:
+                return error_response(
+                    "xtts_model_upload_unsupported",
+                    "This XTTS component does not support model uploads. Update the XTTS component in Pandrator Manager, then retry.",
+                    wrapper_response.status_code,
+                )
+            if 400 <= wrapper_response.status_code < 500:
+                return error_response(
+                    "xtts_model_upload_rejected",
+                    _xtts_wrapper_error_message(wrapper_response),
+                    wrapper_response.status_code,
+                )
+            return error_response(
+                "xtts_model_upload_failed",
+                "The XTTS model service failed while installing the model.",
+                502,
+            )
+        try:
+            wrapper_payload = wrapper_response.json()
+        except ValueError:
+            wrapper_payload = None
+        if (
+            wrapper_response.status_code != 201
+            or not isinstance(wrapper_payload, dict)
+            or not isinstance(wrapper_payload.get("id"), str)
+            or not str(wrapper_payload["id"]).strip()
+            or not isinstance(wrapper_payload.get("object"), str)
+            or not isinstance(wrapper_payload.get("owned_by"), str)
+            or isinstance(wrapper_payload.get("bytes"), bool)
+            or not isinstance(wrapper_payload.get("bytes"), int)
+        ):
+            return error_response(
+                "xtts_model_upload_failed",
+                "The XTTS model service returned an unexpected upload response.",
+                502,
+            )
+        return (
+            jsonify(
+                {
+                    "id": str(wrapper_payload["id"]),
+                    "object": str(wrapper_payload["object"]),
+                    "owned_by": str(wrapper_payload["owned_by"]),
+                    "bytes": int(wrapper_payload["bytes"]),
+                }
+            ),
+            201,
+        )
 
     @app.post("/api/v1/services/tts/discover")
     @require_auth

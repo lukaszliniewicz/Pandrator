@@ -87,6 +87,8 @@ class SettingsApiTests(unittest.TestCase):
         profiles = {item["id"]: item for item in catalogue["profiles"]}
 
         self.assertFalse(services["xtts"]["credential_required"])
+        self.assertTrue(services["xtts"]["supports_dynamic_catalog"])
+        self.assertTrue(services["xtts"]["supports_model_upload"])
         self.assertFalse(services["voxcpm"]["credential_required"])
         self.assertTrue(services["openai"]["credential_required"])
         self.assertFalse(services["openai"]["credential_configured"])

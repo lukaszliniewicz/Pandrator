@@ -1207,6 +1207,62 @@ def build_openapi_document() -> dict:
             "/api/v1/services/tts": {
                 "get": operation("listTtsServices", "TTS readiness and catalogues")
             },
+            "/api/v1/services/tts/xtts/models": {
+                "post": {
+                    "operationId": "uploadXttsModel",
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "multipart/form-data": {
+                                "schema": {
+                                    "type": "object",
+                                    "required": ["model_id", "files"],
+                                    "properties": {
+                                        "model_id": {
+                                            "type": "string",
+                                            "minLength": 1,
+                                            "maxLength": 128,
+                                        },
+                                        "files": {
+                                            "type": "array",
+                                            "minItems": 4,
+                                            "maxItems": 4,
+                                            "items": {
+                                                "type": "string",
+                                                "format": "binary",
+                                            },
+                                        },
+                                    },
+                                }
+                            }
+                        },
+                    },
+                    "responses": {
+                        "201": {
+                            "description": "XTTS model uploaded and installed",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "required": [
+                                            "id",
+                                            "object",
+                                            "owned_by",
+                                            "bytes",
+                                        ],
+                                        "properties": {
+                                            "id": {"type": "string"},
+                                            "object": {"type": "string"},
+                                            "owned_by": {"type": "string"},
+                                            "bytes": {"type": "integer", "minimum": 0},
+                                        },
+                                    }
+                                }
+                            },
+                        }
+                    },
+                }
+            },
             "/api/v1/services/tts/discover": {
                 "post": operation(
                     "discoverTtsService",

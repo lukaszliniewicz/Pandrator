@@ -204,6 +204,10 @@
   let webResearchMode = $state<'global' | 'per_chunk'>('global');
   let webResearchContextFraction = $state(0.8);
   let refreshingTtsServices = $state(false);
+  let xttsModelId = $state('');
+  let xttsModelFiles = $state<File[]>([]);
+  let uploadingXttsModel = $state(false);
+  let xttsModelUploadMessage = $state('');
   let speechCataloguesLoaded = false;
   let llmModelsLoaded = false;
   let workflowTour = $state(false);
@@ -946,6 +950,74 @@
     }
   }
 
+  const XTTS_MODEL_BUNDLE_FILENAMES = [
+    'config.json',
+    'model.pth',
+    'speakers_xtts.pth',
+    'vocab.json'
+  ] as const;
+  const xttsModelIdPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+
+  function chooseXttsModelFiles(files: FileList | null) {
+    xttsModelFiles = Array.from(files ?? []);
+    xttsModelUploadMessage = '';
+  }
+
+  function xttsModelBundleError() {
+    if (!xttsModelIdPattern.test(xttsModelId.trim()))
+      return 'Use a model ID of 1–128 letters, numbers, dots, hyphens, or underscores; it must start with a letter or number.';
+    const names = xttsModelFiles.map((file) => file.name);
+    const expected = new Set(XTTS_MODEL_BUNDLE_FILENAMES);
+    if (
+      names.length !== XTTS_MODEL_BUNDLE_FILENAMES.length ||
+      names.some(
+        (name) =>
+          !expected.has(name as (typeof XTTS_MODEL_BUNDLE_FILENAMES)[number])
+      ) ||
+      new Set(names).size !== names.length
+    )
+      return 'Choose exactly config.json, model.pth, speakers_xtts.pth, and vocab.json from one flat XTTS model bundle. Training folders and incomplete checkpoints cannot be uploaded.';
+    if (xttsModelFiles.some((file) => file.size < 1))
+      return 'Every XTTS bundle file must contain data.';
+    return '';
+  }
+
+  async function uploadXttsModel() {
+    const validationError = xttsModelBundleError();
+    if (validationError) {
+      error = validationError;
+      return;
+    }
+    uploadingXttsModel = true;
+    error = '';
+    xttsModelUploadMessage = 'Uploading and installing the XTTS model…';
+    try {
+      const uploaded = await sessionApi.uploadXttsModel(
+        xttsModelId.trim(),
+        xttsModelFiles
+      );
+      await loadSpeechCatalogues(true, true);
+      const xttsService = ttsCatalogue.services.find(
+        (service) => String(service.id).toLowerCase() === 'xtts'
+      );
+      ttsService = String(xttsService?.id ?? 'xtts');
+      ttsModel = uploaded.id;
+      voiceName = String(
+        xttsService?.default_voices?.[uploaded.id] ??
+          xttsService?.default_voice ??
+          ''
+      );
+      xttsModelId = '';
+      xttsModelFiles = [];
+      xttsModelUploadMessage = `Installed ${uploaded.id} (${(uploaded.bytes / (1024 * 1024)).toFixed(1)} MB) and selected it for this generation.`;
+    } catch (caught) {
+      error = errorMessage(caught);
+      xttsModelUploadMessage = '';
+    } finally {
+      uploadingXttsModel = false;
+    }
+  }
+
   async function loadLlmModels(force = false) {
     if (llmModelsLoaded && !force) return;
     try {
@@ -1143,6 +1215,10 @@
       .toLowerCase()
       .replaceAll('-', '_')
       .replaceAll(' ', '_')
+  );
+  const supportsXttsModelUpload = $derived(
+    selectedTtsServiceId === 'xtts' &&
+      Boolean(selectedTtsService?.supports_model_upload)
   );
   const ttsModelAcquisitionHint = $derived(
     selectedTtsServiceId === 'kobold_qwen'
@@ -3022,6 +3098,75 @@
                 >{/each}</select
             ></label
           >
+          {#if supportsXttsModelUpload}
+            <section
+              class="rounded-xl border border-[var(--line)] bg-[var(--accent-soft)] p-4"
+              aria-labelledby="xtts-model-upload-title"
+            >
+              <div class="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h3
+                    id="xtts-model-upload-title"
+                    class="text-sm font-semibold"
+                  >
+                    Add a fine-tuned XTTS model
+                  </h3>
+                  <p class="muted mt-1 max-w-xl text-xs leading-relaxed">
+                    Choose the four files from one flat exported model bundle.
+                    Pandrator installs it in stable user data; do not copy files
+                    into an XTTS service or version directory.
+                  </p>
+                </div>
+              </div>
+              <div class="mt-3 grid gap-3 sm:grid-cols-2">
+                <label class="text-xs font-semibold"
+                  >Model ID<input
+                    bind:value={xttsModelId}
+                    placeholder="my-narrator-v1"
+                    disabled={uploadingXttsModel}
+                    class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-sm font-normal"
+                  /></label
+                ><label class="text-xs font-semibold"
+                  >Bundle files<input
+                    type="file"
+                    multiple
+                    accept=".json,.pth"
+                    disabled={uploadingXttsModel}
+                    onchange={(event) =>
+                      chooseXttsModelFiles(event.currentTarget.files)}
+                    class="mt-1 block w-full text-sm font-normal"
+                  /></label
+                >
+              </div>
+              <p class="muted mt-3 text-xs">
+                Required: <code>config.json</code>, <code>model.pth</code>,
+                <code>speakers_xtts.pth</code>, and <code>vocab.json</code>.
+                {#if xttsModelFiles.length}
+                  Selected: {xttsModelFiles
+                    .map((file) => file.name)
+                    .join(', ')}.
+                {/if}
+              </p>
+              <div class="mt-3 flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  onclick={uploadXttsModel}
+                  disabled={uploadingXttsModel || !selectedTtsServiceAvailable}
+                  class="flex items-center gap-2 rounded-lg bg-[var(--accent)] px-3 py-2 text-xs font-semibold text-white disabled:opacity-50"
+                  >{#if uploadingXttsModel}<LoaderCircle
+                      class="animate-spin"
+                      size={14}
+                    /> Uploading model…{:else}<CloudUpload size={14} /> Upload and
+                    select{/if}</button
+                >
+                {#if xttsModelUploadMessage}<span
+                    class="text-xs"
+                    role="status"
+                    aria-live="polite">{xttsModelUploadMessage}</span
+                  >{/if}
+              </div>
+            </section>
+          {/if}
           <label class="text-sm font-semibold"
             >Speech language<select
               bind:value={targetLanguage}

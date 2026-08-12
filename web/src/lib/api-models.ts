@@ -504,6 +504,8 @@ export type TtsService = {
   generation_prompt_models?: string[];
   supports_voice_cloning?: boolean;
   supports_voice_deletion?: boolean;
+  supports_dynamic_catalog?: boolean;
+  supports_model_upload?: boolean;
   supports_prebuilt_voices?: boolean;
   voice_reference_text?: 'required' | 'optional' | 'ignored';
   model_voice_modes?: Record<string, 'prebuilt' | 'cloning' | 'hybrid'>;
@@ -563,6 +565,13 @@ export type TtsDiscovery = Partial<TtsService> & {
   message?: string;
   confidence?: string;
   error?: string;
+};
+
+export type XttsModelUpload = {
+  id: string;
+  object: string;
+  owned_by: string;
+  bytes: number;
 };
 
 export type ProviderRecord = {

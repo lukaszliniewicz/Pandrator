@@ -30,7 +30,7 @@
             "type": "string"
           },
           "application_version": {
-            "default": "0.8.10",
+            "default": "0.8.11",
             "title": "Application Version",
             "type": "string"
           },
@@ -4831,6 +4831,74 @@
         "responses": {
           "200": {
             "description": "Discovered endpoint"
+          }
+        }
+      }
+    },
+    "/api/v1/services/tts/xtts/models": {
+      "post": {
+        "operationId": "uploadXttsModel",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "properties": {
+                  "files": {
+                    "items": {
+                      "format": "binary",
+                      "type": "string"
+                    },
+                    "maxItems": 4,
+                    "minItems": 4,
+                    "type": "array"
+                  },
+                  "model_id": {
+                    "maxLength": 128,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "model_id",
+                  "files"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "bytes": {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "id": {
+                      "type": "string"
+                    },
+                    "object": {
+                      "type": "string"
+                    },
+                    "owned_by": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "object",
+                    "owned_by",
+                    "bytes"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "XTTS model uploaded and installed"
           }
         }
       }

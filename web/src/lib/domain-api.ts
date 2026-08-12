@@ -33,6 +33,7 @@ import type {
   SubtitleReviewCatalog,
   TtsCatalogue,
   TtsDiscovery,
+  XttsModelUpload,
   VoiceRecord,
   WaveformData,
   WorkflowSnapshot
@@ -338,6 +339,16 @@ export const sessionApi = {
         }
       }
     ),
+  uploadXttsModel: (modelId: string, files: File[]) => {
+    const body = new FormData();
+    body.set('model_id', modelId);
+    for (const file of files) body.append('files', file, file.name);
+    return typedApiJson<
+      '/api/v1/services/tts/xtts/models',
+      'post',
+      XttsModelUpload
+    >('/api/v1/services/tts/xtts/models', 'post', { body });
+  },
   providers: () =>
     typedApiJson<'/api/v1/providers', 'get', ItemPage<ProviderRecord>>(
       '/api/v1/providers',
