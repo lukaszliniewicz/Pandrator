@@ -22,6 +22,7 @@ from pandrator.web.sessions import SessionService
 from pandrator.web.tts_providers import TtsBatchResult, TtsCapabilities
 from pandrator.web.workflow_handlers import (
     WorkflowHandlers,
+    _apply_selected_segment_tts_override,
     _fraction_message_callback,
     _source_cleaning_progress_callback,
 )
@@ -61,6 +62,149 @@ class WebWorkflowHandlerTests(unittest.TestCase):
         callback("Web research turn 3/8 (1/3 searches, 0/2 pages)")
 
         self.assertAlmostEqual(0.2, updates[-1][0])
+
+    def test_selected_tts_override_wins_after_persistent_segment_choices(self):
+        persisted_segment_settings = {
+            "service": "XTTS",
+            "model": "base",
+            "voice": "stored-voice",
+            "speaker": "stored-voice",
+            "language": "de",
+            "target_language": "de",
+        }
+        effective = _apply_selected_segment_tts_override(
+            persisted_segment_settings,
+            {
+                "service": "Chatterbox",
+                "model": "alternate",
+                "voice": "alternate-reference",
+                "language": "fr",
+                "generation_prompt": "Gentle and close.",
+            },
+        )
+
+        self.assertEqual("Chatterbox", effective["service"])
+        self.assertEqual("alternate", effective["model"])
+        self.assertEqual("alternate-reference", effective["voice"])
+        self.assertEqual("alternate-reference", effective["speaker"])
+        self.assertEqual("fr", effective["language"])
+        self.assertEqual("fr", effective["target_language"])
+        self.assertEqual("Gentle and close.", effective["generation_prompt"])
+
+    def test_selected_override_reaches_synthesis_and_rvc_without_touching_other_takes(
+        self,
+    ):
+        revision_id, segment_ids = self.handlers._store_generation_plan(
+            self.session.id,
+            [
+                {"text": "First alternate.", "voice": "stored-one", "language": "de"},
+                {"text": "Second alternate.", "voice": "stored-two", "language": "it"},
+                {"text": "Keep this take.", "voice": "stored-three", "language": "es"},
+            ],
+            settings={},
+        )
+        selected_override = {
+            "tts": {
+                "service": "Chatterbox",
+                "model": "chatterbox-alternate",
+                "voice": "alternate-reference",
+                "language": "fr",
+                "generation_prompt": "Warm, quiet delivery.",
+            },
+            "rvc": {"enabled": True, "model": "alternate-rvc", "pitch": 2},
+        }
+        with self.database.session() as session:
+            run = GenerationRun(
+                session_id=self.session.id,
+                plan_revision_id=revision_id,
+                status="queued",
+                settings_snapshot_json={
+                    "text": {"llm_tts_optimization": False},
+                    "tts": {
+                        "service": "XTTS",
+                        "model": "base",
+                        "voice": "base-voice",
+                        "language": "en",
+                    },
+                    "rvc": {"enabled": True, "model": "global-rvc"},
+                    "selected_segment_override": selected_override,
+                },
+            )
+            session.add(run)
+            session.flush()
+            run_id = run.id
+            session.add(
+                AudioTake(
+                    generation_segment_id=segment_ids[2],
+                    kind="tts",
+                    status="completed",
+                    is_active=True,
+                )
+            )
+
+        synthesis_settings = []
+        rvc_settings = []
+
+        def synthesize(_text, settings, **_kwargs):
+            synthesis_settings.append(dict(settings))
+            return AudioSegment.silent(duration=35)
+
+        def apply_rvc(audio, settings):
+            rvc_settings.append(dict(settings))
+            return audio + AudioSegment.silent(duration=5)
+
+        with (
+            mock.patch.object(
+                self.handlers.tts_providers,
+                "synthesize",
+                side_effect=synthesize,
+            ),
+            mock.patch(
+                "pandrator.logic.rvc_handler.process_with_rvc",
+                side_effect=apply_rvc,
+            ),
+        ):
+            result = self.handlers.run_generation(
+                {
+                    "generation_run_id": run_id,
+                    "segment_ids": segment_ids[:2],
+                    "operation": "regenerate",
+                },
+                self.progress,
+                threading.Event(),
+            )
+
+        self.assertEqual("partial", result["status"])
+        self.assertEqual(2, len(synthesis_settings))
+        for settings in synthesis_settings:
+            self.assertEqual("Chatterbox", settings["service"])
+            self.assertEqual("chatterbox-alternate", settings["model"])
+            self.assertEqual("alternate-reference", settings["voice"])
+            self.assertEqual("alternate-reference", settings["speaker"])
+            self.assertEqual("fr", settings["language"])
+            self.assertEqual("fr", settings["target_language"])
+            self.assertEqual("Warm, quiet delivery.", settings["generation_prompt"])
+        self.assertEqual(2, len(rvc_settings))
+        self.assertEqual(["alternate-rvc", "alternate-rvc"], [item["model"] for item in rvc_settings])
+        with self.database.session() as session:
+            takes = list(
+                session.scalars(
+                    select(AudioTake)
+                    .where(AudioTake.generation_run_id == run_id)
+                    .order_by(AudioTake.created_at)
+                ).all()
+            )
+            self.assertEqual(segment_ids[:2], [item.generation_segment_id for item in takes])
+            self.assertTrue(all(item.kind == "tts_rvc" for item in takes))
+            untouched_take = session.scalar(
+                select(AudioTake).where(
+                    AudioTake.generation_segment_id == segment_ids[2]
+                )
+            )
+            self.assertTrue(untouched_take.is_active)
+            untouched_segment = session.get(GenerationSegment, segment_ids[2])
+            self.assertEqual("stored-three", untouched_segment.voice)
+            self.assertEqual("es", untouched_segment.language)
 
     def test_source_cleaning_progress_spans_phase_turn_budgets(self):
         updates = []

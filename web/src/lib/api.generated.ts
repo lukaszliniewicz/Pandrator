@@ -2485,6 +2485,10 @@ export interface components {
             };
             /** Segment Ids */
             segment_ids?: string[];
+            /** Selected Segment Override */
+            selected_segment_override?: {
+                [key: string]: unknown;
+            };
         };
         /** JobCreate */
         JobCreate: {

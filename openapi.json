@@ -736,6 +736,11 @@
             },
             "title": "Segment Ids",
             "type": "array"
+          },
+          "selected_segment_override": {
+            "additionalProperties": true,
+            "title": "Selected Segment Override",
+            "type": "object"
           }
         },
         "title": "GenerationStartRequest",

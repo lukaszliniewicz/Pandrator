@@ -785,6 +785,7 @@ export type GenerationRun = {
   pause_requested?: boolean;
   cancel_requested?: boolean;
   settings_hash?: string;
+  settings_snapshot?: Record<string, unknown>;
   error_message?: string | null;
   take_count?: number;
   usage?: UsageSummary;

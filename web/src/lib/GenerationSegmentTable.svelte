@@ -29,7 +29,8 @@
     onselecttake,
     ontakelabel,
     onverificationtitle,
-    onregenerate
+    onregenerate,
+    onregeneratewith
   }: {
     items: GenerationSegment[];
     selectedRows: string[];
@@ -55,6 +56,7 @@
     ontakelabel: (take: GenerationSegment['takes'][number]) => string;
     onverificationtitle: (take: GenerationSegment['takes'][number]) => string;
     onregenerate: (item: GenerationSegment) => unknown;
+    onregeneratewith: (item: GenerationSegment) => unknown;
   } = $props();
 </script>
 
@@ -232,6 +234,18 @@
               aria-label={`Regenerate segment ${item.ordinal + 1}`}
             >
               <RefreshCw size={14} />
+            </button>
+            <button
+              onclick={(event) => {
+                event.stopPropagation();
+                onregeneratewith(item);
+              }}
+              disabled={loading || item.removed}
+              class="action icon-action"
+              title="Regenerate with alternate settings"
+              aria-label={`Regenerate segment ${item.ordinal + 1} with alternate settings`}
+            >
+              <WandSparkles size={14} />
             </button>
             <button
               onclick={(event) => {

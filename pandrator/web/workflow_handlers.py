@@ -501,6 +501,30 @@ def _apply_segment_tts_overrides(
     return resolved
 
 
+def _apply_selected_segment_tts_override(
+    settings: dict[str, Any], override: dict[str, Any] | None
+) -> dict[str, Any]:
+    """Apply an immutable run-local override after persistent segment settings."""
+    selected = dict(override or {})
+    if not selected:
+        return settings
+    resolved = deepcopy(settings)
+    for key, value in selected.items():
+        if isinstance(value, dict) and isinstance(resolved.get(key), dict):
+            resolved[key] = {**resolved[key], **deepcopy(value)}
+        else:
+            resolved[key] = deepcopy(value)
+    return _apply_segment_tts_overrides(
+        resolved,
+        language=str(
+            selected.get("language") or selected.get("target_language") or ""
+        ).strip()
+        or None,
+        voice=str(selected.get("voice") or selected.get("speaker") or "").strip()
+        or None,
+    )
+
+
 def _provider_endpoint_fingerprint(base_url: str) -> str:
     normalized = str(base_url or "").strip().rstrip("/").casefold()
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
@@ -6108,6 +6132,13 @@ class WorkflowHandlers:
                 "audio", dict(settings_snapshot.get("audio") or {})
             ),
         }
+        selected_segment_override = dict(
+            settings_snapshot.get("selected_segment_override") or {}
+        )
+        selected_tts_override = adapt_runtime_settings(
+            "tts", dict(selected_segment_override.get("tts") or {})
+        )
+        selected_rvc_override = dict(selected_segment_override.get("rvc") or {})
         tts_settings = hydrate_tts_settings(
             self.database,
             self.paths,
@@ -6149,6 +6180,10 @@ class WorkflowHandlers:
         rvc_settings = adapt_runtime_settings(
             "rvc", dict(settings_snapshot.get("rvc") or {})
         )
+        if selected_rvc_override:
+            rvc_settings.update(
+                adapt_runtime_settings("rvc", selected_rvc_override)
+            )
         rvc_source_sequence = None
         if operation == "rvc":
             source_run_id = str(rvc_settings.get("source_run_id") or "").strip()
@@ -6171,9 +6206,12 @@ class WorkflowHandlers:
         batch_contexts: dict[str, dict[str, Any]] = {}
         tts_urls = self._tts_urls(tts_settings)
         if operation != "rvc":
-            effective_batch_size = self._negotiated_tts_batch_size(
-                tts_settings,
-                tts_urls,
+            # The selected-only setting set may switch provider.  Do not reuse
+            # the source provider's streaming/batching capabilities for it.
+            effective_batch_size = (
+                1
+                if selected_tts_override
+                else self._negotiated_tts_batch_size(tts_settings, tts_urls)
             )
             if effective_batch_size > 1:
                 batch_items: list[tuple[str, str, dict[str, Any]]] = []
@@ -6185,6 +6223,9 @@ class WorkflowHandlers:
                         tts_settings,
                         language=seed["language"],
                         voice=seed["voice"],
+                    )
+                    segment_tts_settings = _apply_selected_segment_tts_override(
+                        segment_tts_settings, selected_tts_override
                     )
                     self._ensure_qwen_cloned_voice(
                         segment_tts_settings,
@@ -6320,6 +6361,9 @@ class WorkflowHandlers:
                             language=segment_language,
                             voice=segment_voice,
                         )
+                        segment_tts_settings = _apply_selected_segment_tts_override(
+                            segment_tts_settings, selected_tts_override
+                        )
                         self._ensure_qwen_cloned_voice(
                             segment_tts_settings,
                             base_url=tts_urls["kobold_qwen_base_url"],
@@ -6383,6 +6427,18 @@ class WorkflowHandlers:
                     take_kind = "tts"
                     parent_take_id = None
                     take_settings = segment_tts_settings
+                    if bool(selected_rvc_override.get("enabled")):
+                        if not str(
+                            rvc_settings.get("model")
+                            or rvc_settings.get("rvc_model")
+                            or ""
+                        ).strip():
+                            raise ValueError(
+                                "Choose an RVC model before generating an alternate RVC take."
+                            )
+                        audio = rvc_handler.process_with_rvc(audio, rvc_settings)
+                        take_kind = "tts_rvc"
+                        take_settings = {**segment_tts_settings, "rvc": rvc_settings}
                 verification = self._verification_metadata(
                     audio,
                     synthesized_text,

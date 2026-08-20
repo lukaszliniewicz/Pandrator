@@ -709,7 +709,8 @@ export const generationApi = {
     operation: 'generate' | 'regenerate' | 'rvc',
     segmentIds: string[],
     generationRunId: string | null,
-    runOverride: Record<string, unknown>
+    runOverride: Record<string, unknown>,
+    selectedSegmentOverride: Record<string, unknown> = {}
   ) =>
     typedApiJson<
       '/api/v1/sessions/{sessionId}/generation-runs',
@@ -721,7 +722,8 @@ export const generationApi = {
         operation,
         segment_ids: segmentIds,
         generation_run_id: generationRunId,
-        run_override: runOverride
+        run_override: runOverride,
+        selected_segment_override: selectedSegmentOverride
       }
     }),
   rvcModels: () =>

@@ -6,6 +6,8 @@ from contextlib import nullcontext
 from pathlib import Path
 from unittest.mock import patch
 
+from sqlalchemy import select
+
 from pandrator.web.api import create_app
 from pandrator.web.artifacts import ArtifactService
 from pandrator.web.auth import BootstrapTokenStore
@@ -1377,6 +1379,105 @@ class WebParityWorkspaceTests(unittest.TestCase):
                 ).get_json()["items"]
             ),
         )
+
+    def test_selected_alternate_settings_are_immutable_and_do_not_mutate_segments(
+        self,
+    ):
+        record = self.create_session("audiobook")
+        self.client.post(
+            f"/api/v1/sessions/{record['id']}/generation-plan",
+            json={
+                "segments": [
+                    {"text": "First.", "voice": "stored-first", "language": "de"},
+                    {"text": "Second.", "voice": "stored-second", "language": "it"},
+                    {"text": "Keep this take.", "voice": "stored-third", "language": "es"},
+                ]
+            },
+            headers=self.headers,
+        )
+        segments = self.client.get(
+            f"/api/v1/sessions/{record['id']}/generation-segments"
+        ).get_json()["items"]
+        source = self.client.post(
+            f"/api/v1/sessions/{record['id']}/generation-runs",
+            json={
+                "run_override": {
+                    "tts": {"service": "XTTS", "model": "base"},
+                    "text": {"llm_tts_optimization": True},
+                    "audio": {"sentence_silence_ms": 999},
+                    "output": {"format": "mp3"},
+                }
+            },
+            headers=self.headers,
+        ).get_json()
+        database = self.app.extensions["pandrator"]["database"]
+        with database.session() as session:
+            session.get(GenerationRun, source["id"]).status = "failed"
+            session.get(Job, source["job_id"]).status = "failed"
+            untouched = session.get(GenerationSegment, segments[2]["id"])
+            session.add(
+                AudioTake(
+                    generation_segment_id=untouched.id,
+                    generation_run_id=source["id"],
+                    kind="tts",
+                    status="completed",
+                    is_active=True,
+                )
+            )
+
+        alternate = {
+            "tts": {
+                "service": "Chatterbox",
+                "model": "chatterbox-alt",
+                "voice": "alternate-reference",
+                "language": "fr",
+                "generation_prompt": "Warm, quiet delivery.",
+                "chatterbox_exaggeration": 0.75,
+            },
+            "rvc": {"enabled": True, "model": "alternate-rvc", "pitch": 2},
+        }
+        retry = self.client.post(
+            f"/api/v1/sessions/{record['id']}/generation-runs",
+            json={
+                "operation": "regenerate",
+                "segment_ids": [segments[0]["id"], segments[1]["id"]],
+                "generation_run_id": source["id"],
+                "selected_segment_override": alternate,
+            },
+            headers=self.headers,
+        )
+
+        self.assertEqual(202, retry.status_code, retry.get_json())
+        self.assertEqual(source["id"], retry.get_json()["source_generation_run_id"])
+        self.assertEqual(alternate, retry.get_json()["settings_snapshot"]["selected_segment_override"])
+        self.assertNotIn("text", retry.get_json()["settings_snapshot"])
+        self.assertNotIn("audio", retry.get_json()["settings_snapshot"])
+        self.assertNotIn("output", retry.get_json()["settings_snapshot"])
+        with database.session() as session:
+            run = session.get(GenerationRun, retry.get_json()["id"])
+            self.assertEqual("Chatterbox", run.settings_snapshot_json["tts"]["service"])
+            self.assertEqual("chatterbox-alt", run.settings_snapshot_json["tts"]["model"])
+            self.assertEqual("alternate-reference", run.settings_snapshot_json["tts"]["voice"])
+            self.assertEqual("fr", run.settings_snapshot_json["tts"]["language"])
+            self.assertTrue(run.settings_snapshot_json["rvc"]["enabled"])
+            persisted = list(
+                session.scalars(
+                    select(GenerationSegment)
+                    .where(GenerationSegment.id.in_([item["id"] for item in segments]))
+                    .order_by(GenerationSegment.ordinal)
+                ).all()
+            )
+            self.assertEqual("stored-first", persisted[0].voice)
+            self.assertEqual("de", persisted[0].language)
+            self.assertEqual("stored-second", persisted[1].voice)
+            self.assertEqual("it", persisted[1].language)
+            untouched_take = session.scalar(
+                select(AudioTake).where(
+                    AudioTake.generation_segment_id == persisted[2].id
+                )
+            )
+            self.assertIsNotNone(untouched_take)
+            self.assertTrue(untouched_take.is_active)
 
     def test_full_generation_resolves_current_settings_after_an_earlier_run(self):
         record = self.create_session("audiobook")

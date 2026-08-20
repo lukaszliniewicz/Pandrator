@@ -1,5 +1,12 @@
 <script lang="ts">
-  import { Flag, Play, RefreshCw, RotateCcw, Trash2 } from '@lucide/svelte';
+  import {
+    Flag,
+    Play,
+    RefreshCw,
+    RotateCcw,
+    Trash2,
+    WandSparkles
+  } from '@lucide/svelte';
   import type { GenerationSegment } from './api-models';
   import type { GenerationSegmentChanges } from './domain-api';
   import type { ReadingBlock } from './generation-view-models';
@@ -20,6 +27,7 @@
     onhasaudio,
     onplay,
     onregenerate,
+    onregeneratewith,
     onpatch
   }: {
     blocks: ReadingBlock[];
@@ -40,6 +48,7 @@
     onhasaudio: (item: GenerationSegment) => boolean;
     onplay: (item: GenerationSegment) => unknown;
     onregenerate: (item: GenerationSegment) => unknown;
+    onregeneratewith: (item: GenerationSegment) => unknown;
     onpatch: (
       item: GenerationSegment,
       changes: GenerationSegmentChanges
@@ -135,6 +144,16 @@
                 title="Regenerate segment"
                 aria-label={`Regenerate segment ${item.ordinal + 1}`}
                 ><RefreshCw size={13} /></button
+              >
+              <button
+                onclick={(event) => {
+                  event.stopPropagation();
+                  onregeneratewith(item);
+                }}
+                disabled={loading || item.removed}
+                title="Regenerate with alternate settings"
+                aria-label={`Regenerate segment ${item.ordinal + 1} with alternate settings`}
+                ><WandSparkles size={13} /></button
               >
               <button
                 onclick={(event) => {

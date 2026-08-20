@@ -393,6 +393,10 @@ class GenerationSegmentBatchUpdate(StrictModel):
 
 class GenerationStartRequest(StrictModel):
     run_override: dict[str, Any] = Field(default_factory=dict)
+    # This intentionally remains distinct from a normal run override.  It is
+    # applied only to the requested segment set, after any saved per-segment
+    # voice/language choices, and is retained in the immutable run snapshot.
+    selected_segment_override: dict[str, Any] = Field(default_factory=dict)
     segment_ids: list[str] = Field(default_factory=list)
     generation_run_id: str | None = None
     operation: Literal["generate", "regenerate", "rvc"] = "generate"

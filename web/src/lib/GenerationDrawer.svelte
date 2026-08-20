@@ -92,6 +92,10 @@
   let ttsSettings = $state<Record<string, unknown>>({});
   let ttsCatalogue = $state<TtsCatalogue>({ services: [] });
   let libraryVoices = $state<VoiceRecord[]>([]);
+  let alternateOpen = $state(false);
+  let alternateSegmentIds = $state<string[]>([]);
+  let alternateTts = $state<Record<string, unknown>>({});
+  let alternateRvc = $state<Record<string, unknown>>({ enabled: false });
 
   const normalizeId = (value: unknown) =>
     String(value ?? '')
@@ -231,6 +235,168 @@
         selectedTtsService?.default_voice ||
         ''
     )
+  );
+  const alternateService = $derived.by(() => {
+    const configured = String(
+      alternateTts.service ?? alternateTts.tts_service ?? ''
+    );
+    return (
+      ttsCatalogue.services.find((service) =>
+        [service.id, service.name].some(
+          (value) => normalizeId(value) === normalizeId(configured)
+        )
+      ) ?? null
+    );
+  });
+  const alternateModels = $derived.by(() => {
+    const service = alternateService;
+    if (!service) return [] as string[];
+    return Array.from(
+      new Set([
+        ...(service.models ?? []),
+        ...(service.model_catalog ?? []).map((model) => String(model.id ?? '')),
+        String(service.default_model ?? '')
+      ])
+    ).filter(Boolean);
+  });
+  function alternateUsesManagedReferences(
+    service: TtsCatalogue['services'][number],
+    model: string
+  ) {
+    const mode = service.model_voice_modes?.[model];
+    if (mode) return mode === 'cloning' || mode === 'hybrid';
+    return Boolean(
+      service.supports_voice_cloning && !service.supports_prebuilt_voices
+    );
+  }
+  function alternateVoiceIds(
+    service: TtsCatalogue['services'][number],
+    model: string,
+    language: string
+  ) {
+    const catalogue = Array.from(service.voice_catalogues?.[model] ?? []).map(
+      String
+    );
+    const configured = catalogue.length
+      ? catalogue
+      : Array.from(service.voices ?? []).map(String);
+    const managed = alternateUsesManagedReferences(service, model)
+      ? libraryVoices.flatMap((voice) => {
+          const registration =
+            voice.metadata_json?.providers?.[normalizeId(service.id)];
+          return registration?.status === 'ready' && registration?.voice_id
+            ? [String(registration.voice_id)]
+            : [];
+        })
+      : [];
+    return Array.from(
+      new Set([
+        ...configured,
+        ...(service.live_voices ?? []).map(String),
+        ...managed,
+        String(service.default_voices_by_language?.[model]?.[language] ?? ''),
+        String(service.default_voices?.[model] ?? service.default_voice ?? '')
+      ])
+    ).filter(Boolean);
+  }
+  function preferredAlternateVoice(
+    service: TtsCatalogue['services'][number],
+    model: string,
+    language: string
+  ) {
+    const preferred = String(
+      service.default_voices_by_language?.[model]?.[language] ??
+        service.default_voices?.[model] ??
+        service.default_voice ??
+        ''
+    );
+    return (
+      alternateVoiceIds(service, model, language).find(
+        (voice) => normalizeId(voice) === normalizeId(preferred)
+      ) ?? ''
+    );
+  }
+  function compatibleAlternateVoice(
+    service: TtsCatalogue['services'][number],
+    model: string,
+    language: string,
+    voice: string
+  ) {
+    const candidate = alternateVoiceIds(service, model, language).find(
+      (item) => normalizeId(item) === normalizeId(voice)
+    );
+    if (!candidate) return false;
+    const descriptor = describeVoice(
+      service.id,
+      candidate,
+      service.voice_metadata?.[`${model}:${candidate}`]
+    );
+    return (
+      !descriptor.languageCode ||
+      normalizeId(descriptor.languageCode) === normalizeId(language)
+    );
+  }
+  function setAlternateVoiceFor(
+    service: TtsCatalogue['services'][number],
+    model: string,
+    language: string,
+    current: string
+  ) {
+    return compatibleAlternateVoice(service, model, language, current)
+      ? current
+      : preferredAlternateVoice(service, model, language);
+  }
+  const alternateVoices = $derived.by(() => {
+    const service = alternateService;
+    if (!service) return [] as VoiceDescriptor[];
+    const serviceId = normalizeId(service.id);
+    const model = String(alternateTts.model ?? alternateTts.xtts_model ?? '');
+    const language = String(
+      alternateTts.language ?? alternateTts.target_language ?? ''
+    );
+    const managed = alternateUsesManagedReferences(service, model)
+      ? libraryVoices.flatMap((voice) => {
+          const registration = voice.metadata_json?.providers?.[serviceId];
+          return registration?.status === 'ready' && registration?.voice_id
+            ? [[String(registration.voice_id), voice.name] as const]
+            : [];
+        })
+      : [];
+    const names = new Map(
+      managed.map(([id, name]) => [id.toLowerCase(), name])
+    );
+    return Array.from(new Set(alternateVoiceIds(service, model, language)))
+      .filter(Boolean)
+      .map((voice) => ({
+        ...describeVoice(
+          service.id,
+          voice,
+          service.voice_metadata?.[`${model}:${voice}`]
+        ),
+        name:
+          names.get(voice.toLowerCase()) ??
+          describeVoice(service.id, voice).name
+      }));
+  });
+  const alternateLanguages = $derived.by(() => {
+    const discovered = languagesForService(
+      String(alternateService?.id ?? ''),
+      alternateVoices
+    );
+    return discovered.length
+      ? discovered
+      : LANGUAGE_OPTIONS.filter((item) => item.value !== 'auto');
+  });
+  const alternateIsChatterbox = $derived(
+    normalizeId(alternateService?.id) === 'chatterbox'
+  );
+  const alternateCanStart = $derived(
+    alternateSegmentIds.length > 0 &&
+      Boolean(alternateService) &&
+      alternateService?.online !== false &&
+      (alternateModels.length === 0 ||
+        Boolean(String(alternateTts.model ?? ''))) &&
+      (!alternateRvc.enabled || Boolean(String(alternateRvc.model ?? '')))
   );
 
   const marked = $derived(
@@ -590,7 +756,8 @@
 
   async function start(
     operation: 'generate' | 'regenerate' | 'rvc' = 'generate',
-    ids: string[] = []
+    ids: string[] = [],
+    selectedSegmentOverride: Record<string, unknown> = {}
   ) {
     if (operation === 'rvc' && !rvcModel) {
       showRvc = true;
@@ -620,7 +787,8 @@
         operation,
         ids,
         ids.length && operation !== 'rvc' ? selectedRunId || null : null,
-        run_override
+        run_override,
+        selectedSegmentOverride
       );
       generationStore.upsertRun(started);
       // New generation should be visible in the live Active mix while it
@@ -634,6 +802,94 @@
     } finally {
       loading = false;
     }
+  }
+
+  function sourceSettingsForAlternate() {
+    const snapshot = selectedRun?.settings_snapshot ?? {};
+    const sourceTts =
+      snapshot.tts && typeof snapshot.tts === 'object'
+        ? (snapshot.tts as Record<string, unknown>)
+        : ttsSettings;
+    const sourceRvc =
+      snapshot.rvc && typeof snapshot.rvc === 'object'
+        ? (snapshot.rvc as Record<string, unknown>)
+        : {};
+    return { sourceTts, sourceRvc };
+  }
+
+  function openAlternateRegeneration(ids: string[]) {
+    if (!ids.length) return;
+    const { sourceTts, sourceRvc } = sourceSettingsForAlternate();
+    const service = String(
+      sourceTts.service ??
+        sourceTts.tts_service ??
+        ttsSettings.service ??
+        ttsCatalogue.default_service ??
+        ''
+    );
+    const model = String(
+      sourceTts.model ?? sourceTts.xtts_model ?? selectedTtsModel ?? ''
+    );
+    const voice = String(
+      sourceTts.voice ?? sourceTts.speaker ?? inheritedVoice ?? ''
+    );
+    const language = String(
+      sourceTts.language ??
+        sourceTts.target_language ??
+        inheritedLanguage ??
+        'en'
+    );
+    const matchingService = ttsCatalogue.services.find((item) =>
+      [item.id, item.name].some(
+        (value) => normalizeId(value) === normalizeId(service)
+      )
+    );
+    const compatibleVoice = matchingService
+      ? setAlternateVoiceFor(matchingService, model, language, voice)
+      : voice;
+    alternateSegmentIds = [...new Set(ids)];
+    alternateTts = {
+      service,
+      tts_service: service,
+      model,
+      voice: compatibleVoice,
+      speaker: compatibleVoice,
+      language,
+      target_language: language,
+      generation_prompt: String(sourceTts.generation_prompt ?? ''),
+      chatterbox_exaggeration: Number(sourceTts.chatterbox_exaggeration ?? 0.5),
+      chatterbox_cfg_weight: Number(sourceTts.chatterbox_cfg_weight ?? 0.5)
+    };
+    alternateRvc = {
+      enabled: Boolean(sourceRvc.enabled),
+      model: String(sourceRvc.model ?? sourceRvc.rvc_model ?? ''),
+      rvc_model: String(sourceRvc.model ?? sourceRvc.rvc_model ?? ''),
+      pitch: Number(sourceRvc.pitch ?? 0),
+      f0_method: String(sourceRvc.f0_method ?? 'rmvpe'),
+      index_rate: Number(sourceRvc.index_rate ?? 0.3)
+    };
+    alternateOpen = true;
+  }
+
+  async function submitAlternateRegeneration() {
+    if (!alternateCanStart) return;
+    const voice = String(alternateTts.voice ?? '').trim();
+    const language = String(alternateTts.language ?? '').trim();
+    const tts = {
+      ...alternateTts,
+      voice: voice || null,
+      speaker: voice || null,
+      language: language || null,
+      target_language: language || null
+    };
+    const rvc = {
+      ...alternateRvc,
+      enabled: Boolean(alternateRvc.enabled),
+      model: String(alternateRvc.model ?? '').trim(),
+      rvc_model: String(alternateRvc.model ?? '').trim()
+    };
+    alternateOpen = false;
+    await start('regenerate', alternateSegmentIds, { tts, rvc });
   }
 
   async function loadRvc() {
@@ -1131,6 +1387,18 @@
         </div>
       {/if}
       <div class="ml-auto flex flex-wrap gap-2">
+        {#if mode !== 'collapsed'}
+          <button
+            onclick={() =>
+              openAlternateRegeneration(
+                selectedSegmentIds.length ? selectedSegmentIds : marked
+              )}
+            disabled={!selectedSegmentIds.length && !marked.length}
+            class="action"
+            title="Create new takes with a temporary provider, voice, language, prompt, or RVC setting set"
+            >Alternate selected take…</button
+          >
+        {/if}
         {#if !run || ['completed', 'partial', 'failed', 'canceled'].includes(run.status)}
           <button onclick={() => start()} class="action primary"
             ><Play size={14} /> Start</button
@@ -1221,6 +1489,16 @@
             onclick={() => start('regenerate', marked)}
             disabled={!marked.length}
             class="action"><RefreshCw size={14} /> Regenerate marked</button
+          >
+          <button
+            onclick={() =>
+              openAlternateRegeneration(
+                selectedSegmentIds.length ? selectedSegmentIds : marked
+              )}
+            disabled={!selectedSegmentIds.length && !marked.length}
+            class="action"
+            title="Create new takes with a temporary provider, voice, language, prompt, or RVC setting set"
+            >Regenerate selected with…</button
           >
           <button
             onclick={assemble}
@@ -1394,6 +1672,7 @@
               ontakelabel={takeLabel}
               onverificationtitle={verificationTitle}
               onregenerate={(item) => start('regenerate', [item.id])}
+              onregeneratewith={(item) => openAlternateRegeneration([item.id])}
             />
           {:else}
             <GenerationReadingView
@@ -1412,6 +1691,7 @@
               onhasaudio={(item) => Boolean(activeTake(item))}
               onplay={playOnly}
               onregenerate={(item) => start('regenerate', [item.id])}
+              onregeneratewith={(item) => openAlternateRegeneration([item.id])}
               onpatch={patchSegment}
             />
           {/if}
@@ -1424,6 +1704,325 @@
       </div>
     {/if}
   </aside>
+{/if}
+{#if alternateOpen}
+  <div
+    class="fixed inset-0 z-[80] grid place-items-center bg-black/40 p-5"
+    role="presentation"
+    onclick={(event) => {
+      if (event.currentTarget === event.target) alternateOpen = false;
+    }}
+  >
+    <div
+      class="surface max-h-[92vh] w-full max-w-3xl overflow-y-auto rounded-3xl p-6"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="alternate-regeneration-title"
+    >
+      <header class="flex items-start justify-between gap-4">
+        <div>
+          <div class="eyebrow">Alternate take</div>
+          <h2
+            id="alternate-regeneration-title"
+            class="mt-1 text-xl font-semibold"
+          >
+            Regenerate {alternateSegmentIds.length} selected segment{alternateSegmentIds.length ===
+            1
+              ? ''
+              : 's'} with…
+          </h2>
+          <p class="muted mt-1 text-xs">
+            Uses {selectedRun
+              ? `History · ${selectedRun.label}`
+              : 'the current session settings'} as the source, then saves these choices
+            only in the new run. Segment defaults stay untouched.
+          </p>
+        </div>
+        <button
+          class="action"
+          aria-label="Close alternate regeneration"
+          onclick={() => (alternateOpen = false)}>Close</button
+        >
+      </header>
+
+      <div class="mt-5 grid gap-4 sm:grid-cols-2">
+        <label class="text-sm font-semibold"
+          >Speech service
+          <select
+            class="field mt-1 w-full"
+            value={String(alternateTts.service ?? '')}
+            onchange={(event) => {
+              const service = event.currentTarget.value;
+              const next = ttsCatalogue.services.find(
+                (item) => item.id === service
+              );
+              const language = String(
+                alternateTts.language ?? alternateTts.target_language ?? 'en'
+              );
+              const model = String(
+                next?.default_model ??
+                  next?.models?.[0] ??
+                  next?.model_catalog?.[0]?.id ??
+                  ''
+              );
+              const voice = next
+                ? preferredAlternateVoice(next, model, language)
+                : '';
+              alternateTts = {
+                ...alternateTts,
+                service,
+                tts_service: service,
+                model,
+                voice,
+                speaker: voice
+              };
+            }}
+          >
+            <option value="">Choose a service</option>
+            {#each ttsCatalogue.services as service}
+              <option value={service.id} disabled={service.online === false}
+                >{service.name ?? service.id}{service.online === false
+                  ? ' · unavailable'
+                  : ''}</option
+              >
+            {/each}
+          </select>
+        </label>
+        <label class="text-sm font-semibold"
+          >Model
+          <select
+            class="field mt-1 w-full"
+            value={String(alternateTts.model ?? '')}
+            disabled={!alternateService ||
+              alternateService.online === false ||
+              !alternateModels.length}
+            onchange={(event) => {
+              const model = event.currentTarget.value;
+              const language = String(
+                alternateTts.language ?? alternateTts.target_language ?? 'en'
+              );
+              const voice = alternateService
+                ? setAlternateVoiceFor(
+                    alternateService,
+                    model,
+                    language,
+                    String(alternateTts.voice ?? '')
+                  )
+                : '';
+              alternateTts = {
+                ...alternateTts,
+                model,
+                voice,
+                speaker: voice
+              };
+            }}
+          >
+            {#if !alternateModels.length}<option value=""
+                >Service default</option
+              >{/if}
+            {#each alternateModels as model}<option value={model}
+                >{model}</option
+              >{/each}
+          </select>
+        </label>
+        <label class="text-sm font-semibold"
+          >Voice / managed reference
+          <select
+            class="field mt-1 w-full"
+            value={String(alternateTts.voice ?? '')}
+            disabled={!alternateService || alternateService.online === false}
+            onchange={(event) => {
+              const voice = event.currentTarget.value;
+              alternateTts = { ...alternateTts, voice, speaker: voice };
+            }}
+          >
+            <option value="">Service default</option>
+            {#each alternateVoices as voice}<option value={voice.id}
+                >{voiceLabel(voice)}</option
+              >{/each}
+          </select>
+          <span class="muted mt-1 block text-[.67rem]"
+            >Published voice references appear here when ready for this
+            provider.</span
+          >
+        </label>
+        <label class="text-sm font-semibold"
+          >Language
+          <select
+            class="field mt-1 w-full"
+            value={String(alternateTts.language ?? '')}
+            disabled={!alternateService || alternateService.online === false}
+            onchange={(event) => {
+              const language = event.currentTarget.value;
+              const voice = alternateService
+                ? setAlternateVoiceFor(
+                    alternateService,
+                    String(alternateTts.model ?? ''),
+                    language,
+                    String(alternateTts.voice ?? '')
+                  )
+                : '';
+              alternateTts = {
+                ...alternateTts,
+                language,
+                target_language: language,
+                voice,
+                speaker: voice
+              };
+            }}
+          >
+            {#each alternateLanguages as language}<option value={language.value}
+                >{language.label}</option
+              >{/each}
+          </select>
+        </label>
+      </div>
+
+      <label class="mt-4 block text-sm font-semibold"
+        >Generation prompt / instructions
+        <textarea
+          class="field mt-1 min-h-20 w-full"
+          value={String(alternateTts.generation_prompt ?? '')}
+          oninput={(event) => {
+            alternateTts = {
+              ...alternateTts,
+              generation_prompt: event.currentTarget.value
+            };
+          }}
+          placeholder="Provider-supported style or voice instructions"
+        ></textarea>
+      </label>
+
+      {#if alternateIsChatterbox}
+        <div
+          class="mt-4 grid gap-4 rounded-xl bg-[var(--accent-soft)] p-4 sm:grid-cols-2"
+        >
+          <label class="text-sm font-semibold"
+            >Chatterbox exaggeration
+            <input
+              class="field mt-1 w-full"
+              type="number"
+              min="0"
+              max="2"
+              step="0.05"
+              value={Number(alternateTts.chatterbox_exaggeration ?? 0.5)}
+              onchange={(event) =>
+                (alternateTts = {
+                  ...alternateTts,
+                  chatterbox_exaggeration: Number(event.currentTarget.value)
+                })}
+            />
+          </label>
+          <label class="text-sm font-semibold"
+            >Chatterbox CFG weight
+            <input
+              class="field mt-1 w-full"
+              type="number"
+              min="0"
+              max="2"
+              step="0.05"
+              value={Number(alternateTts.chatterbox_cfg_weight ?? 0.5)}
+              onchange={(event) =>
+                (alternateTts = {
+                  ...alternateTts,
+                  chatterbox_cfg_weight: Number(event.currentTarget.value)
+                })}
+            />
+          </label>
+        </div>
+      {/if}
+
+      <div class="mt-4 rounded-xl border border-[var(--line)] p-4">
+        <label class="flex items-center gap-2 text-sm font-semibold">
+          <input
+            type="checkbox"
+            checked={Boolean(alternateRvc.enabled)}
+            onchange={(event) =>
+              (alternateRvc = {
+                ...alternateRvc,
+                enabled: event.currentTarget.checked
+              })}
+          />
+          Convert the new take with RVC
+        </label>
+        {#if alternateRvc.enabled}
+          <div class="mt-3 grid gap-3 sm:grid-cols-3">
+            <label class="text-sm font-semibold"
+              >RVC model
+              <select
+                class="field mt-1 w-full"
+                value={String(alternateRvc.model ?? '')}
+                onchange={(event) =>
+                  (alternateRvc = {
+                    ...alternateRvc,
+                    model: event.currentTarget.value,
+                    rvc_model: event.currentTarget.value
+                  })}
+              >
+                <option value="">Choose a model</option>
+                {#each rvcModels as model}<option value={model}>{model}</option
+                  >{/each}
+              </select>
+            </label>
+            <label class="text-sm font-semibold"
+              >Pitch
+              <input
+                class="field mt-1 w-full"
+                type="number"
+                min="-24"
+                max="24"
+                value={Number(alternateRvc.pitch ?? 0)}
+                onchange={(event) =>
+                  (alternateRvc = {
+                    ...alternateRvc,
+                    pitch: Number(event.currentTarget.value)
+                  })}
+              />
+            </label>
+            <label class="text-sm font-semibold"
+              >Index rate
+              <input
+                class="field mt-1 w-full"
+                type="number"
+                min="0"
+                max="1"
+                step="0.05"
+                value={Number(alternateRvc.index_rate ?? 0.3)}
+                onchange={(event) =>
+                  (alternateRvc = {
+                    ...alternateRvc,
+                    index_rate: Number(event.currentTarget.value)
+                  })}
+              />
+            </label>
+          </div>
+        {/if}
+      </div>
+      {#if alternateService?.online === false}<p
+          class="mt-3 text-sm text-red-500"
+        >
+          This speech service is currently unavailable.
+        </p>{/if}
+      {#if alternateRvc.enabled && !rvcModels.length}<p
+          class="mt-3 text-sm text-red-500"
+        >
+          No RVC models are available. Add one in RVC management first.
+        </p>{/if}
+      <footer class="mt-6 flex justify-end gap-3">
+        <button class="action" onclick={() => (alternateOpen = false)}
+          >Cancel</button
+        >
+        <button
+          class="action primary"
+          disabled={!alternateCanStart || loading}
+          onclick={submitAlternateRegeneration}
+          >Create alternate take{alternateSegmentIds.length === 1
+            ? ''
+            : 's'}</button
+        >
+      </footer>
+    </div>
+  </div>
 {/if}
 {#if ttsServicesOpen}<TtsServicesModal
     onclose={() => {

@@ -2483,10 +2483,13 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         )
         if rejected := inline_credential_error(payload.run_override):
             return rejected
+        if rejected := inline_credential_error(payload.selected_segment_override):
+            return rejected
         try:
             result = generation.start(
                 session_id,
                 run_override=payload.run_override,
+                selected_segment_override=payload.selected_segment_override,
                 segment_ids=payload.segment_ids,
                 generation_run_id=payload.generation_run_id,
                 operation=payload.operation,

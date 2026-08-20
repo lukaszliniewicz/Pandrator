@@ -1380,6 +1380,249 @@ test('generated segments return to the current filtered page after repeated rege
   }
 });
 
+test('alternate regeneration sends one selected-only setting set and returns to Active mix', async ({
+  page
+}) => {
+  const posted: Array<Record<string, unknown>> = [];
+  const runId = 'source-run';
+  const planRevisionId = 'alternate-plan';
+  const sourceRun = {
+    id: runId,
+    session_id: 'mock-session',
+    plan_revision_id: planRevisionId,
+    sequence_number: 1,
+    operation: 'generate',
+    label: 'Run 1: XTTS · base · stored-voice',
+    status: 'completed',
+    progress: 1,
+    settings_snapshot: {
+      tts: {
+        service: 'XTTS',
+        model: 'base',
+        voice: 'stored-voice',
+        language: 'de'
+      },
+      rvc: { enabled: false }
+    }
+  };
+  let generationStarted = false;
+  await page.route('**/api/v1/events?after=*', (route) => route.abort());
+  await signIn(page);
+  const sessionId = await createGenerationPlan(page, [
+    { text: 'First alternate sentence.' },
+    { text: 'Keep this active take.' }
+  ]);
+  const plan = await page.request.get(
+    `/api/v1/sessions/${sessionId}/generation-segments`
+  );
+  const segments = (await plan.json()).items as Array<{ id: string }>;
+  const rows = [
+    {
+      id: segments[0].id,
+      ordinal: 0,
+      node_kind: 'paragraph',
+      paragraph_break_after: false,
+      text: 'First alternate sentence.',
+      optimized_text: null,
+      speech_plan: {},
+      optimization_status: 'not_requested',
+      optimization_reviewed: false,
+      voice: 'stored-first',
+      language: 'de',
+      marked: false,
+      removed: false,
+      status: generationStarted ? 'completed' : 'ready',
+      revision: 1,
+      takes: generationStarted
+        ? [
+            {
+              id: 'alternate-take',
+              generation_run_id: 'alternate-run',
+              artifact_id: 'alternate-artifact',
+              kind: 'tts_rvc',
+              status: 'completed',
+              is_active: true,
+              revision: 1
+            }
+          ]
+        : []
+    },
+    {
+      id: segments[1].id,
+      ordinal: 1,
+      node_kind: 'paragraph',
+      paragraph_break_after: false,
+      text: 'Keep this active take.',
+      optimized_text: null,
+      speech_plan: {},
+      optimization_status: 'completed',
+      optimization_reviewed: false,
+      voice: 'stored-second',
+      language: 'it',
+      marked: false,
+      removed: false,
+      status: 'completed',
+      revision: 1,
+      takes: [
+        {
+          id: 'preserved-take',
+          generation_run_id: runId,
+          artifact_id: 'preserved-artifact',
+          kind: 'tts',
+          status: 'completed',
+          is_active: true,
+          revision: 1
+        }
+      ]
+    }
+  ];
+  await page.route(`**/api/v1/sessions/${sessionId}/settings/tts`, (route) =>
+    route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        effective: {
+          service: 'XTTS',
+          model: 'base',
+          voice: 'stored-voice',
+          language: 'de'
+        }
+      })
+    })
+  );
+  await page.route('**/api/v1/services/tts?refresh=true', (route) =>
+    route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        default_service: 'XTTS',
+        services: [
+          {
+            id: 'XTTS',
+            name: 'XTTS',
+            online: true,
+            models: ['base'],
+            voices: ['stored-voice']
+          },
+          {
+            id: 'Chatterbox',
+            name: 'Chatterbox',
+            online: true,
+            models: ['chatterbox-alt', 'chatterbox-second'],
+            voices: ['alternate-reference']
+          }
+        ]
+      })
+    })
+  );
+  await page.route('**/api/v1/voices', (route) =>
+    route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({ items: [] })
+    })
+  );
+  await page.route('**/api/v1/rvc/models', (route) =>
+    route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({ available: true, items: ['alternate-rvc'] })
+    })
+  );
+  await page.route(
+    `**/api/v1/sessions/${sessionId}/generation-runs`,
+    async (route) => {
+      if (route.request().method() === 'POST') {
+        posted.push(route.request().postDataJSON() as Record<string, unknown>);
+        generationStarted = true;
+        await route.fulfill({
+          contentType: 'application/json',
+          body: JSON.stringify({
+            ...sourceRun,
+            id: 'alternate-run',
+            sequence_number: 2,
+            status: 'running'
+          })
+        });
+        return;
+      }
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ items: [sourceRun] })
+      });
+    }
+  );
+  await page.route(
+    `**/api/v1/sessions/${sessionId}/output-assemblies/latest`,
+    (route) =>
+      route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ item: null })
+      })
+  );
+  await page.route(
+    `**/api/v1/sessions/${sessionId}/generation-segments?*`,
+    (route) =>
+      route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          items: rows,
+          total: rows.length,
+          next_cursor: null,
+          plan_revision_id: planRevisionId
+        })
+      })
+  );
+
+  await page.goto(`/sessions/${sessionId}`);
+  await page.getByRole('button', { name: 'Generation', exact: true }).click();
+  const picker = page.locator('label.run-picker select');
+  await page.locator(`tr[data-segment-id="${segments[0].id}"]`).click();
+  await page
+    .locator(`tr[data-segment-id="${segments[1].id}"]`)
+    .click({ modifiers: ['Control'] });
+  await page
+    .locator('[data-generation-layout] header')
+    .getByRole('button', { name: 'Alternate selected take…' })
+    .click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByText('current session settings')).toBeVisible();
+  await dialog.getByLabel('Speech service').selectOption('Chatterbox');
+  await expect(dialog.getByLabel('Voice / managed reference')).toHaveValue('');
+  await dialog.getByLabel('Model').selectOption('chatterbox-second');
+  await expect(dialog.getByLabel('Voice / managed reference')).toHaveValue('');
+  await dialog.getByLabel('Model').selectOption('chatterbox-alt');
+  await dialog
+    .getByLabel('Voice / managed reference')
+    .selectOption('alternate-reference');
+  await dialog.getByLabel('Language').selectOption('fr');
+  await dialog
+    .getByLabel('Generation prompt / instructions')
+    .fill('Warm, quiet delivery.');
+  await dialog
+    .getByRole('checkbox', { name: 'Convert the new take with RVC' })
+    .check();
+  await dialog.getByLabel('RVC model').selectOption('alternate-rvc');
+  await dialog.getByRole('button', { name: 'Create alternate takes' }).click();
+
+  await expect.poll(() => posted.length).toBe(1);
+  expect(posted[0]).toMatchObject({
+    operation: 'regenerate',
+    segment_ids: [segments[0].id, segments[1].id],
+    generation_run_id: null,
+    selected_segment_override: {
+      tts: {
+        service: 'Chatterbox',
+        model: 'chatterbox-alt',
+        voice: 'alternate-reference',
+        language: 'fr',
+        generation_prompt: 'Warm, quiet delivery.'
+      },
+      rvc: { enabled: true, model: 'alternate-rvc' }
+    }
+  });
+  await expect(picker).toHaveValue('');
+  await expect(
+    page.locator(`tr[data-segment-id="${segments[1].id}"] select`).last()
+  ).toHaveValue('preserved-take');
+});
+
 test('editorial workspace visual smoke', async ({ page }) => {
   const isWindows = await page.evaluate(() =>
     navigator.userAgent.includes('Windows')

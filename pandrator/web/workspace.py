@@ -2251,6 +2251,7 @@ class GenerationService:
         session_id: str,
         *,
         run_override: dict[str, Any] | None = None,
+        selected_segment_override: dict[str, Any] | None = None,
         segment_ids: list[str] | None = None,
         generation_run_id: str | None = None,
         operation: str = "generate",
@@ -2259,6 +2260,11 @@ class GenerationService:
             str(value) for value in (segment_ids or []) if str(value)
         ]
         run_override = dict(run_override or {})
+        selected_segment_override = dict(selected_segment_override or {})
+        if selected_segment_override and not requested_segment_ids:
+            raise ValueError(
+                "An alternate segment setting set requires one or more selected segments."
+            )
         resolved_for_new: tuple[dict[str, Any], str] | None = None
         if operation == "generate" and not requested_segment_ids:
             resolved_for_new = self.settings.resolve(
@@ -2348,9 +2354,15 @@ class GenerationService:
                     raise ValueError(
                         "The source generation run is still active; stop or resume it before regenerating segments."
                     )
+                source_snapshot = dict(source_run.settings_snapshot_json or {})
+                # A previous alternate take is a useful source for ordinary
+                # settings, but its *selected-only* precedence must not leak
+                # into a later regeneration unless it is requested again.
+                source_snapshot.pop("selected_segment_override", None)
                 snapshot = _merge(
-                    dict(source_run.settings_snapshot_json or {}),
+                    source_snapshot,
                     run_override,
+                    selected_segment_override,
                 )
                 settings_hash = stable_hash(snapshot)
             else:
@@ -2360,6 +2372,14 @@ class GenerationService:
                         run_override=run_override,
                     )
                 snapshot, settings_hash = resolved_for_new
+                if selected_segment_override:
+                    snapshot = _merge(snapshot, selected_segment_override)
+                    settings_hash = stable_hash(snapshot)
+            if selected_segment_override:
+                snapshot["selected_segment_override"] = deepcopy(
+                    selected_segment_override
+                )
+                settings_hash = stable_hash(snapshot)
             sequence_number = (
                 int(
                     session.scalar(
@@ -2521,6 +2541,12 @@ class GenerationService:
                 select(UsageEvent).where(UsageEvent.generation_run_id == run.id)
             ).all()
         )
+        snapshot = dict(run.settings_snapshot_json or {})
+        modal_snapshot = {
+            key: deepcopy(snapshot[key])
+            for key in ("tts", "rvc", "selected_segment_override")
+            if isinstance(snapshot.get(key), dict)
+        }
         return {
             "id": run.id,
             "session_id": run.session_id,
@@ -2537,6 +2563,10 @@ class GenerationService:
             "pause_requested": run.pause_requested,
             "cancel_requested": run.cancel_requested,
             "settings_hash": run.settings_hash,
+            # A run has a full reproducibility snapshot, but the history UI
+            # needs only speech settings to seed an alternate take.  Do not
+            # turn this list endpoint into a settings-data side channel.
+            "settings_snapshot": modal_snapshot,
             "error_message": job.error_message if job else None,
             "take_count": take_count,
             "usage": usage_summary(usage),
