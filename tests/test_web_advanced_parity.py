@@ -169,7 +169,7 @@ class AdvancedApiTests(unittest.TestCase):
 
 
 class TrainingHandlerTests(unittest.TestCase):
-    def test_successful_training_registers_model_and_activates_xtts_catalogue(self):
+    def test_successful_training_leaves_xtts_catalogue_to_wrapper_registry(self):
         with tempfile.TemporaryDirectory() as directory:
             paths = prepare_web_test_data_root(directory)
             database = Database(paths.database)
@@ -200,8 +200,13 @@ class TrainingHandlerTests(unittest.TestCase):
                     artifact = session.get(Artifact, record.output_artifact_id)
                     self.assertEqual("xtts_model", artifact.role)
                     defaults = session.get(AppSetting, "services.tts")
-                    xtts = next(item for item in defaults.value_json["provider_configs"] if item["id"] == "xtts")
-                    self.assertIn("narrator", xtts["models"])
+                    if defaults is not None:
+                        providers = defaults.value_json.get("provider_configs", [])
+                        xtts = next(
+                            (item for item in providers if item.get("id") == "xtts"),
+                            {"models": []},
+                        )
+                        self.assertNotIn("narrator", xtts.get("models", []))
             finally:
                 database.dispose()
 

@@ -30,6 +30,7 @@
     TtsCatalogue,
     TtsService,
     VoiceRecord,
+    XttsModel,
     WorkflowStage
   } from './api-models';
   import { appState } from './app-state.svelte';
@@ -208,6 +209,11 @@
   let xttsModelFiles = $state<File[]>([]);
   let uploadingXttsModel = $state(false);
   let xttsModelUploadMessage = $state('');
+  let xttsModels = $state<XttsModel[]>([]);
+  let xttsModelsLoading = $state(false);
+  let xttsModelsLifecycleSupported = $state(false);
+  let xttsModelsCompatibility = $state('');
+  let deletingXttsModelId = $state('');
   let speechCataloguesLoaded = false;
   let llmModelsLoaded = false;
   let workflowTour = $state(false);
@@ -934,6 +940,8 @@
         await discoverTtsService(active);
       }
       speechCataloguesLoaded = true;
+      if (String(active?.id ?? '').toLowerCase() === 'xtts')
+        await loadXttsModels();
     } catch {
       ttsCatalogue = { services: [] };
       libraryVoices = [];
@@ -956,16 +964,21 @@
     'speakers_xtts.pth',
     'vocab.json'
   ] as const;
-  const xttsModelIdPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
-
   function chooseXttsModelFiles(files: FileList | null) {
     xttsModelFiles = Array.from(files ?? []);
     xttsModelUploadMessage = '';
   }
 
   function xttsModelBundleError() {
-    if (!xttsModelIdPattern.test(xttsModelId.trim()))
-      return 'Use a model ID of 1–128 letters, numbers, dots, hyphens, or underscores; it must start with a letter or number.';
+    const modelId = xttsModelId.trim();
+    if (
+      !modelId ||
+      modelId.length > 512 ||
+      modelId.startsWith('/') ||
+      modelId.includes('\\') ||
+      modelId.split('/').some((part) => !part || part === '.' || part === '..' || part.startsWith('.'))
+    )
+      return 'Use a relative model ID such as custom/my-narrator-v1. Slashes may organize models, but empty, hidden, or traversal path parts are not allowed.';
     const names = xttsModelFiles.map((file) => file.name);
     const expected = new Set(XTTS_MODEL_BUNDLE_FILENAMES);
     if (
@@ -997,6 +1010,7 @@
         xttsModelFiles
       );
       await loadSpeechCatalogues(true, true);
+      await loadXttsModels();
       const xttsService = ttsCatalogue.services.find(
         (service) => String(service.id).toLowerCase() === 'xtts'
       );
@@ -1015,6 +1029,66 @@
       xttsModelUploadMessage = '';
     } finally {
       uploadingXttsModel = false;
+    }
+  }
+
+  async function loadXttsModels() {
+    xttsModelsLoading = true;
+    try {
+      const catalogue = await sessionApi.xttsModels();
+      xttsModels = catalogue.data ?? [];
+      xttsModelsLifecycleSupported = Boolean(catalogue.lifecycle_supported);
+      const wrapperVersion = String(catalogue.wrapper?.version ?? '');
+      const wrapperStatus = String(catalogue.wrapper?.status ?? '');
+      const wrapperMessage = wrapperVersion
+        ? `Connected XTTS wrapper ${wrapperVersion}${wrapperStatus ? ` (${wrapperStatus})` : ''}.`
+        : '';
+      xttsModelsCompatibility = [catalogue.compatibility, wrapperMessage]
+        .filter(Boolean)
+        .join(' ');
+    } catch (caught) {
+      xttsModels = [];
+      xttsModelsLifecycleSupported = false;
+      xttsModelsCompatibility = `${errorMessage(caught)} Update or Repair XTTS in Pandrator Manager if model lifecycle controls are unavailable.`;
+    } finally {
+      xttsModelsLoading = false;
+    }
+  }
+
+  async function removeXttsModel(model: XttsModel) {
+    if (!model.removable || deletingXttsModelId) return;
+    const isCurrent = model.id === ttsModel;
+    const question = isCurrent
+      ? `“${model.id}” is selected for this generation. Remove it and switch this generation to a safe XTTS fallback?`
+      : `Remove the local XTTS model “${model.id}”? This cannot be undone.`;
+    if (!window.confirm(question)) return;
+    deletingXttsModelId = model.id;
+    error = '';
+    try {
+      await sessionApi.deleteXttsModel(model.id);
+      if (isCurrent) ttsModel = '';
+      await Promise.all([loadXttsModels(), loadSpeechCatalogues(false, true)]);
+      const service = ttsCatalogue.services.find(
+        (item) => String(item.id).toLowerCase() === 'xtts'
+      );
+      const safeFallback =
+        service?.default_model ??
+        service?.models?.find((candidate) => candidate !== model.id) ??
+        xttsModels.find((candidate) => candidate.is_default)?.id ??
+        xttsModels.find((candidate) => candidate.id !== model.id)?.id ??
+        '';
+      if (
+        isCurrent ||
+        !xttsModels.some((candidate) => candidate.id === ttsModel)
+      ) {
+        ttsModel = String(safeFallback);
+        chooseTtsModel(ttsModel);
+      }
+      xttsModelUploadMessage = `Removed ${model.id}${isCurrent && ttsModel ? ` and selected ${ttsModel}` : ''}.`;
+    } catch (caught) {
+      error = errorMessage(caught);
+    } finally {
+      deletingXttsModelId = '';
     }
   }
 
@@ -1100,6 +1174,7 @@
     );
     ttsModel = String(service?.default_model ?? service?.models?.[0] ?? '');
     await discoverTtsService(service);
+    if (String(service?.id ?? '').toLowerCase() === 'xtts') await loadXttsModels();
     voiceName = String(
       service?.default_voices_by_language?.[ttsModel]?.[targetLanguage] ??
         service?.default_voices?.[ttsModel] ??
@@ -3094,6 +3169,7 @@
               value={ttsModel}
               onchange={(event) => chooseTtsModel(event.currentTarget.value)}
               class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
+              aria-label="TTS model"
               >{#each ttsModels as item}<option value={item}>{item}</option
                 >{/each}</select
             ></label
@@ -3109,20 +3185,75 @@
                     id="xtts-model-upload-title"
                     class="text-sm font-semibold"
                   >
-                    Add a fine-tuned XTTS model
+                    XTTS model management
                   </h3>
                   <p class="muted mt-1 max-w-xl text-xs leading-relaxed">
-                    Choose the four files from one flat exported model bundle.
-                    Pandrator installs it in stable user data; do not copy files
-                    into an XTTS service or version directory.
+                    Select any listed model for this generation. Local complete
+                    bundles can be removed here; the built-in XTTS model is
+                    protected. Add a fine-tuned model with the four-file bundle
+                    below—Pandrator installs it in stable user data.
                   </p>
                 </div>
+                <button
+                  type="button"
+                  onclick={loadXttsModels}
+                  disabled={xttsModelsLoading}
+                  class="flex items-center gap-2 rounded-lg border border-[var(--line)] px-3 py-2 text-xs font-semibold disabled:opacity-50"
+                  ><RefreshCw
+                    size={14}
+                    class={xttsModelsLoading ? 'animate-spin' : ''}
+                  /> Refresh models</button
+                >
               </div>
+              {#if xttsModelsCompatibility}<p
+                class="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-950"
+                role="status">{xttsModelsCompatibility}</p
+              >{/if}
+              {#if xttsModels.length}<div
+                class="mt-3 overflow-hidden rounded-lg border border-[var(--line)] bg-[var(--paper)]"
+              >{#each xttsModels as model}<div
+                    class="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--line)] p-3 last:border-b-0"
+                  ><div class="min-w-0"><button
+                        type="button"
+                        onclick={() => chooseTtsModel(model.id)}
+                        class="max-w-full truncate text-left text-xs font-semibold text-[var(--accent)]"
+                        aria-label={`Select XTTS model ${model.id}`}>{model.id}</button
+                      ><p class="muted mt-1 text-xs"
+                        >{model.is_default
+                          ? 'Built-in protected model'
+                          : model.removable
+                            ? 'Local model bundle'
+                            : model.lifecycle_supported
+                              ? 'Local model (not removable)'
+                              : 'Model lifecycle requires an XTTS update'}</p
+                      >{#if model.id === ttsModel}<span
+                          class="mt-1 inline-block rounded bg-[var(--accent-soft)] px-2 py-0.5 text-[11px] font-semibold"
+                          >Selected for this generation</span
+                        >{/if}</div
+                    ><div class="flex items-center gap-2"><button
+                          type="button"
+                          onclick={() => chooseTtsModel(model.id)}
+                          class="rounded-lg border border-[var(--line)] px-3 py-2 text-xs font-semibold"
+                          >Select</button
+                        >{#if model.removable && xttsModelsLifecycleSupported}<button
+                            type="button"
+                            onclick={() => removeXttsModel(model)}
+                            disabled={Boolean(deletingXttsModelId)}
+                            class="rounded-lg border border-red-300 px-3 py-2 text-xs font-semibold text-red-700 disabled:opacity-50"
+                            >{deletingXttsModelId === model.id
+                              ? 'Removing…'
+                              : 'Remove'}</button
+                          >{:else if !model.is_default}<span
+                            class="muted text-xs">Removal unavailable</span
+                          >{/if}</div
+                    ></div
+                  >{/each}</div
+              >{/if}
               <div class="mt-3 grid gap-3 sm:grid-cols-2">
                 <label class="text-xs font-semibold"
                   >Model ID<input
                     bind:value={xttsModelId}
-                    placeholder="my-narrator-v1"
+                    placeholder="custom/my-narrator-v1"
                     disabled={uploadingXttsModel}
                     class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-sm font-normal"
                   /></label

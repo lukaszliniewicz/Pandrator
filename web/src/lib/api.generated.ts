@@ -1132,10 +1132,26 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        get: operations["listXttsModels"];
         put?: never;
         post: operations["uploadXttsModel"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/services/tts/xtts/models/{modelId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["deleteXttsModel"];
         options?: never;
         head?: never;
         patch?: never;
@@ -3530,6 +3546,19 @@ export interface components {
             /** Plan Digest */
             plan_digest: string;
         };
+        XttsModel: {
+            bundle_complete: boolean;
+            created?: number;
+            id: string;
+            is_default: boolean;
+            is_local: boolean;
+            lifecycle_supported: boolean;
+            object: string;
+            owned_by: string;
+            relative_path?: string | null;
+            removable: boolean;
+            source: string;
+        };
     };
     responses: never;
     parameters: never;
@@ -5212,6 +5241,34 @@ export interface operations {
             };
         };
     };
+    listXttsModels: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description XTTS models and lifecycle metadata */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        compatibility?: string | null;
+                        data: components["schemas"]["XttsModel"][];
+                        lifecycle_supported: boolean;
+                        object: string;
+                        wrapper?: {
+                            [key: string]: string;
+                        } | null;
+                    };
+                };
+            };
+        };
+    };
     uploadXttsModel: {
         parameters: {
             query?: never;
@@ -5239,6 +5296,33 @@ export interface operations {
                         id: string;
                         object: string;
                         owned_by: string;
+                    };
+                };
+            };
+        };
+    };
+    deleteXttsModel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                modelId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description XTTS model removed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        deleted: boolean;
+                        evicted: boolean;
+                        id: string;
+                        object: string;
                     };
                 };
             };

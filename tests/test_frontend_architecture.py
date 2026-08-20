@@ -175,12 +175,12 @@ def test_xtts_model_upload_is_exposed_by_source_and_compiled_shell():
         path.read_text(encoding="utf-8") for path in static_root.rglob("*.js")
     )
 
-    assert "Add a fine-tuned XTTS model" in workspace
+    assert "XTTS model management" in workspace
     assert "config.json" in workspace
     assert "uploadXttsModel" in workspace
     assert "/api/v1/services/tts/xtts/models" in api_client
     assert "/api/v1/services/tts/xtts/models" in compiled
-    assert "Add a fine-tuned XTTS model" in compiled
+    assert "XTTS model management" in compiled
     assert re.search(r"Upload and\s+select", compiled)
     assert "ttsModel = uploaded.id" in workspace
     assert "xtts_model: ttsModel" in workspace

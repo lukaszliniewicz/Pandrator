@@ -6,7 +6,6 @@ from pathlib import Path
 from unittest import mock
 
 from dulwich import porcelain
-
 from pandrator_manager.application import create_application
 from pandrator_manager.components import ComponentRegistry
 from pandrator_manager.components.builtin import MarkerComponentDriver
@@ -35,7 +34,9 @@ def _commit(repository: Path, content: str) -> str:
     return commit.decode()
 
 
-def _registry(repository: Path) -> ComponentRegistry:
+def _registry(
+    repository: Path, *, source_revision: str | None = None
+) -> ComponentRegistry:
     definition = ComponentDefinition(
         id="fixture",
         label="Fixture component",
@@ -45,6 +46,7 @@ def _registry(repository: Path) -> ComponentRegistry:
         owned_paths=("services/fixture",),
         resource_locks=("component:fixture",),
         repo_url=str(repository),
+        source_revision=source_revision,
     )
     return ComponentRegistry((definition,), (MarkerComponentDriver(),))
 
@@ -117,6 +119,42 @@ class OperationEngineTests(unittest.TestCase):
             self.application.context.layout,
             "fixture",
         )
+        self.assertIsNotNone(active)
+        self.assertEqual((active / "marker.txt").read_text(encoding="utf-8"), "one")
+
+    def test_install_checks_out_pinned_source_revision(self):
+        _commit(self.repository, "two")
+        application = create_application(
+            self.base / "pinned-workspace",
+            registry=_registry(
+                self.repository, source_revision=self.first_revision
+            ),
+        )
+        engine = OperationEngine(
+            application.context,
+            application.store,
+            application.registry,
+        )
+        application.attach_operation_queue(engine)
+        engine.start()
+        self.addCleanup(engine.shutdown)
+        plan = application.plan(
+            kind=OperationKind.INSTALL,
+            desired={"fixture": DesiredComponentState()},
+        )
+        submitted, created = application.submit_operation(
+            plan_id=plan.id,
+            plan_digest=plan.digest,
+            accepted_confirmations=tuple(
+                confirmation.key for confirmation in plan.confirmations
+            ),
+            idempotency_key=str(uuid.uuid4()),
+        )
+        self.assertTrue(created)
+
+        completed = _wait(application, submitted.id)
+        self.assertEqual(completed.state, OperationState.SUCCEEDED)
+        active = active_component_path(application.context.layout, "fixture")
         self.assertIsNotNone(active)
         self.assertEqual((active / "marker.txt").read_text(encoding="utf-8"), "one")
 

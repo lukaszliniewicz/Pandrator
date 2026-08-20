@@ -31,6 +31,33 @@ def build_openapi_document() -> dict:
                 )
             schemas[definition_name] = definition
         schemas[name] = schema
+    schemas["XttsModel"] = {
+        "type": "object",
+        "required": [
+            "id",
+            "object",
+            "owned_by",
+            "is_default",
+            "is_local",
+            "removable",
+            "source",
+            "bundle_complete",
+            "lifecycle_supported",
+        ],
+        "properties": {
+            "id": {"type": "string"},
+            "object": {"type": "string"},
+            "created": {"type": "integer", "minimum": 0},
+            "owned_by": {"type": "string"},
+            "is_default": {"type": "boolean"},
+            "is_local": {"type": "boolean"},
+            "removable": {"type": "boolean"},
+            "source": {"type": "string"},
+            "relative_path": {"type": ["string", "null"]},
+            "bundle_complete": {"type": "boolean"},
+            "lifecycle_supported": {"type": "boolean"},
+        },
+    }
     document = {
         "openapi": "3.1.0",
         "info": {"title": "Pandrator API", "version": "1.0.0"},
@@ -1208,6 +1235,35 @@ def build_openapi_document() -> dict:
                 "get": operation("listTtsServices", "TTS readiness and catalogues")
             },
             "/api/v1/services/tts/xtts/models": {
+                "get": {
+                    "operationId": "listXttsModels",
+                    "responses": {
+                        "200": {
+                            "description": "XTTS models and lifecycle metadata",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "required": ["object", "data", "lifecycle_supported"],
+                                        "properties": {
+                                            "object": {"type": "string"},
+                                            "data": {
+                                                "type": "array",
+                                                "items": {"$ref": "#/components/schemas/XttsModel"},
+                                            },
+                                            "lifecycle_supported": {"type": "boolean"},
+                                            "compatibility": {"type": ["string", "null"]},
+                                            "wrapper": {
+                                                "type": ["object", "null"],
+                                                "additionalProperties": {"type": "string"},
+                                            },
+                                        },
+                                    }
+                                }
+                            },
+                        }
+                    },
+                },
                 "post": {
                     "operationId": "uploadXttsModel",
                     "requestBody": {
@@ -1221,7 +1277,7 @@ def build_openapi_document() -> dict:
                                         "model_id": {
                                             "type": "string",
                                             "minLength": 1,
-                                            "maxLength": 128,
+                                            "maxLength": 512,
                                         },
                                         "files": {
                                             "type": "array",
@@ -1255,6 +1311,38 @@ def build_openapi_document() -> dict:
                                             "object": {"type": "string"},
                                             "owned_by": {"type": "string"},
                                             "bytes": {"type": "integer", "minimum": 0},
+                                        },
+                                    }
+                                }
+                            },
+                        }
+                    },
+                }
+            },
+            "/api/v1/services/tts/xtts/models/{modelId}": {
+                "delete": {
+                    "operationId": "deleteXttsModel",
+                    "parameters": [
+                        {
+                            "name": "modelId",
+                            "in": "path",
+                            "required": True,
+                            "schema": {"type": "string", "minLength": 1, "maxLength": 512},
+                        }
+                    ],
+                    "responses": {
+                        "200": {
+                            "description": "XTTS model removed",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "required": ["id", "object", "deleted", "evicted"],
+                                        "properties": {
+                                            "id": {"type": "string"},
+                                            "object": {"type": "string"},
+                                            "deleted": {"type": "boolean"},
+                                            "evicted": {"type": "boolean"},
                                         },
                                     }
                                 }

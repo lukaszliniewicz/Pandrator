@@ -33,6 +33,8 @@ import type {
   SubtitleReviewCatalog,
   TtsCatalogue,
   TtsDiscovery,
+  XttsModelCatalogue,
+  XttsModelDeletion,
   XttsModelUpload,
   VoiceRecord,
   WaveformData,
@@ -349,6 +351,20 @@ export const sessionApi = {
       XttsModelUpload
     >('/api/v1/services/tts/xtts/models', 'post', { body });
   },
+  xttsModels: () =>
+    typedApiJson<
+      '/api/v1/services/tts/xtts/models',
+      'get',
+      XttsModelCatalogue
+    >('/api/v1/services/tts/xtts/models', 'get'),
+  deleteXttsModel: (modelId: string) =>
+    typedApiJson<
+      '/api/v1/services/tts/xtts/models/{modelId}',
+      'delete',
+      XttsModelDeletion
+    >('/api/v1/services/tts/xtts/models/{modelId}', 'delete', {
+      path: { modelId }
+    }),
   providers: () =>
     typedApiJson<'/api/v1/providers', 'get', ItemPage<ProviderRecord>>(
       '/api/v1/providers',

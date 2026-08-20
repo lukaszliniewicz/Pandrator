@@ -204,6 +204,7 @@ class ComponentDefinition(StrictModel):
     service_key: str | None = None
     default_port: int | None = Field(default=None, ge=1, le=65535)
     repo_url: str | None = None
+    source_revision: str | None = Field(default=None, pattern=r"^[0-9a-fA-F]{7,64}$")
     license_name: str | None = None
     license_url: str | None = None
     estimated_download_bytes: int | None = Field(default=None, ge=0)

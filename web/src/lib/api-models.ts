@@ -572,6 +572,41 @@ export type XttsModelUpload = {
   object: string;
   owned_by: string;
   bytes: number;
+  is_default?: boolean;
+  is_local?: boolean;
+  removable?: boolean;
+  source?: string;
+  relative_path?: string | null;
+  bundle_complete?: boolean;
+};
+
+export type XttsModel = {
+  id: string;
+  object: string;
+  created?: number;
+  owned_by: string;
+  is_default: boolean;
+  is_local: boolean;
+  removable: boolean;
+  source: string;
+  relative_path: string | null;
+  bundle_complete: boolean;
+  lifecycle_supported: boolean;
+};
+
+export type XttsModelCatalogue = {
+  object: string;
+  data: XttsModel[];
+  lifecycle_supported: boolean;
+  compatibility: string | null;
+  wrapper?: { version?: string; status?: string } | null;
+};
+
+export type XttsModelDeletion = {
+  id: string;
+  object: string;
+  deleted: boolean;
+  evicted: boolean;
 };
 
 export type ProviderRecord = {

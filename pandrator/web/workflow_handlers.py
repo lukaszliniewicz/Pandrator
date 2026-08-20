@@ -41,7 +41,6 @@ from .models import (
     AgentRun,
     AgentStep,
     AppSetting,
-    AppSettingHistory,
     Artifact,
     ArtifactEdge,
     AudioTake,
@@ -4341,50 +4340,6 @@ class WorkflowHandlers:
                 training.status = "succeeded"
                 training.output_artifact_id = artifact.id
                 training.updated_at = utcnow()
-                defaults = session.get(AppSetting, "services.tts")
-                value = (
-                    dict(defaults.value_json or {})
-                    if defaults and isinstance(defaults.value_json, dict)
-                    else {}
-                )
-                providers = [
-                    dict(item)
-                    for item in value.get("provider_configs", [])
-                    if isinstance(item, dict)
-                ]
-                xtts = next(
-                    (
-                        item
-                        for item in providers
-                        if str(item.get("id") or "").lower() == "xtts"
-                    ),
-                    None,
-                )
-                if xtts is None:
-                    xtts = {"id": "xtts", "name": "XTTS", "models": []}
-                    providers.append(xtts)
-                xtts["models"] = list(
-                    dict.fromkeys([*(xtts.get("models") or []), model_name])
-                )
-                if defaults is None:
-                    session.add(
-                        AppSetting(
-                            key="services.tts",
-                            value_json={**value, "provider_configs": providers},
-                            revision=1,
-                        )
-                    )
-                else:
-                    session.add(
-                        AppSettingHistory(
-                            key=defaults.key,
-                            value_json=defaults.value_json,
-                            revision=defaults.revision,
-                        )
-                    )
-                    defaults.value_json = {**value, "provider_configs": providers}
-                    defaults.revision += 1
-                    defaults.updated_at = utcnow()
             progress(1.0, "XTTS model ready")
             return {
                 "training_id": training_id,

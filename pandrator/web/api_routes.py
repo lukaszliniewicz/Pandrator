@@ -5,7 +5,6 @@ from __future__ import annotations
 import ipaddress
 import json
 import os
-import re
 import secrets
 import shutil
 import time
@@ -14,7 +13,7 @@ from collections.abc import Iterator
 from datetime import timedelta
 from pathlib import Path
 from typing import Any, Self
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 import requests
 from flask import (
@@ -172,7 +171,6 @@ XTTS_MODEL_BUNDLE_FILENAMES = (
     "vocab.json",
 )
 _XTTS_MODEL_BUNDLE_FILENAME_SET = frozenset(XTTS_MODEL_BUNDLE_FILENAMES)
-_XTTS_MODEL_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _XTTS_MODEL_UPLOAD_CHUNK_BYTES = 1024 * 1024
 _XTTS_MODEL_UPLOAD_TIMEOUT_SECONDS = 60 * 60
 
@@ -269,7 +267,7 @@ def _xtts_model_bundle_upload_parts(
     return boundary, _SizedMultipartStream(stream(), total_size)
 
 
-def _xtts_upload_endpoint(base_url: str) -> str:
+def _xtts_models_endpoint(base_url: str, model_id: str = "") -> str:
     parsed = urlsplit(str(base_url or "").strip())
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         raise ValueError("The configured XTTS endpoint is invalid.")
@@ -278,7 +276,127 @@ def _xtts_upload_endpoint(base_url: str) -> str:
     base = str(base_url).strip().rstrip("/")
     if parsed.path.rstrip("/").endswith("/v1"):
         base = base[: -len("/v1")]
-    return f"{base}/v1/models"
+    endpoint = f"{base}/v1/models"
+    if model_id:
+        # Model identifiers are relative slash paths in the first-party XTTS
+        # wrapper.  Preserve their hierarchy while escaping every path part.
+        endpoint = f"{endpoint}/{quote(model_id, safe='/')}"
+    return endpoint
+
+
+def _xtts_health_endpoint(base_url: str) -> str:
+    return _xtts_models_endpoint(base_url).removesuffix("/v1/models") + "/health"
+
+
+def _xtts_model_id_error(model_id: str) -> str:
+    """Apply only transport-safety checks; the wrapper owns full validation."""
+
+    if not model_id or model_id != model_id.strip():
+        return "model_id must be a non-empty relative identifier without surrounding spaces."
+    if len(model_id) > 512:
+        return "model_id is too long."
+    if "\\" in model_id or model_id.startswith("/"):
+        return "model_id must be a relative slash-separated path."
+    parts = model_id.split("/")
+    if any(not part or part in {".", ".."} or part.startswith(".") for part in parts):
+        return "model_id contains an unsafe path part."
+    if any(ord(character) < 32 for character in model_id):
+        return "model_id must not contain control characters."
+    return ""
+
+
+def _xtts_service_endpoint_base(catalogue: dict[str, Any]) -> tuple[str, str | None]:
+    xtts_service = next(
+        (
+            service
+            for service in catalogue.get("services", [])
+            if str(service.get("id") or "").strip().lower() == "xtts"
+        ),
+        None,
+    )
+    if not isinstance(xtts_service, dict):
+        return "", "The XTTS service is not configured."
+    endpoint_base = str(xtts_service.get("api_base") or "").strip()
+    if str(xtts_service.get("connection_mode") or "") == "managed_local":
+        managed = xtts_service.get("manager_service")
+        endpoint_base = (
+            str(managed.get("endpoint") or "").strip()
+            if isinstance(managed, dict)
+            else ""
+        )
+        if not endpoint_base:
+            return "", "Pandrator Manager has not provided an XTTS endpoint for model management."
+    try:
+        # Validate here once, so all lifecycle proxy routes produce the same
+        # connection error rather than constructing an unsafe outbound URL.
+        _xtts_models_endpoint(endpoint_base)
+    except ValueError as error:
+        return "", str(error)
+    return endpoint_base, None
+
+
+def _xtts_lifecycle_item(item: Any) -> dict[str, Any] | None:
+    if not isinstance(item, dict):
+        return None
+    model_id = str(item.get("id") or "").strip()
+    if not model_id:
+        return None
+    lifecycle_supported = any(
+        key in item
+        for key in (
+            "is_default",
+            "is_local",
+            "removable",
+            "source",
+            "relative_path",
+            "bundle_complete",
+        )
+    )
+    created = item.get("created")
+    if isinstance(created, bool):
+        created = 0
+    try:
+        created_at = max(0, int(created or 0))
+    except (TypeError, ValueError):
+        created_at = 0
+    return {
+        "id": model_id,
+        "object": str(item.get("object") or "model"),
+        "created": created_at,
+        "owned_by": str(item.get("owned_by") or "xtts-fapi"),
+        "is_default": bool(item.get("is_default")) if lifecycle_supported else False,
+        "is_local": bool(item.get("is_local")) if lifecycle_supported else False,
+        "removable": bool(item.get("removable")) if lifecycle_supported else False,
+        "source": str(item.get("source") or ("local" if lifecycle_supported else "unknown")),
+        "relative_path": item.get("relative_path") if isinstance(item.get("relative_path"), str) else None,
+        "bundle_complete": bool(item.get("bundle_complete")) if lifecycle_supported else True,
+        "lifecycle_supported": lifecycle_supported,
+    }
+
+
+def _xtts_wrapper_error_details(response: requests.Response) -> Any:
+    try:
+        return response.json()
+    except ValueError:
+        return None
+
+
+def _xtts_wrapper_delete_unsupported(response: requests.Response) -> bool:
+    """Recognize only missing route implementations, never missing models."""
+
+    if response.status_code == 405:
+        return True
+    if response.status_code != 404:
+        return False
+    try:
+        payload = response.json()
+    except ValueError:
+        return False
+    if not isinstance(payload, dict) or isinstance(payload.get("error"), dict):
+        return False
+    # FastAPI/Starlette's unimplemented-route response. A wrapper lifecycle
+    # error uses the OpenAI-style ``error`` envelope and must stay actionable.
+    return str(payload.get("detail") or "").strip() == "Not Found"
 
 
 def _xtts_wrapper_error_message(response: requests.Response) -> str:
@@ -940,6 +1058,93 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         response.headers["ETag"] = f'"{revision}"'
         return response
 
+    @app.get("/api/v1/services/tts/xtts/models")
+    @require_auth
+    def xtts_models_list():
+        catalogue, _revision = tts_catalogue.snapshot()
+        endpoint_base, endpoint_error = _xtts_service_endpoint_base(catalogue)
+        if endpoint_error:
+            return error_response("xtts_service_unavailable", endpoint_error, 503)
+        try:
+            wrapper_response = requests.get(
+                _xtts_models_endpoint(endpoint_base),
+                headers={"Accept": "application/json", "Authorization": "Bearer sk-placeholder"},
+                timeout=(5, 20),
+            )
+        except requests.Timeout:
+            return error_response(
+                "xtts_model_list_timeout",
+                "The XTTS model service did not respond while listing models.",
+                504,
+            )
+        except requests.ConnectionError:
+            return error_response(
+                "xtts_service_unavailable",
+                "Could not connect to the selected XTTS service.",
+                503,
+            )
+        except requests.RequestException:
+            return error_response(
+                "xtts_model_list_failed",
+                "The XTTS model service could not list models.",
+                502,
+            )
+        if wrapper_response.status_code >= 400:
+            return error_response(
+                "xtts_model_list_rejected",
+                _xtts_wrapper_error_message(wrapper_response),
+                wrapper_response.status_code if wrapper_response.status_code < 500 else 502,
+                _xtts_wrapper_error_details(wrapper_response),
+            )
+        try:
+            wrapper_payload = wrapper_response.json()
+            wrapper_items = wrapper_payload.get("data") if isinstance(wrapper_payload, dict) else None
+        except ValueError:
+            wrapper_items = None
+        if not isinstance(wrapper_items, list):
+            return error_response(
+                "xtts_model_list_failed",
+                "The XTTS model service returned an unexpected model list.",
+                502,
+            )
+        items = [
+            normalized
+            for item in wrapper_items
+            if (normalized := _xtts_lifecycle_item(item)) is not None
+        ]
+        lifecycle_supported = bool(items) and all(
+            item["lifecycle_supported"] for item in items
+        )
+        wrapper: dict[str, str] | None = None
+        try:
+            health_response = requests.get(
+                _xtts_health_endpoint(endpoint_base),
+                headers={"Accept": "application/json", "Authorization": "Bearer sk-placeholder"},
+                timeout=(2, 5),
+            )
+            health_payload = health_response.json()
+            if isinstance(health_payload, dict):
+                version = str(health_payload.get("version") or "").strip()
+                status = str(health_payload.get("status") or "").strip()
+                if version or status:
+                    wrapper = {key: value for key, value in {"version": version, "status": status}.items() if value}
+        except (requests.RequestException, ValueError):
+            # Listing remains useful when old wrappers do not expose health.
+            pass
+        return jsonify(
+            {
+                "object": "list",
+                "data": items,
+                "lifecycle_supported": lifecycle_supported,
+                "compatibility": (
+                    None
+                    if lifecycle_supported
+                    else "This XTTS component can list and use models, but cannot safely remove them. Update or Repair XTTS in Pandrator Manager to enable lifecycle management."
+                ),
+                "wrapper": wrapper,
+            }
+        )
+
     @app.post("/api/v1/services/tts/xtts/models")
     @require_auth
     def xtts_model_upload():
@@ -952,10 +1157,11 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         model_ids = [
             str(value or "").strip() for value in request.form.getlist("model_id")
         ]
-        if len(model_ids) != 1 or not _XTTS_MODEL_ID_PATTERN.fullmatch(model_ids[0]):
+        model_id_error = _xtts_model_id_error(model_ids[0]) if len(model_ids) == 1 else ""
+        if len(model_ids) != 1 or model_id_error:
             return error_response(
                 "validation_error",
-                "model_id must use 1–128 letters, numbers, dots, hyphens, or underscores and start with a letter or number.",
+                model_id_error or "Upload exactly one model_id field with the XTTS bundle.",
                 422,
             )
         if set(request.files.keys()) != {"files"}:
@@ -986,42 +1192,13 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             return error_response("validation_error", str(error), 422)
 
         catalogue, _revision = tts_catalogue.snapshot()
-        xtts_service = next(
-            (
-                service
-                for service in catalogue.get("services", [])
-                if str(service.get("id") or "").strip().lower() == "xtts"
-            ),
-            None,
-        )
-        if not isinstance(xtts_service, dict):
-            return error_response(
-                "xtts_service_unavailable",
-                "The XTTS service is not configured.",
-                503,
-            )
-        endpoint_base = str(xtts_service.get("api_base") or "").strip()
-        if str(xtts_service.get("connection_mode") or "") == "managed_local":
-            managed = xtts_service.get("manager_service")
-            endpoint_base = (
-                str(managed.get("endpoint") or "").strip()
-                if isinstance(managed, dict)
-                else ""
-            )
-            if not endpoint_base:
-                return error_response(
-                    "xtts_service_unavailable",
-                    "Pandrator Manager has not provided an XTTS endpoint for model upload.",
-                    503,
-                )
-        try:
-            endpoint = _xtts_upload_endpoint(endpoint_base)
-        except ValueError as error:
-            return error_response("xtts_service_unavailable", str(error), 503)
+        endpoint_base, endpoint_error = _xtts_service_endpoint_base(catalogue)
+        if endpoint_error:
+            return error_response("xtts_service_unavailable", endpoint_error, 503)
 
         try:
             wrapper_response = requests.post(
-                endpoint,
+                _xtts_models_endpoint(endpoint_base),
                 data=body,
                 headers={
                     "Accept": "application/json",
@@ -1093,9 +1270,95 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                     "object": str(wrapper_payload["object"]),
                     "owned_by": str(wrapper_payload["owned_by"]),
                     "bytes": int(wrapper_payload["bytes"]),
+                    **(
+                        {
+                            key: wrapper_payload.get(key)
+                            for key in (
+                                "created",
+                                "is_default",
+                                "is_local",
+                                "removable",
+                                "source",
+                                "relative_path",
+                                "bundle_complete",
+                            )
+                            if key in wrapper_payload
+                        }
+                    ),
                 }
             ),
             201,
+        )
+
+    @app.delete("/api/v1/services/tts/xtts/models/<path:model_id>")
+    @require_auth
+    def xtts_model_delete(model_id: str):
+        model_id_error = _xtts_model_id_error(model_id)
+        if model_id_error:
+            return error_response("validation_error", model_id_error, 422)
+        catalogue, _revision = tts_catalogue.snapshot()
+        endpoint_base, endpoint_error = _xtts_service_endpoint_base(catalogue)
+        if endpoint_error:
+            return error_response("xtts_service_unavailable", endpoint_error, 503)
+        try:
+            wrapper_response = requests.delete(
+                _xtts_models_endpoint(endpoint_base, model_id),
+                headers={"Accept": "application/json", "Authorization": "Bearer sk-placeholder"},
+                timeout=(10, 120),
+            )
+        except requests.Timeout:
+            return error_response(
+                "xtts_model_delete_timeout",
+                "The XTTS model service did not finish removing the model.",
+                504,
+            )
+        except requests.ConnectionError:
+            return error_response(
+                "xtts_service_unavailable",
+                "Could not connect to the selected XTTS service.",
+                503,
+            )
+        except requests.RequestException:
+            return error_response(
+                "xtts_model_delete_failed",
+                "The XTTS model service could not remove the model.",
+                502,
+            )
+        if wrapper_response.status_code >= 400:
+            if _xtts_wrapper_delete_unsupported(wrapper_response):
+                return error_response(
+                    "xtts_model_delete_unsupported",
+                    "This XTTS component cannot safely remove models. Update or Repair XTTS in Pandrator Manager, then retry.",
+                    wrapper_response.status_code,
+                    _xtts_wrapper_error_details(wrapper_response),
+                )
+            return error_response(
+                "xtts_model_delete_rejected",
+                _xtts_wrapper_error_message(wrapper_response),
+                wrapper_response.status_code if wrapper_response.status_code < 500 else 502,
+                _xtts_wrapper_error_details(wrapper_response),
+            )
+        try:
+            wrapper_payload = wrapper_response.json()
+        except ValueError:
+            wrapper_payload = None
+        if (
+            not isinstance(wrapper_payload, dict)
+            or wrapper_payload.get("id") != model_id
+            or wrapper_payload.get("deleted") is not True
+        ):
+            return error_response(
+                "xtts_model_delete_failed",
+                "The XTTS model service returned an unexpected removal response.",
+                502,
+            )
+        return jsonify(
+            {
+                "id": model_id,
+                "object": str(wrapper_payload.get("object") or "model"),
+                "deleted": True,
+                "evicted": bool(wrapper_payload.get("evicted")),
+            }
         )
 
     @app.post("/api/v1/services/tts/discover")

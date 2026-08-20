@@ -3187,6 +3187,59 @@
         ],
         "title": "WorkflowPlanExecuteRequest",
         "type": "object"
+      },
+      "XttsModel": {
+        "properties": {
+          "bundle_complete": {
+            "type": "boolean"
+          },
+          "created": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "id": {
+            "type": "string"
+          },
+          "is_default": {
+            "type": "boolean"
+          },
+          "is_local": {
+            "type": "boolean"
+          },
+          "lifecycle_supported": {
+            "type": "boolean"
+          },
+          "object": {
+            "type": "string"
+          },
+          "owned_by": {
+            "type": "string"
+          },
+          "relative_path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "removable": {
+            "type": "boolean"
+          },
+          "source": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "object",
+          "owned_by",
+          "is_default",
+          "is_local",
+          "removable",
+          "source",
+          "bundle_complete",
+          "lifecycle_supported"
+        ],
+        "type": "object"
       }
     },
     "securitySchemes": {
@@ -4841,6 +4894,55 @@
       }
     },
     "/api/v1/services/tts/xtts/models": {
+      "get": {
+        "operationId": "listXttsModels",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "compatibility": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "data": {
+                      "items": {
+                        "$ref": "#/components/schemas/XttsModel"
+                      },
+                      "type": "array"
+                    },
+                    "lifecycle_supported": {
+                      "type": "boolean"
+                    },
+                    "object": {
+                      "type": "string"
+                    },
+                    "wrapper": {
+                      "additionalProperties": {
+                        "type": "string"
+                      },
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "object",
+                    "data",
+                    "lifecycle_supported"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "XTTS models and lifecycle metadata"
+          }
+        }
+      },
       "post": {
         "operationId": "uploadXttsModel",
         "requestBody": {
@@ -4858,7 +4960,7 @@
                     "type": "array"
                   },
                   "model_id": {
-                    "maxLength": 128,
+                    "maxLength": 512,
                     "minLength": 1,
                     "type": "string"
                   }
@@ -4904,6 +5006,55 @@
               }
             },
             "description": "XTTS model uploaded and installed"
+          }
+        }
+      }
+    },
+    "/api/v1/services/tts/xtts/models/{modelId}": {
+      "delete": {
+        "operationId": "deleteXttsModel",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "modelId",
+            "required": true,
+            "schema": {
+              "maxLength": 512,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "deleted": {
+                      "type": "boolean"
+                    },
+                    "evicted": {
+                      "type": "boolean"
+                    },
+                    "id": {
+                      "type": "string"
+                    },
+                    "object": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "object",
+                    "deleted",
+                    "evicted"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "XTTS model removed"
           }
         }
       }

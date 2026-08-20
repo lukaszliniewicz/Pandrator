@@ -15,7 +15,6 @@ from unittest import mock
 
 import certifi
 import psutil
-
 from pandrator_manager.application import create_application
 from pandrator_manager.artifacts import (
     ArtifactDownloader,
@@ -65,6 +64,13 @@ from pandrator_manager.state import ManagerStore
 
 
 class WorkspaceLayoutTests(unittest.TestCase):
+    def test_xtts_builtin_is_pinned_to_lifecycle_wrapper_revision(self):
+        xtts = next(item for item in BUILTIN_COMPONENTS if item.id == "xtts")
+        self.assertEqual(
+            "e1606eb202a191f3cb9159ea99fc4b66872ceb91",
+            xtts.source_revision,
+        )
+
     def test_layout_uses_distinct_owned_and_user_data_zones(self):
         with tempfile.TemporaryDirectory() as directory:
             layout = WorkspaceLayout.from_value(directory)

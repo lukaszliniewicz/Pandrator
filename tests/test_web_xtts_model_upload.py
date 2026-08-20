@@ -71,7 +71,7 @@ class XttsModelUploadApiTests(unittest.TestCase):
 
         self.assertEqual(401, response.status_code)
 
-    def test_rejects_incomplete_or_nested_bundle_before_proxying(self):
+    def test_rejects_incomplete_bundle_before_proxying(self):
         with mock.patch("pandrator.web.api_routes.requests.post") as post:
             response = self.client.post(
                 XTTS_MODEL_ENDPOINT,
@@ -158,6 +158,33 @@ class XttsModelUploadApiTests(unittest.TestCase):
             prepared.headers["Content-Length"],
         )
         self.assertNotIn("Transfer-Encoding", prepared.headers)
+
+    def test_streams_nested_model_id_under_wrapper_contract(self):
+        wrapper_response = mock.Mock(status_code=201)
+        wrapper_response.json.return_value = {
+            "id": "custom/acme-voice",
+            "object": "model",
+            "owned_by": "user",
+            "bytes": 1234,
+            "is_local": True,
+            "removable": True,
+        }
+        bundle = self._bundle()
+        bundle["model_id"] = "custom/acme-voice"
+        with (
+            mock.patch.object(self.catalogue, "snapshot", return_value=self._catalogue()),
+            mock.patch("pandrator.web.api_routes.requests.post", return_value=wrapper_response) as post,
+        ):
+            response = self.client.post(
+                XTTS_MODEL_ENDPOINT,
+                data=bundle,
+                content_type="multipart/form-data",
+                headers=self.headers,
+            )
+
+        self.assertEqual(201, response.status_code, response.get_json())
+        self.assertEqual("custom/acme-voice", response.get_json()["id"])
+        self.assertEqual("http://127.0.0.1:8020/v1/models", post.call_args.args[0])
 
     def test_preserves_wrapper_rejection_and_explains_missing_upload_support(self):
         wrapper_response = mock.Mock(status_code=404)
@@ -249,6 +276,145 @@ class XttsModelUploadApiTests(unittest.TestCase):
         self.assertEqual(
             "xtts_service_unavailable", response.get_json()["error"]["code"]
         )
+
+    def test_list_preserves_lifecycle_metadata_and_normalizes_old_wrapper(self):
+        lifecycle_response = mock.Mock(status_code=200)
+        lifecycle_response.json.return_value = {
+            "object": "list",
+            "data": [
+                {
+                    "id": "tts_models/multilingual/multi-dataset/xtts_v2",
+                    "object": "model",
+                    "owned_by": "xtts-fapi",
+                    "is_default": True,
+                    "is_local": False,
+                    "removable": False,
+                    "source": "builtin",
+                    "bundle_complete": True,
+                },
+                {
+                    "id": "custom/acme-voice",
+                    "object": "model",
+                    "owned_by": "user",
+                    "is_default": False,
+                    "is_local": True,
+                    "removable": True,
+                    "source": "local",
+                    "relative_path": "custom/acme-voice",
+                    "bundle_complete": True,
+                },
+            ],
+        }
+        health_response = mock.Mock(status_code=200)
+        health_response.json.return_value = {"status": "ok", "version": "0.1.3"}
+        with (
+            mock.patch.object(self.catalogue, "snapshot", return_value=self._catalogue()),
+            mock.patch(
+                "pandrator.web.api_routes.requests.get",
+                side_effect=[lifecycle_response, health_response],
+            ),
+        ):
+            response = self.client.get(XTTS_MODEL_ENDPOINT, headers=self.headers)
+
+        self.assertEqual(200, response.status_code, response.get_json())
+        payload = response.get_json()
+        self.assertTrue(payload["lifecycle_supported"])
+        self.assertTrue(payload["data"][1]["removable"])
+        self.assertEqual("custom/acme-voice", payload["data"][1]["id"])
+        self.assertEqual("0.1.3", payload["wrapper"]["version"])
+
+        old_response = mock.Mock(status_code=200)
+        old_response.json.return_value = {
+            "object": "list",
+            "data": [{"id": "legacy-model", "object": "model", "owned_by": "xtts"}],
+        }
+        with (
+            mock.patch.object(self.catalogue, "snapshot", return_value=self._catalogue()),
+            mock.patch("pandrator.web.api_routes.requests.get", return_value=old_response),
+        ):
+            response = self.client.get(XTTS_MODEL_ENDPOINT, headers=self.headers)
+
+        self.assertEqual(200, response.status_code, response.get_json())
+        payload = response.get_json()
+        self.assertFalse(payload["lifecycle_supported"])
+        self.assertFalse(payload["data"][0]["removable"])
+        self.assertIn("Update or Repair XTTS", payload["compatibility"])
+
+    def test_delete_nested_local_model_and_explains_old_wrapper(self):
+        wrapper_response = mock.Mock(status_code=200)
+        wrapper_response.json.return_value = {
+            "id": "custom/acme-voice",
+            "object": "model",
+            "deleted": True,
+            "evicted": True,
+        }
+        with (
+            mock.patch.object(self.catalogue, "snapshot", return_value=self._catalogue()),
+            mock.patch("pandrator.web.api_routes.requests.delete", return_value=wrapper_response) as delete,
+        ):
+            response = self.client.delete(
+                f"{XTTS_MODEL_ENDPOINT}/custom/acme-voice", headers=self.headers
+            )
+
+        self.assertEqual(200, response.status_code, response.get_json())
+        self.assertTrue(response.get_json()["evicted"])
+        self.assertEqual(
+            "http://127.0.0.1:8020/v1/models/custom/acme-voice",
+            delete.call_args.args[0],
+        )
+
+        old_wrapper = mock.Mock(status_code=405)
+        old_wrapper.json.return_value = {"detail": "Method Not Allowed"}
+        with (
+            mock.patch.object(self.catalogue, "snapshot", return_value=self._catalogue()),
+            mock.patch("pandrator.web.api_routes.requests.delete", return_value=old_wrapper),
+        ):
+            response = self.client.delete(
+                f"{XTTS_MODEL_ENDPOINT}/custom/acme-voice", headers=self.headers
+            )
+
+        self.assertEqual(405, response.status_code)
+        self.assertEqual("xtts_model_delete_unsupported", response.get_json()["error"]["code"])
+        self.assertIn("Update or Repair XTTS", response.get_json()["error"]["message"])
+
+    def test_delete_missing_model_preserves_structured_wrapper_error(self):
+        missing_model = mock.Mock(status_code=404)
+        missing_model.json.return_value = {
+            "error": {
+                "message": "Model 'custom/missing' not found",
+                "type": "invalid_request_error",
+                "param": "model_id",
+                "code": "model_not_found",
+            }
+        }
+        with (
+            mock.patch.object(self.catalogue, "snapshot", return_value=self._catalogue()),
+            mock.patch("pandrator.web.api_routes.requests.delete", return_value=missing_model),
+        ):
+            response = self.client.delete(
+                f"{XTTS_MODEL_ENDPOINT}/custom/missing", headers=self.headers
+            )
+
+        self.assertEqual(404, response.status_code)
+        self.assertEqual("xtts_model_delete_rejected", response.get_json()["error"]["code"])
+        self.assertEqual(
+            "Model 'custom/missing' not found", response.get_json()["error"]["message"]
+        )
+
+    def test_delete_unimplemented_route_explains_update_or_repair(self):
+        route_missing = mock.Mock(status_code=404)
+        route_missing.json.return_value = {"detail": "Not Found"}
+        with (
+            mock.patch.object(self.catalogue, "snapshot", return_value=self._catalogue()),
+            mock.patch("pandrator.web.api_routes.requests.delete", return_value=route_missing),
+        ):
+            response = self.client.delete(
+                f"{XTTS_MODEL_ENDPOINT}/custom/acme-voice", headers=self.headers
+            )
+
+        self.assertEqual(404, response.status_code)
+        self.assertEqual("xtts_model_delete_unsupported", response.get_json()["error"]["code"])
+        self.assertIn("Update or Repair XTTS", response.get_json()["error"]["message"])
 
 
 class XttsCatalogueTests(unittest.TestCase):

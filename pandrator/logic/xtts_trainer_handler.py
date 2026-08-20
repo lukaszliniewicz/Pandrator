@@ -3,7 +3,10 @@ import subprocess
 import logging
 import shutil
 import time
+import unicodedata
+from pathlib import Path, PureWindowsPath
 from typing import Callable
+from uuid import uuid4
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 WORKSPACE_ROOT = os.path.abspath(os.path.join(PROJECT_ROOT, '..'))
@@ -14,6 +17,18 @@ WHISPERX_PIXI_EXE_ENV = 'WHISPERX_PIXI_EXE'
 WHISPERX_PIXI_MANIFEST_ENV = 'WHISPERX_PIXI_MANIFEST'
 PANDRATOR_DUBBING_CACHE_DIR_ENV = 'PANDRATOR_DUBBING_CACHE_DIR'
 DEFAULT_WHISPER_CACHE_ROOT = os.path.join(PROJECT_ROOT, 'cache')
+XTTS_MODEL_BUNDLE_FILENAMES = (
+    'config.json',
+    'model.pth',
+    'speakers_xtts.pth',
+    'vocab.json',
+)
+_XTTS_WINDOWS_RESERVED_PARTS = {
+    'con', 'prn', 'aux', 'nul',
+    *(f'com{number}' for number in range(1, 10)),
+    *(f'lpt{number}' for number in range(1, 10)),
+}
+_XTTS_INVALID_MODEL_ID_CHARS = set('<>:"|?*\\')
 
 
 def _deduplicate_paths(paths: list[str]) -> list[str]:
@@ -138,6 +153,13 @@ def _resolve_trainer_dir(roots: list[str]) -> str:
 
 
 def _resolve_xtts_models_dir(roots: list[str], trainer_dir: str) -> str:
+    managed_models_root = str(os.environ.get("PANDRATOR_MODELS_DIR", "")).strip()
+    if managed_models_root:
+        # Pandrator Manager supplies this stable root to both the trainer and
+        # XTTS wrapper.  Publishing here makes a trained bundle discoverable
+        # through the wrapper's lifecycle registry, without a second
+        # provider-settings catalogue.
+        return os.path.join(managed_models_root, "xtts")
     model_dir_candidates = [
         os.path.abspath(os.path.join(trainer_dir, '..', 'xtts-api-server', 'xtts_models')),
         os.path.abspath(os.path.join(trainer_dir, '..', 'xtts2_api', 'xtts_models')),
@@ -434,22 +456,77 @@ def start_training(
         return False, message
 
 
-def _copy_trained_model(model_name: str, paths: dict[str, str]) -> tuple[bool, str]:
-    """Copies the final trained model files to the xtts-api-server directory."""
-    try:
-        source_dir = os.path.join(paths["trainer_dir"], model_name, "models")
-        target_dir = os.path.join(paths["xtts_models_dir"], model_name)
+def _trained_model_target(model_name: str, models_dir: str) -> tuple[Path, Path]:
+    """Resolve a wrapper-compatible relative training identifier safely."""
 
-        if not os.path.isdir(source_dir):
+    candidate = str(model_name or '')
+    if not candidate or candidate != candidate.strip():
+        raise ValueError('Model name must be a non-empty relative identifier without surrounding spaces.')
+    if any(unicodedata.category(character).startswith('C') for character in candidate):
+        raise ValueError('Model name must not contain control characters.')
+    if '\\' in candidate or candidate.startswith('/') or PureWindowsPath(candidate).is_absolute():
+        raise ValueError('Model name must be a relative slash-separated path.')
+    parts = candidate.split('/')
+    if any(not part for part in parts):
+        raise ValueError('Model name must not contain empty path parts.')
+    for part in parts:
+        windows_basename = part.split('.', maxsplit=1)[0].casefold()
+        if (
+            part in {'.', '..'}
+            or part.startswith('.')
+            or part != part.rstrip('. ')
+            or windows_basename in _XTTS_WINDOWS_RESERVED_PARTS
+            or any(character in _XTTS_INVALID_MODEL_ID_CHARS for character in part)
+        ):
+            raise ValueError('Model name contains a reserved, hidden, or unsafe path part.')
+
+    root = Path(models_dir).expanduser()
+    root.mkdir(parents=True, exist_ok=True)
+    root = root.resolve(strict=True)
+    target = root.joinpath(*parts)
+    try:
+        target.resolve(strict=False).relative_to(root)
+    except (OSError, RuntimeError, ValueError) as error:
+        raise ValueError('Model name must resolve inside the XTTS model root.') from error
+    current = root
+    for part in parts[:-1]:
+        current = current / part
+        if current.is_symlink():
+            raise ValueError('Model name must not pass through a symlink.')
+    return root, target
+
+
+def _copy_trained_model(model_name: str, paths: dict[str, str]) -> tuple[bool, str]:
+    """Atomically publish a trusted local training bundle to the XTTS registry.
+
+    Manager provides the same stable root to the trainer and wrapper. Training
+    output is therefore bridged locally rather than uploaded back over HTTP,
+    but it is staged beneath ``.downloads`` (ignored by the wrapper) and only
+    the wrapper's exact four-file bundle is promoted into the visible registry.
+    """
+    try:
+        models_root, target_dir = _trained_model_target(
+            model_name, paths['xtts_models_dir']
+        )
+        source_dir = Path(paths['trainer_dir']).joinpath(*model_name.split('/'), 'models')
+
+        if not source_dir.is_dir():
             message = f"Training output directory not found: {source_dir}"
             logging.error(message)
             return False, message
 
-        os.makedirs(target_dir, exist_ok=True)
-
         xtts_folder = None
         for attempt in range(10):
-            xtts_folder = next((f for f in os.listdir(source_dir) if f.startswith("xtts")), None)
+            xtts_folder = next(
+                (
+                    folder
+                    for folder in source_dir.iterdir()
+                    if folder.name.startswith('xtts')
+                    and folder.is_dir()
+                    and not folder.is_symlink()
+                ),
+                None,
+            )
             if xtts_folder:
                 break
 
@@ -465,17 +542,42 @@ def _copy_trained_model(model_name: str, paths: dict[str, str]) -> tuple[bool, s
             logging.error(message)
             return False, message
 
-        source_xtts_dir = os.path.join(source_dir, xtts_folder)
-        for item in os.listdir(source_xtts_dir):
-            if item != 'run':
-                s = os.path.join(source_xtts_dir, item)
-                d = os.path.join(target_dir, item)
-                if os.path.isdir(s):
-                    shutil.copytree(s, d, dirs_exist_ok=True)
-                else:
-                    shutil.copy2(s, d)
+        source_xtts_dir = xtts_folder
+        source_files = [source_xtts_dir / filename for filename in XTTS_MODEL_BUNDLE_FILENAMES]
+        missing = [path.name for path in source_files if not path.is_file() or path.is_symlink()]
+        if missing:
+            message = f"Trained model bundle is incomplete; missing required file(s): {', '.join(missing)}"
+            logging.error(message)
+            return False, message
+        if target_dir.exists() or target_dir.is_symlink():
+            message = f"Trained model '{model_name}' already exists; existing bundles are never overwritten."
+            logging.error(message)
+            return False, message
 
-        message = f"Trained model '{model_name}' copied to {target_dir}"
+        downloads_dir = models_root / '.downloads'
+        if downloads_dir.is_symlink():
+            return False, 'XTTS model staging directory must not be a symlink.'
+        downloads_dir.mkdir(exist_ok=True)
+        staging_dir = downloads_dir / f'.training-{uuid4().hex}'
+        try:
+            staging_dir.mkdir()
+            for source_file in source_files:
+                shutil.copy2(source_file, staging_dir / source_file.name)
+            # Re-check immediately before the atomic directory promotion. This
+            # avoids ever intentionally replacing an existing registry entry.
+            if target_dir.exists() or target_dir.is_symlink():
+                return False, f"Trained model '{model_name}' already exists; existing bundles are never overwritten."
+            target_dir.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(staging_dir, target_dir)
+        except OSError as error:
+            message = f"Trained model '{model_name}' could not be published safely: {error}"
+            logging.error(message)
+            return False, message
+        finally:
+            if staging_dir.exists() and staging_dir.is_dir() and not staging_dir.is_symlink():
+                shutil.rmtree(staging_dir)
+
+        message = f"Trained model '{model_name}' published to {target_dir}"
         logging.info(message)
         return True, message
     except Exception as e:
