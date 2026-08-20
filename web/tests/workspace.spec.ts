@@ -999,7 +999,8 @@ test('generation drawer layout survives segment regeneration refreshes', async (
   await expect(drawer).toHaveAttribute('data-generation-layout', 'full');
 
   const regenerate = page.getByRole('button', {
-    name: 'Regenerate segment 1'
+    name: 'Regenerate segment 1',
+    exact: true
   });
   const segmentText = page.locator(
     'tr[data-segment-id="synthetic-segment"] textarea'
@@ -1573,15 +1574,18 @@ test('alternate regeneration sends one selected-only setting set and returns to 
   await page.goto(`/sessions/${sessionId}`);
   await page.getByRole('button', { name: 'Generation', exact: true }).click();
   const picker = page.locator('label.run-picker select');
-  await page.locator(`tr[data-segment-id="${segments[0].id}"]`).click();
-  await page
-    .locator(`tr[data-segment-id="${segments[1].id}"]`)
-    .click({ modifiers: ['Control'] });
+  await page.getByRole('checkbox', { name: 'Mark segment 1' }).check();
+  await page.getByRole('checkbox', { name: 'Mark segment 2' }).check();
   await page
     .locator('[data-generation-layout] header')
-    .getByRole('button', { name: 'Alternate selected take…' })
+    .getByRole('button', { name: 'Alternate marked takes…' })
     .click();
   const dialog = page.getByRole('dialog');
+  await expect(
+    dialog.getByRole('heading', {
+      name: 'Regenerate 2 selected segments with…'
+    })
+  ).toBeVisible();
   await expect(dialog.getByText('current session settings')).toBeVisible();
   await dialog.getByLabel('Speech service').selectOption('Chatterbox');
   await expect(dialog.getByLabel('Voice / managed reference')).toHaveValue('');

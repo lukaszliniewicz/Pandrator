@@ -19,7 +19,11 @@ from pandrator_manager.models import (
     TaskState,
 )
 from pandrator_manager.operations import OperationEngine
-from pandrator_manager.operations.handlers import FilesystemTaskHandler
+from pandrator_manager.operations.handlers import (
+    FilesystemTaskHandler,
+    OperationTaskContext,
+)
+from pandrator_manager.context import CancellationToken
 
 
 def _commit(repository: Path, content: str) -> str:
@@ -157,6 +161,107 @@ class OperationEngineTests(unittest.TestCase):
         active = active_component_path(application.context.layout, "fixture")
         self.assertIsNotNone(active)
         self.assertEqual((active / "marker.txt").read_text(encoding="utf-8"), "one")
+
+    def test_retry_rechecks_pinned_revision_on_reused_staging(self):
+        second_revision = _commit(self.repository, "two")
+        application = create_application(
+            self.base / "pinned-workspace",
+            registry=_registry(
+                self.repository, source_revision=self.first_revision
+            ),
+        )
+        plan = application.plan(
+            kind=OperationKind.INSTALL,
+            desired={"fixture": DesiredComponentState()},
+        )
+        submitted, created = application.submit_operation(
+            plan_id=plan.id,
+            plan_digest=plan.digest,
+            accepted_confirmations=tuple(
+                confirmation.key for confirmation in plan.confirmations
+            ),
+            idempotency_key=str(uuid.uuid4()),
+        )
+        self.assertTrue(created)
+        execution = OperationTaskContext(
+            context=application.context,
+            store=application.store,
+            registry=application.registry,
+            supervisor=None,
+            operation=submitted,
+            plan=plan,
+            prior_results={},
+            cancellation=CancellationToken(),
+        )
+        stage = next(
+            task for task in plan.tasks if task.kind == "stage_component"
+        )
+        handler = FilesystemTaskHandler()
+        real_reset = porcelain.reset
+        with mock.patch.object(
+            porcelain,
+            "reset",
+            side_effect=RuntimeError("injected reset failure"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "source revision"):
+                handler.execute(execution, stage)
+
+        target = handler._staging_source(execution, "fixture")
+        self.assertEqual((target / "marker.txt").read_text(), "two")
+        self.assertEqual(handler._revision(target), second_revision)
+
+        with mock.patch.object(porcelain, "reset", wraps=real_reset) as reset:
+            result = handler.execute(execution, stage)
+
+        self.assertTrue(result["reused"])
+        self.assertEqual(result["revision"], self.first_revision)
+        self.assertEqual(
+            (target / "marker.txt").read_text(encoding="utf-8"), "one"
+        )
+        reset.assert_called_once()
+
+    def test_already_pinned_staging_is_reused_without_reset(self):
+        application = create_application(
+            self.base / "pinned-workspace",
+            registry=_registry(
+                self.repository, source_revision=self.first_revision
+            ),
+        )
+        plan = application.plan(
+            kind=OperationKind.INSTALL,
+            desired={"fixture": DesiredComponentState()},
+        )
+        submitted, created = application.submit_operation(
+            plan_id=plan.id,
+            plan_digest=plan.digest,
+            accepted_confirmations=tuple(
+                confirmation.key for confirmation in plan.confirmations
+            ),
+            idempotency_key=str(uuid.uuid4()),
+        )
+        self.assertTrue(created)
+        execution = OperationTaskContext(
+            context=application.context,
+            store=application.store,
+            registry=application.registry,
+            supervisor=None,
+            operation=submitted,
+            plan=plan,
+            prior_results={},
+            cancellation=CancellationToken(),
+        )
+        stage = next(
+            task for task in plan.tasks if task.kind == "stage_component"
+        )
+        handler = FilesystemTaskHandler()
+        handler.execute(execution, stage)
+
+        with mock.patch.object(porcelain, "reset") as reset:
+            result = handler.execute(execution, stage)
+
+        self.assertTrue(result["reused"])
+        self.assertEqual(result["revision"], self.first_revision)
+        reset.assert_not_called()
 
     def test_execution_rechecks_preflight_before_staging(self):
         plan = self.application.plan(

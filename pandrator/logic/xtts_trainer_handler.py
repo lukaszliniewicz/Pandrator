@@ -23,6 +23,7 @@ XTTS_MODEL_BUNDLE_FILENAMES = (
     'speakers_xtts.pth',
     'vocab.json',
 )
+_XTTS_MODEL_DISCOVERY_IGNORE_PARTS = {'.downloads', '__pycache__'}
 _XTTS_WINDOWS_RESERVED_PARTS = {
     'con', 'prn', 'aux', 'nul',
     *(f'com{number}' for number in range(1, 10)),
@@ -475,6 +476,7 @@ def _trained_model_target(model_name: str, models_dir: str) -> tuple[Path, Path]
             part in {'.', '..'}
             or part.startswith('.')
             or part != part.rstrip('. ')
+            or part in _XTTS_MODEL_DISCOVERY_IGNORE_PARTS
             or windows_basename in _XTTS_WINDOWS_RESERVED_PARTS
             or any(character in _XTTS_INVALID_MODEL_ID_CHARS for character in part)
         ):

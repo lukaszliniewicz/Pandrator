@@ -976,7 +976,12 @@
       modelId.length > 512 ||
       modelId.startsWith('/') ||
       modelId.includes('\\') ||
-      modelId.split('/').some((part) => !part || part === '.' || part === '..' || part.startsWith('.'))
+      modelId
+        .split('/')
+        .some(
+          (part) =>
+            !part || part === '.' || part === '..' || part.startsWith('.')
+        )
     )
       return 'Use a relative model ID such as custom/my-narrator-v1. Slashes may organize models, but empty, hidden, or traversal path parts are not allowed.';
     const names = xttsModelFiles.map((file) => file.name);
@@ -1174,7 +1179,8 @@
     );
     ttsModel = String(service?.default_model ?? service?.models?.[0] ?? '');
     await discoverTtsService(service);
-    if (String(service?.id ?? '').toLowerCase() === 'xtts') await loadXttsModels();
+    if (String(service?.id ?? '').toLowerCase() === 'xtts')
+      await loadXttsModels();
     voiceName = String(
       service?.default_voices_by_language?.[ttsModel]?.[targetLanguage] ??
         service?.default_voices?.[ttsModel] ??
@@ -3206,31 +3212,41 @@
                 >
               </div>
               {#if xttsModelsCompatibility}<p
-                class="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-950"
-                role="status">{xttsModelsCompatibility}</p
-              >{/if}
+                  class="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-950"
+                  role="status"
+                >
+                  {xttsModelsCompatibility}
+                </p>{/if}
               {#if xttsModels.length}<div
-                class="mt-3 overflow-hidden rounded-lg border border-[var(--line)] bg-[var(--paper)]"
-              >{#each xttsModels as model}<div
-                    class="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--line)] p-3 last:border-b-0"
-                  ><div class="min-w-0"><button
-                        type="button"
-                        onclick={() => chooseTtsModel(model.id)}
-                        class="max-w-full truncate text-left text-xs font-semibold text-[var(--accent)]"
-                        aria-label={`Select XTTS model ${model.id}`}>{model.id}</button
-                      ><p class="muted mt-1 text-xs"
-                        >{model.is_default
-                          ? 'Built-in protected model'
-                          : model.removable
-                            ? 'Local model bundle'
-                            : model.lifecycle_supported
-                              ? 'Local model (not removable)'
-                              : 'Model lifecycle requires an XTTS update'}</p
-                      >{#if model.id === ttsModel}<span
-                          class="mt-1 inline-block rounded bg-[var(--accent-soft)] px-2 py-0.5 text-[11px] font-semibold"
-                          >Selected for this generation</span
-                        >{/if}</div
-                    ><div class="flex items-center gap-2"><button
+                  class="mt-3 overflow-hidden rounded-lg border border-[var(--line)] bg-[var(--paper)]"
+                >
+                  {#each xttsModels as model}<div
+                      class="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--line)] p-3 last:border-b-0"
+                    >
+                      <div class="min-w-0">
+                        <button
+                          type="button"
+                          onclick={() => chooseTtsModel(model.id)}
+                          class="max-w-full truncate text-left text-xs font-semibold text-[var(--accent)]"
+                          aria-label={`Select XTTS model ${model.id}`}
+                          >{model.id}</button
+                        >
+                        <p class="muted mt-1 text-xs">
+                          {model.is_default
+                            ? 'Built-in protected model'
+                            : model.removable
+                              ? 'Local model bundle'
+                              : model.lifecycle_supported
+                                ? 'Local model (not removable)'
+                                : 'Model lifecycle requires an XTTS update'}
+                        </p>
+                        {#if model.id === ttsModel}<span
+                            class="mt-1 inline-block rounded bg-[var(--accent-soft)] px-2 py-0.5 text-[11px] font-semibold"
+                            >Selected for this generation</span
+                          >{/if}
+                      </div>
+                      <div class="flex items-center gap-2">
+                        <button
                           type="button"
                           onclick={() => chooseTtsModel(model.id)}
                           class="rounded-lg border border-[var(--line)] px-3 py-2 text-xs font-semibold"
@@ -3245,10 +3261,10 @@
                               : 'Remove'}</button
                           >{:else if !model.is_default}<span
                             class="muted text-xs">Removal unavailable</span
-                          >{/if}</div
-                    ></div
-                  >{/each}</div
-              >{/if}
+                          >{/if}
+                      </div>
+                    </div>{/each}
+                </div>{/if}
               <div class="mt-3 grid gap-3 sm:grid-cols-2">
                 <label class="text-xs font-semibold"
                   >Model ID<input

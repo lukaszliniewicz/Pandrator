@@ -1593,6 +1593,97 @@ class GenerationService:
         self.artifacts = artifacts
         self.plan_refresher = plan_refresher
 
+    def _selected_tts_provider_binding(
+        self,
+        session_id: str,
+        selected_segment_override: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Copy only the selected provider's current, secret-free catalogue record.
+
+        Targeted regeneration starts from an immutable historical run.  Its
+        TTS catalogue may predate a provider that is now configured in the
+        session, so carry a binding for the selected provider into the new run
+        without copying the current provider catalogue or any inline secret.
+        Runtime hydration resolves the retained ``secret_ref`` when the worker
+        executes the run.
+        """
+        selected_tts = selected_segment_override.get("tts")
+        if not isinstance(selected_tts, dict) or not selected_tts:
+            return None
+
+        from pandrator.logic import tts_handler
+
+        resolved, _settings_hash = self.settings.resolve(
+            session_id,
+            ["tts"],
+            run_override={"tts": selected_tts},
+        )
+        current_tts = resolved.get("tts")
+        if not isinstance(current_tts, dict):
+            return None
+        service_value = str(
+            selected_tts.get("service")
+            or selected_tts.get("tts_service")
+            or ""
+        ).strip()
+        endpoint_value = str(
+            selected_tts.get("openai_audio_endpoint") or ""
+        ).strip()
+        generic_service = service_value.casefold().replace("-", "_") in {
+            "custom",
+            "openai_compatible",
+            "openai_compatible_service",
+        }
+        candidates = (
+            [endpoint_value, service_value]
+            if generic_service and endpoint_value
+            else [service_value]
+        )
+        selected = next(
+            (
+                service
+                for candidate in candidates
+                if candidate
+                for service in [
+                    tts_handler.get_service_config(current_tts, candidate)
+                ]
+                if service is not None
+            ),
+            None,
+        )
+        if selected is None:
+            return None
+        selected_id = str(selected.get("id") or "").strip()
+        if not selected_id:
+            return None
+
+        configured_records = [
+            item
+            for key in ("provider_configs", "service_configs")
+            for item in (current_tts.get(key) or [])
+            if isinstance(item, dict)
+        ]
+        configured = next(
+            (
+                item
+                for item in configured_records
+                if str(
+                    item.get("id") or item.get("name") or item.get("provider") or ""
+                )
+                .strip()
+                .casefold()
+                .replace("-", "_")
+                == selected_id.casefold().replace("-", "_")
+            ),
+            None,
+        )
+        # A built-in provider without an explicit current record should remain
+        # eligible for its normal defaults/Manager binding.  Custom providers,
+        # and explicitly configured built-ins, need the copied record.
+        if not bool(selected.get("is_custom")) and configured is None:
+            return None
+        return _secret_free(deepcopy(configured or selected))
+
     def create_plan(
         self,
         session_id: str,
@@ -2260,11 +2351,27 @@ class GenerationService:
             str(value) for value in (segment_ids or []) if str(value)
         ]
         run_override = dict(run_override or {})
-        selected_segment_override = dict(selected_segment_override or {})
+        selected_segment_override = _secret_free(
+            deepcopy(selected_segment_override or {})
+        )
         if selected_segment_override and not requested_segment_ids:
             raise ValueError(
                 "An alternate segment setting set requires one or more selected segments."
             )
+        if selected_segment_override:
+            selected_tts = selected_segment_override.get("tts")
+            if isinstance(selected_tts, dict):
+                # Provider metadata is server-owned.  The compact UI override
+                # may name a provider but must not smuggle an arbitrary
+                # catalogue or secret into an immutable run snapshot.
+                selected_tts.pop("provider_configs", None)
+                selected_tts.pop("service_configs", None)
+                binding = self._selected_tts_provider_binding(
+                    session_id,
+                    selected_segment_override,
+                )
+                if binding is not None:
+                    selected_tts["provider_configs"] = [binding]
         resolved_for_new: tuple[dict[str, Any], str] | None = None
         if operation == "generate" and not requested_segment_ids:
             resolved_for_new = self.settings.resolve(

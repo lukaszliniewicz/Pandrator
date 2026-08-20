@@ -281,6 +281,7 @@ class FilesystemTaskHandler:
             target,
             definition.source_markers,
         ):
+            self._ensure_source_revision(target, definition)
             return {
                 "staged_path": str(target),
                 "revision": self._revision(target),
@@ -319,17 +320,7 @@ class FilesystemTaskHandler:
                 f"{definition.label} source repository could not be closed."
             ) from error
         if definition.source_revision:
-            try:
-                porcelain.reset(
-                    str(target),
-                    mode="hard",
-                    treeish=definition.source_revision,
-                )
-            except Exception as error:
-                raise RuntimeError(
-                    f"{definition.label} source revision "
-                    f"{definition.source_revision} could not be checked out."
-                ) from error
+            self._ensure_source_revision(target, definition)
         self._prepare_runtime_adapter(target, definition.id)
         execution.check_cancelled()
         return {
@@ -342,6 +333,33 @@ class FilesystemTaskHandler:
     def _prepare_runtime_adapter(target: Path, component_id: str) -> None:
         for relative, content in generated_runtime_files(component_id).items():
             _atomic_text(target / relative, content)
+
+    @classmethod
+    def _ensure_source_revision(cls, target: Path, definition) -> None:
+        """Ensure a reusable Git source tree is at its requested revision."""
+
+        requested = definition.source_revision
+        if not requested:
+            return
+        if cls._revision(target).casefold().startswith(requested.casefold()):
+            return
+        try:
+            porcelain.reset(
+                str(target),
+                mode="hard",
+                treeish=requested,
+            )
+        except Exception as error:
+            raise RuntimeError(
+                f"{definition.label} source revision "
+                f"{requested} could not be checked out."
+            ) from error
+        selected = cls._revision(target)
+        if not selected.casefold().startswith(requested.casefold()):
+            raise RuntimeError(
+                f"{definition.label} source revision {requested} was not "
+                f"checked out (selected {selected})."
+            )
 
     def _execute_stage_crispasr(
         self,

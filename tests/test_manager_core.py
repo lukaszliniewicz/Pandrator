@@ -67,7 +67,7 @@ class WorkspaceLayoutTests(unittest.TestCase):
     def test_xtts_builtin_is_pinned_to_lifecycle_wrapper_revision(self):
         xtts = next(item for item in BUILTIN_COMPONENTS if item.id == "xtts")
         self.assertEqual(
-            "e1606eb202a191f3cb9159ea99fc4b66872ceb91",
+            "9d9421080b7db528215d6e63867b95956d36af90",
             xtts.source_revision,
         )
 

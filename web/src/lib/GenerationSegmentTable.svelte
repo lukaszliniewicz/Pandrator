@@ -85,6 +85,8 @@
           <input
             type="checkbox"
             checked={item.marked}
+            aria-label={`Mark segment ${item.ordinal + 1}`}
+            onclick={(event) => event.stopPropagation()}
             onchange={(event) =>
               onpatch(item, { marked: event.currentTarget.checked })}
           />

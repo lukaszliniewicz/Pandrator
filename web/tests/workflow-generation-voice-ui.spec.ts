@@ -385,7 +385,10 @@ test('XTTS model management lists, installs, selects, removes, and guides legacy
     })
   );
   await page.route('**/api/v1/voices', (route) =>
-    route.fulfill({ contentType: 'application/json', body: JSON.stringify({ items: [] }) })
+    route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({ items: [] })
+    })
   );
   await page.route('**/api/v1/services/tts/xtts/models**', async (route) => {
     const method = route.request().method();
@@ -395,8 +398,14 @@ test('XTTS model management lists, installs, selects, removes, and guides legacy
         contentType: 'application/json',
         status: 201,
         body: JSON.stringify({
-          id: 'custom/new-voice', object: 'model', owned_by: 'user', bytes: 12,
-          is_local: true, removable: true, source: 'local', bundle_complete: true
+          id: 'custom/new-voice',
+          object: 'model',
+          owned_by: 'user',
+          bytes: 12,
+          is_local: true,
+          removable: true,
+          source: 'local',
+          bundle_complete: true
         })
       });
       return;
@@ -407,22 +416,68 @@ test('XTTS model management lists, installs, selects, removes, and guides legacy
       );
       await route.fulfill({
         contentType: 'application/json',
-        body: JSON.stringify({ id: deletedModelIds.at(-1), object: 'model', deleted: true, evicted: true })
+        body: JSON.stringify({
+          id: deletedModelIds.at(-1),
+          object: 'model',
+          deleted: true,
+          evicted: true
+        })
       });
       return;
     }
     const data = legacy
       ? [{ id: 'legacy-model', object: 'model', owned_by: 'xtts-fapi' }]
       : [
-          { id: builtin, object: 'model', owned_by: 'xtts-fapi', is_default: true, is_local: false, removable: false, source: 'builtin', bundle_complete: true },
-          ...(!deletedModelIds.includes('custom/acme-voice') ? [{ id: 'custom/acme-voice', object: 'model', owned_by: 'user', is_default: false, is_local: true, removable: true, source: 'local', relative_path: 'custom/acme-voice', bundle_complete: true }] : []),
-          ...(installed && !deletedModelIds.includes('custom/new-voice') ? [{ id: 'custom/new-voice', object: 'model', owned_by: 'user', is_default: false, is_local: true, removable: true, source: 'local', relative_path: 'custom/new-voice', bundle_complete: true }] : [])
+          {
+            id: builtin,
+            object: 'model',
+            owned_by: 'xtts-fapi',
+            is_default: true,
+            is_local: false,
+            removable: false,
+            source: 'builtin',
+            bundle_complete: true
+          },
+          ...(!deletedModelIds.includes('custom/acme-voice')
+            ? [
+                {
+                  id: 'custom/acme-voice',
+                  object: 'model',
+                  owned_by: 'user',
+                  is_default: false,
+                  is_local: true,
+                  removable: true,
+                  source: 'local',
+                  relative_path: 'custom/acme-voice',
+                  bundle_complete: true
+                }
+              ]
+            : []),
+          ...(installed && !deletedModelIds.includes('custom/new-voice')
+            ? [
+                {
+                  id: 'custom/new-voice',
+                  object: 'model',
+                  owned_by: 'user',
+                  is_default: false,
+                  is_local: true,
+                  removable: true,
+                  source: 'local',
+                  relative_path: 'custom/new-voice',
+                  bundle_complete: true
+                }
+              ]
+            : [])
         ];
     await route.fulfill({
       contentType: 'application/json',
       body: JSON.stringify({
-        object: 'list', data, lifecycle_supported: !legacy,
-        compatibility: legacy ? 'This XTTS component can list and use models, but cannot safely remove them. Update or Repair XTTS in Pandrator Manager to enable lifecycle management.' : null
+        object: 'list',
+        data,
+        lifecycle_supported: !legacy,
+        compatibility: legacy
+          ? 'This XTTS component can list and use models, but cannot safely remove them. Update or Repair XTTS in Pandrator Manager to enable lifecycle management.'
+          : null
       })
     });
   });
@@ -434,21 +489,43 @@ test('XTTS model management lists, installs, selects, removes, and guides legacy
   await generationCard.getByRole('button', { name: 'Settings' }).click();
   const dialog = page.getByRole('dialog');
   await expect(dialog.getByText('XTTS model management')).toBeVisible();
-  await dialog.getByRole('button', { name: 'Select XTTS model custom/acme-voice' }).click();
+  await dialog
+    .getByRole('button', { name: 'Select XTTS model custom/acme-voice' })
+    .click();
   await expect(dialog.getByText('Selected for this generation')).toBeVisible();
 
   await dialog.getByLabel('Model ID').fill('custom/new-voice');
   await dialog.locator('input[type=file]').setInputFiles([
-    { name: 'config.json', mimeType: 'application/json', buffer: Buffer.from('{"model":"xtts"}') },
-    { name: 'model.pth', mimeType: 'application/octet-stream', buffer: Buffer.from('weights') },
-    { name: 'speakers_xtts.pth', mimeType: 'application/octet-stream', buffer: Buffer.from('speakers') },
-    { name: 'vocab.json', mimeType: 'application/json', buffer: Buffer.from('{}') }
+    {
+      name: 'config.json',
+      mimeType: 'application/json',
+      buffer: Buffer.from('{"model":"xtts"}')
+    },
+    {
+      name: 'model.pth',
+      mimeType: 'application/octet-stream',
+      buffer: Buffer.from('weights')
+    },
+    {
+      name: 'speakers_xtts.pth',
+      mimeType: 'application/octet-stream',
+      buffer: Buffer.from('speakers')
+    },
+    {
+      name: 'vocab.json',
+      mimeType: 'application/json',
+      buffer: Buffer.from('{}')
+    }
   ]);
   await dialog.getByRole('button', { name: /Upload and select/ }).click();
   await expect.poll(() => installed).toBeTruthy();
-  await expect(dialog.getByText('custom/new-voice', { exact: true })).toBeVisible();
+  await expect(
+    dialog.getByText('custom/new-voice', { exact: true })
+  ).toBeVisible();
 
-  await dialog.getByRole('button', { name: 'Select XTTS model custom/acme-voice' }).click();
+  await dialog
+    .getByRole('button', { name: 'Select XTTS model custom/acme-voice' })
+    .click();
   const newModelRow = dialog
     .getByText('custom/new-voice', { exact: true })
     .locator('xpath=ancestor::div[contains(@class, "border-b")]');
@@ -466,10 +543,14 @@ test('XTTS model management lists, installs, selects, removes, and guides legacy
     .getByRole('button', { name: 'Remove' })
     .click();
   await expect.poll(() => deletedModelIds).toContain('custom/acme-voice');
-  await expect(dialog.getByText(`Removed custom/acme-voice and selected ${builtin}.`)).toBeVisible();
+  await expect(
+    dialog.getByText(`Removed custom/acme-voice and selected ${builtin}.`)
+  ).toBeVisible();
 
   legacy = true;
   await dialog.getByRole('button', { name: 'Refresh models' }).click();
-  await expect(dialog.getByText('Update or Repair XTTS in Pandrator Manager')).toBeVisible();
+  await expect(
+    dialog.getByText('Update or Repair XTTS in Pandrator Manager')
+  ).toBeVisible();
   await expect(dialog.getByText('Removal unavailable')).toBeVisible();
 });

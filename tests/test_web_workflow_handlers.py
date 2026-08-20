@@ -15,9 +15,14 @@ from sqlalchemy import func, select
 
 from pandrator.web.artifacts import ArtifactService
 from pandrator.web.database import Database
-from pandrator.web.credentials import auxiliary_credential_key, upsert_credential
+from pandrator.web.credentials import (
+    auxiliary_credential_key,
+    database_reference,
+    tts_service_credential_key,
+    upsert_credential,
+)
 from pandrator.web.jobs import JobQueue
-from pandrator.web.models import Artifact, ArtifactEdge, AudioTake, GenerationPlan, GenerationPlanRevision, GenerationRun, GenerationSegment, OutputAssembly, PronunciationEntry, SessionRecord, SessionSetting, SessionStageSelection, UsageEvent
+from pandrator.web.models import AppSetting, Artifact, ArtifactEdge, AudioTake, GenerationPlan, GenerationPlanRevision, GenerationRun, GenerationSegment, OutputAssembly, PronunciationEntry, SessionRecord, SessionSetting, SessionStageSelection, UsageEvent
 from pandrator.web.sessions import SessionService
 from pandrator.web.tts_providers import TtsBatchResult, TtsCapabilities
 from pandrator.web.workflow_handlers import (
@@ -205,6 +210,267 @@ class WebWorkflowHandlerTests(unittest.TestCase):
             untouched_segment = session.get(GenerationSegment, segment_ids[2])
             self.assertEqual("stored-three", untouched_segment.voice)
             self.assertEqual("es", untouched_segment.language)
+
+    def test_selected_catalogue_provider_is_hydrated_before_synthesis(self):
+        revision_id, segment_ids = self.handlers._store_generation_plan(
+            self.session.id,
+            [
+                {"text": "Catalogue alternate.", "voice": "stored-one", "language": "de"},
+                {"text": "Keep this take.", "voice": "stored-two", "language": "it"},
+            ],
+            settings={},
+        )
+        provider_configs = [
+            {
+                "id": "catalogue-provider",
+                "name": "Catalogue Provider",
+                "provider": "openai",
+                "api_base": "https://catalogue.example/v1",
+                "api_key": "catalogue-secret",
+                "models": ["catalogue-model"],
+                "voices": ["catalogue-voice"],
+            },
+            {
+                "id": "explicit-catalogue-provider",
+                "name": "Explicit Catalogue Provider",
+                "provider": "openai",
+                "api_base": "https://explicit.example/v1",
+                "api_key": "explicit-secret",
+                "models": ["catalogue-model"],
+                "voices": ["catalogue-voice"],
+            },
+        ]
+        selected_override = {
+            "tts": {
+                "service": "catalogue-provider",
+                "model": "catalogue-model",
+                "voice": "catalogue-voice",
+                "language": "fr",
+                "openai_audio_endpoint": "explicit-catalogue-provider",
+            }
+        }
+        with self.database.session() as session:
+            run = GenerationRun(
+                session_id=self.session.id,
+                plan_revision_id=revision_id,
+                status="queued",
+                settings_snapshot_json={
+                    "text": {"llm_tts_optimization": False},
+                    "tts": {
+                        "service": "XTTS",
+                        "model": "base",
+                        "voice": "base-voice",
+                        "language": "en",
+                        "provider_configs": provider_configs,
+                    },
+                    "selected_segment_override": selected_override,
+                },
+            )
+            session.add(run)
+            session.flush()
+            run_id = run.id
+            session.add(
+                AudioTake(
+                    generation_segment_id=segment_ids[1],
+                    kind="tts",
+                    status="completed",
+                    is_active=True,
+                )
+            )
+
+        synthesis_settings = []
+
+        def synthesize(_text, settings, **_kwargs):
+            synthesis_settings.append(dict(settings))
+            return AudioSegment.silent(duration=35)
+
+        with mock.patch.object(
+            self.handlers.tts_providers,
+            "synthesize",
+            side_effect=synthesize,
+        ):
+            result = self.handlers.run_generation(
+                {
+                    "generation_run_id": run_id,
+                    "segment_ids": [segment_ids[0]],
+                    "operation": "regenerate",
+                },
+                self.progress,
+                threading.Event(),
+            )
+
+        self.assertEqual("partial", result["status"])
+        self.assertEqual(1, len(synthesis_settings))
+        settings = synthesis_settings[0]
+        self.assertEqual("Custom", settings["service"])
+        self.assertEqual("catalogue-model", settings["model"])
+        self.assertEqual("catalogue-voice", settings["voice"])
+        self.assertEqual("catalogue-voice", settings["speaker"])
+        self.assertEqual("fr", settings["language"])
+        self.assertEqual("fr", settings["target_language"])
+        self.assertEqual(
+            "explicit-catalogue-provider", settings["openai_audio_endpoint"]
+        )
+        configured = next(
+            item
+            for item in settings["provider_configs"]
+            if item["id"] == "explicit-catalogue-provider"
+        )
+        self.assertEqual("https://explicit.example/v1", configured["api_base"])
+        self.assertEqual("explicit-secret", configured["api_key"])
+        with self.database.session() as session:
+            stored_run = session.get(GenerationRun, run_id)
+            self.assertEqual("XTTS", stored_run.settings_snapshot_json["tts"]["service"])
+            self.assertNotIn(
+                "openai_audio_endpoint",
+                stored_run.settings_snapshot_json["tts"],
+            )
+            untouched_segment = session.get(GenerationSegment, segment_ids[1])
+            self.assertEqual("stored-two", untouched_segment.voice)
+            self.assertEqual("it", untouched_segment.language)
+            untouched_take = session.scalar(
+                select(AudioTake).where(
+                    AudioTake.generation_segment_id == segment_ids[1]
+                )
+            )
+            self.assertTrue(untouched_take.is_active)
+
+    def test_start_binds_late_custom_provider_for_worker_hydration(self):
+        revision_id, segment_ids = self.handlers._store_generation_plan(
+            self.session.id,
+            [{"text": "Late provider alternate.", "voice": "stored", "language": "de"}],
+            settings={},
+        )
+        source_snapshot = {
+            "text": {"llm_tts_optimization": False},
+            "tts": {
+                "service": "XTTS",
+                "model": "base",
+                "voice": "base-voice",
+                "language": "en",
+            },
+        }
+        late_provider = {
+            "id": "late-catalogue",
+            "name": "Late Catalogue",
+            "provider": "openai",
+            "api_base": "https://late.example/v1",
+            "secret_ref": database_reference(
+                tts_service_credential_key("late-catalogue")
+            ),
+            "models": ["late-model"],
+            "voices": ["late-voice"],
+        }
+        unrelated_provider = {
+            "id": "unrelated-catalogue",
+            "name": "Unrelated Catalogue",
+            "provider": "openai",
+            "api_base": "https://unrelated.example/v1",
+            "secret_ref": database_reference(
+                tts_service_credential_key("unrelated-catalogue")
+            ),
+            "models": ["unrelated-model"],
+            "voices": ["unrelated-voice"],
+        }
+        with self.database.session() as session:
+            source = GenerationRun(
+                session_id=self.session.id,
+                plan_revision_id=revision_id,
+                sequence_number=1,
+                status="completed",
+                settings_snapshot_json=source_snapshot,
+            )
+            session.add(source)
+            upsert_credential(
+                session,
+                tts_service_credential_key("late-catalogue"),
+                "Late Catalogue API key",
+                "late-secret",
+            )
+            session.add(
+                AppSetting(
+                    key="services.tts",
+                    value_json={
+                        "provider_configs": [late_provider, unrelated_provider]
+                    },
+                    revision=1,
+                )
+            )
+            session.flush()
+            source_run_id = source.id
+
+        generation = GenerationService(
+            self.database,
+            JobQueue(self.database),
+            WorkspaceSettingsService(self.database),
+            self.artifacts,
+        )
+        selected_override = {
+            "tts": {
+                "service": "late-catalogue",
+                "model": "late-model",
+                "voice": "late-voice",
+                "language": "fr",
+            }
+        }
+        started = generation.start(
+            self.session.id,
+            segment_ids=[segment_ids[0]],
+            generation_run_id=source_run_id,
+            operation="regenerate",
+            selected_segment_override=selected_override,
+        )
+
+        with self.database.session() as session:
+            source = session.get(GenerationRun, source_run_id)
+            run = session.get(GenerationRun, started["id"])
+            snapshot = dict(run.settings_snapshot_json)
+            bound_configs = snapshot["selected_segment_override"]["tts"][
+                "provider_configs"
+            ]
+            self.assertEqual(["late-catalogue"], [item["id"] for item in bound_configs])
+            self.assertNotIn("api_key", bound_configs[0])
+            self.assertNotIn("late-secret", json.dumps(snapshot))
+            self.assertEqual([], source.settings_snapshot_json["tts"].get("provider_configs", []))
+            top_level_configs = snapshot["tts"]["provider_configs"]
+            self.assertEqual(["late-catalogue"], [item["id"] for item in top_level_configs])
+
+        synthesis_settings = []
+
+        def synthesize(_text, settings, **_kwargs):
+            synthesis_settings.append(dict(settings))
+            return AudioSegment.silent(duration=35)
+
+        with mock.patch.object(
+            self.handlers.tts_providers,
+            "synthesize",
+            side_effect=synthesize,
+        ):
+            result = self.handlers.run_generation(
+                {
+                    "generation_run_id": started["id"],
+                    "segment_ids": segment_ids[:1],
+                    "operation": "regenerate",
+                },
+                self.progress,
+                threading.Event(),
+            )
+
+        self.assertEqual("completed", result["status"])
+        settings = synthesis_settings[0]
+        self.assertEqual("Custom", settings["service"])
+        self.assertEqual("late-model", settings["model"])
+        self.assertEqual("late-voice", settings["voice"])
+        self.assertEqual("fr", settings["language"])
+        configured = next(
+            item for item in settings["provider_configs"] if item["id"] == "late-catalogue"
+        )
+        self.assertEqual("https://late.example/v1", configured["api_base"])
+        self.assertEqual("late-secret", configured["api_key"])
+        self.assertNotIn(
+            "unrelated-catalogue",
+            [item["id"] for item in settings["provider_configs"]],
+        )
 
     def test_source_cleaning_progress_spans_phase_turn_budgets(self):
         updates = []

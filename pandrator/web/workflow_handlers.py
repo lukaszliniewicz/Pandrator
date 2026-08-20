@@ -6090,9 +6090,7 @@ class WorkflowHandlers:
         selected_segment_override = dict(
             settings_snapshot.get("selected_segment_override") or {}
         )
-        selected_tts_override = adapt_runtime_settings(
-            "tts", dict(selected_segment_override.get("tts") or {})
-        )
+        selected_tts_override = dict(selected_segment_override.get("tts") or {})
         selected_rvc_override = dict(selected_segment_override.get("rvc") or {})
         tts_settings = hydrate_tts_settings(
             self.database,
@@ -6100,6 +6098,82 @@ class WorkflowHandlers:
             tts_settings,
             manager_bridge=self.manager_bridge,
         )
+        selected_tts_runtime: dict[str, Any] | None = None
+        if selected_tts_override:
+            # Alternate settings are a small UI payload, not a complete TTS
+            # configuration.  Adapt and hydrate them against the effective
+            # run settings so a catalogue/custom provider retains its saved
+            # endpoint and credential metadata.  Keep this copy run-local:
+            # persistent/session settings must remain unchanged.
+            selected_tts_runtime = _apply_selected_segment_tts_override(
+                tts_settings,
+                selected_tts_override,
+            )
+            explicit_endpoint_keys = {
+                "openai_audio_endpoint",
+                "xtts_base_url",
+                "voxcpm_base_url",
+                "fishs2_base_url",
+                "voxtral_base_url",
+                "kokoro_base_url",
+                "silero_base_url",
+                "chatterbox_base_url",
+                "kobold_qwen_base_url",
+                "magpie_base_url",
+            }
+            explicit_endpoints = {
+                key: deepcopy(selected_tts_override[key])
+                for key in explicit_endpoint_keys
+                if key in selected_tts_override
+            }
+            selected_tts_runtime = adapt_runtime_settings(
+                "tts",
+                selected_tts_runtime,
+            )
+            # ``adapt_runtime_settings`` fills service-derived endpoint aliases
+            # for normal catalogue choices.  An alternate payload that names
+            # an endpoint explicitly is authoritative, however.
+            selected_tts_runtime.update(explicit_endpoints)
+            selected_tts_runtime = hydrate_tts_settings(
+                self.database,
+                self.paths,
+                selected_tts_runtime,
+                manager_bridge=self.manager_bridge,
+            )
+            selected_tts_runtime.update(explicit_endpoints)
+
+        def _tts_settings_for_segment(
+            segment_settings: dict[str, Any],
+            *,
+            language: str,
+            voice: str | None,
+        ) -> dict[str, Any]:
+            if selected_tts_runtime is None:
+                return _apply_selected_segment_tts_override(
+                    segment_settings,
+                    selected_tts_override,
+                )
+            resolved = deepcopy(selected_tts_runtime)
+            if not str(
+                selected_tts_override.get("language")
+                or selected_tts_override.get("target_language")
+                or ""
+            ).strip():
+                resolved = _apply_segment_tts_overrides(
+                    resolved,
+                    language=language,
+                )
+            if not str(
+                selected_tts_override.get("voice")
+                or selected_tts_override.get("speaker")
+                or ""
+            ).strip():
+                resolved = _apply_segment_tts_overrides(
+                    resolved,
+                    voice=voice,
+                )
+            return resolved
+
         text_settings = adapt_runtime_settings(
             "text", dict(settings_snapshot.get("text") or {})
         )
@@ -6159,7 +6233,10 @@ class WorkflowHandlers:
         verified_qwen_voices: set[str] = set()
         batch_results = None
         batch_contexts: dict[str, dict[str, Any]] = {}
-        tts_urls = self._tts_urls(tts_settings)
+        # The selected alternate owns the provider endpoint for this run.  In
+        # particular, a first-class service's explicit base URL must reach the
+        # legacy synthesis boundary instead of the source provider's URL.
+        tts_urls = self._tts_urls(selected_tts_runtime or tts_settings)
         if operation != "rvc":
             # The selected-only setting set may switch provider.  Do not reuse
             # the source provider's streaming/batching capabilities for it.
@@ -6179,8 +6256,10 @@ class WorkflowHandlers:
                         language=seed["language"],
                         voice=seed["voice"],
                     )
-                    segment_tts_settings = _apply_selected_segment_tts_override(
-                        segment_tts_settings, selected_tts_override
+                    segment_tts_settings = _tts_settings_for_segment(
+                        segment_tts_settings,
+                        language=seed["language"],
+                        voice=seed["voice"],
                     )
                     self._ensure_qwen_cloned_voice(
                         segment_tts_settings,
@@ -6316,8 +6395,10 @@ class WorkflowHandlers:
                             language=segment_language,
                             voice=segment_voice,
                         )
-                        segment_tts_settings = _apply_selected_segment_tts_override(
-                            segment_tts_settings, selected_tts_override
+                        segment_tts_settings = _tts_settings_for_segment(
+                            segment_tts_settings,
+                            language=segment_language,
+                            voice=segment_voice,
                         )
                         self._ensure_qwen_cloned_voice(
                             segment_tts_settings,

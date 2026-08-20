@@ -1396,7 +1396,9 @@
             disabled={!selectedSegmentIds.length && !marked.length}
             class="action"
             title="Create new takes with a temporary provider, voice, language, prompt, or RVC setting set"
-            >Alternate selected take…</button
+            >{selectedSegmentIds.length
+              ? 'Alternate selected take…'
+              : 'Alternate marked takes…'}</button
           >
         {/if}
         {#if !run || ['completed', 'partial', 'failed', 'canceled'].includes(run.status)}
@@ -1498,7 +1500,9 @@
             disabled={!selectedSegmentIds.length && !marked.length}
             class="action"
             title="Create new takes with a temporary provider, voice, language, prompt, or RVC setting set"
-            >Regenerate selected with…</button
+            >{selectedSegmentIds.length
+              ? 'Regenerate selected with…'
+              : 'Regenerate marked with…'}</button
           >
           <button
             onclick={assemble}

@@ -352,11 +352,10 @@ export const sessionApi = {
     >('/api/v1/services/tts/xtts/models', 'post', { body });
   },
   xttsModels: () =>
-    typedApiJson<
+    typedApiJson<'/api/v1/services/tts/xtts/models', 'get', XttsModelCatalogue>(
       '/api/v1/services/tts/xtts/models',
-      'get',
-      XttsModelCatalogue
-    >('/api/v1/services/tts/xtts/models', 'get'),
+      'get'
+    ),
   deleteXttsModel: (modelId: string) =>
     typedApiJson<
       '/api/v1/services/tts/xtts/models/{modelId}',

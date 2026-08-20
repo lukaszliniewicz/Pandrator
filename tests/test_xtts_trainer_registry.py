@@ -102,6 +102,17 @@ class XttsTrainerRegistryTests(unittest.TestCase):
         self.assertFalse(copied)
         self.assertIn("unsafe", message)
 
+    def test_rejects_wrapper_ignored_model_path_parts(self):
+        for model_id in ("__pycache__", "team/__pycache__/voice"):
+            with self.subTest(model_id=model_id):
+                copied, message = xtts_trainer_handler._copy_trained_model(
+                    model_id, self._paths()
+                )
+
+                self.assertFalse(copied)
+                self.assertIn("unsafe", message)
+                self.assertFalse(self.models.joinpath(*model_id.split("/")).exists())
+
 
 if __name__ == "__main__":
     unittest.main()
