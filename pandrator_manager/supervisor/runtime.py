@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import secrets
 import socket
 import subprocess
 import threading
@@ -204,18 +205,28 @@ class ProcessSupervisor:
         if existing is None:
             return
         try:
-            process = validate_identity(existing.process)
+            root = validate_identity(existing.process)
         except (IdentityMismatch, IdentityInspectionFailed):
             return
-        if process is None:
-            return
+        if root is None:
+            # A launcher can exit after leaving a token-inheriting child alive.
+            # On a new Manager instance the dead root is no longer enough to
+            # adopt, but a live token match is a positive ownership proof.
+            if not existing.process.ownership_token or not self._token_processes(
+                existing.process.ownership_token
+            ):
+                return
         # A service from a previous manager instance remains owned only through
-        # its full recorded identity; assign the new instance on adoption.
+        # its full recorded identity or a persisted token-proven surviving
+        # family; assign the new instance on adoption.
         adopted_identity = ProcessIdentity(
             pid=existing.process.pid,
             create_time=existing.process.create_time,
             executable=existing.process.executable,
             manager_instance_id=self.manager_instance_id,
+            ownership_token=existing.process.ownership_token,
+            process_group_id=existing.process.process_group_id,
+            session_id=existing.process.session_id,
         )
         self._runtime[spec.service_id] = _RuntimeProcess(
             spec=spec,
@@ -373,6 +384,8 @@ class ProcessSupervisor:
         log_handle = log_path.open("ab", buffering=0)
         environment = self._environment_builder.environment(spec.environment)
         environment["PANDRATOR_MANAGER_INSTANCE"] = self.manager_instance_id
+        ownership_token = secrets.token_urlsafe(32)
+        environment["PANDRATOR_PROCESS_OWNERSHIP_TOKEN"] = ownership_token
         process = None
         try:
             process = subprocess.Popen(
@@ -388,6 +401,7 @@ class ProcessSupervisor:
             identity = capture_identity(
                 psutil.Process(process.pid),
                 manager_instance_id=self.manager_instance_id,
+                ownership_token=ownership_token,
             )
         except Exception:
             if process is not None and process.poll() is None:
@@ -448,34 +462,95 @@ class ProcessSupervisor:
             self._pending.pop(service_id, None)
             return self._start_one(spec)
 
-    def _terminate(self, runtime: _RuntimeProcess) -> None:
-        try:
-            parent = validate_identity(runtime.identity)
-        except (IdentityMismatch, IdentityInspectionFailed) as error:
-            raise RuntimeError(
-                f"Refusing to stop unverifiable PID {runtime.identity.pid}."
-            ) from error
-        if parent is None:
-            if runtime.log_handle:
-                runtime.log_handle.close()
-            return
-        processes = [*parent.children(recursive=True), parent]
+    @staticmethod
+    def _token_processes(ownership_token: str) -> list[psutil.Process]:
+        """Return processes that prove membership in one managed launch.
+
+        An inherited random token survives shell launchers and detached child
+        processes.  Inspection failures are deliberately ignored: without a
+        positive environment match, a process is never considered ours.
+        """
+
+        matches: list[psutil.Process] = []
+        for candidate in psutil.process_iter():
+            try:
+                if (
+                    candidate.environ().get("PANDRATOR_PROCESS_OWNERSHIP_TOKEN")
+                    == ownership_token
+                ):
+                    matches.append(candidate)
+            except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
+                continue
+        return matches
+
+    def _owned_family(
+        self,
+        runtime: _RuntimeProcess,
+        parent: psutil.Process | None,
+    ) -> list[psutil.Process]:
+        """Build a deduplicated, positively owned process family.
+
+        Modern launches are selected solely by their per-launch token, with
+        the validated root included explicitly.  Legacy persisted identities
+        have no token, so retain their previous root-and-descendants behavior
+        only while the exact recorded root still validates.
+        """
+
+        by_pid: dict[int, psutil.Process] = {}
+        if runtime.identity.ownership_token:
+            for candidate in self._token_processes(runtime.identity.ownership_token):
+                by_pid[candidate.pid] = candidate
+            if parent is not None:
+                by_pid[parent.pid] = parent
+        elif parent is not None:
+            try:
+                for candidate in [*parent.children(recursive=True), parent]:
+                    by_pid[candidate.pid] = candidate
+            except (psutil.AccessDenied, psutil.NoSuchProcess):
+                by_pid[parent.pid] = parent
+        return list(by_pid.values())
+
+    @staticmethod
+    def _signal_processes(
+        processes: list[psutil.Process],
+        action: str,
+    ) -> None:
+        # Children first preserves the old shutdown ordering when the root is
+        # still available, while token-only families remain safe unordered.
         for process in reversed(processes):
             try:
-                process.terminate()
-            except (psutil.AccessDenied, psutil.NoSuchProcess):
+                getattr(process, action)()
+            except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
                 pass
-        _, alive = psutil.wait_procs(
-            processes,
-            timeout=runtime.spec.shutdown_timeout_seconds,
-        )
-        for process in alive:
-            try:
-                process.kill()
-            except (psutil.AccessDenied, psutil.NoSuchProcess):
-                pass
-        if alive:
-            psutil.wait_procs(alive, timeout=5)
+
+    def _cleanup_owned_family(
+        self,
+        runtime: _RuntimeProcess,
+        parent: psutil.Process | None,
+    ) -> None:
+        """Stop an owned service family, including escaped launcher children."""
+
+        processes = self._owned_family(runtime, parent)
+        self._signal_processes(processes, "terminate")
+        if processes:
+            psutil.wait_procs(
+                processes,
+                timeout=runtime.spec.shutdown_timeout_seconds,
+            )
+
+        # Scan again before and after escalation.  A wrapper can spawn a
+        # child while it is being stopped, and the token lets us identify that
+        # child without ever touching an arbitrary port listener.
+        remaining = self._owned_family(runtime, parent)
+        self._signal_processes(remaining, "kill")
+        if remaining:
+            psutil.wait_procs(remaining, timeout=5)
+        late = self._owned_family(runtime, parent)
+        self._signal_processes(late, "kill")
+        if late:
+            psutil.wait_procs(late, timeout=1)
+
+    def _close_runtime_handles(self, runtime: _RuntimeProcess) -> None:
         if runtime.process is not None:
             try:
                 runtime.process.wait(timeout=5)
@@ -483,6 +558,17 @@ class ProcessSupervisor:
                 pass
         if runtime.log_handle:
             runtime.log_handle.close()
+            runtime.log_handle = None
+
+    def _terminate(self, runtime: _RuntimeProcess) -> None:
+        try:
+            parent = validate_identity(runtime.identity)
+        except (IdentityMismatch, IdentityInspectionFailed) as error:
+            raise RuntimeError(
+                f"Refusing to stop unverifiable PID {runtime.identity.pid}."
+            ) from error
+        self._cleanup_owned_family(runtime, parent)
+        self._close_runtime_handles(runtime)
 
     def stop(self, service_id: str) -> ManagedService:
         with self._lock:
@@ -688,13 +774,11 @@ class ProcessSupervisor:
                 if not exited:
                     self._terminate(runtime)
                 else:
-                    if runtime.process is not None:
-                        try:
-                            runtime.process.wait(timeout=5)
-                        except (OSError, subprocess.TimeoutExpired):
-                            pass
-                    if runtime.log_handle:
-                        runtime.log_handle.close()
+                    # The launcher can exit while leaving a server child
+                    # behind.  Clean that positively token-matched family
+                    # before the restart can contend with its port.
+                    self._cleanup_owned_family(runtime, None)
+                    self._close_runtime_handles(runtime)
                 self._schedule_restart(
                     runtime.spec,
                     runtime.restart_count,

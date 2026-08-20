@@ -368,6 +368,11 @@ class ProcessIdentity(StrictModel):
     create_time: float = Field(gt=0)
     executable: str = Field(min_length=1)
     manager_instance_id: str = Field(min_length=1)
+    # Optional for compatibility with identities persisted before service
+    # family ownership was recorded.
+    ownership_token: str | None = Field(default=None, min_length=32)
+    process_group_id: int | None = Field(default=None, gt=0)
+    session_id: int | None = Field(default=None, gt=0)
 
 
 class HealthResult(StrictModel):

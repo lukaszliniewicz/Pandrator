@@ -2,6 +2,7 @@ import hashlib
 import json
 import socket
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import time
@@ -94,7 +95,61 @@ HTTPServer(('127.0.0.1',{port}), Handler).serve_forever()
     )
 
 
+def escaped_child_spec(directory: str, child_pid_path: Path) -> ManagedProcessSpec:
+    code = f"""
+import subprocess
+import sys
+import time
+from pathlib import Path
+child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])
+Path({str(child_pid_path)!r}).write_text(str(child.pid), encoding='ascii')
+time.sleep(0.5)
+"""
+    return ManagedProcessSpec(
+        service_id="escaped.child",
+        component_id="fake",
+        label="Escaped child service",
+        executable=sys.executable,
+        arguments=("-c", code),
+        cwd=directory,
+        readiness=HealthProbeSpec(kind="none"),
+        startup_timeout_seconds=3,
+        shutdown_timeout_seconds=1,
+        restart=RestartPolicy(
+            maximum_restarts=0,
+            base_backoff_seconds=0,
+            maximum_backoff_seconds=0,
+        ),
+    )
+
+
+def wait_for_process_exit(pid: int, *, timeout_seconds: float = 5) -> bool:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        try:
+            process = psutil.Process(pid)
+            if not process.is_running() or process.status() == psutil.STATUS_ZOMBIE:
+                return True
+        except psutil.NoSuchProcess:
+            return True
+        time.sleep(0.05)
+    return False
+
+
 class SupervisorIntegrationTests(unittest.TestCase):
+    def test_legacy_process_identity_payload_remains_valid(self):
+        identity = ProcessIdentity.model_validate(
+            {
+                "pid": 123,
+                "create_time": 1.0,
+                "executable": sys.executable,
+                "manager_instance_id": "legacy-manager",
+            }
+        )
+        self.assertIsNone(identity.ownership_token)
+        self.assertIsNone(identity.process_group_id)
+        self.assertIsNone(identity.session_id)
+
     def test_owned_service_starts_reports_identity_and_stops(self):
         with tempfile.TemporaryDirectory() as directory:
             application = create_application(directory)
@@ -136,6 +191,109 @@ class SupervisorIntegrationTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "unrecognized process"):
                 supervisor.start(spec.service_id)
             self.assertEqual(listener.getsockname()[1], port)
+
+    def test_stop_removes_token_owned_child_processes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            application = create_application(directory)
+            child_pid_path = Path(directory) / "child.pid"
+            supervisor = ProcessSupervisor(
+                application.context,
+                application.store,
+                manager_instance_id="manager-test",
+            )
+            spec = escaped_child_spec(directory, child_pid_path)
+            supervisor.register(spec)
+            service = supervisor.start(spec.service_id)
+            deadline = time.monotonic() + 3
+            while not child_pid_path.exists() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertTrue(child_pid_path.exists())
+            child_pid = int(child_pid_path.read_text(encoding="ascii"))
+            try:
+                self.assertEqual(
+                    psutil.Process(child_pid).environ().get(
+                        "PANDRATOR_PROCESS_OWNERSHIP_TOKEN"
+                    ),
+                    service.process.ownership_token,
+                )
+            finally:
+                supervisor.stop(spec.service_id)
+            self.assertTrue(wait_for_process_exit(child_pid))
+
+    def test_monitor_cleans_token_owned_child_after_launcher_exits(self):
+        with tempfile.TemporaryDirectory() as directory:
+            application = create_application(directory)
+            child_pid_path = Path(directory) / "child.pid"
+            supervisor = ProcessSupervisor(
+                application.context,
+                application.store,
+                manager_instance_id="manager-test",
+            )
+            spec = escaped_child_spec(directory, child_pid_path)
+            supervisor.register(spec)
+            service = supervisor.start(spec.service_id)
+            launcher_pid = service.process.pid
+            deadline = time.monotonic() + 3
+            while not child_pid_path.exists() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertTrue(child_pid_path.exists())
+            self.assertTrue(wait_for_process_exit(launcher_pid))
+            child_pid = int(child_pid_path.read_text(encoding="ascii"))
+            try:
+                supervisor.monitor_once()
+                self.assertTrue(wait_for_process_exit(child_pid))
+                self.assertNotIn(spec.service_id, supervisor._runtime)
+            finally:
+                if spec.service_id in supervisor._runtime:
+                    supervisor.stop(spec.service_id)
+
+    def test_new_manager_adopts_and_stops_token_owned_orphaned_family(self):
+        with tempfile.TemporaryDirectory() as directory:
+            application = create_application(directory)
+            child_pid_path = Path(directory) / "child.pid"
+            spec = escaped_child_spec(directory, child_pid_path)
+            first = ProcessSupervisor(
+                application.context,
+                application.store,
+                manager_instance_id="manager-one",
+            )
+            first.register(spec)
+            started = first.start(spec.service_id)
+            launcher_pid = started.process.pid
+            deadline = time.monotonic() + 3
+            while not child_pid_path.exists() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertTrue(child_pid_path.exists())
+            self.assertTrue(wait_for_process_exit(launcher_pid))
+            child_pid = int(child_pid_path.read_text(encoding="ascii"))
+            unrelated = subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(60)"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            first.shutdown(stop_children=False)
+            second = ProcessSupervisor(
+                application.context,
+                application.store,
+                manager_instance_id="manager-two",
+            )
+            try:
+                second.register(spec)
+                self.assertIn(spec.service_id, second._runtime)
+                self.assertEqual(
+                    second._runtime[spec.service_id].identity.ownership_token,
+                    started.process.ownership_token,
+                )
+                second.stop(spec.service_id)
+                self.assertTrue(wait_for_process_exit(child_pid))
+                self.assertIsNone(unrelated.poll())
+            finally:
+                if spec.service_id in second._runtime:
+                    second.stop(spec.service_id)
+                if unrelated.poll() is None:
+                    unrelated.terminate()
+                    unrelated.wait(timeout=5)
 
     def test_health_probe_rejects_expected_json_mismatch(self):
         with tempfile.TemporaryDirectory() as directory:

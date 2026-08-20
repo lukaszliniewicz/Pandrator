@@ -27,12 +27,27 @@ def capture_identity(
     process: psutil.Process,
     *,
     manager_instance_id: str,
+    ownership_token: str | None = None,
 ) -> ProcessIdentity:
+    process_group_id: int | None = None
+    session_id: int | None = None
+    if os.name != "nt":
+        try:
+            process_group_id = os.getpgid(process.pid)
+            session_id = os.getsid(process.pid)
+        except OSError:
+            # Identity validation remains PID/create-time/executable based;
+            # group metadata is only a helpful diagnostic and must not make a
+            # successful launch fail on a short-lived wrapper.
+            pass
     return ProcessIdentity(
         pid=process.pid,
         create_time=float(process.create_time()),
         executable=str(process.exe()),
         manager_instance_id=manager_instance_id,
+        ownership_token=ownership_token,
+        process_group_id=process_group_id,
+        session_id=session_id,
     )
 
 
