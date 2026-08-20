@@ -2258,7 +2258,7 @@ class GenerationService:
         requested_segment_ids = [
             str(value) for value in (segment_ids or []) if str(value)
         ]
-        reused_run = False
+        run_override = dict(run_override or {})
         resolved_for_new: tuple[dict[str, Any], str] | None = None
         if operation == "generate" and not requested_segment_ids:
             resolved_for_new = self.settings.resolve(
@@ -2311,35 +2311,33 @@ class GenerationService:
                         "Selected generation segments do not belong to this session."
                     )
                 plan_revision_id = requested_revision_id
-            reusable = None
-            if requested_segment_ids and operation != "rvc":
-                if generation_run_id:
-                    preferred = session.get(GenerationRun, generation_run_id)
-                    if (
-                        preferred is None
-                        or preferred.session_id != session_id
-                        or preferred.plan_revision_id != plan_revision_id
-                        or preferred.operation == "rvc"
-                    ):
-                        raise ValueError(
-                            "The selected generation run does not match these segments."
-                        )
-                    reusable = preferred
-                else:
-                    reusable = session.scalar(
-                        select(GenerationRun)
-                        .where(
-                            GenerationRun.session_id == session_id,
-                            GenerationRun.plan_revision_id == plan_revision_id,
-                            GenerationRun.operation != "rvc",
-                        )
-                        .order_by(
-                            GenerationRun.sequence_number.desc(),
-                            GenerationRun.created_at.desc(),
-                        )
+            source_run = None
+            if requested_segment_ids and generation_run_id:
+                source_run = session.get(GenerationRun, generation_run_id)
+                if (
+                    source_run is None
+                    or source_run.session_id != session_id
+                    or source_run.plan_revision_id != plan_revision_id
+                    or source_run.operation == "rvc"
+                ):
+                    raise ValueError(
+                        "The selected source generation run does not match these segments."
                     )
-            if reusable is not None:
-                if reusable.status in {
+            elif requested_segment_ids and operation != "rvc":
+                source_run = session.scalar(
+                    select(GenerationRun)
+                    .where(
+                        GenerationRun.session_id == session_id,
+                        GenerationRun.plan_revision_id == plan_revision_id,
+                        GenerationRun.operation != "rvc",
+                    )
+                    .order_by(
+                        GenerationRun.sequence_number.desc(),
+                        GenerationRun.created_at.desc(),
+                    )
+                )
+            if source_run is not None:
+                if source_run.status in {
                     "queued",
                     "running",
                     "pausing",
@@ -2348,15 +2346,13 @@ class GenerationService:
                     "paused",
                 }:
                     raise ValueError(
-                        "The current generation run is still active; stop or resume it before regenerating segments."
+                        "The source generation run is still active; stop or resume it before regenerating segments."
                     )
-                reusable.status = "queued"
-                reusable.pause_requested = False
-                reusable.cancel_requested = False
-                reusable.updated_at = utcnow()
-                run_id = reusable.id
-                snapshot = dict(reusable.settings_snapshot_json or {})
-                reused_run = True
+                snapshot = _merge(
+                    dict(source_run.settings_snapshot_json or {}),
+                    run_override,
+                )
+                settings_hash = stable_hash(snapshot)
             else:
                 if resolved_for_new is None:
                     resolved_for_new = self.settings.resolve(
@@ -2364,29 +2360,30 @@ class GenerationService:
                         run_override=run_override,
                     )
                 snapshot, settings_hash = resolved_for_new
-                sequence_number = (
-                    int(
-                        session.scalar(
-                            select(func.max(GenerationRun.sequence_number)).where(
-                                GenerationRun.session_id == session_id
-                            )
+            sequence_number = (
+                int(
+                    session.scalar(
+                        select(func.max(GenerationRun.sequence_number)).where(
+                            GenerationRun.session_id == session_id
                         )
-                        or 0
                     )
-                    + 1
+                    or 0
                 )
-                run = GenerationRun(
-                    session_id=session_id,
-                    plan_revision_id=plan_revision_id,
-                    sequence_number=sequence_number,
-                    operation=operation,
-                    status="queued",
-                    settings_snapshot_json=snapshot,
-                    settings_hash=settings_hash,
-                )
-                session.add(run)
-                session.flush()
-                run_id = run.id
+                + 1
+            )
+            run = GenerationRun(
+                session_id=session_id,
+                plan_revision_id=plan_revision_id,
+                source_generation_run_id=source_run.id if source_run else None,
+                sequence_number=sequence_number,
+                operation=operation,
+                status="queued",
+                settings_snapshot_json=snapshot,
+                settings_hash=settings_hash,
+            )
+            session.add(run)
+            session.flush()
+            run_id = run.id
         resource_keys = self._resource_keys(session_id, snapshot)
         job = self.jobs.enqueue(
             "generation.run",
@@ -2404,7 +2401,9 @@ class GenerationService:
             run.updated_at = utcnow()
         with self.database.session() as session:
             result = self._run_payload(session, session.get(GenerationRun, run_id))
-            result["reused_run"] = reused_run
+            # Kept for compatibility with clients that used the old response
+            # flag. Targeted generation now always creates a new immutable run.
+            result["reused_run"] = False
             return result
 
     @staticmethod
@@ -2526,6 +2525,7 @@ class GenerationService:
             "id": run.id,
             "session_id": run.session_id,
             "plan_revision_id": run.plan_revision_id,
+            "source_generation_run_id": run.source_generation_run_id,
             "sequence_number": run.sequence_number,
             "operation": run.operation,
             "label": self._run_label(run),

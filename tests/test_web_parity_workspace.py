@@ -1338,7 +1338,7 @@ class WebParityWorkspaceTests(unittest.TestCase):
             "The speech endpoint rejected the request.", latest["error_message"]
         )
 
-    def test_segment_regeneration_reuses_the_latest_failed_run(self):
+    def test_segment_regeneration_creates_a_new_run_from_the_latest_failed_run(self):
         record = self.create_session("audiobook")
         self.client.post(
             f"/api/v1/sessions/{record['id']}/generation-plan",
@@ -1365,17 +1365,62 @@ class WebParityWorkspaceTests(unittest.TestCase):
         )
 
         self.assertEqual(202, retry.status_code, retry.get_json())
-        self.assertEqual(first["id"], retry.get_json()["id"])
-        self.assertTrue(retry.get_json()["reused_run"])
+        self.assertNotEqual(first["id"], retry.get_json()["id"])
+        self.assertEqual(first["id"], retry.get_json()["source_generation_run_id"])
+        self.assertFalse(retry.get_json()["reused_run"])
         self.assertNotEqual(first["job_id"], retry.get_json()["job_id"])
         self.assertEqual(
-            1,
+            2,
             len(
                 self.client.get(
                     f"/api/v1/sessions/{record['id']}/generation-runs"
                 ).get_json()["items"]
             ),
         )
+
+    def test_full_generation_resolves_current_settings_after_an_earlier_run(self):
+        record = self.create_session("audiobook")
+        plan = self.client.post(
+            f"/api/v1/sessions/{record['id']}/generation-plan",
+            json={"segments": [{"text": "Use the current preset."}]},
+            headers=self.headers,
+        )
+        self.assertEqual(201, plan.status_code, plan.get_json())
+
+        first_settings = self.client.put(
+            f"/api/v1/sessions/{record['id']}/settings/tts",
+            json={"value": {"service": "XTTS", "model": "first-preset"}},
+            headers={**self.headers, "If-Match": '"0"'},
+        )
+        self.assertEqual(200, first_settings.status_code, first_settings.get_json())
+        first = self.client.post(
+            f"/api/v1/sessions/{record['id']}/generation-runs",
+            json={},
+            headers=self.headers,
+        )
+        self.assertEqual(202, first.status_code, first.get_json())
+
+        second_settings = self.client.put(
+            f"/api/v1/sessions/{record['id']}/settings/tts",
+            json={"value": {"service": "XTTS", "model": "second-preset"}},
+            headers={**self.headers, "If-Match": '"1"'},
+        )
+        self.assertEqual(200, second_settings.status_code, second_settings.get_json())
+        second = self.client.post(
+            f"/api/v1/sessions/{record['id']}/generation-runs",
+            json={},
+            headers=self.headers,
+        )
+        self.assertEqual(202, second.status_code, second.get_json())
+
+        database = self.app.extensions["pandrator"]["database"]
+        with database.session() as session:
+            first_run = session.get(GenerationRun, first.get_json()["id"])
+            second_run = session.get(GenerationRun, second.get_json()["id"])
+            self.assertEqual("first-preset", first_run.settings_snapshot_json["tts"]["model"])
+            self.assertEqual("second-preset", second_run.settings_snapshot_json["tts"]["model"])
+            self.assertIsNone(first_run.source_generation_run_id)
+            self.assertIsNone(second_run.source_generation_run_id)
 
     def test_generation_segments_are_scoped_to_the_selected_run_revision(self):
         record = self.create_session("audiobook")
@@ -1458,12 +1503,17 @@ class WebParityWorkspaceTests(unittest.TestCase):
                 "operation": "regenerate",
                 "segment_ids": [old_payload["items"][0]["id"]],
                 "generation_run_id": first_run_id,
+                "run_override": {"tts": {"model": "preset-two"}},
             },
             headers=self.headers,
         )
         self.assertEqual(202, retry.status_code, retry.get_json())
-        self.assertEqual(first_run_id, retry.get_json()["id"])
-        self.assertTrue(retry.get_json()["reused_run"])
+        self.assertNotEqual(first_run_id, retry.get_json()["id"])
+        self.assertEqual(first_run_id, retry.get_json()["source_generation_run_id"])
+        self.assertFalse(retry.get_json()["reused_run"])
+        with database.session() as session:
+            new_run = session.get(GenerationRun, retry.get_json()["id"])
+            self.assertEqual("preset-two", new_run.settings_snapshot_json["tts"]["model"])
 
     def test_generation_runs_have_readable_labels_and_can_be_deleted_with_their_takes(
         self,

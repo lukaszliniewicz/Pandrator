@@ -291,7 +291,8 @@
     return rows;
   });
   const selectedAssembly = $derived(
-    selectedRun?.assembly ?? (!selectedRun ? assembly : null)
+    selectedRun?.assembly ??
+      (!selectedRun && !assembly?.generation_run_id ? assembly : null)
   );
   const selectedRunCost = $derived.by(() => {
     const value = selectedRun?.usage?.total_cost_usd;
@@ -543,11 +544,11 @@
   }
 
   async function selectTake(item: GenerationSegment, takeId: string) {
-    const updated = await generationStore.selectTake(item, takeId);
-    const selectedTake = updated.takes.find((take) => take.id === takeId);
-    if (selectedTake?.generation_run_id)
-      selectedRunId = selectedTake.generation_run_id;
-    await refreshAssembly();
+    await generationStore.selectTake(item, takeId);
+    // Take selection is a current mix edit, never a request to preview the
+    // run that originally produced the selected take.
+    selectedRunId = '';
+    await load(true, false);
   }
 
   function waitForStartedRunReconciliation(
@@ -570,13 +571,13 @@
     });
   }
 
-  async function reconcileStartedRun(runId: string) {
+  async function reconcileStartedRun() {
     startedRunReconciliation?.abort();
     const controller = new AbortController();
     startedRunReconciliation = controller;
     try {
       if (!(await waitForStartedRunReconciliation(controller.signal))) return;
-      if (selectedRunId !== runId || controller.signal.aborted) return;
+      if (controller.signal.aborted) return;
       // A terminal event can arrive immediately after the first running
       // snapshot. Do one prompt authoritative refresh so status-filtered rows
       // return without waiting for the long-lived SSE safety interval.
@@ -622,10 +623,12 @@
         run_override
       );
       generationStore.upsertRun(started);
-      selectedRunId = started.id;
+      // New generation should be visible in the live Active mix while it
+      // runs; history remains an explicit comparison view.
+      selectedRunId = '';
       expandIfCollapsed();
       await load();
-      void reconcileStartedRun(started.id);
+      void reconcileStartedRun();
     } catch (caught) {
       error = errorMessage(caught);
     } finally {
@@ -1018,9 +1021,9 @@
       </button>
       <span
         class="muted min-w-0 text-xs lg:flex-1 lg:truncate"
-        title={`${payload.total} segments · ${selectedRun?.label ?? 'No run selected'}${selectedAssembly ? ` · output ${selectedAssembly.status}` : ''}`}
+        title={`${payload.total} segments · ${selectedRun?.label ?? 'Active mix'}${selectedAssembly ? ` · output ${selectedAssembly.status}` : ''}`}
         >{payload.total} segments · {selectedRun?.label ??
-          'No run selected'}{#if selectedAssembly}
+          'Active mix'}{#if selectedAssembly}
           · output {selectedAssembly.status}{/if}</span
       >
       {#if selectedRun?.usage?.commercial}<span class="cost-pill"
@@ -1170,14 +1173,15 @@
           {#if runs.length}
             <label
               class="run-picker flex items-center gap-2 text-xs font-semibold"
-              >Version
+              >Audio view
               <select
                 value={selectedRunId}
                 onchange={changeSelectedRun}
                 class="mini max-w-[22rem]"
               >
+                <option value="">Active mix · current selections</option>
                 {#each runs as item}<option value={item.id}
-                    >{item.label} · {item.status}</option
+                    >History · {item.label} · {item.status}</option
                   >{/each}
               </select>
             </label>
@@ -1394,7 +1398,7 @@
           {:else}
             <GenerationReadingView
               blocks={readingBlocks}
-              selectedRunLabel={selectedRun?.label}
+              selectedRunLabel={selectedRun?.label ?? 'Active mix'}
               textMode={readingTextMode}
               loaded={payload.items.length}
               total={payload.total}

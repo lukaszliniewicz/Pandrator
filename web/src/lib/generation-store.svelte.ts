@@ -126,14 +126,12 @@ export class GenerationStore {
             'cancel_requested',
             'paused'
           ].includes(item.status)
-        ) ??
-        runs[0] ??
-        null;
+        ) ?? null;
       const selectedRunId =
         options.selectedRunId &&
         runs.some((item) => item.id === options.selectedRunId)
           ? options.selectedRunId
-          : (activeRun?.id ?? '');
+          : '';
       if (selectedRunId) query.set('generation_run_id', selectedRunId);
       const next = await generationApi.segments(
         this.sessionId,
@@ -294,7 +292,17 @@ export class GenerationStore {
   removeRun(runId: string) {
     this.runs = this.runs.filter((item) => item.id !== runId);
     if (this.activeRun?.id === runId) {
-      this.activeRun = this.runs[0] ?? null;
+      this.activeRun =
+        this.runs.find((item) =>
+          [
+            'queued',
+            'running',
+            'pausing',
+            'pause_requested',
+            'cancel_requested',
+            'paused'
+          ].includes(item.status)
+        ) ?? null;
     }
   }
 

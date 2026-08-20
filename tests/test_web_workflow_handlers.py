@@ -1622,7 +1622,7 @@ A single reviewed cue.
         )["takes"][0]
         self.assertEqual("warning", loud_take["audio_verification"]["status"])
 
-    def test_individual_regeneration_overwrites_the_take_within_the_same_run(self):
+    def test_targeted_generation_appends_a_new_take_without_overwriting_the_old_one(self):
         revision_id, segment_ids = self.handlers._store_generation_plan(
             self.session.id,
             [{"text": "Regenerate this sentence."}],
@@ -1659,11 +1659,16 @@ A single reviewed cue.
         self.assertEqual("completed", result["status"])
         with self.database.session() as session:
             takes = list(session.scalars(select(AudioTake).where(AudioTake.generation_run_id == run_id)).all())
-            self.assertEqual(1, len(takes))
-            self.assertEqual(take_id, takes[0].id)
-            self.assertEqual(40, takes[0].duration_ms)
-            self.assertNotEqual(original_artifact_id, takes[0].artifact_id)
-            self.assertEqual("stale", session.get(Artifact, original_artifact_id).state)
+            self.assertEqual(2, len(takes))
+            original = next(item for item in takes if item.id == take_id)
+            replacement = next(item for item in takes if item.id != take_id)
+            self.assertEqual(25, original.duration_ms)
+            self.assertEqual(original_artifact_id, original.artifact_id)
+            self.assertFalse(original.is_active)
+            self.assertEqual(40, replacement.duration_ms)
+            self.assertNotEqual(original_artifact_id, replacement.artifact_id)
+            self.assertTrue(replacement.is_active)
+            self.assertEqual("current", session.get(Artifact, original_artifact_id).state)
 
     def test_subtitle_only_export_does_not_require_tts(self):
         subtitle_session = self.sessions.create("Subtitle fixture", workflow_kind="subtitles")

@@ -6404,17 +6404,6 @@ class WorkflowHandlers:
                 )
                 with self.database.session() as session:
                     segment = session.get(GenerationSegment, segment_id)
-                    existing_take = None
-                    if selected_ids:
-                        existing_take = session.scalar(
-                            select(AudioTake)
-                            .where(
-                                AudioTake.generation_segment_id == segment_id,
-                                AudioTake.generation_run_id == run_id,
-                                AudioTake.kind == take_kind,
-                            )
-                            .order_by(AudioTake.created_at.desc())
-                        )
                     artifact = self.artifacts.register_in_session(
                         session,
                         take_path,
@@ -6458,52 +6447,25 @@ class WorkflowHandlers:
                         AudioTake.generation_segment_id == segment_id,
                         AudioTake.is_active.is_(True),
                     )
-                    if existing_take is not None:
-                        deactivate = deactivate.where(AudioTake.id != existing_take.id)
                     session.execute(
                         deactivate.values(
                             is_active=False,
                             revision=AudioTake.revision + 1,
                         ).execution_options(synchronize_session=False)
                     )
-                    if existing_take is None:
-                        session.add(
-                            AudioTake(
-                                generation_segment_id=segment_id,
-                                generation_run_id=run_id,
-                                artifact_id=artifact.id,
-                                parent_take_id=parent_take_id,
-                                kind=take_kind,
-                                status="completed",
-                                settings_hash=artifact.settings_hash,
-                                duration_ms=len(audio),
-                                is_active=True,
-                            )
+                    session.add(
+                        AudioTake(
+                            generation_segment_id=segment_id,
+                            generation_run_id=run_id,
+                            artifact_id=artifact.id,
+                            parent_take_id=parent_take_id,
+                            kind=take_kind,
+                            status="completed",
+                            settings_hash=artifact.settings_hash,
+                            duration_ms=len(audio),
+                            is_active=True,
                         )
-                    else:
-                        previous_artifact = (
-                            session.get(Artifact, existing_take.artifact_id)
-                            if existing_take.artifact_id
-                            else None
-                        )
-                        if previous_artifact is not None:
-                            previous_artifact.state = "stale"
-                            previous_artifact.metadata_json = {
-                                **dict(previous_artifact.metadata_json or {}),
-                                "superseded_by_artifact_id": artifact.id,
-                            }
-                            previous_artifact.updated_at = utcnow()
-                            self.artifacts._mark_descendants_stale(
-                                session, previous_artifact.id
-                            )
-                        existing_take.artifact_id = artifact.id
-                        existing_take.parent_take_id = parent_take_id
-                        existing_take.status = "completed"
-                        existing_take.settings_hash = artifact.settings_hash
-                        existing_take.duration_ms = len(audio)
-                        existing_take.is_active = True
-                        existing_take.revision += 1
-                        existing_take.created_at = utcnow()
+                    )
                     segment.status = "completed"
                     if (
                         verification is not None

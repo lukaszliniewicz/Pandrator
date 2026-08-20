@@ -1037,6 +1037,153 @@ test('generation drawer layout survives segment regeneration refreshes', async (
   await expect(drawer).toHaveAttribute('data-generation-layout', 'half');
 });
 
+test('selecting a take from history returns to Active mix without changing another row', async ({
+  page
+}) => {
+  await page.route('**/api/v1/events?after=*', (route) => route.abort());
+  await signIn(page);
+  const sessionId = await createGenerationPlan(page, [
+    { text: 'History take one.' },
+    { text: 'History take two.' }
+  ]);
+  const firstRunId = 'history-run-one';
+  const secondRunId = 'history-run-two';
+  const runs = [
+    {
+      id: secondRunId,
+      session_id: sessionId,
+      plan_revision_id: 'history-plan',
+      sequence_number: 2,
+      operation: 'regenerate',
+      label: 'Run 2: newer preset',
+      status: 'completed',
+      progress: 1,
+      take_count: 1
+    },
+    {
+      id: firstRunId,
+      session_id: sessionId,
+      plan_revision_id: 'history-plan',
+      sequence_number: 1,
+      operation: 'generate',
+      label: 'Run 1: original preset',
+      status: 'completed',
+      progress: 1,
+      take_count: 2
+    }
+  ];
+  const take = (id: string, generationRunId: string, isActive: boolean) => ({
+    id,
+    generation_run_id: generationRunId,
+    artifact_id: `artifact-${id}`,
+    kind: 'tts',
+    status: 'completed',
+    is_active: isActive,
+    revision: 1,
+    created_at: '2026-08-20T00:00:00Z'
+  });
+  let activeFirstTakeId = 'take-1-old';
+  const selectedTakeRequests: string[] = [];
+  await page.route(
+    `**/api/v1/sessions/${sessionId}/generation-runs`,
+    async (route) => {
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ items: runs })
+      });
+    }
+  );
+  await page.route(
+    `**/api/v1/sessions/${sessionId}/output-assemblies/latest`,
+    (route) =>
+      route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ item: null })
+      })
+  );
+  await page.route(
+    `**/api/v1/sessions/${sessionId}/generation-segments?*`,
+    async (route) => {
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          items: [
+            {
+              id: 'history-segment-one',
+              ordinal: 0,
+              node_kind: 'paragraph',
+              paragraph_break_after: false,
+              text: 'History take one.',
+              marked: false,
+              removed: false,
+              status: 'completed',
+              revision: 1,
+              takes: [
+                take(
+                  'take-1-old',
+                  firstRunId,
+                  activeFirstTakeId === 'take-1-old'
+                ),
+                take(
+                  'take-1-new',
+                  secondRunId,
+                  activeFirstTakeId === 'take-1-new'
+                )
+              ]
+            },
+            {
+              id: 'history-segment-two',
+              ordinal: 1,
+              node_kind: 'paragraph',
+              paragraph_break_after: true,
+              text: 'History take two.',
+              marked: false,
+              removed: false,
+              status: 'completed',
+              revision: 1,
+              takes: [take('take-2-old', firstRunId, true)]
+            }
+          ],
+          total: 2,
+          next_cursor: null,
+          plan_revision_id: 'history-plan'
+        })
+      });
+    }
+  );
+  await page.route(
+    '**/api/v1/generation-segments/history-segment-one/takes/*/select',
+    async (route) => {
+      const takeId = route.request().url().split('/').at(-2) ?? '';
+      selectedTakeRequests.push(takeId);
+      activeFirstTakeId = takeId;
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ revision: 2 })
+      });
+    }
+  );
+
+  await page.goto(`/sessions/${sessionId}`);
+  await page.getByRole('button', { name: 'Generation', exact: true }).click();
+  const picker = page.locator('label.run-picker select');
+  await expect(picker).toHaveValue('');
+  await picker.selectOption(firstRunId);
+  await expect(picker).toHaveValue(firstRunId);
+
+  const rows = page.locator('tbody tr');
+  const firstAudioTake = rows.nth(0).locator('td').nth(3).locator('select');
+  const secondAudioTake = rows.nth(1).locator('td').nth(3).locator('select');
+  await expect(firstAudioTake).toHaveValue('take-1-old');
+  await expect(secondAudioTake).toHaveValue('take-2-old');
+
+  await firstAudioTake.selectOption('take-1-new');
+  await expect(picker).toHaveValue('');
+  await expect(firstAudioTake).toHaveValue('take-1-new');
+  await expect(secondAudioTake).toHaveValue('take-2-old');
+  expect(selectedTakeRequests).toEqual(['take-1-new']);
+});
+
 test('generated segments return to the current filtered page after repeated regeneration', async ({
   page
 }) => {
@@ -1208,7 +1355,7 @@ test('generated segments return to the current filtered page after repeated rege
     .toBeGreaterThan(completedRefreshesBeforeFilter + 1);
   await waitForRegeneratedSegment();
   const versionPicker = page.locator('label.run-picker select');
-  await expect(versionPicker).toHaveValue(runId);
+  await expect(versionPicker).toHaveValue('');
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
     await regenerateSegment101.click();
@@ -1225,7 +1372,7 @@ test('generated segments return to the current filtered page after repeated rege
       { timeout: 20_000 }
     );
     await expect(filter).toHaveValue('completed');
-    await expect(versionPicker).toHaveValue(runId);
+    await expect(versionPicker).toHaveValue('');
     await expect(regenerateSegment101).toHaveCount(1);
     await expect(
       page.getByText('This failed segment must remain excluded.')

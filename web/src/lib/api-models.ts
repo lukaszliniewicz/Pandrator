@@ -774,6 +774,7 @@ export type GenerationRun = {
   id: string;
   session_id: string;
   plan_revision_id: string;
+  source_generation_run_id?: string | null;
   sequence_number: number;
   operation: string;
   label: string;
