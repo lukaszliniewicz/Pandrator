@@ -22,7 +22,7 @@ from cryptography.hazmat.primitives.serialization import (
     PublicFormat,
 )
 
-DEFAULT_KEY_ID = "pandrator-2026-01"
+DEFAULT_KEY_ID = "pandrator-2026-02"
 
 
 def parse_args() -> argparse.Namespace:

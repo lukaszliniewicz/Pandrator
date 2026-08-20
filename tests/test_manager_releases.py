@@ -299,6 +299,21 @@ class ReleaseTrustTests(unittest.TestCase):
         ):
             TrustStore.embedded()
 
+    def test_embedded_trust_retains_historical_and_active_keys(self):
+        embedded = TrustStore.embedded()
+
+        self.assertEqual(
+            embedded.encoded_keys,
+            {
+                "pandrator-2026-01": (
+                    "yWL/8kp9Ojz0axmk3M9umjQKXbBlOEvZ6ctbGBszPSs="
+                ),
+                "pandrator-2026-02": (
+                    "JYscD3JCYhfzJmrod0rC3x9BxNlK3Hr+4lOZmcJJhgU="
+                ),
+            },
+        )
+
 
 class ManagerUpdateDiscoveryTests(unittest.TestCase):
     def setUp(self):

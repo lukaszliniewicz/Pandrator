@@ -17,11 +17,14 @@ from packaging.version import Version
 from .. import __version__
 from .models import ReleaseEnvelope, ReleasePayload
 
-# Public half of the retained project release key. The private half is kept
-# outside the repository and is used only by the release-signing script.
+# Public halves of the retained project release keys. Private halves are kept
+# outside the repository and are used only by the release-signing script. The
+# 2026-01 key remains trusted for historical manifests; 2026-02 is the active
+# signing key from Manager 0.9.15 onward.
 # Runtime APIs never accept replacement public keys or caller-selected roots.
 EMBEDDED_RELEASE_KEYS: Mapping[str, str] = {
     "pandrator-2026-01": "yWL/8kp9Ojz0axmk3M9umjQKXbBlOEvZ6ctbGBszPSs=",
+    "pandrator-2026-02": "JYscD3JCYhfzJmrod0rC3x9BxNlK3Hr+4lOZmcJJhgU=",
 }
 
 
