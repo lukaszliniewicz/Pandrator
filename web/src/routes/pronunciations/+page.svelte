@@ -202,9 +202,20 @@
         Pronunciation library
       </h1>
       <p class="muted mt-3 max-w-2xl leading-relaxed">
-        Review phonetic spellings before Pandrator reuses them. Hyphens make
-        syllables readable here; the speech renderer removes them
-        deterministically.
+        Reviewed entries are deterministic, speech-only respellings. Pandrator
+        uses them only when <strong class="text-[var(--ink)]"
+          >Apply reviewed pronunciation-library overrides</strong
+        > is enabled in Text settings and the entry matches the session, language,
+        and TTS backend. Display and source text stay unchanged. Hyphens make syllables
+        readable here; the speech renderer removes them deterministically.
+      </p>
+      <p class="muted mt-3 max-w-2xl text-sm leading-relaxed">
+        Use <span class="font-semibold text-[var(--ink)]">Reviewed</span> for
+        entries that are ready to send to TTS;
+        <span class="font-semibold text-[var(--ink)]">Needs review</span>
+        and <span class="font-semibold text-[var(--ink)]">Disabled</span>
+        entries are not applied. After changing an entry or the setting, regenerate
+        the affected audio.
       </p>
     </div>
     <button onclick={createEntry} class="btn btn-primary"

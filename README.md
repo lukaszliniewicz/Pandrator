@@ -104,8 +104,8 @@ You can begin with one component and add the others whenever you need them.
 
 ### Voices and providers
 
-- Use local TTS services, OpenAI, Google Gemini, or a compatible custom speech
-  endpoint.
+- Use local TTS services, OpenAI, Google Gemini, native ElevenLabs, or a
+  compatible custom speech endpoint.
 - Connect local OpenAI-compatible LLM servers such as LM Studio or supported
   cloud providers.
 - Record or upload reference voices, keep transcripts with them, and preview
@@ -194,6 +194,79 @@ Otherwise, it estimates the cost from token usage and your configured rates.
 
 Optional Jina research can help resolve uncertain names and terminology. It
 uses explicit search limits and keeps a source ledger with the result.
+
+### Speech optimization and pronunciation
+
+Pandrator keeps the text shown in a session separate from the text sent to a
+speech provider. Speech-text optimization is optional: it creates a separate,
+reviewable speech revision and does not silently rewrite the source or subtitle
+text. It uses Pandrator's configured multi-provider LLM adapter; Ollama is one
+possible LLM provider, not a requirement.
+
+The **Pronunciation library** is the deterministic path for known names, terms,
+and respellings:
+
+1. Open **Pronunciations**, add the written form and a lowercase structured
+   respelling, then leave it as **Needs review** until you have checked it.
+2. Approve it as **Reviewed**, choose **Global** or one session, and optionally
+   restrict it to a language and TTS backend. `und` matches any language and `*`
+   matches any backend.
+3. In a session's **Text** settings, under **Segmentation and deterministic
+   processing**, enable **Apply reviewed pronunciation-library overrides**.
+   It is enabled by default and can be turned off independently of LLM speech
+   optimization.
+
+Only reviewed entries in the applicable scope are used. Matching is bounded,
+case-insensitive, and longest-first without overlapping replacements. For
+example, a reviewed entry `existential threat` → `egzistenszial fret` makes
+the TTS request receive `egzistenszial fret` when its language/backend and
+session scope match. This is a host-side deterministic replacement, not an
+LLM suggestion. The source/display text remains `existential threat`; change
+the entry or setting, then regenerate the affected audio to hear the result.
+If you deliberately reuse an older saved speech plan, rebuild that plan too:
+the toggle does not try to reverse respellings already stored in a historical
+speech revision.
+
+This is different from generic **Search/Replace** in a text or speech revision:
+Search/Replace edits the selected segment/text revision and therefore changes
+what is stored and displayed there. The Pronunciation library changes only the
+speech payload at synthesis time. Guarded and flexible LLM speech planning can
+propose new pronunciation entries, but proposals remain inactive until you
+review them in the library.
+
+### Mixed-language speech
+
+Most local wrappers, including XTTS, accept one language for one synthesis
+request. They do not interpret tags such as `[en]...[/en]`; those tags are sent
+literally or otherwise treated as ordinary text. True inline code switching is
+therefore still experimental.
+
+When a foreign word or phrase can be isolated as its own segment, use a
+per-segment language/voice override, or select/mark the affected segments and
+choose **Generate alternate take**. The alternate dialog can choose a provider,
+model, voice, language, speech prompt, and RVC settings where that service
+supports them. A compatible multilingual voice may be reusable across the
+selected languages; otherwise choose the provider's appropriate voice. These
+are segment- or selection-level takes, not inline language tags.
+
+A possible future surgical workflow is being evaluated: generate a
+dominant-language baseline, align the tagged foreign span, regenerate only that
+span with the same compatible voice in the other language, and splice it back
+with duration/silence matching and confidence gating for review. It is not a
+shipped feature yet, and it depends on provider voice compatibility and usable
+word or character timing.
+
+### Native ElevenLabs speech
+
+ElevenLabs is available as a first-class native service under **Providers &
+services → TTS**. Configure its ElevenLabs API key in the service settings, or
+use the supported `ELEVENLABS_API_KEY` environment-variable fallback, then
+refresh the model and voice catalogues before selecting a voice. Pandrator uses
+the [native ElevenLabs API contract](https://elevenlabs.io/docs/api-reference/text-to-speech/convert);
+it is **not** an OpenAI-compatible endpoint. An OpenAI-compatible ElevenLabs
+intermediary can still be added as a custom provider using the normal
+custom-provider settings. This integration has not been live-validated here
+without an ElevenLabs key.
 
 ## Updating, repair, and data
 
