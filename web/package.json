@@ -1,7 +1,7 @@
 {
   "name": "pandrator-web",
   "private": true,
-  "version": "0.8.12",
+  "version": "0.8.13",
   "type": "module",
   "scripts": {
     "dev": "vite",
