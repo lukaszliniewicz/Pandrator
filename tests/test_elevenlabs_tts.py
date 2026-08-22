@@ -73,6 +73,50 @@ class ElevenLabsRequestTests(unittest.TestCase):
         self.assertEqual(300, post.call_args.kwargs["timeout"])
 
     @patch("pandrator.logic.tts_handler.requests.post")
+    def test_native_request_normalizes_language_for_supporting_model(self, post):
+        post.return_value = _response({}, status_code=200)
+        settings = self._settings()
+        settings["xtts_model"] = "eleven_turbo_v2_5"
+
+        for language, expected_code in (("en-US", "en"), ("zh-cn", "zh")):
+            with self.subTest(language=language):
+                settings["language"] = language
+                tts_handler._request_elevenlabs_audio("Hello", settings)
+
+                self.assertEqual(
+                    {
+                        "text": "Hello",
+                        "model_id": "eleven_turbo_v2_5",
+                        "language_code": expected_code,
+                    },
+                    post.call_args.kwargs["json"],
+                )
+
+    @patch("pandrator.logic.tts_handler.requests.post")
+    def test_native_request_omits_language_for_multilingual_v2(self, post):
+        post.return_value = _response({}, status_code=200)
+        settings = self._settings()
+        settings["language"] = "pl-PL"
+
+        tts_handler._request_elevenlabs_audio("Cześć", settings)
+
+        self.assertEqual(
+            {"text": "Cześć", "model_id": "eleven_multilingual_v2"},
+            post.call_args.kwargs["json"],
+        )
+
+    @patch("pandrator.logic.tts_handler.requests.post")
+    def test_native_request_omits_automatic_and_invalid_language_values(self, post):
+        post.return_value = _response({}, status_code=200)
+        settings = self._settings()
+        settings["xtts_model"] = "eleven_turbo_v2_5"
+
+        for language in ("", "auto", "und", "English", "en-US-extra", None):
+            settings["language"] = language
+            tts_handler._request_elevenlabs_audio("Hello", settings)
+            self.assertNotIn("language_code", post.call_args.kwargs["json"])
+
+    @patch("pandrator.logic.tts_handler.requests.post")
     def test_native_request_can_use_environment_key_without_persisting_it(self, post):
         post.return_value = _response({}, status_code=200)
         settings = {

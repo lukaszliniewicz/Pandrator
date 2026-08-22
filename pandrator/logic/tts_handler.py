@@ -395,6 +395,10 @@ GEMINI_TTS_MODELS = [
 
 ELEVENLABS_TTS_DEFAULT_MODEL = "eleven_multilingual_v2"
 ELEVENLABS_TTS_OUTPUT_FORMAT = "mp3_44100_128"
+# ElevenLabs documents ``language_code`` as unsupported for this model. Keep
+# this an explicit exception instead of maintaining a closed allow-list: the
+# catalogue can gain models without making an otherwise valid synthesis fail.
+ELEVENLABS_MODELS_WITHOUT_LANGUAGE_CODE = frozenset({"eleven_multilingual_v2"})
 
 
 class ElevenLabsCatalogError(RuntimeError):
@@ -418,6 +422,23 @@ class ElevenLabsCatalogError(RuntimeError):
         else:
             message = f"Could not reach ElevenLabs while listing {operation}."
         super().__init__(message)
+
+
+def normalize_elevenlabs_language_code(language_value: object) -> str:
+    """Return an ElevenLabs ISO 639-1 code for a concrete locale value.
+
+    Pandrator language selectors may contain a region (for example ``en-US``)
+    while the native ElevenLabs request expects a two-letter ISO 639-1 code.
+    Keep this deliberately narrow: automatic/undetermined values and values
+    that are not a simple language or language-region tag are omitted so the
+    provider can retain its own language detection.
+    """
+    normalized = str(language_value or "").strip().lower().replace("_", "-")
+    if normalized in {"", "auto", "und"}:
+        return ""
+    if not re.fullmatch(r"[a-z]{2}(?:-[a-z]{2,8})?", normalized):
+        return ""
+    return normalized.split("-", 1)[0]
 
 GENERATION_PROMPT_MODELS_FIELD = "generation_prompt_models"
 KOBOLD_QWEN_GENERATION_PROMPT_MODELS = ["Prebuilt Voices", "qwen3-tts-customvoice"]
@@ -2676,6 +2697,15 @@ def _request_elevenlabs_audio(
         or default_output_format
         or ELEVENLABS_TTS_OUTPUT_FORMAT
     ).strip() or ELEVENLABS_TTS_OUTPUT_FORMAT
+    payload = {"text": str(text), "model_id": model_id}
+    language_code = normalize_elevenlabs_language_code(
+        tts_settings.get("language")
+    )
+    if (
+        language_code
+        and model_id.lower() not in ELEVENLABS_MODELS_WITHOUT_LANGUAGE_CODE
+    ):
+        payload["language_code"] = language_code
     base_url = _elevenlabs_base_url(
         str(selected_endpoint.get("api_base") or ELEVENLABS_API_BASE_URL)
     )
@@ -2685,7 +2715,7 @@ def _request_elevenlabs_audio(
             url,
             headers=_elevenlabs_auth_headers(api_key, audio=True),
             params={"output_format": output_format},
-            json={"text": str(text), "model_id": model_id},
+            json=payload,
             timeout=TTS_GENERATION_TIMEOUT_SECONDS,
         )
     except requests.exceptions.Timeout as error:
