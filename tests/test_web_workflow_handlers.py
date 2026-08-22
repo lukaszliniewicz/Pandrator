@@ -1941,6 +1941,8 @@ A single reviewed cue.
         seen = {}
 
         def optimize(*_args, on_batch=None, on_plan_batch=None, **kwargs):
+            seen["languages"] = list(kwargs["languages"])
+            seen["voice_languages"] = list(kwargs["voice_languages"])
             known = kwargs["known_pronunciation_resolver"](
                 "An existential threat.", "pl"
             )
@@ -1989,6 +1991,8 @@ A single reviewed cue.
             )
 
         self.assertEqual(["An egzystencjalny tret."], optimized)
+        self.assertEqual(["pl"], seen["languages"])
+        self.assertEqual(["pl"], seen["voice_languages"])
         self.assertEqual([entry["id"]], [item["id"] for item in seen["known"]])
         self.assertEqual(
             "egzystencjalny tret",
@@ -2024,6 +2028,8 @@ A single reviewed cue.
                 ),
                 "mode_requested": "guarded",
                 "model": "local/test",
+                "language": "pl",
+                "voice_language": "pl",
                 "known_pronunciations": [
                     {
                         "entry_id": entry["id"],
@@ -2058,6 +2064,95 @@ A single reviewed cue.
                 pronunciation_language="pl",
             )
         self.assertEqual(["An egzystencjalny tret."], optimized)
+
+    def test_saved_source_plan_replans_for_explicit_alternate_language_and_persists_context(self):
+        _revision_id, segment_ids = self.handlers._store_generation_plan(
+            self.session.id,
+            [{"text": "An existential threat.", "language": "en"}],
+            settings={},
+        )
+        source_hash = self.handlers._optimization_text_hash(
+            "An existential threat."
+        )
+        with self.database.session() as session:
+            segment = session.get(GenerationSegment, segment_ids[0])
+            segment.optimized_text = "A source-language saved plan."
+            segment.optimization_source_hash = source_hash
+            segment.optimization_status = "optimized"
+            segment.optimization_model = "local/test"
+            segment.speech_plan_json = {
+                "source_hash": source_hash,
+                "mode_requested": "guarded",
+                "model": "local/test",
+                "language": "en",
+                "voice_language": "en",
+                "known_pronunciations": [],
+            }
+        hydrated = {
+            "llm_tts_optimization": True,
+            "speech_optimization_mode": "guarded",
+            "speech_plan_save_proposals": False,
+            "llm_provider_configs": [],
+            "llm_default_model": "local/test",
+            "request_timeout_seconds": 30,
+            "tts_optimization_model": "local/test",
+            "service": "XTTS",
+            "language": "en",
+        }
+        seen = {}
+
+        def optimize(*_args, on_batch=None, on_plan_batch=None, **kwargs):
+            seen["languages"] = list(kwargs["languages"])
+            seen["voice_languages"] = list(kwargs["voice_languages"])
+            revised = "A freshly planned alternate sentence."
+            plan = {
+                "version": 1,
+                "source_hash": source_hash,
+                "mode_requested": "guarded",
+                "mode_used": "guarded",
+                "model": "local/test",
+                "language": "pl",
+                "voice_language": "pl",
+                "known_pronunciations": [],
+            }
+            if on_batch:
+                on_batch([(0, revised)])
+            if on_plan_batch:
+                on_plan_batch([(0, revised, plan)])
+            return [revised], OptimizationUsage()
+
+        with (
+            mock.patch.object(
+                self.handlers,
+                "_with_database_llm_settings",
+                return_value=hydrated,
+            ),
+            mock.patch(
+                "pandrator.web.tts_optimization.optimize_texts",
+                side_effect=optimize,
+            ),
+        ):
+            optimized, _model = self.handlers._optimize_generation_texts(
+                self.session.id,
+                segment_ids,
+                ["An existential threat."],
+                {
+                    **hydrated,
+                    "use_existing_speech_plans": True,
+                },
+                threading.Event(),
+                self.progress,
+                pronunciation_settings={"service": "ElevenLabs"},
+                pronunciation_language="pl",
+            )
+
+        self.assertEqual(["A freshly planned alternate sentence."], optimized)
+        self.assertEqual(["pl"], seen["languages"])
+        self.assertEqual(["pl"], seen["voice_languages"])
+        with self.database.session() as session:
+            segment = session.get(GenerationSegment, segment_ids[0])
+            self.assertEqual("pl", segment.speech_plan_json["language"])
+            self.assertEqual("pl", segment.speech_plan_json["voice_language"])
 
     def test_reviewed_pronunciation_reapplies_when_saved_speech_text_is_reused(self):
         _revision_id, segment_ids = self.handlers._store_generation_plan(

@@ -3430,7 +3430,9 @@ class WorkflowHandlers:
             or "*"
         )
         pronunciation_library = PronunciationLibrary(self.database)
-        apply_reviewed = settings.get("apply_reviewed_pronunciations", True) is not False
+        apply_reviewed = (
+            settings.get("apply_reviewed_pronunciations", True) is not False
+        )
         speech_plans: list[dict[str, Any]] = []
 
         def optimize_units(
@@ -5170,6 +5172,7 @@ class WorkflowHandlers:
         generation_run_id: str | None = None,
         pronunciation_settings: dict[str, Any] | None = None,
         pronunciation_language: str | None = None,
+        pronunciation_voice_language: str | None = None,
     ) -> tuple[list[str], str]:
         """Resolve reviewed or newly batched inline optimization for generation."""
         from .pronunciations import (
@@ -5190,6 +5193,9 @@ class WorkflowHandlers:
             pronunciation_settings if pronunciation_settings is not None else settings
         )
         pronunciation_language_override = str(pronunciation_language or "").strip()
+        pronunciation_voice_language_override = str(
+            pronunciation_voice_language or ""
+        ).strip()
         pronunciation_service = str(
             pronunciation_context.get("service")
             or pronunciation_context.get("tts_service")
@@ -5307,6 +5313,10 @@ class WorkflowHandlers:
             or resolved.get("language")
             or default_language
         )
+        if pronunciation_voice_language_override:
+            voice_language = pronunciation_voice_language_override
+        elif pronunciation_language_override:
+            voice_language = pronunciation_language_override
         backend = normalize_backend(
             resolved.get("service")
             or resolved.get("tts_service")
@@ -5340,9 +5350,8 @@ class WorkflowHandlers:
             zip(segment_ids, texts, strict=True)
         ):
             state = segment_state.get(segment_id, {})
-            language = (
-                pronunciation_language_override
-                or str(state.get("language") or default_language)
+            language = pronunciation_language_override or str(
+                state.get("language") or default_language
             )
             known = (
                 pronunciation_library.resolve(
@@ -5366,6 +5375,25 @@ class WorkflowHandlers:
                 (str(item.get("entry_id") or ""), int(item.get("entry_revision") or 0))
                 for item in list(plan.get("known_pronunciations") or [])
             )
+            persisted_language = str(plan.get("language") or "").strip()
+            persisted_voice_language = str(plan.get("voice_language") or "").strip()
+            plan_context_matches = True
+            if (
+                pronunciation_language_override
+                or pronunciation_voice_language_override
+                or persisted_language
+                or persisted_voice_language
+            ):
+                # An explicitly selected alternate language changes the speech
+                # planning contract. Legacy plans without these fields must
+                # not silently cross that boundary. When persisted fields are
+                # present, ordinary reuse also requires them to match.
+                plan_context_matches = bool(
+                    persisted_language
+                    and persisted_voice_language
+                    and persisted_language.casefold() == language.casefold()
+                    and persisted_voice_language.casefold() == voice_language.casefold()
+                )
             reusable = bool(
                 state
                 and state.get("optimized_text")
@@ -5380,11 +5408,12 @@ class WorkflowHandlers:
                         and plan.get("mode_requested") == speech_mode
                         and plan.get("model") == model_name
                         and planned_known_signature == current_known_signature
+                        and plan_context_matches
                     )
                 else:
                     reusable = (
                         not plan and state.get("optimization_model") == model_name
-            )
+                    )
             if reusable:
                 revised = str(state["optimized_text"])
                 if apply_reviewed and not structured_mode:
@@ -5453,6 +5482,8 @@ class WorkflowHandlers:
         ) -> None:
             for local_index, revised, plan in items:
                 position = pending_positions[local_index]
+                plan["language"] = pending_languages[local_index]
+                plan["voice_language"] = pending_voice_languages[local_index]
                 proposals: list[dict[str, Any]] = []
                 if bool(resolved.get("speech_plan_save_proposals", True)):
                     proposals = self._save_speech_plan_proposals(
@@ -6311,6 +6342,7 @@ class WorkflowHandlers:
             try:
                 alternate_pronunciation_settings = None
                 alternate_pronunciation_language = None
+                alternate_pronunciation_voice_language = None
                 if selected_tts_runtime is not None:
                     # Only copy provider identity and the explicit language
                     # choice into optimization.  The hydrated runtime may
@@ -6325,11 +6357,18 @@ class WorkflowHandlers:
                         )
                         if key in selected_tts_runtime
                     }
-                    alternate_pronunciation_language = str(
-                        selected_tts_override.get("language")
-                        or selected_tts_override.get("target_language")
-                        or ""
-                    ).strip() or None
+                    alternate_pronunciation_language = (
+                        str(
+                            selected_tts_override.get("language")
+                            or selected_tts_override.get("target_language")
+                            or ""
+                        ).strip()
+                        or None
+                    )
+                    alternate_pronunciation_voice_language = (
+                        str(selected_tts_override.get("voice_language") or "").strip()
+                        or None
+                    )
                 optimized, optimization_model = self._optimize_generation_texts(
                     session_id,
                     segment_ids,
@@ -6343,6 +6382,7 @@ class WorkflowHandlers:
                     generation_run_id=run_id,
                     pronunciation_settings=alternate_pronunciation_settings,
                     pronunciation_language=alternate_pronunciation_language,
+                    pronunciation_voice_language=alternate_pronunciation_voice_language,
                 )
                 optimized_by_id = dict(zip(segment_ids, optimized, strict=True))
             except Exception:
@@ -6356,9 +6396,7 @@ class WorkflowHandlers:
             "rvc", dict(settings_snapshot.get("rvc") or {})
         )
         if selected_rvc_override:
-            rvc_settings.update(
-                adapt_runtime_settings("rvc", selected_rvc_override)
-            )
+            rvc_settings.update(adapt_runtime_settings("rvc", selected_rvc_override))
         rvc_source_sequence = None
         if operation == "rvc":
             source_run_id = str(rvc_settings.get("source_run_id") or "").strip()
