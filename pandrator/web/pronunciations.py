@@ -12,7 +12,12 @@ from .database import Database
 from .models import PronunciationEntry, SessionRecord, utcnow
 
 
-RESPELLING_RE = re.compile(r"^[a-z]+(?:-[a-z]+)*(?: [a-z]+(?:-[a-z]+)*)*$")
+_COMBINING_MARK_CATEGORIES = frozenset({"Mc", "Me", "Mn"})
+_DISALLOWED_INVISIBLE_CATEGORIES = frozenset({"Cc", "Cf"})
+_RESPELLING_ERROR = (
+    "Pronunciation must use lowercase Unicode letters, internal hyphens, "
+    "and single spaces (for example, ee-mah-oh-kah)."
+)
 VALID_SCOPES = {"global", "session"}
 VALID_STATUSES = {"proposed", "reviewed", "disabled"}
 VALID_ALPHABETS = {"respelling"}
@@ -33,12 +38,42 @@ def normalize_backend(value: object) -> str:
 
 
 def validate_respelling(value: object) -> str:
-    phonetic = " ".join(str(value or "").strip().split())
-    if not RESPELLING_RE.fullmatch(phonetic):
-        raise ValueError(
-            "Pronunciation must use lowercase ASCII syllables separated by hyphens "
-            "(for example, ee-mah-oh-kah)."
-        )
+    """Validate and NFKC-normalize a controlled Unicode respelling.
+
+    A respelling consists of non-empty components separated by single ASCII
+    spaces.  Each component contains lowercase Unicode letters (category
+    ``Ll``), optional internal ASCII hyphens, and combining marks (``Mn``,
+    ``Mc``, or ``Me``) only after a lowercase letter.  NFKC canonicalizes
+    compatible/decomposed forms where Unicode defines such a form; all other
+    categories—including uppercase/titlecase/uncased letters, digits,
+    punctuation, symbols, controls, format characters, and non-ASCII
+    whitespace—are rejected.
+    """
+    raw = str(value or "")
+    if any(
+        (character.isspace() and character != " ")
+        or unicodedata.category(character) in _DISALLOWED_INVISIBLE_CATEGORIES
+        for character in raw
+    ):
+        raise ValueError(_RESPELLING_ERROR)
+    phonetic = unicodedata.normalize("NFKC", raw)
+    components = phonetic.split(" ")
+    if not phonetic or any(not component for component in components):
+        raise ValueError(_RESPELLING_ERROR)
+    for component in components:
+        syllables = component.split("-")
+        if any(not syllable for syllable in syllables):
+            raise ValueError(_RESPELLING_ERROR)
+        for syllable in syllables:
+            previous_was_letter = False
+            for character in syllable:
+                category = unicodedata.category(character)
+                if category == "Ll":
+                    previous_was_letter = True
+                elif category in _COMBINING_MARK_CATEGORIES and previous_was_letter:
+                    continue
+                else:
+                    raise ValueError(_RESPELLING_ERROR)
     return phonetic
 
 
@@ -107,7 +142,10 @@ def apply_reviewed_pronunciations(
         candidates,
         key=lambda item: (-(item[1] - item[0]), item[2], item[0]),
     ):
-        if any(start < other_end and end > other_start for other_start, other_end in occupied):
+        if any(
+            start < other_end and end > other_start
+            for other_start, other_end in occupied
+        ):
             continue
         occupied.append((start, end))
         selected.append((start, end, replacement))
@@ -163,10 +201,14 @@ class PronunciationLibrary:
             session_id = None
         status = str(values.get("status") or "reviewed").strip().lower()
         if status not in VALID_STATUSES:
-            raise ValueError("Pronunciation status must be proposed, reviewed, or disabled.")
+            raise ValueError(
+                "Pronunciation status must be proposed, reviewed, or disabled."
+            )
         alphabet = str(values.get("alphabet") or "respelling").strip().lower()
         if alphabet not in VALID_ALPHABETS:
-            raise ValueError("Only the structured respelling alphabet is currently supported.")
+            raise ValueError(
+                "Only the structured respelling alphabet is currently supported."
+            )
         notes = str(values.get("notes") or "").strip() or None
         return {
             "scope": scope,
@@ -180,7 +222,9 @@ class PronunciationLibrary:
             "status": status,
             "source": str(values.get("source") or "manual").strip().lower() or "manual",
             "notes": notes,
-            "metadata_json": dict(values.get("metadata") or values.get("metadata_json") or {}),
+            "metadata_json": dict(
+                values.get("metadata") or values.get("metadata_json") or {}
+            ),
         }
 
     @staticmethod
@@ -247,7 +291,9 @@ class PronunciationLibrary:
                 statement = statement.where(
                     PronunciationEntry.session_id == session_id.strip()
                 )
-            entries = list(session.scalars(statement.limit(max(1, min(limit, 1000)))).all())
+            entries = list(
+                session.scalars(statement.limit(max(1, min(limit, 1000)))).all()
+            )
             session_ids = {item.session_id for item in entries if item.session_id}
             session_names = (
                 {
@@ -267,9 +313,10 @@ class PronunciationLibrary:
     def create(self, values: dict[str, Any]) -> dict[str, Any]:
         normalized = self._normalized_values(values)
         with self.database.session() as session:
-            if normalized["session_id"] and session.get(
-                SessionRecord, normalized["session_id"]
-            ) is None:
+            if (
+                normalized["session_id"]
+                and session.get(SessionRecord, normalized["session_id"]) is None
+            ):
                 raise KeyError(normalized["session_id"])
             if self._duplicate(session, normalized):
                 raise ValueError(
@@ -306,9 +353,10 @@ class PronunciationLibrary:
                 "metadata": dict(entry.metadata_json or {}),
             }
             normalized = self._normalized_values({**current, **changes})
-            if normalized["session_id"] and session.get(
-                SessionRecord, normalized["session_id"]
-            ) is None:
+            if (
+                normalized["session_id"]
+                and session.get(SessionRecord, normalized["session_id"]) is None
+            ):
                 raise KeyError(normalized["session_id"])
             if self._duplicate(session, normalized, excluding_id=entry.id):
                 raise ValueError(

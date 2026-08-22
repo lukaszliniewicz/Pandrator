@@ -12,9 +12,12 @@ import subprocess
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from pandrator.logic.llm_handler import ChatCompletionResult, chat_completion_with_metadata
+from pandrator.logic.llm_handler import (
+    ChatCompletionResult,
+    chat_completion_with_metadata,
+)
 
-from .pronunciations import RESPELLING_RE, render_respelling
+from .pronunciations import render_respelling, validate_respelling
 
 
 ALLOWED_ACTIONS = {"pronounce", "verbalize", "spell_letters", "keep", "uncertain"}
@@ -53,22 +56,94 @@ REPEATED_WORD_RE = re.compile(
 )
 NUMBER_WORDS = frozenset(
     {
-        "zero", "one", "two", "three", "four", "five", "six", "seven", "eight",
-        "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen",
-        "sixteen", "seventeen", "eighteen", "nineteen", "twenty", "thirty",
-        "forty", "fifty", "sixty", "seventy", "eighty", "ninety", "hundred",
+        "zero",
+        "one",
+        "two",
+        "three",
+        "four",
+        "five",
+        "six",
+        "seven",
+        "eight",
+        "nine",
+        "ten",
+        "eleven",
+        "twelve",
+        "thirteen",
+        "fourteen",
+        "fifteen",
+        "sixteen",
+        "seventeen",
+        "eighteen",
+        "nineteen",
+        "twenty",
+        "thirty",
+        "forty",
+        "fifty",
+        "sixty",
+        "seventy",
+        "eighty",
+        "ninety",
+        "hundred",
         "thousand",
     }
 )
 COMMON_TITLECASE_WORDS = frozenset(
     {
-        "a", "an", "and", "as", "at", "but", "by", "chapter", "doctor", "for",
-        "from", "he", "her", "his", "i", "in", "it", "its", "miss", "mister",
-        "mrs", "no", "not", "of", "on", "or", "professor", "section", "she",
-        "that", "the", "their", "then", "they", "this", "to", "we", "when",
-        "where", "which", "who", "with", "you",
+        "a",
+        "an",
+        "and",
+        "as",
+        "at",
+        "but",
+        "by",
+        "chapter",
+        "doctor",
+        "for",
+        "from",
+        "he",
+        "her",
+        "his",
+        "i",
+        "in",
+        "it",
+        "its",
+        "miss",
+        "mister",
+        "mrs",
+        "no",
+        "not",
+        "of",
+        "on",
+        "or",
+        "professor",
+        "section",
+        "she",
+        "that",
+        "the",
+        "their",
+        "then",
+        "they",
+        "this",
+        "to",
+        "we",
+        "when",
+        "where",
+        "which",
+        "who",
+        "with",
+        "you",
     }
 )
+
+
+def _valid_respelling(value: object) -> bool:
+    """Use the pronunciation library's Unicode grammar for model output."""
+    try:
+        validate_respelling(value)
+    except (TypeError, ValueError):
+        return False
+    return True
 
 
 GUARDED_SYSTEM_PROMPT = """You are a constrained speech-planning component.
@@ -76,7 +151,8 @@ You receive one display sentence, its deterministic normalization result, stable
 reviewed pronunciations, and unresolved candidate spans.
 
 Decide every unresolved span exactly once. Required spans cannot use keep. Actions:
-- pronounce: lowercase ASCII syllables separated by ASCII hyphens, e.g. ee-mah-oh-kah
+- pronounce: normalized lowercase Unicode-letter respellings with internal hyphens,
+  e.g. ee-mah-oh-kah or łys-kon-syn
 - verbalize: complete words that should be spoken
 - spell_letters: letters separated by spaces
 - keep: written text is already suitable
@@ -102,7 +178,8 @@ appear in your template exactly the same number of times and with identical spel
 replace or invent placeholders; the host substitutes them later.
 
 Decide every unresolved span exactly once. Required spans cannot use keep. Actions:
-- pronounce: lowercase ASCII syllables separated by ASCII hyphens, e.g. ee-mah-oh-kah
+- pronounce: normalized lowercase Unicode-letter respellings with internal hyphens,
+  e.g. ee-mah-oh-kah or łys-kon-syn
 - verbalize: complete words to speak
 - spell_letters: letters separated by spaces
 - keep: retain the written text
@@ -132,7 +209,9 @@ class SpeechPlanResult:
 
 
 def _comparison_key(value: object) -> str:
-    return "".join(character for character in str(value or "").casefold() if character.isalnum())
+    return "".join(
+        character for character in str(value or "").casefold() if character.isalnum()
+    )
 
 
 def _bounded_pattern(value: str) -> re.Pattern[str]:
@@ -173,15 +252,27 @@ def _hunspell_unknown_words(text: str, dictionary: str) -> set[str]:
         return set()
     if completed.returncode not in (0, 1):
         return set()
-    return {line.strip().casefold() for line in completed.stdout.splitlines() if line.strip()}
+    return {
+        line.strip().casefold()
+        for line in completed.stdout.splitlines()
+        if line.strip()
+    }
 
 
 def _dictionary_for(language: str) -> str:
     base = str(language or "en").replace("-", "_")
     mapping = {
-        "en": "en_US", "en_us": "en_US", "en_gb": "en_GB", "pl": "pl_PL",
-        "de": "de_DE", "fr": "fr_FR", "es": "es_ES", "it": "it_IT",
-        "pt": "pt_PT", "pt_br": "pt_BR", "nl": "nl_NL",
+        "en": "en_US",
+        "en_us": "en_US",
+        "en_gb": "en_GB",
+        "pl": "pl_PL",
+        "de": "de_DE",
+        "fr": "fr_FR",
+        "es": "es_ES",
+        "it": "it_IT",
+        "pt": "pt_PT",
+        "pt_br": "pt_BR",
+        "nl": "nl_NL",
     }
     return mapping.get(base.lower(), base)
 
@@ -192,11 +283,17 @@ def _foreign_name_shape(word: str) -> bool:
     adjacent_vowels = bool(re.search(r"[aeiouy]{2,}", lowered))
     internal_upper = any(character.isupper() for character in word[1:])
     non_ascii = any(ord(character) > 127 for character in word)
-    return internal_upper or non_ascii or (len(word) >= 5 and vowel_count >= 3 and adjacent_vowels)
+    return (
+        internal_upper
+        or non_ascii
+        or (len(word) >= 5 and vowel_count >= 3 and adjacent_vowels)
+    )
 
 
 def _overlaps(left: dict[str, Any], right: dict[str, Any]) -> bool:
-    return int(left["start"]) < int(right["end"]) and int(right["start"]) < int(left["end"])
+    return int(left["start"]) < int(right["end"]) and int(right["start"]) < int(
+        left["end"]
+    )
 
 
 def detect_candidates(
@@ -253,8 +350,18 @@ def detect_candidates(
         detected.append(span)
 
     residuals: list[tuple[re.Pattern[str], str, list[str], bool]] = [
-        (URL_OR_EMAIL_RE, "verbalize", ["url_or_email", "survived_normalization"], True),
-        (ABBREVIATION_RE, "verbalize", ["abbreviation", "survived_normalization"], True),
+        (
+            URL_OR_EMAIL_RE,
+            "verbalize",
+            ["url_or_email", "survived_normalization"],
+            True,
+        ),
+        (
+            ABBREVIATION_RE,
+            "verbalize",
+            ["abbreviation", "survived_normalization"],
+            True,
+        ),
         (ROMAN_RE, "verbalize", ["roman_numeral", "survived_normalization"], True),
         (RESIDUAL_NUMBER_RE, "verbalize", ["number", "survived_normalization"], True),
         (ALL_CAPS_RE, "review", ["all_caps", "acronym_or_word"], False),
@@ -263,7 +370,13 @@ def detect_candidates(
     ]
     for pattern, task, signals, required in residuals:
         for match in pattern.finditer(text):
-            add(match.start(), match.end(), task=task, signals=signals, required=required)
+            add(
+                match.start(),
+                match.end(),
+                task=task,
+                signals=signals,
+                required=required,
+            )
 
     words = list(WORD_RE.finditer(text))
     unknown = _hunspell_unknown_words(text, _dictionary_for(language))
@@ -273,7 +386,9 @@ def detect_candidates(
             continue
         titlecase = word[0].isupper() and not word.isupper()
         preceding = text[: match.start()].rstrip()
-        sentence_initial = not preceding or preceding.endswith((".", "!", "?", ":", "…"))
+        sentence_initial = not preceding or preceding.endswith(
+            (".", "!", "?", ":", "…")
+        )
         signals: list[str] = []
         if word.casefold() in unknown:
             signals.append("dictionary_oov")
@@ -290,7 +405,9 @@ def detect_candidates(
             )
 
     for dash in re.finditer(r"[–-]", text):
-        previous = next((word for word in reversed(words) if word.end() <= dash.start()), None)
+        previous = next(
+            (word for word in reversed(words) if word.end() <= dash.start()), None
+        )
         following = next((word for word in words if word.start() >= dash.end()), None)
         if (
             previous
@@ -311,7 +428,9 @@ def detect_candidates(
         prefix = "P" if span["task"] == "pronunciation" else "N"
         counters[prefix] += 1
         span["id"] = f"{prefix}{counters[prefix]}"
-    for index, span in enumerate(sorted(known_spans, key=lambda item: item["start"]), start=1):
+    for index, span in enumerate(
+        sorted(known_spans, key=lambda item: item["start"]), start=1
+    ):
         span["id"] = f"K{index}"
     return (
         sorted(detected, key=lambda item: item["start"]),
@@ -324,12 +443,18 @@ def build_protected_template(
     candidates: list[dict[str, Any]],
     known: list[dict[str, Any]],
 ) -> tuple[str, dict[str, int]]:
-    entries = sorted([*candidates, *known], key=lambda item: item["start"], reverse=True)
+    entries = sorted(
+        [*candidates, *known], key=lambda item: item["start"], reverse=True
+    )
     template = text
     counts: dict[str, int] = {}
     for entry in entries:
         placeholder = "{{" + str(entry["id"]) + "}}"
-        template = template[: int(entry["start"])] + placeholder + template[int(entry["end"]) :]
+        template = (
+            template[: int(entry["start"])]
+            + placeholder
+            + template[int(entry["end"]) :]
+        )
         counts[placeholder] = counts.get(placeholder, 0) + 1
     return template, counts
 
@@ -360,7 +485,8 @@ def _lexical_tokens(text: str) -> list[str]:
     return [
         token.casefold()
         for token in TOKEN_RE.findall(str(text or ""))
-        if PLACEHOLDER_RE.fullmatch(token) or any(character.isalnum() for character in token)
+        if PLACEHOLDER_RE.fullmatch(token)
+        or any(character.isalnum() for character in token)
     ]
 
 
@@ -381,7 +507,11 @@ def validate_plan(
     errors: list[str] = []
     warnings = [parse_note] if parse_note else []
     if parsed is None:
-        return {"valid": False, "errors": ["Response was not parseable JSON."], "warnings": warnings}
+        return {
+            "valid": False,
+            "errors": ["Response was not parseable JSON."],
+            "warnings": warnings,
+        }
     if parsed.get("case_id") != case_id:
         errors.append("case_id does not match.")
     decisions = parsed.get("decisions")
@@ -421,14 +551,18 @@ def validate_plan(
             if not isinstance(spoken, str) or not spoken.strip():
                 errors.append(f"Decision {span_id} requires spoken text.")
             elif action == "pronounce":
-                if not RESPELLING_RE.fullmatch(spoken):
-                    errors.append(f"Decision {span_id} has an invalid pronunciation format.")
+                if not _valid_respelling(spoken):
+                    errors.append(
+                        f"Decision {span_id} has an invalid pronunciation format."
+                    )
                 elif _comparison_key(spoken) == _comparison_key(candidate["text"]):
                     errors.append(f"Decision {span_id} repeats the written form.")
         elif spoken not in (None, ""):
             warnings.append(f"Decision {span_id} supplied unused spoken text.")
     expected = set(candidates_by_id)
-    duplicate = [item for item, count in collections.Counter(returned).items() if count > 1]
+    duplicate = [
+        item for item, count in collections.Counter(returned).items() if count > 1
+    ]
     if duplicate:
         errors.append("Duplicate decisions: " + ", ".join(sorted(duplicate)))
     missing = expected - set(returned)
@@ -436,7 +570,9 @@ def validate_plan(
         errors.append("Missing decisions: " + ", ".join(sorted(missing)))
 
     token_lookup = {item["id"]: (index, item) for index, item in enumerate(tokens)}
-    protected_ranges = [(int(item["start"]), int(item["end"])) for item in [*candidates, *known]]
+    protected_ranges = [
+        (int(item["start"]), int(item["end"])) for item in [*candidates, *known]
+    ]
     valid_discoveries: list[dict[str, Any]] = []
     for index, raw in enumerate(discoveries):
         if not isinstance(raw, dict):
@@ -451,17 +587,27 @@ def validate_plan(
         end = int(end_entry[1]["end"])
         source_text = deterministic_text[start:end]
         if str(raw.get("source_text") or "") != source_text:
-            errors.append(f"Discovery {index} source_text does not match its token range.")
+            errors.append(
+                f"Discovery {index} source_text does not match its token range."
+            )
             continue
-        if any(start < protected_end and protected_start < end for protected_start, protected_end in protected_ranges):
-            warnings.append(f"Discovery {index} duplicates a protected span and was ignored.")
+        if any(
+            start < protected_end and protected_start < end
+            for protected_start, protected_end in protected_ranges
+        ):
+            warnings.append(
+                f"Discovery {index} duplicates a protected span and was ignored."
+            )
             continue
         action = str(raw.get("action") or "")
-        spoken = str(raw.get("spoken") or "").strip()
+        raw_spoken = str(raw.get("spoken") or "")
+        spoken = raw_spoken if action == "pronounce" else raw_spoken.strip()
         if action not in {"pronounce", "verbalize", "spell_letters"} or not spoken:
-            errors.append(f"Discovery {index} has an invalid action or empty spoken value.")
+            errors.append(
+                f"Discovery {index} has an invalid action or empty spoken value."
+            )
             continue
-        if action == "pronounce" and not RESPELLING_RE.fullmatch(spoken):
+        if action == "pronounce" and not _valid_respelling(spoken):
             errors.append(f"Discovery {index} has an invalid pronunciation format.")
             continue
         if str(raw.get("confidence") or "") not in ALLOWED_CONFIDENCE:
@@ -490,7 +636,9 @@ def validate_plan(
             expected_counts = collections.Counter(placeholder_counts)
             placeholder_integrity = actual == expected_counts
             if not placeholder_integrity:
-                errors.append("speech_template changed or invented protected placeholders.")
+                errors.append(
+                    "speech_template changed or invented protected placeholders."
+                )
             retention = difflib.SequenceMatcher(
                 a=_lexical_tokens(protected_template),
                 b=_lexical_tokens(template),
@@ -548,9 +696,7 @@ def compile_plan(
     }
     if mode == "flexible":
         speech = str(parsed.get("speech_template") or protected_template)
-        replacements = {
-            "{{" + item["id"] + "}}": _render_known(item) for item in known
-        }
+        replacements = {"{{" + item["id"] + "}}": _render_known(item) for item in known}
         replacements.update(
             {
                 "{{" + item["id"] + "}}": _render_decision(
@@ -736,8 +882,7 @@ def plan_speech_text(
             ]
             if previous_validation is not None:
                 errors = "; ".join(
-                    str(error)
-                    for error in previous_validation.get("errors", [])[:4]
+                    str(error) for error in previous_validation.get("errors", [])[:4]
                 )
                 error_suffix = f": {errors}" if errors else ""
                 messages.append(
@@ -826,7 +971,9 @@ def plan_speech_text(
             for item in known
         ]
         compiled = deterministic_text
-        for item in sorted(fallback_replacements, key=lambda value: value["start"], reverse=True):
+        for item in sorted(
+            fallback_replacements, key=lambda value: value["start"], reverse=True
+        ):
             compiled = (
                 compiled[: int(item["start"])]
                 + str(item["spoken"])

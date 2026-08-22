@@ -433,9 +433,10 @@
             ><span>Structured pronunciation</span><input
               bind:value={form.phonetic}
               required
-              pattern="[a-z]+(?:-[a-z]+)*(?: [a-z]+(?:-[a-z]+)*)*"
-              placeholder="ee-mah-oh-kah"
-            /><small>Lowercase ASCII syllables separated by hyphens.</small
+              placeholder="ee-mah-oh-kah or łys-kon-syn"
+            /><small
+              >Lowercase Unicode letters; use internal hyphens for syllables and
+              spaces between words.</small
             ></label
           >
           <div class="preview sm:col-span-2">

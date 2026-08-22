@@ -8,6 +8,7 @@ from pandrator.web.pronunciations import (
     PronunciationLibrary,
     apply_reviewed_pronunciations,
     render_respelling,
+    validate_respelling,
 )
 from pandrator.web.sessions import SessionService
 from tests.web_test_support import prepare_web_test_data_root
@@ -71,7 +72,7 @@ class PronunciationLibraryTests(unittest.TestCase):
         self.assertEqual("ihmahohkah", render_respelling(reviewed["phonetic"]))
 
     def test_respelling_format_is_strict(self):
-        with self.assertRaisesRegex(ValueError, "lowercase ASCII"):
+        with self.assertRaisesRegex(ValueError, "lowercase Unicode"):
             self.library.create(
                 {
                     "source_form": "Imaoka",
@@ -79,6 +80,52 @@ class PronunciationLibraryTests(unittest.TestCase):
                     "language": "en",
                 }
             )
+
+    def test_unicode_lowercase_respellings_normalize_and_render(self):
+        self.assertEqual("syms", validate_respelling("syms"))
+        self.assertEqual("łys-kon-syn", validate_respelling("łys-kon-syn"))
+        self.assertEqual("kołcz", validate_respelling("kołcz"))
+        self.assertEqual("é", validate_respelling("e\u0301"))
+        self.assertEqual("łyskonsyn", render_respelling("łys-kon-syn"))
+
+        entry = self.library.create(
+            {
+                "source_form": "Wisconsin",
+                "phonetic": "łys-kon-syn",
+                "language": "en",
+                "status": "reviewed",
+            }
+        )
+        resolved = self.library.resolve(
+            "Wisconsin",
+            session_id=self.first.id,
+            language="en",
+        )
+        self.assertEqual([entry["id"]], [item["id"] for item in resolved])
+        self.assertEqual(
+            "łyskonsyn", apply_reviewed_pronunciations("Wisconsin", resolved)
+        )
+
+    def test_respelling_rejects_non_lowercase_or_unsafe_separators(self):
+        invalid_values = (
+            "",
+            "Łys",
+            "łys2",
+            "łys!",
+            "łys_kon",
+            "łys--kon",
+            "-łys",
+            "łys-",
+            "łys  kon",
+            " łys",
+            "łys ",
+            "łys\tkon",
+            "łys\u200bkon",
+            "猫",
+        )
+        for value in invalid_values:
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                validate_respelling(value)
 
     def test_deterministic_application_is_bounded_longest_and_non_mutating(self):
         long_entry = self.library.create(
@@ -153,18 +200,24 @@ class PronunciationLibraryTests(unittest.TestCase):
                 backend="xtts",
             )[0]["id"],
         )
-        self.assertEqual([], self.library.resolve(
-            "The route is clear.",
-            session_id=self.first.id,
-            language="pl",
-            backend="xtts",
-        ))
-        self.assertEqual([], self.library.resolve(
-            "The route is clear.",
-            session_id=self.first.id,
-            language="en",
-            backend="chatterbox",
-        ))
+        self.assertEqual(
+            [],
+            self.library.resolve(
+                "The route is clear.",
+                session_id=self.first.id,
+                language="pl",
+                backend="xtts",
+            ),
+        )
+        self.assertEqual(
+            [],
+            self.library.resolve(
+                "The route is clear.",
+                session_id=self.first.id,
+                language="en",
+                backend="chatterbox",
+            ),
+        )
 
 
 class PronunciationApiTests(unittest.TestCase):
@@ -244,7 +297,7 @@ class PronunciationApiTests(unittest.TestCase):
             headers=self.headers,
         )
         self.assertEqual(422, response.status_code)
-        self.assertIn("lowercase ASCII", response.get_json()["error"]["message"])
+        self.assertIn("lowercase Unicode", response.get_json()["error"]["message"])
 
 
 if __name__ == "__main__":

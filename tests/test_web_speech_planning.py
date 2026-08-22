@@ -41,16 +41,15 @@ class SpeechPlanningTests(unittest.TestCase):
 
         def complete(*, messages, **_kwargs):
             payload = json.loads(
-                messages[-1]["content"].split(
-                    "Plan this single speech sentence:\n", 1
-                )[1]
+                messages[-1]["content"].split("Plan this single speech sentence:\n", 1)[
+                    1
+                ]
             )
             return json.dumps(
                 {
                     "case_id": payload["case_id"],
                     "decisions": [
-                        _decision_for(item)
-                        for item in payload["unresolved_candidates"]
+                        _decision_for(item) for item in payload["unresolved_candidates"]
                     ],
                     "discoveries": [],
                     "prosody": [],
@@ -75,9 +74,7 @@ class SpeechPlanningTests(unittest.TestCase):
         self.assertEqual("valid", result.plan["status"])
         self.assertEqual("guarded", result.plan["mode_used"])
         pronunciation = next(
-            item
-            for item in result.plan["decisions"]
-            if item["action"] == "pronounce"
+            item for item in result.plan["decisions"] if item["action"] == "pronounce"
         )
         self.assertEqual("ee-mah-oh-kah", pronunciation["spoken"])
 
@@ -86,17 +83,16 @@ class SpeechPlanningTests(unittest.TestCase):
 
         def complete(*, messages, **_kwargs):
             payload = json.loads(
-                messages[-1]["content"].split(
-                    "Plan this single speech sentence:\n", 1
-                )[1]
+                messages[-1]["content"].split("Plan this single speech sentence:\n", 1)[
+                    1
+                ]
             )
             flexible = "contextual speech-text editor" in messages[0]["content"]
             attempted_modes.append("flexible" if flexible else "guarded")
             response = {
                 "case_id": payload["case_id"],
                 "decisions": [
-                    _decision_for(item)
-                    for item in payload["unresolved_candidates"]
+                    _decision_for(item) for item in payload["unresolved_candidates"]
                 ],
                 "discoveries": [],
                 "prosody": [],
@@ -127,9 +123,9 @@ class SpeechPlanningTests(unittest.TestCase):
         def complete(*, messages, **_kwargs):
             calls.append(messages)
             payload = json.loads(
-                messages[1]["content"].split(
-                    "Plan this single speech sentence:\n", 1
-                )[1]
+                messages[1]["content"].split("Plan this single speech sentence:\n", 1)[
+                    1
+                ]
             )
             if len(calls) == 1:
                 return "{}"
@@ -137,8 +133,7 @@ class SpeechPlanningTests(unittest.TestCase):
                 {
                     "case_id": payload["case_id"],
                     "decisions": [
-                        _decision_for(item)
-                        for item in payload["unresolved_candidates"]
+                        _decision_for(item) for item in payload["unresolved_candidates"]
                     ],
                     "discoveries": [],
                     "prosody": [],
@@ -165,9 +160,9 @@ class SpeechPlanningTests(unittest.TestCase):
 
         def complete(*, messages, **_kwargs):
             payload = json.loads(
-                messages[-1]["content"].split(
-                    "Plan this single speech sentence:\n", 1
-                )[1]
+                messages[-1]["content"].split("Plan this single speech sentence:\n", 1)[
+                    1
+                ]
             )
             seen_payload.update(payload)
             return json.dumps(
@@ -211,6 +206,131 @@ class SpeechPlanningTests(unittest.TestCase):
         self.assertEqual("eemahohkah arrived.", result.text)
         self.assertEqual("entry-1", result.plan["known_pronunciations"][0]["entry_id"])
         self.assertEqual(3, result.plan["known_pronunciations"][0]["entry_revision"])
+
+    def test_unicode_pronunciation_decision_is_validated_and_compiled(self):
+        def complete(*, messages, **_kwargs):
+            payload = json.loads(
+                messages[-1]["content"].split("Plan this single speech sentence:\n", 1)[
+                    1
+                ]
+            )
+            decisions = []
+            for item in payload["unresolved_candidates"]:
+                decisions.append(
+                    {
+                        "span_id": item["id"],
+                        "action": "pronounce",
+                        "spoken": "łys-kon-syn"
+                        if item["text"] == "Imaoka"
+                        else "ee-mah-oh-kah",
+                        "confidence": "high",
+                    }
+                )
+            return json.dumps(
+                {
+                    "case_id": payload["case_id"],
+                    "decisions": decisions,
+                    "discoveries": [],
+                    "prosody": [],
+                }
+            )
+
+        result = plan_speech_text(
+            "We visited Imaoka.",
+            language="en",
+            voice_language="en",
+            mode="guarded",
+            model_name="local/test",
+            llm_settings=SimpleNamespace(),
+            completion_func=complete,
+        )
+
+        self.assertEqual("We visited łyskonsyn.", result.text)
+        self.assertEqual("valid", result.plan["status"])
+
+    def test_unicode_pronunciation_discovery_is_validated_and_compiled(self):
+        def complete(*, messages, **_kwargs):
+            payload = json.loads(
+                messages[-1]["content"].split("Plan this single speech sentence:\n", 1)[
+                    1
+                ]
+            )
+            return json.dumps(
+                {
+                    "case_id": payload["case_id"],
+                    "decisions": [],
+                    "discoveries": [
+                        {
+                            "start_token_id": "T3",
+                            "end_token_id": "T3",
+                            "source_text": "hello",
+                            "action": "pronounce",
+                            "spoken": "łys-kon-syn",
+                            "confidence": "high",
+                        }
+                    ],
+                    "prosody": [],
+                }
+            )
+
+        result = plan_speech_text(
+            "We saw hello.",
+            language="en",
+            voice_language="en",
+            mode="guarded",
+            model_name="local/test",
+            llm_settings=SimpleNamespace(),
+            completion_func=complete,
+        )
+
+        self.assertEqual("We saw łyskonsyn.", result.text)
+        self.assertEqual("valid", result.plan["status"])
+
+    def test_model_rejects_uncased_or_unsafe_pronunciation_output(self):
+        def complete(*, messages, **_kwargs):
+            payload = json.loads(
+                messages[-1]["content"].split("Plan this single speech sentence:\n", 1)[
+                    1
+                ]
+            )
+            return json.dumps(
+                {
+                    "case_id": payload["case_id"],
+                    "decisions": [
+                        {
+                            "span_id": item["id"],
+                            "action": "pronounce",
+                            "spoken": "Łys-kon-syn"
+                            if item["text"] == "Imaoka"
+                            else "łys--kon",
+                            "confidence": "high",
+                        }
+                        for item in payload["unresolved_candidates"]
+                    ],
+                    "discoveries": [],
+                    "prosody": [],
+                }
+            )
+
+        result = plan_speech_text(
+            "We visited Imaoka.",
+            language="en",
+            voice_language="en",
+            mode="guarded",
+            model_name="local/test",
+            llm_settings=SimpleNamespace(),
+            completion_func=complete,
+        )
+
+        self.assertEqual("We visited Imaoka.", result.text)
+        self.assertEqual("safe_fallback", result.plan["status"])
+        self.assertFalse(result.plan["attempts"][0]["valid"])
+        self.assertTrue(
+            any(
+                "invalid pronunciation format" in error
+                for error in result.plan["attempts"][0]["errors"]
+            )
+        )
 
 
 if __name__ == "__main__":
