@@ -1758,6 +1758,307 @@ A single reviewed cue.
             )
         self.assertEqual(["An existential threat."], optimized)
 
+    def test_selected_alternate_uses_its_pronunciation_language_and_backend(self):
+        revision_id, segment_ids = self.handlers._store_generation_plan(
+            self.session.id,
+            [{"text": "An existential threat.", "language": "en"}],
+            settings={},
+        )
+        library = PronunciationLibrary(self.database)
+        library.create(
+            {
+                "source_form": "existential threat",
+                "phonetic": "egzistenszial fret",
+                "language": "en",
+                "backend": "XTTS",
+                "status": "reviewed",
+            }
+        )
+        library.create(
+            {
+                "source_form": "existential threat",
+                "phonetic": "egzystencjalny tret",
+                "language": "pl",
+                "backend": "ElevenLabs",
+                "status": "reviewed",
+            }
+        )
+
+        with self.database.session() as session:
+            source_run = GenerationRun(
+                session_id=self.session.id,
+                plan_revision_id=revision_id,
+                sequence_number=1,
+                status="queued",
+                settings_snapshot_json={
+                    "text": {
+                        "llm_tts_optimization": False,
+                        "apply_reviewed_pronunciations": True,
+                    },
+                    "tts": {"service": "XTTS", "language": "en"},
+                },
+            )
+            alternate_run = GenerationRun(
+                session_id=self.session.id,
+                plan_revision_id=revision_id,
+                sequence_number=2,
+                status="queued",
+                settings_snapshot_json={
+                    "text": {
+                        "llm_tts_optimization": False,
+                        "apply_reviewed_pronunciations": True,
+                    },
+                    "tts": {"service": "XTTS", "language": "en"},
+                    "selected_segment_override": {
+                        "tts": {
+                            "service": "ElevenLabs",
+                            "model": "eleven_multilingual_v2",
+                            "voice": "alternate-voice",
+                            "language": "pl",
+                        }
+                    },
+                },
+            )
+            session.add_all([source_run, alternate_run])
+            session.flush()
+            source_run_id = source_run.id
+            alternate_run_id = alternate_run.id
+
+        synthesis = []
+
+        def synthesize(text, settings, **_kwargs):
+            synthesis.append((text, dict(settings)))
+            return AudioSegment.silent(duration=25)
+
+        with (
+            mock.patch.object(
+                self.handlers.tts_providers,
+                "synthesize",
+                side_effect=synthesize,
+            ),
+            mock.patch.object(
+                self.handlers,
+                "_optimize_generation_texts",
+                wraps=self.handlers._optimize_generation_texts,
+            ) as optimize,
+        ):
+            source_result = self.handlers.run_generation(
+                {"generation_run_id": source_run_id, "operation": "generate"},
+                self.progress,
+                threading.Event(),
+            )
+            alternate_result = self.handlers.run_generation(
+                {
+                    "generation_run_id": alternate_run_id,
+                    "operation": "regenerate",
+                },
+                self.progress,
+                threading.Event(),
+            )
+
+        self.assertEqual("completed", source_result["status"])
+        self.assertEqual("completed", alternate_result["status"])
+        self.assertEqual("An egzistenszial fret.", synthesis[0][0])
+        self.assertEqual("An egzystencjalny tret.", synthesis[1][0])
+        self.assertEqual("XTTS", synthesis[0][1]["service"])
+        self.assertEqual("ElevenLabs", synthesis[1][1]["service"])
+        alternate_context = optimize.call_args_list[1].kwargs[
+            "pronunciation_settings"
+        ]
+        self.assertEqual("ElevenLabs", alternate_context["service"])
+        self.assertLessEqual(
+            set(alternate_context),
+            {"service", "tts_service", "backend", "openai_audio_endpoint"},
+        )
+        self.assertNotIn("api_key", alternate_context)
+        self.assertNotIn("provider_configs", alternate_context)
+        with self.database.session() as session:
+            segment = session.get(GenerationSegment, segment_ids[0])
+            self.assertEqual("An existential threat.", segment.text)
+
+    def test_custom_alternate_pronunciation_uses_catalogue_provider_id(self):
+        _revision_id, segment_ids = self.handlers._store_generation_plan(
+            self.session.id,
+            [{"text": "An existential threat.", "language": "en"}],
+            settings={},
+        )
+        PronunciationLibrary(self.database).create(
+            {
+                "source_form": "existential threat",
+                "phonetic": "egzystencjalny tret",
+                "language": "pl",
+                "backend": "catalogue-provider",
+                "status": "reviewed",
+            }
+        )
+        optimized, _model = self.handlers._optimize_generation_texts(
+            self.session.id,
+            segment_ids,
+            ["An existential threat."],
+            {
+                "llm_tts_optimization": False,
+                "apply_reviewed_pronunciations": True,
+                "language": "en",
+                "service": "XTTS",
+            },
+            threading.Event(),
+            self.progress,
+            pronunciation_settings={
+                "service": "Custom",
+                "openai_audio_endpoint": "catalogue-provider",
+            },
+            pronunciation_language="pl",
+        )
+        self.assertEqual(["An egzystencjalny tret."], optimized)
+
+    def test_structured_alternate_pronunciation_is_protected_once(self):
+        _revision_id, segment_ids = self.handlers._store_generation_plan(
+            self.session.id,
+            [{"text": "An existential threat.", "language": "en"}],
+            settings={},
+        )
+        library = PronunciationLibrary(self.database)
+        entry = library.create(
+            {
+                "source_form": "existential threat",
+                "phonetic": "egzystencjalny tret",
+                "language": "pl",
+                "backend": "ElevenLabs",
+                "status": "reviewed",
+            }
+        )
+        hydrated = {
+            "llm_tts_optimization": True,
+            "speech_optimization_mode": "guarded",
+            "speech_plan_save_proposals": False,
+            "llm_provider_configs": [],
+            "llm_default_model": "local/test",
+            "request_timeout_seconds": 30,
+            "tts_optimization_model": "local/test",
+            "service": "XTTS",
+            "language": "en",
+        }
+        seen = {}
+
+        def optimize(*_args, on_batch=None, on_plan_batch=None, **kwargs):
+            known = kwargs["known_pronunciation_resolver"](
+                "An existential threat.", "pl"
+            )
+            seen["known"] = known
+            if on_batch:
+                on_batch([(0, "An egzystencjalny tret.")])
+            if on_plan_batch:
+                on_plan_batch(
+                    [
+                        (
+                            0,
+                            "An egzystencjalny tret.",
+                            {
+                                "version": 1,
+                                "source_hash": self.handlers._optimization_text_hash(
+                                    "An existential threat."
+                                ),
+                                "mode_requested": "guarded",
+                                "model": "local/test",
+                            },
+                        )
+                    ]
+                )
+            return ["An egzystencjalny tret."], OptimizationUsage()
+
+        with (
+            mock.patch.object(
+                self.handlers,
+                "_with_database_llm_settings",
+                return_value=hydrated,
+            ),
+            mock.patch(
+                "pandrator.web.tts_optimization.optimize_texts",
+                side_effect=optimize,
+            ),
+        ):
+            optimized, _model = self.handlers._optimize_generation_texts(
+                self.session.id,
+                segment_ids,
+                ["An existential threat."],
+                hydrated,
+                threading.Event(),
+                self.progress,
+                pronunciation_settings={"service": "ElevenLabs"},
+                pronunciation_language="pl",
+            )
+
+        self.assertEqual(["An egzystencjalny tret."], optimized)
+        self.assertEqual([entry["id"]], [item["id"] for item in seen["known"]])
+        self.assertEqual(
+            "egzystencjalny tret",
+            seen["known"][0]["phonetic"].replace("-", ""),
+        )
+
+    def test_saved_structured_alternate_plan_reuses_matching_pronunciation_context(self):
+        _revision_id, segment_ids = self.handlers._store_generation_plan(
+            self.session.id,
+            [{"text": "An existential threat.", "language": "en"}],
+            settings={},
+        )
+        entry = PronunciationLibrary(self.database).create(
+            {
+                "source_form": "existential threat",
+                "phonetic": "egzystencjalny tret",
+                "language": "pl",
+                "backend": "ElevenLabs",
+                "status": "reviewed",
+            }
+        )
+        with self.database.session() as session:
+            segment = session.get(GenerationSegment, segment_ids[0])
+            segment.optimized_text = "An egzystencjalny tret."
+            segment.optimization_source_hash = self.handlers._optimization_text_hash(
+                "An existential threat."
+            )
+            segment.optimization_status = "optimized"
+            segment.optimization_model = "local/test"
+            segment.speech_plan_json = {
+                "source_hash": self.handlers._optimization_text_hash(
+                    "An existential threat."
+                ),
+                "mode_requested": "guarded",
+                "model": "local/test",
+                "known_pronunciations": [
+                    {
+                        "entry_id": entry["id"],
+                        "entry_revision": entry["revision"],
+                    }
+                ],
+            }
+        settings = {
+            "llm_tts_optimization": True,
+            "speech_optimization_mode": "guarded",
+            "apply_reviewed_pronunciations": True,
+            "use_existing_speech_plans": True,
+            "llm_provider_configs": [],
+            "llm_default_model": "local/test",
+            "request_timeout_seconds": 30,
+            "tts_optimization_model": "local/test",
+            "service": "XTTS",
+            "language": "en",
+        }
+        with mock.patch(
+            "pandrator.web.tts_optimization.optimize_texts",
+            side_effect=AssertionError("matching alternate plan must be reused"),
+        ):
+            optimized, _model = self.handlers._optimize_generation_texts(
+                self.session.id,
+                segment_ids,
+                ["An existential threat."],
+                settings,
+                threading.Event(),
+                self.progress,
+                pronunciation_settings={"service": "ElevenLabs"},
+                pronunciation_language="pl",
+            )
+        self.assertEqual(["An egzystencjalny tret."], optimized)
+
     def test_reviewed_pronunciation_reapplies_when_saved_speech_text_is_reused(self):
         _revision_id, segment_ids = self.handlers._store_generation_plan(
             self.session.id,

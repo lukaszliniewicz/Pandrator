@@ -5168,6 +5168,8 @@ class WorkflowHandlers:
         *,
         job_id: str | None = None,
         generation_run_id: str | None = None,
+        pronunciation_settings: dict[str, Any] | None = None,
+        pronunciation_language: str | None = None,
     ) -> tuple[list[str], str]:
         """Resolve reviewed or newly batched inline optimization for generation."""
         from .pronunciations import (
@@ -5179,6 +5181,37 @@ class WorkflowHandlers:
         apply_reviewed = (
             settings.get("apply_reviewed_pronunciations", True) is not False
         )
+        # Targeted regeneration may synthesize with a selected alternate TTS
+        # runtime while retaining the immutable source-run settings.  Keep
+        # pronunciation lookup on an explicit, secret-free context so the
+        # alternate provider/language can scope reviewed entries without
+        # changing the persisted run snapshot.
+        pronunciation_context = (
+            pronunciation_settings if pronunciation_settings is not None else settings
+        )
+        pronunciation_language_override = str(pronunciation_language or "").strip()
+        pronunciation_service = str(
+            pronunciation_context.get("service")
+            or pronunciation_context.get("tts_service")
+            or pronunciation_context.get("backend")
+            or ""
+        ).strip()
+        pronunciation_endpoint = str(
+            pronunciation_context.get("openai_audio_endpoint") or ""
+        ).strip()
+        if pronunciation_endpoint and pronunciation_service.casefold().replace(
+            "-", "_"
+        ) in {
+            "custom",
+            "openai_compatible",
+            "openai_compatible_service",
+        }:
+            pronunciation_backend_value = pronunciation_endpoint
+        else:
+            pronunciation_backend_value = (
+                pronunciation_service or pronunciation_endpoint or "*"
+            )
+        pronunciation_backend = normalize_backend(pronunciation_backend_value)
         if not bool(settings.get("llm_tts_optimization")):
             pronunciation_library = PronunciationLibrary(self.database)
             default_language = str(
@@ -5187,12 +5220,6 @@ class WorkflowHandlers:
                 or settings.get("source_language")
                 or "en"
             )
-            backend = normalize_backend(
-                settings.get("service")
-                or settings.get("tts_service")
-                or settings.get("backend")
-                or "*"
-            )
             entries_by_position: dict[int, list[dict[str, Any]]] = {}
             if apply_reviewed:
                 with self.database.session() as session:
@@ -5200,14 +5227,18 @@ class WorkflowHandlers:
                         zip(segment_ids, texts, strict=True)
                     ):
                         segment = session.get(GenerationSegment, segment_id)
-                        language = str(
-                            segment.language if segment is not None else ""
-                        ).strip() or default_language
+                        language = (
+                            pronunciation_language_override
+                            or str(
+                                segment.language if segment is not None else ""
+                            ).strip()
+                            or default_language
+                        )
                         entries_by_position[position] = pronunciation_library.resolve(
                             text,
                             session_id=session_id,
                             language=language,
-                            backend=backend,
+                            backend=pronunciation_backend,
                         )
             if bool(settings.get("use_existing_speech_plans")):
                 output = list(texts)
@@ -5282,6 +5313,8 @@ class WorkflowHandlers:
             or resolved.get("backend")
             or "*"
         )
+        if pronunciation_settings is not None:
+            backend = pronunciation_backend
         pronunciation_library = PronunciationLibrary(self.database)
         output = list(texts)
         pending_texts: list[str] = []
@@ -5307,7 +5340,10 @@ class WorkflowHandlers:
             zip(segment_ids, texts, strict=True)
         ):
             state = segment_state.get(segment_id, {})
-            language = str(state.get("language") or default_language)
+            language = (
+                pronunciation_language_override
+                or str(state.get("language") or default_language)
+            )
             known = (
                 pronunciation_library.resolve(
                     text,
@@ -6273,6 +6309,27 @@ class WorkflowHandlers:
         )
         if operation != "rvc":
             try:
+                alternate_pronunciation_settings = None
+                alternate_pronunciation_language = None
+                if selected_tts_runtime is not None:
+                    # Only copy provider identity and the explicit language
+                    # choice into optimization.  The hydrated runtime may
+                    # contain API keys; it must remain confined to synthesis.
+                    alternate_pronunciation_settings = {
+                        key: deepcopy(selected_tts_runtime[key])
+                        for key in (
+                            "service",
+                            "tts_service",
+                            "backend",
+                            "openai_audio_endpoint",
+                        )
+                        if key in selected_tts_runtime
+                    }
+                    alternate_pronunciation_language = str(
+                        selected_tts_override.get("language")
+                        or selected_tts_override.get("target_language")
+                        or ""
+                    ).strip() or None
                 optimized, optimization_model = self._optimize_generation_texts(
                     session_id,
                     segment_ids,
@@ -6284,6 +6341,8 @@ class WorkflowHandlers:
                     ),
                     job_id=job_id,
                     generation_run_id=run_id,
+                    pronunciation_settings=alternate_pronunciation_settings,
+                    pronunciation_language=alternate_pronunciation_language,
                 )
                 optimized_by_id = dict(zip(segment_ids, optimized, strict=True))
             except Exception:
