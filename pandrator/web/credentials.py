@@ -52,6 +52,7 @@ TTS_SERVICE_ENVS: dict[str, str] = {
     "voxtral": "VOXTRAL_API_KEY",
     "kokoro": "KOKORO_API_KEY",
     "kobold_qwen": "KOBOLD_QWEN_API_KEY",
+    "elevenlabs": "ELEVENLABS_API_KEY",
 }
 SHARED_PROVIDER_CREDENTIALS = {"openai", "gemini", "vertex_ai"}
 AUXILIARY_CREDENTIALS: tuple[dict[str, str], ...] = (

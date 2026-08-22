@@ -11,7 +11,10 @@ class TTSProviderProfileTests(unittest.TestCase):
         self.assertEqual(len(profile_ids), len(set(profile_ids)))
         self.assertGreaterEqual(len(profiles), 15)
         for profile in profiles:
-            self.assertIn(profile["adapter"], {"openai_compatible", "generic_json"})
+            self.assertIn(
+                profile["adapter"],
+                {"openai_compatible", "generic_json", "elevenlabs_native"},
+            )
             self.assertTrue(profile["api_base"].startswith(("http://", "https://")))
             self.assertTrue(profile["speech_path"].startswith("/"))
             self.assertTrue(profile["request_fields"]["text"])

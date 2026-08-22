@@ -188,6 +188,7 @@
       api_base: candidate.api_base,
       provider: candidate.provider,
       adapter: candidate.adapter,
+      profile_id: candidate.profile_id ?? existing.profile_id,
       speech_path: candidate.speech_path,
       models_path: candidate.models_path,
       voices_path: candidate.voices_path,
@@ -635,6 +636,9 @@
                       : ''}
                   {/if}
                 </div>
+                {#if service.description}<p class="muted mt-2 text-xs">
+                    {service.description}
+                  </p>{/if}
                 <div class="mt-3 flex flex-wrap gap-2">
                   <button
                     class="btn btn-sm btn-secondary"
@@ -813,6 +817,10 @@
                 class="muted mt-1 block font-normal"
                 >Resolved at runtime from {editing.managed_service_id}; managed
                 by Pandrator Manager.</small
+              >{:else if normalizedId(editing) === 'elevenlabs'}<small
+                class="muted mt-1 block font-normal"
+                >Native ElevenLabs API. Pandrator adds the official
+                /v1/text-to-speech/{'{voice_id}'} route and xi-api-key header.</small
               >{/if}</label
           >{#if normalizedId(editing) === 'vertex_ai'}<div
               class="mt-4 grid gap-3 sm:grid-cols-2"
@@ -844,7 +852,9 @@
               suggestedEnvironment={editing.api_key_env ?? ''}
               secretLabel={normalizedId(editing) === 'vertex_ai'
                 ? 'Google service-account JSON'
-                : 'API key'}
+                : normalizedId(editing) === 'elevenlabs'
+                  ? 'ElevenLabs API key'
+                  : 'API key'}
               multiline={normalizedId(editing) === 'vertex_ai'}
             />
           </div>

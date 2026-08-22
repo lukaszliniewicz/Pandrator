@@ -1355,7 +1355,11 @@
   const ttsLanguages = $derived(
     languagesForService(
       String(selectedTtsService?.id ?? ttsService),
-      ttsVoiceDescriptors
+      ttsVoiceDescriptors,
+      {
+        modelId: ttsModel,
+        modelCatalog: selectedTtsService?.model_catalog
+      }
     )
   );
   const filteredPrebuiltVoices = $derived(

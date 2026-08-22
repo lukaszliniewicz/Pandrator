@@ -363,10 +363,12 @@ GEMINI_AUDIO_DEFAULT_VOICE = "Kore"
 VERTEX_AUDIO_DEFAULT_LOCATION = "us-central1"
 OPENAI_AUDIO_BASE_URL = "https://api.openai.com/v1"
 GEMINI_AUDIO_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
+ELEVENLABS_API_BASE_URL = "https://api.elevenlabs.io"
 
 OPENAI_SERVICE = "OpenAI"
 GEMINI_SERVICE = "Google Gemini"
 VERTEX_SERVICE = "Google Vertex AI"
+ELEVENLABS_SERVICE = "ElevenLabs"
 LEGACY_GEMINI_SERVICE = "Gemini"
 OPENAI_COMPAT_SERVICE = "Custom"
 LEGACY_OPENAI_COMPAT_SERVICE = "OpenAI-Compatible"
@@ -374,7 +376,8 @@ LEGACY_OPENAI_COMPAT_SERVICE = "OpenAI-Compatible"
 OPENAI_PROVIDER = "openai"
 GEMINI_PROVIDER = "gemini"
 VERTEX_PROVIDER = "vertex_ai"
-SUPPORTED_AUDIO_PROVIDERS = {OPENAI_PROVIDER, GEMINI_PROVIDER}
+ELEVENLABS_PROVIDER = "elevenlabs"
+SUPPORTED_AUDIO_PROVIDERS = {OPENAI_PROVIDER, GEMINI_PROVIDER, ELEVENLABS_PROVIDER}
 
 OPENAI_TTS_MODELS = [
     "gpt-4o-mini-tts",
@@ -389,6 +392,32 @@ GEMINI_TTS_MODELS = [
     "gemini-2.5-flash-tts",
     "gemini-2.5-pro-tts",
 ]
+
+ELEVENLABS_TTS_DEFAULT_MODEL = "eleven_multilingual_v2"
+ELEVENLABS_TTS_OUTPUT_FORMAT = "mp3_44100_128"
+
+
+class ElevenLabsCatalogError(RuntimeError):
+    """Safe, status-aware failure from an ElevenLabs catalogue endpoint."""
+
+    def __init__(self, operation: str, status_code: int = 0):
+        self.operation = operation
+        self.status_code = int(status_code or 0)
+        if self.status_code in {401, 403}:
+            message = f"ElevenLabs API key was rejected while listing {operation}."
+        elif self.status_code == 429:
+            message = f"ElevenLabs rate limit reached while listing {operation}."
+        elif self.status_code >= 500:
+            message = (
+                f"ElevenLabs returned HTTP {self.status_code} while listing {operation}."
+            )
+        elif self.status_code:
+            message = (
+                f"ElevenLabs returned HTTP {self.status_code} while listing {operation}."
+            )
+        else:
+            message = f"Could not reach ElevenLabs while listing {operation}."
+        super().__init__(message)
 
 GENERATION_PROMPT_MODELS_FIELD = "generation_prompt_models"
 KOBOLD_QWEN_GENERATION_PROMPT_MODELS = ["Prebuilt Voices", "qwen3-tts-customvoice"]
@@ -501,6 +530,7 @@ FIRST_CLASS_SERVICE_ORDER = [
     OPENAI_PROVIDER,
     GEMINI_PROVIDER,
     VERTEX_PROVIDER,
+    ELEVENLABS_PROVIDER,
 ]
 FIRST_CLASS_SERVICE_IDS = set(FIRST_CLASS_SERVICE_ORDER)
 FIRST_CLASS_SERVICE_NAMES = {
@@ -516,6 +546,7 @@ FIRST_CLASS_SERVICE_NAMES = {
     OPENAI_PROVIDER: OPENAI_SERVICE,
     GEMINI_PROVIDER: GEMINI_SERVICE,
     VERTEX_PROVIDER: VERTEX_SERVICE,
+    ELEVENLABS_PROVIDER: ELEVENLABS_SERVICE,
 }
 SERVICE_ID_ALIASES = {
     "voxcpm2": "voxcpm",
@@ -528,6 +559,9 @@ SERVICE_ID_ALIASES = {
     "vertex": VERTEX_PROVIDER,
     "vertex-ai": VERTEX_PROVIDER,
     "google-vertex-ai": VERTEX_PROVIDER,
+    "eleven-labs": ELEVENLABS_PROVIDER,
+    "eleven_labs": ELEVENLABS_PROVIDER,
+    "elevenlabs": ELEVENLABS_PROVIDER,
     "kobold-qwen": "kobold_qwen",
     "koboldqwen": "kobold_qwen",
     "qwen": "kobold_qwen",
@@ -537,7 +571,12 @@ SERVICE_ID_ALIASES = {
 PREBUILT_VOICE_PROVIDER_FIELD = "supports_prebuilt_voices"
 OPENAI_COMPAT_ADAPTER = "openai_compatible"
 GENERIC_JSON_ADAPTER = "generic_json"
-SUPPORTED_CUSTOM_TTS_ADAPTERS = {OPENAI_COMPAT_ADAPTER, GENERIC_JSON_ADAPTER}
+ELEVENLABS_NATIVE_ADAPTER = "elevenlabs_native"
+SUPPORTED_CUSTOM_TTS_ADAPTERS = {
+    OPENAI_COMPAT_ADAPTER,
+    GENERIC_JSON_ADAPTER,
+    ELEVENLABS_NATIVE_ADAPTER,
+}
 
 
 def _read_setting(settings, key: str, default=None):
@@ -556,6 +595,9 @@ def _normalize_custom_adapter(raw_adapter: str | None) -> str:
         "generic": GENERIC_JSON_ADAPTER,
         "json": GENERIC_JSON_ADAPTER,
         "generic_json": GENERIC_JSON_ADAPTER,
+        "elevenlabs": ELEVENLABS_NATIVE_ADAPTER,
+        "elevenlabs_native": ELEVENLABS_NATIVE_ADAPTER,
+        "eleven_labs": ELEVENLABS_NATIVE_ADAPTER,
     }
     return aliases.get(normalized, OPENAI_COMPAT_ADAPTER)
 
@@ -810,6 +852,26 @@ def _default_service_configs() -> list[dict[str, object]]:
                 GENERATION_PROMPT_MODELS_FIELD: list(GEMINI_TTS_MODELS),
                 PREBUILT_VOICE_PROVIDER_FIELD: True,
                 "pricing": copy.deepcopy(DEFAULT_TTS_PRICING),
+            },
+            {
+                "id": ELEVENLABS_PROVIDER,
+                "name": ELEVENLABS_SERVICE,
+                "description": "Native ElevenLabs text-to-speech API. Requires an ElevenLabs API key.",
+                "kind": "commercial",
+                "provider": ELEVENLABS_PROVIDER,
+                "api_base": ELEVENLABS_API_BASE_URL,
+                "api_key_env": "ELEVENLABS_API_KEY",
+                "api_key": "",
+                "is_custom": False,
+                "adapter": ELEVENLABS_NATIVE_ADAPTER,
+                "models": [ELEVENLABS_TTS_DEFAULT_MODEL],
+                "default_model": ELEVENLABS_TTS_DEFAULT_MODEL,
+                "voices": [],
+                "default_voice": "",
+                "voice_catalogues": {},
+                "voice_metadata": {},
+                "supports_prebuilt_voices": True,
+                "credential_required": True,
             },
         ]
     )
@@ -1990,6 +2052,9 @@ def _normalize_audio_provider(raw_provider: str | None) -> str:
         "google_ai": GEMINI_PROVIDER,
         "google-ai-studio": GEMINI_PROVIDER,
         "ai-studio": GEMINI_PROVIDER,
+        "eleven-labs": ELEVENLABS_PROVIDER,
+        "eleven_labs": ELEVENLABS_PROVIDER,
+        "elevenlabs": ELEVENLABS_PROVIDER,
     }
     provider = aliases.get(provider, provider)
     return provider if provider in SUPPORTED_AUDIO_PROVIDERS else ""
@@ -2005,30 +2070,41 @@ def _infer_audio_provider(
     hint = f"{name} {base_url}".lower()
     if "generativelanguage.googleapis.com" in hint or "gemini" in hint:
         return GEMINI_PROVIDER
+    if "api.elevenlabs.io" in hint or "elevenlabs" in hint or "eleven labs" in hint:
+        return ELEVENLABS_PROVIDER
     return OPENAI_PROVIDER
 
 
 def _provider_default_model(provider: str) -> str:
     if provider == GEMINI_PROVIDER:
         return GEMINI_AUDIO_DEFAULT_MODEL
+    if provider == ELEVENLABS_PROVIDER:
+        return ELEVENLABS_TTS_DEFAULT_MODEL
     return OPENAI_AUDIO_DEFAULT_MODEL
 
 
 def _provider_default_voice(provider: str) -> str:
     if provider == GEMINI_PROVIDER:
         return GEMINI_AUDIO_DEFAULT_VOICE
+    if provider == ELEVENLABS_PROVIDER:
+        return ""
     return OPENAI_AUDIO_DEFAULT_VOICE
 
 
 def _provider_model_catalog(provider: str) -> list[str]:
     if provider == GEMINI_PROVIDER:
         return list(GEMINI_TTS_MODELS)
+    if provider == ELEVENLABS_PROVIDER:
+        return [ELEVENLABS_TTS_DEFAULT_MODEL]
     return list(OPENAI_TTS_MODELS)
 
 
 def _provider_voice_catalog(provider: str, model_name: str = "") -> list[str]:
     if provider == GEMINI_PROVIDER:
         return list(GEMINI_TTS_VOICES)
+
+    if provider == ELEVENLABS_PROVIDER:
+        return []
 
     normalized_model = _normalize_model_for_provider(model_name, provider).lower()
     if normalized_model in {"tts-1", "tts-1-hd"}:
@@ -2042,6 +2118,8 @@ def _provider_for_tts_service(raw_service: str | None) -> str:
         return OPENAI_PROVIDER
     if normalized in {GEMINI_SERVICE.lower(), LEGACY_GEMINI_SERVICE.lower()}:
         return GEMINI_PROVIDER
+    if normalized == ELEVENLABS_SERVICE.lower():
+        return ELEVENLABS_PROVIDER
     return ""
 
 
@@ -2502,6 +2580,234 @@ def _configured_endpoint_auth_headers(endpoint: dict[str, object]) -> dict[str, 
     return _openai_auth_headers(explicit_key)
 
 
+def _elevenlabs_base_url(base_url: str | None = "") -> str:
+    normalized = _normalize_base_url(base_url, ELEVENLABS_API_BASE_URL)
+    if normalized.lower().endswith("/v1"):
+        normalized = normalized[:-3].rstrip("/")
+    return normalized
+
+
+def _elevenlabs_auth_headers(api_key: str, *, audio: bool = False) -> dict[str, str]:
+    normalized_key = str(api_key or "").strip()
+    headers = {"Accept": "audio/mpeg" if audio else "application/json"}
+    if normalized_key:
+        headers["xi-api-key"] = normalized_key
+    if audio:
+        headers["Content-Type"] = "application/json"
+    return headers
+
+
+def _resolve_elevenlabs_api_key(tts_settings: dict | None = None) -> str:
+    service = get_service_config(tts_settings or {}, ELEVENLABS_PROVIDER) or {}
+    key_env = str(service.get("api_key_env") or "ELEVENLABS_API_KEY").strip()
+    if key_env:
+        value = os.getenv(key_env, "").strip()
+        if value:
+            return value
+    return str(service.get("api_key") or "").strip()
+
+
+def _resolve_elevenlabs_endpoint_api_key(endpoint: dict[str, object]) -> str:
+    key_env = str(endpoint.get("api_key_env") or "").strip()
+    if key_env:
+        value = os.getenv(key_env, "").strip()
+        if value:
+            return value
+    return str(endpoint.get("api_key") or "").strip()
+
+
+def _elevenlabs_catalog_status(error: BaseException) -> int:
+    response = getattr(error, "response", None)
+    try:
+        return int(getattr(response, "status_code", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _request_elevenlabs_audio(
+    text: str,
+    tts_settings: dict,
+    *,
+    endpoint: dict[str, object] | None = None,
+) -> requests.Response:
+    """Call ElevenLabs' native text-to-speech endpoint.
+
+    ElevenLabs is deliberately kept out of the OpenAI/LiteLLM path. Its
+    request uses ``xi-api-key``, a path voice identifier, and an
+    ``output_format`` query parameter rather than an OpenAI JSON speech
+    contract.
+    """
+    service = get_service_config(tts_settings, ELEVENLABS_PROVIDER) or {}
+    selected_endpoint = endpoint or service
+    if endpoint is not None:
+        api_key = _resolve_elevenlabs_endpoint_api_key(selected_endpoint)
+    else:
+        api_key = _resolve_elevenlabs_api_key(tts_settings)
+    if not api_key:
+        raise ValueError("An ElevenLabs API key is required for speech generation.")
+
+    voice_id = str(
+        tts_settings.get("elevenlabs_voice_id")
+        or tts_settings.get("speaker")
+        or tts_settings.get("voice")
+        or selected_endpoint.get("default_voice")
+        or ""
+    ).strip()
+    if not voice_id:
+        raise ValueError("Select an ElevenLabs voice before generating speech.")
+
+    model_id = str(
+        tts_settings.get("elevenlabs_model")
+        or tts_settings.get("xtts_model")
+        or tts_settings.get("model")
+        or selected_endpoint.get("default_model")
+        or ELEVENLABS_TTS_DEFAULT_MODEL
+    ).strip()
+    request_defaults = selected_endpoint.get("request_defaults")
+    default_output_format = (
+        request_defaults.get("output_format")
+        if isinstance(request_defaults, dict)
+        else ""
+    )
+    output_format = str(
+        tts_settings.get("elevenlabs_output_format")
+        or tts_settings.get("output_format")
+        or tts_settings.get("response_format")
+        or default_output_format
+        or ELEVENLABS_TTS_OUTPUT_FORMAT
+    ).strip() or ELEVENLABS_TTS_OUTPUT_FORMAT
+    base_url = _elevenlabs_base_url(
+        str(selected_endpoint.get("api_base") or ELEVENLABS_API_BASE_URL)
+    )
+    url = f"{base_url}/v1/text-to-speech/{quote(voice_id, safe='')}"
+    try:
+        return requests.post(
+            url,
+            headers=_elevenlabs_auth_headers(api_key, audio=True),
+            params={"output_format": output_format},
+            json={"text": str(text), "model_id": model_id},
+            timeout=TTS_GENERATION_TIMEOUT_SECONDS,
+        )
+    except requests.exceptions.Timeout as error:
+        raise RuntimeError("ElevenLabs speech request timed out.") from error
+    except requests.exceptions.RequestException as error:
+        raise RuntimeError(f"ElevenLabs speech request failed: {error}") from error
+
+
+def get_elevenlabs_model_catalog(
+    base_url: str = ELEVENLABS_API_BASE_URL,
+    *,
+    api_key: str = "",
+    strict: bool = False,
+) -> list[dict[str, object]]:
+    """Fetch the currently available TTS models and authoritative languages."""
+    url = f"{_elevenlabs_base_url(base_url)}/v1/models"
+    try:
+        response = requests.get(
+            url,
+            headers=_elevenlabs_auth_headers(api_key),
+            timeout=15,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except (requests.exceptions.RequestException, ValueError) as error:
+        if strict:
+            raise ElevenLabsCatalogError(
+                "models", _elevenlabs_catalog_status(error)
+            ) from error
+        logging.warning("Could not list ElevenLabs models: %s", error)
+        return []
+
+    if not isinstance(payload, list):
+        if strict:
+            raise ElevenLabsCatalogError("models")
+        return []
+    models: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for item in payload:
+        if not isinstance(item, dict) or item.get("can_do_text_to_speech") is False:
+            continue
+        model_id = str(item.get("model_id") or "").strip()
+        if not model_id or model_id in seen:
+            continue
+        seen.add(model_id)
+        entry: dict[str, object] = {
+            "id": model_id,
+            "model_id": model_id,
+            "name": str(item.get("name") or model_id).strip(),
+        }
+        languages = item.get("languages")
+        if isinstance(languages, list):
+            authoritative_languages = []
+            for language in languages:
+                if not isinstance(language, dict):
+                    continue
+                language_id = str(language.get("language_id") or "").strip()
+                name = str(language.get("name") or "").strip()
+                if language_id:
+                    authoritative_languages.append(
+                        {"language_id": language_id, **({"name": name} if name else {})}
+                    )
+            if authoritative_languages:
+                entry["languages"] = authoritative_languages
+        description = str(item.get("description") or "").strip()
+        if description:
+            entry["description"] = description
+        models.append(entry)
+    return models
+
+
+def get_elevenlabs_voice_catalog(
+    base_url: str = ELEVENLABS_API_BASE_URL,
+    *,
+    api_key: str = "",
+    strict: bool = False,
+) -> list[dict[str, object]]:
+    """Fetch voice IDs and metadata from ElevenLabs' current v2 voices API."""
+    url = f"{_elevenlabs_base_url(base_url)}/v2/voices"
+    params: dict[str, object] = {"show_legacy": "true", "page_size": 100}
+    voices: list[dict[str, object]] = []
+    seen: set[str] = set()
+    try:
+        for _page in range(20):
+            response = requests.get(
+                url,
+                headers=_elevenlabs_auth_headers(api_key),
+                params=params,
+                timeout=15,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            if not isinstance(payload, dict):
+                if strict:
+                    raise ElevenLabsCatalogError("voices")
+                break
+            data = payload.get("voices")
+            if not isinstance(data, list):
+                if strict:
+                    raise ElevenLabsCatalogError("voices")
+                break
+            for item in data:
+                if not isinstance(item, dict):
+                    continue
+                voice_id = str(item.get("voice_id") or "").strip()
+                if not voice_id or voice_id in seen:
+                    continue
+                seen.add(voice_id)
+                voices.append(dict(item))
+            next_page = str(payload.get("next_page_token") or "").strip()
+            if not next_page:
+                break
+            params["page_token"] = next_page
+    except (requests.exceptions.RequestException, ValueError) as error:
+        if strict:
+            raise ElevenLabsCatalogError(
+                "voices", _elevenlabs_catalog_status(error)
+            ) from error
+        logging.warning("Could not list ElevenLabs voices: %s", error)
+    return voices
+
+
 def _resolve_service_api_key(
     tts_settings: dict | None, service_id: str, default_env: str
 ) -> str:
@@ -2573,6 +2879,28 @@ def check_openai_audio_connection(tts_settings: dict) -> tuple[bool, str]:
             True,
             f"Connected to endpoint '{endpoint['name']}' at configured speech route {speech_path}.",
         )
+
+    if _normalize_custom_adapter(endpoint.get("adapter")) == ELEVENLABS_NATIVE_ADAPTER:
+        api_key = _resolve_elevenlabs_endpoint_api_key(endpoint)
+        try:
+            response = requests.get(
+                f"{_elevenlabs_base_url(str(endpoint.get('base_url') or ''))}/v1/models",
+                headers=_elevenlabs_auth_headers(api_key),
+                timeout=8,
+            )
+        except requests.exceptions.RequestException as error:
+            return False, f"Could not connect to endpoint '{endpoint['name']}': {error}"
+        if response.status_code in {401, 403}:
+            return (
+                False,
+                f"Endpoint '{endpoint['name']}' rejected the configured ElevenLabs API key with status {response.status_code}.",
+            )
+        if response.status_code >= 400:
+            return (
+                False,
+                f"Endpoint '{endpoint['name']}' returned {response.status_code} when listing ElevenLabs models.",
+            )
+        return True, f"Connected to endpoint '{endpoint['name']}'."
 
     api_key = _resolve_openai_audio_api_key(endpoint)
     last_status = None
@@ -2760,6 +3088,16 @@ def get_openai_audio_models(tts_settings: dict) -> list[str]:
                 )
         return models
 
+    if _normalize_custom_adapter(endpoint.get("adapter")) == ELEVENLABS_NATIVE_ADAPTER:
+        discovered = get_elevenlabs_model_catalog(
+            str(endpoint.get("base_url") or ELEVENLABS_API_BASE_URL),
+            api_key=_resolve_elevenlabs_endpoint_api_key(endpoint),
+        )
+        return _merge_catalog_with_discovered(
+            [default_model] + list(endpoint.get("models") or []),
+            [str(item.get("id") or "") for item in discovered],
+        )
+
     models: list[str] = []
     for models_url in _configured_openai_urls(
         endpoint,
@@ -2825,6 +3163,16 @@ def get_openai_audio_voices(tts_settings: dict) -> list[str]:
                     "Could not list voices for endpoint '%s': %s", endpoint["name"], e
                 )
         return voices
+
+    if _normalize_custom_adapter(endpoint.get("adapter")) == ELEVENLABS_NATIVE_ADAPTER:
+        discovered = get_elevenlabs_voice_catalog(
+            str(endpoint.get("base_url") or ELEVENLABS_API_BASE_URL),
+            api_key=_resolve_elevenlabs_endpoint_api_key(endpoint),
+        )
+        return _merge_catalog_with_discovered(
+            [default_voice] + list(endpoint.get("voices") or []),
+            [str(item.get("voice_id") or "") for item in discovered],
+        )
 
     voices: list[str] = []
     for voices_url in _configured_openai_urls(
@@ -4808,6 +5156,9 @@ def _request_openai_compatible_audio(
     if endpoint is None:
         raise RuntimeError(error)
 
+    if _normalize_custom_adapter(endpoint.get("adapter")) == ELEVENLABS_NATIVE_ADAPTER:
+        return _request_elevenlabs_audio(text, tts_settings, endpoint=endpoint)
+
     if _normalize_custom_adapter(endpoint.get("adapter")) == GENERIC_JSON_ADAPTER:
         request_fields = endpoint.get("request_fields", {})
         if not isinstance(request_fields, dict):
@@ -5652,6 +6003,11 @@ def text_to_audio(
                 LEGACY_OPENAI_COMPAT_SERVICE,
             }:
                 response = _request_openai_compatible_audio(text, tts_settings)
+            elif str(service).strip().lower() in {
+                ELEVENLABS_SERVICE.lower(),
+                ELEVENLABS_PROVIDER,
+            }:
+                response = _request_elevenlabs_audio(text, tts_settings)
             elif service == VERTEX_SERVICE:
                 response = _request_vertex_ai_audio(text, tts_settings)
             elif service == "Silero":

@@ -218,7 +218,11 @@
   const supportedSpeechLanguages = $derived.by(() => {
     const discovered = languagesForService(
       String(selectedTtsService?.id ?? ttsSettings.service ?? ''),
-      modelVoiceDescriptors
+      modelVoiceDescriptors,
+      {
+        modelId: selectedTtsModel,
+        modelCatalog: selectedTtsService?.model_catalog
+      }
     );
     return discovered.length
       ? discovered
@@ -367,21 +371,27 @@
     );
     return Array.from(new Set(alternateVoiceIds(service, model, language)))
       .filter(Boolean)
-      .map((voice) => ({
-        ...describeVoice(
+      .map((voice) => {
+        const descriptor = describeVoice(
           service.id,
           voice,
           service.voice_metadata?.[`${model}:${voice}`]
-        ),
-        name:
-          names.get(voice.toLowerCase()) ??
-          describeVoice(service.id, voice).name
-      }));
+        );
+        return {
+          ...descriptor,
+          name: names.get(voice.toLowerCase()) ?? descriptor.name
+        };
+      });
   });
   const alternateLanguages = $derived.by(() => {
+    const model = String(alternateTts.model ?? alternateTts.xtts_model ?? '');
     const discovered = languagesForService(
       String(alternateService?.id ?? ''),
-      alternateVoices
+      alternateVoices,
+      {
+        modelId: model,
+        modelCatalog: alternateService?.model_catalog
+      }
     );
     return discovered.length
       ? discovered

@@ -107,7 +107,10 @@
     )
   );
   const languages = $derived(
-    languagesForService(service?.id ?? '', descriptors)
+    languagesForService(service?.id ?? '', descriptors, {
+      modelId: model,
+      modelCatalog: service?.model_catalog
+    })
   );
   const visibleVoices = $derived(
     descriptors.filter(

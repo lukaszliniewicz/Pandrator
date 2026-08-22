@@ -3,6 +3,7 @@ import copy
 
 OPENAI_ADAPTER = "openai_compatible"
 GENERIC_JSON_ADAPTER = "generic_json"
+ELEVENLABS_NATIVE_ADAPTER = "elevenlabs_native"
 
 
 def _openai_profile(
@@ -89,6 +90,43 @@ def _generic_profile(
     }
 
 
+def _elevenlabs_profile() -> dict:
+    return {
+        "id": "elevenlabs",
+        "profile_id": "elevenlabs-native",
+        "name": "ElevenLabs (native API)",
+        "description": (
+            "Native ElevenLabs text-to-speech API. This is not an OpenAI-compatible endpoint; "
+            "it requires an ElevenLabs API key."
+        ),
+        "source_url": "https://elevenlabs.io/docs/api-reference/text-to-speech",
+        "api_base": "https://api.elevenlabs.io",
+        "provider": "elevenlabs",
+        "adapter": ELEVENLABS_NATIVE_ADAPTER,
+        "speech_path": "/v1/text-to-speech/{voice_id}",
+        "models_path": "/v1/models",
+        "voices_path": "/v2/voices",
+        "request_fields": {
+            "text": "text",
+            "model": "model_id",
+            "voice": "voice_id",
+            "speed": "",
+            "format": "",
+        },
+        "request_defaults": {"output_format": "mp3_44100_128"},
+        "models": ["eleven_multilingual_v2"],
+        "voices": [],
+        "supports_prebuilt_voices": True,
+        "auth_mode": "xi-api-key",
+        "direct_http": True,
+        "credential_required": True,
+        "notes": (
+            "The voice ID is URL-encoded in /v1/text-to-speech/{voice_id}; models and voices "
+            "are discovered from ElevenLabs' official catalogue endpoints."
+        ),
+    }
+
+
 _VOXTRAL_RUST_VOICES = [
     "casual_female",
     "casual_male",
@@ -114,6 +152,7 @@ _VOXTRAL_RUST_VOICES = [
 
 
 TTS_PROVIDER_PROFILES = [
+    _elevenlabs_profile(),
     _openai_profile(
         "azure-openai-v1",
         "Azure OpenAI (v1 TTS)",

@@ -621,6 +621,81 @@ class SileroAdapter(LegacyTtsAdapter):
         return result
 
 
+class ElevenLabsAdapter(LegacyTtsAdapter):
+    """Adapter for ElevenLabs' native (non-OpenAI-compatible) API."""
+
+    def capabilities(
+        self,
+        service: dict[str, Any],
+    ) -> TtsCapabilities:
+        del service
+        return TtsCapabilities(dynamic_catalog=True)
+
+    def enrich_catalog(
+        self,
+        service: dict[str, Any],
+        *,
+        api_key: str = "",
+    ) -> dict[str, Any]:
+        base_url = str(
+            service.get("api_base") or tts_handler.ELEVENLABS_API_BASE_URL
+        )
+        try:
+            model_entries = tts_handler.get_elevenlabs_model_catalog(
+                base_url,
+                api_key=api_key,
+                strict=True,
+            )
+            voice_entries = tts_handler.get_elevenlabs_voice_catalog(
+                base_url,
+                api_key=api_key,
+                strict=True,
+            )
+        except tts_handler.ElevenLabsCatalogError as error:
+            raise TtsProviderError(
+                self.service_id,
+                "catalog",
+                str(error),
+                retryable=error.status_code not in {401, 403},
+            ) from error
+        configured_models = _dedupe_catalogue_values(service.get("models") or [])
+        models = _dedupe_catalogue_values(
+            configured_models
+            + [str(item.get("id") or "") for item in model_entries]
+        )
+        if not models:
+            models = [tts_handler.ELEVENLABS_TTS_DEFAULT_MODEL]
+        configured_voices = _dedupe_catalogue_values(service.get("voices") or [])
+        voices = _dedupe_catalogue_values(
+            configured_voices
+            + [str(item.get("voice_id") or "") for item in voice_entries]
+        )
+        default_model = str(service.get("default_model") or "").strip()
+        if default_model not in models:
+            default_model = models[0]
+        default_voice = str(service.get("default_voice") or "").strip()
+        if default_voice not in voices:
+            default_voice = voices[0] if voices else ""
+        catalogue = {model: list(voices) for model in models}
+        result: dict[str, Any] = {
+            "models": models,
+            "voices": voices,
+            "voice_catalogues": catalogue,
+            "voice_metadata": {
+                f"{model}:{voice_id}": item
+                for model in models
+                for item in voice_entries
+                for voice_id in [str(item.get("voice_id") or "").strip()]
+                if voice_id
+            },
+            "model_catalog": model_entries,
+            "default_model": default_model,
+        }
+        if default_voice:
+            result["default_voice"] = default_voice
+        return result
+
+
 class TtsProviderRegistry:
     """Resolve all provider operations through one typed adapter contract."""
 
@@ -637,6 +712,7 @@ class TtsProviderRegistry:
         "openai",
         "gemini",
         "vertex_ai",
+        "elevenlabs",
         "openai_compatible",
     )
 
@@ -647,6 +723,7 @@ class TtsProviderRegistry:
         self.replace(XttsAdapter("xtts"))
         self.replace(SileroAdapter("silero"))
         self.replace(KoboldQwenAdapter("kobold_qwen"))
+        self.replace(ElevenLabsAdapter(tts_handler.ELEVENLABS_PROVIDER))
 
     def register(self, adapter: TtsProviderAdapter) -> None:
         service_id = normalize_service_id(adapter.service_id)

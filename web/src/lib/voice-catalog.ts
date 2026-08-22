@@ -6,6 +6,13 @@ export type VoiceDescriptor = {
   gender: string;
 };
 
+export type ModelLanguageMetadata = {
+  id?: string;
+  languages?: readonly (
+    string | { language_id?: string; id?: string; code?: string; name?: string }
+  )[];
+};
+
 const LANGUAGE_LABELS: Record<string, string> = {
   ar: 'Arabic',
   de: 'German',
@@ -330,6 +337,26 @@ export function describeVoice(
       gender: ''
     };
   }
+  if (service === 'elevenlabs') {
+    const providerName = String(
+      metadata?.name ?? metadata?.display_name ?? ''
+    ).trim();
+    const labels = metadata?.labels;
+    const gender =
+      labels && typeof labels === 'object' && 'gender' in labels
+        ? String(labels.gender ?? '').trim()
+        : '';
+    return {
+      id: voiceId,
+      name: providerName || voiceId,
+      // ElevenLabs voices are generally multilingual and its voice labels
+      // describe accents/styles rather than a single synthesis language.
+      // Keep them selectable for every language supported by the model.
+      languageCode: '',
+      language: 'Multilingual',
+      gender
+    };
+  }
   return {
     id: voiceId,
     name: titleize(voiceId),
@@ -341,10 +368,27 @@ export function describeVoice(
 
 export function languagesForService(
   serviceId: string,
-  descriptors: VoiceDescriptor[]
+  descriptors: VoiceDescriptor[],
+  options: {
+    modelId?: string;
+    modelCatalog?: readonly ModelLanguageMetadata[];
+  } = {}
 ) {
   const service = serviceId.toLowerCase().replaceAll('-', '_');
-  const codes =
+  const model = (options.modelCatalog ?? []).find(
+    (item) =>
+      String(item.id ?? '').trim() === String(options.modelId ?? '').trim()
+  );
+  const modelLanguages = (model?.languages ?? [])
+    .map((language) =>
+      typeof language === 'string'
+        ? language
+        : String(
+            language.language_id ?? language.code ?? language.id ?? ''
+          ).trim()
+    )
+    .filter(Boolean);
+  const fallbackCodes =
     service === 'kokoro'
       ? KOKORO_LANGUAGES
       : service === 'kobold_qwen' || service.includes('qwen')
@@ -370,6 +414,7 @@ export function languagesForService(
                         .filter(Boolean)
                     )
                   );
+  const codes = modelLanguages.length ? modelLanguages : fallbackCodes;
   return Array.from(new Set(codes)).map((code) => ({
     value: code,
     label: LANGUAGE_LABELS[code] ?? code
