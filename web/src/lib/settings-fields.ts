@@ -372,6 +372,8 @@ export function settingLabel(key: string): string {
     llm_tts_optimization: 'Optimize each segment with an LLM',
     llm_tts_document_optimization:
       'Optimize and review the document before generation',
+    apply_reviewed_pronunciations:
+      'Apply reviewed pronunciation-library overrides',
     llm_tts_batch_size: 'Segments per inline JSON batch',
     llm_tts_document_batch_size: 'Segments per document JSON batch',
     tts_batch_size: 'Segments per streaming speech batch',

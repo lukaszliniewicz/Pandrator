@@ -72,6 +72,7 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "normalize_all_caps": True,
         "llm_tts_optimization": False,
         "llm_tts_document_optimization": False,
+        "apply_reviewed_pronunciations": True,
         "llm_processing_enabled": False,
         "llm_tts_batch_size": 3,
         "llm_tts_document_batch_size": 8,

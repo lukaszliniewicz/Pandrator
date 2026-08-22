@@ -198,6 +198,16 @@ class SpeechPlanningTests(unittest.TestCase):
         )
 
         self.assertEqual([], seen_payload["unresolved_candidates"])
+        self.assertEqual(
+            [
+                {
+                    "id": "K1",
+                    "text": "Imaoka",
+                    "spoken": "ee-mah-oh-kah",
+                }
+            ],
+            seen_payload["reviewed_pronunciations"],
+        )
         self.assertEqual("eemahohkah arrived.", result.text)
         self.assertEqual("entry-1", result.plan["known_pronunciations"][0]["entry_id"])
         self.assertEqual(3, result.plan["known_pronunciations"][0]["entry_revision"])

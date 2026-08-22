@@ -3357,7 +3357,11 @@ class WorkflowHandlers:
 
         from pandrator.logic.dubbing.srt_utils import compose_srt, parse_srt
 
-        from .pronunciations import PronunciationLibrary, normalize_backend
+        from .pronunciations import (
+            PronunciationLibrary,
+            apply_reviewed_pronunciations,
+            normalize_backend,
+        )
         from .tts_optimization import optimize_texts
 
         session_id = str(payload.get("session_id") or "")
@@ -3426,6 +3430,7 @@ class WorkflowHandlers:
             or "*"
         )
         pronunciation_library = PronunciationLibrary(self.database)
+        apply_reviewed = settings.get("apply_reviewed_pronunciations", True) is not False
         speech_plans: list[dict[str, Any]] = []
 
         def optimize_units(
@@ -3444,7 +3449,7 @@ class WorkflowHandlers:
                     )
                     for index, text in enumerate(source_texts)
                 }
-                if structured_mode
+                if apply_reviewed
                 else {}
             )
 
@@ -3470,7 +3475,7 @@ class WorkflowHandlers:
                     speech_plans[index] = plan
 
             try:
-                return optimize_texts(
+                optimized, usage = optimize_texts(
                     source_texts,
                     settings,
                     llm_settings,
@@ -3492,6 +3497,15 @@ class WorkflowHandlers:
                         usage_settings=settings,
                     ),
                 )
+                if apply_reviewed and not structured_mode:
+                    optimized = [
+                        apply_reviewed_pronunciations(
+                            revised,
+                            known_by_index.get(index, []),
+                        )
+                        for index, revised in enumerate(optimized)
+                    ]
+                return optimized, usage
             except Exception as error:
                 run_store.fail(agent_run.id, error)
                 raise
@@ -5156,7 +5170,45 @@ class WorkflowHandlers:
         generation_run_id: str | None = None,
     ) -> tuple[list[str], str]:
         """Resolve reviewed or newly batched inline optimization for generation."""
+        from .pronunciations import (
+            PronunciationLibrary,
+            apply_reviewed_pronunciations,
+            normalize_backend,
+        )
+
+        apply_reviewed = (
+            settings.get("apply_reviewed_pronunciations", True) is not False
+        )
         if not bool(settings.get("llm_tts_optimization")):
+            pronunciation_library = PronunciationLibrary(self.database)
+            default_language = str(
+                settings.get("language")
+                or settings.get("target_language")
+                or settings.get("source_language")
+                or "en"
+            )
+            backend = normalize_backend(
+                settings.get("service")
+                or settings.get("tts_service")
+                or settings.get("backend")
+                or "*"
+            )
+            entries_by_position: dict[int, list[dict[str, Any]]] = {}
+            if apply_reviewed:
+                with self.database.session() as session:
+                    for position, (segment_id, text) in enumerate(
+                        zip(segment_ids, texts, strict=True)
+                    ):
+                        segment = session.get(GenerationSegment, segment_id)
+                        language = str(
+                            segment.language if segment is not None else ""
+                        ).strip() or default_language
+                        entries_by_position[position] = pronunciation_library.resolve(
+                            text,
+                            session_id=session_id,
+                            language=language,
+                            backend=backend,
+                        )
             if bool(settings.get("use_existing_speech_plans")):
                 output = list(texts)
                 model_name = ""
@@ -5176,13 +5228,28 @@ class WorkflowHandlers:
                             model_name = model_name or str(
                                 segment.optimization_model or ""
                             )
+                if apply_reviewed:
+                    output = [
+                        apply_reviewed_pronunciations(
+                            revised,
+                            entries_by_position.get(position, []),
+                        )
+                        for position, revised in enumerate(output)
+                    ]
                 return output, model_name
+            if apply_reviewed:
+                return [
+                    apply_reviewed_pronunciations(
+                        text,
+                        entries_by_position.get(position, []),
+                    )
+                    for position, text in enumerate(texts)
+                ], ""
             return list(texts), ""
 
         from copy import deepcopy
         from types import SimpleNamespace
 
-        from .pronunciations import PronunciationLibrary, normalize_backend
         from .tts_optimization import optimize_texts
 
         resolved = self._with_database_llm_settings(dict(settings), "tts_optimization")
@@ -5248,7 +5315,7 @@ class WorkflowHandlers:
                     language=language,
                     backend=backend,
                 )
-                if structured_mode
+                if apply_reviewed
                 else []
             )
             known_by_position[position] = known
@@ -5281,9 +5348,15 @@ class WorkflowHandlers:
                 else:
                     reusable = (
                         not plan and state.get("optimization_model") == model_name
-                    )
+            )
             if reusable:
-                output[position] = str(state["optimized_text"])
+                revised = str(state["optimized_text"])
+                if apply_reviewed and not structured_mode:
+                    revised = apply_reviewed_pronunciations(
+                        revised,
+                        known_by_position.get(position, []),
+                    )
+                output[position] = revised
                 continue
             pending_positions.append(position)
             pending_texts.append(text)
@@ -5307,6 +5380,11 @@ class WorkflowHandlers:
             with self.database.session() as session:
                 for local_index, revised in items:
                     position = pending_positions[local_index]
+                    if apply_reviewed and not structured_mode:
+                        revised = apply_reviewed_pronunciations(
+                            revised,
+                            known_by_position.get(position, []),
+                        )
                     output[position] = revised
                     segment = session.get(GenerationSegment, segment_ids[position])
                     if segment is None:
@@ -5389,7 +5467,13 @@ class WorkflowHandlers:
                         segment.updated_at = utcnow()
             raise
         for local_index, revised in enumerate(optimized):
-            output[pending_positions[local_index]] = revised
+            position = pending_positions[local_index]
+            if apply_reviewed and not structured_mode:
+                revised = apply_reviewed_pronunciations(
+                    revised,
+                    known_by_position.get(position, []),
+                )
+            output[position] = revised
         self._record_usage(
             session_id,
             "tts_optimization",
@@ -5965,6 +6049,9 @@ class WorkflowHandlers:
         snapshot["text"] = {
             **dict(snapshot.get("text") or {}),
             "llm_tts_optimization": bool(settings.get("llm_tts_optimization")),
+            "apply_reviewed_pronunciations": settings.get(
+                "apply_reviewed_pronunciations", True
+            ),
             "use_existing_speech_plans": source_artifact.role == "tts_optimized",
         }
         snapshot["source_artifact_id"] = source_artifact.id

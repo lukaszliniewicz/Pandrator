@@ -46,6 +46,7 @@
       'normalize_all_caps',
       'llm_tts_document_optimization',
       'llm_tts_optimization',
+      'apply_reviewed_pronunciations',
       'llm_tts_document_batch_size',
       'llm_tts_batch_size'
     ],
@@ -324,7 +325,8 @@
             'max_sentence_length',
             'enable_sentence_appending',
             'enable_nemo_normalization',
-            'normalize_all_caps'
+            'normalize_all_caps',
+            'apply_reviewed_pronunciations'
           ].includes(key)
       )
   );
@@ -567,6 +569,11 @@
                     >Session override</span
                   >{:else}<span class="muted mt-1 block text-[.65rem]"
                     >Inherited</span
+                  >{/if}{#if key === 'apply_reviewed_pronunciations'}<span
+                    class="muted mt-2 block text-[.68rem] leading-relaxed"
+                    >Applies reviewed entries from the Pronunciation Library
+                    directly to TTS text, even when LLM speech planning is off.
+                    Display text stays unchanged.</span
                   >{/if}
               </div>{/each}
           </div>
@@ -583,7 +590,9 @@
                 Guarded mode asks for typed decisions over stable spans;
                 flexible mode may revise the complete speech sentence behind
                 protected placeholders. Both preserve display text and validate
-                the result before synthesis.
+                the result before synthesis. Reviewed pronunciation entries are
+                applied by the deterministic setting above, with or without an
+                LLM.
               </span>
             </span>
             <ChevronDown class="settings-chevron muted mt-0.5" size={16} />

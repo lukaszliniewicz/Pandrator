@@ -23,6 +23,7 @@ from pandrator.web.credentials import (
 )
 from pandrator.web.jobs import JobQueue
 from pandrator.web.models import AppSetting, Artifact, ArtifactEdge, AudioTake, GenerationPlan, GenerationPlanRevision, GenerationRun, GenerationSegment, OutputAssembly, PronunciationEntry, SessionRecord, SessionSetting, SessionStageSelection, UsageEvent
+from pandrator.web.pronunciations import PronunciationLibrary
 from pandrator.web.sessions import SessionService
 from pandrator.web.tts_providers import TtsBatchResult, TtsCapabilities
 from pandrator.web.workflow_handlers import (
@@ -1655,6 +1656,150 @@ A single reviewed cue.
             self.assertEqual(segment.text, "Chapter 3.")
             self.assertEqual(segment.optimized_text, "Chapter three.")
             self.assertEqual(segment.optimization_status, "optimized")
+
+    def test_reviewed_pronunciation_applies_without_llm_and_reaches_tts(self):
+        revision_id, segment_ids = self.handlers._store_generation_plan(
+            self.session.id,
+            [{"text": "An existential threat.", "language": "en"}],
+            settings={},
+        )
+        PronunciationLibrary(self.database).create(
+            {
+                "source_form": "existential threat",
+                "phonetic": "egzistenszial fret",
+                "language": "en",
+                "status": "reviewed",
+            }
+        )
+        with mock.patch(
+            "pandrator.web.tts_optimization.optimize_texts",
+            side_effect=AssertionError("the dictionary-only path must not call an LLM"),
+        ):
+            optimized, model = self.handlers._optimize_generation_texts(
+                self.session.id,
+                segment_ids,
+                ["An existential threat."],
+                {
+                    "llm_tts_optimization": False,
+                    "apply_reviewed_pronunciations": True,
+                    "language": "en",
+                    "service": "XTTS",
+                },
+                threading.Event(),
+                self.progress,
+            )
+        self.assertEqual(["An egzistenszial fret."], optimized)
+        self.assertEqual("", model)
+        with self.database.session() as session:
+            self.assertEqual(
+                "An existential threat.",
+                session.get(GenerationSegment, segment_ids[0]).text,
+            )
+
+        with self.database.session() as session:
+            run = GenerationRun(
+                session_id=self.session.id,
+                plan_revision_id=revision_id,
+                status="queued",
+                settings_snapshot_json={
+                    "text": {
+                        "llm_tts_optimization": False,
+                        "apply_reviewed_pronunciations": True,
+                    },
+                    "tts": {"service": "XTTS", "language": "en"},
+                },
+            )
+            session.add(run)
+            session.flush()
+            run_id = run.id
+        with mock.patch.object(
+            self.handlers.tts_providers,
+            "synthesize",
+            return_value=AudioSegment.silent(duration=25),
+        ) as synthesize:
+            result = self.handlers.run_generation(
+                {"generation_run_id": run_id, "operation": "generate"},
+                self.progress,
+                threading.Event(),
+            )
+        self.assertEqual("completed", result["status"])
+        self.assertEqual("An egzistenszial fret.", synthesize.call_args.args[0])
+
+    def test_reviewed_pronunciation_toggle_off_leaves_tts_text_untouched(self):
+        _revision_id, segment_ids = self.handlers._store_generation_plan(
+            self.session.id,
+            [{"text": "An existential threat.", "language": "en"}],
+            settings={},
+        )
+        PronunciationLibrary(self.database).create(
+            {
+                "source_form": "existential threat",
+                "phonetic": "egzistenszial fret",
+                "language": "en",
+                "status": "reviewed",
+            }
+        )
+        with mock.patch(
+            "pandrator.web.tts_optimization.optimize_texts",
+            side_effect=AssertionError("the dictionary-only path must not call an LLM"),
+        ):
+            optimized, _model = self.handlers._optimize_generation_texts(
+                self.session.id,
+                segment_ids,
+                ["An existential threat."],
+                {
+                    "llm_tts_optimization": False,
+                    "apply_reviewed_pronunciations": False,
+                    "language": "en",
+                    "service": "XTTS",
+                },
+                threading.Event(),
+                self.progress,
+            )
+        self.assertEqual(["An existential threat."], optimized)
+
+    def test_reviewed_pronunciation_reapplies_when_saved_speech_text_is_reused(self):
+        _revision_id, segment_ids = self.handlers._store_generation_plan(
+            self.session.id,
+            [{"text": "An existential threat.", "language": "en"}],
+            settings={},
+        )
+        PronunciationLibrary(self.database).create(
+            {
+                "source_form": "existential threat",
+                "phonetic": "egzistenszial fret",
+                "language": "en",
+                "status": "reviewed",
+            }
+        )
+        with self.database.session() as session:
+            segment = session.get(GenerationSegment, segment_ids[0])
+            segment.optimized_text = "An existential threat."
+            segment.optimization_source_hash = self.handlers._optimization_text_hash(
+                "An existential threat."
+            )
+            segment.optimization_status = "optimized"
+            segment.optimization_model = "local/test"
+        settings = {
+            "llm_tts_optimization": False,
+            "apply_reviewed_pronunciations": True,
+            "use_existing_speech_plans": True,
+            "language": "en",
+            "service": "XTTS",
+        }
+        with mock.patch(
+            "pandrator.web.tts_optimization.optimize_texts",
+            side_effect=AssertionError("saved-plan reuse must not call an LLM"),
+        ):
+            optimized, _model = self.handlers._optimize_generation_texts(
+                self.session.id,
+                segment_ids,
+                ["An existential threat."],
+                settings,
+                threading.Event(),
+                self.progress,
+            )
+        self.assertEqual(["An egzistenszial fret."], optimized)
 
     def test_structured_speech_plan_is_persisted_and_pronunciation_stays_proposed(self):
         _revision_id, segment_ids = self.handlers._store_generation_plan(

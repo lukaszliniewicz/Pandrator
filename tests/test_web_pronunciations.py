@@ -4,7 +4,11 @@ import unittest
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.database import Database
-from pandrator.web.pronunciations import PronunciationLibrary, render_respelling
+from pandrator.web.pronunciations import (
+    PronunciationLibrary,
+    apply_reviewed_pronunciations,
+    render_respelling,
+)
 from pandrator.web.sessions import SessionService
 from tests.web_test_support import prepare_web_test_data_root
 
@@ -75,6 +79,92 @@ class PronunciationLibraryTests(unittest.TestCase):
                     "language": "en",
                 }
             )
+
+    def test_deterministic_application_is_bounded_longest_and_non_mutating(self):
+        long_entry = self.library.create(
+            {
+                "source_form": "existential threat",
+                "phonetic": "egzistenszial fret",
+                "language": "en",
+                "status": "reviewed",
+            }
+        )
+        short_entry = self.library.create(
+            {
+                "source_form": "threat",
+                "phonetic": "fret",
+                "language": "en",
+                "status": "reviewed",
+            }
+        )
+        entries = self.library.resolve(
+            "An existential threat, but not threats.",
+            session_id=self.first.id,
+            language="en",
+        )
+
+        self.assertEqual(
+            [long_entry["id"], short_entry["id"]],
+            [item["id"] for item in entries],
+        )
+        source = "An existential threat, but not threats."
+        self.assertEqual(
+            "An egzistenszial fret, but not threats.",
+            apply_reviewed_pronunciations(source, entries),
+        )
+        self.assertEqual(source, "An existential threat, but not threats.")
+
+    def test_deterministic_application_respects_language_backend_and_scope(self):
+        global_entry = self.library.create(
+            {
+                "source_form": "route",
+                "phonetic": "root",
+                "language": "en",
+                "backend": "xtts",
+                "status": "reviewed",
+            }
+        )
+        session_entry = self.library.create(
+            {
+                "source_form": "route",
+                "phonetic": "rowt",
+                "language": "en",
+                "backend": "xtts",
+                "scope": "session",
+                "session_id": self.first.id,
+                "status": "reviewed",
+            }
+        )
+        self.assertEqual(
+            session_entry["id"],
+            self.library.resolve(
+                "The route is clear.",
+                session_id=self.first.id,
+                language="en",
+                backend="xtts",
+            )[0]["id"],
+        )
+        self.assertEqual(
+            global_entry["id"],
+            self.library.resolve(
+                "The route is clear.",
+                session_id=self.second.id,
+                language="en",
+                backend="xtts",
+            )[0]["id"],
+        )
+        self.assertEqual([], self.library.resolve(
+            "The route is clear.",
+            session_id=self.first.id,
+            language="pl",
+            backend="xtts",
+        ))
+        self.assertEqual([], self.library.resolve(
+            "The route is clear.",
+            session_id=self.first.id,
+            language="en",
+            backend="chatterbox",
+        ))
 
 
 class PronunciationApiTests(unittest.TestCase):

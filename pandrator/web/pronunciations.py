@@ -47,11 +47,74 @@ def render_respelling(value: object) -> str:
     return validate_respelling(value).replace("-", "")
 
 
+def _bounded_pattern(term: str) -> str:
+    """Build a case-insensitive, word-bounded pattern for a written form.
+
+    Written forms are stored with collapsed whitespace, but speech text may
+    contain line breaks or repeated spaces.  Treating whitespace runs as one
+    separator keeps lookup bounded without making the library mutate source
+    text before it reaches the TTS provider.
+    """
+    normalized = " ".join(str(term or "").split())
+    words = normalized.split(" ") if normalized else []
+    if not words:
+        return r"(?!)"
+    escaped = r"\s+".join(re.escape(word) for word in words)
+    prefix = r"(?<!\w)" if words[0][0].isalnum() else ""
+    suffix = r"(?!\w)" if words[-1][-1].isalnum() else ""
+    return prefix + escaped + suffix
+
+
 def _bounded_contains(text: str, term: str) -> bool:
-    escaped = re.escape(term)
-    prefix = r"(?<!\w)" if term and term[0].isalnum() else ""
-    suffix = r"(?!\w)" if term and term[-1].isalnum() else ""
-    return re.search(prefix + escaped + suffix, text, flags=re.IGNORECASE) is not None
+    return re.search(_bounded_pattern(term), text, flags=re.IGNORECASE) is not None
+
+
+def apply_reviewed_pronunciations(
+    text: str,
+    entries: list[dict[str, Any]],
+) -> str:
+    """Replace selected library entries with their controlled respellings.
+
+    ``resolve`` has already applied scope/language/backend precedence.  This
+    second, pure pass deliberately works on payloads so callers can use it
+    without holding ORM objects or mutating library records.  Matches are
+    selected longest-first and never overlap; punctuation and all unmatched
+    source text are preserved exactly.
+    """
+    if not text or not entries:
+        return text
+
+    candidates: list[tuple[int, int, int, str]] = []
+    for rank, entry in enumerate(entries):
+        source_form = str(entry.get("source_form") or "").strip()
+        if not source_form:
+            continue
+        phonetic = entry.get("phonetic")
+        try:
+            replacement = render_respelling(phonetic)
+        except ValueError:
+            # Database-created entries are validated, but an imported or old
+            # payload must never make synthesis fail unexpectedly.
+            continue
+        for match in re.finditer(
+            _bounded_pattern(source_form), text, flags=re.IGNORECASE
+        ):
+            candidates.append((match.start(), match.end(), rank, replacement))
+
+    selected: list[tuple[int, int, str]] = []
+    occupied: list[tuple[int, int]] = []
+    for start, end, rank, replacement in sorted(
+        candidates,
+        key=lambda item: (-(item[1] - item[0]), item[2], item[0]),
+    ):
+        if any(start < other_end and end > other_start for other_start, other_end in occupied):
+            continue
+        occupied.append((start, end))
+        selected.append((start, end, replacement))
+
+    for start, end, replacement in sorted(selected, reverse=True):
+        text = text[:start] + replacement + text[end:]
+    return text
 
 
 class PronunciationLibrary:
@@ -311,13 +374,23 @@ class PronunciationLibrary:
             ),
             reverse=True,
         )
+        # Pick the highest-precedence entry for each normalized written form
+        # first.  A session entry therefore overrides its global counterpart,
+        # while genuinely different forms still participate in longest-match
+        # selection below.
         chosen: dict[str, PronunciationEntry] = {}
         for entry in ranked:
             if entry.normalized_form in chosen:
                 continue
             if _bounded_contains(text, entry.source_form):
                 chosen[entry.normalized_form] = entry
-        return [self.payload(item) for item in chosen.values()]
+        return [
+            self.payload(item)
+            for item in sorted(
+                chosen.values(),
+                key=lambda item: (-len(item.normalized_form), item.normalized_form),
+            )
+        ]
 
     def propose(
         self,
