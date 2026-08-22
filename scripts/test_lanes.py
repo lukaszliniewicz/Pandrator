@@ -32,6 +32,7 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_dubbing_speech_blocks_integration.py",
         "tests/test_dubbing_subtitle_logic.py",
         "tests/test_dubbing_transcription.py",
+        "tests/test_elevenlabs_tts.py",
         "tests/test_guided_dubbing_workflow.py",
         "tests/test_llm_handler.py",
         "tests/test_nemo_normalizer.py",
@@ -47,6 +48,7 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_tts_handler.py",
         "tests/test_tts_provider_profiles.py",
         "tests/test_version.py",
+        "tests/test_xtts_trainer_registry.py",
     ),
     "installer-serial": (
         "tests/test_installer_architecture.py",
@@ -128,6 +130,8 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_web_subtitle_review.py",
         "tests/test_web_supervisor.py",
         "tests/test_web_tts_optimization.py",
+        "tests/test_web_translation_source_repair.py",
+        "tests/test_web_xtts_model_upload.py",
     ),
 }
 
