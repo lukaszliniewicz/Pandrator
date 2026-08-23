@@ -7,6 +7,7 @@ import os
 import shutil
 import tempfile
 import zipfile
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -1589,27 +1590,33 @@ class FilesystemTaskHandler:
                 "created_slot": bool(journal.get("created_slot")),
                 "previous_pointer": journal.get("previous_pointer"),
             }
-        pointer = component_pointer(execution.context.layout, definition.id)
-        previous = result.get("previous_pointer")
-        if isinstance(previous, dict):
-            _atomic_json(pointer, previous)
-        else:
-            try:
-                pointer.unlink()
-            except FileNotFoundError:
-                pass
-        if result.get("created_slot"):
-            active = Path(str(result.get("active_path") or ""))
-            if active.exists():
-                container = component_container(
-                    execution.context.layout,
-                    definition.id,
-                )
-                execution.context.layout.require_within(
-                    active,
-                    roots=(container / "versions",),
-                )
-                shutil.rmtree(active)
+        removal_guard = nullcontext()
+        if definition.service_key and execution.supervisor is not None:
+            removal_guard = execution.supervisor.component_slot_removal_guard(
+                definition.id
+            )
+        with removal_guard:
+            pointer = component_pointer(execution.context.layout, definition.id)
+            previous = result.get("previous_pointer")
+            if isinstance(previous, dict):
+                _atomic_json(pointer, previous)
+            else:
+                try:
+                    pointer.unlink()
+                except FileNotFoundError:
+                    pass
+            if result.get("created_slot"):
+                active = Path(str(result.get("active_path") or ""))
+                if active.exists():
+                    container = component_container(
+                        execution.context.layout,
+                        definition.id,
+                    )
+                    execution.context.layout.require_within(
+                        active,
+                        roots=(container / "versions",),
+                    )
+                    shutil.rmtree(active)
 
     def _execute_validate_service(
         self,

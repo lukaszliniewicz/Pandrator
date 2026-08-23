@@ -1,4 +1,7 @@
+import shutil
+import sys
 import tempfile
+import threading
 import time
 import unittest
 import uuid
@@ -6,14 +9,20 @@ from pathlib import Path
 from unittest import mock
 
 from dulwich import porcelain
+
 from pandrator_manager.application import create_application
 from pandrator_manager.components import ComponentRegistry
 from pandrator_manager.components.builtin import MarkerComponentDriver
-from pandrator_manager.components.slots import active_component_path
+from pandrator_manager.components.slots import (
+    active_component_path,
+    component_pointer,
+)
+from pandrator_manager.context import CancellationToken
 from pandrator_manager.models import (
     TERMINAL_OPERATION_STATES,
     ComponentDefinition,
     DesiredComponentState,
+    ManagedProcessSpec,
     OperationKind,
     OperationState,
     TaskState,
@@ -23,7 +32,7 @@ from pandrator_manager.operations.handlers import (
     FilesystemTaskHandler,
     OperationTaskContext,
 )
-from pandrator_manager.context import CancellationToken
+from pandrator_manager.supervisor import ProcessSupervisor
 
 
 def _commit(repository: Path, content: str) -> str:
@@ -39,7 +48,10 @@ def _commit(repository: Path, content: str) -> str:
 
 
 def _registry(
-    repository: Path, *, source_revision: str | None = None
+    repository: Path,
+    *,
+    source_revision: str | None = None,
+    service_key: str | None = None,
 ) -> ComponentRegistry:
     definition = ComponentDefinition(
         id="fixture",
@@ -51,6 +63,7 @@ def _registry(
         resource_locks=("component:fixture",),
         repo_url=str(repository),
         source_revision=source_revision,
+        service_key=service_key,
     )
     return ComponentRegistry((definition,), (MarkerComponentDriver(),))
 
@@ -409,6 +422,182 @@ class OperationEngineTests(unittest.TestCase):
             (restored / "marker.txt").read_text(encoding="utf-8"),
             "one",
         )
+
+    def test_failed_validation_stop_preserves_live_slot_for_recovery(self):
+        application = create_application(
+            self.base / "service-workspace",
+            registry=_registry(
+                self.repository,
+                service_key="fixture.service",
+            ),
+        )
+        supervisor = ProcessSupervisor(
+            application.context,
+            application.store,
+            manager_instance_id="manager-test",
+        )
+
+        def service_spec_factory(component_id, _resolved):
+            active = active_component_path(application.context.layout, component_id)
+            self.assertIsNotNone(active)
+            return ManagedProcessSpec(
+                service_id="fixture.service",
+                component_id=component_id,
+                label="Fixture service",
+                executable=sys.executable,
+                arguments=("-c", "import time; time.sleep(60)"),
+                cwd=str(active),
+                startup_timeout_seconds=3,
+                shutdown_timeout_seconds=1,
+            )
+
+        engine = OperationEngine(
+            application.context,
+            application.store,
+            application.registry,
+            supervisor=supervisor,
+            service_spec_factory=service_spec_factory,
+        )
+        application.attach_operation_queue(engine)
+        plan = application.plan(
+            kind=OperationKind.INSTALL,
+            desired={"fixture": DesiredComponentState()},
+        )
+        submitted, created = application.submit_operation(
+            plan_id=plan.id,
+            plan_digest=plan.digest,
+            accepted_confirmations=(),
+            idempotency_key=str(uuid.uuid4()),
+        )
+        self.assertTrue(created)
+        real_stop = supervisor.stop
+        try:
+            with mock.patch.object(
+                supervisor,
+                "stop",
+                side_effect=RuntimeError("injected unverifiable stop"),
+            ):
+                engine.start()
+                completed = _wait(application, submitted.id)
+                engine.shutdown()
+
+            self.assertEqual(completed.state, OperationState.RECOVERY_REQUIRED)
+            active = active_component_path(application.context.layout, "fixture")
+            self.assertIsNotNone(active)
+            self.assertTrue(active.is_dir())
+            self.assertEqual(
+                (active / "marker.txt").read_text(encoding="utf-8"),
+                "one",
+            )
+            self.assertIn("fixture.service", supervisor._runtime)
+            rollback_errors = completed.recovery.get("rollback_errors", [])
+            self.assertTrue(
+                any(
+                    "live or unverifiable" in str(item.get("error", {}).get("message"))
+                    for item in rollback_errors
+                )
+            )
+        finally:
+            engine.shutdown()
+            if "fixture.service" in supervisor._runtime:
+                real_stop("fixture.service")
+
+    def test_slot_removal_blocks_a_concurrent_runtime_start(self):
+        application = create_application(
+            self.base / "concurrent-service-workspace",
+            registry=_registry(
+                self.repository,
+                service_key="fixture.service",
+            ),
+        )
+        supervisor = ProcessSupervisor(
+            application.context,
+            application.store,
+            manager_instance_id="manager-test",
+        )
+        versions = application.context.layout.services / "fixture" / "versions"
+        active = versions / "concurrent"
+        active.mkdir(parents=True)
+        (active / "marker.txt").write_text("one", encoding="utf-8")
+        pointer = component_pointer(application.context.layout, "fixture")
+        pointer.write_text(
+            f'{{"path": "{active}"}}',
+            encoding="utf-8",
+        )
+        supervisor.register(
+            ManagedProcessSpec(
+                service_id="fixture.service",
+                component_id="fixture",
+                label="Fixture service",
+                executable=sys.executable,
+                arguments=("-c", "import time; time.sleep(60)"),
+                cwd=str(active),
+                startup_timeout_seconds=3,
+                shutdown_timeout_seconds=1,
+            )
+        )
+        execution = mock.Mock(
+            context=application.context,
+            registry=application.registry,
+            supervisor=supervisor,
+        )
+        task = mock.Mock(component_id="fixture")
+        handler = FilesystemTaskHandler()
+        removal_entered = threading.Event()
+        allow_removal = threading.Event()
+        rollback_errors = []
+        start_errors = []
+        real_rmtree = shutil.rmtree
+
+        def blocking_rmtree(path):
+            if Path(path) == active:
+                removal_entered.set()
+                self.assertTrue(allow_removal.wait(timeout=5))
+            real_rmtree(path)
+
+        def rollback():
+            try:
+                handler._rollback_activate_component(
+                    execution,
+                    task,
+                    {
+                        "active_path": str(active),
+                        "created_slot": True,
+                        "previous_pointer": None,
+                    },
+                )
+            except Exception as error:
+                rollback_errors.append(error)
+
+        def start():
+            try:
+                supervisor.start("fixture.service")
+            except Exception as error:
+                start_errors.append(error)
+
+        with mock.patch(
+            "pandrator_manager.operations.handlers.shutil.rmtree",
+            side_effect=blocking_rmtree,
+        ):
+            rollback_thread = threading.Thread(target=rollback)
+            rollback_thread.start()
+            self.assertTrue(removal_entered.wait(timeout=5))
+            start_thread = threading.Thread(target=start)
+            start_thread.start()
+            time.sleep(0.1)
+            self.assertTrue(start_thread.is_alive())
+            self.assertNotIn("fixture.service", supervisor._runtime)
+            self.assertTrue(active.is_dir())
+            allow_removal.set()
+            rollback_thread.join(timeout=5)
+            start_thread.join(timeout=5)
+
+        self.assertFalse(rollback_thread.is_alive())
+        self.assertFalse(start_thread.is_alive())
+        self.assertEqual(rollback_errors, [])
+        self.assertFalse(active.exists())
+        self.assertTrue(start_errors)
+        self.assertNotIn("fixture.service", supervisor._runtime)
 
     def test_cancelled_queued_operation_rolls_back_without_activation(self):
         _plan, submitted = self._plan_and_submit(

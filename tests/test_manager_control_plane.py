@@ -1,5 +1,8 @@
 import hashlib
 import json
+import os
+import shlex
+import shutil
 import socket
 import sqlite3
 import subprocess
@@ -120,6 +123,26 @@ time.sleep(0.5)
             base_backoff_seconds=0,
             maximum_backoff_seconds=0,
         ),
+    )
+
+
+def exec_transition_spec(directory: str, *, port: int) -> ManagedProcessSpec:
+    original = fake_http_spec(directory, port=port)
+    server_code = original.arguments[-1]
+    bash = shutil.which("bash")
+    if bash is None:
+        raise unittest.SkipTest("The exec-transition regression requires bash.")
+    return original.model_copy(
+        update={
+            "service_id": "exec.transition",
+            "label": "Exec transition service",
+            "executable": bash,
+            "arguments": (
+                "-c",
+                "sleep 0.3; exec "
+                f"{shlex.quote(sys.executable)} -c {shlex.quote(server_code)}",
+            ),
+        }
     )
 
 
@@ -379,6 +402,131 @@ class SupervisorIntegrationTests(unittest.TestCase):
             finally:
                 runtime.identity = original_identity
                 supervisor._runtime[spec.service_id] = runtime
+                supervisor.stop(spec.service_id)
+
+    @unittest.skipUnless(
+        os.name != "nt" and shutil.which("bash"),
+        "The exec-transition regression requires POSIX bash.",
+    )
+    def test_token_proven_exec_transition_survives_monitor_adoption_and_stop(self):
+        with tempfile.TemporaryDirectory() as directory:
+            application = create_application(directory)
+            port = free_port()
+            spec = exec_transition_spec(directory, port=port)
+            first = ProcessSupervisor(
+                application.context,
+                application.store,
+                manager_instance_id="manager-one",
+            )
+            first.register(spec)
+            started = first.start(spec.service_id)
+            pid = started.process.pid
+            try:
+                self.assertNotEqual(
+                    os.path.realpath(started.process.executable),
+                    os.path.realpath(spec.executable),
+                )
+                first.monitor_once()
+                self.assertNotIn(spec.service_id, first._pending)
+                self.assertEqual(first._runtime[spec.service_id].identity.pid, pid)
+
+                # Simulate a pre-transition durable record written by an
+                # older Manager: the live root has exec'd, but the persisted
+                # executable is still the shell launcher.
+                persisted = application.store.list_services()[0]
+                persisted.process = persisted.process.model_copy(
+                    update={"executable": spec.executable}
+                )
+                application.store.save_service(persisted)
+                first.shutdown(stop_children=False)
+
+                second = ProcessSupervisor(
+                    application.context,
+                    application.store,
+                    manager_instance_id="manager-two",
+                )
+                try:
+                    second.register(spec)
+                    self.assertIn(spec.service_id, second._runtime)
+                    adopted = second._runtime[spec.service_id].identity
+                    self.assertEqual(adopted.pid, pid)
+                    self.assertNotEqual(
+                        os.path.realpath(adopted.executable),
+                        os.path.realpath(spec.executable),
+                    )
+                    # Exercise the stop path while the durable/runtime
+                    # identity still resembles the pre-exec shell record.
+                    second._runtime[spec.service_id].identity = adopted.model_copy(
+                        update={"executable": spec.executable}
+                    )
+                    second.stop(spec.service_id)
+                    self.assertTrue(wait_for_process_exit(pid))
+                    self.assertTrue(second._port_available(port))
+                finally:
+                    if spec.service_id in second._runtime:
+                        second.stop(spec.service_id)
+            finally:
+                if spec.service_id in first._runtime:
+                    first.stop(spec.service_id)
+
+    def test_monitor_refuses_identity_mismatch_without_ownership_token(self):
+        with tempfile.TemporaryDirectory() as directory:
+            application = create_application(directory)
+            supervisor = ProcessSupervisor(
+                application.context,
+                application.store,
+                manager_instance_id="manager-test",
+            )
+            spec = fake_http_spec(directory, port=free_port())
+            supervisor.register(spec)
+            service = supervisor.start(spec.service_id)
+            runtime = supervisor._runtime[spec.service_id]
+            original_identity = runtime.identity
+            runtime.identity = original_identity.model_copy(
+                update={
+                    "executable": "/definitely/not-the-managed-executable",
+                    "ownership_token": None,
+                }
+            )
+            try:
+                supervisor.monitor_once()
+                self.assertIn(spec.service_id, supervisor._runtime)
+                self.assertNotIn(spec.service_id, supervisor._pending)
+                self.assertTrue(psutil.pid_exists(service.process.pid))
+            finally:
+                runtime.identity = original_identity
+                supervisor._runtime[spec.service_id] = runtime
+                supervisor.stop(spec.service_id)
+
+    def test_stop_retains_runtime_when_identity_cannot_be_proven(self):
+        with tempfile.TemporaryDirectory() as directory:
+            application = create_application(directory)
+            supervisor = ProcessSupervisor(
+                application.context,
+                application.store,
+                manager_instance_id="manager-test",
+            )
+            spec = fake_http_spec(directory, port=free_port())
+            supervisor.register(spec)
+            service = supervisor.start(spec.service_id)
+            runtime = supervisor._runtime[spec.service_id]
+            original_identity = runtime.identity
+            runtime.identity = original_identity.model_copy(
+                update={
+                    "executable": "/definitely/not-the-managed-executable",
+                    "ownership_token": None,
+                }
+            )
+            try:
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "Refusing to stop unverifiable PID",
+                ):
+                    supervisor.stop(spec.service_id)
+                self.assertIs(supervisor._runtime[spec.service_id], runtime)
+                self.assertTrue(psutil.pid_exists(service.process.pid))
+            finally:
+                runtime.identity = original_identity
                 supervisor.stop(spec.service_id)
 
     def test_new_manager_instance_adopts_a_surviving_owned_service(self):

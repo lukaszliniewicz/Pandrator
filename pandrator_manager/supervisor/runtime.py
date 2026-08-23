@@ -10,6 +10,7 @@ import socket
 import subprocess
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
@@ -204,9 +205,29 @@ class ProcessSupervisor:
         )
         if existing is None:
             return
+        adopted_identity: ProcessIdentity | None = None
         try:
             root = validate_identity(existing.process)
-        except (IdentityMismatch, IdentityInspectionFailed):
+        except IdentityMismatch:
+            # A POSIX launcher can exec its final server in place.  The PID
+            # and create time remain stable, but the executable changes.  A
+            # persisted launch token is the only proof that this is an
+            # intentional transition rather than PID reuse.
+            token = existing.process.ownership_token
+            root = self._token_process_for_identity(existing.process)
+            if root is None:
+                if not token or not self._token_processes(token):
+                    return
+            else:
+                try:
+                    adopted_identity = capture_identity(
+                        root,
+                        manager_instance_id=self.manager_instance_id,
+                        ownership_token=token,
+                    )
+                except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
+                    return
+        except IdentityInspectionFailed:
             return
         if root is None:
             # A launcher can exit after leaving a token-inheriting child alive.
@@ -219,15 +240,16 @@ class ProcessSupervisor:
         # A service from a previous manager instance remains owned only through
         # its full recorded identity or a persisted token-proven surviving
         # family; assign the new instance on adoption.
-        adopted_identity = ProcessIdentity(
-            pid=existing.process.pid,
-            create_time=existing.process.create_time,
-            executable=existing.process.executable,
-            manager_instance_id=self.manager_instance_id,
-            ownership_token=existing.process.ownership_token,
-            process_group_id=existing.process.process_group_id,
-            session_id=existing.process.session_id,
-        )
+        if adopted_identity is None:
+            adopted_identity = ProcessIdentity(
+                pid=existing.process.pid,
+                create_time=existing.process.create_time,
+                executable=existing.process.executable,
+                manager_instance_id=self.manager_instance_id,
+                ownership_token=existing.process.ownership_token,
+                process_group_id=existing.process.process_group_id,
+                session_id=existing.process.session_id,
+            )
         self._runtime[spec.service_id] = _RuntimeProcess(
             spec=spec,
             identity=adopted_identity,
@@ -429,6 +451,11 @@ class ProcessSupervisor:
                 break
             health = self._health(spec)
             if health.state == HealthState.HEALTHY:
+                # Readiness can be reached only after a shell launcher has
+                # exec'd the real server. Refresh the durable identity before
+                # publishing it so later monitoring/adoption sees the same
+                # executable that is actually serving traffic.
+                self._refresh_runtime_identity(runtime)
                 service = self._service_snapshot(runtime, health)
                 self.store.save_service(service)
                 self.context.event_sink.emit(
@@ -474,14 +501,49 @@ class ProcessSupervisor:
         matches: list[psutil.Process] = []
         for candidate in psutil.process_iter():
             try:
-                if (
-                    candidate.environ().get("PANDRATOR_PROCESS_OWNERSHIP_TOKEN")
-                    == ownership_token
-                ):
+                if candidate.environ().get("PANDRATOR_PROCESS_OWNERSHIP_TOKEN") == ownership_token:
                     matches.append(candidate)
             except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
                 continue
         return matches
+
+    @classmethod
+    def _token_process_for_pid(
+        cls,
+        ownership_token: str | None,
+        pid: int,
+    ) -> psutil.Process | None:
+        if not ownership_token:
+            return None
+        return next(
+            (process for process in cls._token_processes(ownership_token) if process.pid == pid),
+            None,
+        )
+
+    def _token_process_for_identity(
+        self,
+        identity: ProcessIdentity,
+    ) -> psutil.Process | None:
+        return self._token_process_for_pid(identity.ownership_token, identity.pid)
+
+    def _refresh_runtime_identity(
+        self,
+        runtime: _RuntimeProcess,
+    ) -> psutil.Process | None:
+        """Refresh a root identity after a token-proven in-place exec."""
+
+        process = self._token_process_for_identity(runtime.identity)
+        if process is None:
+            return None
+        try:
+            runtime.identity = capture_identity(
+                process,
+                manager_instance_id=self.manager_instance_id,
+                ownership_token=runtime.identity.ownership_token,
+            )
+        except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
+            return None
+        return process
 
     def _owned_family(
         self,
@@ -563,7 +625,20 @@ class ProcessSupervisor:
     def _terminate(self, runtime: _RuntimeProcess) -> None:
         try:
             parent = validate_identity(runtime.identity)
-        except (IdentityMismatch, IdentityInspectionFailed) as error:
+        except IdentityMismatch as error:
+            # An exec transition changes the executable at the same PID. It is
+            # safe to accept only when that exact PID still carries this
+            # launch's random token. If the root is gone but token-owned
+            # descendants remain, clean those descendants without touching
+            # the reused/unrelated PID.
+            parent = self._refresh_runtime_identity(runtime)
+            if parent is None:
+                token = runtime.identity.ownership_token
+                if not token or not self._token_processes(token):
+                    raise RuntimeError(
+                        f"Refusing to stop unverifiable PID {runtime.identity.pid}."
+                    ) from error
+        except IdentityInspectionFailed as error:
             raise RuntimeError(
                 f"Refusing to stop unverifiable PID {runtime.identity.pid}."
             ) from error
@@ -573,7 +648,7 @@ class ProcessSupervisor:
     def stop(self, service_id: str) -> ManagedService:
         with self._lock:
             self._pending.pop(service_id, None)
-            runtime = self._runtime.pop(service_id, None)
+            runtime = self._runtime.get(service_id)
             if runtime is None:
                 existing = next(
                     (
@@ -604,6 +679,7 @@ class ProcessSupervisor:
                 self.store.save_service(existing)
                 return existing
             self._terminate(runtime)
+            self._runtime.pop(service_id, None)
             service = self._service_snapshot(
                 runtime,
                 HealthResult(
@@ -718,6 +794,49 @@ class ProcessSupervisor:
                     )
         return snapshots
 
+    def _component_slot_removal_safe_locked(self, component_id: str) -> bool:
+        if any(
+            runtime.spec.component_id == component_id
+            for runtime in self._runtime.values()
+        ) or any(
+            pending.spec.component_id == component_id
+            for pending in self._pending.values()
+        ):
+            return False
+
+        for service in self.store.list_services():
+            identity = service.process
+            if service.component_id != component_id or identity is None:
+                continue
+            try:
+                process = validate_identity(identity)
+            except (IdentityMismatch, IdentityInspectionFailed):
+                return False
+            if process is not None:
+                return False
+            token = identity.ownership_token
+            if token and self._token_processes(token):
+                return False
+        return True
+
+    @contextmanager
+    def component_slot_removal_guard(self, component_id: str):
+        """Hold supervision stable while rollback removes component files.
+
+        A live, pending, or unverifiable process may still execute from the
+        active slot. The lock remains held across the caller's pointer update
+        and filesystem deletion so a runtime start cannot race the removal.
+        """
+
+        with self._lock:
+            if not self._component_slot_removal_safe_locked(component_id):
+                raise RuntimeError(
+                    f"Refusing to remove the {component_id} component slot while "
+                    "its managed service is live or unverifiable. Stop the "
+                    "service safely before retrying recovery."
+                )
+            yield
+
     def monitor_once(self) -> None:
         with self._lock:
             now = time.monotonic()
@@ -741,8 +860,27 @@ class ProcessSupervisor:
             for service_id, runtime in list(self._runtime.items()):
                 try:
                     process = validate_identity(runtime.identity)
-                except (IdentityMismatch, IdentityInspectionFailed):
-                    process = None
+                except IdentityMismatch:
+                    process = self._refresh_runtime_identity(runtime)
+                    if process is None:
+                        token = runtime.identity.ownership_token
+                        # No positive token proof means this could be a PID
+                        # reuse. Leave the runtime untouched and do not
+                        # schedule a restart or signal an arbitrary process.
+                        if not token or not self._token_processes(token):
+                            logging.warning(
+                                "Refusing to supervise unverifiable PID %s for %s.",
+                                runtime.identity.pid,
+                                service_id,
+                            )
+                            continue
+                except IdentityInspectionFailed:
+                    logging.warning(
+                        "Refusing to supervise uninspectable PID %s for %s.",
+                        runtime.identity.pid,
+                        service_id,
+                    )
+                    continue
                 exited = process is None
                 health = (
                     HealthResult(
