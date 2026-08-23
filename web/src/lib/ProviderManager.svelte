@@ -1116,14 +1116,17 @@
             >Research budgeting defaults unknown models to 262,144.</small
           ></label
         ><label class="text-sm font-semibold"
-          >Maximum output tokens<input
+          >Output reservation for context planning<input
             bind:value={maxOutputTokens}
             type="number"
             min="1"
             step="1"
-            placeholder="8,192 reserve"
+            placeholder="Optional"
             class="field font-normal"
-          /></label
+          /><small class="muted mt-1 block font-normal"
+            >Reserves context space for safe input partitioning; it is not a
+            generation request cap.</small
+          ></label
         >
       </div>
       <button onclick={saveModel} class="btn btn-primary mt-6 w-full"

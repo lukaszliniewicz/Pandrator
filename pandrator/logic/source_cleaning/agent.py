@@ -44,7 +44,6 @@ class SourceCleaningAgentConfig:
     max_evidence_ledger_chars: int = 10000
     recent_detailed_turns: int = 1
     max_batch_commands: int = 8
-    max_tokens: int = 2200
     remove_footnotes: bool = False
     filter_citations: bool = True
     max_finish_reviews: int = 2
@@ -139,7 +138,6 @@ def run_source_cleaning_agent(
             messages=request_messages,
             model_name=resolved_config.model_name,
             llm_settings=llm_settings,
-            max_tokens=resolved_config.max_tokens,
         )
         response, call_metadata = _normalize_completion_response(completion_response)
         _record_llm_call(

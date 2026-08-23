@@ -24,6 +24,7 @@ from pandrator.web.credentials import (
 from pandrator.web.jobs import JobQueue
 from pandrator.web.models import AppSetting, Artifact, ArtifactEdge, AudioTake, GenerationPlan, GenerationPlanRevision, GenerationRun, GenerationSegment, OutputAssembly, PronunciationEntry, SessionRecord, SessionSetting, SessionStageSelection, UsageEvent
 from pandrator.web.pronunciations import PronunciationLibrary
+from pandrator.web.speech_planning import SPEECH_PROMPT_REVISION
 from pandrator.web.sessions import SessionService
 from pandrator.web.tts_providers import TtsBatchResult, TtsCapabilities
 from pandrator.web.workflow_handlers import (
@@ -2028,6 +2029,7 @@ A single reviewed cue.
                 ),
                 "mode_requested": "guarded",
                 "model": "local/test",
+                "prompt_revision": SPEECH_PROMPT_REVISION,
                 "language": "pl",
                 "voice_language": "pl",
                 "known_pronunciations": [

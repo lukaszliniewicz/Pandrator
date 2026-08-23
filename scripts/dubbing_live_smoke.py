@@ -165,7 +165,6 @@ def _llm_settings(model_name: str, provider_id: str = "") -> dict[str, Any]:
         "request_timeout_seconds": 180,
         "reasoning_effort": "",
         "llm_char": 6000,
-        "max_tokens": 1000,
     }
     return settings
 
@@ -183,8 +182,6 @@ def smoke_llm(model_name: str, provider_id: str = "") -> dict[str, str]:
                 "request_timeout_seconds": 180,
                 "reasoning_effort": "",
             },
-            max_tokens=16,
-            temperature=0.0,
         )
         content = str(result.content or "").strip()
         if not content:

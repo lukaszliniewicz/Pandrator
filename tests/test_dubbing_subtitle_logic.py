@@ -255,6 +255,7 @@ Bob: reply
         self.assertEqual(result.response_count, 1)
         self.assertEqual(calls[0]["model_name"], "anthropic/claude-sonnet-4-6")
         self.assertIn("Preserve the speaker labels", calls[0]["messages"][0]["content"])
+        self.assertNotIn("max_tokens", calls[0])
 
     def test_correct_zoom_vtt_content_uses_default_llm_when_dubbing_provider_is_deepl(self):
         calls = []

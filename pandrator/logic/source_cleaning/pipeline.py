@@ -121,7 +121,6 @@ class SourceCleaningPipelineConfig:
     total_max_iterations: int = 53
     # Exact per-phase limits. When supplied, these take precedence over the legacy total.
     phase_max_iterations: dict[str, int] | None = None
-    max_tokens: int = 2200
     max_tool_result_chars: int = 12000
     max_evidence_ledger_chars: int = 10000
     recent_detailed_turns: int = 1
@@ -189,7 +188,6 @@ def run_cleaning_pipeline(
             model_name=resolved.model_name,
             phase_name=phase_name,
             max_iterations=budgets[phase_name],
-            max_tokens=resolved.max_tokens,
             max_tool_result_chars=resolved.max_tool_result_chars,
             max_evidence_ledger_chars=resolved.max_evidence_ledger_chars,
             recent_detailed_turns=resolved.recent_detailed_turns,

@@ -2899,7 +2899,6 @@ class WorkflowHandlers:
                         2_000,
                         int(settings.get("web_research_result_chars") or 10_000),
                     ),
-                    max_tokens=min(12_000, budget.max_output_tokens),
                     preferred_domains=tuple(run_settings["preferred_domains"]),
                     blocked_domains=tuple(run_settings["blocked_domains"]),
                     context_window_tokens=budget.context_window_tokens,
@@ -5302,6 +5301,8 @@ class WorkflowHandlers:
             str(resolved.get("speech_optimization_mode") or "guarded").strip().lower()
         )
         structured_mode = speech_mode in {"guarded", "flexible"}
+        from .speech_planning import SPEECH_PROMPT_REVISION
+
         default_language = str(
             resolved.get("language")
             or resolved.get("target_language")
@@ -5407,6 +5408,7 @@ class WorkflowHandlers:
                         and plan.get("source_hash") == plan_source_hash
                         and plan.get("mode_requested") == speech_mode
                         and plan.get("model") == model_name
+                        and plan.get("prompt_revision") == SPEECH_PROMPT_REVISION
                         and planned_known_signature == current_known_signature
                         and plan_context_matches
                     )

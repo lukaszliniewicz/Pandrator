@@ -1,3 +1,4 @@
+import json
 import os
 import threading
 import time
@@ -233,7 +234,7 @@ class LlmHandlerTests(unittest.TestCase):
         self.assertEqual([record["id"] for record in merged], ["manual-model", "discovered-model"])
         self.assertEqual(merged[0]["default_temperature"], 0.25)
 
-    def test_chat_completion_with_metadata_forwards_max_tokens(self):
+    def test_chat_completion_with_metadata_strips_output_limit_options(self):
         captured_payload = {}
 
         def fake_completion(**kwargs):
@@ -277,19 +278,83 @@ class LlmHandlerTests(unittest.TestCase):
                                     "default_reasoning_effort": "medium",
                                 }
                             ],
-                            "request_options": {"organization": "pandrator-test", "temperature": 1.9},
+                            "request_options": {
+                                "organization": "pandrator-test",
+                                "temperature": 1.9,
+                                "MAX-TOKENS": 1234,
+                                "max_completion_tokens": 2345,
+                                "MaxOutputTokens": 3456,
+                            },
                         }
                     ],
                 },
-                max_tokens=1234,
             )
 
         self.assertEqual(result.content, "Corrected text")
-        self.assertEqual(captured_payload["max_tokens"], 1234)
         self.assertEqual(captured_payload["temperature"], 0.1)
         self.assertEqual(captured_payload["timeout"], 30)
         self.assertEqual(captured_payload["reasoning_effort"], "medium")
         self.assertEqual(captured_payload["organization"], "pandrator-test")
+        for key in ("MAX-TOKENS", "max_completion_tokens", "MaxOutputTokens"):
+            self.assertNotIn(key, captured_payload)
+
+    def test_legacy_provider_options_strip_output_limit_aliases(self):
+        settings = {
+            "custom_openai_endpoints_json": json.dumps(
+                [
+                    {
+                        "name": "legacy",
+                        "base_url": "http://127.0.0.1:8000/v1",
+                        "default_model": "demo",
+                        "request_options": {
+                            "max_tokens": 100,
+                            "MAX_COMPLETION-TOKENS": 200,
+                            "normal_option": "preserved",
+                        },
+                    }
+                ]
+            )
+        }
+
+        provider = next(
+            item for item in llm_handler.get_provider_configs(settings) if item["id"] == "legacy"
+        )
+        self.assertEqual({"normal_option": "preserved"}, provider["request_options"])
+
+    def test_completion_boundary_strips_aliases_from_resolved_overrides(self):
+        captured_payload = {}
+
+        def fake_completion(**kwargs):
+            captured_payload.update(kwargs)
+            return {"choices": [{"message": {"content": "ok"}}]}
+
+        details = {
+            "model": "openai/demo",
+            "request_overrides": {
+                "mAx_ToKeNs": 1,
+                "max-completion-tokens": 2,
+                "MAX_OUTPUT_TOKENS": 3,
+                "normal_option": "preserved",
+            },
+            "model_record": None,
+        }
+        with patch(
+            "pandrator.logic.llm_handler._get_litellm_clients",
+            return_value=(fake_completion, None),
+        ), patch(
+            "pandrator.logic.llm_handler._resolve_model_request_details",
+            return_value=details,
+        ):
+            result = llm_handler.chat_completion_with_metadata(
+                messages=[{"role": "user", "content": "test"}],
+                model_name="openai/demo",
+            )
+
+        self.assertEqual("ok", result.content)
+        self.assertEqual("preserved", captured_payload["normal_option"])
+        self.assertNotIn("mAx_ToKeNs", captured_payload)
+        self.assertNotIn("max-completion-tokens", captured_payload)
+        self.assertNotIn("MAX_OUTPUT_TOKENS", captured_payload)
 
     def test_tool_call_is_a_success_and_preserves_gemini_thought_signature(self):
         captured_payload = {}

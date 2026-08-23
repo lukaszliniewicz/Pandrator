@@ -125,6 +125,9 @@ class SourceCleaningTests(unittest.TestCase):
         self.assertTrue(
             all(not hasattr(call.kwargs["config"], "temperature") for call in run_agent.call_args_list)
         )
+        self.assertTrue(
+            all(not hasattr(call.kwargs["config"], "max_tokens") for call in run_agent.call_args_list)
+        )
         self.assertEqual(configured_baselines, [[], [], [], [], baseline_operations])
         self.assertEqual(
             [phase.max_iterations for phase in result.phases],

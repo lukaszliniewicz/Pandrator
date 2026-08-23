@@ -13,7 +13,12 @@ from pandrator.web.artifacts import ArtifactService
 from pandrator.web.database import Database
 from pandrator.web.models import AgentRun, AgentStep, ArtifactEdge, Document, UsageEvent
 from pandrator.web.sessions import SessionService
-from pandrator.web.tts_optimization import optimize_texts, prompt_sequence
+from pandrator.web.speech_planning import SPEECH_PROMPT_REVISION
+from pandrator.web.tts_optimization import (
+    optimization_unit_key,
+    optimize_texts,
+    prompt_sequence,
+)
 from pandrator.web.workflow_handlers import WorkflowHandlers
 from tests.web_test_support import prepare_web_test_data_root
 
@@ -244,6 +249,55 @@ class TtsOptimizationUnitTests(unittest.TestCase):
         self.assertEqual(first_usage.response_count, resumed_usage.response_count)
         first_completion.assert_called_once()
         resumed_completion.assert_not_called()
+
+    def test_structured_checkpoint_with_old_prompt_revision_is_recomputed(self):
+        checkpoints = {
+            optimization_unit_key([0], stage=0): {
+                "version": 1,
+                "kind": "tts_optimization_plan",
+                "stage": 0,
+                "original_indices": [0],
+                "items": [{"index": 0, "text": "Old pronunciation"}],
+                "plan": {"prompt_revision": SPEECH_PROMPT_REVISION - 1},
+                "cost": 0.01,
+                "response_count": 1,
+                "usage": {},
+                "cost_sources": [],
+            }
+        }
+        updated_checkpoints = {}
+        planned = SimpleNamespace(
+            text="New pronunciation",
+            plan={"prompt_revision": SPEECH_PROMPT_REVISION},
+            responses=[],
+        )
+
+        with mock.patch(
+            "pandrator.web.speech_planning.plan_speech_text",
+            return_value=planned,
+        ) as plan:
+            output, _usage = optimize_texts(
+                ["Wisconsin"],
+                {
+                    "speech_optimization_mode": "guarded",
+                    "llm_concurrent_calls": 1,
+                },
+                SimpleNamespace(),
+                "provider/model",
+                threading.Event(),
+                lambda *_args: None,
+                completed_units=checkpoints,
+                on_unit_completed=lambda key, payload: updated_checkpoints.__setitem__(
+                    key, payload
+                ),
+            )
+
+        self.assertEqual(["New pronunciation"], output)
+        plan.assert_called_once()
+        self.assertEqual(
+            SPEECH_PROMPT_REVISION,
+            next(iter(updated_checkpoints.values()))["plan"]["prompt_revision"],
+        )
 
 
 class TtsOptimizationHandlerTests(unittest.TestCase):

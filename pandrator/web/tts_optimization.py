@@ -412,7 +412,7 @@ def _optimize_with_speech_plans(
     on_unit_completed: UnitCompletedCallback | None,
 ) -> tuple[list[str], OptimizationUsage]:
     """Plan one stable sentence per call and compile only validated responses."""
-    from .speech_planning import plan_speech_text
+    from .speech_planning import SPEECH_PROMPT_REVISION, plan_speech_text
 
     workers = max(1, min(16, int(settings.get("llm_concurrent_calls") or 1)))
     default_language = str(
@@ -450,19 +450,21 @@ def _optimize_with_speech_plans(
     def process(index: int, text: str):
         if cancel_event.is_set():
             return index, text, {}, OptimizationUsage()
-        restored = _restore_optimization_unit(
-            [index],
-            stage=0,
-            completed_units=completed_units,
+        unit_key = optimization_unit_key([index], stage=0)
+        raw = completed_units.get(unit_key, {}) if completed_units else {}
+        raw_plan = raw.get("plan") if isinstance(raw, Mapping) else None
+        restored = (
+            _restore_optimization_unit(
+                [index],
+                stage=0,
+                completed_units=completed_units,
+            )
+            if isinstance(raw_plan, Mapping)
+            and raw_plan.get("prompt_revision") == SPEECH_PROMPT_REVISION
+            else None
         )
         if restored is not None:
             restored_items, restored_usage = restored
-            raw = (
-                completed_units.get(optimization_unit_key([index], stage=0), {})
-                if completed_units
-                else {}
-            )
-            raw_plan = raw.get("plan") if isinstance(raw, Mapping) else None
             return (
                 index,
                 restored_items[index],

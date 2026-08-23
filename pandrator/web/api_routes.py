@@ -4553,7 +4553,6 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             messages=[{"role": "user", "content": "Reply with exactly OK."}],
             model_name=model_name,
             llm_settings=settings,
-            max_tokens=8,
         )
         if not result.content:
             return error_response(

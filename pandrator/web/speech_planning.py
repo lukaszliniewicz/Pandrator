@@ -137,6 +137,23 @@ COMMON_TITLECASE_WORDS = frozenset(
 )
 
 
+SPEECH_PROMPT_REVISION = 2
+POLISH_PRONUNCIATION_GUIDANCE = """For Polish-target speech, evaluate pronunciation candidates using Polish grapheme-to-phoneme behavior. An i after a consonant can soften or palatalize that consonant. If the target pronunciation keeps a consonant hard, choose an orthographic form that preserves the hardness, often y or another context-appropriate vowel. Do not apply this mechanically: judge the complete pronunciation, the surrounding sounds, and Polish inflection."""
+
+
+def _language_base(language: object) -> str:
+    """Return a normalized base language for prompt-specific guidance."""
+    normalized = str(language or "").strip().casefold().replace("_", "-")
+    return normalized.split("-", 1)[0]
+
+
+def speech_pronunciation_guidance(language: object) -> str:
+    """Return language-specific pronunciation guidance for speech planning."""
+    if _language_base(language) == "pl":
+        return POLISH_PRONUNCIATION_GUIDANCE
+    return ""
+
+
 def _valid_respelling(value: object) -> bool:
     """Use the pronunciation library's Unicode grammar for model output."""
     try:
@@ -151,8 +168,7 @@ You receive one display sentence, its deterministic normalization result, stable
 reviewed pronunciations, and unresolved candidate spans.
 
 Decide every unresolved span exactly once. Required spans cannot use keep. Actions:
-- pronounce: normalized lowercase Unicode-letter respellings with internal hyphens,
-  e.g. ee-mah-oh-kah or łys-kon-syn
+- pronounce: normalized lowercase Unicode-letter respellings with internal hyphens
 - verbalize: complete words that should be spoken
 - spell_letters: letters separated by spaces
 - keep: written text is already suitable
@@ -178,8 +194,7 @@ appear in your template exactly the same number of times and with identical spel
 replace or invent placeholders; the host substitutes them later.
 
 Decide every unresolved span exactly once. Required spans cannot use keep. Actions:
-- pronounce: normalized lowercase Unicode-letter respellings with internal hyphens,
-  e.g. ee-mah-oh-kah or łys-kon-syn
+- pronounce: normalized lowercase Unicode-letter respellings with internal hyphens
 - verbalize: complete words to speak
 - spell_letters: letters separated by spaces
 - keep: retain the written text
@@ -865,14 +880,18 @@ def plan_speech_text(
         for _protocol_attempt in range(1, attempts_per_mode + 1):
             if cancel_event is not None and cancel_event.is_set():
                 raise RuntimeError("Speech planning was canceled.")
+            system_prompt = (
+                FLEXIBLE_SYSTEM_PROMPT
+                if attempted_mode == "flexible"
+                else GUARDED_SYSTEM_PROMPT
+            )
+            guidance = speech_pronunciation_guidance(language)
+            if guidance:
+                system_prompt += "\n\n" + guidance
             messages = [
                 {
                     "role": "system",
-                    "content": (
-                        FLEXIBLE_SYSTEM_PROMPT
-                        if attempted_mode == "flexible"
-                        else GUARDED_SYSTEM_PROMPT
-                    ),
+                    "content": system_prompt,
                 },
                 {
                     "role": "user",
@@ -900,7 +919,6 @@ def plan_speech_text(
                 "messages": messages,
                 "model_name": model_name,
                 "llm_settings": llm_settings,
-                "max_tokens": 1100 if attempted_mode == "flexible" else 850,
             }
             if completion_func is None:
                 kwargs["cancel_event"] = cancel_event
@@ -1000,6 +1018,7 @@ def plan_speech_text(
         }
     plan = {
         "version": 1,
+        "prompt_revision": SPEECH_PROMPT_REVISION,
         "case_id": case_id,
         "status": status,
         "mode_requested": requested_mode,

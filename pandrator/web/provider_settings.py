@@ -8,6 +8,7 @@ from typing import Any
 
 from sqlalchemy import select
 
+from pandrator.logic.llm_handler import strip_output_limit_options
 from pandrator.runtime import DataPaths
 
 from .credentials import (
@@ -130,7 +131,7 @@ def list_llm_provider_profiles() -> list[dict[str, Any]]:
 
 
 def _request_options(options: dict[str, Any] | None) -> dict[str, Any]:
-    raw = dict((options or {}).get("request_options") or {})
+    raw = strip_output_limit_options((options or {}).get("request_options") or {})
     reserved = {
         "model",
         "messages",

@@ -41,10 +41,6 @@ class ResearchAgentConfig:
     max_iterations: int = 8
     max_source_chars: int = 14_000
     max_tool_result_chars: int = 10_000
-    # Gemini 3 thinking tokens share the output allowance. A 1,400-token cap
-    # can therefore end a high-thinking tool-selection turn before the model
-    # emits either visible text or a function call.
-    max_tokens: int = 4096
     preferred_domains: tuple[str, ...] = ()
     blocked_domains: tuple[str, ...] = ()
     context_window_tokens: int = 262_144
@@ -1000,7 +996,6 @@ def run_web_research_agent(
             "messages": conversation,
             "model_name": model_name,
             "llm_settings": llm_settings,
-            "max_tokens": max(4096, min(config.max_tokens, 12_000)),
             "tools": _research_tools(config.stage),
             "tool_choice": "auto",
         }

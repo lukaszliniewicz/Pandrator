@@ -244,7 +244,12 @@ class ProviderApiTests(unittest.TestCase):
                 "provider_key": "vertex_ai",
                 "label": "Vertex",
                 "api_key": credentials,
-                "options": {"request_options": {"vertex_location": "global"}},
+                "options": {
+                    "request_options": {
+                        "vertex_location": "global",
+                        "max-output-tokens": 123,
+                    }
+                },
             },
             headers=self.headers,
         ).get_json()
@@ -262,6 +267,7 @@ class ProviderApiTests(unittest.TestCase):
         self.assertEqual(credentials, vertex["request_options"]["vertex_credentials"])
         self.assertEqual("vertex-project", vertex["request_options"]["vertex_project"])
         self.assertEqual("global", vertex["request_options"]["vertex_location"])
+        self.assertNotIn("max-output-tokens", vertex["request_options"])
         self.assertNotIn(credentials, json.dumps(created))
 
     def test_auxiliary_api_keys_share_write_only_storage(self):

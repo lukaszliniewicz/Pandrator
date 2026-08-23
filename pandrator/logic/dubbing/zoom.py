@@ -133,7 +133,6 @@ def correct_transcript_chunks(
     corrected_chunks: list[str] = []
     total_cost = 0.0
     response_count = 0
-    max_tokens = int(normalized_settings.get("max_tokens") or normalized_settings.get("llm_max_tokens") or 4000)
 
     for chunk in chunks:
         prompt = build_zoom_correction_prompt(chunk)
@@ -142,7 +141,6 @@ def correct_transcript_chunks(
             messages=messages,
             model_name=llm_settings.model_name,
             llm_settings=llm_settings.llm_settings,
-            max_tokens=max_tokens,
         )
         content = str(result.content or "").strip()
         if not content:

@@ -18,6 +18,31 @@ from .retry_utils import (
 DEFAULT_LITELLM_MODEL = "openai/gpt-5.4-mini"
 PLACEHOLDER_API_KEY = "sk-placeholder"
 
+# LiteLLM and provider adapters use several spellings for an output-token
+# limit. Pandrator does not impose one: strip all known aliases at every
+# boundary where provider options enter the shared completion path.
+OUTPUT_LIMIT_OPTION_NAMES = frozenset(
+    {"maxtokens", "maxcompletiontokens", "maxoutputtokens"}
+)
+
+
+def strip_output_limit_options(options: Any) -> dict[str, Any]:
+    """Return provider options without output-token limit aliases.
+
+    Keys are compared case-insensitively, ignoring hyphens and underscores,
+    while the spelling of all retained keys is preserved for provider-specific
+    options.
+    """
+
+    if not isinstance(options, dict):
+        return {}
+    return {
+        str(key): value
+        for key, value in options.items()
+        if re.sub(r"[-_]", "", str(key).strip().lower())
+        not in OUTPUT_LIMIT_OPTION_NAMES
+    }
+
 
 def default_model_record(model_id: str) -> dict[str, Any]:
     return {
@@ -441,6 +466,9 @@ def _parse_legacy_custom_endpoints(raw_json: str) -> list[dict[str, Any]]:
                 "api_key": str(item.get("api_key", "")).strip(),
                 "is_custom": True,
                 "models": normalize_model_records(raw_models, "openai"),
+                "request_options": strip_output_limit_options(
+                    item.get("request_options")
+                ),
             }
         )
 
@@ -486,8 +514,9 @@ def _coerce_provider_record(item: Any) -> dict[str, Any] | None:
             record["api_key"] = api_key
 
         record["is_custom"] = False
-        request_options = item.get("request_options")
-        record["request_options"] = dict(request_options) if isinstance(request_options, dict) else {}
+        record["request_options"] = strip_output_limit_options(
+            item.get("request_options")
+        )
         return record
 
     api_base = _normalize_base_url(item.get("api_base") or item.get("base_url") or "")
@@ -502,7 +531,7 @@ def _coerce_provider_record(item: Any) -> dict[str, Any] | None:
         "is_custom": True,
         "models": normalize_model_records(item.get("models", []), explicit_provider or "openai"),
         "models_explicit": True,
-        "request_options": dict(item.get("request_options") or {}) if isinstance(item.get("request_options"), dict) else {},
+        "request_options": strip_output_limit_options(item.get("request_options")),
     }
 
 
@@ -552,6 +581,9 @@ def get_provider_configs(llm_settings: Any | None = None) -> list[dict[str, Any]
         provider["api_base"] = _normalize_base_url(provider.get("api_base"))
         provider["api_key_env"] = str(provider.get("api_key_env") or "").strip()
         provider["api_key"] = str(provider.get("api_key") or "").strip()
+        provider["request_options"] = strip_output_limit_options(
+            provider.get("request_options")
+        )
 
         models = normalize_model_records(provider.get("models", []), provider["provider"])
         if models:
@@ -1296,7 +1328,7 @@ def _resolve_model_request_details(
                 f"Custom provider '{custom_provider_id}' is missing an API base URL."
             )
 
-        provider_options = provider.get("request_options")
+        provider_options = strip_output_limit_options(provider.get("request_options"))
         if isinstance(provider_options, dict):
             reserved = {"model", "messages", "timeout", "api_key", "api_base", "temperature", "reasoning_effort"}
             request_overrides.update(
@@ -1334,7 +1366,9 @@ def _resolve_model_request_details(
 
     provider_key = _provider_key_for_resolved_model(normalized_model)
     provider_config = _builtin_provider_config_for_key(provider_configs, provider_key)
-    provider_options = provider_config.get("request_options") if provider_config else None
+    provider_options = strip_output_limit_options(
+        provider_config.get("request_options") if provider_config else None
+    )
     if isinstance(provider_options, dict):
         reserved = {"model", "messages", "timeout", "api_key", "api_base", "temperature", "reasoning_effort"}
         request_overrides.update(
@@ -1632,7 +1666,6 @@ def chat_completion_with_metadata(
     messages: list[dict[str, Any]],
     model_name: str | None = None,
     llm_settings: Any | None = None,
-    max_tokens: int | None = None,
     cancel_event: Any | None = None,
     retry_callback: Any | None = None,
     tools: list[dict[str, Any]] | None = None,
@@ -1663,11 +1696,6 @@ def chat_completion_with_metadata(
         "timeout": request_timeout,
     }
     request_payload.update(request_overrides)
-    if max_tokens is not None:
-        try:
-            request_payload["max_tokens"] = max(1, int(max_tokens))
-        except (TypeError, ValueError):
-            logging.warning("Ignoring invalid max_tokens value: %r", max_tokens)
     if tools:
         request_payload["tools"] = copy.deepcopy(tools)
         if tool_choice is not None:
@@ -1680,6 +1708,7 @@ def chat_completion_with_metadata(
     reasoning_effort = _request_reasoning_effort(model_record, llm_settings)
     if reasoning_effort:
         request_payload["reasoning_effort"] = reasoning_effort
+    request_payload = strip_output_limit_options(request_payload)
 
     try:
         max_attempts = max(1, min(20, int(_read_setting(llm_settings, "llm_max_attempts", 5) or 5)))
@@ -1799,14 +1828,12 @@ def chat_completion(
     messages: list[dict[str, Any]],
     model_name: str | None = None,
     llm_settings: Any | None = None,
-    max_tokens: int | None = None,
 ) -> str:
     """Runs a LiteLLM chat completion using Pandrator's configured providers."""
     result = chat_completion_with_metadata(
         messages=messages,
         model_name=model_name,
         llm_settings=llm_settings,
-        max_tokens=max_tokens,
     )
     return result.content
 
@@ -1867,6 +1894,7 @@ def _make_api_request(
         reasoning_effort = _request_reasoning_effort(model_record, llm_settings)
         if reasoning_effort:
             request_payload["reasoning_effort"] = reasoning_effort
+    request_payload = strip_output_limit_options(request_payload)
     logging.info("LiteLLM request model=%s", resolved_model)
     logging.debug("LiteLLM request payload: %s", request_payload)
 

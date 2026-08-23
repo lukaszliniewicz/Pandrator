@@ -3,7 +3,13 @@ import threading
 import unittest
 from types import SimpleNamespace
 
-from pandrator.web.speech_planning import detect_candidates, plan_speech_text
+from pandrator.web.speech_planning import (
+    FLEXIBLE_SYSTEM_PROMPT,
+    GUARDED_SYSTEM_PROMPT,
+    SPEECH_PROMPT_REVISION,
+    detect_candidates,
+    plan_speech_text,
+)
 
 
 def _decision_for(candidate):
@@ -28,6 +34,93 @@ def _decision_for(candidate):
 
 
 class SpeechPlanningTests(unittest.TestCase):
+    def test_polish_guidance_uses_language_not_voice_language_and_normalizes_codes(
+        self,
+    ):
+        captured = []
+
+        def complete(*, messages, **kwargs):
+            captured.append((messages, kwargs))
+            payload = json.loads(
+                messages[-1]["content"].split("Plan this single speech sentence:\n", 1)[
+                    1
+                ]
+            )
+            return json.dumps(
+                {
+                    "case_id": payload["case_id"],
+                    "decisions": [],
+                    "discoveries": [],
+                    "prosody": [],
+                }
+            )
+
+        for language in ("pl", "pl-PL", "PL_pl"):
+            plan_speech_text(
+                "A sentence.",
+                language=language,
+                voice_language="en",
+                mode="guarded",
+                model_name="local/test",
+                llm_settings=SimpleNamespace(),
+                completion_func=complete,
+            )
+        plan_speech_text(
+            "A sentence.",
+            language="en",
+            voice_language="pl",
+            mode="guarded",
+            model_name="local/test",
+            llm_settings=SimpleNamespace(),
+            completion_func=complete,
+        )
+
+        self.assertEqual(4, len(captured))
+        for messages, _kwargs in captured[:3]:
+            self.assertIn("Polish-target speech", messages[0]["content"])
+            self.assertIn("i after a consonant", messages[0]["content"])
+        self.assertNotIn("Polish-target speech", captured[3][0][0]["content"])
+
+    def test_speech_completion_does_not_set_max_tokens_and_plan_has_revision(self):
+        captured_kwargs = []
+
+        def complete(*, messages, **kwargs):
+            captured_kwargs.append(kwargs)
+            payload = json.loads(
+                messages[-1]["content"].split("Plan this single speech sentence:\n", 1)[
+                    1
+                ]
+            )
+            return json.dumps(
+                {
+                    "case_id": payload["case_id"],
+                    "decisions": [],
+                    "discoveries": [],
+                    "prosody": [],
+                }
+            )
+
+        result = plan_speech_text(
+            "A sentence.",
+            language="en",
+            voice_language="en",
+            mode="guarded",
+            model_name="local/test",
+            llm_settings=SimpleNamespace(),
+            completion_func=complete,
+        )
+
+        self.assertTrue(captured_kwargs)
+        self.assertTrue(all("max_tokens" not in kwargs for kwargs in captured_kwargs))
+        self.assertEqual(SPEECH_PROMPT_REVISION, result.plan["prompt_revision"])
+
+    def test_base_prompts_have_no_case_specific_pronunciation_example(self):
+        for prompt in (GUARDED_SYSTEM_PROMPT, FLEXIBLE_SYSTEM_PROMPT):
+            self.assertNotIn("łys-kon-syn", prompt)
+            self.assertNotIn("Wisconsin", prompt)
+            self.assertNotIn("Sims", prompt)
+            self.assertNotIn("coach", prompt)
+
     def test_imaoka_is_detected_and_guarded_plan_compiles_structured_respelling(self):
         candidates, _known = detect_candidates(
             "Dr. Imaoka paid 20,000 francs.",

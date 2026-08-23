@@ -173,7 +173,8 @@ class WebResearchTests(unittest.TestCase):
 
         self.assertEqual(2, len(calls))
         self.assertEqual("auto", calls[0]["tool_choice"])
-        self.assertGreaterEqual(calls[0]["max_tokens"], 4096)
+        self.assertNotIn("max_tokens", calls[0])
+        self.assertNotIn("max_tokens", calls[1])
         assistant_turn = calls[1]["messages"][-2]
         tool_turn = calls[1]["messages"][-1]
         self.assertEqual(
@@ -294,6 +295,26 @@ class WebResearchTests(unittest.TestCase):
             self.assertTrue(second["cached"])
             self.assertEqual(1, len(http.calls))
             self.assertNotIn("secret-value", json.dumps(second))
+            database.dispose()
+
+    def test_jina_reader_preserves_external_max_tokens_header(self):
+        with tempfile.TemporaryDirectory() as directory:
+            paths = prepare_web_test_data_root(directory)
+            database = Database(paths.database)
+            http = _FakeHttpSession()
+            provider = JinaResearchProvider(
+                api_key="secret-value",
+                cache=PersistentResearchCache(database),
+                http_session=http,
+            )
+
+            provider.read_url("https://example.com/guide", max_tokens=7_500)
+
+            self.assertEqual(1, len(http.calls))
+            self.assertEqual(
+                "7500",
+                http.calls[0][1]["headers"]["X-Max-Tokens"],
+            )
             database.dispose()
 
     def test_context_batches_cover_every_character_within_budget(self):
