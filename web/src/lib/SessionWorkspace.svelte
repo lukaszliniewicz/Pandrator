@@ -208,6 +208,11 @@
   let xttsModelId = $state('');
   let xttsModelFiles = $state<File[]>([]);
   let uploadingXttsModel = $state(false);
+  let xttsModelUploadProgress = $state(0);
+  let xttsModelUploadPhase = $state<'idle' | 'transferring' | 'installing'>(
+    'idle'
+  );
+  let xttsModelUploadError = $state('');
   let xttsModelUploadMessage = $state('');
   let xttsModels = $state<XttsModel[]>([]);
   let xttsModelsLoading = $state(false);
@@ -966,6 +971,7 @@
   ] as const;
   function chooseXttsModelFiles(files: FileList | null) {
     xttsModelFiles = Array.from(files ?? []);
+    xttsModelUploadError = '';
     xttsModelUploadMessage = '';
   }
 
@@ -1001,18 +1007,32 @@
   }
 
   async function uploadXttsModel() {
+    if (uploadingXttsModel) return;
+    error = '';
     const validationError = xttsModelBundleError();
     if (validationError) {
-      error = validationError;
+      xttsModelUploadError = validationError;
+      xttsModelUploadMessage = '';
       return;
     }
     uploadingXttsModel = true;
-    error = '';
-    xttsModelUploadMessage = 'Uploading and installing the XTTS model…';
+    xttsModelUploadProgress = 0;
+    xttsModelUploadPhase = 'transferring';
+    xttsModelUploadError = '';
+    xttsModelUploadMessage = 'Uploading the XTTS model…';
     try {
       const uploaded = await sessionApi.uploadXttsModel(
         xttsModelId.trim(),
-        xttsModelFiles
+        xttsModelFiles,
+        (fraction) => {
+          xttsModelUploadProgress = Math.max(0, Math.min(1, fraction));
+        },
+        () => {
+          xttsModelUploadProgress = 1;
+          xttsModelUploadPhase = 'installing';
+          xttsModelUploadMessage =
+            'Upload transferred; Pandrator is installing the model…';
+        }
       );
       await loadSpeechCatalogues(true, true);
       await loadXttsModels();
@@ -1030,10 +1050,11 @@
       xttsModelFiles = [];
       xttsModelUploadMessage = `Installed ${uploaded.id} (${(uploaded.bytes / (1024 * 1024)).toFixed(1)} MB) and selected it for this generation.`;
     } catch (caught) {
-      error = errorMessage(caught);
+      xttsModelUploadError = errorMessage(caught);
       xttsModelUploadMessage = '';
     } finally {
       uploadingXttsModel = false;
+      xttsModelUploadPhase = 'idle';
     }
   }
 
@@ -3310,12 +3331,38 @@
                     /> Uploading model…{:else}<CloudUpload size={14} /> Upload and
                     select{/if}</button
                 >
-                {#if xttsModelUploadMessage}<span
+                {#if xttsModelUploadError}<p
+                    class="basis-full rounded-lg border border-red-300 bg-red-50 p-3 text-xs text-red-800"
+                    role="alert"
+                  >
+                    {xttsModelUploadError}
+                  </p>{/if}
+                {#if xttsModelUploadMessage && !uploadingXttsModel}<span
                     class="text-xs"
                     role="status"
                     aria-live="polite">{xttsModelUploadMessage}</span
                   >{/if}
               </div>
+              {#if uploadingXttsModel}<div class="mt-3">
+                  <div
+                    class="mb-1.5 flex items-center justify-between gap-3 text-xs"
+                  >
+                    <span class="muted"
+                      >{xttsModelUploadPhase === 'installing'
+                        ? 'Upload transferred; Pandrator is installing the model…'
+                        : 'Uploading the XTTS model…'}</span
+                    ><span class="muted tabular-nums"
+                      >{Math.round(xttsModelUploadProgress * 100)}%</span
+                    >
+                  </div>
+                  <progress
+                    class="h-2 w-full overflow-hidden rounded-full accent-[var(--accent)]"
+                    max="1"
+                    value={xttsModelUploadProgress}
+                    aria-label="XTTS model upload progress"
+                    >{Math.round(xttsModelUploadProgress * 100)}%</progress
+                  >
+                </div>{/if}
             </section>
           {/if}
           <label class="text-sm font-semibold"

@@ -131,8 +131,10 @@ function serializeBody(body: unknown, headers: Headers) {
   return JSON.stringify(body);
 }
 
-async function errorFromResponse(response: Response) {
-  const payload: unknown = await response.json().catch(() => undefined);
+const XHR_NETWORK_ERROR_MESSAGE =
+  'The upload connection was interrupted. Check free disk space and the Pandrator Manager + XTTS logs, then retry.';
+
+function errorFromPayload(status: number, payload: unknown, requestId = '') {
   const envelope =
     payload && typeof payload === 'object'
       ? (payload as { error?: unknown }).error
@@ -147,11 +149,20 @@ async function errorFromResponse(response: Response) {
         })
       : {};
   return new ApiError(
-    response.status,
+    status,
     String(error.code ?? 'request_failed'),
-    String(error.message ?? `Request failed (${response.status})`),
+    String(error.message ?? `Request failed (${status})`),
     error.details,
-    String(error.request_id ?? response.headers.get('X-Request-ID') ?? '')
+    String(error.request_id ?? requestId)
+  );
+}
+
+async function errorFromResponse(response: Response) {
+  const payload: unknown = await response.json().catch(() => undefined);
+  return errorFromPayload(
+    response.status,
+    payload,
+    response.headers.get('X-Request-ID') ?? ''
   );
 }
 
@@ -187,6 +198,89 @@ export async function apiJson<T>(
   const response = await apiResponse(path, init);
   if (response.status === 204) return undefined as T;
   return (await response.json()) as T;
+}
+
+export type UploadProgressCallback = (fraction: number) => void;
+export type UploadTransferCompleteCallback = () => void;
+
+/**
+ * Send a JSON-response request with a browser-visible upload progress stream.
+ *
+ * XHR is used here because fetch does not expose request-body transfer events
+ * in the browsers supported by the application. The request keeps the same
+ * mutation headers and credential defaults as apiResponse, and deliberately
+ * leaves the XHR timeout at its browser default (zero / no timeout).
+ */
+export function apiJsonUpload<T>(
+  path: string,
+  init: RequestInit = {},
+  onProgress?: UploadProgressCallback,
+  onTransferComplete?: UploadTransferCompleteCallback
+): Promise<T> {
+  const headers = new Headers(init.headers);
+  const method = String(init.method ?? 'GET').toUpperCase();
+  const isMutation = !['GET', 'HEAD', 'OPTIONS'].includes(method);
+  if (isMutation && !headers.has('Idempotency-Key')) {
+    headers.set('Idempotency-Key', createIdempotencyKey());
+  }
+  if (csrfToken && isMutation) {
+    headers.set('X-CSRF-Token', csrfToken);
+  }
+  const body = serializeBody(init.body, headers);
+  const url = path.startsWith('/api/v1') ? path : `/api/v1${path}`;
+
+  return new Promise<T>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    const credentials = init.credentials ?? 'same-origin';
+    let transferComplete = false;
+    const markTransferComplete = () => {
+      if (transferComplete) return;
+      transferComplete = true;
+      onProgress?.(1);
+      onTransferComplete?.();
+    };
+    const rejectNetworkError = () =>
+      reject(new ApiError(0, 'network_error', XHR_NETWORK_ERROR_MESSAGE));
+
+    xhr.open(method, url, true);
+    xhr.withCredentials = credentials === 'include';
+    headers.forEach((value, key) => xhr.setRequestHeader(key, value));
+    xhr.upload.addEventListener('progress', (event) => {
+      if (!event.lengthComputable || event.total <= 0) return;
+      onProgress?.(Math.max(0, Math.min(1, event.loaded / event.total)));
+    });
+    xhr.upload.addEventListener('load', markTransferComplete);
+    xhr.addEventListener('load', () => {
+      if (xhr.status < 200 || xhr.status >= 300) {
+        let payload: unknown;
+        try {
+          payload = xhr.responseText ? JSON.parse(xhr.responseText) : undefined;
+        } catch {
+          payload = undefined;
+        }
+        reject(
+          errorFromPayload(
+            xhr.status,
+            payload,
+            xhr.getResponseHeader('X-Request-ID') ?? ''
+          )
+        );
+        return;
+      }
+      if (xhr.status === 204) {
+        resolve(undefined as T);
+        return;
+      }
+      try {
+        resolve(JSON.parse(xhr.responseText) as T);
+      } catch (caught) {
+        reject(caught);
+      }
+    });
+    xhr.addEventListener('error', rejectNetworkError);
+    xhr.addEventListener('abort', rejectNetworkError);
+    xhr.send(body as XMLHttpRequestBodyInit | null);
+  });
 }
 
 export async function typedApiJson<

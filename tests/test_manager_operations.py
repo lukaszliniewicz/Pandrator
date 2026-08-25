@@ -22,7 +22,10 @@ from pandrator_manager.models import (
     TERMINAL_OPERATION_STATES,
     ComponentDefinition,
     DesiredComponentState,
+    HealthResult,
+    HealthState,
     ManagedProcessSpec,
+    ManagedService,
     OperationKind,
     OperationState,
     TaskState,
@@ -367,6 +370,100 @@ class OperationEngineTests(unittest.TestCase):
                 mock.call.start("pandrator.worker"),
             ],
         )
+
+    def test_stop_and_validate_preserve_desired_running_when_process_is_absent(self):
+        handler = FilesystemTaskHandler()
+        supervisor = mock.Mock()
+        supervisor.snapshot.return_value = [
+            ManagedService(
+                id="fixture.service",
+                component_id="fixture",
+                service_key="fixture.service",
+                desired_running=True,
+                health=HealthResult(
+                    state=HealthState.UNHEALTHY,
+                    service_id="fixture.service",
+                ),
+                process=None,
+            )
+        ]
+        execution = mock.Mock()
+        execution.supervisor = supervisor
+        definition = mock.Mock(
+            id="fixture",
+            label="Fixture component",
+            service_key="fixture.service",
+        )
+        task = mock.Mock(component_id="fixture")
+        with mock.patch.object(handler, "_definition", return_value=definition):
+            stopped = handler._execute_stop_service(execution, task)
+
+        self.assertFalse(stopped["was_running"])
+        self.assertTrue(stopped["desired_running"])
+        supervisor.stop.assert_called_once_with("fixture.service")
+
+        execution.plan.desired = {"fixture": DesiredComponentState()}
+        execution.prior_results = {"fixture:stop": stopped}
+        execution.registry.driver.return_value.resolve.return_value = (
+            mock.sentinel.resolved
+        )
+        replacement = ManagedProcessSpec(
+            service_id="fixture.service",
+            component_id="fixture",
+            label="Fixture service",
+            executable=sys.executable,
+            arguments=("-c", "pass"),
+        )
+        execution.service_spec_factory.return_value = replacement
+        supervisor.replace_spec.return_value = None
+        supervisor.start.return_value = mock.Mock(health=None)
+        with mock.patch.object(handler, "_definition", return_value=definition):
+            validated = handler._execute_validate_service(execution, task)
+
+        self.assertTrue(validated["kept_running"])
+        supervisor.start.assert_called_once_with("fixture.service")
+        # The service was already absent, so validation must not stop the
+        # replacement merely because the old process was transiently gone.
+        supervisor.stop.assert_called_once_with("fixture.service")
+
+        handler._rollback_stop_service(
+            execution,
+            task,
+            {
+                "service_id": "fixture.service",
+                "was_running": False,
+                "desired_running": True,
+            },
+        )
+        self.assertEqual(
+            supervisor.start.call_args_list,
+            [mock.call("fixture.service"), mock.call("fixture.service")],
+        )
+
+    def test_operation_execution_holds_shared_lifecycle_lock(self):
+        lifecycle_lock = self.application.lifecycle_lock
+        engine = OperationEngine(
+            self.application.context,
+            self.application.store,
+            self.application.registry,
+            lifecycle_lock=lifecycle_lock,
+        )
+        entered = threading.Event()
+        release = threading.Event()
+
+        def observe_lock(_operation_id):
+            entered.set()
+            self.assertTrue(release.wait(timeout=5))
+
+        with mock.patch.object(engine, "_execute_locked", side_effect=observe_lock):
+            worker = threading.Thread(target=engine._execute, args=("operation",))
+            worker.start()
+            self.assertTrue(entered.wait(timeout=5))
+            self.assertFalse(lifecycle_lock.acquire(blocking=False))
+            release.set()
+            worker.join(timeout=5)
+
+        self.assertFalse(worker.is_alive())
 
     def test_update_activation_failure_restores_previous_slot(self):
         first_engine = OperationEngine(

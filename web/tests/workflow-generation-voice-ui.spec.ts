@@ -363,6 +363,7 @@ test('XTTS model management lists, installs, selects, removes, and guides legacy
   const builtin = 'tts_models/multilingual/multi-dataset/xtts_v2';
   let legacy = false;
   let installed = false;
+  let uploadAttempt = 0;
   const deletedModelIds: string[] = [];
   await page.route('**/api/v1/services/tts?refresh=true', (route) =>
     route.fulfill({
@@ -393,6 +394,12 @@ test('XTTS model management lists, installs, selects, removes, and guides legacy
   await page.route('**/api/v1/services/tts/xtts/models**', async (route) => {
     const method = route.request().method();
     if (method === 'POST') {
+      uploadAttempt += 1;
+      if (uploadAttempt === 1) {
+        await route.abort('failed');
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250));
       installed = true;
       await route.fulfill({
         contentType: 'application/json',
@@ -518,6 +525,27 @@ test('XTTS model management lists, installs, selects, removes, and guides legacy
     }
   ]);
   await dialog.getByRole('button', { name: /Upload and select/ }).click();
+  await expect(dialog.getByRole('alert')).toContainText(
+    'upload connection was interrupted'
+  );
+  await expect(dialog.getByLabel('Model ID')).toHaveValue('custom/new-voice');
+  await expect
+    .poll(() =>
+      dialog
+        .locator('input[type=file]')
+        .evaluate((element) =>
+          Array.from(
+            (element as HTMLInputElement).files ?? [],
+            (file) => file.name
+          )
+        )
+    )
+    .toEqual(['config.json', 'model.pth', 'speakers_xtts.pth', 'vocab.json']);
+
+  await dialog.getByRole('button', { name: /Upload and select/ }).click();
+  await expect(
+    dialog.getByRole('progressbar', { name: 'XTTS model upload progress' })
+  ).toBeVisible();
   await expect.poll(() => installed).toBeTruthy();
   await expect(
     dialog.getByText('custom/new-voice', { exact: true })

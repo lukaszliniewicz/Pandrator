@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import queue
 import threading
+from _thread import RLock as RLockType
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
@@ -50,6 +51,7 @@ class OperationEngine:
         task_handler: FilesystemTaskHandler | None = None,
         service_spec_factory=None,
         release_authority: ReleaseAuthority | None = None,
+        lifecycle_lock: RLockType | None = None,
         manager_handoff_callback: (
             Callable[[OperationTaskContext, dict], None] | None
         ) = None,
@@ -62,6 +64,12 @@ class OperationEngine:
         self.task_handler = task_handler or FilesystemTaskHandler()
         self.service_spec_factory = service_spec_factory
         self.release_authority = release_authority
+        # The daemon passes ManagerApplication's lock here so durable
+        # maintenance cannot interleave with direct runtime mutations.  A
+        # private default keeps standalone/test callers backwards compatible.
+        self.lifecycle_lock = (
+            lifecycle_lock if lifecycle_lock is not None else threading.RLock()
+        )
         self.manager_handoff_callback = manager_handoff_callback
         self.fault_injector = fault_injector
         self._queue: queue.Queue[str | None] = queue.Queue()
@@ -145,6 +153,14 @@ class OperationEngine:
             )
 
     def _execute(self, operation_id: str) -> None:
+        # Hold the lifecycle-wide lock for the complete operation, including
+        # task execution, rollback, and finalization.  Direct API mutations
+        # use the same lock non-blockingly and therefore fail fast while an
+        # operation is changing managed runtime state.
+        with self.lifecycle_lock:
+            self._execute_locked(operation_id)
+
+    def _execute_locked(self, operation_id: str) -> None:
         operation = self.store.get_operation(operation_id)
         if (
             operation.state in TERMINAL_OPERATION_STATES

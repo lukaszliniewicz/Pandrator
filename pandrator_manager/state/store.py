@@ -581,6 +581,26 @@ class ManagerStore:
                     operation["record_json"]
                 ), False
 
+            terminal_states = sorted(
+                state.value for state in TERMINAL_OPERATION_STATES
+            )
+            placeholders = ",".join("?" for _ in terminal_states)
+            active = connection.execute(
+                f"""
+                SELECT operation_id
+                FROM operations
+                WHERE state NOT IN ({placeholders})
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                terminal_states,
+            ).fetchone()
+            if active is not None:
+                raise ConflictError(
+                    "Another manager operation is already in progress.",
+                    {"active_operation_id": str(active["operation_id"])},
+                )
+
             row = connection.execute(
                 """
                 SELECT digest, expected_revision, expires_at, consumed_at

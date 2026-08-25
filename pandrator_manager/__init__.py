@@ -2,7 +2,7 @@
 
 from typing import TYPE_CHECKING
 
-__version__ = "0.9.16"
+__version__ = "0.9.17"
 
 if TYPE_CHECKING:
     from .application import ManagerApplication

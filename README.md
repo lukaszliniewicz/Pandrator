@@ -15,22 +15,22 @@ computer. Cloud language and speech providers are optional.
 ## Quick start
 
 The current release is
-[Pandrator 0.8.14](https://github.com/lukaszliniewicz/Pandrator/releases/tag/v.0.8.14)
-with Pandrator Manager 0.9.16. The Manager installs Pandrator, launches it, and
+[Pandrator 0.8.15](https://github.com/lukaszliniewicz/Pandrator/releases/tag/v.0.8.15)
+with Pandrator Manager 0.9.17. The Manager installs Pandrator, launches it, and
 lets you add or remove speech components later. Docker and WSL are not
 required.
 
 ### Windows
 
 1. Download
-   [PandratorManager-0.9.16-windows-x86_64.exe](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.8.14/PandratorManager-0.9.16-windows-x86_64.exe).
+   [PandratorManager-0.9.17-windows-x86_64.exe](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.8.15/PandratorManager-0.9.17-windows-x86_64.exe).
 2. Run it and choose the parent folder for your installation.
 3. Let the Manager install Pandrator, then open the browser interface.
 4. Under **Providers & services**, install only the local models you want.
 
 The Windows executable is not Authenticode-signed, so Windows may show
 **Unknown publisher** or a SmartScreen warning. The
-[release page](https://github.com/lukaszliniewicz/Pandrator/releases/tag/v.0.8.14)
+[release page](https://github.com/lukaszliniewicz/Pandrator/releases/tag/v.0.8.15)
 collects the checksums for all downloadable files in one `SHA256SUMS` file.
 
 ### Linux
@@ -38,15 +38,15 @@ collects the checksums for all downloadable files in one `SHA256SUMS` file.
 Download the AppImage, make it executable, and run it:
 
 ```bash
-chmod +x PandratorManager-0.9.16-x86_64.AppImage
-./PandratorManager-0.9.16-x86_64.AppImage
+chmod +x PandratorManager-0.9.17-x86_64.AppImage
+./PandratorManager-0.9.17-x86_64.AppImage
 ```
 
 The first launch asks where to create the managed `Pandrator` folder. On a
 headless machine, choose the workspace explicitly:
 
 ```bash
-./PandratorManager-0.9.16-x86_64.AppImage \
+./PandratorManager-0.9.17-x86_64.AppImage \
   setup --workspace /srv/pandrator --no-open
 ```
 
@@ -57,8 +57,9 @@ If AppImage mounting is unavailable, prefix the command with
 
 Download and run the newer Manager file for your operating system. It reuses
 the remembered installation when possible; if it asks for a folder, choose the
-same parent folder as before. Then use **Review update** in the Manager for
-Pandrator or any installed engine. Projects, generated media, and other user
+same parent folder as before. Then use **Review updates** in the Manager to
+prepare one plan for all available local engine updates, or review an
+individual component. Projects, generated media, and other user
 data are kept separately from replaceable application runtimes.
 
 The Manager keeps the application, model environments, caches, services, and

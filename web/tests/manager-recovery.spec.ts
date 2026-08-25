@@ -50,6 +50,8 @@ type ManagerComponent = {
   inspection: {
     component_id: string;
     state: string;
+    installed_version?: string | null;
+    installed_revision?: string | null;
     problems: string[];
     evidence: string[];
     resolved: {
@@ -483,4 +485,107 @@ test('Pandrator sends selected Qwen and Fish install options to the manager', as
     },
     expected_revision: 7
   });
+});
+
+test('Pandrator reviews eligible local updates as one exact batch plan', async ({
+  page
+}) => {
+  const kokoro = component('kokoro', 'Kokoro', 'tts.kokoro');
+  kokoro.inspection.installed_revision =
+    'abcdef1234567890abcdef1234567890abcdef12';
+  kokoro.desired = {
+    present: true,
+    compute: 'cpu',
+    quantization: 'q8_0',
+    options: { model_size: 'medium', start_after_install: true }
+  };
+  kokoro.inspection.resolved = {
+    compute: 'cpu',
+    platform: 'test',
+    quantization: 'q8_0',
+    options: { model_size: 'medium' }
+  };
+  const fish = component('fish_speech', 'Fish Speech', 'tts.fish_speech');
+  fish.desired.options = { model: 's2-pro' };
+  fish.inspection.resolved.options = { model: 's2-pro' };
+  const degraded = component('degraded', 'Needs repair', 'tts.degraded');
+  degraded.inspection.state = 'degraded';
+  const absent = component('absent', 'Not installed', 'tts.absent');
+  absent.inspection.state = 'absent';
+  const removeOnly = component('remove_only', 'Remove only', 'tts.remove');
+  removeOnly.definition.supported_actions = ['remove'];
+  const pandrator = component('pandrator', 'Pandrator', null);
+
+  const planRequests: Array<Record<string, unknown>> = [];
+  await page.route('**/api/v1/manager/**', async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path === '/api/v1/manager/status') {
+      await fulfillJson(route, {
+        available: true,
+        configured: true,
+        status: { configuration_revision: 11, active_operation_id: null }
+      });
+    } else if (path === '/api/v1/manager/components') {
+      await fulfillJson(route, {
+        items: [pandrator, kokoro, fish, degraded, absent, removeOnly]
+      });
+    } else if (path === '/api/v1/manager/services') {
+      await fulfillJson(route, { items: [] });
+    } else if (path === '/api/v1/manager/releases') {
+      await fulfillJson(route, { current: {}, items: [] });
+    } else if (path === '/api/v1/manager/plans') {
+      planRequests.push(request.postDataJSON() as Record<string, unknown>);
+      await fulfillJson(route, {
+        id: 'batch-plan',
+        digest: 'batch-digest',
+        kind: 'update',
+        tasks: [],
+        warnings: [],
+        confirmations: [],
+        estimated_download_bytes: 0,
+        estimated_disk_bytes: 0
+      });
+    } else {
+      await fulfillJson(route, {});
+    }
+  });
+
+  await signIn(page);
+  await page.goto('/providers?tab=local');
+  const card = page.locator('#component-kokoro');
+  await expect(card.getByText('rev abcdef12', { exact: true })).toBeVisible();
+  await expect(
+    card.locator(
+      '[title="Installed revision abcdef1234567890abcdef1234567890abcdef12"]'
+    )
+  ).toBeVisible();
+
+  const batchButton = page.getByRole('button', {
+    name: 'Review updates (2)'
+  });
+  await expect(batchButton).toBeEnabled();
+  await batchButton.click();
+  await expect.poll(() => planRequests.length).toBe(1);
+
+  expect(planRequests[0]).toMatchObject({
+    kind: 'update',
+    expected_revision: 11,
+    desired: {
+      kokoro: {
+        present: true,
+        compute: 'cpu',
+        quantization: 'q8_0',
+        options: { model_size: 'medium', start_after_install: false }
+      },
+      fish_speech: {
+        present: true,
+        compute: 'cpu',
+        options: { model: 's2-pro', start_after_install: false }
+      }
+    }
+  });
+  expect(
+    Object.keys(planRequests[0].desired as Record<string, unknown>)
+  ).toEqual(['kokoro', 'fish_speech']);
 });

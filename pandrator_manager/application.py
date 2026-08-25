@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -61,6 +62,10 @@ class ManagerApplication:
         )
         self.instance_id: str | None = None
         self.operation_queue: OperationQueue | None = None
+        # All durable operations and direct runtime mutations in the daemon
+        # share this process-local lock.  It is intentionally owned by the
+        # application so every composition path can use the same instance.
+        self.lifecycle_lock = threading.RLock()
 
     def configure_release_trust(self, trust_root: TrustStore) -> None:
         """Inject a test/release-qualification root at the composition boundary."""

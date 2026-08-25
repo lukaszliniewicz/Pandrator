@@ -387,6 +387,7 @@ def run_daemon(
             application.store,
             application.registry,
             supervisor=supervisor,
+            lifecycle_lock=application.lifecycle_lock,
             release_authority=application.release_authority,
             manager_handoff_callback=coordinate_handoff,
             service_spec_factory=(

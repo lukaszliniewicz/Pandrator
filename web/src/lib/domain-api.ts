@@ -1,4 +1,10 @@
-import { typedApiJson, type ApiSchema } from './api';
+import {
+  apiJsonUpload,
+  typedApiJson,
+  type ApiSchema,
+  type UploadProgressCallback,
+  type UploadTransferCompleteCallback
+} from './api';
 import type {
   AgentRun,
   AgentStep,
@@ -341,15 +347,21 @@ export const sessionApi = {
         }
       }
     ),
-  uploadXttsModel: (modelId: string, files: File[]) => {
+  uploadXttsModel: (
+    modelId: string,
+    files: File[],
+    onProgress?: UploadProgressCallback,
+    onTransferComplete?: UploadTransferCompleteCallback
+  ) => {
     const body = new FormData();
     body.set('model_id', modelId);
     for (const file of files) body.append('files', file, file.name);
-    return typedApiJson<
+    return apiJsonUpload<XttsModelUpload>(
       '/api/v1/services/tts/xtts/models',
-      'post',
-      XttsModelUpload
-    >('/api/v1/services/tts/xtts/models', 'post', { body });
+      { method: 'POST', body },
+      onProgress,
+      onTransferComplete
+    );
   },
   xttsModels: () =>
     typedApiJson<'/api/v1/services/tts/xtts/models', 'get', XttsModelCatalogue>(

@@ -1068,6 +1068,46 @@ def create_api(
                 http_status=409,
             )
 
+    def lifecycle_guard(action: str):
+        """Reject direct runtime mutations while durable maintenance runs."""
+
+        def decorate(handler):
+            @wraps(handler)
+            def wrapped(*args, **kwargs):
+                if not application.lifecycle_lock.acquire(blocking=False):
+                    raise ManagerError(
+                        "maintenance_in_progress",
+                        "Manager maintenance is active; retry the runtime action "
+                        "after it completes.",
+                        {"action": action},
+                        409,
+                    )
+                try:
+                    active = application.store.list_operations(
+                        active_only=True,
+                        limit=1,
+                    )
+                    if active:
+                        operation = active[0]
+                        raise ManagerError(
+                            "maintenance_in_progress",
+                            "Manager maintenance is active; retry the runtime "
+                            "action after it completes.",
+                            {
+                                "action": action,
+                                "active_operation_id": operation.id,
+                                "active_operation_state": operation.state.value,
+                            },
+                            409,
+                        )
+                    return handler(*args, **kwargs)
+                finally:
+                    application.lifecycle_lock.release()
+
+            return wrapped
+
+        return decorate
+
     def refresh_application_specs() -> None:
         active = {
             service.id
@@ -1101,6 +1141,7 @@ def create_api(
         for specification in specifications:
             supervisor.replace_spec(specification)
 
+    @lifecycle_guard("start")
     def start_application() -> dict:
         emit_application_event("application.action_requested", "start")
         try:
@@ -1125,6 +1166,7 @@ def create_api(
             application_environment.pop("PANDRATOR_OWNER_PASSWORD", None)
         return application_snapshot()
 
+    @lifecycle_guard("stop")
     def stop_application() -> dict:
         emit_application_event("application.action_requested", "stop")
         try:
@@ -1144,6 +1186,7 @@ def create_api(
         emit_application_event("application.stopped", "stop")
         return application_snapshot()
 
+    @lifecycle_guard("launch")
     def launch_url() -> str:
         current = application_snapshot()
         if not current["running"] or not current["healthy"]:
@@ -1215,6 +1258,7 @@ def create_api(
 
     @api.post("/v1/application/restart")
     @idempotent
+    @lifecycle_guard("restart")
     def application_restart():
         emit_application_event("application.action_requested", "restart")
         try:
@@ -1655,6 +1699,7 @@ def create_api(
         )
         return jsonify(service_id=service_id, tail=_tail(path, maximum))
 
+    @lifecycle_guard("runtime")
     def runtime_action(action: str):
         payload = RuntimeRequest.model_validate(
             request.get_json(silent=True) or {}

@@ -162,6 +162,16 @@
       )
     }
   ]);
+  const updateCandidates = $derived(
+    components.filter(
+      (component) =>
+        component.inspection.state === 'present' &&
+        component.definition.supported_actions.includes('update')
+    )
+  );
+  const operationBusy = $derived(
+    Boolean(operation && !MANAGER_TERMINAL_STATES.has(operation.state))
+  );
 
   const formatBytes = (value: number) => {
     if (!value) return 'No estimate';
@@ -481,6 +491,42 @@
     }
   }
 
+  async function createBatchPlan() {
+    if (!updateCandidates.length || operationBusy || planning) return;
+    planning = 'batch';
+    error = '';
+    notice = '';
+    try {
+      const desired = Object.fromEntries(
+        updateCandidates.map((component) => [
+          component.definition.id,
+          {
+            present: true,
+            compute: configuredCompute(component),
+            quantization:
+              component.desired?.quantization ??
+              component.inspection.resolved?.quantization ??
+              null,
+            options: {
+              ...(component.inspection.resolved?.options ?? {}),
+              ...(component.desired?.options ?? {}),
+              start_after_install: false
+            }
+          }
+        ])
+      );
+      pendingPlan = await managerApi.plan<ManagerPlan>({
+        kind: 'update',
+        desired,
+        expected_revision: status?.status?.configuration_revision
+      });
+    } catch (caught) {
+      report(caught);
+    } finally {
+      planning = '';
+    }
+  }
+
   async function executePlan() {
     if (!pendingPlan) return;
     const plan = pendingPlan;
@@ -707,6 +753,21 @@
     <button class="btn btn-secondary" onclick={load} disabled={loading}>
       <RefreshCw size={16} class={loading ? 'animate-spin' : ''} /> Refresh
     </button>
+    <button
+      class="btn btn-secondary"
+      disabled={loading ||
+        Boolean(planning) ||
+        Boolean(runtimeBusy) ||
+        operationBusy ||
+        !updateCandidates.length}
+      onclick={createBatchPlan}
+    >
+      {#if planning === 'batch'}<LoaderCircle
+          class="animate-spin"
+          size={15}
+        />{:else}<RefreshCw size={15} />{/if}
+      Review updates ({updateCandidates.length})
+    </button>
   </div>
 
   {#if error}
@@ -794,6 +855,10 @@
                 {@const runtimeState = runtimeStateFor(component, service)}
                 {@const installed = component.inspection.state === 'present'}
                 {@const degraded = component.inspection.state === 'degraded'}
+                {@const installedVersion =
+                  component.inspection.installed_version?.trim() ?? ''}
+                {@const installedRevision =
+                  component.inspection.installed_revision?.trim() ?? ''}
                 {@const busy =
                   planning === component.definition.id ||
                   runtimeBusy === component.definition.id ||
@@ -815,6 +880,21 @@
                           ? ` · port ${component.definition.default_port}`
                           : ''}
                       </div>
+                      {#if installedVersion || installedRevision}
+                        <div class="muted mt-1 text-xs">
+                          {#if installedVersion}<span
+                              title={'Installed version ' + installedVersion}
+                              >v{installedVersion}</span
+                            >{/if}
+                          {#if installedVersion && installedRevision}
+                            <span class="mx-1">·</span>
+                          {/if}
+                          {#if installedRevision}<span
+                              title={'Installed revision ' + installedRevision}
+                              >rev {installedRevision.slice(0, 8)}</span
+                            >{/if}
+                        </div>
+                      {/if}
                     </div>
                     <span
                       class={`status-dot ${runtimeState.state}`}

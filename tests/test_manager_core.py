@@ -15,6 +15,7 @@ from unittest import mock
 
 import certifi
 import psutil
+
 from pandrator_manager.application import create_application
 from pandrator_manager.artifacts import (
     ArtifactDownloader,
@@ -38,6 +39,7 @@ from pandrator_manager.environments import (
 )
 from pandrator_manager.errors import (
     CancellationRequested,
+    ConflictError,
     ManagerError,
     RevisionConflict,
     UnsafePathError,
@@ -191,6 +193,51 @@ class StateStoreTests(unittest.TestCase):
                     idempotency_key="stable-key",
                     request_payload={"plan_id": "different"},
                 )
+
+    def test_begin_operation_replays_idempotently_and_blocks_new_plan(self):
+        with tempfile.TemporaryDirectory() as directory:
+            application = create_application(directory)
+            first_plan = application.plan(
+                kind=OperationKind.INSTALL,
+                desired={"silero": DesiredComponentState()},
+            )
+            first, created = application.submit_operation(
+                plan_id=first_plan.id,
+                plan_digest=first_plan.digest,
+                accepted_confirmations=(),
+                idempotency_key="first-operation",
+            )
+            self.assertTrue(created)
+            replay, replayed = application.submit_operation(
+                plan_id=first_plan.id,
+                plan_digest=first_plan.digest,
+                accepted_confirmations=(),
+                idempotency_key="first-operation",
+            )
+            self.assertFalse(replayed)
+            self.assertEqual(first.id, replay.id)
+
+            second_plan = application.plan(
+                kind=OperationKind.INSTALL,
+                desired={"fish_speech": DesiredComponentState()},
+            )
+            with self.assertRaises(ConflictError) as raised:
+                application.submit_operation(
+                    plan_id=second_plan.id,
+                    plan_digest=second_plan.digest,
+                    accepted_confirmations=(),
+                    idempotency_key="second-operation",
+                )
+            self.assertEqual(
+                first.id,
+                (raised.exception.details or {}).get("active_operation_id"),
+            )
+            with application.store.transaction() as connection:
+                consumed = connection.execute(
+                    "SELECT consumed_at FROM plans WHERE plan_id=?",
+                    (second_plan.id,),
+                ).fetchone()["consumed_at"]
+            self.assertIsNone(consumed)
 
 
 class RegistryAndPlanningTests(unittest.TestCase):
@@ -501,6 +548,57 @@ class RegistryAndPlanningTests(unittest.TestCase):
             if definition.default_port
         ]
         self.assertEqual(len(ports), len(set(ports)))
+
+    def test_marker_inspection_reports_validated_slot_revision_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            layout = WorkspaceLayout.from_value(directory)
+            layout.ensure_base_directories()
+            slot = layout.services / "fixture" / "versions" / "abc1234"
+            slot.mkdir(parents=True)
+            (slot / "marker.txt").write_text("managed", encoding="utf-8")
+            (layout.services / "fixture" / "current.json").write_text(
+                json.dumps(
+                    {
+                        "component_id": "fixture",
+                        "version": "abc1234",
+                        "path": str(slot),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            definition = ComponentDefinition(
+                id="fixture",
+                label="Fixture",
+                source_markers=("marker.txt",),
+                markers=("legacy-marker.txt",),
+                compute_variants=(ComputeVariant.CPU,),
+            )
+            context = ManagerContext(
+                layout=layout,
+                system="Linux",
+                architecture="x86_64",
+                environment={},
+            )
+            inspection = MarkerComponentDriver().inspect(
+                context,
+                definition,
+                DesiredComponentState(compute=ComputeVariant.CPU),
+            )
+            self.assertEqual(ComponentState.PRESENT, inspection.state)
+            self.assertIsNone(inspection.installed_version)
+            self.assertEqual("abc1234", inspection.installed_revision)
+
+            (layout.services / "fixture" / "current.json").write_text(
+                json.dumps({"path": str(slot)}),
+                encoding="utf-8",
+            )
+            manual = MarkerComponentDriver().inspect(
+                context,
+                definition,
+                DesiredComponentState(compute=ComputeVariant.CPU),
+            )
+            self.assertIsNone(manual.installed_version)
+            self.assertIsNone(manual.installed_revision)
 
     def test_registry_rejects_duplicate_ports_paths_and_dependency_cycles(self):
         driver = MarkerComponentDriver()

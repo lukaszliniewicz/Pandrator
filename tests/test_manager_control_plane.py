@@ -8,6 +8,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 import uuid
@@ -30,6 +31,8 @@ from pandrator_manager.models import (
     DesiredComponentState,
     HealthProbeSpec,
     ManagedProcessSpec,
+    OperationKind,
+    OperationState,
     ProcessIdentity,
     RestartPolicy,
 )
@@ -721,6 +724,65 @@ class ApiContractTests(unittest.TestCase):
             operation.get_json()["id"],
             operation_repeat.get_json()["id"],
         )
+
+    def test_runtime_action_rejects_during_maintenance_without_supervisor_call(self):
+        self.application.lifecycle_lock = threading.Lock()
+        self.application.lifecycle_lock.acquire()
+        self.addCleanup(self.application.lifecycle_lock.release)
+        with mock.patch.object(self.supervisor, "snapshot") as snapshot:
+            response = self.client.post(
+                "/v1/runtime/start",
+                headers={
+                    **self.auth,
+                    "Idempotency-Key": "runtime-maintenance-conflict",
+                },
+                json={"service_ids": ["fake.service"]},
+            )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(
+            response.get_json()["error"]["code"],
+            "maintenance_in_progress",
+        )
+        snapshot.assert_not_called()
+
+    def test_runtime_action_rejects_handoff_pending_operation_without_lock(self):
+        plan = self.application.plan(
+            kind=OperationKind.INSTALL,
+            desired={},
+        )
+        operation, created = self.application.submit_operation(
+            plan_id=plan.id,
+            plan_digest=plan.digest,
+            accepted_confirmations=(),
+            idempotency_key="handoff-pending-operation",
+        )
+        self.assertTrue(created)
+        operation.state = OperationState.HANDOFF_PENDING
+        self.application.store.update_operation(operation)
+
+        with mock.patch.object(self.supervisor, "snapshot") as snapshot:
+            response = self.client.post(
+                "/v1/runtime/start",
+                headers={
+                    **self.auth,
+                    "Idempotency-Key": "runtime-handoff-conflict",
+                },
+                json={"service_ids": ["fake.service"]},
+            )
+
+        self.assertEqual(response.status_code, 409)
+        error = response.get_json()["error"]
+        self.assertEqual(error["code"], "maintenance_in_progress")
+        self.assertEqual(
+            error["details"]["active_operation_id"],
+            operation.id,
+        )
+        self.assertEqual(
+            error["details"]["active_operation_state"],
+            OperationState.HANDOFF_PENDING.value,
+        )
+        snapshot.assert_not_called()
 
     def test_recovery_token_is_single_use_and_cookie_auth_needs_csrf_for_writes(self):
         response = self.client.post(

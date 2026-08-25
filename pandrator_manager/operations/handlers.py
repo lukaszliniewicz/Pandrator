@@ -1652,6 +1652,7 @@ class FilesystemTaskHandler:
         keep_running = bool(
             desired.options.get("start_after_install", False)
             or stop_result.get("was_running", False)
+            or stop_result.get("desired_running", False)
         )
         if not keep_running:
             execution.supervisor.stop(spec.service_id)
@@ -1781,17 +1782,26 @@ class FilesystemTaskHandler:
     ) -> dict:
         definition = self._definition(execution, task)
         if not definition.service_key or execution.supervisor is None:
-            return {"service_id": None, "was_running": False}
-        running = {
-            service.id: bool(service.process)
+            return {
+                "service_id": None,
+                "was_running": False,
+                "desired_running": False,
+            }
+        snapshots = {
+            service.id: service
             for service in execution.supervisor.snapshot()
         }
-        was_running = running.get(definition.service_key, False)
-        if definition.service_key in running:
+        previous = snapshots.get(definition.service_key)
+        was_running = bool(previous is not None and previous.process is not None)
+        desired_running = bool(
+            previous is not None and previous.desired_running
+        )
+        if previous is not None:
             execution.supervisor.stop(definition.service_key)
         return {
             "service_id": definition.service_key,
             "was_running": was_running,
+            "desired_running": desired_running,
         }
 
     def _rollback_stop_service(
@@ -1801,7 +1811,7 @@ class FilesystemTaskHandler:
         result: dict,
     ) -> None:
         if (
-            result.get("was_running")
+            (result.get("was_running") or result.get("desired_running"))
             and result.get("service_id")
             and execution.supervisor is not None
         ):

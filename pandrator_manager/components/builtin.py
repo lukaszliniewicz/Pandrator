@@ -23,7 +23,7 @@ from .catalog import presentation_for
 from .crispasr import resolve_asset
 from .host import resolve_auto_compute, vulkan_requires_quantized_models
 from .registry import ComponentRegistry
-from .slots import active_component_path
+from .slots import active_component_metadata, active_component_path
 
 
 class MarkerComponentDriver:
@@ -54,6 +54,22 @@ class MarkerComponentDriver:
             )
 
         active = active_component_path(context.layout, definition.id)
+        active_metadata = active_component_metadata(context.layout, definition.id)
+        pointer_revision = (
+            active_metadata.get("revision")
+            if active_metadata is not None
+            else None
+        )
+        pointer_version = (
+            active_metadata.get("version")
+            if active_metadata is not None and pointer_revision is not None
+            else None
+        )
+        pointer_revision = pointer_revision or (
+            active_metadata.get("version")
+            if active_metadata is not None
+            else None
+        )
         active_evidence = tuple(
             f"slot:{marker}"
             for marker in definition.source_markers
@@ -71,10 +87,17 @@ class MarkerComponentDriver:
             evidence = active_evidence
             state = ComponentState.PRESENT
             problems = ()
+            # Component slots do not currently carry a separate semantic
+            # release version. Preserve the exact pointer value as a
+            # revision, but never infer metadata for legacy/manual installs.
+            installed_version = pointer_version
+            installed_revision = pointer_revision
         elif active_evidence:
             evidence = active_evidence
             state = ComponentState.DEGRADED
             problems = ("The active component slot is incomplete.",)
+            installed_version = pointer_version
+            installed_revision = pointer_revision
         elif legacy_evidence:
             evidence = legacy_evidence
             state = (
@@ -87,20 +110,28 @@ class MarkerComponentDriver:
                 if state == ComponentState.PRESENT
                 else ("Only part of the legacy component installation was found.",)
             )
+            installed_version = None
+            installed_revision = None
         elif not definition.markers and not definition.source_markers:
             evidence = ()
             state = ComponentState.UNKNOWN
             problems = ("No inspection markers are defined.",)
+            installed_version = None
+            installed_revision = None
         else:
             evidence = ()
             state = ComponentState.ABSENT
             problems = ()
+            installed_version = None
+            installed_revision = None
         resolved = self.resolve(context, definition, desired) if desired else None
         return ComponentInspection(
             component_id=definition.id,
             state=state,
             desired=desired,
             resolved=resolved,
+            installed_version=installed_version,
+            installed_revision=installed_revision,
             evidence=evidence,
             problems=problems,
         )
