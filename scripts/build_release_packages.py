@@ -361,8 +361,7 @@ def resolve_installer_executable(explicit_path: str | None, repo_root: Path) -> 
         return installer_path
 
     candidate_paths = (
-        repo_root / "dist" / "PandratorInstaller.exe",
-        repo_root / "dist" / "pandrator_installer_launcher.exe",
+        repo_root / "dist" / "PandratorManagerBootstrap.exe",
     )
     for candidate in candidate_paths:
         if candidate.exists():
@@ -715,7 +714,10 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--installer-exe",
         default=None,
-        help="Path to installer executable (defaults to dist/PandratorInstaller.exe).",
+        help=(
+            "Path to the Manager bootstrap executable "
+            "(defaults to dist/PandratorManagerBootstrap.exe)."
+        ),
     )
     parser.add_argument(
         "-o",

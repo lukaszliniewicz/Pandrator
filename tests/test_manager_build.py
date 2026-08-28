@@ -11,6 +11,7 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest import mock
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PrivateKey,
@@ -25,6 +26,7 @@ from cryptography.hazmat.primitives.serialization import (
 from pandrator_manager.releases.trust import TrustStore
 from scripts.build_manager_appimage import stage_appdir, write_checksum
 from scripts.build_manager_bootstrap import (
+    _build_temporary_wheel,
     _extract_wheel,
     _stage_wheel_source,
     _verify_wheel_provenance,
@@ -40,6 +42,36 @@ from scripts.qualify_manager_lifecycle import _default_bundle_path
 
 
 class ManagerBootstrapBuildTests(unittest.TestCase):
+    def test_temporary_wheel_build_runs_outside_checkout_build_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = root / "repository"
+            package = repository / "pandrator_manager"
+            package.mkdir(parents=True)
+            (package / "__init__.py").write_text("", encoding="utf-8")
+            (package / "pyproject.toml").write_text(
+                "[build-system]\nrequires = ['setuptools']\n"
+                "build-backend = 'setuptools.build_meta'\n",
+                encoding="utf-8",
+            )
+            # This is the path that shadowed the build frontend in practice.
+            (repository / "build").mkdir()
+            destination = root / "wheel"
+
+            with mock.patch(
+                "scripts.build_manager_bootstrap.subprocess.run"
+            ) as run, mock.patch(
+                "scripts.build_manager_bootstrap._wheel_from_directory",
+                return_value=destination / "fixture.whl",
+            ):
+                _build_temporary_wheel(repository, destination)
+
+            self.assertEqual(
+                destination.parent / "source",
+                run.call_args.kwargs["cwd"],
+            )
+            self.assertIn("--no-isolation", run.call_args.args[0])
+
     def test_release_checksum_manifest_is_single_sorted_file(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

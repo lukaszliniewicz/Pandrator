@@ -1,4 +1,5 @@
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -11,6 +12,24 @@ import build_release_packages
 
 
 class BuildReleasePackagesTests(unittest.TestCase):
+    def test_default_release_bootstrap_is_the_manager_not_legacy_installer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            dist = root / "dist"
+            dist.mkdir()
+            legacy = dist / "PandratorInstaller.exe"
+            legacy.write_bytes(b"legacy supervisor")
+
+            with self.assertRaisesRegex(RuntimeError, "installer executable"):
+                build_release_packages.resolve_installer_executable(None, root)
+
+            bootstrap = dist / "PandratorManagerBootstrap.exe"
+            bootstrap.write_bytes(b"manager bootstrap")
+            self.assertEqual(
+                bootstrap,
+                build_release_packages.resolve_installer_executable(None, root),
+            )
+
     def test_resolve_dependencies_single_no_deps(self):
         # A component like kokoro has no dependencies
         resolved = build_release_packages.resolve_dependencies(["kokoro"])

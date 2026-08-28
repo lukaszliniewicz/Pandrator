@@ -138,6 +138,28 @@ class NetworkConfigurationTests(unittest.TestCase):
         )
         self.assertNotIn("PANDRATOR_OWNER_PASSWORD", worker.environment)
 
+    def test_managed_web_runtime_receives_authenticated_manager_handoff(self):
+        with tempfile.TemporaryDirectory() as directory:
+            layout = WorkspaceLayout.from_value(directory)
+            layout.ensure_base_directories()
+            api, worker = pandrator_runtime_specs(layout)
+
+        expected = {
+            "PANDRATOR_MANAGER_DESCRIPTOR": str(layout.descriptor),
+            "PANDRATOR_MANAGER_CREDENTIAL": str(layout.credential),
+        }
+        self.assertTrue(
+            expected.items() <= api.environment.items(),
+            "the supervised API subprocess must receive the Manager handoff",
+        )
+        self.assertTrue(
+            expected.items() <= worker.environment.items(),
+            "the supervised worker subprocess must receive the Manager handoff",
+        )
+        self.assertIn("serve", api.arguments)
+        self.assertIn("worker", worker.arguments)
+
+
     def test_legacy_source_without_public_url_option_remains_launchable(self):
         with tempfile.TemporaryDirectory() as directory:
             layout = WorkspaceLayout.from_value(directory)

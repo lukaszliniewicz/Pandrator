@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -15,23 +16,26 @@ def build_linux_appimage(repo_root: Path) -> int:
 
 
 def build_windows_executable(repo_root: Path) -> int:
-    spec_path = repo_root / "pandrator_installer_launcher.spec"
-    executable = repo_root / "dist" / "PandratorInstaller.exe"
+    """Build the Manager bootstrap under the historical Windows filename.
 
-    subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "PyInstaller",
-            "--clean",
-            "--noconfirm",
-            str(spec_path),
-        ],
-        check=True,
-        cwd=repo_root,
-    )
-    subprocess.run([str(executable), "--self-check"], check=True, cwd=repo_root)
-    print(f"Built and verified installer: {executable}")
+    ``PandratorInstaller.exe`` used to embed the Qt installer and its own
+    unauthenticated process supervisor.  Retain the familiar download name
+    for one-time migrations, but make its payload the current Manager
+    bootstrap so every normal launch enters the authenticated manager
+    lifecycle.
+    """
+
+    from build_manager_bootstrap import main as build_manager_bootstrap
+
+    if build_manager_bootstrap([]) != 0:
+        raise RuntimeError("Pandrator Manager bootstrap build failed.")
+    bootstrap = repo_root / "dist" / "PandratorManagerBootstrap.exe"
+    executable = repo_root / "dist" / "PandratorInstaller.exe"
+    if not bootstrap.is_file():
+        raise RuntimeError(f"Manager bootstrap output missing: {bootstrap}")
+    shutil.copy2(bootstrap, executable)
+    subprocess.run([str(executable), "self-check"], check=True, cwd=repo_root)
+    print(f"Built and verified Manager-based installer: {executable}")
     return 0
 
 

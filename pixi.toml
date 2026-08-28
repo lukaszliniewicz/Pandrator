@@ -24,6 +24,8 @@ check-requirements = "python scripts/generate_requirements.py --check"
 smoke-dubbing-local = "python scripts/dubbing_live_smoke.py"
 
 [feature.installer-build.pypi-dependencies]
+build = ">=1.2,<2"
+wheel = "*"
 PyInstaller = "==6.20.0"
 PyQt6 = "==6.7.1"
 requests = "*"

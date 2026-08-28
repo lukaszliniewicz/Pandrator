@@ -16,6 +16,19 @@ from pandrator.web.manager_proxy import (
 
 
 class LocalManagerProxyTests(unittest.TestCase):
+    def test_standalone_runtime_without_handoff_remains_unmanaged(self):
+        with mock.patch.dict(
+            os.environ,
+            {
+                "PANDRATOR_MANAGER_DESCRIPTOR": "",
+                "PANDRATOR_MANAGER_CREDENTIAL": "",
+            },
+        ):
+            with self.assertRaises(ManagerProxyError) as raised:
+                LocalManagerProxy().discover()
+
+        self.assertEqual("manager_not_configured", raised.exception.code)
+
     def test_discovery_rejects_non_loopback_descriptor(self):
         with tempfile.TemporaryDirectory() as directory:
             state = Path(directory)

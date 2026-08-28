@@ -235,6 +235,20 @@ the
 
 ## Legacy import, releases, and uninstall
 
+### Migrating the retired Qt installer
+
+`PandratorInstaller.exe` builds released before the Manager migration used a
+separate legacy supervisor. Updating its checked-out application source or
+speech components does **not** update that executable, so it cannot provide
+the Manager descriptor and credential handoff required by the current WebUI.
+
+Download and run the current `PandratorManager-...-windows-x86_64.exe` once,
+select the same parent workspace, and use the recovery UI's legacy import
+flow. It records the existing installation conservatively, then subsequent
+launches use the digest-verified Manager launcher in `Pandrator/bin`. Do not
+try to make an old `PandratorInstaller.exe` a Manager by setting environment
+variables or by relying on its process tree.
+
 Inspect legacy state without changing it:
 
 ```bash

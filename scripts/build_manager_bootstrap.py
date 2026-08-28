@@ -118,11 +118,16 @@ def _build_temporary_wheel(repo_root: Path, destination: Path) -> Path:
             "-m",
             "build",
             "--wheel",
+            "--no-isolation",
             "--outdir",
             str(destination),
             str(source),
         ],
-        cwd=repo_root,
+        # Invoke the build frontend from the staged source, not the checkout.
+        # A previous PyInstaller build leaves ``<repo>/build`` behind; from the
+        # repository root that directory shadows the third-party ``build``
+        # module and makes ``python -m build`` fail before packaging begins.
+        cwd=source,
         check=True,
     )
     return _wheel_from_directory(destination)
