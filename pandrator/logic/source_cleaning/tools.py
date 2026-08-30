@@ -38,6 +38,7 @@ _MAJOR_NUMBERED_HEADING_RE = re.compile(
 )
 _UNNUMBERED_MAJOR_HEADING_RE = re.compile(
     r"^(?:acknowledg(?:e)?ments?|preface|foreword|introduction|prologue|epilogue|"
+    r"act(?:\s+(?:[ivxlcdm]+|\d{1,4}|one|[1t]wo|three|four|five|six))?|"
     r"afterword|conclusion|appendi(?:x|ces)|postscript|wst[eę]p|przedmowa|pos[lł]owie|"
     r"pr[eé]face|avant-propos|postface|vorwort|einleitung|nachwort|prefacio|"
     r"introducci[oó]n|pref[aá]cio|introdu[cç][aã]o|posf[aá]cio|inleiding|nawoord|"
@@ -51,6 +52,7 @@ class SourceCleaningTools:
 
     def __init__(self, document: SourceDocument):
         self.document = document
+        self._blocks_by_id = {block.block_id: block for block in document.blocks}
         self._last_hits: dict[str, SearchHit] = {}
 
     def search(
@@ -179,7 +181,7 @@ class SourceCleaningTools:
         }
 
     def inspect_block(self, block_id: str) -> dict[str, Any]:
-        block = self.document.block_by_id(block_id)
+        block = self._blocks_by_id.get(str(block_id or ""))
         if block is None:
             return {"error": f"Block not found: {block_id}"}
         return block.to_dict()
@@ -603,7 +605,7 @@ class SourceCleaningTools:
         section_blocks: list[SourceBlock] = []
 
         for candidate in heading_candidates:
-            block = self.document.block_by_id(str(candidate.get("block_id") or ""))
+            block = self._blocks_by_id.get(str(candidate.get("block_id") or ""))
             if block is None or _is_non_chapter_block(block):
                 continue
 
@@ -623,6 +625,8 @@ class SourceCleaningTools:
                     self.document.source_type.startswith("pdf")
                     and not numbered
                     and not _UNNUMBERED_MAJOR_HEADING_RE.match(text)
+                    and "substantially_larger_than_body_font"
+                    not in _role_reasons(block, "deterministic_chapter")
                 ):
                     continue
                 evidence = "deterministic_chapter"
@@ -1119,13 +1123,31 @@ def _looks_like_minor_section_heading(text: str) -> bool:
     return bool(_MINOR_SECTION_HEADING_RE.match(str(text or "").strip()))
 
 
+def _role_reasons(block: SourceBlock, role: str) -> set[str]:
+    evidence = block.attributes.get("role_evidence") or {}
+    role_evidence = evidence.get(role) or {}
+    return {str(reason) for reason in role_evidence.get("reasons") or []}
+
+
 def _is_non_chapter_block(block: SourceBlock) -> bool:
     excluded_roles = {
         "toc",
+        "toc_candidate",
+        "navigation",
+        "deterministic_toc",
+        "deterministic_boilerplate",
+        "deterministic_footnote",
+        "deterministic_visual",
         "copyright",
         "page_number",
         "caption",
+        "chapter_outline",
         "image_alt",
+        "boilerplate",
+        "non_narrative_section",
+        "repeated_marginal",
+        "running_header",
+        "title_heading",
         "footnote",
         "footnote_candidate",
         "side_note",

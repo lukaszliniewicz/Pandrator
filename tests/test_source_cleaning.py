@@ -1014,6 +1014,65 @@ class SourceCleaningTests(unittest.TestCase):
             )
         )
 
+    def test_epub_internal_noteref_is_not_navigation_or_toc(self):
+        from bs4 import BeautifulSoup
+
+        from pandrator.logic.source_cleaning.epub_adapter import _infer_role_candidates
+
+        soup = BeautifulSoup(
+            '<html><body><p>The claim<a href="#note-1" epub:type="noteref">1</a> continues.</p>'
+            '<nav epub:type="toc"><ol><li><a href="chapter.xhtml">Chapter One</a></li></ol></nav>'
+            '</body></html>',
+            "html.parser",
+        )
+
+        prose = soup.find("p")
+        toc_item = soup.find("li")
+        prose_roles = _infer_role_candidates(prose, prose.get_text(" ", strip=True), "chapter.xhtml")
+        toc_roles = _infer_role_candidates(toc_item, toc_item.get_text(" ", strip=True), "nav.xhtml")
+
+        self.assertNotIn("navigation", prose_roles)
+        self.assertNotIn("toc", prose_roles)
+        self.assertIn("navigation", toc_roles)
+        self.assertIn("toc", toc_roles)
+
+    def test_epub_index_reserves_chapter_role_for_strong_structure(self):
+        document = build_source_document(self._write_structural_chapter_components_epub_fixture())
+        by_text = {block.text: block for block in document.blocks}
+
+        self.assertIn("deterministic_chapter", by_text["Signals and Structure"].role_candidates)
+        self.assertIn("deterministic_chapter", by_text["The Next Signal"].role_candidates)
+        self.assertNotIn("deterministic_chapter", by_text["A nested section"].role_candidates)
+        self.assertNotIn("deterministic_chapter", by_text["Another nested section"].role_candidates)
+        self.assertFalse(
+            any(
+                "deterministic_chapter" in block.role_candidates
+                for block in document.blocks
+                if block.href == "toc.xhtml"
+            )
+        )
+
+    def test_front_legal_detection_does_not_discard_large_mixed_xhtml(self):
+        from pandrator.logic.source_cleaning.deterministic.boilerplate import (
+            is_front_legal_document,
+        )
+
+        legal_page = [
+            {"text": "Copyright 2026 Example Press"},
+            {"text": "All rights reserved"},
+            {"text": "ISBN 978-0-00-000000-0"},
+        ]
+        mixed_resource = [
+            *legal_page,
+            *(
+                {"text": f"Narrative paragraph {index} with ordinary body text."}
+                for index in range(120)
+            ),
+        ]
+
+        self.assertTrue(is_front_legal_document(legal_page))
+        self.assertFalse(is_front_legal_document(mixed_resource))
+
     def test_chapter_structure_analysis_suggests_complete_narrative_selector(self):
         document = SourceDocument(
             source_type="epub",
@@ -1097,6 +1156,77 @@ class SourceCleaningTests(unittest.TestCase):
             [item["block_id"] for item in analysis["likely_chapters"]],
             ["chapter"],
         )
+
+    def test_chapter_analysis_uses_indexed_block_lookup(self):
+        document = SourceDocument(
+            source_type="epub",
+            source_path="large.epub",
+            filename="large.epub",
+            blocks=[
+                SourceBlock(
+                    block_id=f"block-{index}",
+                    text=f"Chapter {index}",
+                    line_start=index + 1,
+                    line_end=index + 1,
+                    source_index=index,
+                    tag="h1",
+                    role_candidates=["heading", "deterministic_chapter"],
+                )
+                for index in range(2_000)
+            ],
+        )
+        tools = SourceCleaningTools(document)
+
+        with patch.object(
+            document,
+            "block_by_id",
+            side_effect=AssertionError("chapter analysis performed a linear lookup"),
+        ):
+            analysis = tools.analyze_chapter_structure(max_candidates=10)
+
+        self.assertEqual(analysis["likely_chapter_count"], 2_000)
+        self.assertTrue(analysis["likely_chapters_truncated"])
+
+    def test_chapter_analysis_excludes_deterministic_non_narrative_roles(self):
+        document = SourceDocument(
+            source_type="epub",
+            source_path="roles.epub",
+            filename="roles.epub",
+            blocks=[
+                SourceBlock(
+                    block_id="chapter",
+                    text="Chapter 1",
+                    line_start=1,
+                    line_end=1,
+                    source_index=0,
+                    tag="h1",
+                    role_candidates=["heading", "deterministic_chapter"],
+                ),
+                SourceBlock(
+                    block_id="toc",
+                    text="Chapter 2",
+                    line_start=2,
+                    line_end=2,
+                    source_index=1,
+                    tag="h2",
+                    role_candidates=["heading", "deterministic_toc"],
+                ),
+                SourceBlock(
+                    block_id="legal",
+                    text="Chapter 3",
+                    line_start=3,
+                    line_end=3,
+                    source_index=2,
+                    tag="h2",
+                    role_candidates=["heading", "deterministic_boilerplate"],
+                ),
+            ],
+        )
+
+        analysis = SourceCleaningTools(document).analyze_chapter_structure()
+
+        self.assertEqual(analysis["likely_chapter_count"], 1)
+        self.assertEqual(analysis["likely_chapters"][0]["block_id"], "chapter")
 
     def test_pdf_filename_metadata_ignores_managed_upload_uuid_prefix(self):
         document = build_source_document_from_text(

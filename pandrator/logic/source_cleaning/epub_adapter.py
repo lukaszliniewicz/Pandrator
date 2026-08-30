@@ -135,6 +135,8 @@ def build_source_document(epub_path: str) -> SourceDocument:
                 elif tokens.intersection(end_keywords) or any(x in name_lower for x in ["index", "biblio", "copyright"]):
                     end_bp_files.add(nh)
 
+    non_narrative_files = toc_files | footnote_files | front_bp_files | end_bp_files
+
     for item in _ordered_document_items(book):
         href = item.get_name()
         nh = norm_href(href)
@@ -172,15 +174,46 @@ def build_source_document(epub_path: str) -> SourceDocument:
                 if illustrations.is_visual_material_block(block_dict):
                     block_roles.append("deterministic_visual")
 
-                # Check element ID against global TOC anchors
+                # A matching TOC target is useful evidence only when its label
+                # actually matches this block.  Navigation may legally point to
+                # pages, paragraphs, notes, or index entries; the mere presence
+                # of a fragment target does not make any of those a chapter.
                 elem_id = attributes.get("element_id") or tag.get("id") or ""
                 is_ch_via_toc = False
+                toc_title = ""
                 if elem_id:
                     frag_key = f"{nh}#{str(elem_id).lower()}"
-                    if frag_key in global_toc:
-                        is_ch_via_toc = True
+                    toc_title = str(global_toc.get(frag_key) or "")
+                elif item_block_count == 0:
+                    toc_title = str(global_toc.get(nh) or "")
+                if toc_title:
+                    is_ch_via_toc = bool(
+                        _normalize_title_match(text) == _normalize_title_match(toc_title)
+                        and chapters.is_plausible_heading_text(text, max_chars=220)
+                        and not chapters.is_non_chapter_heading_text(text)
+                        and not chapters.is_navigation_label(text)
+                        and not chapters.is_heading_fragment(text)
+                        and (
+                            item_block_count == 0
+                            or chapters.has_direct_chapter_semantics(block_dict)
+                            or chapters.is_chapter_block(
+                                block_dict,
+                                item_block_count,
+                                language or "en",
+                                allow_heading_fallback=False,
+                            )
+                        )
+                    )
 
-                if is_ch_via_toc or chapters.is_chapter_block(block_dict, item_block_count, language or "en"):
+                if nh not in non_narrative_files and (
+                    is_ch_via_toc
+                    or chapters.is_chapter_block(
+                        block_dict,
+                        item_block_count,
+                        language or "en",
+                        allow_heading_fallback=False,
+                    )
+                ):
                     block_roles.append("deterministic_chapter")
 
                 block = SourceBlock(
@@ -494,19 +527,20 @@ def _infer_role_candidates(tag, text: str, href: str) -> list[str]:
     if any(token in lowered for token in ("footnote", "endnote", "note-ref", "noteref")):
         roles.append("footnote")
     
-    # Check if this block contains child anchors pointing to internal links
-    has_inner_links = False
-    for a in tag.find_all("a"):
-        a_href = a.get("href") or ""
-        if a_href:
-            has_inner_links = True
-            if "#" in a_href:
-                roles.append("toc")
-                break
-    if has_inner_links:
+    inherited_semantics = " ".join(
+        _inherited_attr_values(tag, "role")
+        + _inherited_attr_values(tag, "epub:type")
+    ).lower()
+    semantic_tokens = set(re.split(r"[^a-z0-9]+", inherited_semantics))
+    in_navigation = tag.find_parent("nav") is not None or bool(
+        semantic_tokens.intersection(
+            {"navigation", "toc", "landmarks", "pagelist"}
+        )
+    )
+    in_toc = "toc" in semantic_tokens
+    if in_navigation or in_toc:
         roles.append("navigation")
-
-    if any(token in lowered for token in ("toc", "contents", "nav")):
+    if in_toc:
         roles.append("toc")
     if any(token in text_lower for token in ("copyright", "all rights reserved", "isbn")):
         roles.append("copyright")
@@ -552,6 +586,10 @@ def _normalize_classes(raw_classes: Any) -> list[str]:
 def _normalize_text(text: str) -> str:
     normalized = re.sub(r"\s+", " ", str(text or "")).strip()
     return normalized
+
+
+def _normalize_title_match(text: str) -> str:
+    return re.sub(r"[^\w]+", "", _normalize_text(text).casefold())
 
 
 def _dedupe(items: list[str]) -> list[str]:

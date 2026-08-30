@@ -18,7 +18,7 @@ from .models import SourceBlock, SourceDocument
 from .pdf_text_adapter import _front_matter_metadata, _metadata_from_filename
 
 ProgressCallback = Callable[[str], None]
-PDF_INGESTION_VERSION = 8
+PDF_INGESTION_VERSION = 10
 _LATIN_V6_LANGUAGES = {
     "auto", "latin", "en", "af", "az", "bs", "ca", "cs", "cy", "da", "de", "es",
     "et", "eu", "fi", "fr", "ga", "gl", "hr", "hu", "id", "is", "it", "ku", "la",
@@ -43,7 +43,7 @@ _NUMBERED_HEADING_RE = re.compile(
 )
 _MAJOR_SECTION_RE = re.compile(
     r"^(?:acknowledg(?:e)?ments?|preface|foreword|introduction|prologue|epilogue|afterword|"
-    r"conclusion|appendi(?:x|ces)|postscript|chapter|book|part|volume|section|"
+    r"conclusion|appendi(?:x|ces)|postscript|chapter|book|part|volume|section|act|"
     r"pr[eé]face|avant-propos|postface|chapitre|kapitel|vorwort|einleitung|nachwort|"
     r"prolog|epilog|cap[ií]tulo|introducci[oó]n|pr[oó]logo|ep[ií]logo|"
     r"wst[eę]p|przedmowa|pos[lł]owie|podzi[eę]kowania|rozdzia[lł]|cz[eę][sś][cć]|tom|ksi[eę]ga|"
@@ -68,6 +68,7 @@ _COPYRIGHT_RE = re.compile(
 _NON_NARRATIVE_HEADING_RE = re.compile(
     r"^(?:(?:select\s+)?(?:bibliography|references|works cited|index|glossary|"
     r"notes?|footnotes?|endnotes?|colophon|copyright|list of abbreviations|abbreviations)|"
+    r"(?:other\s+)?works\s+(?:by|about)|"
     r"(?:wykaz|spis)\s+skr[oó]t[oó]w|ключи|.*(?:мини[-*])?словар\w*)\b",
     re.IGNORECASE,
 )
@@ -591,9 +592,9 @@ def _is_heading_like_line(line: dict[str, Any]) -> bool:
     if not text or len(text) > 180 or len(text.split()) > 18:
         return False
     return bool(
-        _CHAPTER_RE.match(text)
+        _is_explicit_chapter_heading_text(text)
         or _NUMBERED_HEADING_RE.match(text)
-        or _MAJOR_SECTION_RE.match(text)
+        or _is_major_section_heading_text(text)
         or (len(text) >= 4 and text.isupper() and re.search(r"[^\W\d_]", text))
     )
 
@@ -603,18 +604,40 @@ def _is_structural_heading_text(text: str) -> bool:
     if not normalized or len(normalized) > 180 or len(normalized.split()) > 18:
         return False
     return bool(
-        _CHAPTER_RE.match(normalized)
+        _is_explicit_chapter_heading_text(normalized)
         or _NUMBERED_HEADING_RE.match(normalized)
         or _is_major_section_heading_text(normalized)
     )
 
 
+def _is_explicit_chapter_heading_text(text: str) -> bool:
+    """Accept a chapter label, not an ordinary sentence that cites a chapter."""
+    normalized = _normalize_space(text)
+    match = _CHAPTER_RE.match(normalized)
+    if not match:
+        return False
+    remainder = normalized[match.end() :].strip()
+    return bool(
+        not remainder
+        or remainder[0] in ".:;,-–—"
+        or normalized.isupper()
+    )
+
+
 def _is_major_section_heading_text(text: str) -> bool:
     normalized = _normalize_space(text)
+    if not normalized or not normalized[0].isupper():
+        return False
+    match = _MAJOR_SECTION_RE.match(normalized)
+    if not match:
+        return False
+    if _CHAPTER_RE.match(normalized):
+        return _is_explicit_chapter_heading_text(normalized)
+    remainder = normalized[match.end() :].strip()
     return bool(
-        normalized
-        and normalized[0].isupper()
-        and _MAJOR_SECTION_RE.match(normalized)
+        not remainder
+        or remainder[0] in ".:;,-–—"
+        or normalized.isupper()
     )
 
 
@@ -648,8 +671,20 @@ def _annotate_structural_roles(document: SourceDocument) -> None:
     for block in document.blocks:
         if block.page:
             blocks_by_page[block.page].append(block)
+    chapter_outline_pages = {
+        page
+        for page, blocks in blocks_by_page.items()
+        if sum(
+            len(block.text) <= 160
+            and len(block.text.split()) <= 18
+            and _is_explicit_chapter_heading_text(block.text)
+            for block in blocks
+        )
+        >= 3
+    }
 
     marginal_occurrences: dict[str, list[SourceBlock]] = defaultdict(list)
+    structural_marginal_occurrences: dict[str, list[SourceBlock]] = defaultdict(list)
     for block in document.blocks:
         bbox = block.attributes.get("bbox") or [0, 0, 0, 0]
         page_size = block.attributes.get("page_size") or [1, 1]
@@ -657,8 +692,13 @@ def _annotate_structural_roles(document: SourceDocument) -> None:
         y1 = float(bbox[3]) / max(1.0, float(page_size[1]))
         if y1 <= 0.16 or y0 >= 0.84:
             key = _normalized_marginal_key(block.text)
+            font_size = float(block.attributes.get("font_size") or body_font)
             if key and not _is_structural_heading_text(block.text):
                 marginal_occurrences[key].append(block)
+            elif key and font_size <= body_font * 1.10:
+                exact_key = re.sub(r"[^\w]+", "", _normalize_space(block.text).casefold())
+                if exact_key:
+                    structural_marginal_occurrences[exact_key].append(block)
     repeated_threshold = max(3, min(8, int(page_count * 0.15) or 3))
     repeated_ids = {
         block.block_id
@@ -666,6 +706,13 @@ def _annotate_structural_roles(document: SourceDocument) -> None:
         if len({block.page for block in blocks}) >= repeated_threshold
         for block in blocks
     }
+    for blocks in structural_marginal_occurrences.values():
+        previous_page = -100
+        for block in sorted(blocks, key=lambda item: (item.page or 0, item.source_index)):
+            page = block.page or 0
+            if page - previous_page <= 6:
+                repeated_ids.add(block.block_id)
+            previous_page = page
 
     front_limit = max(5, min(30, int(page_count * 0.2) + 1))
     toc_pages = _find_toc_pages(blocks_by_page, front_limit)
@@ -686,10 +733,42 @@ def _annotate_structural_roles(document: SourceDocument) -> None:
         is_title_heading = _is_title_followed_by_byline(block, page_blocks, body_font)
         is_running_header = _is_probable_running_header(text, short, y1, font_size, body_font)
         note_marker = bool(_NOTE_PREFIX_RE.match(text) or _SINGLE_NOTE_MARKER_RE.fullmatch(text))
-        likely_footnote = note_marker and (font_size <= body_font * 0.90 or y0 >= 0.72)
+        toc_like = bool(re.search(r"\.{3,}\s*\d{1,4}$", text)) or (
+            short
+            and not _is_structural_heading_text(text)
+            and bool(re.search(r"\s+\d{1,4}$", text))
+        )
+        is_toc_candidate = bool(
+            not is_toc_page
+            and (block.page or 1) <= front_limit
+            and (toc_like or _TOC_HEADING_RE.search(text))
+        )
+        footnote_reasons: list[str] = []
+        footnote_score = 0.0
+        if y0 >= 0.80:
+            footnote_score += 0.45
+            footnote_reasons.append("bottom_page_region")
+        elif y0 >= 0.72:
+            footnote_score += 0.30
+            footnote_reasons.append("lower_page_region")
+        if font_size <= body_font * 0.90:
+            footnote_score += 0.3
+            footnote_reasons.append("smaller_than_body_font")
+        if note_marker:
+            footnote_score += 0.35
+            footnote_reasons.append("note_marker_prefix")
+        likely_footnote = footnote_score >= 0.6
 
-        page_number_shape = bool(re.fullmatch(r"(?:\d{1,4}|[ivxlcdm]{1,8})", text, re.IGNORECASE))
-        page_number_size = font_size <= body_font * 1.15
+        page_number_shape = bool(
+            re.fullmatch(
+                r"(?:\d{1,4}|[ivxlcdm]{1,8}|[1il|]\s+\d{2,4})",
+                text,
+                re.IGNORECASE,
+            )
+        )
+        # OCR and embedded subset fonts sometimes make a folio appear slightly
+        # larger than the surrounding body even though it is physically tiny.
+        page_number_size = font_size <= body_font * 1.35
         if page_number_shape and page_number_size and (y1 <= 0.18 or y0 >= 0.80):
             evidence["page_number"] = {"score": 0.99, "reasons": ["numeric_or_roman", "marginal_position"]}
         if block.block_id in repeated_ids:
@@ -715,7 +794,12 @@ def _annotate_structural_roles(document: SourceDocument) -> None:
 
         heading_score = 0.0
         heading_reasons: list[str] = []
-        explicit_chapter = short and bool(_CHAPTER_RE.match(text))
+        explicit_chapter = (
+            short
+            and not likely_footnote
+            and _is_explicit_chapter_heading_text(text)
+        )
+        is_chapter_outline_entry = explicit_chapter and (block.page or 0) in chapter_outline_pages
         numbered_heading = short and not likely_footnote and bool(_NUMBERED_HEADING_RE.match(text))
         major_section = short and _is_major_section_heading_text(text)
         non_narrative_section = short and bool(_NON_NARRATIVE_HEADING_RE.match(text))
@@ -753,46 +837,49 @@ def _annotate_structural_roles(document: SourceDocument) -> None:
                 "score": 0.90,
                 "reasons": ["bibliographic_or_note_section_heading"],
             }
+        if is_chapter_outline_entry:
+            evidence["chapter_outline"] = {
+                "score": 0.95,
+                "reasons": ["several_chapter_labels_on_same_page"],
+            }
         if (
             heading_score >= 0.85
             and not evidence.get("repeated_marginal")
             and not evidence.get("running_header")
             and not evidence.get("title_heading")
+            and not evidence.get("boilerplate")
+            and not evidence.get("page_number")
+            and not likely_footnote
+            and not is_chapter_outline_entry
             and not is_toc_page
+            and not is_toc_candidate
             and not non_narrative_section
-            and (is_content_opener or explicit_chapter or major_section)
+            and (
+                explicit_chapter
+                or major_section
+                or (
+                    is_content_opener
+                    and (
+                        numbered_heading
+                        or (font_ratio >= 1.45 and text[:1].isupper())
+                    )
+                )
+            )
         ):
             evidence["deterministic_chapter"] = {
                 "score": min(0.96, heading_score),
                 "reasons": heading_reasons + ["global_pdf_heading_policy"],
             }
 
-        footnote_reasons: list[str] = []
-        footnote_score = 0.0
-        if y0 >= 0.80:
-            footnote_score += 0.45
-            footnote_reasons.append("bottom_page_region")
-        elif y0 >= 0.72:
-            footnote_score += 0.30
-            footnote_reasons.append("lower_page_region")
-        if font_size <= body_font * 0.90:
-            footnote_score += 0.3
-            footnote_reasons.append("smaller_than_body_font")
-        if note_marker:
-            footnote_score += 0.35
-            footnote_reasons.append("note_marker_prefix")
-        if footnote_score >= 0.6 and "page_number" not in evidence:
+        if likely_footnote and "page_number" not in evidence:
             evidence["footnote"] = {"score": min(0.98, footnote_score), "reasons": footnote_reasons}
 
-        toc_like = bool(re.search(r"\.{3,}\s*\d{1,4}$", text)) or (
-            short and bool(re.search(r"\s+\d{1,4}$", text))
-        )
         if is_toc_page:
             evidence["toc"] = {
                 "score": 0.94,
                 "reasons": ["front_matter", "toc_heading_or_continuation_page"],
             }
-        elif (block.page or 1) <= front_limit and (toc_like or _TOC_HEADING_RE.search(text)):
+        elif is_toc_candidate:
             evidence["toc_candidate"] = {
                 "score": 0.7 if toc_like else 0.85,
                 "reasons": ["front_matter", "toc_entry_shape" if toc_like else "toc_heading"],
@@ -1150,6 +1237,7 @@ def _is_probable_running_header(
         and font_size <= body_font * 1.10
         and text.isupper()
         and re.search(r"[^\W\d_]", text)
+        and not _is_major_section_heading_text(text)
     )
 
 
@@ -1220,7 +1308,8 @@ def _bbox_area(value: Iterable[float]) -> float:
 
 
 def _normalize_space(text: str) -> str:
-    return re.sub(r"\s+", " ", str(text or "")).strip()
+    without_controls = re.sub(r"[\x00-\x1f\x7f]+", " ", str(text or ""))
+    return re.sub(r"\s+", " ", without_controls).strip()
 
 
 def _write_json(path: str, payload: Any) -> None:

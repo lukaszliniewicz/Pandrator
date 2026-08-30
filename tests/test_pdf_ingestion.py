@@ -7,6 +7,7 @@ import fitz
 
 from pandrator.logic.source_cleaning import (
     PDFIngestionConfig,
+    SourceCleaningTools,
     apply_cleaning_operations,
     build_source_document,
     propose_deterministic_operations,
@@ -449,6 +450,92 @@ class PDFIngestionTests(unittest.TestCase):
 
             self.assertLess(decimal.role_score("deterministic_chapter"), 0.85)
 
+    def test_spaced_ocr_folio_is_page_number_not_chapter(self):
+        document = SourceDocument(
+            source_type="pdf_structured",
+            source_path="ocr-folio.pdf",
+            filename="ocr-folio.pdf",
+        )
+        for index, (text, y, font_size) in enumerate(
+            [
+                ("I 86", 12, 10.3),
+                ("Ordinary body narration establishes the document typography.", 80, 8.2),
+                ("More ordinary body narration follows on the same page.", 130, 8.2),
+                ("The page continues with enough prose to establish the body font.", 180, 8.2),
+            ],
+            start=1,
+        ):
+            document.blocks.append(
+                SourceBlock(
+                    block_id=f"folio:{index}",
+                    text=text,
+                    line_start=index,
+                    line_end=index,
+                    source_index=index,
+                    page=1,
+                    tag="p",
+                    attributes={
+                        "bbox": [15, y, 430, y + 12],
+                        "page_size": [500, 700],
+                        "font_size": font_size,
+                        "source_lines": 1,
+                        "role_evidence": {},
+                    },
+                )
+            )
+
+        _annotate_structural_roles(document)
+        folio = document.blocks[0]
+
+        self.assertGreaterEqual(folio.role_score("page_number"), 0.98)
+        self.assertLess(folio.role_score("deterministic_chapter"), 0.85)
+
+    def test_small_top_act_heading_is_a_boundary_but_cast_name_is_not(self):
+        document = SourceDocument(
+            source_type="pdf_structured",
+            source_path="play.pdf",
+            filename="play.pdf",
+        )
+        for index, (text, y, font_size) in enumerate(
+            [
+                ("ACT TWO", 56, 9.1),
+                ("The scene opens with ordinary dialogue and stage directions.", 82, 8.3),
+                ("ANDREW PROZOROV", 156, 10.3),
+                ("The character enters and begins an ordinary line of dialogue.", 180, 8.3),
+            ],
+            start=1,
+        ):
+            document.blocks.append(
+                SourceBlock(
+                    block_id=f"play:{index}",
+                    text=text,
+                    line_start=index,
+                    line_end=index,
+                    source_index=index,
+                    page=1,
+                    tag="p",
+                    attributes={
+                        "bbox": [72, y, 430, y + 12],
+                        "page_size": [500, 700],
+                        "font_size": font_size,
+                        "source_lines": 1,
+                        "role_evidence": {},
+                    },
+                )
+            )
+
+        _annotate_structural_roles(document)
+        by_text = {block.text: block for block in document.blocks}
+
+        self.assertGreaterEqual(by_text["ACT TWO"].role_score("deterministic_chapter"), 0.85)
+        self.assertLess(by_text["ACT TWO"].role_score("running_header"), 0.95)
+        self.assertLess(by_text["ANDREW PROZOROV"].role_score("deterministic_chapter"), 0.85)
+        analysis = SourceCleaningTools(document).analyze_chapter_structure()
+        self.assertEqual(
+            [item["text"] for item in analysis["likely_chapters"]],
+            ["ACT TWO"],
+        )
+
     def test_pdf_heading_policy_promotes_content_openers_without_promoting_title_or_notes_pages(self):
         with tempfile.TemporaryDirectory() as directory:
             path = os.path.join(directory, "headings.pdf")
@@ -498,6 +585,24 @@ class PDFIngestionTests(unittest.TestCase):
                 fontsize=11,
             )
 
+            works_page = document.new_page(width=500, height=700)
+            works_page.insert_text((72, 90), "Works by Chekhov", fontsize=18)
+            works_page.insert_textbox(
+                fitz.Rect(72, 140, 430, 280),
+                "A publication list follows this non-narrative heading and is deliberately long enough "
+                "to look like ordinary page content to the geometry-aware extractor.",
+                fontsize=11,
+            )
+
+            fragment_page = document.new_page(width=500, height=700)
+            fragment_page.insert_text((72, 90), "in Public Address", fontsize=18)
+            fragment_page.insert_textbox(
+                fitz.Rect(72, 140, 430, 280),
+                "A lowercase continuation split from the preceding title must not become a second "
+                "chapter boundary merely because the PDF gives it title-sized typography.",
+                fontsize=11,
+            )
+
             document.save(path)
             document.close()
 
@@ -506,6 +611,7 @@ class PDFIngestionTests(unittest.TestCase):
 
             self.assertLess(by_text["EXAMPLE ANTHOLOGY"].role_score("deterministic_chapter"), 0.85)
             self.assertGreaterEqual(by_text["Chapter 1"].role_score("deterministic_chapter"), 0.85)
+            self.assertLess(by_text["Chapter 1"].role_score("toc_candidate"), 0.85)
             self.assertGreaterEqual(by_text["A Short Story"].role_score("deterministic_chapter"), 0.85)
             self.assertLess(by_text["I was thinking about ordinary narration."].role_score("heading"), 0.45)
             self.assertLess(by_text["1 30"].role_score("heading"), 0.45)
@@ -514,6 +620,18 @@ class PDFIngestionTests(unittest.TestCase):
             self.assertLess(by_text["Select Bibliography"].role_score("deterministic_chapter"), 0.85)
             self.assertGreaterEqual(by_text["List of Abbreviations"].role_score("non_narrative_section"), 0.85)
             self.assertLess(by_text["List of Abbreviations"].role_score("deterministic_chapter"), 0.85)
+            self.assertGreaterEqual(by_text["Works by Chekhov"].role_score("non_narrative_section"), 0.85)
+            self.assertLess(by_text["Works by Chekhov"].role_score("deterministic_chapter"), 0.85)
+            self.assertLess(by_text["in Public Address"].role_score("deterministic_chapter"), 0.85)
+
+            likely_titles = {
+                item["text"]
+                for item in SourceCleaningTools(structured).analyze_chapter_structure()[
+                    "likely_chapters"
+                ]
+            }
+            self.assertIn("Chapter 1", likely_titles)
+            self.assertIn("A Short Story", likely_titles)
 
             deleted = {
                 block_id
@@ -522,6 +640,201 @@ class PDFIngestionTests(unittest.TestCase):
                 for block_id in operation["block_ids"]
             }
             self.assertIn(by_text["13 INTRODUCTION"].block_id, deleted)
+
+    def test_front_toc_entry_with_dot_leader_is_not_a_chapter_boundary(self):
+        document = SourceDocument(
+            source_type="pdf_structured",
+            source_path="toc-entry.pdf",
+            filename="toc-entry.pdf",
+        )
+        for index, (text, y, font_size) in enumerate(
+            [
+                ("Section V ....134", 90, 16),
+                ("A dot-leader entry must not become a narration boundary.", 140, 11),
+                ("Ordinary body-sized text establishes the document typography.", 190, 11),
+            ],
+            start=1,
+        ):
+            document.blocks.append(
+                SourceBlock(
+                    block_id=f"toc-entry:{index}",
+                    text=text,
+                    line_start=index,
+                    line_end=index,
+                    source_index=index,
+                    page=1,
+                    tag="p",
+                    attributes={
+                        "bbox": [72, y, 430, y + 18],
+                        "page_size": [500, 700],
+                        "font_size": font_size,
+                        "source_lines": 1,
+                        "role_evidence": {},
+                    },
+                )
+            )
+
+        _annotate_structural_roles(document)
+        toc_entry = document.blocks[0]
+
+        self.assertGreaterEqual(toc_entry.role_score("toc_candidate"), 0.7)
+        self.assertLess(toc_entry.role_score("deterministic_chapter"), 0.85)
+
+    def test_pdf_chapter_references_in_prose_are_not_chapter_boundaries(self):
+        document = SourceDocument(
+            source_type="pdf_structured",
+            source_path="references.pdf",
+            filename="references.pdf",
+        )
+        texts = [
+            "Ordinary body narration establishes the document's normal typography and reading flow.",
+            "Chapter 4 shifts its perspective by focusing on an important conflict.",
+            "Book 1 results from the fact that the editor included this passage in the final text.",
+            "Further ordinary narration follows the references and continues the same discussion at length.",
+            "Chapter 9: Inferences are things that have happened in the cited discussion.",
+        ]
+        for index, text in enumerate(texts, start=1):
+            document.blocks.append(
+                SourceBlock(
+                    block_id=f"reference:{index}",
+                    text=text,
+                    line_start=index,
+                    line_end=index,
+                    source_index=index,
+                    page=1,
+                    tag="p",
+                    attributes={
+                        "bbox": [72, 180 + index * 70, 430, 205 + index * 70],
+                        "page_size": [500, 700],
+                        "font_size": 8 if index == 5 else 11,
+                        "source_lines": 1,
+                        "role_evidence": {},
+                    },
+                )
+            )
+
+        _annotate_structural_roles(document)
+
+        for block in document.blocks[1:3]:
+            self.assertLess(block.role_score("deterministic_chapter"), 0.85)
+        footnote_reference = document.blocks[4]
+        self.assertGreaterEqual(footnote_reference.role_score("footnote"), 0.6)
+        self.assertLess(footnote_reference.role_score("deterministic_chapter"), 0.85)
+
+    def test_repeated_small_chapter_labels_keep_first_boundary_only(self):
+        document = SourceDocument(
+            source_type="pdf_structured",
+            source_path="running-headers.pdf",
+            filename="running-headers.pdf",
+        )
+
+        def add_block(page, suffix, text, y, font_size):
+            index = len(document.blocks) + 1
+            document.blocks.append(
+                SourceBlock(
+                    block_id=f"page-{page}:{suffix}",
+                    text=text,
+                    line_start=index,
+                    line_end=index,
+                    source_index=index,
+                    page=page,
+                    tag="p",
+                    attributes={
+                        "bbox": [72, y, 430, y + 20],
+                        "page_size": [500, 700],
+                        "font_size": font_size,
+                        "source_lines": 1,
+                        "role_evidence": {},
+                    },
+                )
+            )
+
+        add_block(1, "title", "Chapter 1", 70, 18)
+        add_block(
+            1,
+            "body",
+            "The actual chapter begins with substantial ordinary narration that establishes the body font.",
+            130,
+            11,
+        )
+        for page in range(2, 5):
+            add_block(page, "header", "Chapter 18 \x08", 40, 11)
+            add_block(
+                page,
+                "body",
+                "Narration continues on this page with enough prose to represent an ordinary book page.",
+                100,
+                11,
+            )
+        add_block(20, "header", "Chapter 18 \x08", 40, 11)
+        add_block(
+            20,
+            "body",
+            "A later part restarts chapter numbering and must retain its first boundary.",
+            100,
+            11,
+        )
+
+        _annotate_structural_roles(document)
+        actual_title = next(block for block in document.blocks if block.text == "Chapter 1")
+        repeated_headers = [block for block in document.blocks if block.text.startswith("Chapter 18")]
+
+        self.assertGreaterEqual(actual_title.role_score("deterministic_chapter"), 0.85)
+        self.assertLess(actual_title.role_score("repeated_marginal"), 0.95)
+        self.assertGreaterEqual(repeated_headers[0].role_score("deterministic_chapter"), 0.85)
+        self.assertLess(repeated_headers[0].role_score("repeated_marginal"), 0.95)
+        self.assertTrue(
+            all(block.role_score("repeated_marginal") >= 0.95 for block in repeated_headers[1:3])
+        )
+        self.assertTrue(
+            all(block.role_score("deterministic_chapter") < 0.85 for block in repeated_headers[1:3])
+        )
+        self.assertGreaterEqual(repeated_headers[3].role_score("deterministic_chapter"), 0.85)
+        self.assertLess(repeated_headers[3].role_score("repeated_marginal"), 0.95)
+
+    def test_chapter_outline_entries_are_not_chapter_boundaries(self):
+        document = SourceDocument(
+            source_type="pdf_structured",
+            source_path="outline.pdf",
+            filename="outline.pdf",
+        )
+        for index, text in enumerate(
+            [
+                "Chapter 1: The Beginning",
+                "Chapter 2: The Middle",
+                "Chapter 3: The End",
+                "The chapter-by-chapter outline explains the organization of the complete work.",
+            ],
+            start=1,
+        ):
+            document.blocks.append(
+                SourceBlock(
+                    block_id=f"outline:{index}",
+                    text=text,
+                    line_start=index,
+                    line_end=index,
+                    source_index=index,
+                    page=1,
+                    tag="p",
+                    attributes={
+                        "bbox": [72, 80 + index * 50, 430, 100 + index * 50],
+                        "page_size": [500, 700],
+                        "font_size": 11,
+                        "source_lines": 1,
+                        "role_evidence": {},
+                    },
+                )
+            )
+
+        _annotate_structural_roles(document)
+        outline_entries = document.blocks[:3]
+
+        self.assertTrue(
+            all(block.role_score("chapter_outline") >= 0.95 for block in outline_entries)
+        )
+        self.assertTrue(
+            all(block.role_score("deterministic_chapter") < 0.85 for block in outline_entries)
+        )
 
     def test_pdf_toc_boilerplate_and_roman_footnotes_are_safe_to_remove(self):
         with tempfile.TemporaryDirectory() as directory:

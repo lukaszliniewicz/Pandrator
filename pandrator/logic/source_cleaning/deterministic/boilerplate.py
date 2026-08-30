@@ -88,13 +88,23 @@ def is_front_boilerplate(
 
 
 def is_front_legal_document(blocks: list[dict] | None) -> bool:
-    """Identify a legal/publisher page without discarding a real preface."""
+    """Identify a self-contained legal page without discarding a mixed body file.
+
+    Calibre and other converters sometimes put a copyright page and many
+    chapters in one large XHTML resource.  A couple of publisher phrases are
+    evidence for individual boilerplate blocks, but they are not enough to
+    discard that complete resource.
+    """
     if not blocks:
         return False
-    signals = sum(
-        bool(FRONT_LEGAL_TEXT_RE.search(str(block.get("text", ""))))
+    text_blocks = [
+        str(block.get("text", "")).strip()
         for block in blocks
-    )
+        if str(block.get("text", "")).strip()
+    ]
+    signals = sum(bool(FRONT_LEGAL_TEXT_RE.search(text)) for text in text_blocks)
+    if len(text_blocks) > 100 or sum(len(text.split()) for text in text_blocks) > 3_000:
+        return False
     return signals >= 2
 
 def is_end_boilerplate(idx: int, total_spine_files: int, href: str) -> bool:
