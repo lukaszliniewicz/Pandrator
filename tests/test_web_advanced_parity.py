@@ -289,6 +289,171 @@ class AgenticCleaningTests(unittest.TestCase):
             finally:
                 database.dispose()
 
+    def test_agentic_epub_uses_deterministic_text_as_its_working_document(self):
+        from pandrator.logic.source_cleaning.models import PipelineResult
+        from pandrator.logic.source_cleaning.pdf_text_adapter import (
+            build_source_document_from_text,
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            paths = prepare_web_test_data_root(directory)
+            database = Database(paths.database)
+            try:
+                session_record = SessionService(database).create("EPUB baseline")
+                (paths.sessions / session_record.storage_key).mkdir()
+                source_path = paths.uploads / "book.epub"
+                source_path.write_bytes(b"test fixture")
+                source = ArtifactService(database, paths).register(
+                    source_path,
+                    kind="source",
+                    role="upload",
+                    session_id=session_record.id,
+                )
+                with database.session() as session:
+                    provider = Provider(
+                        provider_key="openai",
+                        label="Local",
+                        base_url="http://127.0.0.1:1234/v1",
+                    )
+                    session.add(provider)
+                    session.flush()
+                    session.add(
+                        ProviderModel(
+                            provider_id=provider.id,
+                            model_id="test",
+                            is_default=True,
+                        )
+                    )
+                cleaned = "[[Chapter]]Chapter One\n\nNarration remains."
+                agent_document = build_source_document_from_text(
+                    cleaned,
+                    source_path=str(source_path),
+                    filename=source_path.name,
+                )
+                agent_document.source_type = "epub_cleaned_text"
+                agent_document.blocks[0].text = "Chapter One"
+                agent_document.blocks[0].role_candidates.append(
+                    "deterministic_chapter"
+                )
+                chapter_operation = {
+                    "op": "mark_chapter",
+                    "block_id": agent_document.blocks[0].block_id,
+                    "title": "Chapter One",
+                    "reason": "deterministic embedded chapter marker",
+                }
+                pipeline = PipelineResult()
+                with (
+                    mock.patch(
+                        "pandrator.logic.file_handler.extract_text_from_epub",
+                        return_value=cleaned,
+                    ),
+                    mock.patch(
+                        "pandrator.logic.source_cleaning.build_cleaned_epub_source_document",
+                        return_value=agent_document,
+                    ) as build_agent_document,
+                    mock.patch(
+                        "pandrator.logic.source_cleaning.propose_embedded_chapter_operations",
+                        return_value=[chapter_operation],
+                    ),
+                    mock.patch(
+                        "pandrator.logic.source_cleaning.run_cleaning_pipeline",
+                        return_value=pipeline,
+                    ) as run_pipeline,
+                ):
+                    result = WorkflowHandlers(database, paths).clean_source(
+                        {
+                            "session_id": session_record.id,
+                            "source_artifact_id": source.id,
+                            "settings": {"agentic": True, "phase_names": ["metadata"]},
+                        },
+                        lambda *_args: None,
+                        threading.Event(),
+                    )
+
+                build_agent_document.assert_called_once_with(str(source_path), cleaned)
+                self.assertIs(run_pipeline.call_args.args[0], agent_document)
+                self.assertEqual(
+                    run_pipeline.call_args.kwargs["config"].baseline_operations,
+                    [chapter_operation],
+                )
+                _artifact, output_path = ArtifactService(database, paths).resolve(
+                    result["artifact_id"]
+                )
+                self.assertEqual(output_path.read_text(encoding="utf-8"), cleaned)
+            finally:
+                database.dispose()
+
+    def test_agentic_pdf_exposes_deterministic_operations_to_pipeline_review(self):
+        import fitz
+
+        from pandrator.logic.source_cleaning.models import PipelineResult
+
+        with tempfile.TemporaryDirectory() as directory:
+            paths = prepare_web_test_data_root(directory)
+            database = Database(paths.database)
+            try:
+                session_record = SessionService(database).create("PDF baseline")
+                (paths.sessions / session_record.storage_key).mkdir()
+                source_path = paths.uploads / "book.pdf"
+                pdf = fitz.open()
+                page = pdf.new_page()
+                page.insert_text((72, 72), "Chapter One")
+                pdf.save(source_path)
+                pdf.close()
+                source = ArtifactService(database, paths).register(
+                    source_path,
+                    kind="source",
+                    role="upload",
+                    session_id=session_record.id,
+                )
+                with database.session() as session:
+                    provider = Provider(
+                        provider_key="openai",
+                        label="Local",
+                        base_url="http://127.0.0.1:1234/v1",
+                    )
+                    session.add(provider)
+                    session.flush()
+                    session.add(
+                        ProviderModel(
+                            provider_id=provider.id,
+                            model_id="test",
+                            is_default=True,
+                        )
+                    )
+                deterministic = [
+                    {"op": "mark_chapter", "start_line": 1, "title": "Chapter One"}
+                ]
+                with (
+                    mock.patch(
+                        "pandrator.logic.source_cleaning.propose_deterministic_operations",
+                        return_value=deterministic,
+                    ),
+                    mock.patch(
+                        "pandrator.logic.source_cleaning.run_cleaning_pipeline",
+                        return_value=PipelineResult(),
+                    ) as run_pipeline,
+                ):
+                    WorkflowHandlers(database, paths).clean_source(
+                        {
+                            "session_id": session_record.id,
+                            "source_artifact_id": source.id,
+                            "settings": {
+                                "agentic": True,
+                                "phase_names": ["chapter_marking"],
+                            },
+                        },
+                        lambda *_args: None,
+                        threading.Event(),
+                    )
+
+                self.assertEqual(
+                    run_pipeline.call_args.kwargs["config"].baseline_operations,
+                    deterministic,
+                )
+            finally:
+                database.dispose()
+
 
 class SourceAwareWorkflowTests(unittest.TestCase):
     def test_srt_workflow_omits_transcription_and_renumbers_cards(self):

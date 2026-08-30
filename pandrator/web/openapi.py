@@ -523,6 +523,18 @@ def build_openapi_document() -> dict:
             "/api/v1/artifacts/{artifactId}/pdf": {
                 "get": {
                     "operationId": "inspectPdf",
+                    "parameters": [
+                        {
+                            "name": "first_page_side",
+                            "in": "query",
+                            "required": False,
+                            "schema": {
+                                "type": "string",
+                                "enum": ["left", "right"],
+                                "default": "right",
+                            },
+                        }
+                    ],
                     "responses": {"200": {"description": "PDF geometry"}},
                 }
             },

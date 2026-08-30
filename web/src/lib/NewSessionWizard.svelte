@@ -126,6 +126,7 @@
 
   function chooseKind(value: typeof kind, full = false) {
     kind = value;
+    if (value === 'audiobook' && sourceMode === 'url') sourceMode = 'upload';
     if (value === 'audiobook' && sourceLanguage === 'auto')
       sourceLanguage = 'en';
     custom = full;
@@ -398,7 +399,7 @@
       >
     {:else if step === 2}
       <div class="mt-7 grid gap-3 sm:grid-cols-5">
-        {#each [{ id: 'upload', label: 'Upload', icon: Upload }, { id: 'paste', label: 'Paste', icon: FileText }, { id: 'url', label: 'URL', icon: Link2 }, { id: 'reuse', label: 'Reuse', icon: BookOpenText }, { id: 'later', label: 'Add later', icon: Gauge }] as mode}{@const Icon =
+        {#each [{ id: 'upload', label: 'Upload', icon: Upload }, { id: 'paste', label: 'Paste', icon: FileText }, ...(kind === 'audiobook' ? [] : [{ id: 'url', label: 'URL', icon: Link2 }]), { id: 'reuse', label: 'Reuse', icon: BookOpenText }, { id: 'later', label: 'Add later', icon: Gauge }] as mode}{@const Icon =
             mode.icon}<button
             onclick={() => (sourceMode = mode.id as typeof sourceMode)}
             class:active={sourceMode === mode.id}

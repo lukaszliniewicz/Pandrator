@@ -5,6 +5,10 @@ segments, generated takes, an assembled timeline, and a final audio or M4B
 export. Preparation, generation, assembly, and export are separate stages so a
 new take does not silently replace a finished book.
 
+For exact PDF/OCR and EPUB behavior, cleanup controls, artifacts, and
+segmentation defaults, keep the
+[document-ingestion reference](../reference/document-ingestion.md) nearby.
+
 ## Before you begin
 
 Install or configure one TTS provider. **Kokoro** is a lightweight local first
@@ -18,20 +22,25 @@ local or cloud-hosted and which document text it will receive.
 ## 1. Create the session and import text
 
 Create an **Audiobook** session and provide TXT, PDF, EPUB, DOCX, MOBI, pasted
-text, or a supported public URL. PDF quality varies: text-native PDFs are
-easier than scans, and OCR should be reviewed carefully. URL import uses
-`yt-dlp` where supported; you remain responsible for the source service's
-terms and applicable law.
+text, or a reusable document from the source library. PDF quality varies:
+text-native PDFs are easier than scans, and OCR should be reviewed carefully.
+The public-URL importer is for audio/video transcription workflows, not general
+PDF or EPUB downloads.
 
 Pandrator keeps the original source artifact. Cleanup produces a new,
 reviewable result rather than overwriting it.
 
 ## 2. Clean and structure the document
 
-Review extraction artifacts, headers, page numbers, broken line wrapping,
-footnotes, OCR errors, and chapter boundaries. Prefer deterministic cleanup
-for predictable patterns. Optional AI cleanup should have a narrow instruction
-and be reviewed before it becomes the selected clean source.
+Review the extraction baseline and diagnostics, headers, page numbers, broken
+line wrapping, footnotes, OCR errors, and chapter boundaries. Prefer
+deterministic cleanup for predictable patterns. Optional model-assisted cleanup
+uses constrained structural edits and should be reviewed before its result
+becomes the selected clean source.
+
+PDF users should start with automatic OCR and change it only after inspecting
+the native result. EPUB users should verify spine order and chapter markers,
+especially in scholarly, illustrated, or unusually structured editions.
 
 Check chapter titles and metadata now. They affect navigation and M4B chapter
 markers later.

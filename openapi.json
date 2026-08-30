@@ -4338,6 +4338,19 @@
         "operationId": "inspectPdf",
         "parameters": [
           {
+            "in": "query",
+            "name": "first_page_side",
+            "required": false,
+            "schema": {
+              "default": "right",
+              "enum": [
+                "left",
+                "right"
+              ],
+              "type": "string"
+            }
+          },
+          {
             "in": "path",
             "name": "artifactId",
             "required": true,

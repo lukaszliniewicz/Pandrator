@@ -124,8 +124,8 @@ const CHOICES: Record<string, SettingOption[]> = {
   ],
   pdf_ocr_mode: [
     option('auto', 'Automatic'),
-    option('always', 'Always OCR'),
-    option('never', 'Never OCR')
+    option('force', 'Always OCR'),
+    option('off', 'Never OCR')
   ],
   format: [
     option('wav', 'WAV'),
@@ -327,6 +327,7 @@ export function numberPresentation(key: string): NumberPresentation {
     stt_compute_device: { min: 0, step: 1 },
     stt_threads: { min: 0, step: 1 },
     stt_beam_size: { min: 1, step: 1 },
+    pdf_ocr_dpi: { min: 120, max: 400, step: 1 },
     char_limit: { min: 1, max: 100000, step: 100 },
     max_segments_per_batch: { min: 1, max: 500, step: 1 },
     context_before: { min: 0, max: 20, step: 1 },

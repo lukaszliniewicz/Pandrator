@@ -71,6 +71,13 @@ that model runs locally or sends prompts to a provider is controlled by the
 MCP host. Pandrator cannot make a cloud-hosted agent local by calling the
 workflow “passive.”
 
+PDF/EPUB parsing and deterministic cleanup remain local. Enabling agentic
+document cleanup sends its bounded working text and instructions to the LLM
+provider configured in Pandrator; it is not processed by the MCP host's passive
+dispatcher. See the
+[document-ingestion reference](../reference/document-ingestion.md) for the
+stage and artifact boundaries.
+
 Use the least scopes needed. Read-only explanation does not need session or
 Manager mutation authority. Exact scope recipes and enrollment behavior are in
 the [MCP guide](../../pandrator_mcp/README.md).

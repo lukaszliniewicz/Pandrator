@@ -58,6 +58,35 @@ class WebWorkflowHandlerTests(unittest.TestCase):
     def progress(_value, _detail=None):
         return None
 
+    def test_prepare_text_fallbacks_match_canonical_text_defaults(self):
+        source_path = self.session_dir / "cleaned.txt"
+        source_path.write_text("LOUD HEADING\n\nNarration.", encoding="utf-8")
+        source = self.artifacts.register(
+            source_path,
+            kind="text",
+            role="clean_text",
+            session_id=self.session.id,
+        )
+
+        with mock.patch(
+            "pandrator.logic.text_preprocessor.preprocess_text",
+            return_value=[{"text": "Narration."}],
+        ) as preprocess:
+            self.handlers.prepare_text(
+                {
+                    "session_id": self.session.id,
+                    "source_artifact_id": source.id,
+                    "settings": {},
+                },
+                self.progress,
+                threading.Event(),
+            )
+
+        effective = preprocess.call_args.args[1]
+        self.assertEqual(effective["language"], "auto")
+        self.assertEqual(effective["max_sentence_length"], 200)
+        self.assertTrue(effective["normalize_all_caps"])
+
     def test_fraction_message_progress_uses_the_primary_work_counter(self):
         updates = []
         callback = _fraction_message_callback(

@@ -10,21 +10,25 @@ from ebooklib import epub
 from pandrator.logic import llm_handler
 from pandrator.logic.source_cleaning import (
     PHASE_ORDER,
+    SourceBlock,
     SourceCleaningAgentConfig,
     SourceCleaningAgentResult,
     SourceCleaningPipelineConfig,
     SourceCleaningTools,
-    SourceBlock,
     SourceDocument,
     apply_cleaning_operations,
+    build_cleaned_epub_source_document,
     build_source_document,
+    propose_embedded_chapter_operations,
     resolve_phase_max_iterations,
     run_cleaning_pipeline,
     run_source_cleaning_agent,
     validate_cleaning_result,
 )
 from pandrator.logic.source_cleaning.agent import parse_json_command
-from pandrator.logic.source_cleaning.pdf_text_adapter import build_source_document_from_text
+from pandrator.logic.source_cleaning.pdf_text_adapter import (
+    build_source_document_from_text,
+)
 
 
 class SourceCleaningTests(unittest.TestCase):
@@ -91,7 +95,12 @@ class SourceCleaningTests(unittest.TestCase):
         }
 
         baseline_operations = [
-            {"op": "mark_chapter", "block_id": document.blocks[1].block_id, "reason": "deterministic candidate"}
+            {
+                "op": "delete_blocks",
+                "block_ids": [document.blocks[0].block_id],
+                "reason": "deterministic cleanup",
+            },
+            {"op": "mark_chapter", "block_id": document.blocks[1].block_id, "reason": "deterministic candidate"},
         ]
 
         with patch(
@@ -129,6 +138,12 @@ class SourceCleaningTests(unittest.TestCase):
             all(not hasattr(call.kwargs["config"], "max_tokens") for call in run_agent.call_args_list)
         )
         self.assertEqual(configured_baselines, [[], [], [], [], baseline_operations])
+        self.assertTrue(
+            all(
+                "Title" not in call.args[0].plain_text()
+                for call in run_agent.call_args_list
+            )
+        )
         self.assertEqual(
             [phase.max_iterations for phase in result.phases],
             [limits[name] for name in PHASE_ORDER],
@@ -137,6 +152,38 @@ class SourceCleaningTests(unittest.TestCase):
         self.assertEqual(result.phases[0].tool_trace, [{"action": "inspect_document_structure"}])
         self.assertEqual(result.phases[0].finish_reviews, [{"accepted": True}])
         self.assertEqual(result.phases[0].raw_final_command, {"action": "finish"})
+
+    def test_cleaned_epub_agent_index_preserves_baseline_and_metadata_hints(self):
+        epub_path = self._write_epub_fixture()
+        cleaned_text = "[[Chapter]]Rozdzial pierwszy\n\nTo jest pierwsze zdanie powiesci."
+
+        document = build_cleaned_epub_source_document(epub_path, cleaned_text)
+        operations = propose_embedded_chapter_operations(document)
+
+        self.assertEqual(document.source_type, "epub_cleaned_text")
+        self.assertEqual(
+            apply_cleaning_operations(document, operations).cleaned_text,
+            cleaned_text,
+        )
+        self.assertNotIn("Mapa starego miasta", document.plain_text())
+        self.assertIn("deterministic_chapter", document.blocks[0].role_candidates)
+        self.assertNotIn("[[Chapter]]", document.blocks[0].text)
+        self.assertNotIn(
+            "[[Chapter]]",
+            apply_cleaning_operations(
+                document,
+                [
+                    *operations,
+                    {
+                        "op": "unmark_chapter",
+                        "block_id": document.blocks[0].block_id,
+                    },
+                ],
+            ).cleaned_text,
+        )
+        self.assertEqual(document.language, "pl")
+        self.assertTrue(document.metadata_candidates.get("title"))
+        self.assertFalse(document.attributes["epub_baseline"]["raw_markup_tools_available"])
 
     def test_destructive_phase_requires_inspection_before_finishing(self):
         document = build_source_document_from_text(

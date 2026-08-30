@@ -4170,7 +4170,9 @@ export interface operations {
     };
     inspectPdf: {
         parameters: {
-            query?: never;
+            query?: {
+                first_page_side?: "left" | "right";
+            };
             header?: never;
             path: {
                 artifactId: string;

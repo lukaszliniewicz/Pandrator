@@ -18,8 +18,9 @@ apply_cleaning_operations().
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
 from .agent import SourceCleaningAgentConfig, run_source_cleaning_agent
 from .models import PhaseResult, PipelineResult, SourceDocument
@@ -159,7 +160,11 @@ def run_cleaning_pipeline(
     )
 
     pipeline_result = PipelineResult()
-    accumulated_deleted_ids: set[str] = set()
+    baseline_cleaning = apply_cleaning_operations(
+        document,
+        list(resolved.baseline_operations),
+    )
+    accumulated_deleted_ids: set[str] = set(baseline_cleaning.deleted_block_ids)
     previous_summaries: list[dict[str, Any]] = []
 
     for idx, phase_name in enumerate(phase_names):

@@ -6,6 +6,67 @@ from . import epub_adapter, pdf_adapter, pdf_text_adapter
 from .models import SourceDocument
 
 
+def build_cleaned_epub_source_document(
+    source_path: str,
+    extracted_text: str,
+) -> SourceDocument:
+    """Index a deterministic EPUB baseline without reopening removed content.
+
+    The structured EPUB index remains useful for metadata and navigation hints,
+    but its raw blocks predate deterministic cleanup.  Agentic cleanup must work
+    on the already-cleaned text so that a no-op model cannot reintroduce a table
+    of contents, publisher boilerplate, illustrations, or removed notes.
+    """
+    document = pdf_text_adapter.build_source_document_from_text(
+        extracted_text or "",
+        source_path=source_path,
+        filename=os.path.basename(source_path),
+    )
+    document.source_type = "epub_cleaned_text"
+    for block in document.blocks:
+        if block.text.startswith("[[Chapter]]"):
+            block.text = block.text.removeprefix("[[Chapter]]").strip()
+            block.role_candidates.append("deterministic_chapter")
+
+    try:
+        structured = epub_adapter.build_source_document(source_path)
+    except Exception as error:  # noqa: BLE001 - EPUB parser failures span several libraries
+        document.warnings.append(
+            f"Structured EPUB metadata indexing failed; using the cleaned text baseline: {error}"
+        )
+        return document
+
+    document.metadata_candidates = (
+        structured.metadata_candidates or document.metadata_candidates
+    )
+    document.language = structured.language
+    document.nav_titles = structured.nav_titles
+    document.navigation_entries = structured.navigation_entries
+    document.warnings.extend(structured.warnings)
+    document.attributes["epub_baseline"] = {
+        "structured_block_count": len(structured.blocks),
+        "agent_block_count": len(document.blocks),
+        "raw_markup_tools_available": False,
+    }
+    return document
+
+
+def propose_embedded_chapter_operations(
+    document: SourceDocument,
+) -> list[dict[str, object]]:
+    """Turn chapter roles embedded by a text adapter into reversible operations."""
+    return [
+        {
+            "op": "mark_chapter",
+            "block_id": block.block_id,
+            "title": block.text,
+            "reason": "deterministic embedded chapter marker",
+        }
+        for block in document.blocks
+        if block.text and "deterministic_chapter" in block.role_candidates
+    ]
+
+
 def build_source_document(
     source_path: str,
     extracted_text: str | None = None,

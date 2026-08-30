@@ -40,6 +40,14 @@ that exact plan. Every write uses an idempotency key. Concurrent changes
 produce an explicit revision or stale-plan error instead of a silent
 overwrite.
 
+For document workflows, the public
+[document-ingestion reference](https://github.com/lukaszliniewicz/Pandrator/blob/main/docs/reference/document-ingestion.md) explains
+PDF layout/OCR, EPUB structure, deterministic and optional model-assisted
+cleanup, artifacts, and narration preparation. MCP plans and monitors those
+native stages; it does not parse books in the sidecar. Source-cleaning model
+work uses Pandrator's configured provider, while passive MCP dispatch is
+currently limited to subtitle correction and translation.
+
 ### Subtitle dispatch
 
 Dispatch is a passive pull loop for correction and translation. Create a run,

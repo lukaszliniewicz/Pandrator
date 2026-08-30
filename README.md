@@ -138,6 +138,7 @@ and configuration commands.
 | Area | Canonical documentation |
 | --- | --- |
 | Product setup and workflows | [Public documentation](docs/README.md) |
+| PDF/EPUB ingestion, OCR, cleanup, and narration parameters | [Document-ingestion reference](docs/reference/document-ingestion.md) |
 | Manager installation, CLI, recovery, and component operations | [Manager guide](pandrator_manager/README.md) |
 | MCP installation, targets, scopes, host configuration, and protocol behavior | [MCP guide](pandrator_mcp/README.md) |
 | Version history, downloads, and checksums | [GitHub Releases](https://github.com/lukaszliniewicz/Pandrator/releases) |

@@ -11,9 +11,14 @@ from pandrator.logic.source_cleaning import (
     build_source_document,
     propose_deterministic_operations,
 )
-from pandrator.logic.source_cleaning.pdf_adapter import build_source_document as build_pdf_source_document
-from pandrator.logic.source_cleaning.pdf_adapter import _annotate_structural_roles, _lines_to_blocks
 from pandrator.logic.source_cleaning.models import SourceBlock, SourceDocument
+from pandrator.logic.source_cleaning.pdf_adapter import (
+    _annotate_structural_roles,
+    _lines_to_blocks,
+)
+from pandrator.logic.source_cleaning.pdf_adapter import (
+    build_source_document as build_pdf_source_document,
+)
 
 
 class _FakeOCREngine:
@@ -65,6 +70,13 @@ class _ContinuationOCREngine:
 
 
 class PDFIngestionTests(unittest.TestCase):
+    def test_ocr_mode_normalization_accepts_ui_and_canonical_values(self):
+        self.assertEqual(PDFIngestionConfig(ocr_mode="always").normalized().ocr_mode, "force")
+        self.assertEqual(PDFIngestionConfig(ocr_mode="never").normalized().ocr_mode, "off")
+        self.assertEqual(PDFIngestionConfig(ocr_mode="force").normalized().ocr_mode, "force")
+        self.assertEqual(PDFIngestionConfig(ocr_mode="off").normalized().ocr_mode, "off")
+        self.assertEqual(PDFIngestionConfig(ocr_mode="unknown").normalized().ocr_mode, "auto")
+
     def test_native_line_grouping_keeps_margins_and_headings_separate_from_body(self):
         def line(text, bbox, font_size):
             return {

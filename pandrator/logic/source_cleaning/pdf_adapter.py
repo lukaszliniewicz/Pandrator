@@ -9,8 +9,9 @@ import re
 import statistics
 import unicodedata
 from collections import defaultdict
+from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass
-from typing import Any, Callable, Iterable
+from typing import Any
 
 from .models import SourceBlock, SourceDocument
 from .pdf_text_adapter import _front_matter_metadata, _metadata_from_filename
@@ -89,8 +90,9 @@ class PDFIngestionConfig:
     ocr_dpi: int = 200
     use_cache: bool = True
 
-    def normalized(self) -> "PDFIngestionConfig":
+    def normalized(self) -> PDFIngestionConfig:
         mode = str(self.ocr_mode or "auto").lower()
+        mode = {"always": "force", "never": "off"}.get(mode, mode)
         if mode not in {"auto", "off", "force"}:
             mode = "auto"
         return PDFIngestionConfig(

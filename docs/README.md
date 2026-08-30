@@ -31,10 +31,13 @@ interfaces live in the [Pandrator Manager guide](../pandrator_manager/README.md)
 ## Reference
 
 - [Supported formats and exports](reference/formats-and-exports.md)
+- [Document ingestion and narration pipeline](reference/document-ingestion.md)
 - [Subtitle-to-speech pipeline and parameters](reference/subtitle-pipeline.md)
 
-The subtitle reference explains the durable distinction between timed words,
-display cues, LLM batches, speech blocks, generation takes, and alignment.
+The document reference covers upload lineage, PDF layout/OCR, EPUB structure,
+cleanup, narration preparation, and generation segments. The subtitle reference
+explains the durable distinction between timed words, display cues, LLM
+batches, speech blocks, generation takes, and alignment.
 
 ## MCP and agents
 

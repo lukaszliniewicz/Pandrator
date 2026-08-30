@@ -28,6 +28,9 @@ must be reviewed. MOBI conversion needs Calibre; other Manager operations do
 not require it.
 
 Keep the original artifact and treat cleaned text as a new reviewable stage.
+For the format branches, PDF/OCR controls, EPUB spine and navigation behavior,
+artifact boundaries, cleanup settings, and narration parameters, see
+[document ingestion and narration](document-ingestion.md).
 
 ## Subtitles
 

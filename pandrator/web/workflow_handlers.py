@@ -4478,11 +4478,18 @@ class WorkflowHandlers:
             from .provider_settings import build_llm_settings
 
             progress(0.4, "Building source-cleaning index")
-            if extension in {".epub", ".pdf"}:
+            if extension == ".epub":
+                document = source_cleaning.build_cleaned_epub_source_document(
+                    str(source_path),
+                    cleaned_text,
+                )
+                deterministic_operations = (
+                    source_cleaning.propose_embedded_chapter_operations(document)
+                )
+            elif extension == ".pdf":
                 document = source_cleaning.build_source_document(
                     str(source_path),
-                    pdf_config=pdf_config if extension == ".pdf" else None,
-                    extracted_text=cleaned_text if extension == ".epub" else None,
+                    pdf_config=pdf_config,
                     artifact_dir=str(
                         self._session_dir(session_id) / "source_ingestion"
                     ),
@@ -4537,6 +4544,7 @@ class WorkflowHandlers:
                     if isinstance(phase_iterations, dict)
                     else None,
                     phase_names=requested_phase_names,
+                    baseline_operations=deterministic_operations,
                 ),
                 progress_callback=_source_cleaning_progress_callback(
                     progress,
@@ -4702,6 +4710,8 @@ class WorkflowHandlers:
     def prepare_text(self, payload, progress, cancel_event):
         from pandrator.logic.text_preprocessor import preprocess_text
 
+        from .workspace import BUILTIN_DEFAULTS
+
         session_id = str(payload.get("session_id") or "")
         source_artifact, source_path = self._resolve_input(
             str(payload.get("source_artifact_id") or "")
@@ -4712,8 +4722,7 @@ class WorkflowHandlers:
         text = source_path.read_text(encoding="utf-8-sig")
         record = self._session_record(session_id)
         source_language = str(record.source_language or "auto")
-        if source_language == "auto":
-            source_language = "en"
+        text_defaults = BUILTIN_DEFAULTS["text"]
         progress(0.1, "Segmenting narration")
         prepared = preprocess_text(
             text,
@@ -4723,21 +4732,44 @@ class WorkflowHandlers:
                 # Segmentation is intentionally provider-independent.  This
                 # selects the shared multilingual sentence tokenizer only.
                 "tts_service": "XTTS",
-                "max_sentence_length": int(settings.get("max_sentence_length") or 160),
+                "max_sentence_length": int(
+                    settings.get("max_sentence_length")
+                    or text_defaults["max_sentence_length"]
+                ),
                 "enable_sentence_splitting": bool(
-                    settings.get("enable_sentence_splitting", True)
+                    settings.get(
+                        "enable_sentence_splitting",
+                        text_defaults["enable_sentence_splitting"],
+                    )
                 ),
                 "enable_sentence_appending": bool(
-                    settings.get("enable_sentence_appending", True)
+                    settings.get(
+                        "enable_sentence_appending",
+                        text_defaults["enable_sentence_appending"],
+                    )
                 ),
                 "enable_nemo_normalization": bool(
-                    settings.get("enable_nemo_normalization", True)
+                    settings.get(
+                        "enable_nemo_normalization",
+                        text_defaults["enable_nemo_normalization"],
+                    )
                 ),
-                "remove_diacritics": bool(settings.get("remove_diacritics", False)),
+                "remove_diacritics": bool(
+                    settings.get(
+                        "remove_diacritics", text_defaults["remove_diacritics"]
+                    )
+                ),
                 "remove_quotation_marks": bool(
-                    settings.get("remove_quotation_marks", False)
+                    settings.get(
+                        "remove_quotation_marks",
+                        text_defaults["remove_quotation_marks"],
+                    )
                 ),
-                "normalize_all_caps": bool(settings.get("normalize_all_caps", False)),
+                "normalize_all_caps": bool(
+                    settings.get(
+                        "normalize_all_caps", text_defaults["normalize_all_caps"]
+                    )
+                ),
             },
             progress_callback=_scaled_progress_callback(progress, 0.1, 0.85),
         )

@@ -17,6 +17,13 @@ Whole-document speech optimization and generation-time batch optimization are
 alternative places to perform the same kind of transformation. Review the plan
 and avoid enabling both unintentionally.
 
+PDF layout/OCR, EPUB spine and navigation handling, deterministic and optional
+model-assisted cleanup, artifacts, and narration segmentation are described in
+the public [document-ingestion reference](https://github.com/lukaszliniewicz/Pandrator/blob/main/docs/reference/document-ingestion.md).
+The optional cleanup model is run by Pandrator through its configured provider;
+it is not a passive MCP batch. Passive dispatch currently applies to subtitle
+correction and translation.
+
 Generation can send narration text to a configured TTS provider. Cleanup or
 optimization can send text to an LLM provider. A useful plan therefore states
 which provider receives which data before execution. Generated takes and final

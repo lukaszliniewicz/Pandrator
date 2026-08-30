@@ -51,6 +51,27 @@ For cloud providers, distinguish a slow request from provider authentication,
 quota, timeout, and rate-limit failures. For local models, inspect service
 readiness and resource use.
 
+## Document extraction or cleanup looks wrong
+
+- Confirm that the selected source is the intended original or derived file.
+- For PDF, compare automatic, forced, and disabled OCR on representative pages;
+  set a concrete OCR language and keep DPI within 120–400.
+- Inspect PDF columns, page joins, repeated margins, contents removal, and
+  chapter markers separately. OCR does not repair every layout decision.
+- For EPUB, confirm spine order, navigation, front/end matter, notes, image
+  captions, and `[[Chapter]]` markers.
+- Treat a structured-EPUB fallback warning as reduced evidence, not silent
+  success; review the complete cleaned text.
+- Confirm Calibre and `ebook-convert` are available for DOCX or MOBI.
+- If model-assisted cleanup fails or reaches its budget, inspect its diff,
+  typed operations, validation warnings, and provider error before adding more
+  turns.
+
+Do not rerun generation until the intended cleaned-text artifact and prepared
+narration revision are selected. The
+[document-ingestion reference](../reference/document-ingestion.md) explains
+format branches, controls, artifact boundaries, and recovery in detail.
+
 ## Transcription or subtitles look wrong
 
 - Set a known language instead of automatic detection when possible.
