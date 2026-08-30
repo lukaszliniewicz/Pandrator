@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -134,12 +135,13 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "model_name": "",
         "reasoning_effort": "",
         "instructions": "",
-        "preserve_timing": True,
-        "max_subtitles_per_call": 40,
+        "char_limit": 6000,
+        "max_segments_per_batch": 40,
         "llm_concurrent_calls": 1,
-        "timing_context_enabled": True,
-        "timing_context_gap_ms": 2000,
-        "context_before": 2,
+        "timing_context_mode": "full",
+        "substantial_gap_ms": 2000,
+        "no_remove_subtitles": False,
+        "context_before": 8,
         "context_after": 2,
         "request_timeout_seconds": 600,
         "web_research_enabled": False,
@@ -162,20 +164,18 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "backend": "llm",
         "source_language": "auto",
         "target_language": "en",
-        "professional_cleanup": True,
         "model_name": "",
         "reasoning_effort": "",
         "instructions": "",
         "glossary": "",
-        "max_subtitles_per_call": 40,
+        "char_limit": 6000,
+        "max_segments_per_batch": 40,
         "llm_concurrent_calls": 1,
-        "timing_context_enabled": True,
-        "timing_context_gap_ms": 2000,
-        "max_line_length": 0,
-        "context_before": 2,
+        "timing_context_mode": "full",
+        "substantial_gap_ms": 2000,
+        "context_before": 8,
         "context_after": 2,
         "no_remove_subtitles": False,
-        "llm_char": 6000,
         "context": True,
         "glossary_enabled": False,
         "request_timeout_seconds": 600,
@@ -372,6 +372,9 @@ RUNTIME_SETTING_ALIASES: dict[str, dict[str, str]] = {
         "enabled": "correction_enabled",
         "model_name": "correction_model",
         "instructions": "custom_correction_prompt",
+        "char_limit": "llm_char",
+        "max_segments_per_batch": "max_subtitles_per_call",
+        "substantial_gap_ms": "timing_context_gap_ms",
     },
     "translation": {
         "enabled": "translation_enabled",
@@ -379,6 +382,9 @@ RUNTIME_SETTING_ALIASES: dict[str, dict[str, str]] = {
         "source_language": "original_language",
         "model_name": "translation_model",
         "instructions": "translate_prompt",
+        "char_limit": "llm_char",
+        "max_segments_per_batch": "max_subtitles_per_call",
+        "substantial_gap_ms": "timing_context_gap_ms",
     },
 }
 
@@ -389,6 +395,10 @@ def adapt_runtime_settings(section: str, values: dict[str, Any]) -> dict[str, An
     for web_key, runtime_key in RUNTIME_SETTING_ALIASES.get(section, {}).items():
         if runtime_key not in result and web_key in result:
             result[runtime_key] = deepcopy(result[web_key])
+    if section in {"correction", "translation"}:
+        mode = str(result.get("timing_context_mode") or "").strip().lower()
+        if mode and "timing_context_enabled" not in result:
+            result["timing_context_enabled"] = mode != "none"
     if section == "tts":
         # Web settings persist stable service IDs (for example ``kokoro``), while
         # the legacy synthesis boundary still dispatches on canonical labels.

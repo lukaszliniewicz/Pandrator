@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 CredentialBackend = Literal["database", "environment", "keyring", "file"]
 ApiScope = Literal[
@@ -23,6 +23,18 @@ ApiScope = Literal[
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+
+def _default_manager_scopes() -> list[ApiScope]:
+    return [
+        "app.read",
+        "app.write",
+        "app.run",
+        "app.cancel",
+        "manager.read",
+        "manager.runtime",
+        "manager.mutate",
+    ]
 
 
 class ErrorBody(StrictModel):
@@ -74,15 +86,7 @@ class BootstrapRequest(StrictModel):
 
 class ManagerBootstrapRequest(StrictModel):
     scopes: list[ApiScope] = Field(
-        default_factory=lambda: [
-            "app.read",
-            "app.write",
-            "app.run",
-            "app.cancel",
-            "manager.read",
-            "manager.runtime",
-            "manager.mutate",
-        ],
+        default_factory=_default_manager_scopes,
         min_length=1,
     )
 
@@ -513,6 +517,255 @@ class AgentRunCreateRequest(StrictModel):
     settings: dict[str, Any] = Field(default_factory=dict)
 
 
+class DispatchRunCreateRequest(StrictModel):
+    kind: Literal["correction", "translation"]
+    source_artifact_id: str | None = Field(default=None, min_length=1, max_length=80)
+    source_language: str | None = Field(default=None, max_length=40)
+    target_language: str | None = Field(default=None, max_length=40)
+    instructions: str = Field(default="", max_length=16_000)
+    char_limit: int = Field(default=6000, ge=1, le=100_000)
+    max_segments_per_batch: int = Field(default=40, ge=1, le=500)
+    no_remove_subtitles: bool = False
+    context_before: int = Field(default=8, ge=0, le=20)
+    context_after: int = Field(default=2, ge=0, le=20)
+    timing_context_mode: Literal["full", "overlap_only", "none"] = "full"
+    include_timing_context: bool | None = Field(
+        default=None,
+        exclude=True,
+        deprecated=True,
+        description=(
+            "Deprecated compatibility input. False maps to timing_context_mode=none; "
+            "true maps to full."
+        ),
+    )
+    substantial_gap_ms: int = Field(default=2000, ge=0, le=60_000)
+    glossary: dict[str, str] = Field(default_factory=dict, max_length=2_000)
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_timing_context(cls, value: Any) -> Any:
+        if not isinstance(value, dict) or "include_timing_context" not in value:
+            return value
+        legacy = value.get("include_timing_context")
+        if legacy is None:
+            return value
+        migrated = dict(value)
+        legacy_enabled = (
+            legacy.strip().lower() not in {"0", "false", "no", "off"}
+            if isinstance(legacy, str)
+            else bool(legacy)
+        )
+        requested = "full" if legacy_enabled else "none"
+        canonical = migrated.get("timing_context_mode")
+        if canonical is not None and canonical != requested:
+            raise ValueError(
+                "include_timing_context conflicts with timing_context_mode."
+            )
+        migrated["timing_context_mode"] = requested
+        return migrated
+
+    @field_validator("glossary")
+    @classmethod
+    def validate_dispatch_glossary(cls, value: dict[str, str]) -> dict[str, str]:
+        for term, replacement in value.items():
+            if not term.strip() or len(term) > 500:
+                raise ValueError("Glossary terms must be 1-500 characters.")
+            if not replacement.strip() or len(replacement) > 2_000:
+                raise ValueError(
+                    "Glossary replacements must be 1-2,000 characters."
+                )
+        return value
+
+
+class DispatchBatchClaimRequest(StrictModel):
+    lease_seconds: int = Field(default=900, ge=30, le=3600)
+
+
+class DispatchBatchRenewRequest(StrictModel):
+    lease_token: str = Field(min_length=1, max_length=160)
+    lease_seconds: int = Field(default=900, ge=30, le=3600)
+
+
+class DispatchBatchReleaseRequest(StrictModel):
+    lease_token: str = Field(min_length=1, max_length=160)
+
+
+class DispatchCorrectionOperation(StrictModel):
+    action: Literal["edit", "delete", "merge", "split"]
+    cue_ids: list[Annotated[int, Field(ge=1)]] = Field(
+        min_length=1,
+        max_length=500,
+    )
+    texts: list[Annotated[str, Field(min_length=1, max_length=16_000)]] = Field(
+        default_factory=list,
+        max_length=500,
+    )
+    speakers: list[Annotated[str, Field(min_length=1, max_length=500)]] = Field(
+        default_factory=list,
+        max_length=500,
+    )
+
+    @model_validator(mode="after")
+    def validate_operation_shape(self) -> DispatchCorrectionOperation:
+        ids = self.cue_ids
+        texts = self.texts
+        valid = (
+            (self.action == "edit" and len(ids) == 1 and len(texts) == 1)
+            or (self.action == "delete" and not texts)
+            or (self.action == "merge" and len(ids) >= 2 and bool(texts))
+            or (self.action == "split" and len(ids) == 1 and len(texts) >= 2)
+        )
+        if not valid:
+            raise ValueError("Correction operation fields do not match its action.")
+        if len(set(ids)) != len(ids):
+            raise ValueError("Correction operation cue_ids must be unique.")
+        if self.speakers and len(self.speakers) != len(texts):
+            raise ValueError("speakers must be empty or match texts one-for-one.")
+        return self
+
+
+class DispatchCorrectionResult(StrictModel):
+    kind: Literal["correction"]
+    operations: list[DispatchCorrectionOperation] = Field(
+        default_factory=list,
+        max_length=500,
+    )
+
+
+class DispatchTranslationItem(StrictModel):
+    cue_id: int = Field(ge=1)
+    text: str = Field(min_length=1, max_length=16_000)
+    speaker: str | None = Field(default=None, max_length=500)
+
+
+class DispatchTranslationResult(StrictModel):
+    kind: Literal["translation"]
+    translations: list[DispatchTranslationItem] = Field(
+        min_length=1,
+        max_length=500,
+    )
+    glossary_updates: dict[str, str] = Field(default_factory=dict, max_length=2_000)
+
+    @field_validator("glossary_updates")
+    @classmethod
+    def validate_glossary_updates(cls, value: dict[str, str]) -> dict[str, str]:
+        for term, replacement in value.items():
+            if not term.strip() or len(term) > 500:
+                raise ValueError("Glossary terms must be 1-500 characters.")
+            if not replacement.strip() or len(replacement) > 2_000:
+                raise ValueError(
+                    "Glossary replacements must be 1-2,000 characters."
+                )
+        return value
+
+
+DispatchStructuredResult = Annotated[
+    DispatchCorrectionResult | DispatchTranslationResult,
+    Field(discriminator="kind"),
+]
+
+
+class DispatchBatchSubmitRequest(StrictModel):
+    lease_token: str = Field(min_length=1, max_length=160)
+    result: DispatchStructuredResult | None = None
+    response_text: str | None = Field(default=None, max_length=512 * 1024)
+
+    @model_validator(mode="after")
+    def validate_exactly_one_result(self):
+        if (self.result is None) == (self.response_text is None):
+            raise ValueError("Provide exactly one of result or response_text.")
+        return self
+
+    @field_validator("response_text")
+    @classmethod
+    def validate_dispatch_response_bytes(cls, value: str | None) -> str | None:
+        if value is not None and len(value.encode("utf-8")) > 512 * 1024:
+            raise ValueError("Model response exceeds the 512 KiB limit.")
+        return value
+
+
+class DispatchCueTiming(StrictModel):
+    start_ms: int | None = Field(default=None, ge=0)
+    end_ms: int | None = Field(default=None, gt=0)
+    gap_from_previous_ms: int | None = Field(default=None, ge=0)
+    overlap_with_previous_ms: int | None = Field(default=None, ge=0)
+
+
+class DispatchCue(StrictModel):
+    cue_id: int = Field(ge=1)
+    text: str
+    speaker: str | None = None
+    timing: DispatchCueTiming | None = None
+
+
+class DispatchBoundaryCue(StrictModel):
+    text: str
+    speaker: str | None = None
+
+
+class DispatchBoundaryContext(StrictModel):
+    previous_output: list[DispatchBoundaryCue]
+    following_source: list[DispatchBoundaryCue]
+
+
+class DispatchClaimedBatch(StrictModel):
+    id_namespace: Literal["source_revision_cue"]
+    source_revision_id: str
+    cue_count: int = Field(ge=1, le=500)
+    valid_cue_ids: list[int]
+    cues: list[DispatchCue]
+    context: DispatchBoundaryContext
+
+
+class DispatchTaskContract(StrictModel):
+    kind: Literal["correction", "translation"]
+    output_role: Literal["correction", "translation"]
+    source_language: str
+    target_language: str | None = None
+    instructions: str
+    result_contract: dict[str, Any]
+    no_remove_subtitles: bool
+    known_speakers: list[str]
+    glossary: dict[str, str]
+    timing_context_mode: Literal["full", "overlap_only", "none"]
+    substantial_gap_ms: int | None = Field(default=None, ge=0, le=60_000)
+
+
+class DispatchBatchClaimResponse(StrictModel):
+    schema_version: Literal["1"] = "1"
+    run_id: str
+    batch_id: str
+    batch_ordinal: int = Field(ge=1)
+    status: str
+    run_status: str
+    batch_status: str
+    task: DispatchTaskContract
+    batch: DispatchClaimedBatch
+    lease_token: str
+    lease_expires_at: str | None
+
+
+class DispatchBatchSubmitResponse(StrictModel):
+    run_id: str
+    batch_id: str
+    output_role: Literal["correction", "translation"]
+    status: str
+    run_status: str
+    batch_status: str
+    accepted: bool
+    completed_batch_count: int = Field(ge=0)
+    completed_batches: int = Field(ge=0)
+    batch_count: int = Field(ge=1)
+    total_batches: int = Field(ge=1)
+    remaining_batches: int = Field(ge=0)
+    result_artifact_id: str | None = None
+    final_artifact_id: str | None = None
+    finalized: bool
+    result_revision_id: str | None = None
+    error_code: str | None = None
+    error_message: str | None = None
+
+
 SCHEMA_MODELS = {
     model.__name__: model
     for model in (
@@ -579,5 +832,22 @@ SCHEMA_MODELS = {
         OutputMixPreviewRequest,
         TtsEndpointDiscoveryRequest,
         AgentRunCreateRequest,
+        DispatchRunCreateRequest,
+        DispatchBatchClaimRequest,
+        DispatchBatchRenewRequest,
+        DispatchBatchReleaseRequest,
+        DispatchCorrectionOperation,
+        DispatchCorrectionResult,
+        DispatchTranslationItem,
+        DispatchTranslationResult,
+        DispatchBatchSubmitRequest,
+        DispatchCueTiming,
+        DispatchCue,
+        DispatchBoundaryCue,
+        DispatchBoundaryContext,
+        DispatchClaimedBatch,
+        DispatchTaskContract,
+        DispatchBatchClaimResponse,
+        DispatchBatchSubmitResponse,
     )
 }

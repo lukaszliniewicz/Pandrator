@@ -29,8 +29,8 @@ def _settings(glossary_enabled=False):
         "llm_provider_configs": llm_handler.get_provider_configs(None),
         "request_timeout_seconds": 30,
         "reasoning_effort": "",
-        "llm_char": 6000,
-        "max_subtitles_per_call": 40,
+        "char_limit": 6000,
+        "max_segments_per_batch": 40,
         "context": True,
         "glossary_enabled": glossary_enabled,
     }
@@ -49,11 +49,12 @@ class DubbingLLMTranslationTests(unittest.TestCase):
             ],
             source_language="English",
             target_language="German",
+            timing_context_mode="overlap_only",
         )
         cue = json.loads(prompt.rsplit("\nThe subtitles:\n", 1)[1])[0]
 
         self.assertEqual(cue["speaker"], "Speaker 2")
-        self.assertEqual(cue["overlap_with_previous_ms"], 200)
+        self.assertEqual(cue["timing"]["overlap_with_previous_ms"], 200)
         self.assertIn("non-spoken evidence", prompt)
 
     def test_translation_prompt_can_include_timing_and_gap_policy(self):
@@ -74,10 +75,41 @@ class DubbingLLMTranslationTests(unittest.TestCase):
         )
         cue = json.loads(prompt.rsplit("\nThe subtitles:\n", 1)[1])[0]
 
-        self.assertEqual(3100, cue["start_ms"])
-        self.assertEqual(4200, cue["end_ms"])
-        self.assertEqual(2100, cue["gap_from_previous_ms"])
-        self.assertIn("A gap of 2000 ms or more", prompt)
+        self.assertEqual(3100, cue["timing"]["start_ms"])
+        self.assertEqual(4200, cue["timing"]["end_ms"])
+        self.assertEqual(2100, cue["timing"]["gap_from_previous_ms"])
+        self.assertIn("A gap of at least 2000 ms", prompt)
+
+    def test_translation_prompt_timing_modes_are_exact(self):
+        block = [
+            {
+                "index": 9,
+                "text": "Okay",
+                "start_ms": 800,
+                "end_ms": 1500,
+                "overlap_with_previous_ms": 200,
+            }
+        ]
+        overlap_prompt = llm_translation.build_translation_prompt(
+            block,
+            source_language="English",
+            target_language="German",
+            timing_context_mode="overlap_only",
+        )
+        overlap_cue = json.loads(overlap_prompt.rsplit("\nThe subtitles:\n", 1)[1])[0]
+        self.assertEqual(
+            {"overlap_with_previous_ms": 200},
+            overlap_cue["timing"],
+        )
+        none_prompt = llm_translation.build_translation_prompt(
+            block,
+            source_language="English",
+            target_language="German",
+            timing_context_mode="none",
+        )
+        none_cue = json.loads(none_prompt.rsplit("\nThe subtitles:\n", 1)[1])[0]
+        self.assertNotIn("timing", none_cue)
+        self.assertNotIn("start_ms", none_prompt)
 
     def test_parse_translation_response_extracts_glossary(self):
         translations, glossary = llm_translation.parse_translation_response(
@@ -107,6 +139,26 @@ hello = czesc
                 '[{"number":7,"text":"One"},{"number":7,"text":"Two"}]',
                 expected_numbers=[7, 12],
             )
+
+    def test_structured_translation_does_not_reparse_text_or_glossary_markers(self):
+        translations, glossary, speakers = (
+            llm_translation.parse_translation_items_details(
+                [
+                    {
+                        "cue_id": 7,
+                        "text": "Say [GLOSSARY] literally.",
+                        "speaker": "Speaker 1",
+                    }
+                ],
+                expected_numbers=[7],
+                known_speakers={"Speaker 1"},
+                glossary={"source=term": "target\nterm"},
+            )
+        )
+
+        self.assertEqual(["Say [GLOSSARY] literally."], translations)
+        self.assertEqual({"source=term": "target\nterm"}, glossary)
+        self.assertEqual(["Speaker 1"], speakers)
 
     def test_translation_responses_to_srt_removes_marked_subtitles(self):
         srt_content = llm_translation.translation_responses_to_srt(
@@ -256,7 +308,7 @@ Three.
                 if active >= 2:
                     gate.set()
             self.assertTrue(gate.wait(2))
-            if cue["number"] == 1:
+            if cue["cue_id"] == 1:
                 time.sleep(0.05)
             with lock:
                 active -= 1
@@ -265,12 +317,12 @@ Three.
                     json.dumps(
                         [
                             {
-                                "number": cue["number"],
+                                "cue_id": cue["cue_id"],
                                 "text": f"T-{cue['text']}",
                             }
                         ]
                     )
-                    + f"\n[GLOSSARY]\nterm{cue['number']} = translated{cue['number']}"
+                    + f"\n[GLOSSARY]\nterm{cue['cue_id']} = translated{cue['cue_id']}"
                 )
             )
 
@@ -278,7 +330,7 @@ Three.
             content,
             {
                 **_settings(glossary_enabled=True),
-                "max_subtitles_per_call": 1,
+                "max_segments_per_batch": 1,
                 "llm_concurrent_calls": 2,
             },
             glossary={"base": "basis"},
@@ -304,6 +356,47 @@ Three.
             {"base", "term1", "term2", "term3"},
             set(result.glossary),
         )
+
+    def test_sequential_context_matches_non_actionable_boundary_shape(self):
+        prompts = []
+
+        def fake_completion(**kwargs):
+            prompt = kwargs["messages"][0]["content"]
+            prompts.append(prompt)
+            cue = json.loads(prompt.rsplit("\nThe subtitles:\n", 1)[1])[0]
+            return llm_handler.ChatCompletionResult(
+                content=json.dumps(
+                    [
+                        {
+                            "cue_id": cue["cue_id"],
+                            "text": f"T-{cue['text']}",
+                        }
+                    ]
+                )
+            )
+
+        llm_translation.translate_srt_content(
+            SAMPLE_SRT,
+            {
+                **_settings(),
+                "max_segments_per_batch": 1,
+                "llm_concurrent_calls": 1,
+                "context_before": 8,
+                "context_after": 2,
+            },
+            completion_func=fake_completion,
+        )
+
+        following = prompts[0].split("Following source cues", 1)[1].split(
+            "The subtitles:", 1
+        )[0]
+        previous = prompts[1].split("final version of the previous", 1)[1].split(
+            "The subtitles:", 1
+        )[0]
+        self.assertIn('{"text": "Remove this."}', following)
+        self.assertIn('{"text": "T-Hello."}', previous)
+        self.assertNotIn("cue_id", following + previous)
+        self.assertNotIn("timing", following + previous)
 
     def test_legacy_speaker_labels_stay_out_of_deepl_requests(self):
         labelled = """1
@@ -351,7 +444,7 @@ Three.
             return llm_handler.ChatCompletionResult(
                 content=json.dumps(
                     [
-                        {"number": item["number"], "text": f"Translated {item['text']}"}
+                        {"cue_id": item["cue_id"], "text": f"Translated {item['text']}"}
                         for item in subtitles
                     ]
                 )
@@ -359,8 +452,8 @@ Three.
 
         settings = {
             **_settings(),
-            "llm_char": 100_000,
-            "max_subtitles_per_call": 2,
+            "char_limit": 100_000,
+            "max_segments_per_batch": 2,
         }
         progress_updates = []
         result = llm_translation.translate_srt_content(
@@ -461,13 +554,13 @@ Three.
             if len(subtitles) > 1:
                 return llm_handler.ChatCompletionResult(
                     content=json.dumps(
-                        [{"number": subtitles[0]["number"], "text": "Incomplete"}]
+                        [{"cue_id": subtitles[0]["cue_id"], "text": "Incomplete"}]
                     )
                 )
             item = subtitles[0]
             return llm_handler.ChatCompletionResult(
                 content=json.dumps(
-                    [{"number": item["number"], "text": f"Translated {item['text']}"}]
+                    [{"cue_id": item["cue_id"], "text": f"Translated {item['text']}"}]
                 )
             )
 
@@ -590,14 +683,14 @@ Three.
             if len(subtitles) > 1:
                 return llm_handler.ChatCompletionResult(
                     content=json.dumps(
-                        [{"number": subtitles[0]["number"], "text": "Incomplete"}]
+                        [{"cue_id": subtitles[0]["cue_id"], "text": "Incomplete"}]
                     )
                 )
             item = subtitles[0]
-            if item["number"] == 2:
+            if item["cue_id"] == 2:
                 raise RuntimeError("temporary provider outage")
             return llm_handler.ChatCompletionResult(
-                content=json.dumps([{"number": item["number"], "text": "Czesc."}])
+                content=json.dumps([{"cue_id": item["cue_id"], "text": "Czesc."}])
             )
 
         with self.assertRaisesRegex(RuntimeError, "provider outage"):
@@ -620,7 +713,7 @@ Three.
             prompt = kwargs["messages"][0]["content"]
             resumed_prompts.append(prompt)
             subtitles = json.loads(prompt.rsplit("\nThe subtitles:\n", 1)[1])
-            self.assertEqual([2], [item["number"] for item in subtitles])
+            self.assertEqual([2], [item["cue_id"] for item in subtitles])
             return llm_handler.ChatCompletionResult(
                 content='[{"number":2,"text":"Usun to."}]'
             )

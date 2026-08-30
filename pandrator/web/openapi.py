@@ -1219,10 +1219,149 @@ def build_openapi_document() -> dict:
             }
         return value
 
+    def idempotency_header(*, required: bool) -> dict:
+        return {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": required,
+            "description": (
+                "Required for automation principals and strongly recommended "
+                "for every retryable write."
+            ),
+            "schema": {"type": "string", "minLength": 8, "maxLength": 200},
+        }
+
     # Parity-workspace operations are declared alongside their Pydantic DTOs;
     # this block is also the source used to generate the checked-in TS client.
     paths.update(
         {
+            "/api/v1/sessions/{sessionId}/dispatch-runs": {
+                "post": {
+                    "operationId": "createDispatchRun",
+                    "parameters": [idempotency_header(required=False)],
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/DispatchRunCreateRequest"
+                                }
+                            }
+                        },
+                    },
+                    "responses": {"201": {"description": "Dispatch run created"}},
+                },
+                "get": {
+                    "operationId": "listDispatchRuns",
+                    "responses": {"200": {"description": "Dispatch run metadata"}},
+                },
+            },
+            "/api/v1/dispatch-runs/{runId}": {
+                "get": {
+                    "operationId": "getDispatchRun",
+                    "responses": {"200": {"description": "Dispatch run metadata"}},
+                }
+            },
+            "/api/v1/dispatch-runs/{runId}/claim": {
+                "post": {
+                    "operationId": "claimDispatchBatch",
+                    "parameters": [idempotency_header(required=True)],
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/DispatchBatchClaimRequest"
+                                }
+                            }
+                        },
+                    },
+                    "responses": {
+                        "200": {
+                            "description": "Claimed subtitle batch",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "$ref": "#/components/schemas/DispatchBatchClaimResponse"
+                                    }
+                                }
+                            },
+                        }
+                    },
+                }
+            },
+            "/api/v1/dispatch-batches/{batchId}/renew": {
+                "post": {
+                    "operationId": "renewDispatchBatch",
+                    "parameters": [idempotency_header(required=False)],
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/DispatchBatchRenewRequest"
+                                }
+                            }
+                        },
+                    },
+                    "responses": {"200": {"description": "Lease renewed"}},
+                }
+            },
+            "/api/v1/dispatch-batches/{batchId}/release": {
+                "post": {
+                    "operationId": "releaseDispatchBatch",
+                    "parameters": [idempotency_header(required=False)],
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/DispatchBatchReleaseRequest"
+                                }
+                            }
+                        },
+                    },
+                    "responses": {"200": {"description": "Batch returned to ready"}},
+                }
+            },
+            "/api/v1/dispatch-batches/{batchId}/submit": {
+                "post": {
+                    "operationId": "submitDispatchBatch",
+                    "parameters": [idempotency_header(required=True)],
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/DispatchBatchSubmitRequest"
+                                }
+                            }
+                        },
+                    },
+                    "responses": {
+                        "200": {
+                            "description": "Batch accepted",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "$ref": "#/components/schemas/DispatchBatchSubmitResponse"
+                                    }
+                                }
+                            },
+                        },
+                        "202": {
+                            "description": "Batch accepted; finalization continues",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "$ref": "#/components/schemas/DispatchBatchSubmitResponse"
+                                    }
+                                }
+                            },
+                        },
+                    },
+                }
+            },
             "/api/v1/parity": {
                 "get": operation("getParityRegistry", "Qt-to-web parity registry")
             },
@@ -1244,18 +1383,28 @@ def build_openapi_document() -> dict:
                                 "application/json": {
                                     "schema": {
                                         "type": "object",
-                                        "required": ["object", "data", "lifecycle_supported"],
+                                        "required": [
+                                            "object",
+                                            "data",
+                                            "lifecycle_supported",
+                                        ],
                                         "properties": {
                                             "object": {"type": "string"},
                                             "data": {
                                                 "type": "array",
-                                                "items": {"$ref": "#/components/schemas/XttsModel"},
+                                                "items": {
+                                                    "$ref": "#/components/schemas/XttsModel"
+                                                },
                                             },
                                             "lifecycle_supported": {"type": "boolean"},
-                                            "compatibility": {"type": ["string", "null"]},
+                                            "compatibility": {
+                                                "type": ["string", "null"]
+                                            },
                                             "wrapper": {
                                                 "type": ["object", "null"],
-                                                "additionalProperties": {"type": "string"},
+                                                "additionalProperties": {
+                                                    "type": "string"
+                                                },
                                             },
                                         },
                                     }
@@ -1317,7 +1466,7 @@ def build_openapi_document() -> dict:
                             },
                         }
                     },
-                }
+                },
             },
             "/api/v1/services/tts/xtts/models/{modelId}": {
                 "delete": {
@@ -1327,7 +1476,11 @@ def build_openapi_document() -> dict:
                             "name": "modelId",
                             "in": "path",
                             "required": True,
-                            "schema": {"type": "string", "minLength": 1, "maxLength": 512},
+                            "schema": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 512,
+                            },
                         }
                     ],
                     "responses": {
@@ -1337,7 +1490,12 @@ def build_openapi_document() -> dict:
                                 "application/json": {
                                     "schema": {
                                         "type": "object",
-                                        "required": ["id", "object", "deleted", "evicted"],
+                                        "required": [
+                                            "id",
+                                            "object",
+                                            "deleted",
+                                            "evicted",
+                                        ],
                                         "properties": {
                                             "id": {"type": "string"},
                                             "object": {"type": "string"},
@@ -1761,6 +1919,13 @@ def build_openapi_document() -> dict:
         ("/api/v1/capabilities", "get", "app.read"),
         ("/api/v1/sessions", "get", "app.read"),
         ("/api/v1/sessions", "post", "app.write"),
+        ("/api/v1/sessions/{sessionId}/dispatch-runs", "get", "app.read"),
+        ("/api/v1/sessions/{sessionId}/dispatch-runs", "post", "app.run"),
+        ("/api/v1/dispatch-runs/{runId}", "get", "app.read"),
+        ("/api/v1/dispatch-runs/{runId}/claim", "post", "app.run"),
+        ("/api/v1/dispatch-batches/{batchId}/renew", "post", "app.run"),
+        ("/api/v1/dispatch-batches/{batchId}/release", "post", "app.run"),
+        ("/api/v1/dispatch-batches/{batchId}/submit", "post", "app.run"),
         ("/api/v1/sessions/{sessionId}", "get", "app.read"),
         ("/api/v1/sessions/{sessionId}", "patch", "app.write"),
         ("/api/v1/sessions/{sessionId}/forks", "post", "app.write"),

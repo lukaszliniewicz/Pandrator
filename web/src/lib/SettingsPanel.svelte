@@ -88,11 +88,12 @@
       'model_name',
       'reasoning_effort',
       'llm_concurrent_calls',
-      'timing_context_enabled',
-      'timing_context_gap_ms',
+      'timing_context_mode',
+      'substantial_gap_ms',
       'instructions',
-      'preserve_timing',
-      'max_subtitles_per_call',
+      'char_limit',
+      'max_segments_per_batch',
+      'no_remove_subtitles',
       'context_before',
       'context_after',
       'web_research_enabled',
@@ -112,18 +113,19 @@
       'backend',
       'source_language',
       'target_language',
-      'professional_cleanup',
       'model_name',
       'reasoning_effort',
       'llm_concurrent_calls',
-      'timing_context_enabled',
-      'timing_context_gap_ms',
+      'timing_context_mode',
+      'substantial_gap_ms',
       'instructions',
       'glossary',
       'glossary_enabled',
       'context',
-      'max_subtitles_per_call',
-      'max_line_length',
+      'context_before',
+      'context_after',
+      'char_limit',
+      'max_segments_per_batch',
       'no_remove_subtitles',
       'web_research_enabled',
       'web_research_provider',
@@ -241,6 +243,11 @@
     ] ?? value.replaceAll('_', ' ');
   const applicable = $derived(
     entries.filter(([key]) => {
+      if (
+        section === 'translation' &&
+        ['professional_cleanup', 'max_line_length'].includes(key)
+      )
+        return false;
       if (section !== 'tts') return true;
       if (providerSetting(key)) return false;
       const service = String(
@@ -288,8 +295,36 @@
   const stageResearchSection = $derived(
     section === 'correction' || section === 'translation'
   );
+  const translationBackend = $derived(
+    String(value('backend', payload?.effective?.backend ?? 'llm')).toLowerCase()
+  );
+  const translationLlmOnlyKeys = new Set([
+    'source_language',
+    'model_name',
+    'reasoning_effort',
+    'llm_concurrent_calls',
+    'timing_context_mode',
+    'substantial_gap_ms',
+    'instructions',
+    'glossary',
+    'glossary_enabled',
+    'context',
+    'context_before',
+    'context_after',
+    'char_limit',
+    'max_segments_per_batch',
+    'no_remove_subtitles',
+    'request_timeout_seconds'
+  ]);
   const standardVisible = $derived(
-    visible.filter(([key]) => !key.startsWith('web_research_'))
+    visible
+      .filter(([key]) => !key.startsWith('web_research_'))
+      .filter(
+        ([key]) =>
+          section !== 'translation' ||
+          translationBackend !== 'deepl' ||
+          !translationLlmOnlyKeys.has(key)
+      )
   );
   const researchVisible = $derived(
     applicable.filter(
@@ -309,9 +344,7 @@
   );
   const deepLResearchConflict = $derived(
     section === 'translation' &&
-      String(
-        value('backend', payload?.effective?.backend ?? 'llm')
-      ).toLowerCase() === 'deepl' &&
+      translationBackend === 'deepl' &&
       researchEnabled
   );
   const deterministicText = $derived(

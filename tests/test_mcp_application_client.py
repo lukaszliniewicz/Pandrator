@@ -264,18 +264,12 @@ class ApplicationClientTests(unittest.TestCase):
         )
 
         self.assertEqual("PATCH", update["method"])
-        self.assertTrue(
-            update["url"].endswith("/api/v1/sessions/session-1")
-        )
+        self.assertTrue(update["url"].endswith("/api/v1/sessions/session-1"))
         self.assertEqual({"name": "Revised"}, json.loads(update["data"]))
         self.assertEqual('"1"', update["headers"]["If-Match"])
 
         self.assertEqual("POST", attach["method"])
-        self.assertTrue(
-            attach["url"].endswith(
-                "/api/v1/sessions/session-1/sources"
-            )
-        )
+        self.assertTrue(attach["url"].endswith("/api/v1/sessions/session-1/sources"))
         self.assertEqual(
             {"source_asset_id": "source-1", "role": "primary"},
             json.loads(attach["data"]),
@@ -284,15 +278,182 @@ class ApplicationClientTests(unittest.TestCase):
 
         self.assertEqual("PUT", settings["method"])
         self.assertTrue(
-            settings["url"].endswith(
-                "/api/v1/sessions/session-1/settings/tts"
-            )
+            settings["url"].endswith("/api/v1/sessions/session-1/settings/tts")
         )
         self.assertEqual(
             {"value": {"model": "model-1"}},
             json.loads(settings["data"]),
         )
         self.assertEqual('"0"', settings["headers"]["If-Match"])
+
+    def test_dispatch_methods_map_exact_routes_bodies_and_queries(self):
+        origin = "http://127.0.0.1:8097"
+        session = FakeSession(
+            [
+                FakeResponse(201, {"run_id": "run-1", "status": "queued"}),
+                FakeResponse(200, {"items": []}),
+                FakeResponse(200, {"run_id": "run-1", "status": "completed"}),
+                FakeResponse(
+                    200,
+                    {
+                        "run_id": "run-1",
+                        "batch_id": "batch-1",
+                        "lease_token": "lease-capability",
+                        "expiry": "2030-01-01T00:00:00Z",
+                        "prompt": "prompt",
+                        "task": "task",
+                        "source_batch": [{"id": "cue-1", "text": "Hello"}],
+                    },
+                ),
+                FakeResponse(
+                    200,
+                    {"batch_id": "batch-1", "lease_token": "lease-capability"},
+                ),
+                FakeResponse(200, {"batch_id": "batch-1", "status": "released"}),
+                FakeResponse(
+                    200,
+                    {"batch_id": "batch-1", "run_id": "run-1", "status": "accepted"},
+                ),
+            ]
+        )
+        client = ApplicationClient(
+            local_registry(origin).bind("local"),
+            CredentialResolver(()),
+            session=session,
+            local_bootstrap=lambda _target, _session: "csrf-value",
+        )
+
+        client.create_dispatch_run(
+            "session-1",
+            kind="translation",
+            source_artifact_id="artifact-1",
+            source_language="en",
+            target_language="pl",
+            instructions="Preserve cue boundaries.",
+            char_limit=6000,
+            max_segments_per_batch=40,
+            no_remove_subtitles=False,
+            timing_context_mode="full",
+            substantial_gap_ms=2000,
+            glossary={"Pandrator": "Pandrator"},
+            idempotency_key="dispatch:create:1",
+        )
+        client.list_dispatch_runs("session-1", limit=20)
+        client.get_dispatch_run("run-1")
+        client.claim_dispatch_batch(
+            "run-1",
+            lease_seconds=900,
+            idempotency_key="dispatch:claim:1",
+        )
+        client.renew_dispatch_batch(
+            "batch-1",
+            lease_token="lease-capability",
+            lease_seconds=600,
+            idempotency_key="dispatch:renew:1",
+        )
+        client.release_dispatch_batch(
+            "batch-1",
+            lease_token="lease-capability",
+            idempotency_key="dispatch:release:1",
+        )
+        client.submit_dispatch_batch(
+            "batch-1",
+            lease_token="lease-capability",
+            result={"kind": "translation", "translations": [{"cue_id": 1, "text": "Cześć"}]},
+            idempotency_key="dispatch:submit:1",
+        )
+
+        create, listed, fetched, claim, renew, release, submit = session.calls
+        self.assertEqual(
+            {
+                "kind": "translation",
+                "source_artifact_id": "artifact-1",
+                "source_language": "en",
+                "target_language": "pl",
+                "instructions": "Preserve cue boundaries.",
+                "char_limit": 6000,
+                "max_segments_per_batch": 40,
+                "no_remove_subtitles": False,
+                "context_before": 8,
+                "context_after": 2,
+                "timing_context_mode": "full",
+                "substantial_gap_ms": 2000,
+                "glossary": {"Pandrator": "Pandrator"},
+            },
+            json.loads(create["data"]),
+        )
+        self.assertEqual("dispatch:create:1", create["headers"]["Idempotency-Key"])
+        self.assertEqual("GET", listed.get("method", "GET"))
+        self.assertTrue(
+            listed["url"].endswith("/api/v1/sessions/session-1/dispatch-runs")
+        )
+        self.assertEqual({"limit": 20}, listed["params"])
+        self.assertTrue(fetched["url"].endswith("/api/v1/dispatch-runs/run-1"))
+        self.assertEqual("POST", claim["method"])
+        self.assertTrue(claim["url"].endswith("/api/v1/dispatch-runs/run-1/claim"))
+        self.assertEqual({"lease_seconds": 900}, json.loads(claim["data"]))
+        self.assertEqual("dispatch:claim:1", claim["headers"]["Idempotency-Key"])
+        self.assertTrue(renew["url"].endswith("/api/v1/dispatch-batches/batch-1/renew"))
+        self.assertEqual(
+            {"lease_token": "lease-capability", "lease_seconds": 600},
+            json.loads(renew["data"]),
+        )
+        self.assertTrue(
+            release["url"].endswith("/api/v1/dispatch-batches/batch-1/release")
+        )
+        self.assertEqual(
+            {"lease_token": "lease-capability"}, json.loads(release["data"])
+        )
+        self.assertTrue(
+            submit["url"].endswith("/api/v1/dispatch-batches/batch-1/submit")
+        )
+        self.assertEqual(
+            {
+                "lease_token": "lease-capability",
+                "result": {
+                    "kind": "translation",
+                    "translations": [{"cue_id": 1, "text": "Cześć"}],
+                },
+            },
+            json.loads(submit["data"]),
+        )
+        self.assertEqual("dispatch:renew:1", renew["headers"]["Idempotency-Key"])
+        self.assertEqual("dispatch:release:1", release["headers"]["Idempotency-Key"])
+        self.assertEqual("dispatch:submit:1", submit["headers"]["Idempotency-Key"])
+
+    def test_dispatch_error_codes_preserve_backend_message_and_details(self):
+        origin = "http://127.0.0.1:8097"
+        session = FakeSession(
+            [
+                FakeResponse(
+                    409,
+                    {
+                        "error": {
+                            "code": "lease_expired",
+                            "message": "Lease expired before submission.",
+                            "details": {"batch_id": "batch-1", "retryable": True},
+                        }
+                    },
+                )
+            ]
+        )
+        client = ApplicationClient(
+            local_registry(origin).bind("local"),
+            CredentialResolver(()),
+            session=session,
+            local_bootstrap=lambda _target, _session: "csrf-value",
+        )
+        with self.assertRaises(PandratorMcpError) as caught:
+            client.submit_dispatch_batch(
+                "batch-1",
+                lease_token="lease-capability",
+                response_text="{}",
+                idempotency_key="dispatch:submit:2",
+            )
+        self.assertEqual("lease_expired", caught.exception.code)
+        self.assertEqual("Lease expired before submission.", str(caught.exception))
+        self.assertEqual("batch-1", caught.exception.details["batch_id"])
+        self.assertTrue(caught.exception.retryable)
 
     def test_bounded_post_uses_csrf_idempotency_and_typed_errors(self):
         origin = "http://127.0.0.1:8097"
@@ -556,9 +717,7 @@ class RecoveryManagerGatewayTests(unittest.TestCase):
         )
         registry = TargetRegistry(
             [profile],
-            network_policy=NetworkPolicy(
-                lambda _host, _port: ("127.0.0.1",)
-            ),
+            network_policy=NetworkPolicy(lambda _host, _port: ("127.0.0.1",)),
         )
         return registry.bind("private")
 
@@ -576,20 +735,14 @@ class RecoveryManagerGatewayTests(unittest.TestCase):
                 FakeResponse(
                     200,
                     {"status": "ready"},
-                    headers={
-                        "X-Pandrator-Manager-Instance": "manager-id"
-                    },
+                    headers={"X-Pandrator-Manager-Instance": "manager-id"},
                 ),
             ]
         )
         gateway = RecoveryManagerGateway(
             self.binding(),
             CredentialResolver(
-                (
-                    MemoryCredentialBackend(
-                        {"manager/recovery": "recovery-secret"}
-                    ),
-                )
+                (MemoryCredentialBackend({"manager/recovery": "recovery-secret"}),)
             ),
             session=session,
         )
@@ -609,11 +762,7 @@ class RecoveryManagerGatewayTests(unittest.TestCase):
         self,
     ):
         resolver = CredentialResolver(
-            (
-                MemoryCredentialBackend(
-                    {"manager/recovery": "recovery-secret"}
-                ),
-            )
+            (MemoryCredentialBackend({"manager/recovery": "recovery-secret"}),)
         )
         redirect = RecoveryManagerGateway(
             self.binding(),
@@ -635,9 +784,7 @@ class RecoveryManagerGatewayTests(unittest.TestCase):
                             "schema_version": "1",
                             "service": "pandrator-manager",
                             "manager_instance_id": "other-manager",
-                            "canonical_recovery_origin": (
-                                "https://manager.home"
-                            ),
+                            "canonical_recovery_origin": ("https://manager.home"),
                             "automation_enabled": True,
                         },
                     )

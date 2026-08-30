@@ -14,8 +14,9 @@ import subprocess
 import sys
 import tempfile
 import zipfile
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -74,12 +75,24 @@ def _stage_wheel_source(repo_root: Path, destination: Path) -> Path:
     source = (repo_root / "pandrator_manager").resolve(strict=True)
     if not source.is_dir() or source.is_symlink():
         raise RuntimeError(f"Unsafe or missing manager source: {source}")
+    source_root = source.resolve(strict=True)
+    excluded_root_names = frozenset(
+        {
+            ".mypy_cache",
+            ".pytest_cache",
+            ".ruff_cache",
+            ".venv",
+            "build",
+            "dist",
+        }
+    )
     for candidate in source.rglob("*"):
+        if candidate.relative_to(source_root).parts[0] in excluded_root_names:
+            continue
         if candidate.is_symlink():
             raise RuntimeError(
                 f"Manager wheel source contains a symlink: {candidate}"
             )
-    source_root = source.resolve(strict=True)
 
     def ignored(directory: str, names: list[str]) -> set[str]:
         current = Path(directory).resolve(strict=True)
@@ -90,17 +103,7 @@ def _stage_wheel_source(repo_root: Path, destination: Path) -> Path:
             or name.endswith((".pyc", ".pyo", ".egg-info"))
         }
         if current == source_root:
-            excluded.update(
-                name
-                for name in names
-                if name
-                in {
-                    "build",
-                    "dist",
-                    ".pytest_cache",
-                    ".ruff_cache",
-                }
-            )
+            excluded.update(name for name in names if name in excluded_root_names)
         return excluded
 
     shutil.copytree(source, destination, ignore=ignored)
@@ -122,7 +125,9 @@ def _build_temporary_wheel(repo_root: Path, destination: Path) -> Path:
             str(destination),
             str(source),
         ],
-        cwd=repo_root,
+        # Build from the staged tree. A prior PyInstaller run can leave a
+        # ``build`` directory in the checkout that shadows ``python -m build``.
+        cwd=source,
         check=True,
     )
     return _wheel_from_directory(destination)

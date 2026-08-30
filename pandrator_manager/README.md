@@ -9,7 +9,7 @@ pods without changing the loopback-only default.
 
 The current release is 0.9.17. For most users, the easiest installation is the
 Windows executable or Linux AppImage on the
-[Pandrator 0.8.15 release page](https://github.com/lukaszliniewicz/Pandrator/releases/tag/v.0.8.15).
+[Pandrator 0.8.16 release page](https://github.com/lukaszliniewicz/Pandrator/releases/tag/v.0.8.16).
 These packages include their own runtime and do not require a suitable system
 Python.
 
@@ -39,9 +39,9 @@ single `SHA256SUMS` file when you download it.
 The native packages are the recommended installation:
 
 - Windows:
-  [PandratorManager-0.9.17-windows-x86_64.exe](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.8.15/PandratorManager-0.9.17-windows-x86_64.exe)
+  [PandratorManager-0.9.17-windows-x86_64.exe](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.8.16/PandratorManager-0.9.17-windows-x86_64.exe)
 - Linux:
-  [PandratorManager-0.9.17-x86_64.AppImage](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.8.15/PandratorManager-0.9.17-x86_64.AppImage)
+  [PandratorManager-0.9.17-x86_64.AppImage](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.8.16/PandratorManager-0.9.17-x86_64.AppImage)
 
 If you already have Python 3.11 or 3.12, install the Manager as an isolated
 command-line tool:

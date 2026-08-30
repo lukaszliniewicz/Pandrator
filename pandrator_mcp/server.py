@@ -1,4 +1,4 @@
-"""MCP 2 protocol adapter for Pandrator guidance and bounded automation."""
+"""July 2026 MCP adapter for Pandrator guidance and bounded automation."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import Field
 
+from . import __version__
 from .context import McpRuntime
 from .errors import PandratorMcpError, ToolFailure
 from .request_context import begin_request, end_request
@@ -19,11 +20,15 @@ from .schemas import (
     AttachExistingSourceInput,
     CancelWorkInput,
     CapabilitiesInput,
+    ClaimDispatchBatchInput,
     ControlRuntimeInput,
+    CreateDispatchRunInput,
     CreateSessionInput,
+    DispatchStructuredResultInput,
     ExecuteComponentPlanInput,
     ExecuteWorkflowPlanInput,
     ExplainSystemInput,
+    GetDispatchRunInput,
     GetSessionInput,
     GetSessionSettingsInput,
     GetWorkflowInput,
@@ -31,6 +36,7 @@ from .schemas import (
     GetWorkLogInput,
     GuideTopic,
     ListArtifactsInput,
+    ListDispatchRunsInput,
     ListSessionsInput,
     ListSourcesInput,
     ListWorkInput,
@@ -39,6 +45,9 @@ from .schemas import (
     PlanWorkflowInput,
     ProviderStatusInput,
     RecommendNextStepsInput,
+    ReleaseDispatchBatchInput,
+    RenewDispatchBatchInput,
+    SubmitDispatchBatchInput,
     SystemStatusInput,
     TargetStatusInput,
     UpdateSessionInput,
@@ -49,17 +58,21 @@ from .tools import (
     attach_existing_source,
     cancel_work,
     capabilities,
+    claim_dispatch_batch,
     control_runtime,
+    create_dispatch_run,
     create_session,
     execute_component_plan,
     execute_workflow_plan,
     explain_system,
+    get_dispatch_run,
     get_session,
     get_session_settings,
     get_work,
     get_work_log,
     get_workflow,
     list_artifacts,
+    list_dispatch_runs,
     list_sessions,
     list_sources,
     list_work,
@@ -69,6 +82,9 @@ from .tools import (
     plan_workflow,
     provider_status,
     recommend_next_steps,
+    release_dispatch_batch,
+    renew_dispatch_batch,
+    submit_dispatch_batch,
     system_status,
     target_status,
     update_session,
@@ -90,7 +106,7 @@ def _tool_failure(error: PandratorMcpError, request_id: str) -> RuntimeError:
     return RuntimeError(failure.model_dump_json())
 
 
-def _call(function, *args) -> dict[str, Any]:
+def _guarded_call(function, *args) -> tuple[str, Any]:
     request_id = str(uuid.uuid4())
     tokens = begin_request(request_id)
     try:
@@ -105,6 +121,11 @@ def _call(function, *args) -> dict[str, Any]:
         raise _tool_failure(error, request_id) from error
     finally:
         end_request(tokens)
+    return request_id, result
+
+
+def _call(function, *args) -> dict[str, Any]:
+    request_id, result = _guarded_call(function, *args)
     if isinstance(result, ToolOutcome):
         return {
             "schema_version": "1",
@@ -124,20 +145,27 @@ def _call(function, *args) -> dict[str, Any]:
     }
 
 
+def _resource_call(function, *args) -> str:
+    _, result = _guarded_call(function, *args)
+    if isinstance(result, ToolOutcome):
+        result = result.result
+    return json.dumps(result, ensure_ascii=False, indent=2)
+
+
 def build_server(runtime: McpRuntime):
-    """Construct an MCP 2.0 server without importing the SDK at package import."""
+    """Construct a July 2026 MCP server without importing the SDK eagerly."""
 
     try:
         from mcp.server import MCPServer
         from mcp.types import ToolAnnotations
     except ImportError as error:
         raise RuntimeError(
-            "pandrator-mcp requires the pinned mcp==2.0.0 runtime dependency."
+            "pandrator-mcp requires the pinned mcp==2.1.1 runtime dependency."
         ) from error
 
     server = MCPServer(
         "Pandrator",
-        version="0.1.0",
+        version=__version__,
         instructions=(
             "Explain Pandrator using packaged guides and inspect only the "
             "configured target. Never ask for connection URLs or credentials "
@@ -350,6 +378,227 @@ def build_server(runtime: McpRuntime):
         )
 
     @server.tool(
+        name="pandrator_create_dispatch_run",
+        title="Create a subtitle dispatch run",
+        annotations=write_action,
+    )
+    def dispatch_create_tool(
+        session_id: str,
+        kind: Literal["correction", "translation"],
+        idempotency_key: Annotated[
+            str,
+            Field(
+                min_length=8,
+                max_length=200,
+                pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$",
+            ),
+        ],
+        instructions: Annotated[str, Field(max_length=16_000)] = "",
+        source_artifact_id: Annotated[
+            str | None,
+            Field(min_length=1, max_length=80),
+        ] = None,
+        source_language: Annotated[
+            str | None,
+            Field(min_length=2, max_length=40),
+        ] = None,
+        target_language: Annotated[
+            str | None,
+            Field(min_length=2, max_length=40),
+        ] = None,
+        char_limit: Annotated[int, Field(ge=1, le=100_000)] = 6_000,
+        max_segments_per_batch: Annotated[
+            int,
+            Field(ge=1, le=500),
+        ] = 40,
+        no_remove_subtitles: bool = False,
+        context_before: Annotated[int, Field(ge=0, le=20)] = 8,
+        context_after: Annotated[int, Field(ge=0, le=20)] = 2,
+        timing_context_mode: Literal["full", "overlap_only", "none"] = "full",
+        substantial_gap_ms: Annotated[
+            int,
+            Field(ge=0, le=60_000),
+        ] = 2_000,
+        glossary: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Create a run; then claim batches sequentially for correction or translation."""
+
+        return _call(
+            create_dispatch_run,
+            runtime,
+            CreateDispatchRunInput(
+                session_id=session_id,
+                kind=kind,
+                source_artifact_id=source_artifact_id,
+                source_language=source_language,
+                target_language=target_language,
+                instructions=instructions,
+                char_limit=char_limit,
+                max_segments_per_batch=max_segments_per_batch,
+                no_remove_subtitles=no_remove_subtitles,
+                context_before=context_before,
+                context_after=context_after,
+                timing_context_mode=timing_context_mode,
+                substantial_gap_ms=substantial_gap_ms,
+                glossary=glossary or {},
+                idempotency_key=idempotency_key,
+            ),
+        )
+
+    @server.tool(
+        name="pandrator_list_dispatch_runs",
+        title="List subtitle dispatch runs",
+        annotations=read_only,
+    )
+    def dispatch_list_tool(
+        session_id: str,
+        limit: Annotated[int, Field(ge=1, le=100)] = 50,
+    ) -> dict[str, Any]:
+        """List dispatch metadata only; canonical task packets appear on claim."""
+
+        return _call(
+            list_dispatch_runs,
+            runtime,
+            ListDispatchRunsInput(session_id=session_id, limit=limit),
+        )
+
+    @server.tool(
+        name="pandrator_get_dispatch_run",
+        title="Inspect a subtitle dispatch run",
+        annotations=read_only,
+    )
+    def dispatch_get_tool(run_id: str) -> dict[str, Any]:
+        """Inspect run metadata and final artifact state without batch content."""
+
+        return _call(
+            get_dispatch_run,
+            runtime,
+            GetDispatchRunInput(run_id=run_id),
+        )
+
+    @server.tool(
+        name="pandrator_claim_dispatch_batch",
+        title="Claim a subtitle dispatch batch",
+        annotations=write_action,
+    )
+    def dispatch_claim_tool(
+        run_id: str,
+        idempotency_key: Annotated[
+            str,
+            Field(
+                min_length=8,
+                max_length=200,
+                pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$",
+            ),
+        ],
+        lease_seconds: Annotated[int, Field(ge=30, le=3_600)] = 900,
+    ) -> dict[str, Any]:
+        """Claim one canonical task packet; each cue and timing value appears once."""
+
+        return _call(
+            claim_dispatch_batch,
+            runtime,
+            ClaimDispatchBatchInput(
+                run_id=run_id,
+                lease_seconds=lease_seconds,
+                idempotency_key=idempotency_key,
+            ),
+        )
+
+    @server.tool(
+        name="pandrator_renew_dispatch_batch",
+        title="Renew a subtitle dispatch lease",
+        annotations=write_action,
+    )
+    def dispatch_renew_tool(
+        batch_id: str,
+        lease_token: Annotated[str, Field(min_length=1, max_length=160)],
+        idempotency_key: Annotated[
+            str,
+            Field(
+                min_length=8,
+                max_length=200,
+                pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$",
+            ),
+        ],
+        lease_seconds: Annotated[int, Field(ge=30, le=3_600)] = 900,
+    ) -> dict[str, Any]:
+        """Renew only the matching batch lease; keep lease_token scoped to this batch."""
+
+        return _call(
+            renew_dispatch_batch,
+            runtime,
+            RenewDispatchBatchInput(
+                batch_id=batch_id,
+                lease_token=lease_token,
+                lease_seconds=lease_seconds,
+                idempotency_key=idempotency_key,
+            ),
+        )
+
+    @server.tool(
+        name="pandrator_release_dispatch_batch",
+        title="Release a subtitle dispatch lease",
+        annotations=write_action,
+    )
+    def dispatch_release_tool(
+        batch_id: str,
+        lease_token: Annotated[str, Field(min_length=1, max_length=160)],
+        idempotency_key: Annotated[
+            str,
+            Field(
+                min_length=8,
+                max_length=200,
+                pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$",
+            ),
+        ],
+    ) -> dict[str, Any]:
+        """Release a claimed batch with its matching lease_token before retrying later."""
+
+        return _call(
+            release_dispatch_batch,
+            runtime,
+            ReleaseDispatchBatchInput(
+                batch_id=batch_id,
+                lease_token=lease_token,
+                idempotency_key=idempotency_key,
+            ),
+        )
+
+    @server.tool(
+        name="pandrator_submit_dispatch_batch",
+        title="Submit a subtitle dispatch batch",
+        annotations=write_action,
+    )
+    def dispatch_submit_tool(
+        batch_id: str,
+        lease_token: Annotated[str, Field(min_length=1, max_length=160)],
+        idempotency_key: Annotated[
+            str,
+            Field(
+                min_length=8,
+                max_length=200,
+                pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$",
+            ),
+        ],
+        result: DispatchStructuredResultInput | None = None,
+        response_text: Annotated[str | None, Field(max_length=524_288)] = None,
+    ) -> dict[str, Any]:
+        """Submit one typed result; response_text is a legacy compatibility path."""
+
+        return _call(
+            submit_dispatch_batch,
+            runtime,
+            SubmitDispatchBatchInput(
+                batch_id=batch_id,
+                lease_token=lease_token,
+                result=result,
+                response_text=response_text,
+                idempotency_key=idempotency_key,
+            ),
+        )
+
+    @server.tool(
         name="pandrator_create_session",
         title="Create a Pandrator session",
         annotations=write_action,
@@ -485,7 +734,7 @@ def build_server(runtime: McpRuntime):
         return _call(
             update_session,
             runtime,
-            UpdateSessionInput(**values),
+            UpdateSessionInput.model_validate(values),
         )
 
     @server.tool(
@@ -863,63 +1112,51 @@ def build_server(runtime: McpRuntime):
     def guide_index_resource() -> str:
         """List deterministic packaged Pandrator guides."""
 
-        return json.dumps(
-            runtime.guides.index(),
-            ensure_ascii=False,
-            indent=2,
-        )
+        return _resource_call(runtime.guides.index)
 
     @server.resource("pandrator://guide/{topic}")
     def guide_resource(topic: str) -> str:
         """Read one deterministic packaged Pandrator guide."""
 
-        return json.dumps(runtime.guides.get(topic), ensure_ascii=False, indent=2)
+        return _resource_call(runtime.guides.get, topic)
 
     @server.resource("pandrator://target/current")
     def target_resource() -> str:
         """Inspect the current target without requiring authentication."""
 
-        return json.dumps(
-            target_status(
-                runtime,
-                TargetStatusInput(include_authenticated_identity=False),
-            ),
-            ensure_ascii=False,
-            indent=2,
+        return _resource_call(
+            target_status,
+            runtime,
+            TargetStatusInput(include_authenticated_identity=False),
         )
 
     @server.resource("pandrator://live/status")
     def live_status_resource() -> str:
         """Inspect current application and Manager status."""
 
-        return json.dumps(
-            system_status(runtime, SystemStatusInput()),
-            ensure_ascii=False,
-            indent=2,
-        )
+        return _resource_call(system_status, runtime, SystemStatusInput())
 
     @server.resource("pandrator://live/capabilities")
     def live_capabilities_resource() -> str:
         """Inspect current capabilities."""
 
-        return json.dumps(
-            capabilities(runtime, CapabilitiesInput()),
-            ensure_ascii=False,
-            indent=2,
-        )
+        return _resource_call(capabilities, runtime, CapabilitiesInput())
 
     @server.resource("pandrator://sessions/{session_id}/workflow")
     def workflow_resource(session_id: str) -> str:
         """Inspect one live workflow snapshot."""
 
-        return json.dumps(
-            get_workflow(runtime, GetWorkflowInput(session_id=session_id)),
-            ensure_ascii=False,
-            indent=2,
+        return _resource_call(
+            get_workflow,
+            runtime,
+            GetWorkflowInput(session_id=session_id),
         )
 
     @server.resource("pandrator://work/{work_type}/{work_id}")
-    def work_resource(work_type: str, work_id: str) -> str:
+    def work_resource(
+        work_type: Literal["job", "manager_operation"],
+        work_id: str,
+    ) -> str:
         """Inspect one application or Manager work item."""
 
         arguments = GetWorkInput(
@@ -927,8 +1164,7 @@ def build_server(runtime: McpRuntime):
             work_id=work_id,
             include_events=False,
         )
-        outcome = get_work(runtime, arguments)
-        return json.dumps(outcome.result, ensure_ascii=False, indent=2)
+        return _resource_call(get_work, runtime, arguments)
 
     @server.prompt(name="start_audiobook")
     def start_audiobook_prompt(goal: str) -> str:

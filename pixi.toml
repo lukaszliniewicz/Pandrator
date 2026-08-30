@@ -35,6 +35,7 @@ packaging = ">=24,<26"
 pandrator-manager = { path = "./pandrator_manager", editable = true, extras = ["dev"] }
 pandrator-mcp = { path = "./pandrator_mcp", editable = true, extras = ["dev"] }
 pandrator-installer = { path = "./pandrator_installer", editable = true }
+keyring = ">=25, <26"
 mypy = ">=1.17,<2"
 vulture = ">=2.14,<3"
 pydeps = ">=3,<4"

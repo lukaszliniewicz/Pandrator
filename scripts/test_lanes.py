@@ -77,6 +77,7 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
     "mcp-serial": (
         "tests/test_mcp_application_client.py",
         "tests/test_mcp_architecture.py",
+        "tests/test_mcp_dispatch.py",
         "tests/test_mcp_doctor.py",
         "tests/test_mcp_enrollment.py",
         "tests/test_mcp_host_config.py",
@@ -90,6 +91,7 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_state_db_handler.py",
     ),
     "web-01-serial": (
+        "tests/test_web_dispatch.py",
         "tests/test_web_parity_workspace.py",
     ),
     "web-02-serial": (

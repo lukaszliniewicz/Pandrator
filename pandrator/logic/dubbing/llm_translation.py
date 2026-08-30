@@ -21,9 +21,12 @@ from .models import SubtitleSegment
 from .srt_utils import (
     compose_srt,
     create_translation_blocks,
+    normalize_timing_context_mode,
     parse_srt,
     split_speaker_label,
-    subtitle_prompt_context,
+    subtitle_boundary_cue,
+    subtitle_task_cue,
+    timing_context_mode_from_settings,
 )
 
 logger = logging.getLogger(__name__)
@@ -91,19 +94,19 @@ DEEPL_LANGUAGE_MAP = {
 TRANSLATION_PROMPT_TEMPLATE = """Your task: translate machine-generated subtitles from {source_lang} to {target_lang}. You will receive {subtitle_count} subtitles.
 
 Instructions:
-1. You will receive an array of numbered subtitles in JSON format. Each subtitle has a "number" and "text" field.
+1. You will receive an array of subtitle cues in JSON format. Each cue has a stable `cue_id` and a `text` field.
 2. Translate the "text" of each subtitle.
-3. You MUST preserve the "number" field exactly as it is for each subtitle.
-4. You MUST return EXACTLY {subtitle_count} subtitles in the EXACT SAME numbered format.
+3. You MUST preserve each `cue_id` exactly.
+4. {response_structure}
 5. If a subtitle should be removed (e.g., it contains only filler words or you are confident it is a hallucination of the STT model), replace its text with "[REMOVE]".
 6. Spell out numbers, especially Roman numerals, dates, amounts etc.
 7. It is ok for a subtitle to not end in punctuation if the following subtitle continues the sentence/thought. You don't have to add "..." - in fact, don't do it.
 8. Choose concise translations suitable for dubbing while maintaining accuracy, grammatical correctness in the target language and the tone of the source.
 9. Use correct punctuation that enhances a natural flow of speech for optimal speech generation.
-10. Do not add ANY comments, confirmations, explanations, or questions. Output only the translation formatted like the original JSON array.
-11. Before outputting your answer, validate its formatting. Return EXACTLY {subtitle_count} subtitles with the same structure as the input.
-12. Do not add speaker names, speaker numbers, or bracketed speaker labels to translated text. Preserve each supplied `speaker` by default. If the discourse clearly reveals a diarization mistake, return a corrected `speaker` using only one of these known IDs: {known_speakers}. Omit `speaker` when no speaker was supplied.
-13. Cue context fields such as `speaker`, timings, gaps, and overlap are non-spoken evidence. Speaker IDs may change at ASR chunk seams: use the discourse to correct a likely mistake, but never copy context into translated text or invent an ID.
+10. Do not add ANY comments, confirmations, explanations, or questions. {output_only_instruction}
+11. Before outputting your answer, validate its formatting. {validation_instruction}
+12. Do not add speaker names, speaker numbers, or bracketed speaker labels to translated text. Preserve each supplied `speaker` by default. {known_speakers_policy}
+13. {cue_context_policy}
 14. Overlapping cues from different speakers can be legitimate simultaneous speech. Preserve meaningful speech. You may mark a very short, inconsequential interjection as `[REMOVE]` only when it obscures a longer utterance, and remove one copy of clearly duplicated near-identical ASR text that occupies the same time span.
 """
 
@@ -117,6 +120,10 @@ Use the following glossary. Apply it flexibly, considering different forms of sp
 {glossary}
 
 After your translation, if you identify important terms for consistent translation, add them below the [GLOSSARY] tag as 'word or phrase in source language = translated word or phrase in target language'. Include only NEW entries, not ones already in the glossary.
+""".strip()
+
+STRUCTURED_GLOSSARY_INSTRUCTIONS_TRANSLATION = """
+Use the existing mappings supplied once in `task.glossary`, applying them flexibly across inflection and conjugation. If you identify important NEW terminology for later batches, return only those additions in `glossary_updates`; do not repeat existing mappings.
 """.strip()
 
 
@@ -396,6 +403,31 @@ def parse_translation_response_details(
     known_speakers: set[str] | None = None,
 ) -> tuple[list[str], dict[str, str], list[str | None]]:
     """Parse translated text plus optional, validated speaker corrections."""
+    translation_text, _separator, glossary_text = str(response_text or "").partition(
+        "[GLOSSARY]"
+    )
+    payload = extract_json_payload(translation_text)
+    if not isinstance(payload, list):
+        raise ValueError("Translation response must be a JSON array.")
+    return parse_translation_items_details(
+        payload,
+        expected_count,
+        expected_numbers=expected_numbers,
+        known_speakers=known_speakers,
+        glossary=parse_glossary_entries(glossary_text),
+    )
+
+
+def parse_translation_items_details(
+    payload: list[Any],
+    expected_count: int | None = None,
+    *,
+    expected_numbers: list[int] | None = None,
+    known_speakers: set[str] | None = None,
+    glossary: dict[str, str] | None = None,
+) -> tuple[list[str], dict[str, str], list[str | None]]:
+    """Validate an already-structured translation result without text parsing."""
+
     if expected_numbers is None:
         if expected_count is None:
             raise ValueError("Expected subtitle identifiers are required.")
@@ -407,12 +439,6 @@ def parse_translation_response_details(
     if len(set(expected_numbers)) != len(expected_numbers):
         raise ValueError("Expected subtitle identifiers must be unique.")
 
-    translation_text, _separator, glossary_text = str(response_text or "").partition(
-        "[GLOSSARY]"
-    )
-    payload = extract_json_payload(translation_text)
-    if not isinstance(payload, list):
-        raise ValueError("Translation response must be a JSON array.")
     if len(payload) != len(expected_numbers):
         raise ValueError(
             "Translation response count mismatch: "
@@ -425,11 +451,15 @@ def parse_translation_response_details(
         speaker.casefold(): speaker for speaker in (known_speakers or set())
     }
     for item in payload:
-        if not isinstance(item, dict) or "number" not in item or "text" not in item:
+        if (
+            not isinstance(item, dict)
+            or not ({"cue_id", "number"} & set(item))
+            or "text" not in item
+        ):
             raise ValueError(
-                "Translation response items must contain 'number' and 'text'."
+                "Translation response items must contain 'cue_id' and 'text'."
             )
-        raw_number = item["number"]
+        raw_number = item.get("cue_id", item.get("number"))
         if isinstance(raw_number, bool):
             raise ValueError("Translation response identifiers must be integers.")
         if isinstance(raw_number, int):
@@ -477,9 +507,141 @@ def parse_translation_response_details(
         )
     return (
         [translations_by_number[number] for number in expected_numbers],
-        parse_glossary_entries(glossary_text),
+        dict(glossary or {}),
         [speakers_by_number[number] for number in expected_numbers],
     )
+
+
+def build_translation_task_instructions(
+    *,
+    subtitle_count: int,
+    source_language: str,
+    target_language: str,
+    translation_instructions: str = "",
+    glossary: dict[str, str] | None = None,
+    no_remove_subtitles: bool = False,
+    timing_context_mode: str | None = None,
+    include_timing_context: bool | None = None,
+    substantial_gap_ms: int = 2000,
+    known_speakers: set[str] | None = None,
+    dispatch_result: bool = False,
+    structured_context: bool = False,
+) -> str:
+    """Build translation guidance without embedding source cue content."""
+
+    mode = normalize_timing_context_mode(
+        timing_context_mode,
+        legacy_enabled=include_timing_context,
+        default="none",
+    )
+    prompt_template = TRANSLATION_PROMPT_TEMPLATE
+    if no_remove_subtitles:
+        prompt_template = prompt_template.replace(
+            '5. If a subtitle should be removed (e.g., it contains only filler words or you are confident it is a hallucination of the STT model), replace its text with "[REMOVE]".',
+            "5. You MUST NOT remove any subtitles. Translate every subtitle, even if it contains filler words.",
+        )
+
+    prompt = prompt_template.format(
+        source_lang=source_language,
+        target_lang=target_language,
+        subtitle_count=int(subtitle_count),
+        response_structure=(
+            f"Return one typed result object with `kind` equal to `translation` "
+            f"and a `translations` array containing exactly {int(subtitle_count)} "
+            '`{"cue_id": 1, "text": "translated text"}` items. The optional '
+            "`glossary_updates` object contains only new terminology."
+            if dispatch_result
+            else f"Return EXACTLY {int(subtitle_count)} items as "
+            '`{"cue_id": 1, "text": "translated text"}` objects.'
+        ),
+        output_only_instruction=(
+            "Output only the typed result object described above."
+            if dispatch_result
+            else "Output only the translation JSON array."
+        ),
+        validation_instruction=(
+            f"Return exactly {int(subtitle_count)} translations inside the typed "
+            "result object, preserving every supplied `cue_id`."
+            if dispatch_result
+            else f"Return exactly {int(subtitle_count)} subtitles with the same "
+            "cue IDs as the input."
+        ),
+        known_speakers_policy=(
+            "Known speaker IDs are provided once in `task.known_speakers`; use "
+            "only those IDs when correcting diarization. An empty list means "
+            "speaker reassignment is unavailable. Omit `speaker` when none was "
+            "supplied."
+            if structured_context
+            else (
+                "If the discourse clearly reveals a diarization mistake, return "
+                "a corrected `speaker` using only one of these known IDs: "
+                + (
+                    ", ".join(sorted(known_speakers, key=str.casefold))
+                    if known_speakers
+                    else "none (do not add speaker assignments)"
+                )
+                + ". Omit `speaker` when no speaker was supplied."
+            )
+        ),
+        cue_context_policy=(
+            "The optional `speaker` field is non-spoken evidence. Speaker IDs "
+            "may change at ASR chunk seams: use the discourse to correct a "
+            "likely mistake, but never copy it into translated text or invent "
+            "an ID."
+            if mode == "none"
+            else (
+                "The optional `speaker` field and "
+                "`timing.overlap_with_previous_ms` are non-spoken evidence. "
+                "Speaker IDs may change at ASR chunk seams: use the discourse "
+                "to correct a likely mistake, but never copy context into "
+                "translated text or invent an ID."
+                if mode == "overlap_only"
+                else "The optional `speaker` and `timing` objects are non-spoken "
+                "evidence. Speaker IDs may change at ASR chunk seams: use the "
+                "discourse to correct a likely mistake, but never copy context "
+                "into translated text or invent an ID."
+            )
+        ),
+    )
+    if translation_instructions:
+        prompt += (
+            f"\n\nAdditional context and instructions:\n{translation_instructions}"
+        )
+
+    if mode == "full":
+        gap_reference = (
+            "`task.substantial_gap_ms`"
+            if structured_context
+            else f"{max(0, int(substantial_gap_ms))} ms"
+        )
+        prompt += (
+            "\n\nTiming policy:\n"
+            "- Each cue's optional `timing` object contains `start_ms`, `end_ms`, "
+            "and its gap from or overlap with the preceding cue.\n"
+            f"- A gap of at least {gap_reference} is a "
+            "substantial audible pause: preserve the rhetorical boundary in "
+            "punctuation and phrasing even when the thought continues.\n"
+            "- A shorter gap is not by itself a new utterance. Keep coherent "
+            "same-speaker phrasing natural across ordinary cue boundaries."
+        )
+    elif mode == "overlap_only":
+        prompt += (
+            "\n\nTiming policy:\n"
+            "- A cue has a `timing` object only when it overlaps the preceding "
+            "cue. Treat that overlap as non-spoken evidence of simultaneous "
+            "speech or a possible duplicated ASR seam."
+        )
+
+    if glossary is not None:
+        prompt += "\n\n" + (
+            STRUCTURED_GLOSSARY_INSTRUCTIONS_TRANSLATION
+            if structured_context
+            else GLOSSARY_INSTRUCTIONS_TRANSLATION.format(
+                glossary=json.dumps(glossary, ensure_ascii=False, indent=2)
+            )
+        )
+
+    return prompt
 
 
 def build_translation_prompt(
@@ -492,77 +654,53 @@ def build_translation_prompt(
     previous_response: str = "",
     next_block: list[dict[str, Any]] | None = None,
     no_remove_subtitles: bool = False,
-    include_timing_context: bool = False,
+    timing_context_mode: str | None = None,
+    include_timing_context: bool | None = None,
     substantial_gap_ms: int = 2000,
     known_speakers: set[str] | None = None,
+    context_after: int = 2,
 ) -> str:
-    prompt_template = TRANSLATION_PROMPT_TEMPLATE
-    if no_remove_subtitles:
-        prompt_template = prompt_template.replace(
-            '5. If a subtitle should be removed (e.g., it contains only filler words or you are confident it is a hallucination of the STT model), replace its text with "[REMOVE]".',
-            "5. You MUST NOT remove any subtitles. Translate every subtitle, even if it contains filler words.",
-        )
-
-    prompt = prompt_template.format(
-        source_lang=source_language,
-        target_lang=target_language,
-        subtitle_count=len(block),
-        known_speakers=(
-            ", ".join(sorted(known_speakers, key=str.casefold))
-            if known_speakers
-            else "none (do not add speaker assignments)"
-        ),
+    mode = normalize_timing_context_mode(
+        timing_context_mode,
+        legacy_enabled=include_timing_context,
+        default="none",
     )
-    if translation_instructions:
-        prompt += (
-            f"\n\nAdditional context and instructions:\n{translation_instructions}"
-        )
-
-    if include_timing_context:
-        prompt += (
-            "\n\nTiming policy:\n"
-            "- `start_ms` and `end_ms` locate each cue on the source timeline; "
-            "`gap_from_previous_ms` and `overlap_with_previous_ms` describe its "
-            "relationship to the preceding cue.\n"
-            f"- A gap of {max(0, int(substantial_gap_ms))} ms or more is a "
-            "substantial audible pause: preserve the rhetorical boundary in "
-            "punctuation and phrasing even when the thought continues.\n"
-            "- A shorter gap is not by itself a new utterance. Keep coherent "
-            "same-speaker phrasing natural across ordinary cue boundaries."
-        )
-
-    if glossary is not None:
-        prompt += "\n\n" + GLOSSARY_INSTRUCTIONS_TRANSLATION.format(
-            glossary=json.dumps(glossary, ensure_ascii=False, indent=2)
-        )
+    prompt = build_translation_task_instructions(
+        subtitle_count=len(block),
+        source_language=source_language,
+        target_language=target_language,
+        translation_instructions=translation_instructions,
+        glossary=glossary,
+        no_remove_subtitles=no_remove_subtitles,
+        timing_context_mode=mode,
+        substantial_gap_ms=substantial_gap_ms,
+        known_speakers=known_speakers,
+    )
 
     if previous_response:
         prompt += "\n" + CONTEXT_PROMPT_TEMPLATE.format(
             context_previous_response=previous_response
         )
 
-    if next_block:
-        next_subtitles = next_block[:2]
-        if next_subtitles:
-            next_text = "\n".join(
-                f'- "{subtitle["text"]}"' for subtitle in next_subtitles
-            )
+    if next_block and context_after > 0:
+        following = [
+            cue
+            for subtitle in next_block[:context_after]
+            if (cue := subtitle_boundary_cue(subtitle)) is not None
+        ]
+        if following:
             prompt += (
-                f"\n\nFor additional context, here are the next {len(next_subtitles)} subtitle(s) from the following block. "
-                "DO NOT TRANSLATE THEM. They are only provided to help with continuity.\n"
-                f"{next_text}"
+                "\n\nFollowing source cues for continuity only; do not return "
+                "translations for them:\n"
+                + json.dumps(following, ensure_ascii=False)
             )
 
     subtitles = json.dumps(
         [
-            {
-                "number": int(subtitle["index"]),
-                "text": subtitle.get("text") or "",
-                **subtitle_prompt_context(
-                    subtitle,
-                    include_timing=include_timing_context,
-                ),
-            }
+            subtitle_task_cue(
+                subtitle,
+                timing_context_mode=mode,
+            )
             for subtitle in block
         ],
         ensure_ascii=False,
@@ -770,13 +908,43 @@ def translate_srt_content(
         or "English"
     )
     target_language = str(settings.get("target_language") or "en")
-    char_limit = int(settings.get("llm_char") or DEFAULT_LLM_CHAR_LIMIT)
-    max_subtitles_per_call = max(1, int(settings.get("max_subtitles_per_call") or 40))
+    char_limit = int(
+        settings.get("char_limit")
+        or settings.get("llm_char")
+        or DEFAULT_LLM_CHAR_LIMIT
+    )
+    max_subtitles_per_call = max(
+        1,
+        int(
+            settings.get("max_segments_per_batch")
+            or settings.get("max_subtitles_per_call")
+            or 40
+        ),
+    )
     use_context = bool(settings.get("context", True))
-    no_remove_subtitles = bool(settings.get("no_remove_subtitles", False))
-    include_timing_context = bool(settings.get("timing_context_enabled", True))
     try:
-        configured_gap = settings.get("timing_context_gap_ms")
+        raw_context_before = settings.get("context_before")
+        context_before = max(
+            0,
+            min(20, int(8 if raw_context_before is None else raw_context_before)),
+        )
+    except (TypeError, ValueError):
+        context_before = 8
+    try:
+        raw_context_after = settings.get("context_after")
+        context_after = max(
+            0,
+            min(20, int(2 if raw_context_after is None else raw_context_after)),
+        )
+    except (TypeError, ValueError):
+        context_after = 2
+    no_remove_subtitles = bool(settings.get("no_remove_subtitles", False))
+    timing_context_mode = timing_context_mode_from_settings(settings)
+    try:
+        configured_gap = settings.get(
+            "substantial_gap_ms",
+            settings.get("timing_context_gap_ms"),
+        )
         substantial_gap_ms = max(
             0,
             int(
@@ -880,19 +1048,21 @@ def translate_srt_content(
             translations: list[str],
             speakers: list[str],
         ) -> str:
-            return json.dumps(
-                [
-                    {
-                        "number": int(subtitle["index"]),
-                        "text": translated_text,
-                        "speaker": speaker or None,
-                    }
-                    for subtitle, translated_text, speaker in zip(
-                        unit, translations, speakers, strict=True
+            if context_before <= 0:
+                return ""
+            context_items = [
+                cue
+                for _subtitle, translated_text, speaker in list(
+                    zip(unit, translations, speakers, strict=True)
+                )[-context_before:]
+                if (
+                    cue := subtitle_boundary_cue(
+                        {"text": translated_text, "speaker": speaker}
                     )
-                ],
-                ensure_ascii=False,
-            )
+                )
+                is not None
+            ]
+            return json.dumps(context_items, ensure_ascii=False)
 
         def report_unit_complete(unit: list[dict[str, Any]], *, restored: bool) -> None:
             expected_numbers = [int(subtitle["index"]) for subtitle in unit]
@@ -983,9 +1153,10 @@ def translate_srt_content(
                 previous_response=previous_unit_context if use_context else "",
                 next_block=next_context if use_context else None,
                 no_remove_subtitles=no_remove_subtitles,
-                include_timing_context=include_timing_context,
+                timing_context_mode=timing_context_mode,
                 substantial_gap_ms=substantial_gap_ms,
                 known_speakers=known_speakers,
+                context_after=context_after,
             )
             expected_numbers = [int(subtitle["index"]) for subtitle in unit]
             last_error: ValueError | None = None
@@ -1339,8 +1510,19 @@ def translate_srt_content_deepl(
         or "English"
     )
     target_language = str(settings.get("target_language") or "en")
-    char_limit = int(settings.get("llm_char") or DEFAULT_LLM_CHAR_LIMIT)
-    max_subtitles_per_call = max(1, int(settings.get("max_subtitles_per_call") or 40))
+    char_limit = int(
+        settings.get("char_limit")
+        or settings.get("llm_char")
+        or DEFAULT_LLM_CHAR_LIMIT
+    )
+    max_subtitles_per_call = max(
+        1,
+        int(
+            settings.get("max_segments_per_batch")
+            or settings.get("max_subtitles_per_call")
+            or 40
+        ),
+    )
     translation_blocks = create_translation_blocks(
         srt_content,
         char_limit,

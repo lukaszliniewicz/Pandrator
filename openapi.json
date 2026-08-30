@@ -30,7 +30,7 @@
             "type": "string"
           },
           "application_version": {
-            "default": "0.8.15",
+            "default": "0.8.16",
             "title": "Application Version",
             "type": "string"
           },
@@ -316,6 +316,906 @@
           }
         },
         "title": "CredentialUpdate",
+        "type": "object"
+      },
+      "DispatchBatchClaimRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "lease_seconds": {
+            "default": 900,
+            "maximum": 3600,
+            "minimum": 30,
+            "title": "Lease Seconds",
+            "type": "integer"
+          }
+        },
+        "title": "DispatchBatchClaimRequest",
+        "type": "object"
+      },
+      "DispatchBatchClaimResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "batch": {
+            "$ref": "#/components/schemas/DispatchClaimedBatch"
+          },
+          "batch_id": {
+            "title": "Batch Id",
+            "type": "string"
+          },
+          "batch_ordinal": {
+            "minimum": 1,
+            "title": "Batch Ordinal",
+            "type": "integer"
+          },
+          "batch_status": {
+            "title": "Batch Status",
+            "type": "string"
+          },
+          "lease_expires_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lease Expires At"
+          },
+          "lease_token": {
+            "title": "Lease Token",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "run_status": {
+            "title": "Run Status",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "1",
+            "default": "1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "task": {
+            "$ref": "#/components/schemas/DispatchTaskContract"
+          }
+        },
+        "required": [
+          "run_id",
+          "batch_id",
+          "batch_ordinal",
+          "status",
+          "run_status",
+          "batch_status",
+          "task",
+          "batch",
+          "lease_token",
+          "lease_expires_at"
+        ],
+        "title": "DispatchBatchClaimResponse",
+        "type": "object"
+      },
+      "DispatchBatchReleaseRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "lease_token": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Lease Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "lease_token"
+        ],
+        "title": "DispatchBatchReleaseRequest",
+        "type": "object"
+      },
+      "DispatchBatchRenewRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "lease_seconds": {
+            "default": 900,
+            "maximum": 3600,
+            "minimum": 30,
+            "title": "Lease Seconds",
+            "type": "integer"
+          },
+          "lease_token": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Lease Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "lease_token"
+        ],
+        "title": "DispatchBatchRenewRequest",
+        "type": "object"
+      },
+      "DispatchBatchSubmitRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "lease_token": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Lease Token",
+            "type": "string"
+          },
+          "response_text": {
+            "anyOf": [
+              {
+                "maxLength": 524288,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Response Text"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "discriminator": {
+                  "mapping": {
+                    "correction": "#/components/schemas/DispatchCorrectionResult",
+                    "translation": "#/components/schemas/DispatchTranslationResult"
+                  },
+                  "propertyName": "kind"
+                },
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/DispatchCorrectionResult"
+                  },
+                  {
+                    "$ref": "#/components/schemas/DispatchTranslationResult"
+                  }
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Result"
+          }
+        },
+        "required": [
+          "lease_token"
+        ],
+        "title": "DispatchBatchSubmitRequest",
+        "type": "object"
+      },
+      "DispatchBatchSubmitResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "accepted": {
+            "title": "Accepted",
+            "type": "boolean"
+          },
+          "batch_count": {
+            "minimum": 1,
+            "title": "Batch Count",
+            "type": "integer"
+          },
+          "batch_id": {
+            "title": "Batch Id",
+            "type": "string"
+          },
+          "batch_status": {
+            "title": "Batch Status",
+            "type": "string"
+          },
+          "completed_batch_count": {
+            "minimum": 0,
+            "title": "Completed Batch Count",
+            "type": "integer"
+          },
+          "completed_batches": {
+            "minimum": 0,
+            "title": "Completed Batches",
+            "type": "integer"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error Code"
+          },
+          "error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error Message"
+          },
+          "final_artifact_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Final Artifact Id"
+          },
+          "finalized": {
+            "title": "Finalized",
+            "type": "boolean"
+          },
+          "output_role": {
+            "enum": [
+              "correction",
+              "translation"
+            ],
+            "title": "Output Role",
+            "type": "string"
+          },
+          "remaining_batches": {
+            "minimum": 0,
+            "title": "Remaining Batches",
+            "type": "integer"
+          },
+          "result_artifact_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Result Artifact Id"
+          },
+          "result_revision_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Result Revision Id"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "run_status": {
+            "title": "Run Status",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "total_batches": {
+            "minimum": 1,
+            "title": "Total Batches",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "run_id",
+          "batch_id",
+          "output_role",
+          "status",
+          "run_status",
+          "batch_status",
+          "accepted",
+          "completed_batch_count",
+          "completed_batches",
+          "batch_count",
+          "total_batches",
+          "remaining_batches",
+          "finalized"
+        ],
+        "title": "DispatchBatchSubmitResponse",
+        "type": "object"
+      },
+      "DispatchBoundaryContext": {
+        "additionalProperties": false,
+        "properties": {
+          "following_source": {
+            "items": {
+              "$ref": "#/components/schemas/DispatchBoundaryCue"
+            },
+            "title": "Following Source",
+            "type": "array"
+          },
+          "previous_output": {
+            "items": {
+              "$ref": "#/components/schemas/DispatchBoundaryCue"
+            },
+            "title": "Previous Output",
+            "type": "array"
+          }
+        },
+        "required": [
+          "previous_output",
+          "following_source"
+        ],
+        "title": "DispatchBoundaryContext",
+        "type": "object"
+      },
+      "DispatchBoundaryCue": {
+        "additionalProperties": false,
+        "properties": {
+          "speaker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Speaker"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "DispatchBoundaryCue",
+        "type": "object"
+      },
+      "DispatchClaimedBatch": {
+        "additionalProperties": false,
+        "properties": {
+          "context": {
+            "$ref": "#/components/schemas/DispatchBoundaryContext"
+          },
+          "cue_count": {
+            "maximum": 500,
+            "minimum": 1,
+            "title": "Cue Count",
+            "type": "integer"
+          },
+          "cues": {
+            "items": {
+              "$ref": "#/components/schemas/DispatchCue"
+            },
+            "title": "Cues",
+            "type": "array"
+          },
+          "id_namespace": {
+            "const": "source_revision_cue",
+            "title": "Id Namespace",
+            "type": "string"
+          },
+          "source_revision_id": {
+            "title": "Source Revision Id",
+            "type": "string"
+          },
+          "valid_cue_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Valid Cue Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id_namespace",
+          "source_revision_id",
+          "cue_count",
+          "valid_cue_ids",
+          "cues",
+          "context"
+        ],
+        "title": "DispatchClaimedBatch",
+        "type": "object"
+      },
+      "DispatchCorrectionOperation": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "enum": [
+              "edit",
+              "delete",
+              "merge",
+              "split"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "cue_ids": {
+            "items": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "maxItems": 500,
+            "minItems": 1,
+            "title": "Cue Ids",
+            "type": "array"
+          },
+          "speakers": {
+            "items": {
+              "maxLength": 500,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 500,
+            "title": "Speakers",
+            "type": "array"
+          },
+          "texts": {
+            "items": {
+              "maxLength": 16000,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 500,
+            "title": "Texts",
+            "type": "array"
+          }
+        },
+        "required": [
+          "action",
+          "cue_ids"
+        ],
+        "title": "DispatchCorrectionOperation",
+        "type": "object"
+      },
+      "DispatchCorrectionResult": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "correction",
+            "title": "Kind",
+            "type": "string"
+          },
+          "operations": {
+            "items": {
+              "$ref": "#/components/schemas/DispatchCorrectionOperation"
+            },
+            "maxItems": 500,
+            "title": "Operations",
+            "type": "array"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "title": "DispatchCorrectionResult",
+        "type": "object"
+      },
+      "DispatchCue": {
+        "additionalProperties": false,
+        "properties": {
+          "cue_id": {
+            "minimum": 1,
+            "title": "Cue Id",
+            "type": "integer"
+          },
+          "speaker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Speaker"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "timing": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DispatchCueTiming"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "cue_id",
+          "text"
+        ],
+        "title": "DispatchCue",
+        "type": "object"
+      },
+      "DispatchCueTiming": {
+        "additionalProperties": false,
+        "properties": {
+          "end_ms": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "End Ms"
+          },
+          "gap_from_previous_ms": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Gap From Previous Ms"
+          },
+          "overlap_with_previous_ms": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Overlap With Previous Ms"
+          },
+          "start_ms": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Start Ms"
+          }
+        },
+        "title": "DispatchCueTiming",
+        "type": "object"
+      },
+      "DispatchRunCreateRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "char_limit": {
+            "default": 6000,
+            "maximum": 100000,
+            "minimum": 1,
+            "title": "Char Limit",
+            "type": "integer"
+          },
+          "context_after": {
+            "default": 2,
+            "maximum": 20,
+            "minimum": 0,
+            "title": "Context After",
+            "type": "integer"
+          },
+          "context_before": {
+            "default": 8,
+            "maximum": 20,
+            "minimum": 0,
+            "title": "Context Before",
+            "type": "integer"
+          },
+          "glossary": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "maxProperties": 2000,
+            "title": "Glossary",
+            "type": "object"
+          },
+          "include_timing_context": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "deprecated": true,
+            "description": "Deprecated compatibility input. False maps to timing_context_mode=none; true maps to full.",
+            "title": "Include Timing Context"
+          },
+          "instructions": {
+            "default": "",
+            "maxLength": 16000,
+            "title": "Instructions",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "correction",
+              "translation"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "max_segments_per_batch": {
+            "default": 40,
+            "maximum": 500,
+            "minimum": 1,
+            "title": "Max Segments Per Batch",
+            "type": "integer"
+          },
+          "no_remove_subtitles": {
+            "default": false,
+            "title": "No Remove Subtitles",
+            "type": "boolean"
+          },
+          "source_artifact_id": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Source Artifact Id"
+          },
+          "source_language": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Source Language"
+          },
+          "substantial_gap_ms": {
+            "default": 2000,
+            "maximum": 60000,
+            "minimum": 0,
+            "title": "Substantial Gap Ms",
+            "type": "integer"
+          },
+          "target_language": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Target Language"
+          },
+          "timing_context_mode": {
+            "default": "full",
+            "enum": [
+              "full",
+              "overlap_only",
+              "none"
+            ],
+            "title": "Timing Context Mode",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "title": "DispatchRunCreateRequest",
+        "type": "object"
+      },
+      "DispatchTaskContract": {
+        "additionalProperties": false,
+        "properties": {
+          "glossary": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Glossary",
+            "type": "object"
+          },
+          "instructions": {
+            "title": "Instructions",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "correction",
+              "translation"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "known_speakers": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Known Speakers",
+            "type": "array"
+          },
+          "no_remove_subtitles": {
+            "title": "No Remove Subtitles",
+            "type": "boolean"
+          },
+          "output_role": {
+            "enum": [
+              "correction",
+              "translation"
+            ],
+            "title": "Output Role",
+            "type": "string"
+          },
+          "result_contract": {
+            "additionalProperties": true,
+            "title": "Result Contract",
+            "type": "object"
+          },
+          "source_language": {
+            "title": "Source Language",
+            "type": "string"
+          },
+          "substantial_gap_ms": {
+            "anyOf": [
+              {
+                "maximum": 60000,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Substantial Gap Ms"
+          },
+          "target_language": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Target Language"
+          },
+          "timing_context_mode": {
+            "enum": [
+              "full",
+              "overlap_only",
+              "none"
+            ],
+            "title": "Timing Context Mode",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "output_role",
+          "source_language",
+          "instructions",
+          "result_contract",
+          "no_remove_subtitles",
+          "known_speakers",
+          "glossary",
+          "timing_context_mode"
+        ],
+        "title": "DispatchTaskContract",
+        "type": "object"
+      },
+      "DispatchTranslationItem": {
+        "additionalProperties": false,
+        "properties": {
+          "cue_id": {
+            "minimum": 1,
+            "title": "Cue Id",
+            "type": "integer"
+          },
+          "speaker": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Speaker"
+          },
+          "text": {
+            "maxLength": 16000,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "cue_id",
+          "text"
+        ],
+        "title": "DispatchTranslationItem",
+        "type": "object"
+      },
+      "DispatchTranslationResult": {
+        "additionalProperties": false,
+        "properties": {
+          "glossary_updates": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "maxProperties": 2000,
+            "title": "Glossary Updates",
+            "type": "object"
+          },
+          "kind": {
+            "const": "translation",
+            "title": "Kind",
+            "type": "string"
+          },
+          "translations": {
+            "items": {
+              "$ref": "#/components/schemas/DispatchTranslationItem"
+            },
+            "maxItems": 500,
+            "minItems": 1,
+            "title": "Translations",
+            "type": "array"
+          }
+        },
+        "required": [
+          "kind",
+          "translations"
+        ],
+        "title": "DispatchTranslationResult",
         "type": "object"
       },
       "ErrorBody": {
@@ -3766,6 +4666,279 @@
         }
       }
     },
+    "/api/v1/dispatch-batches/{batchId}/release": {
+      "post": {
+        "operationId": "releaseDispatchBatch",
+        "parameters": [
+          {
+            "description": "Required for automation principals and strongly recommended for every retryable write.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "batchId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DispatchBatchReleaseRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Batch returned to ready"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.run"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/dispatch-batches/{batchId}/renew": {
+      "post": {
+        "operationId": "renewDispatchBatch",
+        "parameters": [
+          {
+            "description": "Required for automation principals and strongly recommended for every retryable write.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "batchId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DispatchBatchRenewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Lease renewed"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.run"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/dispatch-batches/{batchId}/submit": {
+      "post": {
+        "operationId": "submitDispatchBatch",
+        "parameters": [
+          {
+            "description": "Required for automation principals and strongly recommended for every retryable write.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "batchId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DispatchBatchSubmitRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DispatchBatchSubmitResponse"
+                }
+              }
+            },
+            "description": "Batch accepted"
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DispatchBatchSubmitResponse"
+                }
+              }
+            },
+            "description": "Batch accepted; finalization continues"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.run"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/dispatch-runs/{runId}": {
+      "get": {
+        "operationId": "getDispatchRun",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "runId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Dispatch run metadata"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/dispatch-runs/{runId}/claim": {
+      "post": {
+        "operationId": "claimDispatchBatch",
+        "parameters": [
+          {
+            "description": "Required for automation principals and strongly recommended for every retryable write.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "runId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DispatchBatchClaimRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DispatchBatchClaimResponse"
+                }
+              }
+            },
+            "description": "Claimed subtitle batch"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.run"
+            ]
+          }
+        ]
+      }
+    },
     "/api/v1/document-revisions/{revisionId}/words": {
       "get": {
         "operationId": "listTimedWords",
@@ -5380,6 +6553,91 @@
             "description": "Queued"
           }
         }
+      }
+    },
+    "/api/v1/sessions/{sessionId}/dispatch-runs": {
+      "get": {
+        "operationId": "listDispatchRuns",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Dispatch run metadata"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
+      },
+      "post": {
+        "operationId": "createDispatchRun",
+        "parameters": [
+          {
+            "description": "Required for automation principals and strongly recommended for every retryable write.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DispatchRunCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Dispatch run created"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.run"
+            ]
+          }
+        ]
       }
     },
     "/api/v1/sessions/{sessionId}/documents": {

@@ -6,13 +6,13 @@ import json
 import re
 import threading
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 from urllib.parse import quote
 
 import requests
 
 from ..credentials import CredentialResolver
-from ..errors import PandratorMcpError
+from ..errors import FailureCode, PandratorMcpError
 from ..network_policy import TargetMode, normalize_origin
 from ..request_context import correlation_headers
 from ..targets import ResolvedTarget, TargetBinding
@@ -23,16 +23,25 @@ LocalBootstrap = Callable[
     str | None,
 ]
 
-_IDEMPOTENCY_KEY = re.compile(
-    r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$"
-)
+_IDEMPOTENCY_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$")
 _PASSTHROUGH_ERROR_CODES = frozenset(
     {
+        "batch_completed",
         "confirmation_required",
+        "dispatch_busy",
+        "dispatch_sequential",
         "duplicate_session",
+        "finalization_conflict",
+        "finalization_incomplete",
+        "ineligible_source",
+        "invalid_kind",
+        "invalid_model_response",
+        "invalid_output_role",
         "idempotency_conflict",
         "idempotency_in_progress",
         "idempotency_key_required",
+        "lease_conflict",
+        "lease_expired",
         "not_found",
         "plan_consumed",
         "plan_digest_mismatch",
@@ -40,10 +49,26 @@ _PASSTHROUGH_ERROR_CODES = frozenset(
         "plan_invalid",
         "plan_stale",
         "precondition_required",
+        "response_too_large",
+        "result_kind_mismatch",
+        "run_not_claimable",
         "scope_denied",
         "session_busy",
+        "source_changed",
+        "source_deleted",
+        "source_hash_missing",
         "source_hash_unavailable",
+        "source_language_mismatch",
+        "source_language_missing",
+        "source_not_found",
+        "source_revision_missing",
+        "source_revision_mismatch",
+        "source_segments_invalid",
+        "source_session_mismatch",
+        "source_unavailable",
+        "source_unmaterialized",
         "target_identity_mismatch",
+        "target_language_required",
         "validation_error",
     }
 )
@@ -99,6 +124,7 @@ class ApplicationClient:
         body: dict[str, Any] | None = None,
         idempotency_key: str | None = None,
         if_match_revision: int | None = None,
+        maximum_body_bytes: int = 512 * 1024,
         _allow_local_retry: bool = True,
     ) -> dict[str, Any]:
         method = str(method or "GET").upper()
@@ -116,30 +142,21 @@ class ApplicationClient:
                     allow_nan=False,
                 ).encode("utf-8")
             except (TypeError, ValueError) as error:
-                raise ValueError(
-                    "Application request values must be finite JSON."
-                ) from error
-            if len(encoded_body) > 512 * 1024:
-                raise ValueError(
-                    "The application request exceeds the bounded body limit."
-                )
-        if idempotency_key is not None and not _IDEMPOTENCY_KEY.fullmatch(
-            idempotency_key
+                raise ValueError("Application request values must be finite JSON.") from error
+            body_limit = max(
+                64 * 1024,
+                min(int(maximum_body_bytes), 4 * 1024 * 1024),
+            )
+            if len(encoded_body) > body_limit:
+                raise ValueError("The application request exceeds the bounded body limit.")
+        if idempotency_key is not None and not _IDEMPOTENCY_KEY.fullmatch(idempotency_key):
+            raise ValueError("Idempotency keys must contain 8-200 safe ASCII characters.")
+        if if_match_revision is not None and (
+            isinstance(if_match_revision, bool) or int(if_match_revision) < 0
         ):
-            raise ValueError(
-                "Idempotency keys must contain 8-200 safe ASCII characters."
-            )
-        if (
-            if_match_revision is not None
-            and (
-                isinstance(if_match_revision, bool)
-                or int(if_match_revision) < 0
-            )
-        ):
-            raise ValueError(
-                "If-Match revisions must be non-negative integers."
-            )
+            raise ValueError("If-Match revisions must be non-negative integers.")
         target = self.binding.resolve()
+        local_bootstrap = self._local_bootstrap
         headers = {
             "Accept": "application/json",
             **correlation_headers(),
@@ -152,7 +169,7 @@ class ApplicationClient:
                     audience="application",
                 )
                 headers["Authorization"] = f"Bearer {secret.reveal()}"
-            elif target.mode != TargetMode.LOCAL_MANAGED or self._local_bootstrap is None:
+            elif target.mode != TargetMode.LOCAL_MANAGED or local_bootstrap is None:
                 raise PandratorMcpError(
                     "authentication_required",
                     "This target has no application credential enrollment.",
@@ -184,30 +201,29 @@ class ApplicationClient:
                         and target.application_credential is None
                         and target.application.origin not in self._local_authenticated_origins
                     ):
-                        csrf_token = self._local_bootstrap(
+                        if local_bootstrap is None:
+                            raise PandratorMcpError(
+                                "authentication_required",
+                                "This local target cannot bootstrap authentication.",
+                            )
+                        csrf_token = local_bootstrap(
                             target,
                             self.session,
                         )
                         if csrf_token:
-                            self._local_csrf_tokens[
-                                target.application.origin
-                            ] = csrf_token
+                            self._local_csrf_tokens[target.application.origin] = csrf_token
                         self._local_authenticated_origins.add(target.application.origin)
                     if encoded_body is not None:
                         headers["Content-Type"] = "application/json"
                     if idempotency_key is not None:
                         headers["Idempotency-Key"] = idempotency_key
                     if if_match_revision is not None:
-                        headers["If-Match"] = (
-                            f'"{int(if_match_revision)}"'
-                        )
+                        headers["If-Match"] = f'"{int(if_match_revision)}"'
                     if (
                         method not in {"GET", "HEAD", "OPTIONS"}
                         and target.application_credential is None
                     ):
-                        csrf_token = self._local_csrf_tokens.get(
-                            target.application.origin
-                        )
+                        csrf_token = self._local_csrf_tokens.get(target.application.origin)
                         if csrf_token:
                             headers["X-CSRF-Token"] = csrf_token
                     request_arguments = {
@@ -298,35 +314,27 @@ class ApplicationClient:
                     body=body,
                     idempotency_key=idempotency_key,
                     if_match_revision=if_match_revision,
+                    maximum_body_bytes=maximum_body_bytes,
                     _allow_local_retry=False,
                 )
             raise PandratorMcpError(
                 "authentication_required",
                 "The Pandrator application credential was rejected.",
             )
-        downstream_error = (
-            payload.get("error")
-            if isinstance(payload.get("error"), dict)
-            else {}
+        raw_downstream_error = payload.get("error")
+        downstream_error: dict[str, Any] = (
+            raw_downstream_error if isinstance(raw_downstream_error, dict) else {}
         )
-        downstream_code = str(
-            downstream_error.get("code") or ""
-        ).strip()
+        downstream_code = str(downstream_error.get("code") or "").strip()
         if downstream_code in _PASSTHROUGH_ERROR_CODES:
             details = downstream_error.get("details")
             if not isinstance(details, dict):
                 details = {}
             raise PandratorMcpError(
-                downstream_code,
-                str(
-                    downstream_error.get("message")
-                    or "Pandrator rejected the request."
-                )[:2_000],
+                cast(FailureCode, downstream_code),
+                str(downstream_error.get("message") or "Pandrator rejected the request.")[:2_000],
                 details={
-                    **{
-                        str(key)[:120]: value
-                        for key, value in list(details.items())[:20]
-                    },
+                    **{str(key)[:120]: value for key, value in list(details.items())[:20]},
                     "status": status_code,
                 },
                 retryable=bool(details.get("retryable")),
@@ -459,6 +467,137 @@ class ApplicationClient:
             parameters={"limit": max(1, min(int(limit), 100))},
         )
 
+    def create_dispatch_run(
+        self,
+        session_id: str,
+        *,
+        kind: str,
+        source_artifact_id: str | None,
+        source_language: str | None,
+        target_language: str | None,
+        instructions: str,
+        char_limit: int,
+        max_segments_per_batch: int,
+        no_remove_subtitles: bool,
+        context_before: int = 8,
+        context_after: int = 2,
+        timing_context_mode: str | None = None,
+        include_timing_context: bool | None = None,
+        substantial_gap_ms: int,
+        glossary: dict[str, str],
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        resolved_timing_context_mode = timing_context_mode
+        if resolved_timing_context_mode is None:
+            resolved_timing_context_mode = (
+                "full" if include_timing_context is not False else "none"
+            )
+        return self._request_json(
+            f"/api/v1/sessions/{quote(session_id, safe='')}/dispatch-runs",
+            method="POST",
+            body={
+                "kind": kind,
+                "source_artifact_id": source_artifact_id,
+                "source_language": source_language,
+                "target_language": target_language,
+                "instructions": instructions,
+                "char_limit": int(char_limit),
+                "max_segments_per_batch": int(max_segments_per_batch),
+                "no_remove_subtitles": bool(no_remove_subtitles),
+                "context_before": int(context_before),
+                "context_after": int(context_after),
+                "timing_context_mode": resolved_timing_context_mode,
+                "substantial_gap_ms": int(substantial_gap_ms),
+                "glossary": glossary,
+            },
+            idempotency_key=idempotency_key,
+        )
+
+    def list_dispatch_runs(
+        self,
+        session_id: str,
+        *,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/sessions/{quote(session_id, safe='')}/dispatch-runs",
+            parameters={"limit": max(1, min(int(limit), 100))},
+        )
+
+    def get_dispatch_run(self, run_id: str) -> dict[str, Any]:
+        return self._request_json(f"/api/v1/dispatch-runs/{quote(run_id, safe='')}")
+
+    def claim_dispatch_batch(
+        self,
+        run_id: str,
+        *,
+        lease_seconds: int = 900,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/dispatch-runs/{quote(run_id, safe='')}/claim",
+            method="POST",
+            body={"lease_seconds": int(lease_seconds)},
+            idempotency_key=idempotency_key,
+        )
+
+    def renew_dispatch_batch(
+        self,
+        batch_id: str,
+        *,
+        lease_token: str,
+        lease_seconds: int,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/dispatch-batches/{quote(batch_id, safe='')}/renew",
+            method="POST",
+            body={
+                "lease_token": lease_token,
+                "lease_seconds": int(lease_seconds),
+            },
+            idempotency_key=idempotency_key,
+        )
+
+    def release_dispatch_batch(
+        self,
+        batch_id: str,
+        *,
+        lease_token: str,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/dispatch-batches/{quote(batch_id, safe='')}/release",
+            method="POST",
+            body={"lease_token": lease_token},
+            idempotency_key=idempotency_key,
+        )
+
+    def submit_dispatch_batch(
+        self,
+        batch_id: str,
+        *,
+        lease_token: str,
+        result: dict[str, Any] | None = None,
+        response_text: str | None = None,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {"lease_token": lease_token}
+        if result is not None:
+            body["result"] = result
+        if response_text is not None:
+            body["response_text"] = response_text
+        return self._request_json(
+            f"/api/v1/dispatch-batches/{quote(batch_id, safe='')}/submit",
+            method="POST",
+            body=body,
+            idempotency_key=idempotency_key,
+            # JSON string escaping can make a valid 512 KiB UTF-8 response
+            # larger on the wire while the backend still enforces the exact
+            # decoded response limit.
+            maximum_body_bytes=4 * 1024 * 1024,
+        )
+
     def get_session(self, session_id: str) -> dict[str, Any]:
         return self._request_json(f"/api/v1/sessions/{quote(session_id, safe='')}")
 
@@ -471,8 +610,7 @@ class ApplicationClient:
         section: str,
     ) -> dict[str, Any]:
         return self._request_json(
-            f"/api/v1/sessions/{quote(session_id, safe='')}/settings/"
-            f"{quote(section, safe='')}"
+            f"/api/v1/sessions/{quote(session_id, safe='')}/settings/{quote(section, safe='')}"
         )
 
     def create_session(
@@ -523,11 +661,7 @@ class ApplicationClient:
     ) -> dict[str, Any]:
         return self._request_json(
             "/api/v1/sources",
-            parameters=(
-                {"include_trashed": "true"}
-                if include_trashed
-                else None
-            ),
+            parameters=({"include_trashed": "true"} if include_trashed else None),
         )
 
     def attach_existing_source(
@@ -560,8 +694,7 @@ class ApplicationClient:
         idempotency_key: str,
     ) -> dict[str, Any]:
         return self._request_json(
-            f"/api/v1/sessions/{quote(session_id, safe='')}/settings/"
-            f"{quote(section, safe='')}",
+            f"/api/v1/sessions/{quote(session_id, safe='')}/settings/{quote(section, safe='')}",
             method="PUT",
             body={"value": value},
             idempotency_key=idempotency_key,
@@ -644,9 +777,7 @@ class ApplicationClient:
         )
 
     def get_workflow_plan(self, plan_id: str) -> dict[str, Any]:
-        return self._request_json(
-            f"/api/v1/workflow-plans/{quote(plan_id, safe='')}"
-        )
+        return self._request_json(f"/api/v1/workflow-plans/{quote(plan_id, safe='')}")
 
     def execute_workflow_plan(
         self,
@@ -661,9 +792,7 @@ class ApplicationClient:
             method="POST",
             body={
                 "plan_digest": plan_digest,
-                "accepted_confirmations": list(
-                    accepted_confirmations
-                ),
+                "accepted_confirmations": list(accepted_confirmations),
             },
             idempotency_key=idempotency_key,
         )
@@ -744,9 +873,7 @@ class ApplicationClient:
             body={
                 "plan_id": plan_id,
                 "plan_digest": plan_digest,
-                "accepted_confirmations": list(
-                    accepted_confirmations
-                ),
+                "accepted_confirmations": list(accepted_confirmations),
             },
             idempotency_key=idempotency_key,
         )

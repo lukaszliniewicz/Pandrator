@@ -3,16 +3,16 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
 
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
-SCHEMA_HEAD = "0029_generation_run_sources"
+SCHEMA_HEAD = "0031_dispatch_output_roles"
 
 
 def sqlite_url(path: Path) -> str:

@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-MINIMUM_APPLICATION_VERSION = (0, 6, 0)
+MINIMUM_APPLICATION_VERSION = (0, 8, 16)
 SUPPORTED_API_VERSIONS = frozenset({"v1"})
 REQUIRED_READ_OPERATION_IDS = frozenset(
     {
@@ -27,6 +27,17 @@ REQUIRED_MANAGER_OPERATION_IDS = frozenset(
     {
         "getManagerDoctorReport",
         "getManagerStatus",
+    }
+)
+REQUIRED_DISPATCH_OPERATION_IDS = frozenset(
+    {
+        "claimDispatchBatch",
+        "createDispatchRun",
+        "getDispatchRun",
+        "listDispatchRuns",
+        "releaseDispatchBatch",
+        "renewDispatchBatch",
+        "submitDispatchBatch",
     }
 )
 _VERSION_PREFIX = re.compile(r"^(\d+)\.(\d+)\.(\d+)")
@@ -74,7 +85,7 @@ def negotiate_compatibility(
         parsed_version = tuple(int(value) for value in match.groups())
         if parsed_version < MINIMUM_APPLICATION_VERSION:
             errors.append(
-                f"Pandrator {application_version} is older than the supported 0.6.0 baseline."
+                f"Pandrator {application_version} is older than the supported 0.8.16 baseline."
             )
     else:
         warnings.append(
@@ -83,6 +94,7 @@ def negotiate_compatibility(
         )
 
     required = set(REQUIRED_READ_OPERATION_IDS)
+    required.update(REQUIRED_DISPATCH_OPERATION_IDS)
     if manager_expected:
         required.update(REQUIRED_MANAGER_OPERATION_IDS)
     missing = sorted(required - _operations(openapi))

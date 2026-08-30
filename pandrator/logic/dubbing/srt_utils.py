@@ -6,7 +6,7 @@ import logging
 import re
 from collections.abc import Mapping
 from dataclasses import replace
-from typing import Any
+from typing import Any, Literal, cast
 
 from .models import SubtitleSegment
 
@@ -30,6 +30,58 @@ _SENTENCE_ENDERS = {
     "\u2026",
 }
 
+TimingContextMode = Literal["full", "overlap_only", "none"]
+TIMING_CONTEXT_MODES: tuple[TimingContextMode, ...] = (
+    "full",
+    "overlap_only",
+    "none",
+)
+
+
+def normalize_timing_context_mode(
+    value: object = None,
+    *,
+    legacy_enabled: object = None,
+    default: TimingContextMode = "full",
+) -> TimingContextMode:
+    """Resolve the canonical timing-disclosure mode.
+
+    ``timing_context_enabled`` used to be a boolean whose false branch still
+    leaked overlap timing.  Treating a legacy false value as ``none`` makes the
+    old setting finally mean what it says.  ``overlap_only`` is now an explicit
+    choice instead of a hidden exception.
+    """
+
+    normalized = str(value or "").strip().lower().replace("-", "_")
+    if normalized in TIMING_CONTEXT_MODES:
+        return cast(TimingContextMode, normalized)
+    if legacy_enabled is not None and legacy_enabled != "":
+        if isinstance(legacy_enabled, str):
+            enabled = legacy_enabled.strip().lower() not in {
+                "0",
+                "false",
+                "no",
+                "off",
+            }
+        else:
+            enabled = bool(legacy_enabled)
+        return "full" if enabled else "none"
+    return default
+
+
+def timing_context_mode_from_settings(
+    settings: Mapping[str, Any],
+    *,
+    default: TimingContextMode = "full",
+) -> TimingContextMode:
+    """Read canonical timing settings with compatibility for saved sessions."""
+
+    return normalize_timing_context_mode(
+        settings.get("timing_context_mode"),
+        legacy_enabled=settings.get("timing_context_enabled"),
+        default=default,
+    )
+
 
 def parse_srt_timestamp(timestamp: str) -> int:
     """Parse an SRT timestamp into milliseconds."""
@@ -48,7 +100,7 @@ def parse_srt_timestamp(timestamp: str) -> int:
 
 def format_srt_timestamp(milliseconds: int) -> str:
     """Format milliseconds as an SRT timestamp."""
-    total = max(0, int(round(milliseconds)))
+    total = max(0, milliseconds)
     hours, remainder = divmod(total, 3_600_000)
     minutes, remainder = divmod(remainder, 60_000)
     seconds, millis = divmod(remainder, 1_000)
@@ -247,31 +299,74 @@ def remove_speaker_labels(srt_content: str) -> str:
 def subtitle_prompt_context(
     subtitle: Mapping[str, Any],
     *,
-    include_timing: bool,
+    timing_context_mode: TimingContextMode | str | None = None,
+    include_timing: bool | None = None,
 ) -> dict[str, Any]:
-    """Return compact, non-spoken cue evidence for an LLM prompt.
+    """Return compact, non-spoken cue evidence for an LLM task.
 
-    Overlap is always useful because it can identify simultaneous speech or a
-    duplicated ASR seam. Absolute timings and ordinary gaps are optional: they
-    improve high-quality editorial decisions, but increase prompt tokens.
+    Timing is nested under one key so callers cannot accidentally disclose the
+    same values in several peer fields.  ``none`` excludes all timing,
+    ``overlap_only`` discloses only positive overlap, and ``full`` discloses the
+    absolute interval plus the relationship to the preceding cue.
     """
 
     context: dict[str, Any] = {}
     speaker = str(subtitle.get("speaker") or "").strip()
     if speaker:
         context["speaker"] = speaker
-    if include_timing:
-        context["start_ms"] = int(subtitle.get("start_ms") or 0)
-        context["end_ms"] = int(subtitle.get("end_ms") or 0)
-        if "gap_from_previous_ms" in subtitle:
-            context["gap_from_previous_ms"] = max(
+    mode = normalize_timing_context_mode(
+        timing_context_mode,
+        legacy_enabled=include_timing,
+        default="none",
+    )
+    timing: dict[str, int] = {}
+    overlap_ms = max(0, int(subtitle.get("overlap_with_previous_ms") or 0))
+    if mode == "full":
+        timing["start_ms"] = int(subtitle.get("start_ms") or 0)
+        timing["end_ms"] = int(subtitle.get("end_ms") or 0)
+        if overlap_ms:
+            timing["overlap_with_previous_ms"] = overlap_ms
+        elif "gap_from_previous_ms" in subtitle:
+            timing["gap_from_previous_ms"] = max(
                 0,
                 int(subtitle.get("gap_from_previous_ms") or 0),
             )
-    overlap_ms = max(0, int(subtitle.get("overlap_with_previous_ms") or 0))
-    if overlap_ms:
-        context["overlap_with_previous_ms"] = overlap_ms
+    elif overlap_ms and mode == "overlap_only":
+        timing["overlap_with_previous_ms"] = overlap_ms
+    if timing:
+        context["timing"] = timing
     return context
+
+
+def subtitle_task_cue(
+    subtitle: Mapping[str, Any],
+    *,
+    timing_context_mode: TimingContextMode | str,
+) -> dict[str, Any]:
+    """Build the canonical model-visible cue used by native and passive work."""
+
+    cue_id = int(subtitle["index"])
+    return {
+        "cue_id": cue_id,
+        "text": re.sub(r"\s+", " ", str(subtitle.get("text") or "")).strip(),
+        **subtitle_prompt_context(
+            subtitle,
+            timing_context_mode=timing_context_mode,
+        ),
+    }
+
+
+def subtitle_boundary_cue(subtitle: Mapping[str, Any]) -> dict[str, str] | None:
+    """Build non-actionable continuity evidence without identity or timing."""
+
+    text = re.sub(r"\s+", " ", str(subtitle.get("text") or "")).strip()
+    if not text:
+        return None
+    cue = {"text": text}
+    speaker = str(subtitle.get("speaker") or "").strip()
+    if speaker:
+        cue["speaker"] = speaker
+    return cue
 
 
 def create_translation_blocks(
@@ -296,6 +391,7 @@ def create_translation_blocks(
     if max_subtitles_per_block is not None:
         max_subtitles_per_block = max(1, int(max_subtitles_per_block))
 
+    endings: tuple[str, ...]
     if normalized_language in {"japanese", "ja"}:
         endings = ("\u3002", "\uff01", "\uff1f", "\u304b", "\u306d", "\u3088", "\u308f")
     elif normalized_language in {"chinese", "zh", "zh-cn", "zh-tw"}:

@@ -15,7 +15,7 @@ computer. Cloud language and speech providers are optional.
 ## Quick start
 
 The current release is
-[Pandrator 0.8.15](https://github.com/lukaszliniewicz/Pandrator/releases/tag/v.0.8.15)
+[Pandrator 0.8.16](https://github.com/lukaszliniewicz/Pandrator/releases/tag/v.0.8.16)
 with Pandrator Manager 0.9.17. The Manager installs Pandrator, launches it, and
 lets you add or remove speech components later. Docker and WSL are not
 required.
@@ -23,14 +23,14 @@ required.
 ### Windows
 
 1. Download
-   [PandratorManager-0.9.17-windows-x86_64.exe](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.8.15/PandratorManager-0.9.17-windows-x86_64.exe).
+   [PandratorManager-0.9.17-windows-x86_64.exe](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.8.16/PandratorManager-0.9.17-windows-x86_64.exe).
 2. Run it and choose the parent folder for your installation.
 3. Let the Manager install Pandrator, then open the browser interface.
 4. Under **Providers & services**, install only the local models you want.
 
 The Windows executable is not Authenticode-signed, so Windows may show
 **Unknown publisher** or a SmartScreen warning. The
-[release page](https://github.com/lukaszliniewicz/Pandrator/releases/tag/v.0.8.15)
+[release page](https://github.com/lukaszliniewicz/Pandrator/releases/tag/v.0.8.16)
 collects the checksums for all downloadable files in one `SHA256SUMS` file.
 
 ### Linux
@@ -189,6 +189,24 @@ or speech-text improvements. Each step creates a separate, reviewable result;
 AI-optimized speech text does not silently replace the text shown in exported
 subtitles.
 
+Subtitle correction and translation can also run in **passive dispatch** mode.
+In that mode Pandrator does not call an LLM at all: it snapshots one subtitle
+revision, queues deterministic batches, and lets the model already running in
+Codex, OpenCode, Claude Code, or another MCP host claim, edit, and submit each
+batch. Claims are sequential and leased, submissions use stable cue IDs, and
+the final result is materialized only after every batch passes validation.
+This is useful when the host model is capable but you do not want—or cannot
+configure—a separate provider API inside Pandrator.
+
+Correction, LLM translation, and passive dispatch share the same quality-first
+batch, boundary-context, timing-disclosure, deletion, and glossary policies.
+Timing can be supplied in `full`, `overlap_only`, or `none` mode; it appears at
+most once per actionable cue and never leaks into boundary context. A
+translation artifact can be corrected in place as a new translation revision,
+without being mislabeled as source-language correction. The complete data-flow
+and parameter reference is in
+[SUBTITLE_PIPELINE_GUIDE.md](SUBTITLE_PIPELINE_GUIDE.md).
+
 Models can have their own temperature, reasoning, and token-price settings.
 When a provider reports an authoritative cost, Pandrator records it.
 Otherwise, it estimates the cost from token usage and your configured rates.
@@ -327,6 +345,10 @@ OpenCode, and Antigravity. Credentials are enrolled with owner approval and
 stored in the operating-system credential store rather than in MCP
 configuration or model-visible arguments.
 
+The MCP sidecar can also act as the worker for passive subtitle correction and
+translation: the host model processes Pandrator's queued batches with its own
+inference, so Pandrator never routes the text to another model provider.
+
 The
 [Pandrator MCP guide](https://github.com/lukaszliniewicz/Pandrator/tree/main/pandrator_mcp)
 walks through:
@@ -335,7 +357,8 @@ walks through:
 - least-privilege scopes and identity pinning;
 - owner-approved login and credential revocation;
 - optional recovery while the Pandrator application is stopped;
-- diagnostics and host configuration; and
+- diagnostics and host configuration;
+- passive subtitle dispatch and correction of translated tracks; and
 - a guarded prompt an agent can use to help prepare a server or pod.
 
 ## Privacy and security

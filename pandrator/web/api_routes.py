@@ -66,6 +66,7 @@ from .credentials import (
     validate_vertex_service_account_json,
 )
 from .database import Database
+from .dispatch_routes import register_dispatch_routes
 from .domain_blueprints import DomainBlueprints
 from .idempotency import IdempotencyConflict, IdempotencyInProgress
 from .knowledge import KnowledgeLedgerStore, KnowledgeValidationError
@@ -705,6 +706,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     )
     register_automation_routes(app, context)
     register_workflow_plan_routes(app, context)
+    register_dispatch_routes(app, context)
 
     @app.get("/api/v1/health")
     def health():

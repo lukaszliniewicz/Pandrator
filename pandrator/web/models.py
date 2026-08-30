@@ -931,6 +931,108 @@ class AgentRun(Base):
     )
 
 
+class DispatchRun(Base):
+    """A passive, externally processed subtitle correction/translation run."""
+
+    __tablename__ = "dispatch_runs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    kind: Mapped[str] = mapped_column(String(24), nullable=False, index=True)
+    output_role: Mapped[str] = mapped_column(String(120), nullable=False)
+    source_artifact_id: Mapped[str] = mapped_column(
+        ForeignKey("artifacts.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    source_revision_id: Mapped[str] = mapped_column(
+        ForeignKey("document_revisions.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    source_state: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="current"
+    )
+    source_content_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    source_language: Mapped[str] = mapped_column(
+        String(40), nullable=False, default="auto"
+    )
+    target_language: Mapped[str | None] = mapped_column(String(40))
+    settings_json: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
+    selection_snapshot_json: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
+    input_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    output_head_artifact_id: Mapped[str | None] = mapped_column(
+        ForeignKey("artifacts.id", ondelete="SET NULL"), index=True
+    )
+    result_artifact_id: Mapped[str | None] = mapped_column(
+        ForeignKey("artifacts.id", ondelete="SET NULL"), index=True
+    )
+    result_revision_id: Mapped[str | None] = mapped_column(
+        ForeignKey("document_revisions.id", ondelete="SET NULL"), index=True
+    )
+    glossary_json: Mapped[dict[str, str]] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
+    status: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="ready", index=True
+    )
+    batch_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    completed_batch_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    error_code: Mapped[str | None] = mapped_column(String(120))
+    error_message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False, index=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False, index=True
+    )
+
+
+class DispatchBatch(Base):
+    """An immutable semantic subtitle block and its externally supplied result."""
+
+    __tablename__ = "dispatch_batches"
+    __table_args__ = (
+        UniqueConstraint(
+            "dispatch_run_id", "ordinal", name="uq_dispatch_batch_ordinal"
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    dispatch_run_id: Mapped[str] = mapped_column(
+        ForeignKey("dispatch_runs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    input_json: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+    input_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="ready", index=True
+    )
+    lease_token: Mapped[str | None] = mapped_column(String(160))
+    claim_key: Mapped[str | None] = mapped_column(String(200))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), index=True
+    )
+    normalized_output_json: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON)
+    output_hash: Mapped[str | None] = mapped_column(String(64))
+    submission_key: Mapped[str | None] = mapped_column(String(200))
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+
 class AgentStep(Base):
     __tablename__ = "agent_steps"
 

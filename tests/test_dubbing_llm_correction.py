@@ -30,8 +30,8 @@ def _settings():
         "llm_provider_configs": llm_handler.get_provider_configs(None),
         "request_timeout_seconds": 30,
         "reasoning_effort": "",
-        "llm_char": 6000,
-        "max_subtitles_per_call": 40,
+        "char_limit": 6000,
+        "max_segments_per_batch": 40,
         "max_line_length": 42,
         "context": True,
     }
@@ -42,14 +42,21 @@ class DubbingLLMCorrectionTests(unittest.TestCase):
         operations = llm_correction.parse_correction_operations(
             """Here is the result:
 ```json
-{"operations":[{"action":"edit","ids":[1],"texts":["Hello."]}]}
+{"operations":[{"action":"edit","cue_ids":[1],"texts":["Hello."]}]}
 ```
 """
         )
 
         self.assertEqual(
             operations,
-            [{"action": "edit", "ids": [1], "texts": ["Hello."]}],
+            [
+                {
+                    "action": "edit",
+                    "cue_ids": [1],
+                    "id_namespace": "source_revision_cue",
+                    "texts": ["Hello."],
+                }
+            ],
         )
 
     def test_parse_correction_operations_rejects_malformed_entries_instead_of_skipping(
@@ -131,12 +138,13 @@ class DubbingLLMCorrectionTests(unittest.TestCase):
                     "speaker": "Speaker 2",
                     "overlap_with_previous_ms": 200,
                 }
-            ]
+            ],
+            timing_context_mode="overlap_only",
         )
         cue = json.loads(prompt.rsplit("\nThe subtitles:\n", 1)[1])[0]
 
         self.assertEqual(cue["speaker"], "Speaker 2")
-        self.assertEqual(cue["overlap_with_previous_ms"], 200)
+        self.assertEqual(cue["timing"]["overlap_with_previous_ms"], 200)
         self.assertIn("non-spoken evidence", prompt)
 
     def test_correction_prompt_can_include_timing_and_gap_policy(self):
@@ -157,10 +165,51 @@ class DubbingLLMCorrectionTests(unittest.TestCase):
         )
         cue = json.loads(prompt.rsplit("\nThe subtitles:\n", 1)[1])[0]
 
-        self.assertEqual(3100, cue["start_ms"])
-        self.assertEqual(4200, cue["end_ms"])
-        self.assertEqual(2100, cue["gap_from_previous_ms"])
-        self.assertIn("A gap of 2000 ms or more", prompt)
+        self.assertEqual(3100, cue["timing"]["start_ms"])
+        self.assertEqual(4200, cue["timing"]["end_ms"])
+        self.assertEqual(2100, cue["timing"]["gap_from_previous_ms"])
+        self.assertIn("A gap of at least 2000 ms", prompt)
+
+    def test_correction_prompt_timing_modes_are_exact(self):
+        block = [
+            {
+                "index": 9,
+                "start_ms": 800,
+                "end_ms": 1500,
+                "text": "Okay",
+                "gap_from_previous_ms": 0,
+                "overlap_with_previous_ms": 200,
+            }
+        ]
+        full_prompt = llm_correction.build_correction_prompt(
+            block,
+            timing_context_mode="full",
+        )
+        full_cue = json.loads(full_prompt.rsplit("\nThe subtitles:\n", 1)[1])[0]
+        self.assertEqual(
+            {
+                "start_ms": 800,
+                "end_ms": 1500,
+                "overlap_with_previous_ms": 200,
+            },
+            full_cue["timing"],
+        )
+        overlap_prompt = llm_correction.build_correction_prompt(
+            block,
+            timing_context_mode="overlap_only",
+        )
+        overlap_cue = json.loads(overlap_prompt.rsplit("\nThe subtitles:\n", 1)[1])[0]
+        self.assertEqual(
+            {"overlap_with_previous_ms": 200},
+            overlap_cue["timing"],
+        )
+        none_prompt = llm_correction.build_correction_prompt(
+            block,
+            timing_context_mode="none",
+        )
+        none_cue = json.loads(none_prompt.rsplit("\nThe subtitles:\n", 1)[1])[0]
+        self.assertNotIn("timing", none_cue)
+        self.assertNotIn("start_ms", none_prompt)
 
     def test_structured_speakers_are_non_spoken_prompt_evidence_and_block_cross_speaker_merge(
         self,
@@ -241,7 +290,7 @@ three
                         "operations": [
                             {
                                 "action": "edit",
-                                "ids": [1],
+                                "cue_ids": [cue["cue_id"]],
                                 "texts": [cue["text"].upper()],
                             }
                         ]
@@ -253,7 +302,7 @@ three
             content,
             {
                 **_settings(),
-                "max_subtitles_per_call": 1,
+                "max_segments_per_batch": 1,
                 "llm_concurrent_calls": 2,
             },
             completion_func=fake_completion,
@@ -326,8 +375,8 @@ three
 
         settings = {
             **_settings(),
-            "llm_char": 100_000,
-            "max_subtitles_per_call": 2,
+            "char_limit": 100_000,
+            "max_segments_per_batch": 2,
         }
         progress_updates = []
         result = llm_correction.correct_srt_content(
@@ -404,7 +453,7 @@ three
         self.assertEqual("Hello.", srt_utils.parse_srt(result.srt_content)[0].text)
 
     def test_next_batch_context_contains_corrected_cues_not_prior_operations(self):
-        settings = {**_settings(), "llm_char": 1}
+        settings = {**_settings(), "char_limit": 1}
         prompts = []
 
         def fake_completion(**kwargs):
@@ -423,7 +472,7 @@ three
         context = (
             prompts[1].split("Prior corrected cues", 1)[1].split("The subtitles:", 1)[0]
         )
-        self.assertIn('["Hello."]', context)
+        self.assertIn('[{"text": "Hello."}]', context)
         self.assertNotIn('"action"', context)
 
     def test_dubbing_handler_correction_writes_native_result(self):
@@ -490,7 +539,7 @@ three
         ):
             llm_correction.correct_srt_content(
                 SAMPLE_SRT,
-                {**_settings(), "max_subtitles_per_call": 1},
+                {**_settings(), "max_segments_per_batch": 1},
                 completion_func=lambda **kwargs: (
                     first_calls.append(kwargs)
                     or llm_handler.ChatCompletionResult(
@@ -503,7 +552,7 @@ three
         resumed_calls = []
         result = llm_correction.correct_srt_content(
             SAMPLE_SRT,
-            {**_settings(), "max_subtitles_per_call": 1},
+            {**_settings(), "max_segments_per_batch": 1},
             completion_func=lambda **kwargs: (
                 resumed_calls.append(kwargs)
                 or llm_handler.ChatCompletionResult(content='{"operations":[]}')

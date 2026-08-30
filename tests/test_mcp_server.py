@@ -1,3 +1,4 @@
+import json
 import sys
 import tempfile
 import unittest
@@ -11,6 +12,8 @@ except ImportError:
     StdioServerParameters = None
     stdio_client = None
 
+from pandrator_mcp import __version__
+from pandrator_mcp.catalog import ACTION_CATALOG, RiskClass
 from pandrator_mcp.context import build_runtime
 from pandrator_mcp.server import build_server
 from pandrator_mcp.settings import McpSettings
@@ -27,19 +30,34 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                 )
             )
             server = build_server(runtime)
-            async with Client(server, raise_exceptions=True) as client:
+            async with Client(server, mode="auto", raise_exceptions=True) as client:
+                self.assertEqual("2026-07-28", client.protocol_version)
+                self.assertEqual(__version__, client.server_info.version)
+                self.assertEqual(
+                    ["2026-07-28"],
+                    client.session.discover_result.supported_versions,
+                )
                 listed = await client.list_tools()
+                self.assertEqual(0, listed.ttl_ms)
+                self.assertEqual("private", listed.cache_scope)
+                self.assertEqual(
+                    {"name": "Pandrator", "version": __version__},
+                    listed.meta["io.modelcontextprotocol/serverInfo"],
+                )
                 names = sorted(tool.name for tool in listed.tools)
                 self.assertEqual(
                     [
                         "pandrator_attach_existing_source",
                         "pandrator_cancel_work",
+                        "pandrator_claim_dispatch_batch",
                         "pandrator_control_runtime",
+                        "pandrator_create_dispatch_run",
                         "pandrator_create_session",
                         "pandrator_execute_component_plan",
                         "pandrator_execute_workflow_plan",
                         "pandrator_explain_system",
                         "pandrator_get_capabilities",
+                        "pandrator_get_dispatch_run",
                         "pandrator_get_provider_status",
                         "pandrator_get_session",
                         "pandrator_get_session_settings",
@@ -50,6 +68,7 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                         "pandrator_get_work_log",
                         "pandrator_get_workflow",
                         "pandrator_list_artifacts",
+                        "pandrator_list_dispatch_runs",
                         "pandrator_list_sessions",
                         "pandrator_list_sources",
                         "pandrator_list_work",
@@ -58,10 +77,17 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                         "pandrator_plan_component_change",
                         "pandrator_plan_workflow",
                         "pandrator_recommend_next_steps",
+                        "pandrator_release_dispatch_batch",
+                        "pandrator_renew_dispatch_batch",
+                        "pandrator_submit_dispatch_batch",
                         "pandrator_update_session",
                         "pandrator_update_session_settings",
                     ],
                     names,
+                )
+                self.assertEqual(
+                    {action.name for action in ACTION_CATALOG.list() if action.enabled},
+                    set(names),
                 )
                 for tool in listed.tools:
                     properties = set(tool.input_schema.get("properties", {}))
@@ -76,6 +102,51 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                                 "url",
                             }
                         )
+                    )
+                    spec = ACTION_CATALOG.get(tool.name)
+                    self.assertEqual(
+                        spec.risk == RiskClass.READ,
+                        tool.annotations.read_only_hint,
+                    )
+                dispatch_tools = {
+                    tool.name: tool
+                    for tool in listed.tools
+                    if "dispatch" in tool.name
+                }
+                self.assertEqual(
+                    {
+                        "pandrator_claim_dispatch_batch",
+                        "pandrator_create_dispatch_run",
+                        "pandrator_get_dispatch_run",
+                        "pandrator_list_dispatch_runs",
+                        "pandrator_release_dispatch_batch",
+                        "pandrator_renew_dispatch_batch",
+                        "pandrator_submit_dispatch_batch",
+                    },
+                    set(dispatch_tools),
+                )
+                for name in (
+                    "pandrator_list_dispatch_runs",
+                    "pandrator_get_dispatch_run",
+                ):
+                    self.assertTrue(dispatch_tools[name].annotations.read_only_hint)
+                for name in set(dispatch_tools) - {
+                    "pandrator_list_dispatch_runs",
+                    "pandrator_get_dispatch_run",
+                }:
+                    self.assertFalse(dispatch_tools[name].annotations.read_only_hint)
+                for name in (
+                    "pandrator_renew_dispatch_batch",
+                    "pandrator_release_dispatch_batch",
+                    "pandrator_submit_dispatch_batch",
+                ):
+                    self.assertIn(
+                        "lease_token",
+                        dispatch_tools[name].input_schema["properties"],
+                    )
+                    self.assertNotIn(
+                        "token",
+                        dispatch_tools[name].input_schema["properties"],
                     )
                 explain_schema = next(
                     tool.input_schema
@@ -107,6 +178,10 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                     },
                 )
                 self.assertFalse(result.is_error)
+                self.assertEqual(
+                    result.structured_content,
+                    json.loads(result.content[0].text),
+                )
                 self.assertEqual(
                     "overview",
                     result.structured_content["result"]["topic"],
@@ -185,6 +260,12 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
             "adapter.explain_system = noisy\n"
             "runtime = build_runtime(McpSettings("
             "target_name='missing', configuration_path=Path('missing.json')))\n"
+            "original_index = runtime.guides.index\n"
+            "def noisy_index():\n"
+            "    print('deliberate resource stdout noise')\n"
+            "    warnings.warn('deliberate resource warning')\n"
+            "    return original_index()\n"
+            "runtime.guides.index = noisy_index\n"
             "adapter.build_server(runtime).run()\n"
         )
         with tempfile.NamedTemporaryFile(mode="w+", encoding="utf-8") as errors:
@@ -207,10 +288,38 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                     },
                 )
                 self.assertFalse(result.is_error)
+                resource = await session.read_resource("pandrator://guide/index")
+                self.assertTrue(resource.contents)
             errors.seek(0)
             diagnostics = errors.read()
             self.assertIn("deliberate dependency stdout noise", diagnostics)
             self.assertIn("deliberate dependency warning", diagnostics)
+            self.assertIn("deliberate resource stdout noise", diagnostics)
+            self.assertIn("deliberate resource warning", diagnostics)
+
+    async def test_modern_protocol_discovery_over_real_stdio(self):
+        script = (
+            "from pathlib import Path\n"
+            "from pandrator_mcp.context import build_runtime\n"
+            "from pandrator_mcp.server import build_server\n"
+            "from pandrator_mcp.settings import McpSettings\n"
+            "runtime = build_runtime(McpSettings("
+            "target_name='missing', configuration_path=Path('missing.json')))\n"
+            "build_server(runtime).run()\n"
+        )
+        parameters = StdioServerParameters(
+            command=sys.executable,
+            args=["-c", script],
+            cwd=str(Path(__file__).resolve().parents[1]),
+        )
+        async with Client(parameters, mode="auto", raise_exceptions=True) as client:
+            self.assertEqual("2026-07-28", client.protocol_version)
+            self.assertEqual(__version__, client.server_info.version)
+            listed = await client.list_tools()
+            self.assertIn(
+                "pandrator_create_dispatch_run",
+                {tool.name for tool in listed.tools},
+            )
 
 
 if __name__ == "__main__":

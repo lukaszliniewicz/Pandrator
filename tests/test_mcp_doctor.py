@@ -10,6 +10,7 @@ from typing import Any
 from test_mcp_application_client import create_test_ca
 
 from pandrator_mcp.compatibility import (
+    REQUIRED_DISPATCH_OPERATION_IDS,
     REQUIRED_MANAGER_OPERATION_IDS,
     REQUIRED_READ_OPERATION_IDS,
 )
@@ -52,14 +53,16 @@ class DoctorTests(unittest.TestCase):
                             {
                                 "status": "ok",
                                 "service": "pandrator",
-                                "version": "0.6.0",
+                                "version": "0.8.16",
                                 "migration": "ready",
                             }
                         )
                         return
                     if path == "/api/v1/openapi.json":
                         operations = sorted(
-                            REQUIRED_READ_OPERATION_IDS | REQUIRED_MANAGER_OPERATION_IDS
+                            REQUIRED_READ_OPERATION_IDS
+                            | REQUIRED_DISPATCH_OPERATION_IDS
+                            | REQUIRED_MANAGER_OPERATION_IDS
                         )
                         self._send(
                             {
@@ -83,7 +86,7 @@ class DoctorTests(unittest.TestCase):
                                 "schema_version": "1",
                                 "service": "pandrator",
                                 "instance_id": "application-id",
-                                "application_version": "0.6.0",
+                                "application_version": "0.8.16",
                                 "api_version": "v1",
                                 "protocol_version": "v1",
                                 "canonical_origin": origin_holder["origin"],

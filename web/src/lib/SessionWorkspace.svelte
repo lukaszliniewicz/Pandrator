@@ -160,8 +160,13 @@
   let instructions = $state('');
   let optimizationPrompt = $state('');
   let optimizationConcurrent = $state(1);
-  let timingContextEnabled = $state(true);
+  let timingContextMode = $state<'full' | 'overlap_only' | 'none'>('full');
   let timingContextGap = $state(2000);
+  let correctionBatchCharLimit = $state(6000);
+  let correctionBatchSegmentLimit = $state(40);
+  let contextBefore = $state(8);
+  let contextAfter = $state(2);
+  let preventSubtitleRemoval = $state(false);
   let optimizationBatchSize = $state(3);
   let documentOptimizationBatchSize = $state(8);
   let optimizationMultiStage = $state(false);
@@ -684,8 +689,27 @@
     instructions = String(saved.instructions ?? '');
     optimizationPrompt = String(saved.combined_prompt ?? '');
     optimizationConcurrent = Number(saved.llm_concurrent_calls ?? 1);
-    timingContextEnabled = Boolean(saved.timing_context_enabled ?? true);
-    timingContextGap = Number(saved.timing_context_gap_ms ?? 2000);
+    const savedTimingContextMode = String(
+      saved.timing_context_mode ??
+        (saved.timing_context_enabled === false ? 'none' : 'full')
+    );
+    timingContextMode = ['full', 'overlap_only', 'none'].includes(
+      savedTimingContextMode
+    )
+      ? (savedTimingContextMode as 'full' | 'overlap_only' | 'none')
+      : 'full';
+    timingContextGap = Number(
+      saved.substantial_gap_ms ?? saved.timing_context_gap_ms ?? 2000
+    );
+    correctionBatchCharLimit = Number(
+      saved.char_limit ?? saved.llm_char ?? 6000
+    );
+    correctionBatchSegmentLimit = Number(
+      saved.max_segments_per_batch ?? saved.max_subtitles_per_call ?? 40
+    );
+    contextBefore = Number(saved.context_before ?? 8);
+    contextAfter = Number(saved.context_after ?? 2);
+    preventSubtitleRemoval = Boolean(saved.no_remove_subtitles ?? false);
     optimizationBatchSize = Number(saved.llm_tts_batch_size ?? 3);
     documentOptimizationBatchSize = Number(
       saved.llm_tts_document_batch_size ?? 8
@@ -1748,8 +1772,13 @@
             reasoning_effort: reasoningEffort,
             instructions,
             llm_concurrent_calls: optimizationConcurrent,
-            timing_context_enabled: timingContextEnabled,
-            timing_context_gap_ms: timingContextGap,
+            char_limit: correctionBatchCharLimit,
+            max_segments_per_batch: correctionBatchSegmentLimit,
+            context_before: contextBefore,
+            context_after: contextAfter,
+            no_remove_subtitles: preventSubtitleRemoval,
+            timing_context_mode: timingContextMode,
+            substantial_gap_ms: timingContextGap,
             web_research_enabled: webResearchEnabled,
             web_research_model_name: webResearchModel,
             web_research_mode: webResearchMode,
@@ -1770,8 +1799,13 @@
             instructions,
             source_artifact_id: translationSourceArtifactId,
             llm_concurrent_calls: optimizationConcurrent,
-            timing_context_enabled: timingContextEnabled,
-            timing_context_gap_ms: timingContextGap,
+            char_limit: correctionBatchCharLimit,
+            max_segments_per_batch: correctionBatchSegmentLimit,
+            context_before: contextBefore,
+            context_after: contextAfter,
+            no_remove_subtitles: preventSubtitleRemoval,
+            timing_context_mode: timingContextMode,
+            substantial_gap_ms: timingContextGap,
             web_research_enabled: webResearchEnabled,
             web_research_model_name: webResearchModel,
             web_research_mode: webResearchMode,
@@ -1887,8 +1921,13 @@
         reasoning_effort: reasoningEffort,
         instructions,
         llm_concurrent_calls: optimizationConcurrent,
-        timing_context_enabled: timingContextEnabled,
-        timing_context_gap_ms: timingContextGap,
+        char_limit: correctionBatchCharLimit,
+        max_segments_per_batch: correctionBatchSegmentLimit,
+        context_before: contextBefore,
+        context_after: contextAfter,
+        no_remove_subtitles: preventSubtitleRemoval,
+        timing_context_mode: timingContextMode,
+        substantial_gap_ms: timingContextGap,
         web_research_enabled: webResearchEnabled,
         web_research_model_name: webResearchModel,
         web_research_mode: webResearchMode,
@@ -1903,8 +1942,13 @@
         reasoning_effort: reasoningEffort,
         instructions,
         llm_concurrent_calls: optimizationConcurrent,
-        timing_context_enabled: timingContextEnabled,
-        timing_context_gap_ms: timingContextGap,
+        char_limit: correctionBatchCharLimit,
+        max_segments_per_batch: correctionBatchSegmentLimit,
+        context_before: contextBefore,
+        context_after: contextAfter,
+        no_remove_subtitles: preventSubtitleRemoval,
+        timing_context_mode: timingContextMode,
+        substantial_gap_ms: timingContextGap,
         web_research_enabled: webResearchEnabled,
         web_research_model_name: webResearchModel,
         web_research_mode: webResearchMode,
@@ -2344,7 +2388,7 @@
         >
       </div>
       <div class="mt-6 grid gap-5">
-        {#if ['correct', 'translate', 'optimize_tts', 'optimize_document', 'clean_source'].includes(settingsStage.key)}<label
+        {#if settingsStage.key === 'correct' || (settingsStage.key === 'translate' && backend === 'llm') || ['optimize_tts', 'optimize_document', 'clean_source'].includes(settingsStage.key)}<label
             class="text-sm font-semibold"
             >LLM model<select
               bind:value={model}
@@ -2406,21 +2450,24 @@
         {/if}
         {#if settingsStage.key === 'correct' || (settingsStage.key === 'translate' && backend === 'llm')}
           <div class="rounded-xl border border-[var(--line)] p-4">
-            <label class="flex items-start gap-3 text-sm font-semibold"
-              ><input
-                type="checkbox"
-                bind:checked={timingContextEnabled}
-                class="mt-1 accent-[var(--accent)]"
-              /><span
-                >Include cue timing context<span
-                  class="muted mt-1 block text-xs font-normal leading-relaxed"
-                  >Lets the model distinguish ordinary cue boundaries, long
-                  pauses, and overlapping speech. This improves difficult
-                  editorial decisions at a modest prompt-token cost.</span
-                ></span
+            <label class="block text-sm font-semibold"
+              >Cue timing context<select
+                bind:value={timingContextMode}
+                class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
+              >
+                <option value="full">Full timing · best quality</option>
+                <option value="overlap_only">Overlap only · fewer tokens</option
+                >
+                <option value="none">No timing context</option>
+              </select><span
+                class="muted mt-2 block text-xs font-normal leading-relaxed"
+                >Full timing includes each cue interval and its preceding gap or
+                overlap exactly once. Overlap-only is a useful compromise for
+                simultaneous speech and ASR seam detection. None excludes every
+                timing field.</span
               ></label
             >
-            {#if timingContextEnabled}<label
+            {#if timingContextMode === 'full'}<label
                 class="mt-4 block text-xs font-semibold"
                 >Substantial audible pause (ms)<input
                   type="number"
@@ -2431,10 +2478,79 @@
                   class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
                 /><span class="muted mt-1 block font-normal"
                   >The model is asked to preserve a rhetorical boundary at or
-                  above this gap. Overlap evidence remains available even when
-                  full timing context is off.</span
+                  above this gap.</span
                 ></label
               >{/if}
+          </div>
+        {/if}
+        {#if settingsStage.key === 'correct' || (settingsStage.key === 'translate' && backend === 'llm')}
+          <div class="rounded-xl border border-[var(--line)] p-4">
+            <div class="grid grid-cols-2 gap-3">
+              <label class="text-xs font-semibold"
+                >Maximum batch characters<input
+                  type="number"
+                  min="1"
+                  max="100000"
+                  step="100"
+                  bind:value={correctionBatchCharLimit}
+                  class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                /></label
+              ><label class="text-xs font-semibold"
+                >Maximum cues per batch<input
+                  type="number"
+                  min="1"
+                  max="500"
+                  bind:value={correctionBatchSegmentLimit}
+                  class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                /></label
+              >
+            </div>
+            <p class="muted mt-2 text-xs leading-relaxed">
+              Pandrator stops at whichever limit is reached first and prefers a
+              sentence or speaker boundary. The quality-first defaults are 6,000
+              characters and 40 cues.
+            </p>
+            {#if settingsStage.key === 'correct' || backend === 'llm'}
+              <div class="mt-4 grid grid-cols-2 gap-3">
+                <label class="text-xs font-semibold"
+                  >Previous output cues<input
+                    type="number"
+                    min="0"
+                    max="20"
+                    bind:value={contextBefore}
+                    class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                  /></label
+                ><label class="text-xs font-semibold"
+                  >Following source cues<input
+                    type="number"
+                    min="0"
+                    max="20"
+                    bind:value={contextAfter}
+                    class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                  /></label
+                >
+              </div>
+              <p class="muted mt-2 text-xs leading-relaxed">
+                Boundary context improves names, sentence continuity, and
+                punctuation without making those cues editable. Sequential mode
+                can use corrected or translated output from the previous batch;
+                parallel mode cannot.
+              </p>
+              <label class="mt-4 flex items-start gap-3 text-sm font-semibold"
+                ><input
+                  type="checkbox"
+                  bind:checked={preventSubtitleRemoval}
+                  class="mt-1 accent-[var(--accent)]"
+                /><span
+                  >Prevent cue removal<span
+                    class="muted mt-1 block text-xs font-normal leading-relaxed"
+                    >Every source cue must survive correction or translation.
+                    Enable this when omissions would be worse than preserving an
+                    uncertain filler or ASR artifact.</span
+                  ></span
+                ></label
+              >
+            {/if}
           </div>
         {/if}
         {#if settingsStage.key === 'correct' || (settingsStage.key === 'translate' && backend === 'llm')}
@@ -2941,13 +3057,13 @@
                   value={item.value}>{item.label}</option
                 >{/each}</select
             ></label
-          ><label class="text-sm font-semibold"
-            >Translation guidance<textarea
-              bind:value={instructions}
-              rows="3"
-              class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
-            ></textarea></label
-          >{/if}
+          >{#if backend === 'llm'}<label class="text-sm font-semibold"
+              >Translation guidance<textarea
+                bind:value={instructions}
+                rows="3"
+                class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
+              ></textarea></label
+            >{/if}{/if}
         {#if settingsStage.key === 'optimize_tts'}
           <fieldset class="rounded-xl border border-[var(--line)] p-4">
             <legend class="px-1 text-sm font-semibold"

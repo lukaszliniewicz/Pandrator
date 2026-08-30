@@ -7,11 +7,16 @@ import tomllib
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from typing import get_args
 
 from pydantic import ValidationError
 
+from pandrator_mcp import __version__
 from pandrator_mcp.catalog import ACTION_CATALOG, RiskClass
-from pandrator_mcp.clients.application import ApplicationClient
+from pandrator_mcp.clients.application import (
+    _PASSTHROUGH_ERROR_CODES,
+    ApplicationClient,
+)
 from pandrator_mcp.credentials import (
     APPROVED_CREDENTIAL_BACKENDS,
     CredentialReference,
@@ -20,6 +25,7 @@ from pandrator_mcp.credentials import (
 )
 from pandrator_mcp.errors import (
     CredentialResolutionError,
+    FailureCode,
     PandratorMcpError,
     TargetResolutionError,
 )
@@ -90,14 +96,22 @@ class McpArchitectureTests(unittest.TestCase):
                     found.append((path.relative_to(ROOT), sorted(overlap)))
         self.assertEqual([], found)
 
-    def test_sdk_is_exactly_pinned_to_stable_v2(self):
+    def test_sdk_and_package_versions_are_exactly_pinned(self):
         payload = tomllib.loads(
             (MCP_ROOT / "pyproject.toml").read_text(encoding="utf-8")
         )
-        self.assertIn("mcp==2.0.0", payload["project"]["dependencies"])
+        self.assertEqual("0.2.0", __version__)
+        self.assertEqual(__version__, payload["project"]["version"])
+        self.assertIn("mcp==2.1.1", payload["project"]["dependencies"])
         server_source = (MCP_ROOT / "server.py").read_text(encoding="utf-8")
         self.assertIn("from mcp.server import MCPServer", server_source)
         self.assertNotIn("FastMCP", server_source)
+
+    def test_passthrough_downstream_failures_are_typed(self):
+        self.assertEqual(
+            set(),
+            _PASSTHROUGH_ERROR_CODES - set(get_args(FailureCode)),
+        )
 
     def test_setuptools_wheels_exclude_cached_bytecode(self):
         for package_root in (MCP_ROOT, ROOT / "pandrator_manager"):
@@ -309,10 +323,15 @@ class McpArchitectureTests(unittest.TestCase):
             {
                 "pandrator_cancel_work",
                 "pandrator_attach_existing_source",
+                "pandrator_claim_dispatch_batch",
                 "pandrator_control_runtime",
+                "pandrator_create_dispatch_run",
                 "pandrator_create_session",
                 "pandrator_execute_component_plan",
                 "pandrator_execute_workflow_plan",
+                "pandrator_release_dispatch_batch",
+                "pandrator_renew_dispatch_batch",
+                "pandrator_submit_dispatch_batch",
                 "pandrator_update_session",
                 "pandrator_update_session_settings",
             },

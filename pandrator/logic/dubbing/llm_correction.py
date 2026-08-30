@@ -22,8 +22,11 @@ from .models import SubtitleSegment
 from .srt_utils import (
     compose_srt,
     create_translation_blocks,
+    normalize_timing_context_mode,
     split_speaker_label,
-    subtitle_prompt_context,
+    subtitle_boundary_cue,
+    subtitle_task_cue,
+    timing_context_mode_from_settings,
 )
 
 logger = logging.getLogger(__name__)
@@ -42,23 +45,23 @@ CORRECTION_SYSTEM_PROMPT = (
 
 CORRECTION_PROMPT_TEMPLATE = """
 Review the array of {subtitle_count} subtitle cues below and return this JSON shape:
-{{"operations":[{{"action":"edit|delete|merge|split","ids":[1],"texts":["corrected text"],"speakers":["SPEAKER_00"]}}]}}
+{response_shape}
 
 Instructions:
 1. Use your editorial judgment to fix punctuation, capitalization, spelling, and clear transcription errors. Remove isolated filler and accidental repetition when appropriate.
 2. Preserve each speaker's meaning, register, names, and terminology. Do not add speaker labels to replacement text. Preserve the supplied speaker by default, but correct a likely diarization mistake when the discourse clearly supports it. When changing a speaker or merging across different supplied speakers, include one `speakers` entry for every replacement text and use only a supplied speaker ID. Otherwise omit `speakers`.
 3. Return operations only for cues that need a change; return an empty `operations` array when no changes are needed.
 4. Available actions:
-   - "edit": one cue ID and exactly one corrected text.
-   - "delete": one or more sequential cue IDs that contain no meaningful speech, with an empty `texts` array.
-   - "merge": two or more sequential cue IDs whose boundary breaks one thought, with one or more corrected replacement texts.
-   - "split": one cue ID and two or more replacement texts, only when semantic correction genuinely requires separate cues.
+   - "edit": one `cue_id` and exactly one corrected text.
+   - "delete": one or more sequential `cue_id` values that contain no meaningful speech, with an empty `texts` array.
+   - "merge": two or more sequential `cue_id` values whose boundary breaks one thought, with one or more corrected replacement texts.
+   - "split": one `cue_id` and two or more replacement texts, only when semantic correction genuinely requires separate cues.
 5. Cue timing, reading speed, visual wrapping, and line layout are handled by Pandrator after editing. Do not insert line breaks or split/merge merely to change visual layout.
 6. Every replacement must be complete, corrected plain text. Do not include IDs that are only context.
-7. If prior corrected context is provided, use it only for continuity. Operate only on the current array (IDs 1 to {subtitle_count}).
-8. Cue context fields such as `speaker`, timings, gaps, and overlap are non-spoken evidence. Speaker IDs may change at ASR chunk seams: never copy context into replacement text or assume that a changed ID always means a new person.
+7. If prior corrected context is provided, use it only for continuity. Operate only on the `cue_id` values present in the current array; they identify cues in the pinned source revision and are not batch-local positions.
+8. {cue_context_policy}
 9. Overlapping cues from different speakers can be legitimate simultaneous speech. Preserve meaningful speech. You may delete a very short, inconsequential interjection only when it obscures a longer utterance, and remove one copy of clearly duplicated near-identical ASR text that occupies the same time span.
-10. Known speaker IDs for this document: {known_speakers}. Never invent another speaker ID.
+10. {known_speakers_policy}
 
 Additional context and instructions specific to your particular batch, if any:
 {correction_instructions}
@@ -159,12 +162,13 @@ def parse_correction_operations(response_text: str) -> list[dict[str, Any]]:
                 f"Correction operation {operation_index} has unsupported action "
                 f"'{action or '<blank>'}'."
             )
-        ids = operation.get("ids")
+        has_canonical_ids = "cue_ids" in operation
+        ids = operation.get("cue_ids" if has_canonical_ids else "ids")
         texts = operation.get("texts")
         speakers = operation.get("speakers", [])
         if not isinstance(ids, list) or not ids:
             raise ValueError(
-                f"Correction operation {operation_index} must contain a non-empty ids list."
+                f"Correction operation {operation_index} must contain a non-empty cue_ids list."
             )
         normalized_ids: list[int] = []
         for item in ids:
@@ -202,7 +206,10 @@ def parse_correction_operations(response_text: str) -> list[dict[str, Any]]:
             )
         normalized_operation = {
             "action": action,
-            "ids": normalized_ids,
+            "cue_ids": normalized_ids,
+            "id_namespace": (
+                "source_revision_cue" if has_canonical_ids else "legacy_batch_local"
+            ),
             "texts": list(texts),
         }
         if speakers:
@@ -213,6 +220,25 @@ def parse_correction_operations(response_text: str) -> list[dict[str, Any]]:
     return normalized
 
 
+def _operation_source_ids(
+    block: list[dict[str, Any]],
+    operation: Mapping[str, Any],
+) -> list[int]:
+    """Resolve canonical source IDs while accepting the pre-contract local form."""
+
+    raw_ids = operation.get("cue_ids")
+    if raw_ids is None:
+        raw_ids = operation.get("ids", [])
+        namespace = "legacy_batch_local"
+    else:
+        namespace = str(operation.get("id_namespace") or "source_revision_cue")
+    ids = [int(value) for value in raw_ids or []]
+    if namespace != "legacy_batch_local":
+        return ids
+    source_ids = [int(item["index"]) for item in block]
+    return [source_ids[value - 1] if 1 <= value <= len(source_ids) else value for value in ids]
+
+
 def validate_correction_operations(
     block: list[dict[str, Any]],
     operations: list[dict[str, Any]],
@@ -221,11 +247,11 @@ def validate_correction_operations(
     known_speakers: set[str] | None = None,
 ) -> None:
     """Reject ambiguous operation sets before any subtitle mutation is applied."""
-    valid_ids = set(range(1, len(block) + 1))
+    valid_ids = {int(item["index"]) for item in block}
     claimed_ids: set[int] = set()
     for operation_index, operation in enumerate(operations, start=1):
         action = str(operation["action"])
-        ids = list(operation["ids"])
+        ids = _operation_source_ids(block, operation)
         texts = [
             text
             for raw_text in operation["texts"]
@@ -327,9 +353,7 @@ def apply_correction_operations(
     known_speakers: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Apply Subdub-style correction operations to a local subtitle block."""
-    block_by_local_id = {
-        index + 1: subtitle.copy() for index, subtitle in enumerate(block)
-    }
+    block_by_source_id = {int(subtitle["index"]): subtitle.copy() for subtitle in block}
     processed_ids: set[int] = set()
     new_subtitles_by_primary_id: dict[int, list[dict[str, Any]]] = {}
 
@@ -337,7 +361,9 @@ def apply_correction_operations(
         action = operation.get("action")
         ids = list(
             dict.fromkeys(
-                item for item in operation.get("ids", []) if item in block_by_local_id
+                item
+                for item in _operation_source_ids(block, operation)
+                if item in block_by_source_id
             )
         )
         texts = [
@@ -363,7 +389,7 @@ def apply_correction_operations(
         if not valid_shape:
             continue
 
-        valid_subtitles = [block_by_local_id[item] for item in ids]
+        valid_subtitles = [block_by_source_id[item] for item in ids]
         if not valid_subtitles:
             continue
         if action == "delete" and no_remove_subtitles:
@@ -413,13 +439,114 @@ def apply_correction_operations(
         new_subtitles_by_primary_id[primary_id] = replacement_subtitles
 
     corrected: list[dict[str, Any]] = []
-    for local_id in range(1, len(block) + 1):
-        if local_id not in processed_ids:
-            corrected.append(block_by_local_id[local_id])
+    for subtitle in block:
+        source_id = int(subtitle["index"])
+        if source_id not in processed_ids:
+            corrected.append(block_by_source_id[source_id])
             continue
-        corrected.extend(new_subtitles_by_primary_id.get(local_id, []))
+        corrected.extend(new_subtitles_by_primary_id.get(source_id, []))
 
     return corrected
+
+
+def build_correction_task_instructions(
+    *,
+    subtitle_count: int,
+    correction_instructions: str = "",
+    no_remove_subtitles: bool = False,
+    timing_context_mode: str | None = None,
+    include_timing_context: bool | None = None,
+    substantial_gap_ms: int = 2000,
+    known_speakers: set[str] | None = None,
+    dispatch_result: bool = False,
+    structured_context: bool = False,
+) -> str:
+    """Build correction guidance without embedding source cue content."""
+
+    mode = normalize_timing_context_mode(
+        timing_context_mode,
+        legacy_enabled=include_timing_context,
+        default="none",
+    )
+    prompt_template = CORRECTION_PROMPT_TEMPLATE
+    if no_remove_subtitles:
+        prompt_template = prompt_template.replace(
+            '   - "delete": one or more sequential `cue_id` values that contain no meaningful speech, with an empty `texts` array.',
+            '   - "delete": do not use this action; every input cue must be preserved.',
+        )
+
+    base_prompt = prompt_template.format(
+        correction_instructions=correction_instructions
+        or "No additional instructions provided.",
+        subtitle_count=int(subtitle_count),
+        response_shape=(
+            '{"kind":"correction","operations":['
+            '{"action":"edit|delete|merge|split","cue_ids":[1],'
+            '"texts":["corrected text"],"speakers":["SPEAKER_00"]}]}'
+            if dispatch_result
+            else '{"operations":[{"action":"edit|delete|merge|split",'
+            '"cue_ids":[1],"texts":["corrected text"],'
+            '"speakers":["SPEAKER_00"]}]}'
+        ),
+        known_speakers_policy=(
+            "Known speaker IDs are provided once in `task.known_speakers`; "
+            "never invent another speaker ID. An empty list means speaker "
+            "reassignment is unavailable."
+            if structured_context
+            else (
+                "Known speaker IDs for this document: "
+                + (
+                    ", ".join(sorted(known_speakers, key=str.casefold))
+                    if known_speakers
+                    else "none (do not add speaker assignments)"
+                )
+                + ". Never invent another speaker ID."
+            )
+        ),
+        cue_context_policy=(
+            "The optional `speaker` field is non-spoken evidence. Speaker IDs "
+            "may change at ASR chunk seams: never copy it into replacement "
+            "text or assume that a changed ID always means a new person."
+            if mode == "none"
+            else (
+                "The optional `speaker` field and "
+                "`timing.overlap_with_previous_ms` are non-spoken evidence. "
+                "Speaker IDs may change at ASR chunk seams: never copy context "
+                "into replacement text or assume that a changed ID always "
+                "means a new person."
+                if mode == "overlap_only"
+                else "The optional `speaker` and `timing` objects are non-spoken "
+                "evidence. Speaker IDs may change at ASR chunk seams: never "
+                "copy context into replacement text or assume that a changed "
+                "ID always means a new person."
+            )
+        ),
+    )
+    if mode == "full":
+        gap_reference = (
+            "`task.substantial_gap_ms`"
+            if structured_context
+            else f"{max(0, int(substantial_gap_ms))} ms"
+        )
+        base_prompt += (
+            "\n\nTiming policy:\n"
+            "- Each cue's optional `timing` object contains `start_ms`, `end_ms`, "
+            "and its gap from or overlap with the preceding cue.\n"
+            f"- A gap of at least {gap_reference} is a "
+            "substantial audible pause: normally preserve a cue boundary there "
+            "even when the text is semantically related.\n"
+            "- A shorter gap is not by itself a reason to split a coherent "
+            "same-speaker utterance. Use semantics, punctuation, and the timing "
+            "evidence together."
+        )
+    elif mode == "overlap_only":
+        base_prompt += (
+            "\n\nTiming policy:\n"
+            "- A cue has a `timing` object only when it overlaps the preceding "
+            "cue. Treat that overlap as non-spoken evidence of simultaneous "
+            "speech or a possible duplicated ASR seam."
+        )
+    return base_prompt
 
 
 def build_correction_prompt(
@@ -429,64 +556,70 @@ def build_correction_prompt(
     previous_response: str = "",
     max_line_length: int = DEFAULT_MAX_LINE_LENGTH,
     no_remove_subtitles: bool = False,
-    include_timing_context: bool = False,
+    timing_context_mode: str | None = None,
+    include_timing_context: bool | None = None,
     substantial_gap_ms: int = 2000,
     known_speakers: set[str] | None = None,
+    next_block: list[dict[str, Any]] | None = None,
+    context_after: int = 2,
 ) -> str:
     """Build a correction prompt for one subtitle block."""
-    prompt_template = CORRECTION_PROMPT_TEMPLATE
-    if no_remove_subtitles:
-        prompt_template = prompt_template.replace(
-            '   - "delete": one or more sequential cue IDs that contain no meaningful speech, with an empty `texts` array.',
-            '   - "delete": do not use this action; every input cue must be preserved.',
-        )
 
-    base_prompt = prompt_template.format(
-        correction_instructions=correction_instructions
-        or "No additional instructions provided.",
-        subtitle_count=len(block),
-        known_speakers=(
-            ", ".join(sorted(known_speakers, key=str.casefold))
-            if known_speakers
-            else "none (do not add speaker assignments)"
-        ),
+    mode = normalize_timing_context_mode(
+        timing_context_mode,
+        legacy_enabled=include_timing_context,
+        default="none",
     )
-    if include_timing_context:
-        base_prompt += (
-            "\n\nTiming policy:\n"
-            "- `start_ms` and `end_ms` locate each cue on the source timeline; "
-            "`gap_from_previous_ms` and `overlap_with_previous_ms` describe its "
-            "relationship to the preceding cue.\n"
-            f"- A gap of {max(0, int(substantial_gap_ms))} ms or more is a "
-            "substantial audible pause: normally preserve a cue boundary there "
-            "even when the text is semantically related.\n"
-            "- A shorter gap is not by itself a reason to split a coherent "
-            "same-speaker utterance. Use semantics, punctuation, and the timing "
-            "evidence together."
-        )
+    base_prompt = build_correction_task_instructions(
+        subtitle_count=len(block),
+        correction_instructions=correction_instructions,
+        no_remove_subtitles=no_remove_subtitles,
+        timing_context_mode=mode,
+        substantial_gap_ms=substantial_gap_ms,
+        known_speakers=known_speakers,
+    )
     # Retained in the signature for callers using the old helper contract.
     # Layout limits intentionally do not belong in the LLM task.
     _ = max_line_length
     subtitles = json.dumps(
         [
-            {
-                "id": index + 1,
-                "text": _normalize_replacement_text(subtitle.get("text")),
-                **subtitle_prompt_context(
-                    subtitle,
-                    include_timing=include_timing_context,
-                ),
-            }
-            for index, subtitle in enumerate(block)
+            subtitle_task_cue(
+                {**subtitle, "text": _normalize_replacement_text(subtitle.get("text"))},
+                timing_context_mode=mode,
+            )
+            for subtitle in block
         ],
         ensure_ascii=False,
     )
 
+    context_parts: list[str] = []
     if previous_response:
-        context_prompt = CONTEXT_PROMPT_TEMPLATE.format(
-            context_previous_cues=previous_response
+        context_parts.append(
+            CONTEXT_PROMPT_TEMPLATE.format(
+                context_previous_cues=previous_response
+            )
         )
-        return f"{base_prompt}\n{context_prompt}\n\nThe subtitles:\n{subtitles}"
+    if next_block and context_after > 0:
+        following = [
+            {
+                "text": _normalize_replacement_text(item.get("text")),
+                **(
+                    {"speaker": str(item.get("speaker") or "").strip()}
+                    if str(item.get("speaker") or "").strip()
+                    else {}
+                ),
+            }
+            for item in next_block[:context_after]
+        ]
+        if following:
+            context_parts.append(
+                "Following source cues for continuity only; do not return "
+                "operations for them:\n"
+                + json.dumps(following, ensure_ascii=False)
+            )
+    context = "\n\n".join(context_parts)
+    if context:
+        return f"{base_prompt}\n{context}\n\nThe subtitles:\n{subtitles}"
     return f"{base_prompt}\n\nThe subtitles:\n{subtitles}"
 
 
@@ -604,10 +737,19 @@ def correct_srt_content(
     on_unit_completed: UnitCompletedCallback | None = None,
 ) -> CorrectionResult:
     """Correct SRT content with Pandrator's LLM provider layer."""
-    char_limit = _coerce_int(settings.get("llm_char"), DEFAULT_LLM_CHAR_LIMIT)
+    char_limit = _coerce_int(
+        settings.get("char_limit", settings.get("llm_char")),
+        DEFAULT_LLM_CHAR_LIMIT,
+    )
     max_subtitles_per_call = max(
         1,
-        _coerce_int(settings.get("max_subtitles_per_call"), 40),
+        _coerce_int(
+            settings.get(
+                "max_segments_per_batch",
+                settings.get("max_subtitles_per_call"),
+            ),
+            40,
+        ),
     )
     max_line_length = _coerce_int(
         settings.get("max_line_length"), DEFAULT_MAX_LINE_LENGTH
@@ -619,11 +761,22 @@ def correct_srt_content(
         or "English"
     )
     use_context = bool(settings.get("context", True))
+    context_before = max(
+        0,
+        min(20, _coerce_int(settings.get("context_before"), CORRECTION_CONTEXT_CUES)),
+    )
+    context_after = max(0, min(20, _coerce_int(settings.get("context_after"), 2)))
     no_remove_subtitles = bool(settings.get("no_remove_subtitles", False))
-    include_timing_context = bool(settings.get("timing_context_enabled", True))
+    timing_context_mode = timing_context_mode_from_settings(settings)
     substantial_gap_ms = max(
         0,
-        _coerce_int(settings.get("timing_context_gap_ms"), 2000),
+        _coerce_int(
+            settings.get(
+                "substantial_gap_ms",
+                settings.get("timing_context_gap_ms"),
+            ),
+            2000,
+        ),
     )
     workers = max(1, min(16, _coerce_int(settings.get("llm_concurrent_calls"), 1)))
 
@@ -660,6 +813,7 @@ def correct_srt_content(
         block_number: int,
         block: list[dict[str, Any]],
         previous_context: str,
+        following_context: list[dict[str, Any]] | None,
     ) -> tuple[list[dict[str, Any]], str, float, int, list[str], dict[str, Any]]:
         nonlocal completed_subtitles
         if cancel_event is not None and cancel_event.is_set():
@@ -683,9 +837,11 @@ def correct_srt_content(
             previous_response=previous_context if use_context else "",
             max_line_length=max_line_length,
             no_remove_subtitles=no_remove_subtitles,
-            include_timing_context=include_timing_context,
+            timing_context_mode=timing_context_mode,
             substantial_gap_ms=substantial_gap_ms,
             known_speakers=known_speakers,
+            next_block=following_context if use_context else None,
+            context_after=context_after,
         )
         last_protocol_error: ValueError | None = None
         block_cost = 0.0
@@ -720,7 +876,9 @@ def correct_srt_content(
                             "Your previous response was rejected because "
                             f"{last_protocol_error}. Return a complete replacement "
                             'object with an explicit "operations" array. Use only cue '
-                            f"IDs 1 through {len(block)}, and do not explain the correction."
+                            "IDs present in this batch: "
+                            + ", ".join(str(item["index"]) for item in block)
+                            + ". Do not explain the correction."
                         ),
                     }
                 )
@@ -755,12 +913,25 @@ def correct_srt_content(
                     no_remove_subtitles=no_remove_subtitles,
                     known_speakers=known_speakers,
                 )
-                next_context = json.dumps(
-                    [
-                        _normalize_replacement_text(item.get("text"))
-                        for item in corrected_block[-CORRECTION_CONTEXT_CUES:]
-                    ],
-                    ensure_ascii=False,
+                context_items = [
+                    cue
+                    for item in corrected_block[-context_before:]
+                    if (
+                        cue := subtitle_boundary_cue(
+                            {
+                                **item,
+                                "text": _normalize_replacement_text(
+                                    item.get("text")
+                                ),
+                            }
+                        )
+                    )
+                    is not None
+                ]
+                next_context = (
+                    json.dumps(context_items, ensure_ascii=False)
+                    if context_before
+                    else ""
                 )
                 if on_unit_completed is not None:
                     payload = {
@@ -841,6 +1012,7 @@ def correct_srt_content(
                     block_number,
                     block,
                     previous_context,
+                    blocks[block_number] if block_number < len(blocks) else None,
                 )
             )
             corrected_subtitles.extend(corrected)
@@ -851,7 +1023,13 @@ def correct_srt_content(
         ] = {}
         executor = ThreadPoolExecutor(max_workers=min(workers, len(blocks)))
         futures = {
-            executor.submit(correct_block, block_number, block, ""): block_number
+            executor.submit(
+                correct_block,
+                block_number,
+                block,
+                "",
+                blocks[block_number] if block_number < len(blocks) else None,
+            ): block_number
             for block_number, block in enumerate(blocks, start=1)
         }
         try:

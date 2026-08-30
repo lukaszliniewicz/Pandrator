@@ -30,6 +30,7 @@ from scripts.build_manager_appimage import (
     write_checksum,
 )
 from scripts.build_manager_bootstrap import (
+    _build_temporary_wheel,
     _extract_wheel,
     _stage_wheel_source,
     _verify_wheel_provenance,
@@ -45,6 +46,32 @@ from scripts.qualify_manager_lifecycle import _default_bundle_path
 
 
 class ManagerBootstrapBuildTests(unittest.TestCase):
+    def test_temporary_wheel_build_runs_from_clean_staged_source(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            staged = root / "staged"
+            staged.mkdir()
+            destination = root / "wheel"
+            expected = destination / "pandrator-0.8.16-py3-none-any.whl"
+            with (
+                mock.patch(
+                    "scripts.build_manager_bootstrap._stage_wheel_source",
+                    return_value=staged,
+                ),
+                mock.patch(
+                    "scripts.build_manager_bootstrap._wheel_from_directory",
+                    return_value=expected,
+                ),
+                mock.patch("scripts.build_manager_bootstrap.subprocess.run") as run,
+            ):
+                wheel = _build_temporary_wheel(root, destination)
+
+            self.assertEqual(expected, wheel)
+            arguments = run.call_args.args[0]
+            self.assertNotIn("--no-isolation", arguments)
+            self.assertEqual(staged, run.call_args.kwargs["cwd"])
+            self.assertTrue(run.call_args.kwargs["check"])
+
     def test_manager_appimage_rejects_a_newer_glibc_build_floor(self) -> None:
         with (
             mock.patch("scripts.build_manager_appimage.sys.platform", "linux"),
@@ -254,6 +281,9 @@ class ManagerBootstrapBuildTests(unittest.TestCase):
             egg_info = source / "pandrator_manager.egg-info"
             egg_info.mkdir()
             (egg_info / "SOURCES.txt").write_text("stale", encoding="utf-8")
+            virtual_environment = source / ".venv"
+            virtual_environment.mkdir()
+            (virtual_environment / "local.txt").write_text("local", encoding="utf-8")
 
             staged = _stage_wheel_source(root, root / "staged")
 
@@ -262,6 +292,7 @@ class ManagerBootstrapBuildTests(unittest.TestCase):
             self.assertFalse((staged / "build").exists())
             self.assertFalse((staged / "__pycache__").exists())
             self.assertFalse((staged / "pandrator_manager.egg-info").exists())
+            self.assertFalse((staged / ".venv").exists())
 
     def test_wheel_extraction_rejects_parent_traversal(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

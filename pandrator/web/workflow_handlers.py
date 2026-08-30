@@ -22,7 +22,10 @@ from pandrator.logic.dubbing.languages import (
     normalize_language_code,
     subtitle_language_title,
 )
-from pandrator.logic.dubbing.srt_utils import split_speaker_label
+from pandrator.logic.dubbing.srt_utils import (
+    split_speaker_label,
+    timing_context_mode_from_settings,
+)
 from pandrator.logic.dubbing.transcript_normalization import load_transcript
 from pandrator.runtime import DataPaths
 
@@ -257,20 +260,51 @@ def _stage_settings_fingerprint(
         except (TypeError, ValueError):
             return default
 
-    def _boolean(key: str, default: bool) -> bool:
-        value = settings.get(key)
-        if value is None or value == "":
-            return default
-        if isinstance(value, str):
-            return value.strip().lower() not in {"0", "false", "no", "off"}
-        return bool(value)
-
-    def _nonnegative_int(key: str, default: int) -> int:
-        value = settings.get(key)
+    def _nonnegative_int(*keys: str, default: int) -> int:
+        value: Any = None
+        for key in keys:
+            if settings.get(key) not in {None, ""}:
+                value = settings[key]
+                break
         try:
             return max(0, int(default if value is None or value == "" else value))
         except (TypeError, ValueError):
             return default
+
+    def _processing_shape() -> dict[str, Any]:
+        shape: dict[str, Any] = {}
+        char_limit = _nonnegative_int("char_limit", "llm_char", default=6000)
+        segment_limit = _nonnegative_int(
+            "max_segments_per_batch",
+            "max_subtitles_per_call",
+            default=40,
+        )
+        if char_limit != 6000:
+            shape["char_limit"] = char_limit
+        if segment_limit != 40:
+            shape["max_segments_per_batch"] = segment_limit
+        if bool(settings.get("no_remove_subtitles", False)):
+            shape["no_remove_subtitles"] = True
+        if settings.get("context") is False:
+            shape["context"] = False
+        context_before = _nonnegative_int("context_before", default=8)
+        context_after = _nonnegative_int("context_after", default=2)
+        if context_before != 8:
+            shape["context_before"] = context_before
+        if context_after != 2:
+            shape["context_after"] = context_after
+        mode = timing_context_mode_from_settings(settings)
+        if mode != "full":
+            shape["timing_context_mode"] = mode
+        elif (
+            gap := _nonnegative_int(
+                "substantial_gap_ms",
+                "timing_context_gap_ms",
+                default=2000,
+            )
+        ) != 2000:
+            shape["substantial_gap_ms"] = gap
+        return shape
 
     if stage_key == "translate":
         backend = _text("translation_backend", "backend").lower() or "llm"
@@ -289,14 +323,9 @@ def _stage_settings_fingerprint(
         concurrent_calls = _positive_int("llm_concurrent_calls")
         if backend == "llm" and concurrent_calls > 1:
             result["llm_concurrent_calls"] = concurrent_calls
-        if backend == "llm":
-            timing_context = _boolean("timing_context_enabled", True)
-            if not timing_context:
-                result["timing_context_enabled"] = False
-            else:
-                timing_gap = _nonnegative_int("timing_context_gap_ms", 2000)
-                if timing_gap != 2000:
-                    result["timing_context_gap_ms"] = timing_gap
+        result.update(_processing_shape())
+        if bool(settings.get("glossary_enabled", False)) and settings.get("glossary"):
+            result["glossary"] = settings["glossary"]
         research = _research_fingerprint(settings)
         return {**result, **({"web_research": research} if research else {})}
     if stage_key == "correct":
@@ -313,13 +342,7 @@ def _stage_settings_fingerprint(
         concurrent_calls = _positive_int("llm_concurrent_calls")
         if concurrent_calls > 1:
             result["llm_concurrent_calls"] = concurrent_calls
-        timing_context = _boolean("timing_context_enabled", True)
-        if not timing_context:
-            result["timing_context_enabled"] = False
-        else:
-            timing_gap = _nonnegative_int("timing_context_gap_ms", 2000)
-            if timing_gap != 2000:
-                result["timing_context_gap_ms"] = timing_gap
+        result.update(_processing_shape())
         research = _research_fingerprint(settings)
         return {**result, **({"web_research": research} if research else {})}
     return {}
@@ -2809,7 +2832,14 @@ class WorkflowHandlers:
                 budget_tokens=budget.input_budget_tokens,
             )
         else:
-            chunk_size = max(1, int(settings.get("max_subtitles_per_call") or 40))
+            chunk_size = max(
+                1,
+                int(
+                    settings.get("max_segments_per_batch")
+                    or settings.get("max_subtitles_per_call")
+                    or 40
+                ),
+            )
             record_groups = []
             for offset in range(0, len(records), chunk_size):
                 record_groups.extend(

@@ -101,6 +101,11 @@ const CHOICES: Record<string, SettingOption[]> = {
     option('medium', 'Medium · balanced'),
     option('high', 'High · strongest')
   ],
+  timing_context_mode: [
+    option('full', 'Full timing · best quality'),
+    option('overlap_only', 'Overlap only · fewer tokens'),
+    option('none', 'No timing context')
+  ],
   speech_optimization_mode: [
     option('guarded', 'Guarded speech plan (recommended)'),
     option('flexible', 'Flexible contextual rewrite'),
@@ -322,6 +327,11 @@ export function numberPresentation(key: string): NumberPresentation {
     stt_compute_device: { min: 0, step: 1 },
     stt_threads: { min: 0, step: 1 },
     stt_beam_size: { min: 1, step: 1 },
+    char_limit: { min: 1, max: 100000, step: 100 },
+    max_segments_per_batch: { min: 1, max: 500, step: 1 },
+    context_before: { min: 0, max: 20, step: 1 },
+    context_after: { min: 0, max: 20, step: 1 },
+    substantial_gap_ms: { min: 0, max: 60000, step: 100 },
     moss_max_chunk_seconds: { min: 30, max: 120, step: 1 },
     moss_ctc_padding_seconds: { min: 0, max: 2, step: 0.1 },
     max_lines: { min: 1, max: 3, step: 1 },
@@ -399,8 +409,12 @@ export function settingLabel(key: string): string {
     llm_processing_enabled: 'Enable LLM text processing',
     llm_multi_stage: 'Use divided prompts',
     llm_concurrent_calls: 'Concurrent LLM requests',
-    timing_context_enabled: 'Include cue timing context',
-    timing_context_gap_ms: 'Substantial audible pause (ms)',
+    timing_context_mode: 'Cue timing context',
+    substantial_gap_ms: 'Substantial audible pause (ms)',
+    char_limit: 'Maximum batch characters',
+    max_segments_per_batch: 'Maximum cues per batch',
+    context_before: 'Previous output cues for continuity',
+    context_after: 'Following source cues for continuity',
     combined_prompt: 'Single optimization prompt',
     first_prompt: 'First optimization prompt',
     second_prompt: 'Second optimization prompt',

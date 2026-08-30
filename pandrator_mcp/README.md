@@ -18,6 +18,8 @@ The current tool surface supports:
   durable-work, and redacted-event inspection;
 - session creation and revision-safe session, source, and settings changes;
 - immutable workflow planning followed by explicit execution;
+- passive subtitle correction and translation dispatch runs with sequential
+  pull, short-lived batch leases, and exact response submission;
 - durable-work cancellation;
 - Manager status and diagnostics;
 - immutable Manager component plans, runtime control, and plan execution; and
@@ -30,11 +32,53 @@ that exact plan. Every write uses an idempotency key. Concurrent changes
 produce an explicit revision or stale-plan error instead of a silent
 overwrite.
 
+### Subtitle dispatch
+
+Dispatch is a passive pull loop for correction and translation. Create a run,
+then claim one batch at a time. Only the claim response discloses that batch's
+canonical `task`, actionable `batch.cues`, bounded boundary context, and
+short-lived `lease_token`; list/get calls return metadata only. Cue text occurs
+once. Timing is nested once per actionable cue in `full` mode, limited to
+positive overlap in `overlap_only`, and absent in `none` mode. Stable
+source-revision `cue_id` values are used for submission; `batch_ordinal` is
+presentation only. Claim reports `run_status` and `batch_status` separately so
+replaying a completed claim cannot masquerade as a completed run.
+An explicit translation artifact may also be the source of a correction run;
+the returned `output_role: translation` preserves its language and downstream
+track semantics while a new translation revision is materialized.
+
+Submit a typed `result`: correction uses `kind: correction` plus operations
+over `cue_ids`; translation uses `kind: translation`, one item per `cue_id`,
+and optional `glossary_updates`. `response_text` remains only as a compatibility
+path for raw model adapters. Accepted batches are followed by the next
+sequential claim. If validation rejects a result, repair and resubmit it while
+the lease remains valid. Renew slow work or release abandoned work. The final
+accepted batch automatically finalizes the run; retry the same final submission
+and idempotency key if transient materialization leaves it `finalizing`.
+
 Guidance remains available even when no target can be reached.
+
+### MCP protocol compatibility
+
+Version 0.2.0 pins the official Python SDK 2.1.1 and supports the final
+[MCP 2026-07-28 specification](https://modelcontextprotocol.io/specification/2026-07-28).
+Modern hosts connect through `server/discover` and attach the negotiated
+protocol metadata to requests; maintained older hosts can still use the legacy
+`initialize` handshake. The same server therefore works with current clients
+without abruptly abandoning existing integrations.
+
+Tools expose JSON Schema inputs, annotations, structured JSON results, and a
+text JSON fallback. Tool, resource, and prompt discovery are deterministic.
+For stdio, stdout is reserved exclusively for newline-delimited MCP frames;
+dependency diagnostics from both tool and resource handlers are redirected to
+stderr. Protocol discovery, structured-content fallback, modern stdio, legacy
+negotiation, annotations, and stdout-noise containment are covered by the
+contract tests.
 
 ## Install
 
-The current release is 0.1.0. With Python 3.11 or 3.12, install it as an
+The current release is 0.2.0 and requires Pandrator 0.8.16 or newer. With
+Python 3.11 or 3.12, install it as an
 isolated command-line tool:
 
 ```console
@@ -86,6 +130,7 @@ Request only the authority the agent needs:
 | Explain and inspect | `app.read` |
 | Create and edit sessions | `app.read`, `app.write` |
 | Run and cancel workflows | `app.read`, `app.write`, `app.run`, `app.cancel` |
+| Correct or translate subtitles through dispatch | `app.read`, `app.run` |
 | Inspect Manager through Pandrator | add `manager.read` |
 | Start or stop managed runtimes | add `manager.runtime` |
 | Execute reviewed Manager plans | add `manager.mutate` |
@@ -248,7 +293,7 @@ parallel supported Python and create a dedicated data root:
 ```bash
 sudo dnf install python3.12 python3.12-devel
 python3.12 -m venv ~/.local/share/pandrator/venv
-~/.local/share/pandrator/venv/bin/pip install /path/to/pandrator-0.8.15-py3-none-any.whl
+~/.local/share/pandrator/venv/bin/pip install /path/to/pandrator-0.8.16-py3-none-any.whl
 ffmpeg -version
 
 export PANDRATOR_DATA_DIR="$HOME/.local/share/pandrator/data"

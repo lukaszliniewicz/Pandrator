@@ -421,6 +421,86 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/dispatch-batches/{batchId}/release": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["releaseDispatchBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/dispatch-batches/{batchId}/renew": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["renewDispatchBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/dispatch-batches/{batchId}/submit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["submitDispatchBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/dispatch-runs/{runId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getDispatchRun"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/dispatch-runs/{runId}/claim": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["claimDispatchBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/document-revisions/{revisionId}/words": {
         parameters: {
             query?: never;
@@ -1247,6 +1327,22 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["exportSessionBundle"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/dispatch-runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listDispatchRuns"];
+        put?: never;
+        post: operations["createDispatchRun"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2206,7 +2302,7 @@ export interface components {
             api_version?: string;
             /**
              * Application Version
-             * @default 0.8.15
+             * @default 0.8.16
              */
             application_version?: string;
             /** Canonical Origin */
@@ -2324,6 +2420,368 @@ export interface components {
              * @default false
              */
             delete_previous_credential?: boolean;
+        };
+        /** DispatchBatchClaimRequest */
+        DispatchBatchClaimRequest: {
+            /**
+             * Lease Seconds
+             * @default 900
+             */
+            lease_seconds?: number;
+        };
+        /** DispatchBatchClaimResponse */
+        DispatchBatchClaimResponse: {
+            batch: components["schemas"]["DispatchClaimedBatch"];
+            /** Batch Id */
+            batch_id: string;
+            /** Batch Ordinal */
+            batch_ordinal: number;
+            /** Batch Status */
+            batch_status: string;
+            /** Lease Expires At */
+            lease_expires_at: string | null;
+            /** Lease Token */
+            lease_token: string;
+            /** Run Id */
+            run_id: string;
+            /** Run Status */
+            run_status: string;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version?: "1";
+            /** Status */
+            status: string;
+            task: components["schemas"]["DispatchTaskContract"];
+        };
+        /** DispatchBatchReleaseRequest */
+        DispatchBatchReleaseRequest: {
+            /** Lease Token */
+            lease_token: string;
+        };
+        /** DispatchBatchRenewRequest */
+        DispatchBatchRenewRequest: {
+            /**
+             * Lease Seconds
+             * @default 900
+             */
+            lease_seconds?: number;
+            /** Lease Token */
+            lease_token: string;
+        };
+        /** DispatchBatchSubmitRequest */
+        DispatchBatchSubmitRequest: {
+            /** Lease Token */
+            lease_token: string;
+            /**
+             * Response Text
+             * @default null
+             */
+            response_text?: string | null;
+            /**
+             * Result
+             * @default null
+             */
+            result?: (components["schemas"]["DispatchCorrectionResult"] | components["schemas"]["DispatchTranslationResult"]) | null;
+        };
+        /** DispatchBatchSubmitResponse */
+        DispatchBatchSubmitResponse: {
+            /** Accepted */
+            accepted: boolean;
+            /** Batch Count */
+            batch_count: number;
+            /** Batch Id */
+            batch_id: string;
+            /** Batch Status */
+            batch_status: string;
+            /** Completed Batch Count */
+            completed_batch_count: number;
+            /** Completed Batches */
+            completed_batches: number;
+            /**
+             * Error Code
+             * @default null
+             */
+            error_code?: string | null;
+            /**
+             * Error Message
+             * @default null
+             */
+            error_message?: string | null;
+            /**
+             * Final Artifact Id
+             * @default null
+             */
+            final_artifact_id?: string | null;
+            /** Finalized */
+            finalized: boolean;
+            /**
+             * Output Role
+             * @enum {string}
+             */
+            output_role: "correction" | "translation";
+            /** Remaining Batches */
+            remaining_batches: number;
+            /**
+             * Result Artifact Id
+             * @default null
+             */
+            result_artifact_id?: string | null;
+            /**
+             * Result Revision Id
+             * @default null
+             */
+            result_revision_id?: string | null;
+            /** Run Id */
+            run_id: string;
+            /** Run Status */
+            run_status: string;
+            /** Status */
+            status: string;
+            /** Total Batches */
+            total_batches: number;
+        };
+        /** DispatchBoundaryContext */
+        DispatchBoundaryContext: {
+            /** Following Source */
+            following_source: components["schemas"]["DispatchBoundaryCue"][];
+            /** Previous Output */
+            previous_output: components["schemas"]["DispatchBoundaryCue"][];
+        };
+        /** DispatchBoundaryCue */
+        DispatchBoundaryCue: {
+            /**
+             * Speaker
+             * @default null
+             */
+            speaker?: string | null;
+            /** Text */
+            text: string;
+        };
+        /** DispatchClaimedBatch */
+        DispatchClaimedBatch: {
+            context: components["schemas"]["DispatchBoundaryContext"];
+            /** Cue Count */
+            cue_count: number;
+            /** Cues */
+            cues: components["schemas"]["DispatchCue"][];
+            /**
+             * Id Namespace
+             * @constant
+             */
+            id_namespace: "source_revision_cue";
+            /** Source Revision Id */
+            source_revision_id: string;
+            /** Valid Cue Ids */
+            valid_cue_ids: number[];
+        };
+        /** DispatchCorrectionOperation */
+        DispatchCorrectionOperation: {
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "edit" | "delete" | "merge" | "split";
+            /** Cue Ids */
+            cue_ids: number[];
+            /** Speakers */
+            speakers?: string[];
+            /** Texts */
+            texts?: string[];
+        };
+        /** DispatchCorrectionResult */
+        DispatchCorrectionResult: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "correction";
+            /** Operations */
+            operations?: components["schemas"]["DispatchCorrectionOperation"][];
+        };
+        /** DispatchCue */
+        DispatchCue: {
+            /** Cue Id */
+            cue_id: number;
+            /**
+             * Speaker
+             * @default null
+             */
+            speaker?: string | null;
+            /** Text */
+            text: string;
+            /** @default null */
+            timing?: components["schemas"]["DispatchCueTiming"] | null;
+        };
+        /** DispatchCueTiming */
+        DispatchCueTiming: {
+            /**
+             * End Ms
+             * @default null
+             */
+            end_ms?: number | null;
+            /**
+             * Gap From Previous Ms
+             * @default null
+             */
+            gap_from_previous_ms?: number | null;
+            /**
+             * Overlap With Previous Ms
+             * @default null
+             */
+            overlap_with_previous_ms?: number | null;
+            /**
+             * Start Ms
+             * @default null
+             */
+            start_ms?: number | null;
+        };
+        /** DispatchRunCreateRequest */
+        DispatchRunCreateRequest: {
+            /**
+             * Char Limit
+             * @default 6000
+             */
+            char_limit?: number;
+            /**
+             * Context After
+             * @default 2
+             */
+            context_after?: number;
+            /**
+             * Context Before
+             * @default 8
+             */
+            context_before?: number;
+            /** Glossary */
+            glossary?: {
+                [key: string]: string;
+            };
+            /**
+             * Include Timing Context
+             * @deprecated
+             * @description Deprecated compatibility input. False maps to timing_context_mode=none; true maps to full.
+             * @default null
+             */
+            include_timing_context?: boolean | null;
+            /**
+             * Instructions
+             * @default
+             */
+            instructions?: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "correction" | "translation";
+            /**
+             * Max Segments Per Batch
+             * @default 40
+             */
+            max_segments_per_batch?: number;
+            /**
+             * No Remove Subtitles
+             * @default false
+             */
+            no_remove_subtitles?: boolean;
+            /**
+             * Source Artifact Id
+             * @default null
+             */
+            source_artifact_id?: string | null;
+            /**
+             * Source Language
+             * @default null
+             */
+            source_language?: string | null;
+            /**
+             * Substantial Gap Ms
+             * @default 2000
+             */
+            substantial_gap_ms?: number;
+            /**
+             * Target Language
+             * @default null
+             */
+            target_language?: string | null;
+            /**
+             * Timing Context Mode
+             * @default full
+             * @enum {string}
+             */
+            timing_context_mode?: "full" | "overlap_only" | "none";
+        };
+        /** DispatchTaskContract */
+        DispatchTaskContract: {
+            /** Glossary */
+            glossary: {
+                [key: string]: string;
+            };
+            /** Instructions */
+            instructions: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "correction" | "translation";
+            /** Known Speakers */
+            known_speakers: string[];
+            /** No Remove Subtitles */
+            no_remove_subtitles: boolean;
+            /**
+             * Output Role
+             * @enum {string}
+             */
+            output_role: "correction" | "translation";
+            /** Result Contract */
+            result_contract: {
+                [key: string]: unknown;
+            };
+            /** Source Language */
+            source_language: string;
+            /**
+             * Substantial Gap Ms
+             * @default null
+             */
+            substantial_gap_ms?: number | null;
+            /**
+             * Target Language
+             * @default null
+             */
+            target_language?: string | null;
+            /**
+             * Timing Context Mode
+             * @enum {string}
+             */
+            timing_context_mode: "full" | "overlap_only" | "none";
+        };
+        /** DispatchTranslationItem */
+        DispatchTranslationItem: {
+            /** Cue Id */
+            cue_id: number;
+            /**
+             * Speaker
+             * @default null
+             */
+            speaker?: string | null;
+            /** Text */
+            text: string;
+        };
+        /** DispatchTranslationResult */
+        DispatchTranslationResult: {
+            /** Glossary Updates */
+            glossary_updates?: {
+                [key: string]: string;
+            };
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "translation";
+            /** Translations */
+            translations: components["schemas"]["DispatchTranslationItem"][];
         };
         /** ErrorBody */
         ErrorBody: {
@@ -4129,6 +4587,147 @@ export interface operations {
             };
         };
     };
+    releaseDispatchBatch: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Required for automation principals and strongly recommended for every retryable write. */
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                batchId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DispatchBatchReleaseRequest"];
+            };
+        };
+        responses: {
+            /** @description Batch returned to ready */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    renewDispatchBatch: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Required for automation principals and strongly recommended for every retryable write. */
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                batchId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DispatchBatchRenewRequest"];
+            };
+        };
+        responses: {
+            /** @description Lease renewed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    submitDispatchBatch: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Required for automation principals and strongly recommended for every retryable write. */
+                "Idempotency-Key": string;
+            };
+            path: {
+                batchId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DispatchBatchSubmitRequest"];
+            };
+        };
+        responses: {
+            /** @description Batch accepted */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DispatchBatchSubmitResponse"];
+                };
+            };
+            /** @description Batch accepted; finalization continues */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DispatchBatchSubmitResponse"];
+                };
+            };
+        };
+    };
+    getDispatchRun: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Dispatch run metadata */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    claimDispatchBatch: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Required for automation principals and strongly recommended for every retryable write. */
+                "Idempotency-Key": string;
+            };
+            path: {
+                runId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DispatchBatchClaimRequest"];
+            };
+        };
+        responses: {
+            /** @description Claimed subtitle batch */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DispatchBatchClaimResponse"];
+                };
+            };
+        };
+    };
     listTimedWords: {
         parameters: {
             query?: never;
@@ -5560,6 +6159,53 @@ export interface operations {
         responses: {
             /** @description Queued */
             202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listDispatchRuns: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Dispatch run metadata */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createDispatchRun: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Required for automation principals and strongly recommended for every retryable write. */
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DispatchRunCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Dispatch run created */
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };

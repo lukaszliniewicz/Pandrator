@@ -7,7 +7,7 @@
       "summary": "Artifact metadata, lineage, current selections, and revision-safe changes.",
       "audiences": ["new_user", "operator", "developer"],
       "related_tools": ["pandrator_list_artifacts", "pandrator_get_workflow"],
-      "minimum_application_version": "0.6.0",
+      "minimum_application_version": "0.8.16",
       "revision": 1,
       "file": "artifacts-and-revisions.md"
     },
@@ -17,7 +17,7 @@
       "summary": "Document cleanup, narration preparation, generation, assembly, and export.",
       "audiences": ["new_user", "operator"],
       "related_tools": ["pandrator_get_capabilities", "pandrator_get_workflow"],
-      "minimum_application_version": "0.6.0",
+      "minimum_application_version": "0.8.16",
       "revision": 1,
       "file": "audiobooks.md"
     },
@@ -26,10 +26,21 @@
       "title": "Durable work and failure diagnosis",
       "summary": "Safe work projections, normalized states, redacted logs, and diagnosis.",
       "audiences": ["operator", "developer", "administrator"],
-      "related_tools": ["pandrator_list_work", "pandrator_get_work", "pandrator_get_work_log"],
-      "minimum_application_version": "0.6.0",
+      "related_tools": [
+        "pandrator_list_work",
+        "pandrator_get_work",
+        "pandrator_get_work_log",
+        "pandrator_create_dispatch_run",
+        "pandrator_list_dispatch_runs",
+        "pandrator_get_dispatch_run",
+        "pandrator_claim_dispatch_batch",
+        "pandrator_renew_dispatch_batch",
+        "pandrator_release_dispatch_batch",
+        "pandrator_submit_dispatch_batch"
+      ],
+      "minimum_application_version": "0.8.16",
       "minimum_manager_version": "0.9.0",
-      "revision": 1,
+      "revision": 2,
       "file": "durable-work.md"
     },
     {
@@ -38,7 +49,7 @@
       "summary": "Normal Manager proxying, app-down diagnostics, recovery enrollment, and plan-first repair.",
       "audiences": ["operator", "developer", "administrator"],
       "related_tools": ["pandrator_manager_status", "pandrator_manager_doctor"],
-      "minimum_application_version": "0.6.0",
+      "minimum_application_version": "0.8.16",
       "minimum_manager_version": "0.9.0",
       "revision": 2,
       "file": "manager-and-recovery.md"
@@ -53,7 +64,7 @@
         "pandrator_list_sessions",
         "pandrator_list_work"
       ],
-      "minimum_application_version": "0.6.0",
+      "minimum_application_version": "0.8.16",
       "minimum_manager_version": "0.9.0",
       "revision": 2,
       "file": "overview.md"
@@ -64,7 +75,7 @@
       "summary": "Provider readiness, credential boundaries, model availability, and voice selection.",
       "audiences": ["new_user", "operator", "administrator"],
       "related_tools": ["pandrator_get_provider_status", "pandrator_get_voice_catalog"],
-      "minimum_application_version": "0.6.0",
+      "minimum_application_version": "0.8.16",
       "revision": 1,
       "file": "providers-and-voices.md"
     },
@@ -74,7 +85,7 @@
       "summary": "Safe local, LAN/VPN, external HTTPS, server, and pod connectivity.",
       "audiences": ["operator", "developer", "administrator"],
       "related_tools": ["pandrator_get_target_status", "pandrator_manager_status"],
-      "minimum_application_version": "0.6.0",
+      "minimum_application_version": "0.8.16",
       "minimum_manager_version": "0.9.0",
       "revision": 3,
       "file": "remote-targets.md"
@@ -85,7 +96,7 @@
       "summary": "Trust boundaries, threats, controls, and release acceptance criteria.",
       "audiences": ["developer", "administrator"],
       "related_tools": ["pandrator_get_target_status", "pandrator_get_system_status"],
-      "minimum_application_version": "0.6.0",
+      "minimum_application_version": "0.8.16",
       "minimum_manager_version": "0.9.0",
       "revision": 1,
       "file": "threat-model.md"
@@ -95,9 +106,19 @@
       "title": "Subtitle workflow",
       "summary": "Transcription, correction, translation, comparison, and subtitle export.",
       "audiences": ["new_user", "operator"],
-      "related_tools": ["pandrator_get_workflow", "pandrator_list_artifacts"],
-      "minimum_application_version": "0.6.0",
-      "revision": 1,
+      "related_tools": [
+        "pandrator_get_workflow",
+        "pandrator_list_artifacts",
+        "pandrator_create_dispatch_run",
+        "pandrator_list_dispatch_runs",
+        "pandrator_get_dispatch_run",
+        "pandrator_claim_dispatch_batch",
+        "pandrator_renew_dispatch_batch",
+        "pandrator_release_dispatch_batch",
+        "pandrator_submit_dispatch_batch"
+      ],
+      "minimum_application_version": "0.8.16",
+      "revision": 2,
       "file": "subtitles.md"
     },
     {
@@ -105,9 +126,20 @@
       "title": "Voiceover and dubbing workflow",
       "summary": "Timed speech generation, take review, assembly, mixing, and media export.",
       "audiences": ["new_user", "operator"],
-      "related_tools": ["pandrator_get_provider_status", "pandrator_get_voice_catalog", "pandrator_get_workflow"],
-      "minimum_application_version": "0.6.0",
-      "revision": 1,
+      "related_tools": [
+        "pandrator_get_provider_status",
+        "pandrator_get_voice_catalog",
+        "pandrator_get_workflow",
+        "pandrator_create_dispatch_run",
+        "pandrator_list_dispatch_runs",
+        "pandrator_get_dispatch_run",
+        "pandrator_claim_dispatch_batch",
+        "pandrator_renew_dispatch_batch",
+        "pandrator_release_dispatch_batch",
+        "pandrator_submit_dispatch_batch"
+      ],
+      "minimum_application_version": "0.8.16",
+      "revision": 2,
       "file": "dubbing-voiceover.md"
     },
     {
@@ -116,7 +148,7 @@
       "summary": "How audiobook, subtitle, and voiceover sessions move through inspect, plan, execute, and review.",
       "audiences": ["new_user", "operator", "developer"],
       "related_tools": ["pandrator_recommend_next_steps", "pandrator_get_workflow"],
-      "minimum_application_version": "0.6.0",
+      "minimum_application_version": "0.8.16",
       "revision": 1,
       "file": "workflows.md"
     }

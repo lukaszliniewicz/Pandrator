@@ -63,7 +63,7 @@ class GuideEntry(BaseModel):
     summary: str
     audiences: tuple[str, ...]
     related_tools: tuple[str, ...] = ()
-    minimum_application_version: str = "0.6.0"
+    minimum_application_version: str = "0.8.16"
     minimum_manager_version: str | None = None
     revision: int = Field(ge=1)
     file: str

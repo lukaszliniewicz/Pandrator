@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from pandrator.runtime import DataPaths
 
@@ -16,6 +17,7 @@ from .automation_enrollment import AutomationEnrollmentService
 from .capabilities import CapabilityService, crispasr_install_preferences
 from .credentials import SecretRedactor
 from .database import Database
+from .dispatch import DispatchRunService
 from .idempotency import IdempotencyService
 from .identity import ApplicationIdentityService
 from .jobs import JobQueue
@@ -23,8 +25,8 @@ from .legacy_migration import import_legacy_data
 from .manager_proxy import LocalManagerProxy
 from .models import AppSetting, SessionRecord
 from .pronunciations import PronunciationLibrary
-from .sessions import SessionService
 from .session_forks import SessionForkService
+from .sessions import SessionService
 from .startup import StartupMaintenance
 from .subtitle_review import SubtitleReviewService
 from .tts_providers import TtsCatalogueService, TtsProviderRegistry
@@ -75,6 +77,7 @@ class ApplicationServices:
     chunk_uploads: ChunkUploadService
     startup_maintenance: StartupMaintenance
     subtitle_review: SubtitleReviewService
+    dispatch: DispatchRunService
     bootstrap: BootstrapTokenStore
     session_directory: Callable[[str], Path]
 
@@ -186,6 +189,11 @@ class ApplicationServices:
             artifacts,
             session_directory,
         )
+        dispatch = DispatchRunService(
+            database,
+            artifacts,
+            session_directory,
+        )
         return cls(
             paths=paths,
             migration=migration,
@@ -217,6 +225,7 @@ class ApplicationServices:
             chunk_uploads=chunk_uploads,
             startup_maintenance=startup_maintenance,
             subtitle_review=subtitle_review,
+            dispatch=dispatch,
             bootstrap=bootstrap_tokens or BootstrapTokenStore(),
             session_directory=session_directory,
         )
@@ -254,6 +263,7 @@ class ApplicationServices:
             "chunk_uploads": self.chunk_uploads,
             "startup_maintenance": self.startup_maintenance,
             "subtitle_review": self.subtitle_review,
+            "dispatch": self.dispatch,
             "bootstrap": self.bootstrap,
             "migration": self.migration,
             "services": self,
