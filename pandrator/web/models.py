@@ -1033,6 +1033,115 @@ class DispatchBatch(Base):
     )
 
 
+class SourceCleaningDispatchRun(Base):
+    """A passive, externally reviewed PDF/EPUB source-cleaning run."""
+
+    __tablename__ = "source_cleaning_dispatch_runs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    job_id: Mapped[str | None] = mapped_column(
+        ForeignKey("jobs.id", ondelete="SET NULL"), index=True
+    )
+    source_artifact_id: Mapped[str] = mapped_column(
+        ForeignKey("artifacts.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    source_state: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="current"
+    )
+    source_content_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    source_format: Mapped[str] = mapped_column(String(16), nullable=False)
+    settings_json: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
+    selection_snapshot_json: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
+    input_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    output_head_artifact_id: Mapped[str | None] = mapped_column(
+        ForeignKey("artifacts.id", ondelete="SET NULL"), index=True
+    )
+    baseline_artifact_id: Mapped[str | None] = mapped_column(
+        ForeignKey("artifacts.id", ondelete="SET NULL"), index=True
+    )
+    index_artifact_id: Mapped[str | None] = mapped_column(
+        ForeignKey("artifacts.id", ondelete="SET NULL"), index=True
+    )
+    result_artifact_id: Mapped[str | None] = mapped_column(
+        ForeignKey("artifacts.id", ondelete="SET NULL"), index=True
+    )
+    status: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="preparing", index=True
+    )
+    batch_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    completed_batch_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    accepted_operation_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    rejected_proposal_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    validation_json: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
+    error_code: Mapped[str | None] = mapped_column(String(120))
+    error_message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False, index=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False, index=True
+    )
+
+
+class SourceCleaningDispatchBatch(Base):
+    """One durable, lease-scoped source-cleaning editorial phase."""
+
+    __tablename__ = "source_cleaning_dispatch_batches"
+    __table_args__ = (
+        UniqueConstraint(
+            "dispatch_run_id",
+            "ordinal",
+            name="uq_source_cleaning_dispatch_batch_ordinal",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    dispatch_run_id: Mapped[str] = mapped_column(
+        ForeignKey("source_cleaning_dispatch_runs.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    phase: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    input_json: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
+    input_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="ready", index=True
+    )
+    lease_token: Mapped[str | None] = mapped_column(String(160))
+    claim_key: Mapped[str | None] = mapped_column(String(200))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), index=True
+    )
+    normalized_output_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    output_hash: Mapped[str | None] = mapped_column(String(64))
+    submission_key: Mapped[str | None] = mapped_column(String(200))
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+
 class AgentStep(Base):
     __tablename__ = "agent_steps"
 

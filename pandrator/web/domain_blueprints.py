@@ -26,8 +26,13 @@ def route_domain(rule: str) -> str:
     """Map a public URL rule to its owning backend domain."""
 
     if rule.startswith(
-        ("/api/v1/dispatch-runs", "/api/v1/dispatch-batches")
-    ) or "/dispatch-runs" in rule:
+        (
+            "/api/v1/dispatch-runs",
+            "/api/v1/dispatch-batches",
+            "/api/v1/source-cleaning-dispatch-runs",
+            "/api/v1/source-cleaning-dispatch-batches",
+        )
+    ) or "/dispatch-runs" in rule or "/source-cleaning-dispatch-runs" in rule:
         return "workflow"
     if rule.startswith("/api/v1/auth/"):
         return "auth"

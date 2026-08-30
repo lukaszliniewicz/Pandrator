@@ -6,6 +6,12 @@ from typing import Any
 
 from .models import SourceBlock, SourceDocument
 
+_MANAGED_UPLOAD_PREFIX_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-"
+    r"[0-9a-f]{12}-",
+    re.IGNORECASE,
+)
+
 
 def build_source_document_from_text(
     text: str,
@@ -60,7 +66,8 @@ def _normalize_pdf_line(line: str) -> str:
 
 
 def _metadata_from_filename(stem: str) -> dict[str, list[dict[str, Any]]]:
-    cleaned = re.sub(r"[_]+", " ", str(stem or "")).strip()
+    original = str(stem or "").strip()
+    cleaned = re.sub(r"[_]+", " ", _MANAGED_UPLOAD_PREFIX_RE.sub("", original)).strip()
     if not cleaned:
         return {}
 

@@ -3,11 +3,11 @@ from __future__ import annotations
 import difflib
 import json
 import os
+import re
 from typing import Any
 
 from .models import CleaningResult, SourceBlock, SourceDocument
 from .selectors import blocks_matching_selector, selector_summary
-
 
 ALLOWED_METADATA_KEYS = {
     "title",
@@ -43,43 +43,85 @@ def apply_cleaning_operations(
 
     for index, operation in enumerate(operations, start=1):
         if not isinstance(operation, dict):
-            skipped.append({"index": index, "operation": operation, "reason": "operation is not an object"})
+            skipped.append(
+                {
+                    "index": index,
+                    "operation": operation,
+                    "reason": "operation is not an object",
+                }
+            )
             continue
 
         op = str(operation.get("op") or "").strip()
         if op == "set_metadata":
             updates = _metadata_updates(operation)
             if not updates:
-                skipped.append({"index": index, "operation": operation, "reason": "no allowed metadata keys"})
+                skipped.append(
+                    {
+                        "index": index,
+                        "operation": operation,
+                        "reason": "no allowed metadata keys",
+                    }
+                )
                 continue
             metadata.update(updates)
-            applied.append(_applied(index, operation, {"metadata_keys": sorted(updates)}))
+            applied.append(
+                _applied(index, operation, {"metadata_keys": sorted(updates)})
+            )
             continue
 
         if op == "delete_range":
             start_line = operation.get("start_line")
             end_line = operation.get("end_line")
             if start_line is None or end_line is None:
-                skipped.append({"index": index, "operation": operation, "reason": "start_line/end_line required"})
+                skipped.append(
+                    {
+                        "index": index,
+                        "operation": operation,
+                        "reason": "start_line/end_line required",
+                    }
+                )
                 continue
-            targets = document.blocks_in_line_range(int(start_line), int(end_line))
-            if not targets:
-                skipped.append({"index": index, "operation": operation, "reason": "line range matched no blocks"})
+            range_targets = document.blocks_in_line_range(
+                int(start_line), int(end_line)
+            )
+            if not range_targets:
+                skipped.append(
+                    {
+                        "index": index,
+                        "operation": operation,
+                        "reason": "line range matched no blocks",
+                    }
+                )
                 continue
-            for block in targets:
-                deleted_block_ids.add(block.block_id)
-            applied.append(_applied(index, operation, {"deleted_blocks": len(targets)}))
+            for target_block in range_targets:
+                deleted_block_ids.add(target_block.block_id)
+            applied.append(
+                _applied(index, operation, {"deleted_blocks": len(range_targets)})
+            )
             continue
 
         if op == "delete_blocks":
-            requested_ids = [str(block_id) for block_id in operation.get("block_ids", [])]
-            targets = [block_id for block_id in requested_ids if block_id in block_ids]
-            missing = [block_id for block_id in requested_ids if block_id not in block_ids]
-            if not targets:
-                skipped.append({"index": index, "operation": operation, "reason": "no valid block_ids"})
+            requested_ids = [
+                str(block_id) for block_id in operation.get("block_ids", [])
+            ]
+            target_ids = [
+                block_id for block_id in requested_ids if block_id in block_ids
+            ]
+            missing = [
+                block_id for block_id in requested_ids if block_id not in block_ids
+            ]
+            if not target_ids:
+                skipped.append(
+                    {
+                        "index": index,
+                        "operation": operation,
+                        "reason": "no valid block_ids",
+                    }
+                )
                 continue
-            deleted_block_ids.update(targets)
-            details: dict[str, Any] = {"deleted_blocks": len(targets)}
+            deleted_block_ids.update(target_ids)
+            details: dict[str, Any] = {"deleted_blocks": len(target_ids)}
             if missing:
                 details["missing_block_ids"] = missing
             applied.append(_applied(index, operation, details))
@@ -88,72 +130,126 @@ def apply_cleaning_operations(
         if op == "delete_by_selector":
             selector = operation.get("selector")
             if not isinstance(selector, dict) or not selector:
-                skipped.append({"index": index, "operation": operation, "reason": "selector object required"})
+                skipped.append(
+                    {
+                        "index": index,
+                        "operation": operation,
+                        "reason": "selector object required",
+                    }
+                )
                 continue
-            targets = blocks_matching_selector(document.blocks, selector)
-            if not targets:
-                skipped.append({"index": index, "operation": operation, "reason": "selector matched no blocks"})
+            selector_targets = blocks_matching_selector(document.blocks, selector)
+            if not selector_targets:
+                skipped.append(
+                    {
+                        "index": index,
+                        "operation": operation,
+                        "reason": "selector matched no blocks",
+                    }
+                )
                 continue
-            for block in targets:
-                deleted_block_ids.add(block.block_id)
+            for target_block in selector_targets:
+                deleted_block_ids.add(target_block.block_id)
             applied.append(
                 _applied(
                     index,
                     operation,
                     {
-                        "deleted_blocks": len(targets),
+                        "deleted_blocks": len(selector_targets),
                         "selector": selector_summary(selector),
-                        "first_line": targets[0].line_start,
-                        "last_line": targets[-1].line_end,
+                        "first_line": selector_targets[0].line_start,
+                        "last_line": selector_targets[-1].line_end,
                     },
                 )
             )
             continue
 
         if op == "mark_chapter":
-            block = _resolve_operation_block(document, operation)
-            if block is None:
-                skipped.append({"index": index, "operation": operation, "reason": "chapter target not found"})
+            resolved_block = _resolve_operation_block(document, operation)
+            if resolved_block is None:
+                skipped.append(
+                    {
+                        "index": index,
+                        "operation": operation,
+                        "reason": "chapter target not found",
+                    }
+                )
                 continue
-            title = str(operation.get("title") or "").strip() or block.text.strip()
-            chapter_marks[block.block_id] = title
-            applied.append(_applied(index, operation, {"block_id": block.block_id, "title": title}))
+            title = (
+                str(operation.get("title") or "").strip() or resolved_block.text.strip()
+            )
+            chapter_marks[resolved_block.block_id] = title
+            applied.append(
+                _applied(
+                    index,
+                    operation,
+                    {"block_id": resolved_block.block_id, "title": title},
+                )
+            )
             continue
 
         if op == "unmark_chapter":
-            block = _resolve_operation_block(document, operation)
-            if block is None:
-                skipped.append({"index": index, "operation": operation, "reason": "chapter target not found"})
-                continue
-            if block.block_id not in chapter_marks:
+            resolved_block = _resolve_operation_block(document, operation)
+            if resolved_block is None:
                 skipped.append(
-                    {"index": index, "operation": operation, "reason": "chapter target is not currently marked"}
+                    {
+                        "index": index,
+                        "operation": operation,
+                        "reason": "chapter target not found",
+                    }
                 )
                 continue
-            chapter_marks.pop(block.block_id, None)
-            applied.append(_applied(index, operation, {"block_id": block.block_id, "unmarked_chapter": True}))
+            if resolved_block.block_id not in chapter_marks:
+                skipped.append(
+                    {
+                        "index": index,
+                        "operation": operation,
+                        "reason": "chapter target is not currently marked",
+                    }
+                )
+                continue
+            chapter_marks.pop(resolved_block.block_id, None)
+            applied.append(
+                _applied(
+                    index,
+                    operation,
+                    {"block_id": resolved_block.block_id, "unmarked_chapter": True},
+                )
+            )
             continue
 
         if op == "mark_chapters_by_selector":
             selector = operation.get("selector")
             if not isinstance(selector, dict) or not selector:
-                skipped.append({"index": index, "operation": operation, "reason": "selector object required"})
+                skipped.append(
+                    {
+                        "index": index,
+                        "operation": operation,
+                        "reason": "selector object required",
+                    }
+                )
                 continue
-            targets = blocks_matching_selector(document.blocks, selector)
-            if not targets:
-                skipped.append({"index": index, "operation": operation, "reason": "selector matched no blocks"})
+            selector_targets = blocks_matching_selector(document.blocks, selector)
+            if not selector_targets:
+                skipped.append(
+                    {
+                        "index": index,
+                        "operation": operation,
+                        "reason": "selector matched no blocks",
+                    }
+                )
                 continue
-            for block in targets:
-                chapter_marks[block.block_id] = block.text.strip()
+            for target_block in selector_targets:
+                chapter_marks[target_block.block_id] = target_block.text.strip()
             applied.append(
                 _applied(
                     index,
                     operation,
                     {
-                        "marked_chapters": len(targets),
+                        "marked_chapters": len(selector_targets),
                         "selector": selector_summary(selector),
-                        "first_line": targets[0].line_start,
-                        "last_line": targets[-1].line_end,
+                        "first_line": selector_targets[0].line_start,
+                        "last_line": selector_targets[-1].line_end,
                     },
                 )
             )
@@ -164,41 +260,114 @@ def apply_cleaning_operations(
             end_line = operation.get("end_line")
             replacement = str(operation.get("replacement") or "")
             if start_line is None or end_line is None:
-                skipped.append({"index": index, "operation": operation, "reason": "start_line/end_line required"})
+                skipped.append(
+                    {
+                        "index": index,
+                        "operation": operation,
+                        "reason": "start_line/end_line required",
+                    }
+                )
                 continue
-            targets = document.blocks_in_line_range(int(start_line), int(end_line))
-            if not targets:
-                skipped.append({"index": index, "operation": operation, "reason": "line range matched no blocks"})
+            range_targets = document.blocks_in_line_range(
+                int(start_line), int(end_line)
+            )
+            if not range_targets:
+                skipped.append(
+                    {
+                        "index": index,
+                        "operation": operation,
+                        "reason": "line range matched no blocks",
+                    }
+                )
                 continue
-            if len(targets) > max_replace_lines or len(replacement) > max_replacement_chars:
+            if (
+                len(range_targets) > max_replace_lines
+                or len(replacement) > max_replacement_chars
+            ):
                 skipped.append(
                     {
                         "index": index,
                         "operation": operation,
                         "reason": "replace_range exceeds guard limits",
-                        "matched_lines": len(targets),
+                        "matched_lines": len(range_targets),
                         "replacement_chars": len(replacement),
                     }
                 )
                 continue
-            first = targets[0]
+            first = range_targets[0]
             replacements[first.block_id] = replacement.strip()
-            for block in targets[1:]:
-                deleted_block_ids.add(block.block_id)
+            for target_block in range_targets[1:]:
+                deleted_block_ids.add(target_block.block_id)
             applied.append(
                 _applied(
                     index,
                     operation,
-                    {"replaced_blocks": len(targets), "target_block_id": first.block_id},
+                    {
+                        "replaced_blocks": len(range_targets),
+                        "target_block_id": first.block_id,
+                    },
                 )
             )
             continue
 
-        skipped.append({"index": index, "operation": operation, "reason": f"unsupported operation: {op}"})
+        if op == "replace_block":
+            resolved_block = _resolve_operation_block(document, operation)
+            replacement = str(operation.get("replacement") or "")
+            if resolved_block is None:
+                skipped.append(
+                    {
+                        "index": index,
+                        "operation": operation,
+                        "reason": "replacement target not found",
+                    }
+                )
+                continue
+            if not replacement.strip():
+                skipped.append(
+                    {
+                        "index": index,
+                        "operation": operation,
+                        "reason": "replacement text is empty",
+                    }
+                )
+                continue
+            if len(replacement) > max_replacement_chars:
+                skipped.append(
+                    {
+                        "index": index,
+                        "operation": operation,
+                        "reason": "replace_block exceeds guard limits",
+                        "replacement_chars": len(replacement),
+                    }
+                )
+                continue
+            replacements[resolved_block.block_id] = replacement.strip()
+            applied.append(
+                _applied(
+                    index,
+                    operation,
+                    {
+                        "replaced_blocks": 1,
+                        "target_block_id": resolved_block.block_id,
+                    },
+                )
+            )
+            continue
+
+        skipped.append(
+            {
+                "index": index,
+                "operation": operation,
+                "reason": f"unsupported operation: {op}",
+            }
+        )
 
     cleaned_lines: list[str] = []
     last_output_block_id = ""
+    last_output_block: SourceBlock | None = None
+    last_output_was_chapter = False
     joined_page_continuations = 0
+    joined_layout_continuations = 0
     for block in document.blocks:
         if block.block_id in deleted_block_ids:
             continue
@@ -209,7 +378,9 @@ def apply_cleaning_operations(
         if is_chapter:
             title = chapter_marks[block.block_id].strip() or text
             text = title if title.startswith("[[Chapter]]") else f"[[Chapter]]{title}"
-        continuation_from = str(block.attributes.get("continuation_from_block_id") or "")
+        continuation_from = str(
+            block.attributes.get("continuation_from_block_id") or ""
+        )
         continuation_mode = str(block.attributes.get("continuation_join") or "")
         if (
             not is_chapter
@@ -221,9 +392,26 @@ def apply_cleaning_operations(
                 cleaned_lines[-1], text, continuation_mode
             )
             joined_page_continuations += 1
+        elif (
+            not is_chapter
+            and not last_output_was_chapter
+            and cleaned_lines
+            and last_output_block is not None
+            and _is_soft_pdf_layout_continuation(
+                document,
+                last_output_block,
+                block,
+                cleaned_lines[-1],
+                text,
+            )
+        ):
+            cleaned_lines[-1] = _join_soft_layout_continuation(cleaned_lines[-1], text)
+            joined_layout_continuations += 1
         else:
             cleaned_lines.append(text)
         last_output_block_id = block.block_id
+        last_output_block = block
+        last_output_was_chapter = is_chapter
 
     original_lines = document.plain_lines()
     cleaned_text = "\n\n".join(cleaned_lines)
@@ -235,8 +423,11 @@ def apply_cleaning_operations(
         "original_block_count": len(original_lines),
         "cleaned_block_count": len(cleaned_lines),
         "deleted_block_count": len(deleted_block_ids),
-        "chapter_count": sum(1 for line in cleaned_lines if line.startswith("[[Chapter]]")),
+        "chapter_count": sum(
+            1 for line in cleaned_lines if line.startswith("[[Chapter]]")
+        ),
         "page_continuation_join_count": joined_page_continuations,
+        "layout_continuation_join_count": joined_layout_continuations,
         "applied_operation_count": len(applied),
         "skipped_operation_count": len(skipped),
         "metadata": metadata,
@@ -314,7 +505,9 @@ def _metadata_updates(operation: dict[str, Any]) -> dict[str, str]:
     return updates
 
 
-def _resolve_operation_block(document: SourceDocument, operation: dict[str, Any]) -> SourceBlock | None:
+def _resolve_operation_block(
+    document: SourceDocument, operation: dict[str, Any]
+) -> SourceBlock | None:
     block_id = str(operation.get("block_id") or "").strip()
     if block_id:
         return document.block_by_id(block_id)
@@ -331,7 +524,9 @@ def _resolve_operation_block(document: SourceDocument, operation: dict[str, Any]
     return blocks[0] if blocks else None
 
 
-def _applied(index: int, operation: dict[str, Any], details: dict[str, Any]) -> dict[str, Any]:
+def _applied(
+    index: int, operation: dict[str, Any], details: dict[str, Any]
+) -> dict[str, Any]:
     return {
         "index": index,
         "operation": operation,
@@ -365,5 +560,67 @@ def _join_page_continuation(previous: str, current: str, mode: str) -> str:
     previous_text = str(previous or "").rstrip()
     current_text = str(current or "").lstrip()
     if mode == "remove_hyphen" and previous_text.endswith(("-", "\u00ad")):
+        return f"{previous_text[:-1]}{current_text}"
+    return f"{previous_text} {current_text}".strip()
+
+
+_LOWERCASE_START_RE = re.compile(r"^[\s\"\'“‘(\[]*[a-zà-öø-ÿ]")
+_STRONG_SENTENCE_END_RE = re.compile(r"[.!?…][\"\'”’)*\]]*$")
+_MAJOR_HEADING_RE = re.compile(
+    r"^(?:chapter|part|book|volume)\s+(?:[0-9]+|[ivxlcdm]+|one|two|three|four|five|six|seven|eight|nine|ten)\s*$",
+    re.IGNORECASE,
+)
+_NON_NARRATIVE_ROLES = {
+    "page_number",
+    "repeated_marginal",
+    "toc",
+    "toc_candidate",
+    "non_narrative_section",
+    "metadata",
+    "boilerplate",
+}
+
+
+def _is_soft_pdf_layout_continuation(
+    document: SourceDocument,
+    previous_block: SourceBlock,
+    current_block: SourceBlock,
+    previous_text: str,
+    current_text: str,
+) -> bool:
+    """Join only syntactically clear PDF block seams left by columns/pages.
+
+    Structured PDF extraction intentionally keeps blocks independently inspectable.
+    Once reviewed deletions are applied, however, those physical blocks must not
+    become audible paragraph pauses in the cleaned text.  This conservative rule
+    handles lowercase prose continuations and split words while keeping EPUB
+    paragraphs and structural/non-narrative boundaries intact.
+    """
+
+    if not str(document.source_type or "").startswith("pdf"):
+        return False
+    left = str(previous_text or "").rstrip()
+    right = str(current_text or "").lstrip()
+    if not left or not right or not _LOWERCASE_START_RE.match(right):
+        return False
+    if _STRONG_SENTENCE_END_RE.search(left):
+        return False
+    if _MAJOR_HEADING_RE.match(left):
+        return False
+    previous_roles = set(previous_block.role_candidates)
+    current_roles = set(current_block.role_candidates)
+    if previous_roles & _NON_NARRATIVE_ROLES or current_roles & _NON_NARRATIVE_ROLES:
+        return False
+    previous_page = previous_block.page
+    current_page = current_block.page
+    return not (
+        previous_page and current_page and not 0 <= current_page - previous_page <= 1
+    )
+
+
+def _join_soft_layout_continuation(previous: str, current: str) -> str:
+    previous_text = str(previous or "").rstrip()
+    current_text = str(current or "").lstrip()
+    if previous_text.endswith(("-", "\u00ad")):
         return f"{previous_text[:-1]}{current_text}"
     return f"{previous_text} {current_text}".strip()

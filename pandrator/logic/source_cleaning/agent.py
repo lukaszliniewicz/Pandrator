@@ -13,7 +13,6 @@ from .prompts import build_initial_user_prompt, build_system_prompt
 from .tools import SourceCleaningTools
 from .validators import validate_cleaning_result
 
-
 CompletionFunc = Callable[..., Any]
 ProgressCallback = Callable[[str], None]
 _INSPECTION_ACTIONS = {
@@ -345,7 +344,7 @@ def run_source_cleaning_agent(
                 remove_footnotes=resolved_config.remove_footnotes,
             )
         else:
-            observation = _execute_tool_action(
+            observation = execute_tool_action(
                 tools,
                 command,
                 max_batch_commands=resolved_config.max_batch_commands,
@@ -489,7 +488,7 @@ def _dedupe_command_candidates(candidates: list[dict[str, Any]]) -> list[dict[st
     return deduped
 
 
-def _execute_tool_action(
+def execute_tool_action(
     tools: SourceCleaningTools,
     command: dict[str, Any],
     max_batch_commands: int = 8,
@@ -515,7 +514,7 @@ def _execute_tool_action(
                         "error": f"Action '{batch_action}' is not allowed inside a batch."
                     }
                 else:
-                    batch_observation = _execute_tool_action(
+                    batch_observation = execute_tool_action(
                         tools,
                         batch_command,
                         max_batch_commands=0,

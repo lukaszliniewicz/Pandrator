@@ -4707,6 +4707,19 @@ class WorkflowHandlers:
             "report": report,
         }
 
+    def prepare_source_cleaning_dispatch(self, payload, progress, cancel_event):
+        """Prepare durable PDF/EPUB evidence without invoking a model provider."""
+        from .source_cleaning_dispatch import prepare_source_cleaning_dispatch_job
+
+        return prepare_source_cleaning_dispatch_job(
+            self.database,
+            self.artifacts,
+            self._session_dir,
+            payload,
+            progress,
+            cancel_event,
+        )
+
     def prepare_text(self, payload, progress, cancel_event):
         from pandrator.logic.text_preprocessor import preprocess_text
 

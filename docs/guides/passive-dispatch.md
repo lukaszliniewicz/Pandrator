@@ -1,53 +1,58 @@
-# Passive subtitle dispatch
+# Passive processing through MCP
 
-Passive dispatch lets Pandrator coordinate correction or translation without
-calling an external model itself. The model already running in Codex,
-OpenCode, Claude Code, or another MCP host performs the language work through
-the Pandrator MCP tools.
+Passive dispatch lets Pandrator coordinate language or editorial work without
+calling a model provider itself. The model already running in Codex, OpenCode,
+Claude Code, or another MCP host performs the work by claiming one bounded
+packet, returning a typed result, and continuing until the run is complete.
 
-Use it when the host model is capable but a separate model API is unavailable,
-undesirable, or not worth configuring. It is also useful when you want the
-host's normal agent supervision and tool permissions around each batch.
+Two passive workflows are available:
+
+- subtitle correction and translation over stable cue IDs; and
+- PDF or EPUB source cleanup before audiobook narration preparation.
+
+Use passive processing when the host model is capable but a separate model API
+is unavailable, undesirable, or not worth configuring. It also keeps the
+host's normal agent supervision and tool permissions around every batch.
 
 ## What “passive” means
 
-Pandrator is the durable dispatcher and validator. It:
+Pandrator is the durable dispatcher, filesystem owner, and validator. It pins
+the source and relevant output state, prepares deterministic evidence, leases
+one packet at a time, validates typed results, records an audit trail, and
+materializes the final artifact only after every packet is accepted.
 
-- pins the exact source artifact, revision, content hash, and relevant stage
-  selections;
-- constructs deterministic semantic batches;
-- discloses one batch only after a worker claims it;
-- leases that batch to one worker for a bounded period;
-- validates typed results against stable cue IDs and task policy; and
-- materializes the final artifact only after every batch is accepted.
+Pandrator does **not** choose or call a model in this mode. Provider keys,
+provider model settings, token budgets, request timeouts, and model-iteration
+limits are not part of a passive run. The MCP host decides which model works on
+the claimed content.
 
-Pandrator does **not** choose or call a model in this mode. The MCP host decides
-which model is running and submits the result. Provider keys and model settings
-are not part of the dispatch run.
-
-## The sequential loop
+The general loop is:
 
 ```text
 create run
    ↓
-claim next batch ── no batch available ──→ inspect run state
+wait for deterministic preparation when required
    ↓
-process only batch.cues
+claim next packet ── none ready ──→ inspect run state
+   ↓
+inspect/search more of the pinned extraction when needed
+   ↓
+process the disclosed or explicitly inspected evidence
    ↓
 submit typed result ── rejected ──→ repair under the same valid lease
    ↓ accepted
-claim next batch
-   ↓ final accepted batch
-atomic artifact materialization
+claim next packet
+   ↓ final accepted packet
+validated artifact materialization
 ```
 
-Listing or inspecting a run returns metadata, not raw subtitle content. Claim
-is the content-disclosure step and returns a short-lived `lease_token`. That
-token belongs to one batch and cannot be used to submit another.
+Listing or inspecting a run returns metadata, not the source text. Claim is
+the content-disclosure boundary and returns a short-lived `lease_token`. That
+token belongs to one batch and cannot submit another.
 
-## The task packet
+## Subtitle correction and translation
 
-The claim identifies the task as correction or translation and provides:
+A subtitle claim identifies correction or translation and provides:
 
 - one-based `batch_ordinal` for presentation;
 - an explicit source-revision cue-ID namespace;
@@ -56,72 +61,144 @@ The claim identifies the task as correction or translation and provides:
 - timing according to `full`, `overlap_only`, or `none`; and
 - the lease token and expiry.
 
-Context is evidence for continuity, not additional work. Do not edit or submit
-it. Use the declared `cue_id`, never an SRT number guessed from its position in
-the batch.
-
-## Typed results
+Context is continuity evidence, not additional work. Use the declared
+`cue_id`; never guess from an SRT number or array position.
 
 A correction result contains `kind: correction` and operations over declared
 cue IDs. A translation result contains `kind: translation`, exactly one item
 per actionable cue ID, and optional glossary additions. Raw `response_text`
-exists for compatibility with adapters that can return only model text; MCP
-workers should prefer the typed result.
+exists for adapters that can only return model text; MCP workers should prefer
+the typed result.
 
 Pandrator validates IDs, operation shape, deletion policy, speaker decisions,
-translation coverage, and glossary changes. A rejected submission is not
-permission to skip the batch or change the source. Repair the result while the
-lease remains valid and resubmit it.
+translation coverage, and glossary changes. Correction can explicitly pin an
+existing translation artifact; finalization then appends a revision to that
+translation lineage instead of publishing it as source-language correction.
 
-## Lease and run states
+## Passive PDF and EPUB cleanup
 
-- **Renew** a lease before expiry when language work is taking longer.
-- **Release** it when stopping so the run does not wait for expiry.
+The document must already be a managed PDF or EPUB source attached to the
+audiobook session. An agent can create a session, inspect reusable sources,
+attach one with `pandrator_attach_existing_source`, and then create a cleanup
+run. The dispatcher intentionally does not grant arbitrary host-filesystem
+read access; importing a new local path remains an explicit upload step outside
+this tool family.
+
+Creating a source-cleaning run queues deterministic preparation. PDF
+preparation may include local, page-by-page OCR according to the requested OCR
+settings. EPUB preparation uses the deterministic cleaned-text baseline and
+retains structural metadata and navigation evidence. Neither path calls an
+LLM provider.
+
+Poll `pandrator_get_source_cleaning_dispatch_run` until the run is `ready`,
+then process these phases sequentially:
+
+1. `metadata`;
+2. `navigation`;
+3. `boilerplate`;
+4. `repeated_elements`;
+5. `chapter_marking`; and
+6. `text_repair`.
+
+Each claim contains a phase description, capabilities, document summary,
+bounded evidence, candidate blocks with stable IDs, server-owned proposals,
+and the exact operation types permitted for that phase. A result must decide
+every proposal exactly once with `accept` or `reject`. It may also add typed
+operations over evidence actually disclosed in that packet.
+
+Heuristic candidates are navigation aids, not a permission boundary. While a
+phase lease is active, `pandrator_inspect_source_cleaning_dispatch_extraction`
+can browse line ranges, search plain text or regular expressions, inspect
+individual blocks and context, inspect document/navigation structure, preview
+selectors, review heading/footnote candidates, and request EPUB markup when
+the persisted index supports it. Independent inspections can be batched. Use
+`view=working` for the document after accepted earlier deletions or
+`view=baseline` to compare against the original extraction.
+
+Every returned live block ID is recorded and promoted into that leased batch's
+valid evidence scope. Baseline-only blocks that an earlier accepted phase
+deleted remain inspectable for diagnosis but cannot be mutated. This preserves
+an audit trail without forcing the host model to trust the detector's initial
+candidate set.
+
+PDF chapter proposals deliberately exclude weak section, note-number, and
+decorative-title guesses. Those headings remain in the evidence and can still
+be inspected and marked explicitly. This keeps automation conservative without
+hiding the material needed for a model to disagree with it.
+
+Packets are materialized sequentially. Before exposing a later phase,
+Pandrator deterministically applies all accepted earlier operations to the
+persisted index. Boilerplate, repeated-element, and chapter evidence therefore
+describe the current working document rather than a stale copy of the original.
+
+| Phase | Agent-authored operation |
+| --- | --- |
+| Metadata | `set_metadata` using the supplied metadata-key allowlist |
+| Navigation | `delete_blocks` |
+| Boilerplate | `delete_blocks` |
+| Repeated elements | `delete_blocks` |
+| Chapter marking | `mark_chapter` or `unmark_chapter` |
+| Text repair | `replace_block` for confirmed extraction defects, or `delete_blocks` for newly discovered extraction debris |
+
+The agent cannot submit a rewritten book or an uninspected block ID. A
+`replace_block` may contain up to 50,000 characters so a badly reconstructed
+paragraph can be repaired without an artificial model-token budget, but it is
+available only in the final text-repair phase and remains an explicit audited
+operation. Broader structured selectors may appear in server-owned proposals;
+the agent can inspect arbitrary selectors for evidence but cannot silently turn
+an unreviewed selector into a bulk mutation.
+
+The `evidence_limit` setting is a per-phase transport bound, defaulting to 500
+items with an accepted range of 20–2,000. It is **not** a token budget or turn
+budget. Use a larger value for books whose structural review genuinely needs
+more candidates, while remembering that very large tool results also consume
+the MCP host model's context. MCP application responses allow 8 MiB by default
+and retain a 16 MiB safety ceiling.
+
+After the sixth accepted phase, Pandrator reloads the persisted structured
+index, applies all accepted operations deterministically, validates the
+result, writes the rules/report/diff audit set, and registers a selected
+`clean_text` artifact. The agent can then plan and execute narration
+preparation through the normal workflow tools.
+
+## Lease, retry, and conflict behavior
+
+- Renew a lease before expiry when work is taking longer.
+- Release it when stopping so the run does not wait for expiry.
+- Retry the same logical mutation with the same idempotency key.
 - A stale or mismatched token cannot submit.
-- A run can be busy because another batch lease is active.
-- Source or output conflicts mean the pinned revision or relevant current
-  selection changed; inspect the conflict instead of forcing finalization.
-- `finalizing` means all batches were accepted but durable materialization has
-  not completed. Retry the same final submission and idempotency key after a
+- Another active lease makes the run busy; phases remain sequential.
+- Source, revision, selected-stage, or output-head changes fail closed rather
+  than silently applying work to different content.
+- `finalizing` means all batches were accepted but durable materialization did
+  not finish. Retry the same final submission and idempotency key after a
   transient failure.
 
-Claim reports batch status and run status separately. Replaying an already
-accepted idempotent claim cannot therefore masquerade as a completed run.
-
-## Correcting a translation
-
-A correction run can explicitly pin an existing translation artifact. The
-task is still correction, but its `output_role` is translation. Finalization
-appends a new revision to the target-language translation lineage, preserving
-language and downstream voiceover semantics.
-
-This is preferable to pretending target-language cleanup is a new translation
-or accidentally publishing it as a source-language correction.
+A validation rejection is not permission to skip a packet or mutate the
+source. Repair the typed result while its lease remains valid and resubmit it.
 
 ## Security and privacy boundary
 
-Subtitle text is disclosed to the model running in the MCP host when that host
-claims a batch. Whether the model runs locally or at an external provider is a
-property of the host, not Pandrator. Review the host's model and data policy.
+Claimed text is disclosed to the model running in the MCP host. Whether that
+model runs locally or at an external provider is a property of the host, not
+Pandrator. Review the host's model and data policy.
 
 Use least-privilege MCP scopes, bind one sidecar process to one fixed target,
 and keep credentials outside model-visible configuration and tool arguments.
-Dispatch needs application read and run authority; it does not need Manager
-mutation authority.
+Passive dispatch needs application read and run authority; it does not need
+Manager mutation or Pandrator credential authority.
 
 ## Getting started through MCP
 
 Install and configure the sidecar, enroll one target, run `doctor`, and add the
-generated secret-free stdio fragment to the host you actually use. Then ask the
-agent to:
-
-1. inspect the intended session and selected source revision;
-2. create a correction or translation dispatch run with explicit settings;
-3. claim, process, and submit batches sequentially;
-4. renew or release leases deliberately; and
-5. inspect the finalized artifact and lineage before selecting it downstream.
+generated secret-free stdio fragment to the host you actually use. Then ask
+the agent to inspect the session and source, create the appropriate passive
+run, claim and submit sequentially, renew or release deliberately, and inspect
+the finalized artifact before continuing downstream.
 
 Exact target, scope, host-configuration, and tool behavior belongs to the
 [Pandrator MCP guide](../../pandrator_mcp/README.md). The
-[subtitle pipeline reference](../reference/subtitle-pipeline.md) documents the
-shared quality parameters.
+[subtitle pipeline reference](../reference/subtitle-pipeline.md) documents cue
+and timing parameters; the
+[document-ingestion reference](../reference/document-ingestion.md) documents
+PDF/EPUB extraction and narration preparation.

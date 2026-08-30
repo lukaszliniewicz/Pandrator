@@ -26,8 +26,8 @@ The current tool surface supports:
   durable-work, and redacted-event inspection;
 - session creation and revision-safe session, source, and settings changes;
 - immutable workflow planning followed by explicit execution;
-- passive subtitle correction and translation dispatch runs with sequential
-  pull, short-lived batch leases, and exact response submission;
+- passive subtitle correction/translation and PDF/EPUB source-cleaning runs
+  with sequential pull, short-lived batch leases, and typed submissions;
 - durable-work cancellation;
 - Manager status and diagnostics;
 - immutable Manager component plans, runtime control, and plan execution; and
@@ -44,9 +44,10 @@ For document workflows, the public
 [document-ingestion reference](https://github.com/lukaszliniewicz/Pandrator/blob/main/docs/reference/document-ingestion.md) explains
 PDF layout/OCR, EPUB structure, deterministic and optional model-assisted
 cleanup, artifacts, and narration preparation. MCP plans and monitors those
-native stages; it does not parse books in the sidecar. Source-cleaning model
-work uses Pandrator's configured provider, while passive MCP dispatch is
-currently limited to subtitle correction and translation.
+native stages; it does not parse books in the sidecar. Source cleaning can use
+Pandrator's configured provider or the passive dispatcher, where the MCP host
+model performs editorial review and Pandrator retains parsing, validation, and
+artifact ownership.
 
 ### Subtitle dispatch
 
@@ -71,6 +72,38 @@ sequential claim. If validation rejects a result, repair and resubmit it while
 the lease remains valid. Renew slow work or release abandoned work. The final
 accepted batch automatically finalizes the run; retry the same final submission
 and idempotency key if transient materialization leaves it `finalizing`.
+
+### PDF and EPUB source-cleaning dispatch
+
+For an attached PDF or EPUB, call
+`pandrator_create_source_cleaning_dispatch_run`. Preparation is asynchronous
+because local PDF extraction may include OCR. Inspect the run until it is
+`ready`, then claim and submit six sequential phases with the corresponding
+source-cleaning tools.
+
+A claim discloses only that phase's document summary, bounded evidence,
+candidate blocks, server proposals, and operation allowlist. Decide every
+proposal with `accept` or `reject`; optionally add phase-appropriate typed
+operations over disclosed block IDs. Do not return rewritten book text.
+
+The claim's candidates are a starting point, not a heuristic gate. While the
+lease is active, use
+`pandrator_inspect_source_cleaning_dispatch_extraction` to browse, search,
+inspect context or structure, preview selectors, and batch independent
+lookups. Returned live block IDs are added to the batch's audited valid scope.
+The final `text_repair` phase permits targeted `replace_block` corrections for
+confirmed extraction defects.
+
+There is no provider, model-token, or iteration budget in this passive path.
+`evidence_limit` is only a per-phase transport bound: default 500, range
+20–2,000. MCP application responses permit 8 MiB by default with a 16 MiB
+safety ceiling. After the last phase, Pandrator applies and validates the
+accepted operations and selects the resulting `clean_text` artifact. Normal
+workflow planning can then continue with narration preparation.
+
+The source must already be managed and attached. This tool family does not
+turn an arbitrary model-supplied filesystem path into a source; use the normal
+upload flow or attach a source returned by `pandrator_list_sources`.
 
 Guidance remains available even when no target can be reached.
 
@@ -147,6 +180,7 @@ Request only the authority the agent needs:
 | Create and edit sessions | `app.read`, `app.write` |
 | Run and cancel workflows | `app.read`, `app.write`, `app.run`, `app.cancel` |
 | Correct or translate subtitles through dispatch | `app.read`, `app.run` |
+| Clean an attached PDF or EPUB through passive dispatch | `app.read`, `app.run` |
 | Inspect Manager through Pandrator | add `manager.read` |
 | Start or stop managed runtimes | add `manager.runtime` |
 | Execute reviewed Manager plans | add `manager.mutate` |

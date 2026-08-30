@@ -149,6 +149,9 @@ from .schemas import (
     VoiceUpdate,
 )
 from .sessions import RevisionConflict
+from .source_cleaning_dispatch_routes import (
+    register_source_cleaning_dispatch_routes,
+)
 from .source_resolution import resolve_primary_source
 from .voice_library import (
     ensure_bundled_voice,
@@ -707,6 +710,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     register_automation_routes(app, context)
     register_workflow_plan_routes(app, context)
     register_dispatch_routes(app, context)
+    register_source_cleaning_dispatch_routes(app, context)
 
     @app.get("/api/v1/health")
     def health():

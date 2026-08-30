@@ -89,7 +89,7 @@ the common settings; advanced integrations can also provide the phase maps.
 
 | Setting | Default | Effect |
 | --- | --- | --- |
-| `agentic` | `false` | Runs only deterministic extraction when false. When true, a configured LLM performs the constrained five-phase review described below. |
+| `agentic` | `false` | Runs only deterministic extraction when false. When true, a configured LLM performs the app-executed five-phase review described below. Passive MCP cleanup uses a separate run and leaves this false. |
 | `max_iterations` | `53` | Total model-turn budget distributed across enabled cleanup phases. It is a ceiling, not a target. |
 | `phase_max_iterations` | `{}` | Optional per-phase ceilings. Supplied values override the distributed total for those phases and are clamped to pipeline limits. |
 | `phase_names` | all phases | Advanced ordered subset of `metadata`, `navigation`, `boilerplate`, `repeated_elements`, and `chapter_marking`. |
@@ -116,6 +116,13 @@ Page-to-page continuation is deliberately cautious. It joins only compatible
 adjacent prose and avoids headings, terminal punctuation, bilingual-looking
 joins, and common abbreviations. This helps remove page-layout seams without
 turning separate paragraphs into one sentence.
+
+The cleaned-text writer also reflows clear lowercase continuations left between
+physical PDF blocks after reviewed marginal deletions. Source blocks remain
+separate in the inspection index for page-level provenance; only the final text
+loses the artificial audible pause. Validation distinguishes expected
+non-narrative page deletion and text relocated into reviewed repairs from
+substantive text that genuinely disappeared.
 
 ### OCR controls
 
@@ -256,6 +263,44 @@ Agentic cleanup writes a session-local audit set containing the working index,
 raw text, cleaned text, typed rules, a report, and a diff. Token/cost usage is
 recorded when the provider reports it.
 
+### Passive host-model cleanup
+
+The same five structural concerns, followed by an explicit text-repair pass,
+can instead be reviewed by the model already running in an MCP host. Create a
+source-cleaning dispatch run for an attached PDF or EPUB. Pandrator prepares
+the structured baseline as durable work, then leases `metadata`, `navigation`,
+`boilerplate`, `repeated_elements`, and `chapter_marking` packets followed by
+`text_repair`.
+
+Each later packet is derived from the persisted index after accepted earlier
+operations have been applied. A navigation deletion therefore cannot remain as
+actionable boilerplate or chapter evidence merely because all packets were
+prepared at run creation.
+
+The host model must accept or reject every server proposal and may add only the
+typed operations allowed by that phase. The initial claim is deliberately
+bounded, but it is not the model's only view: while holding the lease the model
+can browse ranges, search text or regular expressions, inspect blocks and
+context, query navigation/heading/footnote structure, preview selectors, and
+batch independent inspections over either the original baseline or the current
+working document. Returned live block IDs become auditable legal targets for
+that batch. The final phase can use `replace_block` for confirmed OCR, joining,
+encoding, or parser defects rather than forcing deletion or accepting damaged
+text.
+
+For PDF chapter review, weak section, numbered-note, and decorative-title
+matches stay visible as heading evidence but are not automatically proposed as
+chapters. The host model may inspect and mark them when the book's actual
+structure warrants it.
+Pandrator never sends this run to its configured LLM provider. There is no
+model-token or iteration budget in the run; `evidence_limit` only bounds the
+number of evidence items disclosed per phase. It defaults to 500 and accepts
+20–2,000. After all phases, Pandrator applies and validates the accepted
+operations using the same deterministic artifact boundary.
+
+See [passive processing through MCP](../guides/passive-dispatch.md) for the
+lease, retry, privacy, and tool-level workflow.
+
 ## From clean text to narration segments
 
 **Prepare text** converts the selected cleaned-text artifact into a JSON
@@ -301,14 +346,15 @@ The same stage model is used from all three surfaces:
   the selected stages as durable jobs.
 - API clients attach/reuse source assets, save revisioned settings, create a
   workflow plan, execute that exact plan, and monitor durable work.
-- The MCP exposes the application planning/execution surface rather than
-  reimplementing PDF or EPUB parsing in the sidecar.
+- The MCP exposes both the application planning/execution surface and the
+  passive source-cleaning dispatcher. PDF/EPUB parsing remains in Pandrator;
+  the sidecar never reimplements it.
 
-Optional source-cleaning model work is currently **app-executed**: Pandrator
-uses the configured LLM provider. The passive pull dispatcher is a separate
-facility for subtitle correction and translation; it does not currently queue
-document-cleaning phases for the MCP host model. Do not set `agentic=true`
-expecting a passive batch to appear.
+Setting `agentic=true` selects **app-executed** model cleanup through
+Pandrator's configured provider. It does not create passive work. Passive
+cleanup starts through the dedicated source-cleaning dispatch tools and uses
+the MCP host model instead. Both paths converge on a validated `clean_text`
+artifact, but their execution and credential boundaries remain explicit.
 
 For exact MCP installation, scopes, planning, and monitoring contracts, see the
 [Pandrator MCP guide](../../pandrator_mcp/README.md). The packaged
@@ -349,6 +395,8 @@ Generate a small sample before committing substantial provider time or cost.
 | DOCX/MOBI conversion fails | Install or repair Calibre and verify that `ebook-convert` is discoverable. |
 | Prepare text says a cleaned artifact is required | Finish/select **Clean source** first; preparation accepts cleaned TXT/Markdown artifacts, not the original binary document. |
 | Agentic cleanup reaches a limit or emits validation warnings | Review its diff and report. Increase a phase budget only after confirming that more model turns address the actual problem. |
+| Passive cleanup claim says `run_preparing` | Poll the run or its preparation job. PDF OCR may still be running locally. |
+| Passive cleanup submission is rejected | Keep the current lease, repair the typed proposal decisions or operations using only exposed IDs, and resubmit with the same logical idempotency key. |
 
 Check the job detail and bounded event log before rerunning. For wider service,
 storage, or recovery problems, see
@@ -366,6 +414,7 @@ inflation budget for every document shape.
 Use normal OS/storage limits for untrusted sources, keep the application and
 parsers updated, and test a representative subset before enabling forced OCR
 or model-assisted cleanup on a very large book. Uploading a file does not send
-its text to a model; enabling agentic cleanup or later speech optimization can.
+its text to a model; enabling app-executed cleanup, claiming a passive cleanup
+packet in an MCP host, or later speech optimization can.
 Review the provider boundary in
 [privacy and security](../security/privacy-and-security.md) before execution.

@@ -569,7 +569,7 @@ class ApplicationClientTests(unittest.TestCase):
             ),
             (
                 FakeResponse(200, body=b"x" * (64 * 1024 + 1)),
-                "downstream_unavailable",
+                "response_too_large",
             ),
         ]
         for response, code in cases:

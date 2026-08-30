@@ -10,7 +10,6 @@ from urllib.parse import unquote
 from .models import SearchHit, SourceBlock, SourceDocument
 from .selectors import blocks_matching_selector, selector_supported_keys
 
-
 NUMBERED_HEADING_PATTERN = (
     r"^((?:chapter|ch|rozdział|rozdz|chapitre|chap|kapitel|kap|capítulo|cap|"
     r"secção|seção|hoofdstuk|hst|fejezet|fej|kapitull|part|section|sectie|część|cz|"
@@ -22,6 +21,28 @@ NUMBERED_HEADING_PATTERN = (
     r"előszó|utószó|parathënie|pasthënie)\s+)?"
     r"([ivxlcdm]+|\d{1,3}|[\u4e00-\u4e5d\u5341\u767e\u5343]+)"
     r"([\.:)\- ]|$)"
+)
+
+_MINOR_SECTION_HEADING_RE = re.compile(
+    r"^(?:section|sectie|abschnitt|secci[oó]n|se[cç][aã]o|secção|szakasz|seksion|"
+    r"sekcja)\s+"
+    r"(?:[ivxlcdm]+|\d{1,4})\b",
+    re.IGNORECASE,
+)
+_MAJOR_NUMBERED_HEADING_RE = re.compile(
+    r"^(?:chapter|ch|rozdzia[lł]|rozdz|chapitre|chap|kapitel|kap|cap[ií]tulo|cap|"
+    r"hoofdstuk|hst|fejezet|fej|kapitull|part|book|volume|vol|tom|band|buch|libro|"
+    r"livro|boek|kötet|könyv|vëllim|libër|księga|livre|tome|deel)\s+"
+    r"(?:[ivxlcdm]+|\d{1,4})\b",
+    re.IGNORECASE,
+)
+_UNNUMBERED_MAJOR_HEADING_RE = re.compile(
+    r"^(?:acknowledg(?:e)?ments?|preface|foreword|introduction|prologue|epilogue|"
+    r"afterword|conclusion|appendi(?:x|ces)|postscript|wst[eę]p|przedmowa|pos[lł]owie|"
+    r"pr[eé]face|avant-propos|postface|vorwort|einleitung|nachwort|prefacio|"
+    r"introducci[oó]n|pref[aá]cio|introdu[cç][aã]o|posf[aá]cio|inleiding|nawoord|"
+    r"bevezet[eé]s|el[oő]sz[oó]|ut[oó]sz[oó])\s*[.!:]?$",
+    re.IGNORECASE,
 )
 
 
@@ -112,8 +133,11 @@ class SourceCleaningTools:
             start = anchor_start - max(0, int(before if before is not None else 5))
             end = anchor_end + max(0, int(after if after is not None else 5))
         elif start_line is not None or end_line is not None:
-            start = int(start_line if start_line is not None else end_line)
-            end = int(end_line if end_line is not None else start_line)
+            candidate_start = start_line if start_line is not None else end_line
+            candidate_end = end_line if end_line is not None else start_line
+            assert candidate_start is not None and candidate_end is not None
+            start = candidate_start
+            end = candidate_end
         elif before is not None:
             start = 1
             end = int(before)
@@ -122,7 +146,9 @@ class SourceCleaningTools:
             end = max((block.line_end for block in self.document.blocks), default=start)
         else:
             start = 1
-            end = min(20, max((block.line_end for block in self.document.blocks), default=1))
+            end = min(
+                20, max((block.line_end for block in self.document.blocks), default=1)
+            )
 
         start = max(1, start)
         end = max(start, end)
@@ -134,12 +160,18 @@ class SourceCleaningTools:
             "end_line": end,
             "matched_blocks": len(matches),
             "returned_blocks": len(blocks),
-            "tag_counts": dict(Counter(str(block.tag or "<none>") for block in matches).most_common(12)),
+            "tag_counts": dict(
+                Counter(str(block.tag or "<none>") for block in matches).most_common(12)
+            ),
             "role_counts": dict(
-                Counter(role for block in matches for role in block.role_candidates).most_common(12)
+                Counter(
+                    role for block in matches for role in block.role_candidates
+                ).most_common(12)
             ),
             "class_counts": dict(
-                Counter(class_name for block in matches for class_name in block.classes).most_common(12)
+                Counter(
+                    class_name for block in matches for class_name in block.classes
+                ).most_common(12)
             ),
             "hrefs": _dedupe_values(block.href for block in matches if block.href),
             "blocks": [self._preview_block(block) for block in blocks],
@@ -166,8 +198,12 @@ class SourceCleaningTools:
         documents: list[dict[str, Any]] = []
         for href, blocks in grouped.items():
             tag_counts = Counter(str(block.tag or "<none>") for block in blocks)
-            role_counts = Counter(role for block in blocks for role in block.role_candidates)
-            class_counts = Counter(class_name for block in blocks for class_name in block.classes)
+            role_counts = Counter(
+                role for block in blocks for role in block.role_candidates
+            )
+            class_counts = Counter(
+                class_name for block in blocks for class_name in block.classes
+            )
             documents.append(
                 {
                     "href": href,
@@ -178,22 +214,32 @@ class SourceCleaningTools:
                     "tag_counts": dict(tag_counts.most_common(12)),
                     "role_counts": dict(role_counts.most_common(12)),
                     "class_counts": dict(class_counts.most_common(12)),
-                    "first_texts": [_short_text(block.text, max_chars=120) for block in blocks[:2]],
-                    "last_texts": [_short_text(block.text, max_chars=120) for block in blocks[-2:]],
+                    "first_texts": [
+                        _short_text(block.text, max_chars=120) for block in blocks[:2]
+                    ],
+                    "last_texts": [
+                        _short_text(block.text, max_chars=120) for block in blocks[-2:]
+                    ],
                 }
             )
 
         documents.sort(key=lambda item: int(item["first_line"]))
         global_tags = Counter(str(block.tag or "<none>") for block in scoped_blocks)
-        global_roles = Counter(role for block in scoped_blocks for role in block.role_candidates)
-        global_classes = Counter(class_name for block in scoped_blocks for class_name in block.classes)
+        global_roles = Counter(
+            role for block in scoped_blocks for role in block.role_candidates
+        )
+        global_classes = Counter(
+            class_name for block in scoped_blocks for class_name in block.classes
+        )
         heading_tag_count = sum(
             count
             for tag, count in global_tags.items()
             if tag.lower() in {"h1", "h2", "h3", "h4", "h5", "h6"}
         )
         navigation_entries = self.document.navigation_entries
-        navigation_with_fragments = sum(bool(entry.get("fragment")) for entry in navigation_entries)
+        navigation_with_fragments = sum(
+            bool(entry.get("fragment")) for entry in navigation_entries
+        )
         diagnostics: list[str] = []
         if self.document.source_type.startswith("epub") and not heading_tag_count:
             diagnostics.append(
@@ -229,7 +275,14 @@ class SourceCleaningTools:
     ) -> dict[str, Any]:
         """Maps navigation labels and targets to likely parsed blocks."""
         entries = self.document.navigation_entries or [
-            {"order": index, "depth": 0, "title": title, "href": "", "href_path": "", "fragment": ""}
+            {
+                "order": index,
+                "depth": 0,
+                "title": title,
+                "href": "",
+                "href_path": "",
+                "fragment": "",
+            }
             for index, title in enumerate(self.document.nav_titles, start=1)
         ]
         normalized_blocks: list[tuple[SourceBlock, str]] = [
@@ -271,16 +324,25 @@ class SourceCleaningTools:
                 )
             ]
             numbered_matches: list[SourceBlock] = []
-            number_match = re.search(r"\b(\d+|[ivxlcdm]+)\b", title, flags=re.IGNORECASE)
+            number_match = re.search(
+                r"\b(\d+|[ivxlcdm]+)\b", title, flags=re.IGNORECASE
+            )
             if number_match and same_document:
                 number = re.escape(number_match.group(1))
                 numbered_matches = [
                     block
                     for block in same_document
-                    if re.match(rf"^[\s\u200b]*{number}[\s.():\-]", block.text, flags=re.IGNORECASE)
+                    if re.match(
+                        rf"^[\s\u200b]*{number}[\s.():\-]",
+                        block.text,
+                        flags=re.IGNORECASE,
+                    )
                 ]
             candidates = _dedupe_blocks(
-                fragment_matches + exact_matches + title_prefix_matches + numbered_matches
+                fragment_matches
+                + exact_matches
+                + title_prefix_matches
+                + numbered_matches
             )
             rows.append(
                 {
@@ -302,7 +364,8 @@ class SourceCleaningTools:
                         }
                         for block in candidates[: max(1, int(max_matches_per_entry))]
                     ],
-                    "matches_truncated": len(candidates) > max(1, int(max_matches_per_entry)),
+                    "matches_truncated": len(candidates)
+                    > max(1, int(max_matches_per_entry)),
                 }
             )
 
@@ -367,7 +430,10 @@ class SourceCleaningTools:
             "start_line": int(start_line),
             "end_line": int(end_line),
             "matched_blocks": len(blocks),
-            "blocks": [self._raw_markup_block(block) for block in blocks[:max(1, int(max_blocks))]],
+            "blocks": [
+                self._raw_markup_block(block)
+                for block in blocks[: max(1, int(max_blocks))]
+            ],
             "truncated": len(blocks) > max(1, int(max_blocks)),
         }
 
@@ -423,16 +489,24 @@ class SourceCleaningTools:
             "last_line": matches[-1].line_end if matches else None,
             "hrefs": _dedupe_values(block.href for block in matches if block.href),
             "tags": _dedupe_values(block.tag for block in matches if block.tag),
-            "classes": _dedupe_values(class_name for block in matches for class_name in block.classes),
-            "roles": _dedupe_values(role for block in matches for role in block.role_candidates),
+            "classes": _dedupe_values(
+                class_name for block in matches for class_name in block.classes
+            ),
+            "roles": _dedupe_values(
+                role for block in matches for role in block.role_candidates
+            ),
             "blocks": [
-                self._raw_markup_block(block) if include_raw_markup else self._preview_block(block)
+                self._raw_markup_block(block)
+                if include_raw_markup
+                else self._preview_block(block)
                 for block in blocks
             ],
             "truncated": len(matches) > len(blocks),
         }
 
-    def list_repeated_lines(self, min_repeats: int = 3, max_length: int = 120) -> list[dict[str, Any]]:
+    def list_repeated_lines(
+        self, min_repeats: int = 3, max_length: int = 120
+    ) -> list[dict[str, Any]]:
         grouped: dict[str, list[SourceBlock]] = defaultdict(list)
         for block in self.document.blocks:
             normalized = _normalize_for_repeat_detection(block.text)
@@ -450,15 +524,23 @@ class SourceCleaningTools:
                     "normalized": normalized,
                     "count": len(blocks),
                     "line_numbers": [block.line_start for block in blocks],
-                    "pages": _dedupe_values(block.page for block in blocks if block.page is not None),
-                    "hrefs": _dedupe_values(block.href for block in blocks if block.href),
+                    "pages": _dedupe_values(
+                        block.page for block in blocks if block.page is not None
+                    ),
+                    "hrefs": _dedupe_values(
+                        block.href for block in blocks if block.href
+                    ),
                     "block_ids": [block.block_id for block in blocks],
                 }
             )
 
-        return sorted(repeated, key=lambda item: (-int(item["count"]), str(item["text"]).lower()))
+        return sorted(
+            repeated, key=lambda item: (-int(item["count"]), str(item["text"]).lower())
+        )
 
-    def find_heading_candidates(self, max_candidates: int = 100) -> list[dict[str, Any]]:
+    def find_heading_candidates(
+        self, max_candidates: int = 100
+    ) -> list[dict[str, Any]]:
         candidates: list[dict[str, Any]] = []
         nav_titles = {title.lower() for title in self.document.nav_titles}
         for block in self.document.blocks:
@@ -508,7 +590,9 @@ class SourceCleaningTools:
 
     def analyze_chapter_structure(self, max_candidates: int = 60) -> dict[str, Any]:
         """Summarizes likely chapter headings and reusable selectors."""
-        heading_candidates = self.find_heading_candidates(max_candidates=max(1, len(self.document.blocks)))
+        heading_candidates = self.find_heading_candidates(
+            max_candidates=max(1, len(self.document.blocks))
+        )
         normalized_nav_titles = {
             _normalize_for_repeat_detection(title)
             for title in self.document.nav_titles
@@ -516,6 +600,7 @@ class SourceCleaningTools:
         }
         likely_chapters: list[dict[str, Any]] = []
         numbered_blocks: list[SourceBlock] = []
+        section_blocks: list[SourceBlock] = []
 
         for candidate in heading_candidates:
             block = self.document.block_by_id(str(candidate.get("block_id") or ""))
@@ -525,13 +610,40 @@ class SourceCleaningTools:
             text = block.text.strip()
             numbered = _looks_like_numbered_heading(text)
             nav_match = _normalize_for_repeat_detection(text) in normalized_nav_titles
-            explicit_heading = "heading" in block.role_candidates or "deterministic_chapter" in block.role_candidates
+            explicit_heading = (
+                "heading" in block.role_candidates
+                or "deterministic_chapter" in block.role_candidates
+            )
+            if _looks_like_minor_section_heading(text):
+                if explicit_heading:
+                    section_blocks.append(block)
+                continue
             if "deterministic_chapter" in block.role_candidates:
+                if (
+                    self.document.source_type.startswith("pdf")
+                    and not numbered
+                    and not _UNNUMBERED_MAJOR_HEADING_RE.match(text)
+                ):
+                    continue
                 evidence = "deterministic_chapter"
-            elif numbered and (explicit_heading or self.document.source_type != "epub"):
+                if numbered:
+                    numbered_blocks.append(block)
+            elif numbered and (
+                (
+                    self.document.source_type == "pdf_structured"
+                    and explicit_heading
+                    and _MAJOR_NUMBERED_HEADING_RE.match(text)
+                )
+                or (self.document.source_type.startswith("epub") and explicit_heading)
+                or self.document.source_type == "pdf_text"
+            ):
                 evidence = "numbered_heading"
                 numbered_blocks.append(block)
-            elif nav_match and explicit_heading and not _looks_like_boilerplate_heading(text):
+            elif (
+                nav_match
+                and explicit_heading
+                and not _looks_like_boilerplate_heading(text)
+            ):
                 evidence = "epub_nav_heading"
             else:
                 continue
@@ -548,6 +660,7 @@ class SourceCleaningTools:
             "heading_candidate_count": len(heading_candidates),
             "likely_chapter_count": len(likely_chapters),
             "numbered_heading_count": len(numbered_blocks),
+            "section_heading_count": len(section_blocks),
             "likely_chapters": likely_chapters[:limit],
             "likely_chapters_truncated": len(likely_chapters) > limit,
             "selector_suggestions": selector_suggestions,
@@ -565,7 +678,9 @@ class SourceCleaningTools:
         """Summarizes structured TOC and boilerplate groups that merit inspection."""
         blocks = self._scoped_blocks(scope)
         toc_blocks = [block for block in blocks if "toc" in block.role_candidates]
-        copyright_blocks = [block for block in blocks if "copyright" in block.role_candidates]
+        copyright_blocks = [
+            block for block in blocks if "copyright" in block.role_candidates
+        ]
         grouped_hrefs: dict[str, list[SourceBlock]] = defaultdict(list)
         grouped_classes: dict[str, list[SourceBlock]] = defaultdict(list)
         for block in blocks:
@@ -577,7 +692,9 @@ class SourceCleaningTools:
         candidates: list[dict[str, Any]] = []
         seen: set[str] = set()
 
-        def add_candidate(selector: dict[str, Any], matched: list[SourceBlock], reasons: list[str]):
+        def add_candidate(
+            selector: dict[str, Any], matched: list[SourceBlock], reasons: list[str]
+        ):
             if len(matched) < 2:
                 return
             key = repr(sorted(selector.items()))
@@ -599,7 +716,9 @@ class SourceCleaningTools:
             add_candidate({"role": "toc"}, toc_blocks, ["structured_toc_or_navigation"])
 
         for class_name, class_blocks in grouped_classes.items():
-            class_toc_count = sum("toc" in block.role_candidates for block in class_blocks)
+            class_toc_count = sum(
+                "toc" in block.role_candidates for block in class_blocks
+            )
             if class_toc_count >= 4 and class_toc_count >= len(class_blocks) * 0.7:
                 add_candidate(
                     {"class": class_name},
@@ -609,23 +728,44 @@ class SourceCleaningTools:
 
         strong_boilerplate_blocks: set[str] = set()
         for href, href_blocks in grouped_hrefs.items():
-            href_toc_count = sum("toc" in block.role_candidates for block in href_blocks)
-            href_copyright_count = sum("copyright" in block.role_candidates for block in href_blocks)
-            href_strong_markers = sum(_has_strong_boilerplate_marker(block.text) for block in href_blocks)
+            href_toc_count = sum(
+                "toc" in block.role_candidates for block in href_blocks
+            )
+            href_copyright_count = sum(
+                "copyright" in block.role_candidates for block in href_blocks
+            )
+            href_strong_markers = sum(
+                _has_strong_boilerplate_marker(block.text) for block in href_blocks
+            )
             strong_marker_ratio = href_strong_markers / len(href_blocks)
             reasons: list[str] = []
             if href_toc_count >= 4 and href_toc_count >= len(href_blocks) * 0.7:
                 reasons.append("document_is_predominantly_toc")
             if href_strong_markers >= 2 and strong_marker_ratio >= 0.1:
-                reasons.append("document_contains_repeated_license_or_boilerplate_markers")
-            if href_copyright_count >= 3 and href_strong_markers and strong_marker_ratio >= 0.05:
+                reasons.append(
+                    "document_contains_repeated_license_or_boilerplate_markers"
+                )
+            if (
+                href_copyright_count >= 3
+                and href_strong_markers
+                and strong_marker_ratio >= 0.05
+            ):
                 reasons.append("document_contains_many_copyright_blocks")
             if reasons:
                 add_candidate({"href": href}, href_blocks, reasons)
-                if any("license" in reason or "copyright" in reason or "boilerplate" in reason for reason in reasons):
-                    strong_boilerplate_blocks.update(block.block_id for block in href_blocks)
+                if any(
+                    "license" in reason
+                    or "copyright" in reason
+                    or "boilerplate" in reason
+                    for reason in reasons
+                ):
+                    strong_boilerplate_blocks.update(
+                        block.block_id for block in href_blocks
+                    )
 
-        candidates.sort(key=lambda item: (-int(item["matched_blocks"]), int(item["first_line"])))
+        candidates.sort(
+            key=lambda item: (-int(item["matched_blocks"]), int(item["first_line"]))
+        )
         return {
             "scoped_block_count": len(blocks),
             "toc_block_count": len(toc_blocks),
@@ -639,7 +779,9 @@ class SourceCleaningTools:
             ),
         }
 
-    def find_footnote_candidates(self, max_candidates: int = 100) -> list[dict[str, Any]]:
+    def find_footnote_candidates(
+        self, max_candidates: int = 100
+    ) -> list[dict[str, Any]]:
         candidates: list[dict[str, Any]] = []
         for block in self.document.blocks:
             reasons: list[str] = []
@@ -653,7 +795,10 @@ class SourceCleaningTools:
                     block.dom_path or "",
                 ]
             ).lower()
-            if any(token in evidence for token in ("footnote", "endnote", "noteref", "note-ref")):
+            if any(
+                token in evidence
+                for token in ("footnote", "endnote", "noteref", "note-ref")
+            ):
                 reasons.append("markup_or_role_mentions_note")
             if block.tag == "aside":
                 reasons.append("aside_tag")
@@ -682,8 +827,7 @@ class SourceCleaningTools:
             "language": self.document.language,
             "metadata_candidates": self.document.metadata_candidates,
             "front_matter_preview": [
-                self._preview_block(block)
-                for block in self.document.blocks[:25]
+                self._preview_block(block) for block in self.document.blocks[:25]
             ],
         }
 
@@ -696,7 +840,11 @@ class SourceCleaningTools:
         end_line = scope.get("end_line")
         if start_line is not None or end_line is not None:
             start = int(start_line if start_line is not None else 1)
-            end = int(end_line if end_line is not None else max(block.line_end for block in blocks))
+            end = int(
+                end_line
+                if end_line is not None
+                else max(block.line_end for block in blocks)
+            )
             blocks = self.document.blocks_in_line_range(start, end)
 
         href = scope.get("href")
@@ -776,20 +924,29 @@ class SourceCleaningTools:
                     "first_line": blocks[0].line_start,
                     "last_line": blocks[-1].line_end,
                     "sample_texts": [block.text for block in blocks[:5]],
-                    "hrefs": _dedupe_values(block.href for block in blocks if block.href),
+                    "hrefs": _dedupe_values(
+                        block.href for block in blocks if block.href
+                    ),
                 }
             )
 
         rows.sort(key=lambda item: (-int(item["count"]), str(item["value"]).lower()))
-        return rows[:max(1, int(max_items))]
+        return rows[: max(1, int(max_items))]
 
-    def _chapter_selector_suggestions(self, numbered_blocks: list[SourceBlock]) -> list[dict[str, Any]]:
+    def _chapter_selector_suggestions(
+        self, numbered_blocks: list[SourceBlock]
+    ) -> list[dict[str, Any]]:
         if len(numbered_blocks) < 2:
             return []
 
         selectors: list[dict[str, Any]] = []
-        if sum(1 for block in numbered_blocks if "heading" in block.role_candidates) >= 2:
-            selectors.append({"role": "heading", "text_regex": NUMBERED_HEADING_PATTERN})
+        if (
+            sum(1 for block in numbered_blocks if "heading" in block.role_candidates)
+            >= 2
+        ):
+            selectors.append(
+                {"role": "heading", "text_regex": NUMBERED_HEADING_PATTERN}
+            )
 
         grouped_tags: dict[str, list[SourceBlock]] = defaultdict(list)
         grouped_classes: dict[str, list[SourceBlock]] = defaultdict(list)
@@ -807,10 +964,17 @@ class SourceCleaningTools:
                 selectors.append({"tag": tag, "text_regex": NUMBERED_HEADING_PATTERN})
         for class_name, blocks in grouped_classes.items():
             if len(blocks) >= 2:
-                selectors.append({"class": class_name, "text_regex": NUMBERED_HEADING_PATTERN})
+                selectors.append(
+                    {"class": class_name, "text_regex": NUMBERED_HEADING_PATTERN}
+                )
         for id_pattern, blocks in grouped_id_patterns.items():
             if len(blocks) >= 2:
-                selectors.append({"element_id_regex": id_pattern, "text_regex": NUMBERED_HEADING_PATTERN})
+                selectors.append(
+                    {
+                        "element_id_regex": id_pattern,
+                        "text_regex": NUMBERED_HEADING_PATTERN,
+                    }
+                )
 
         suggestions: list[dict[str, Any]] = []
         seen: set[str] = set()
@@ -821,7 +985,9 @@ class SourceCleaningTools:
                 continue
             seen.add(key)
             matches = blocks_matching_selector(self.document.blocks, selector)
-            likely_matches = [block for block in matches if block.block_id in numbered_ids]
+            likely_matches = [
+                block for block in matches if block.block_id in numbered_ids
+            ]
             suggestions.append(
                 {
                     "selector": selector,
@@ -877,7 +1043,9 @@ def _navigation_titles_overlap(nav_title: str, block_title: str) -> bool:
     shorter = min(len(nav_title), len(block_title))
     if shorter < 8:
         return False
-    return nav_title.startswith(block_title + " ") or block_title.startswith(nav_title + " ")
+    return nav_title.startswith(block_title + " ") or block_title.startswith(
+        nav_title + " "
+    )
 
 
 def _dedupe_blocks(blocks: list[SourceBlock]) -> list[SourceBlock]:
@@ -947,6 +1115,10 @@ def _looks_like_numbered_heading(text: str) -> bool:
     )
 
 
+def _looks_like_minor_section_heading(text: str) -> bool:
+    return bool(_MINOR_SECTION_HEADING_RE.match(str(text or "").strip()))
+
+
 def _is_non_chapter_block(block: SourceBlock) -> bool:
     excluded_roles = {
         "toc",
@@ -993,7 +1165,11 @@ def _has_strong_boilerplate_marker(text: str) -> bool:
 
 def _numeric_id_pattern(value: str) -> str:
     parts = re.split(r"(\d+)", str(value or ""))
-    return "^" + "".join(r"\d+" if part.isdigit() else re.escape(part) for part in parts) + "$"
+    return (
+        "^"
+        + "".join(r"\d+" if part.isdigit() else re.escape(part) for part in parts)
+        + "$"
+    )
 
 
 def _dedupe_values(values) -> list[Any]:
@@ -1012,4 +1188,8 @@ def _representative_blocks(blocks: list[SourceBlock], limit: int) -> list[Source
         return blocks
     head_count = (limit + 1) // 2
     tail_count = limit - head_count
-    return blocks[:head_count] + blocks[-tail_count:] if tail_count else blocks[:head_count]
+    return (
+        blocks[:head_count] + blocks[-tail_count:]
+        if tail_count
+        else blocks[:head_count]
+    )

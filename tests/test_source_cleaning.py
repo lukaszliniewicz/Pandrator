@@ -1055,6 +1055,67 @@ class SourceCleaningTests(unittest.TestCase):
         self.assertEqual(analysis["selector_suggestions"][0]["matched_blocks"], 2)
         self.assertEqual(analysis["selector_suggestions"][0]["likely_chapter_matches"], 2)
 
+    def test_pdf_chapter_analysis_keeps_sections_and_numbered_notes_advisory(self):
+        document = SourceDocument(
+            source_type="pdf_structured",
+            source_path="sample.pdf",
+            filename="sample.pdf",
+            blocks=[
+                SourceBlock(
+                    "chapter",
+                    "CHAPTER I",
+                    1,
+                    1,
+                    page=1,
+                    role_candidates=["heading", "deterministic_chapter"],
+                ),
+                SourceBlock(
+                    "section",
+                    "SECTION 1. General observations",
+                    2,
+                    2,
+                    page=2,
+                    role_candidates=["heading", "deterministic_chapter"],
+                ),
+                SourceBlock(
+                    "note",
+                    "1. This numbered note was styled like a heading by the PDF.",
+                    3,
+                    3,
+                    page=2,
+                    role_candidates=["heading"],
+                ),
+            ],
+        )
+
+        analysis = SourceCleaningTools(document).analyze_chapter_structure()
+
+        self.assertEqual(analysis["likely_chapter_count"], 1)
+        self.assertEqual(analysis["numbered_heading_count"], 1)
+        self.assertEqual(analysis["section_heading_count"], 1)
+        self.assertEqual(
+            [item["block_id"] for item in analysis["likely_chapters"]],
+            ["chapter"],
+        )
+
+    def test_pdf_filename_metadata_ignores_managed_upload_uuid_prefix(self):
+        document = build_source_document_from_text(
+            "Front matter.",
+            filename=(
+                "738eb431-db64-49c6-bb28-73c68359804e-"
+                "Schopenhauer, Arthur - Essays, Vol. 1.pdf"
+            ),
+        )
+
+        self.assertEqual(
+            document.metadata_candidates["author"][0]["value"],
+            "Schopenhauer, Arthur",
+        )
+        self.assertEqual(
+            document.metadata_candidates["title"][0]["value"],
+            "Essays, Vol. 1",
+        )
+
     def test_cleanup_structure_finds_inline_toc_and_complete_license_document(self):
         document = SourceDocument(
             source_type="epub",
@@ -1193,6 +1254,91 @@ class SourceCleaningTests(unittest.TestCase):
         self.assertNotRegex(result.cleaned_text, r"(^|\n\n)[123](\n\n|$)")
         self.assertIn("Chapitre I", result.cleaned_text)
 
+    def test_pdf_output_rejoins_clear_layout_seams_after_marginal_deletion(self):
+        document = SourceDocument(
+            source_type="pdf_structured",
+            source_path="fixture.pdf",
+            filename="fixture.pdf",
+            blocks=[
+                SourceBlock(
+                    "pdf:1:1",
+                    "The sentence continues into",
+                    1,
+                    1,
+                    page=1,
+                ),
+                SourceBlock(
+                    "pdf:1:2",
+                    "1",
+                    2,
+                    2,
+                    page=1,
+                    role_candidates=["page_number", "repeated_marginal"],
+                ),
+                SourceBlock(
+                    "pdf:2:1",
+                    "Running Header",
+                    3,
+                    3,
+                    page=2,
+                    role_candidates=["repeated_marginal"],
+                ),
+                SourceBlock(
+                    "pdf:2:2",
+                    "the next physical page without an audible paragraph break.",
+                    4,
+                    4,
+                    page=2,
+                ),
+                SourceBlock("pdf:2:3", "Chapter 2", 5, 5, page=2),
+                SourceBlock(
+                    "pdf:2:4",
+                    "lowercase text begins a genuinely new chapter paragraph.",
+                    6,
+                    6,
+                    page=2,
+                ),
+            ],
+        )
+
+        result = apply_cleaning_operations(
+            document,
+            [
+                {
+                    "op": "delete_blocks",
+                    "block_ids": ["pdf:1:2", "pdf:2:1"],
+                    "reason": "verified running margins",
+                }
+            ],
+        )
+
+        self.assertIn(
+            "The sentence continues into the next physical page without an audible "
+            "paragraph break.",
+            result.cleaned_text,
+        )
+        self.assertIn(
+            "paragraph break.\n\nChapter 2\n\nlowercase text begins",
+            result.cleaned_text,
+        )
+        self.assertEqual(result.report["layout_continuation_join_count"], 1)
+
+        epub_document = SourceDocument(
+            source_type="epub",
+            source_path="fixture.epub",
+            filename="fixture.epub",
+            blocks=[
+                SourceBlock("epub:1", "A deliberately open paragraph", 1, 1),
+                SourceBlock("epub:2", "lowercase text remains a separate EPUB block.", 2, 2),
+            ],
+        )
+        epub_result = apply_cleaning_operations(epub_document, [])
+        self.assertIn(
+            "A deliberately open paragraph\n\nlowercase text remains",
+            epub_result.cleaned_text,
+        )
+        self.assertEqual(epub_result.report["layout_continuation_join_count"], 0)
+
     def test_apply_cleaning_operations_writes_artifacts_and_diff(self):
         document = build_source_document_from_text(
             "\n".join(
@@ -1274,6 +1420,28 @@ class SourceCleaningTests(unittest.TestCase):
         self.assertEqual(len(result.skipped_operations), 1)
         self.assertIn("exceeds guard", result.skipped_operations[0]["reason"])
         self.assertIn("line 6", result.cleaned_text)
+
+    def test_replace_block_repairs_a_confirmed_extraction_defect(self):
+        document = build_source_document_from_text(
+            "The narra tive begins here.",
+            filename="sample.pdf",
+        )
+        block = document.blocks[0]
+
+        result = apply_cleaning_operations(
+            document,
+            [
+                {
+                    "op": "replace_block",
+                    "block_id": block.block_id,
+                    "replacement": "The narrative begins here.",
+                    "reason": "word split during extraction",
+                }
+            ],
+        )
+
+        self.assertEqual("The narrative begins here.", result.cleaned_text)
+        self.assertEqual(1, len(result.applied_operations))
 
     def test_unmark_chapter_reverses_an_earlier_deterministic_marker(self):
         document = build_source_document_from_text("Running Header\nNarration.", filename="sample.pdf")
@@ -1761,6 +1929,104 @@ class SourceCleaningTests(unittest.TestCase):
         validation = validate_cleaning_result(document, result)
 
         self.assertNotIn("table-of-contents-like", "\n".join(validation.warnings))
+
+    def test_validator_treats_verified_pdf_toc_and_boilerplate_pages_as_expected_deletions(self):
+        document = SourceDocument(
+            source_type="pdf_structured",
+            source_path="book.pdf",
+            filename="book.pdf",
+            blocks=[
+                SourceBlock(
+                    "notice",
+                    "Publishing notice",
+                    1,
+                    1,
+                    page=1,
+                    role_candidates=["boilerplate"],
+                ),
+                SourceBlock(
+                    "contents",
+                    "Contents",
+                    2,
+                    2,
+                    page=2,
+                    role_candidates=["heading", "toc"],
+                ),
+                SourceBlock("body-1", "Narrative page one.", 3, 3, page=3),
+                SourceBlock("body-2", "Narrative page two.", 4, 4, page=4),
+            ],
+        )
+        result = apply_cleaning_operations(
+            document,
+            [
+                {
+                    "op": "delete_blocks",
+                    "block_ids": ["notice", "contents"],
+                    "reason": "verified front matter",
+                }
+            ],
+        )
+
+        validation = validate_cleaning_result(document, result)
+
+        self.assertEqual(validation.stats["fully_deleted_pdf_pages"], [1, 2])
+        self.assertEqual(
+            validation.stats["expected_fully_deleted_pdf_pages"],
+            [1, 2],
+        )
+        self.assertEqual(validation.stats["substantive_fully_deleted_pdf_pages"], [])
+        self.assertEqual(validation.stats["substantive_deleted_blocks"], 0)
+        self.assertNotIn("substantive extracted text", "\n".join(validation.warnings))
+
+        destructive = apply_cleaning_operations(
+            document,
+            [
+                {
+                    "op": "delete_blocks",
+                    "block_ids": ["notice", "contents", "body-1"],
+                    "reason": "overbroad deletion",
+                }
+            ],
+        )
+        destructive_validation = validate_cleaning_result(document, destructive)
+        self.assertEqual(
+            destructive_validation.stats["substantive_fully_deleted_pdf_pages"],
+            [3],
+        )
+        self.assertIn(
+            "All substantive extracted text was removed",
+            "\n".join(destructive_validation.warnings),
+        )
+
+        relocated = apply_cleaning_operations(
+            document,
+            [
+                {
+                    "op": "replace_block",
+                    "block_id": "body-2",
+                    "replacement": "Narrative page one. Narrative page two.",
+                    "reason": "repair a page seam",
+                },
+                {
+                    "op": "delete_blocks",
+                    "block_ids": ["notice", "contents", "body-1"],
+                    "reason": "remove copied source blocks after the repair",
+                },
+            ],
+        )
+        relocated_validation = validate_cleaning_result(document, relocated)
+        self.assertEqual(
+            relocated_validation.stats["relocated_fully_deleted_pdf_pages"],
+            [3],
+        )
+        self.assertEqual(
+            relocated_validation.stats["substantive_fully_deleted_pdf_pages"],
+            [],
+        )
+        self.assertNotIn(
+            "All substantive extracted text was removed",
+            "\n".join(relocated_validation.warnings),
+        )
 
     def test_validator_keeps_unstructured_numeric_toc_detection(self):
         document = SourceDocument(

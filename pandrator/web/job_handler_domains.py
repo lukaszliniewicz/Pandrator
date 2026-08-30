@@ -161,12 +161,18 @@ def register_source_handlers(
             {
                 "source.download_url": "download_source_url",
                 "source.reuse": "reuse_source",
+                "source.cleaning_dispatch.prepare": "prepare_source_cleaning_dispatch",
             },
         ),
         payload_contracts=_contracts(
             {
                 "source.download_url": ("session_id", "url"),
                 "source.reuse": ("session_id", "artifact_id"),
+                "source.cleaning_dispatch.prepare": (
+                    "session_id",
+                    "source_artifact_id",
+                    "source_cleaning_dispatch_run_id",
+                ),
             }
         ),
     )

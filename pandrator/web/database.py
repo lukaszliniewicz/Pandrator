@@ -12,7 +12,7 @@ from alembic.config import Config
 from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
-SCHEMA_HEAD = "0031_dispatch_output_roles"
+SCHEMA_HEAD = "0032_source_cleaning_dispatch"
 
 
 def sqlite_url(path: Path) -> str:

@@ -571,9 +571,7 @@ class DispatchRunCreateRequest(StrictModel):
             if not term.strip() or len(term) > 500:
                 raise ValueError("Glossary terms must be 1-500 characters.")
             if not replacement.strip() or len(replacement) > 2_000:
-                raise ValueError(
-                    "Glossary replacements must be 1-2,000 characters."
-                )
+                raise ValueError("Glossary replacements must be 1-2,000 characters.")
         return value
 
 
@@ -653,9 +651,7 @@ class DispatchTranslationResult(StrictModel):
             if not term.strip() or len(term) > 500:
                 raise ValueError("Glossary terms must be 1-500 characters.")
             if not replacement.strip() or len(replacement) > 2_000:
-                raise ValueError(
-                    "Glossary replacements must be 1-2,000 characters."
-                )
+                raise ValueError("Glossary replacements must be 1-2,000 characters.")
         return value
 
 
@@ -766,6 +762,204 @@ class DispatchBatchSubmitResponse(StrictModel):
     error_message: str | None = None
 
 
+class SourceCleaningDispatchRunCreateRequest(StrictModel):
+    source_artifact_id: str | None = Field(default=None, min_length=1, max_length=80)
+    instructions: str = Field(default="", max_length=16_000)
+    evidence_limit: int = Field(
+        default=500,
+        ge=20,
+        le=2_000,
+        description=(
+            "Maximum evidence items exposed in each phase packet. This is a "
+            "transport bound, not a model-token or iteration budget."
+        ),
+    )
+    remove_footnotes: bool | None = None
+    filter_citations: bool | None = None
+    pdf_ocr_mode: Literal["auto", "off", "force"] | None = None
+    pdf_ocr_language: str | None = Field(default=None, min_length=2, max_length=80)
+    pdf_ocr_dpi: int | None = Field(default=None, ge=120, le=400)
+    pdf_remove_toc: bool | None = None
+    pdf_remove_repeated_marginals: bool | None = None
+
+
+class SourceCleaningDispatchDecision(StrictModel):
+    operation_id: str = Field(min_length=1, max_length=200)
+    verdict: Literal["accept", "reject"]
+
+
+class SourceCleaningDispatchOperation(StrictModel):
+    op: Literal[
+        "set_metadata",
+        "delete_blocks",
+        "mark_chapter",
+        "unmark_chapter",
+        "replace_block",
+    ]
+    metadata: dict[
+        Annotated[str, Field(min_length=1, max_length=40)],
+        Annotated[str, Field(min_length=1, max_length=2_000)],
+    ] = Field(default_factory=dict, max_length=20)
+    block_ids: list[Annotated[str, Field(min_length=1, max_length=200)]] = Field(
+        default_factory=list,
+        max_length=2_000,
+    )
+    block_id: str | None = Field(default=None, min_length=1, max_length=200)
+    title: str | None = Field(default=None, max_length=2_000)
+    replacement: str = Field(default="", max_length=50_000)
+    reason: str = Field(default="", max_length=4_000)
+
+    @model_validator(mode="after")
+    def validate_operation_shape(self):
+        if self.op == "set_metadata":
+            valid = (
+                bool(self.metadata)
+                and not self.block_ids
+                and self.block_id is None
+                and not self.replacement
+            )
+        elif self.op == "delete_blocks":
+            valid = (
+                bool(self.block_ids)
+                and not self.metadata
+                and self.block_id is None
+                and not self.replacement
+            )
+        elif self.op == "mark_chapter":
+            valid = (
+                self.block_id is not None
+                and not self.metadata
+                and not self.block_ids
+                and not self.replacement
+            )
+        elif self.op == "unmark_chapter":
+            valid = (
+                self.block_id is not None
+                and not self.metadata
+                and not self.block_ids
+                and self.title is None
+                and not self.replacement
+            )
+        else:
+            valid = (
+                self.block_id is not None
+                and bool(self.replacement.strip())
+                and not self.metadata
+                and not self.block_ids
+                and self.title is None
+            )
+        if not valid:
+            raise ValueError("Source-cleaning operation fields do not match its op.")
+        if len(set(self.block_ids)) != len(self.block_ids):
+            raise ValueError("delete_blocks block_ids must be unique.")
+        return self
+
+
+class SourceCleaningDispatchResult(StrictModel):
+    kind: Literal["source_cleaning"]
+    phase: Literal[
+        "metadata",
+        "navigation",
+        "boilerplate",
+        "repeated_elements",
+        "chapter_marking",
+        "text_repair",
+    ]
+    decisions: list[SourceCleaningDispatchDecision] = Field(
+        default_factory=list,
+        max_length=5_000,
+    )
+    operations: list[SourceCleaningDispatchOperation] = Field(
+        default_factory=list,
+        max_length=2_000,
+    )
+    summary: str = Field(default="", max_length=8_000)
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
+class SourceCleaningDispatchBatchSubmitRequest(StrictModel):
+    lease_token: str = Field(min_length=1, max_length=160)
+    result: SourceCleaningDispatchResult
+
+
+class SourceCleaningDispatchInspectionRequest(StrictModel):
+    lease_token: str = Field(min_length=1, max_length=160)
+    action: Literal[
+        "batch",
+        "inspect_document_structure",
+        "inspect_navigation",
+        "search",
+        "regex_search",
+        "preview",
+        "inspect_block",
+        "get_epub_markup_for_text",
+        "preview_raw_markup_range",
+        "list_epub_selectors",
+        "preview_selector",
+        "list_repeated_lines",
+        "find_heading_candidates",
+        "analyze_chapter_structure",
+        "analyze_cleanup_structure",
+        "find_footnote_candidates",
+        "find_metadata_candidates",
+    ]
+    arguments: dict[str, Any] = Field(default_factory=dict, max_length=100)
+    view: Literal["working", "baseline"] = "working"
+
+
+class SourceCleaningDispatchInspectionResponse(StrictModel):
+    schema_version: Literal["1"] = "1"
+    run_id: str
+    batch_id: str
+    phase: str
+    inspection_id: str
+    view: Literal["working", "baseline"]
+    action: str
+    observation: Any
+    promoted_block_ids: list[str]
+    baseline_only_block_ids: list[str]
+    valid_block_id_count: int = Field(ge=0)
+    lease_expires_at: str | None
+
+
+class SourceCleaningDispatchBatchClaimResponse(StrictModel):
+    schema_version: Literal["1"] = "1"
+    run_id: str
+    batch_id: str
+    batch_ordinal: int = Field(ge=1)
+    status: str
+    run_status: str
+    batch_status: str
+    task: dict[str, Any]
+    batch: dict[str, Any]
+    lease_token: str
+    lease_expires_at: str | None
+
+
+class SourceCleaningDispatchBatchSubmitResponse(StrictModel):
+    run_id: str
+    batch_id: str
+    output_role: Literal["clean_text"]
+    status: str
+    run_status: str
+    batch_status: str
+    accepted: bool
+    completed_batch_count: int = Field(ge=0)
+    completed_batches: int = Field(ge=0)
+    batch_count: int = Field(ge=1)
+    total_batches: int = Field(ge=1)
+    remaining_batches: int = Field(ge=0)
+    accepted_operation_count: int = Field(ge=0)
+    rejected_proposal_count: int = Field(ge=0)
+    result_artifact_id: str | None = None
+    final_artifact_id: str | None = None
+    finalized: bool
+    requires_review: bool
+    validation: dict[str, Any]
+    error_code: str | None = None
+    error_message: str | None = None
+
+
 SCHEMA_MODELS = {
     model.__name__: model
     for model in (
@@ -849,5 +1043,14 @@ SCHEMA_MODELS = {
         DispatchTaskContract,
         DispatchBatchClaimResponse,
         DispatchBatchSubmitResponse,
+        SourceCleaningDispatchRunCreateRequest,
+        SourceCleaningDispatchDecision,
+        SourceCleaningDispatchOperation,
+        SourceCleaningDispatchResult,
+        SourceCleaningDispatchInspectionRequest,
+        SourceCleaningDispatchInspectionResponse,
+        SourceCleaningDispatchBatchSubmitRequest,
+        SourceCleaningDispatchBatchClaimResponse,
+        SourceCleaningDispatchBatchSubmitResponse,
     )
 }

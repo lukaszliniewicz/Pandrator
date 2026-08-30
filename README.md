@@ -40,7 +40,7 @@ verification, workspace selection, headless setup, and updates.
 | Turn a document into narrated audio or an M4B audiobook | [Create your first audiobook](docs/getting-started/first-audiobook.md) |
 | Transcribe media, correct subtitles, translate them, or export SRT/VTT | [Create your first subtitles](docs/getting-started/first-subtitles.md) |
 | Generate synchronized speech and produce a dubbed video | [Create your first voiceover](docs/getting-started/first-voiceover.md) |
-| Let the model in Codex, OpenCode, Claude Code, or another MCP host correct or translate queued subtitle batches | [Use passive dispatch](docs/guides/passive-dispatch.md) |
+| Let the model in Codex, OpenCode, Claude Code, or another MCP host process subtitle or PDF/EPUB cleanup batches | [Use passive dispatch](docs/guides/passive-dispatch.md) |
 | Connect an agent safely to Pandrator or recover a managed installation | [Pandrator MCP](pandrator_mcp/README.md) |
 | Install, update, repair, or operate local components | [Pandrator Manager](pandrator_manager/README.md) |
 
@@ -116,9 +116,9 @@ safe remote exposure.
 
 `pandrator-mcp` is a local stdio sidecar that lets an MCP-capable agent explain
 Pandrator, inspect one fixed installation, edit sessions safely, execute
-reviewed workflow plans, process passive subtitle batches, and perform bounded
-Manager recovery. Target origins and credentials are process configuration,
-not model-selected tool arguments.
+reviewed workflow plans, process passive subtitle and document-cleaning
+batches, and perform bounded Manager recovery. Target origins and credentials
+are process configuration, not model-selected tool arguments.
 
 The component guide documents:
 
@@ -127,7 +127,7 @@ The component guide documents:
 - owner-approved enrollment, identity pinning, rotation, and revocation;
 - secret-free host configuration for Codex, Claude Code, OpenCode, and
   Antigravity;
-- passive correction and translation; and
+- passive subtitle correction/translation and PDF/EPUB source cleanup; and
 - diagnostics and optional recovery while Pandrator is stopped.
 
 See the [Pandrator MCP guide](pandrator_mcp/README.md) for exact installation

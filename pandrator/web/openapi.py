@@ -1374,6 +1374,175 @@ def build_openapi_document() -> dict:
                     },
                 }
             },
+            "/api/v1/sessions/{sessionId}/source-cleaning-dispatch-runs": {
+                "post": {
+                    "operationId": "createSourceCleaningDispatchRun",
+                    "parameters": [idempotency_header(required=False)],
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/SourceCleaningDispatchRunCreateRequest"
+                                }
+                            }
+                        },
+                    },
+                    "responses": {
+                        "202": {
+                            "description": "Deterministic PDF/EPUB preparation queued"
+                        }
+                    },
+                },
+                "get": {
+                    "operationId": "listSourceCleaningDispatchRuns",
+                    "responses": {
+                        "200": {
+                            "description": "Source-cleaning dispatch run metadata"
+                        }
+                    },
+                },
+            },
+            "/api/v1/source-cleaning-dispatch-runs/{runId}": {
+                "get": {
+                    "operationId": "getSourceCleaningDispatchRun",
+                    "responses": {
+                        "200": {
+                            "description": "Source-cleaning dispatch run metadata"
+                        }
+                    },
+                }
+            },
+            "/api/v1/source-cleaning-dispatch-runs/{runId}/claim": {
+                "post": {
+                    "operationId": "claimSourceCleaningDispatchBatch",
+                    "parameters": [idempotency_header(required=True)],
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/DispatchBatchClaimRequest"
+                                }
+                            }
+                        },
+                    },
+                    "responses": {
+                        "200": {
+                            "description": "Claimed source-cleaning phase packet",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "$ref": "#/components/schemas/SourceCleaningDispatchBatchClaimResponse"
+                                    }
+                                }
+                            },
+                        }
+                    },
+                }
+            },
+            "/api/v1/source-cleaning-dispatch-batches/{batchId}/renew": {
+                "post": {
+                    "operationId": "renewSourceCleaningDispatchBatch",
+                    "parameters": [idempotency_header(required=False)],
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/DispatchBatchRenewRequest"
+                                }
+                            }
+                        },
+                    },
+                    "responses": {"200": {"description": "Lease renewed"}},
+                }
+            },
+            "/api/v1/source-cleaning-dispatch-batches/{batchId}/release": {
+                "post": {
+                    "operationId": "releaseSourceCleaningDispatchBatch",
+                    "parameters": [idempotency_header(required=False)],
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/DispatchBatchReleaseRequest"
+                                }
+                            }
+                        },
+                    },
+                    "responses": {
+                        "200": {"description": "Phase returned to ready"}
+                    },
+                }
+            },
+            "/api/v1/source-cleaning-dispatch-batches/{batchId}/inspect": {
+                "post": {
+                    "operationId": "inspectSourceCleaningDispatchExtraction",
+                    "parameters": [idempotency_header(required=True)],
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/SourceCleaningDispatchInspectionRequest"
+                                }
+                            }
+                        },
+                    },
+                    "responses": {
+                        "200": {
+                            "description": "Extraction inspection result and promoted evidence scope",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "$ref": "#/components/schemas/SourceCleaningDispatchInspectionResponse"
+                                    }
+                                }
+                            },
+                        }
+                    },
+                }
+            },
+            "/api/v1/source-cleaning-dispatch-batches/{batchId}/submit": {
+                "post": {
+                    "operationId": "submitSourceCleaningDispatchBatch",
+                    "parameters": [idempotency_header(required=True)],
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/SourceCleaningDispatchBatchSubmitRequest"
+                                }
+                            }
+                        },
+                    },
+                    "responses": {
+                        "200": {
+                            "description": "Phase accepted",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "$ref": "#/components/schemas/SourceCleaningDispatchBatchSubmitResponse"
+                                    }
+                                }
+                            },
+                        },
+                        "202": {
+                            "description": "Phase accepted; finalization continues",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "$ref": "#/components/schemas/SourceCleaningDispatchBatchSubmitResponse"
+                                    }
+                                }
+                            },
+                        },
+                    },
+                }
+            },
             "/api/v1/parity": {
                 "get": operation("getParityRegistry", "Qt-to-web parity registry")
             },
@@ -1938,6 +2107,42 @@ def build_openapi_document() -> dict:
         ("/api/v1/dispatch-batches/{batchId}/renew", "post", "app.run"),
         ("/api/v1/dispatch-batches/{batchId}/release", "post", "app.run"),
         ("/api/v1/dispatch-batches/{batchId}/submit", "post", "app.run"),
+        (
+            "/api/v1/sessions/{sessionId}/source-cleaning-dispatch-runs",
+            "get",
+            "app.read",
+        ),
+        (
+            "/api/v1/sessions/{sessionId}/source-cleaning-dispatch-runs",
+            "post",
+            "app.run",
+        ),
+        ("/api/v1/source-cleaning-dispatch-runs/{runId}", "get", "app.read"),
+        (
+            "/api/v1/source-cleaning-dispatch-runs/{runId}/claim",
+            "post",
+            "app.run",
+        ),
+        (
+            "/api/v1/source-cleaning-dispatch-batches/{batchId}/renew",
+            "post",
+            "app.run",
+        ),
+        (
+            "/api/v1/source-cleaning-dispatch-batches/{batchId}/release",
+            "post",
+            "app.run",
+        ),
+        (
+            "/api/v1/source-cleaning-dispatch-batches/{batchId}/inspect",
+            "post",
+            "app.run",
+        ),
+        (
+            "/api/v1/source-cleaning-dispatch-batches/{batchId}/submit",
+            "post",
+            "app.run",
+        ),
         ("/api/v1/sessions/{sessionId}", "get", "app.read"),
         ("/api/v1/sessions/{sessionId}", "patch", "app.write"),
         ("/api/v1/sessions/{sessionId}/forks", "post", "app.write"),

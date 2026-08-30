@@ -3306,6 +3306,688 @@
         "title": "SourceAttachRequest",
         "type": "object"
       },
+      "SourceCleaningDispatchBatchClaimResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "batch": {
+            "additionalProperties": true,
+            "title": "Batch",
+            "type": "object"
+          },
+          "batch_id": {
+            "title": "Batch Id",
+            "type": "string"
+          },
+          "batch_ordinal": {
+            "minimum": 1,
+            "title": "Batch Ordinal",
+            "type": "integer"
+          },
+          "batch_status": {
+            "title": "Batch Status",
+            "type": "string"
+          },
+          "lease_expires_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lease Expires At"
+          },
+          "lease_token": {
+            "title": "Lease Token",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "run_status": {
+            "title": "Run Status",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "1",
+            "default": "1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "task": {
+            "additionalProperties": true,
+            "title": "Task",
+            "type": "object"
+          }
+        },
+        "required": [
+          "run_id",
+          "batch_id",
+          "batch_ordinal",
+          "status",
+          "run_status",
+          "batch_status",
+          "task",
+          "batch",
+          "lease_token",
+          "lease_expires_at"
+        ],
+        "title": "SourceCleaningDispatchBatchClaimResponse",
+        "type": "object"
+      },
+      "SourceCleaningDispatchBatchSubmitRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "lease_token": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Lease Token",
+            "type": "string"
+          },
+          "result": {
+            "$ref": "#/components/schemas/SourceCleaningDispatchResult"
+          }
+        },
+        "required": [
+          "lease_token",
+          "result"
+        ],
+        "title": "SourceCleaningDispatchBatchSubmitRequest",
+        "type": "object"
+      },
+      "SourceCleaningDispatchBatchSubmitResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "accepted": {
+            "title": "Accepted",
+            "type": "boolean"
+          },
+          "accepted_operation_count": {
+            "minimum": 0,
+            "title": "Accepted Operation Count",
+            "type": "integer"
+          },
+          "batch_count": {
+            "minimum": 1,
+            "title": "Batch Count",
+            "type": "integer"
+          },
+          "batch_id": {
+            "title": "Batch Id",
+            "type": "string"
+          },
+          "batch_status": {
+            "title": "Batch Status",
+            "type": "string"
+          },
+          "completed_batch_count": {
+            "minimum": 0,
+            "title": "Completed Batch Count",
+            "type": "integer"
+          },
+          "completed_batches": {
+            "minimum": 0,
+            "title": "Completed Batches",
+            "type": "integer"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error Code"
+          },
+          "error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error Message"
+          },
+          "final_artifact_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Final Artifact Id"
+          },
+          "finalized": {
+            "title": "Finalized",
+            "type": "boolean"
+          },
+          "output_role": {
+            "const": "clean_text",
+            "title": "Output Role",
+            "type": "string"
+          },
+          "rejected_proposal_count": {
+            "minimum": 0,
+            "title": "Rejected Proposal Count",
+            "type": "integer"
+          },
+          "remaining_batches": {
+            "minimum": 0,
+            "title": "Remaining Batches",
+            "type": "integer"
+          },
+          "requires_review": {
+            "title": "Requires Review",
+            "type": "boolean"
+          },
+          "result_artifact_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Result Artifact Id"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "run_status": {
+            "title": "Run Status",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "total_batches": {
+            "minimum": 1,
+            "title": "Total Batches",
+            "type": "integer"
+          },
+          "validation": {
+            "additionalProperties": true,
+            "title": "Validation",
+            "type": "object"
+          }
+        },
+        "required": [
+          "run_id",
+          "batch_id",
+          "output_role",
+          "status",
+          "run_status",
+          "batch_status",
+          "accepted",
+          "completed_batch_count",
+          "completed_batches",
+          "batch_count",
+          "total_batches",
+          "remaining_batches",
+          "accepted_operation_count",
+          "rejected_proposal_count",
+          "finalized",
+          "requires_review",
+          "validation"
+        ],
+        "title": "SourceCleaningDispatchBatchSubmitResponse",
+        "type": "object"
+      },
+      "SourceCleaningDispatchDecision": {
+        "additionalProperties": false,
+        "properties": {
+          "operation_id": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "verdict": {
+            "enum": [
+              "accept",
+              "reject"
+            ],
+            "title": "Verdict",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation_id",
+          "verdict"
+        ],
+        "title": "SourceCleaningDispatchDecision",
+        "type": "object"
+      },
+      "SourceCleaningDispatchInspectionRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "enum": [
+              "batch",
+              "inspect_document_structure",
+              "inspect_navigation",
+              "search",
+              "regex_search",
+              "preview",
+              "inspect_block",
+              "get_epub_markup_for_text",
+              "preview_raw_markup_range",
+              "list_epub_selectors",
+              "preview_selector",
+              "list_repeated_lines",
+              "find_heading_candidates",
+              "analyze_chapter_structure",
+              "analyze_cleanup_structure",
+              "find_footnote_candidates",
+              "find_metadata_candidates"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "arguments": {
+            "additionalProperties": true,
+            "maxProperties": 100,
+            "title": "Arguments",
+            "type": "object"
+          },
+          "lease_token": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Lease Token",
+            "type": "string"
+          },
+          "view": {
+            "default": "working",
+            "enum": [
+              "working",
+              "baseline"
+            ],
+            "title": "View",
+            "type": "string"
+          }
+        },
+        "required": [
+          "lease_token",
+          "action"
+        ],
+        "title": "SourceCleaningDispatchInspectionRequest",
+        "type": "object"
+      },
+      "SourceCleaningDispatchInspectionResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "title": "Action",
+            "type": "string"
+          },
+          "baseline_only_block_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Baseline Only Block Ids",
+            "type": "array"
+          },
+          "batch_id": {
+            "title": "Batch Id",
+            "type": "string"
+          },
+          "inspection_id": {
+            "title": "Inspection Id",
+            "type": "string"
+          },
+          "lease_expires_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lease Expires At"
+          },
+          "observation": {
+            "title": "Observation"
+          },
+          "phase": {
+            "title": "Phase",
+            "type": "string"
+          },
+          "promoted_block_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Promoted Block Ids",
+            "type": "array"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "1",
+            "default": "1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "valid_block_id_count": {
+            "minimum": 0,
+            "title": "Valid Block Id Count",
+            "type": "integer"
+          },
+          "view": {
+            "enum": [
+              "working",
+              "baseline"
+            ],
+            "title": "View",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "batch_id",
+          "phase",
+          "inspection_id",
+          "view",
+          "action",
+          "observation",
+          "promoted_block_ids",
+          "baseline_only_block_ids",
+          "valid_block_id_count",
+          "lease_expires_at"
+        ],
+        "title": "SourceCleaningDispatchInspectionResponse",
+        "type": "object"
+      },
+      "SourceCleaningDispatchOperation": {
+        "additionalProperties": false,
+        "properties": {
+          "block_id": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Block Id"
+          },
+          "block_ids": {
+            "items": {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 2000,
+            "title": "Block Ids",
+            "type": "array"
+          },
+          "metadata": {
+            "additionalProperties": {
+              "maxLength": 2000,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxProperties": 20,
+            "propertyNames": {
+              "maxLength": 40,
+              "minLength": 1
+            },
+            "title": "Metadata",
+            "type": "object"
+          },
+          "op": {
+            "enum": [
+              "set_metadata",
+              "delete_blocks",
+              "mark_chapter",
+              "unmark_chapter",
+              "replace_block"
+            ],
+            "title": "Op",
+            "type": "string"
+          },
+          "reason": {
+            "default": "",
+            "maxLength": 4000,
+            "title": "Reason",
+            "type": "string"
+          },
+          "replacement": {
+            "default": "",
+            "maxLength": 50000,
+            "title": "Replacement",
+            "type": "string"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Title"
+          }
+        },
+        "required": [
+          "op"
+        ],
+        "title": "SourceCleaningDispatchOperation",
+        "type": "object"
+      },
+      "SourceCleaningDispatchResult": {
+        "additionalProperties": false,
+        "properties": {
+          "confidence": {
+            "default": 0.0,
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Confidence",
+            "type": "number"
+          },
+          "decisions": {
+            "items": {
+              "$ref": "#/components/schemas/SourceCleaningDispatchDecision"
+            },
+            "maxItems": 5000,
+            "title": "Decisions",
+            "type": "array"
+          },
+          "kind": {
+            "const": "source_cleaning",
+            "title": "Kind",
+            "type": "string"
+          },
+          "operations": {
+            "items": {
+              "$ref": "#/components/schemas/SourceCleaningDispatchOperation"
+            },
+            "maxItems": 2000,
+            "title": "Operations",
+            "type": "array"
+          },
+          "phase": {
+            "enum": [
+              "metadata",
+              "navigation",
+              "boilerplate",
+              "repeated_elements",
+              "chapter_marking",
+              "text_repair"
+            ],
+            "title": "Phase",
+            "type": "string"
+          },
+          "summary": {
+            "default": "",
+            "maxLength": 8000,
+            "title": "Summary",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "phase"
+        ],
+        "title": "SourceCleaningDispatchResult",
+        "type": "object"
+      },
+      "SourceCleaningDispatchRunCreateRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "evidence_limit": {
+            "default": 500,
+            "description": "Maximum evidence items exposed in each phase packet. This is a transport bound, not a model-token or iteration budget.",
+            "maximum": 2000,
+            "minimum": 20,
+            "title": "Evidence Limit",
+            "type": "integer"
+          },
+          "filter_citations": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Filter Citations"
+          },
+          "instructions": {
+            "default": "",
+            "maxLength": 16000,
+            "title": "Instructions",
+            "type": "string"
+          },
+          "pdf_ocr_dpi": {
+            "anyOf": [
+              {
+                "maximum": 400,
+                "minimum": 120,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Pdf Ocr Dpi"
+          },
+          "pdf_ocr_language": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "minLength": 2,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Pdf Ocr Language"
+          },
+          "pdf_ocr_mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "auto",
+                  "off",
+                  "force"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Pdf Ocr Mode"
+          },
+          "pdf_remove_repeated_marginals": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Pdf Remove Repeated Marginals"
+          },
+          "pdf_remove_toc": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Pdf Remove Toc"
+          },
+          "remove_footnotes": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Remove Footnotes"
+          },
+          "source_artifact_id": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Source Artifact Id"
+          }
+        },
+        "title": "SourceCleaningDispatchRunCreateRequest",
+        "type": "object"
+      },
       "SourceReuseRequest": {
         "additionalProperties": false,
         "properties": {
@@ -7244,6 +7926,91 @@
         ]
       }
     },
+    "/api/v1/sessions/{sessionId}/source-cleaning-dispatch-runs": {
+      "get": {
+        "operationId": "listSourceCleaningDispatchRuns",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Source-cleaning dispatch run metadata"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
+      },
+      "post": {
+        "operationId": "createSourceCleaningDispatchRun",
+        "parameters": [
+          {
+            "description": "Required for automation principals and strongly recommended for every retryable write.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SourceCleaningDispatchRunCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Deterministic PDF/EPUB preparation queued"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.run"
+            ]
+          }
+        ]
+      }
+    },
     "/api/v1/sessions/{sessionId}/sources": {
       "get": {
         "operationId": "listSessionSources",
@@ -7842,6 +8609,340 @@
             "description": "Revision conflict"
           }
         }
+      }
+    },
+    "/api/v1/source-cleaning-dispatch-batches/{batchId}/inspect": {
+      "post": {
+        "operationId": "inspectSourceCleaningDispatchExtraction",
+        "parameters": [
+          {
+            "description": "Required for automation principals and strongly recommended for every retryable write.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "batchId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SourceCleaningDispatchInspectionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SourceCleaningDispatchInspectionResponse"
+                }
+              }
+            },
+            "description": "Extraction inspection result and promoted evidence scope"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.run"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/source-cleaning-dispatch-batches/{batchId}/release": {
+      "post": {
+        "operationId": "releaseSourceCleaningDispatchBatch",
+        "parameters": [
+          {
+            "description": "Required for automation principals and strongly recommended for every retryable write.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "batchId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DispatchBatchReleaseRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Phase returned to ready"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.run"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/source-cleaning-dispatch-batches/{batchId}/renew": {
+      "post": {
+        "operationId": "renewSourceCleaningDispatchBatch",
+        "parameters": [
+          {
+            "description": "Required for automation principals and strongly recommended for every retryable write.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "batchId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DispatchBatchRenewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Lease renewed"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.run"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/source-cleaning-dispatch-batches/{batchId}/submit": {
+      "post": {
+        "operationId": "submitSourceCleaningDispatchBatch",
+        "parameters": [
+          {
+            "description": "Required for automation principals and strongly recommended for every retryable write.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "batchId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SourceCleaningDispatchBatchSubmitRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SourceCleaningDispatchBatchSubmitResponse"
+                }
+              }
+            },
+            "description": "Phase accepted"
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SourceCleaningDispatchBatchSubmitResponse"
+                }
+              }
+            },
+            "description": "Phase accepted; finalization continues"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.run"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/source-cleaning-dispatch-runs/{runId}": {
+      "get": {
+        "operationId": "getSourceCleaningDispatchRun",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "runId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Source-cleaning dispatch run metadata"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/source-cleaning-dispatch-runs/{runId}/claim": {
+      "post": {
+        "operationId": "claimSourceCleaningDispatchBatch",
+        "parameters": [
+          {
+            "description": "Required for automation principals and strongly recommended for every retryable write.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "runId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DispatchBatchClaimRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SourceCleaningDispatchBatchClaimResponse"
+                }
+              }
+            },
+            "description": "Claimed source-cleaning phase packet"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.run"
+            ]
+          }
+        ]
       }
     },
     "/api/v1/sources": {

@@ -1605,6 +1605,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{sessionId}/source-cleaning-dispatch-runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listSourceCleaningDispatchRuns"];
+        put?: never;
+        post: operations["createSourceCleaningDispatchRun"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{sessionId}/sources": {
         parameters: {
             query?: never;
@@ -1855,6 +1871,102 @@ export interface paths {
         get: operations["getSetting"];
         put: operations["putSetting"];
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/source-cleaning-dispatch-batches/{batchId}/inspect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["inspectSourceCleaningDispatchExtraction"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/source-cleaning-dispatch-batches/{batchId}/release": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["releaseSourceCleaningDispatchBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/source-cleaning-dispatch-batches/{batchId}/renew": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["renewSourceCleaningDispatchBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/source-cleaning-dispatch-batches/{batchId}/submit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["submitSourceCleaningDispatchBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/source-cleaning-dispatch-runs/{runId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getSourceCleaningDispatchRun"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/source-cleaning-dispatch-runs/{runId}/claim": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["claimSourceCleaningDispatchBatch"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3679,6 +3791,286 @@ export interface components {
             role?: string;
             /** Source Asset Id */
             source_asset_id: string;
+        };
+        /** SourceCleaningDispatchBatchClaimResponse */
+        SourceCleaningDispatchBatchClaimResponse: {
+            /** Batch */
+            batch: {
+                [key: string]: unknown;
+            };
+            /** Batch Id */
+            batch_id: string;
+            /** Batch Ordinal */
+            batch_ordinal: number;
+            /** Batch Status */
+            batch_status: string;
+            /** Lease Expires At */
+            lease_expires_at: string | null;
+            /** Lease Token */
+            lease_token: string;
+            /** Run Id */
+            run_id: string;
+            /** Run Status */
+            run_status: string;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version?: "1";
+            /** Status */
+            status: string;
+            /** Task */
+            task: {
+                [key: string]: unknown;
+            };
+        };
+        /** SourceCleaningDispatchBatchSubmitRequest */
+        SourceCleaningDispatchBatchSubmitRequest: {
+            /** Lease Token */
+            lease_token: string;
+            result: components["schemas"]["SourceCleaningDispatchResult"];
+        };
+        /** SourceCleaningDispatchBatchSubmitResponse */
+        SourceCleaningDispatchBatchSubmitResponse: {
+            /** Accepted */
+            accepted: boolean;
+            /** Accepted Operation Count */
+            accepted_operation_count: number;
+            /** Batch Count */
+            batch_count: number;
+            /** Batch Id */
+            batch_id: string;
+            /** Batch Status */
+            batch_status: string;
+            /** Completed Batch Count */
+            completed_batch_count: number;
+            /** Completed Batches */
+            completed_batches: number;
+            /**
+             * Error Code
+             * @default null
+             */
+            error_code?: string | null;
+            /**
+             * Error Message
+             * @default null
+             */
+            error_message?: string | null;
+            /**
+             * Final Artifact Id
+             * @default null
+             */
+            final_artifact_id?: string | null;
+            /** Finalized */
+            finalized: boolean;
+            /**
+             * Output Role
+             * @constant
+             */
+            output_role: "clean_text";
+            /** Rejected Proposal Count */
+            rejected_proposal_count: number;
+            /** Remaining Batches */
+            remaining_batches: number;
+            /** Requires Review */
+            requires_review: boolean;
+            /**
+             * Result Artifact Id
+             * @default null
+             */
+            result_artifact_id?: string | null;
+            /** Run Id */
+            run_id: string;
+            /** Run Status */
+            run_status: string;
+            /** Status */
+            status: string;
+            /** Total Batches */
+            total_batches: number;
+            /** Validation */
+            validation: {
+                [key: string]: unknown;
+            };
+        };
+        /** SourceCleaningDispatchDecision */
+        SourceCleaningDispatchDecision: {
+            /** Operation Id */
+            operation_id: string;
+            /**
+             * Verdict
+             * @enum {string}
+             */
+            verdict: "accept" | "reject";
+        };
+        /** SourceCleaningDispatchInspectionRequest */
+        SourceCleaningDispatchInspectionRequest: {
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "batch" | "inspect_document_structure" | "inspect_navigation" | "search" | "regex_search" | "preview" | "inspect_block" | "get_epub_markup_for_text" | "preview_raw_markup_range" | "list_epub_selectors" | "preview_selector" | "list_repeated_lines" | "find_heading_candidates" | "analyze_chapter_structure" | "analyze_cleanup_structure" | "find_footnote_candidates" | "find_metadata_candidates";
+            /** Arguments */
+            arguments?: {
+                [key: string]: unknown;
+            };
+            /** Lease Token */
+            lease_token: string;
+            /**
+             * View
+             * @default working
+             * @enum {string}
+             */
+            view?: "working" | "baseline";
+        };
+        /** SourceCleaningDispatchInspectionResponse */
+        SourceCleaningDispatchInspectionResponse: {
+            /** Action */
+            action: string;
+            /** Baseline Only Block Ids */
+            baseline_only_block_ids: string[];
+            /** Batch Id */
+            batch_id: string;
+            /** Inspection Id */
+            inspection_id: string;
+            /** Lease Expires At */
+            lease_expires_at: string | null;
+            /** Observation */
+            observation: unknown;
+            /** Phase */
+            phase: string;
+            /** Promoted Block Ids */
+            promoted_block_ids: string[];
+            /** Run Id */
+            run_id: string;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version?: "1";
+            /** Valid Block Id Count */
+            valid_block_id_count: number;
+            /**
+             * View
+             * @enum {string}
+             */
+            view: "working" | "baseline";
+        };
+        /** SourceCleaningDispatchOperation */
+        SourceCleaningDispatchOperation: {
+            /**
+             * Block Id
+             * @default null
+             */
+            block_id?: string | null;
+            /** Block Ids */
+            block_ids?: string[];
+            /** Metadata */
+            metadata?: {
+                [key: string]: string;
+            };
+            /**
+             * Op
+             * @enum {string}
+             */
+            op: "set_metadata" | "delete_blocks" | "mark_chapter" | "unmark_chapter" | "replace_block";
+            /**
+             * Reason
+             * @default
+             */
+            reason?: string;
+            /**
+             * Replacement
+             * @default
+             */
+            replacement?: string;
+            /**
+             * Title
+             * @default null
+             */
+            title?: string | null;
+        };
+        /** SourceCleaningDispatchResult */
+        SourceCleaningDispatchResult: {
+            /**
+             * Confidence
+             * @default 0
+             */
+            confidence?: number;
+            /** Decisions */
+            decisions?: components["schemas"]["SourceCleaningDispatchDecision"][];
+            /**
+             * Kind
+             * @constant
+             */
+            kind: "source_cleaning";
+            /** Operations */
+            operations?: components["schemas"]["SourceCleaningDispatchOperation"][];
+            /**
+             * Phase
+             * @enum {string}
+             */
+            phase: "metadata" | "navigation" | "boilerplate" | "repeated_elements" | "chapter_marking" | "text_repair";
+            /**
+             * Summary
+             * @default
+             */
+            summary?: string;
+        };
+        /** SourceCleaningDispatchRunCreateRequest */
+        SourceCleaningDispatchRunCreateRequest: {
+            /**
+             * Evidence Limit
+             * @description Maximum evidence items exposed in each phase packet. This is a transport bound, not a model-token or iteration budget.
+             * @default 500
+             */
+            evidence_limit?: number;
+            /**
+             * Filter Citations
+             * @default null
+             */
+            filter_citations?: boolean | null;
+            /**
+             * Instructions
+             * @default
+             */
+            instructions?: string;
+            /**
+             * Pdf Ocr Dpi
+             * @default null
+             */
+            pdf_ocr_dpi?: number | null;
+            /**
+             * Pdf Ocr Language
+             * @default null
+             */
+            pdf_ocr_language?: string | null;
+            /**
+             * Pdf Ocr Mode
+             * @default null
+             */
+            pdf_ocr_mode?: ("auto" | "off" | "force") | null;
+            /**
+             * Pdf Remove Repeated Marginals
+             * @default null
+             */
+            pdf_remove_repeated_marginals?: boolean | null;
+            /**
+             * Pdf Remove Toc
+             * @default null
+             */
+            pdf_remove_toc?: boolean | null;
+            /**
+             * Remove Footnotes
+             * @default null
+             */
+            remove_footnotes?: boolean | null;
+            /**
+             * Source Artifact Id
+             * @default null
+             */
+            source_artifact_id?: string | null;
         };
         /** SourceReuseRequest */
         SourceReuseRequest: {
@@ -6676,6 +7068,53 @@ export interface operations {
             };
         };
     };
+    listSourceCleaningDispatchRuns: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Source-cleaning dispatch run metadata */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createSourceCleaningDispatchRun: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Required for automation principals and strongly recommended for every retryable write. */
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SourceCleaningDispatchRunCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Deterministic PDF/EPUB preparation queued */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     listSessionSources: {
         parameters: {
             query?: never;
@@ -7111,6 +7550,176 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    inspectSourceCleaningDispatchExtraction: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Required for automation principals and strongly recommended for every retryable write. */
+                "Idempotency-Key": string;
+            };
+            path: {
+                batchId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SourceCleaningDispatchInspectionRequest"];
+            };
+        };
+        responses: {
+            /** @description Extraction inspection result and promoted evidence scope */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourceCleaningDispatchInspectionResponse"];
+                };
+            };
+        };
+    };
+    releaseSourceCleaningDispatchBatch: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Required for automation principals and strongly recommended for every retryable write. */
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                batchId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DispatchBatchReleaseRequest"];
+            };
+        };
+        responses: {
+            /** @description Phase returned to ready */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    renewSourceCleaningDispatchBatch: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Required for automation principals and strongly recommended for every retryable write. */
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                batchId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DispatchBatchRenewRequest"];
+            };
+        };
+        responses: {
+            /** @description Lease renewed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    submitSourceCleaningDispatchBatch: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Required for automation principals and strongly recommended for every retryable write. */
+                "Idempotency-Key": string;
+            };
+            path: {
+                batchId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SourceCleaningDispatchBatchSubmitRequest"];
+            };
+        };
+        responses: {
+            /** @description Phase accepted */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourceCleaningDispatchBatchSubmitResponse"];
+                };
+            };
+            /** @description Phase accepted; finalization continues */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourceCleaningDispatchBatchSubmitResponse"];
+                };
+            };
+        };
+    };
+    getSourceCleaningDispatchRun: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Source-cleaning dispatch run metadata */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    claimSourceCleaningDispatchBatch: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Required for automation principals and strongly recommended for every retryable write. */
+                "Idempotency-Key": string;
+            };
+            path: {
+                runId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DispatchBatchClaimRequest"];
+            };
+        };
+        responses: {
+            /** @description Claimed source-cleaning phase packet */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourceCleaningDispatchBatchClaimResponse"];
+                };
             };
         };
     };

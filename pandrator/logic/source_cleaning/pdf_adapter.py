@@ -11,11 +11,11 @@ import unicodedata
 from collections import defaultdict
 from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass
+from itertools import pairwise
 from typing import Any
 
 from .models import SourceBlock, SourceDocument
 from .pdf_text_adapter import _front_matter_metadata, _metadata_from_filename
-
 
 ProgressCallback = Callable[[str], None]
 PDF_INGESTION_VERSION = 8
@@ -119,7 +119,7 @@ class PaddleOCRMediumEngine:
         image = np.frombuffer(pixmap.samples, dtype=np.uint8).reshape(pixmap.height, pixmap.width, channels)
         if channels == 4:
             image = image[:, :, :3]
-        result = list(engine.predict(image))[0]
+        result = next(iter(engine.predict(image)))
         texts = list(result.get("rec_texts") or [])
         scores = list(result.get("rec_scores") or [])
         polygons = list(result.get("rec_polys") or [])
@@ -263,7 +263,7 @@ def build_source_document(
                 try:
                     _emit(progress_callback, f"Running OCR on PDF page {page_index + 1}/{pdf.page_count}...")
                     lines, ocr_report = engine.recognize(page, resolved.ocr_language, resolved.ocr_dpi)
-                except Exception as error:
+                except Exception as error:  # noqa: BLE001 - OCR backends expose varied failures
                     document.warnings.append(
                         f"OCR failed on page {page_index + 1}; retained native extraction: {error}"
                     )
@@ -815,7 +815,7 @@ def _annotate_page_continuations(document: SourceDocument) -> None:
 
     non_narrative_pages = _non_narrative_page_span(blocks_by_page)
     pages = sorted(blocks_by_page)
-    for previous_page, current_page in zip(pages, pages[1:]):
+    for previous_page, current_page in pairwise(pages):
         if current_page != previous_page + 1:
             continue
         if previous_page in non_narrative_pages or current_page in non_narrative_pages:

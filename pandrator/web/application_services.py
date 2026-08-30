@@ -27,6 +27,7 @@ from .models import AppSetting, SessionRecord
 from .pronunciations import PronunciationLibrary
 from .session_forks import SessionForkService
 from .sessions import SessionService
+from .source_cleaning_dispatch import SourceCleaningDispatchRunService
 from .startup import StartupMaintenance
 from .subtitle_review import SubtitleReviewService
 from .tts_providers import TtsCatalogueService, TtsProviderRegistry
@@ -78,6 +79,7 @@ class ApplicationServices:
     startup_maintenance: StartupMaintenance
     subtitle_review: SubtitleReviewService
     dispatch: DispatchRunService
+    source_cleaning_dispatch: SourceCleaningDispatchRunService
     bootstrap: BootstrapTokenStore
     session_directory: Callable[[str], Path]
 
@@ -194,6 +196,13 @@ class ApplicationServices:
             artifacts,
             session_directory,
         )
+        source_cleaning_dispatch = SourceCleaningDispatchRunService(
+            database,
+            artifacts,
+            session_directory,
+            jobs=jobs,
+            workspace_settings=workspace_settings,
+        )
         return cls(
             paths=paths,
             migration=migration,
@@ -226,6 +235,7 @@ class ApplicationServices:
             startup_maintenance=startup_maintenance,
             subtitle_review=subtitle_review,
             dispatch=dispatch,
+            source_cleaning_dispatch=source_cleaning_dispatch,
             bootstrap=bootstrap_tokens or BootstrapTokenStore(),
             session_directory=session_directory,
         )
@@ -264,6 +274,7 @@ class ApplicationServices:
             "startup_maintenance": self.startup_maintenance,
             "subtitle_review": self.subtitle_review,
             "dispatch": self.dispatch,
+            "source_cleaning_dispatch": self.source_cleaning_dispatch,
             "bootstrap": self.bootstrap,
             "migration": self.migration,
             "services": self,

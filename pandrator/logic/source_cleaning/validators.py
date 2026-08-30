@@ -5,7 +5,7 @@ from collections import Counter
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from .models import CleaningResult, SourceDocument
+from .models import CleaningResult, SourceBlock, SourceDocument
 from .tools import SourceCleaningTools
 
 
@@ -33,30 +33,51 @@ def validate_cleaning_result(
             report.blocking_warnings.append(message)
 
     original_blocks = len(document.plain_lines())
-    cleaned_blocks = len([line for line in result.cleaned_text.splitlines() if line.strip()])
+    cleaned_blocks = len(
+        [line for line in result.cleaned_text.splitlines() if line.strip()]
+    )
     deleted_blocks = len(result.deleted_block_ids)
     chapter_count = result.report.get("chapter_count", 0)
     nav_title_count = len(document.nav_titles)
-    chapter_structure = SourceCleaningTools(document).analyze_chapter_structure(max_candidates=1)
+    chapter_structure = SourceCleaningTools(document).analyze_chapter_structure(
+        max_candidates=1
+    )
     likely_chapter_count = int(chapter_structure.get("likely_chapter_count") or 0)
     numbered_heading_count = int(chapter_structure.get("numbered_heading_count") or 0)
+    section_heading_count = int(chapter_structure.get("section_heading_count") or 0)
     deleted_ids = set(result.deleted_block_ids)
     retained_ids = [
-        block.block_id
-        for block in document.blocks
-        if block.block_id not in deleted_ids
+        block.block_id for block in document.blocks if block.block_id not in deleted_ids
     ]
     cleanup_structure = SourceCleaningTools(document).analyze_cleanup_structure(
         max_candidates=10,
         scope={"block_ids": retained_ids},
     )
     remaining_toc_blocks = int(cleanup_structure.get("toc_block_count") or 0)
-    remaining_boilerplate_blocks = int(cleanup_structure.get("likely_boilerplate_block_count") or 0)
+    remaining_boilerplate_blocks = int(
+        cleanup_structure.get("likely_boilerplate_block_count") or 0
+    )
     title_heading_blocks = _narrative_title_heading_blocks(document)
-    retained_title_heading_count = sum(block.block_id not in deleted_ids for block in title_heading_blocks)
+    retained_title_heading_count = sum(
+        block.block_id not in deleted_ids for block in title_heading_blocks
+    )
     closing_marker_blocks = _narrative_closing_marker_blocks(document)
-    retained_closing_marker_count = sum(block.block_id not in deleted_ids for block in closing_marker_blocks)
+    retained_closing_marker_count = sum(
+        block.block_id not in deleted_ids for block in closing_marker_blocks
+    )
     deletion_ratio = (deleted_blocks / original_blocks) if original_blocks else 0.0
+    expected_deletion_ids = {
+        block.block_id
+        for block in document.blocks
+        if _is_expected_non_narrative_deletion(block, remove_footnotes=remove_footnotes)
+    }
+    substantive_original_blocks = max(0, original_blocks - len(expected_deletion_ids))
+    substantive_deleted_blocks = len(deleted_ids - expected_deletion_ids)
+    substantive_deletion_ratio = (
+        substantive_deleted_blocks / substantive_original_blocks
+        if substantive_original_blocks
+        else 0.0
+    )
 
     report.stats.update(
         {
@@ -68,23 +89,58 @@ def validate_cleaning_result(
             "nav_title_count": nav_title_count,
             "likely_chapter_count": likely_chapter_count,
             "numbered_heading_count": numbered_heading_count,
+            "section_heading_count": section_heading_count,
             "remaining_toc_blocks": remaining_toc_blocks,
             "remaining_likely_boilerplate_blocks": remaining_boilerplate_blocks,
             "retained_title_heading_count": retained_title_heading_count,
             "retained_closing_marker_count": retained_closing_marker_count,
             "applied_operation_count": len(result.applied_operations),
             "skipped_operation_count": len(result.skipped_operations),
+            "substantive_deleted_blocks": substantive_deleted_blocks,
+            "substantive_deletion_ratio": round(substantive_deletion_ratio, 4),
         }
     )
 
     if document.source_type == "pdf_structured":
         page_blocks = Counter(block.page for block in document.blocks if block.page)
         deleted_page_blocks = Counter(
-            block.page for block in document.blocks if block.block_id in deleted_ids and block.page
+            block.page
+            for block in document.blocks
+            if block.block_id in deleted_ids and block.page
         )
         fully_deleted_pages = sorted(
-            page for page, count in page_blocks.items() if deleted_page_blocks.get(page, 0) >= count
+            page
+            for page, count in page_blocks.items()
+            if deleted_page_blocks.get(page, 0) >= count
         )
+        expected_fully_deleted_pages = [
+            page
+            for page in fully_deleted_pages
+            if all(
+                _is_expected_non_narrative_deletion(
+                    block,
+                    remove_footnotes=remove_footnotes,
+                )
+                for block in document.blocks
+                if block.page == page
+            )
+        ]
+        relocated_fully_deleted_pages = [
+            page
+            for page in fully_deleted_pages
+            if page not in expected_fully_deleted_pages
+            and _page_content_preserved_after_repair(
+                [block for block in document.blocks if block.page == page],
+                result.cleaned_text,
+                remove_footnotes=remove_footnotes,
+            )
+        ]
+        substantive_fully_deleted_pages = [
+            page
+            for page in fully_deleted_pages
+            if page not in expected_fully_deleted_pages
+            and page not in relocated_fully_deleted_pages
+        ]
         ingestion_pages = document.attributes.get("pdf_ingestion", {}).get("pages", [])
         low_confidence_ocr_pages = [
             int(page.get("page") or 0)
@@ -94,24 +150,34 @@ def validate_cleaning_result(
             and float(page["ocr"].get("mean_confidence") or 0.0) < 0.75
         ]
         report.stats["fully_deleted_pdf_pages"] = fully_deleted_pages
+        report.stats["expected_fully_deleted_pdf_pages"] = expected_fully_deleted_pages
+        report.stats["relocated_fully_deleted_pdf_pages"] = (
+            relocated_fully_deleted_pages
+        )
+        report.stats["substantive_fully_deleted_pdf_pages"] = (
+            substantive_fully_deleted_pages
+        )
         report.stats["low_confidence_ocr_pages"] = low_confidence_ocr_pages
-        if fully_deleted_pages:
+        if substantive_fully_deleted_pages:
             add_warning(
-                f"All extracted text was removed from PDF page(s): {fully_deleted_pages[:12]}.",
-                blocking=len(fully_deleted_pages) >= 2,
+                "All substantive extracted text was removed from PDF page(s): "
+                f"{substantive_fully_deleted_pages[:12]}.",
+                blocking=len(substantive_fully_deleted_pages) >= 2,
             )
         if low_confidence_ocr_pages:
             add_warning(
                 f"Low-confidence OCR was retained on PDF page(s): {low_confidence_ocr_pages[:12]}."
             )
 
-    if original_blocks and deletion_ratio > 0.45:
+    if substantive_original_blocks and substantive_deletion_ratio > 0.45:
         add_warning(
-            f"High deletion ratio ({deletion_ratio:.1%}); review the diff before accepting."
+            "High substantive deletion ratio "
+            f"({substantive_deletion_ratio:.1%}); review the diff before accepting."
         )
-    elif original_blocks and deletion_ratio > 0.30:
+    elif substantive_original_blocks and substantive_deletion_ratio > 0.30:
         add_warning(
-            f"Moderate deletion ratio ({deletion_ratio:.1%}); spot-check removed sections."
+            "Moderate substantive deletion ratio "
+            f"({substantive_deletion_ratio:.1%}); spot-check removed sections."
         )
 
     if original_blocks >= 40 and not chapter_count:
@@ -141,7 +207,10 @@ def validate_cleaning_result(
         document=document,
         deleted_block_ids=deleted_ids,
     ):
-        add_warning("Cleaned text may still contain a table-of-contents-like section.", blocking=True)
+        add_warning(
+            "Cleaned text may still contain a table-of-contents-like section.",
+            blocking=True,
+        )
 
     if remaining_toc_blocks >= 4:
         add_warning(
@@ -162,10 +231,14 @@ def validate_cleaning_result(
         )
 
     if title_heading_blocks and not retained_title_heading_count:
-        add_warning("The book title heading appears to have been removed.", blocking=True)
+        add_warning(
+            "The book title heading appears to have been removed.", blocking=True
+        )
 
     if closing_marker_blocks and not retained_closing_marker_count:
-        add_warning("The narrative closing marker appears to have been removed.", blocking=True)
+        add_warning(
+            "The narrative closing marker appears to have been removed.", blocking=True
+        )
 
     if remove_footnotes and _contains_footnote_like_lines(result.cleaned_text):
         add_warning(
@@ -183,6 +256,70 @@ def validate_cleaning_result(
         report.errors.append("Cleaning produced empty text.")
 
     return report
+
+
+def _is_expected_non_narrative_deletion(
+    block: SourceBlock,
+    *,
+    remove_footnotes: bool,
+) -> bool:
+    roles = set(block.role_candidates)
+    expected_roles = {
+        "boilerplate",
+        "copyright",
+        "page_number",
+        "repeated_marginal",
+        "running_header",
+        "toc",
+    }
+    if remove_footnotes:
+        expected_roles.update({"footnote", "footnote_candidate"})
+    return bool(roles & expected_roles)
+
+
+def _page_content_preserved_after_repair(
+    blocks: list[SourceBlock],
+    cleaned_text: str,
+    *,
+    remove_footnotes: bool,
+) -> bool:
+    """Recognize page text deliberately moved into reviewed replacement blocks.
+
+    Block IDs cannot survive a replacement that repairs column order or joins a
+    page seam.  Eight-word phrases provide stronger evidence than global token
+    overlap, while short blocks still require their entire normalized phrase.
+    """
+
+    cleaned_words = _validation_words(cleaned_text)
+    if not cleaned_words:
+        return False
+    cleaned = " ".join(cleaned_words)
+    phrases: list[str] = []
+    for block in blocks:
+        if _is_expected_non_narrative_deletion(
+            block,
+            remove_footnotes=remove_footnotes,
+        ):
+            continue
+        words = _validation_words(block.text)
+        if not words:
+            continue
+        if len(words) <= 8:
+            phrases.append(" ".join(words))
+            continue
+        starts = list(range(0, len(words) - 7, 8))
+        final_start = len(words) - 8
+        if final_start not in starts:
+            starts.append(final_start)
+        phrases.extend(" ".join(words[start : start + 8]) for start in starts)
+    if not phrases:
+        return False
+    matched = sum(phrase in cleaned for phrase in phrases)
+    return matched / len(phrases) >= 0.75
+
+
+def _validation_words(text: str) -> list[str]:
+    return re.findall(r"[^\W_]+(?:[’'][^\W_]+)?", str(text or "").casefold())
 
 
 def _contains_toc_like_section(
@@ -205,21 +342,24 @@ def _contains_toc_like_section(
         following = lines[index + 1 : index + 18]
         if sum(1 for item in following if _looks_like_toc_entry(item)) >= 4:
             return True
-    front_lines = lines[:120]
+    front_items: list[Any] = list(lines[:120])
     if document is not None:
         deleted = deleted_block_ids or set()
-        front_lines = [
+        front_items = [
             block
             for block in document.blocks
             if block.block_id not in deleted and block.text.strip()
         ][:120]
-    for index in range(0, max(1, len(front_lines) - 7)):
-        window = front_lines[index : index + 8]
-        if sum(
-            _looks_like_chapter_heading(_toc_candidate_text(item))
-            and not _is_non_narrative_toc_candidate(item)
-            for item in window
-        ) >= 5:
+    for index in range(max(1, len(front_items) - 7)):
+        window = front_items[index : index + 8]
+        if (
+            sum(
+                _looks_like_chapter_heading(_toc_candidate_text(item))
+                and not _is_non_narrative_toc_candidate(item)
+                for item in window
+            )
+            >= 5
+        ):
             return True
     return False
 
@@ -246,9 +386,7 @@ def _looks_like_toc_entry(line: str) -> bool:
     stripped = line.strip()
     if re.search(r"\.{3,}\s*\d+$", stripped):
         return True
-    if re.search(r"\s+\d{1,4}$", stripped) and len(stripped.split()) <= 12:
-        return True
-    return False
+    return bool(re.search(r"\s+\d{1,4}$", stripped) and len(stripped.split()) <= 12)
 
 
 def _looks_like_chapter_heading(line: str) -> bool:

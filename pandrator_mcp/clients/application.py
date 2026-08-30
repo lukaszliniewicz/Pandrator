@@ -36,6 +36,7 @@ _PASSTHROUGH_ERROR_CODES = frozenset(
         "ineligible_source",
         "invalid_kind",
         "invalid_model_response",
+        "invalid_cleanup_result",
         "invalid_output_role",
         "idempotency_conflict",
         "idempotency_in_progress",
@@ -49,9 +50,13 @@ _PASSTHROUGH_ERROR_CODES = frozenset(
         "plan_invalid",
         "plan_stale",
         "precondition_required",
+        "preparation_conflict",
         "response_too_large",
         "result_kind_mismatch",
+        "result_phase_mismatch",
         "run_not_claimable",
+        "run_preparing",
+        "run_not_preparable",
         "scope_denied",
         "session_busy",
         "source_changed",
@@ -67,6 +72,8 @@ _PASSTHROUGH_ERROR_CODES = frozenset(
         "source_session_mismatch",
         "source_unavailable",
         "source_unmaterialized",
+        "index_changed",
+        "index_unavailable",
         "target_identity_mismatch",
         "target_language_required",
         "validation_error",
@@ -85,7 +92,7 @@ class ApplicationClient:
         session: requests.Session | None = None,
         local_bootstrap: LocalBootstrap | None = None,
         timeout_seconds: float = 15.0,
-        maximum_response_bytes: int = 2 * 1024 * 1024,
+        maximum_response_bytes: int = 8 * 1024 * 1024,
     ) -> None:
         self.binding = binding
         self.credentials = credentials
@@ -145,7 +152,7 @@ class ApplicationClient:
                 raise ValueError("Application request values must be finite JSON.") from error
             body_limit = max(
                 64 * 1024,
-                min(int(maximum_body_bytes), 4 * 1024 * 1024),
+                min(int(maximum_body_bytes), 16 * 1024 * 1024),
             )
             if len(encoded_body) > body_limit:
                 raise ValueError("The application request exceeds the bounded body limit.")
@@ -260,7 +267,7 @@ class ApplicationClient:
                             size += len(chunk)
                             if size > self.maximum_response_bytes:
                                 raise PandratorMcpError(
-                                    "downstream_unavailable",
+                                    "response_too_large",
                                     "The Pandrator response exceeded the configured size limit.",
                                 )
                             chunks.append(chunk)
@@ -596,6 +603,145 @@ class ApplicationClient:
             # larger on the wire while the backend still enforces the exact
             # decoded response limit.
             maximum_body_bytes=4 * 1024 * 1024,
+        )
+
+    def create_source_cleaning_dispatch_run(
+        self,
+        session_id: str,
+        *,
+        source_artifact_id: str | None,
+        instructions: str,
+        evidence_limit: int,
+        remove_footnotes: bool | None,
+        filter_citations: bool | None,
+        pdf_ocr_mode: str | None,
+        pdf_ocr_language: str | None,
+        pdf_ocr_dpi: int | None,
+        pdf_remove_toc: bool | None,
+        pdf_remove_repeated_marginals: bool | None,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "source_artifact_id": source_artifact_id,
+            "instructions": instructions,
+            "evidence_limit": int(evidence_limit),
+        }
+        optional = {
+            "remove_footnotes": remove_footnotes,
+            "filter_citations": filter_citations,
+            "pdf_ocr_mode": pdf_ocr_mode,
+            "pdf_ocr_language": pdf_ocr_language,
+            "pdf_ocr_dpi": pdf_ocr_dpi,
+            "pdf_remove_toc": pdf_remove_toc,
+            "pdf_remove_repeated_marginals": pdf_remove_repeated_marginals,
+        }
+        body.update({key: value for key, value in optional.items() if value is not None})
+        return self._request_json(
+            f"/api/v1/sessions/{quote(session_id, safe='')}/source-cleaning-dispatch-runs",
+            method="POST",
+            body=body,
+            idempotency_key=idempotency_key,
+        )
+
+    def list_source_cleaning_dispatch_runs(
+        self,
+        session_id: str,
+        *,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/sessions/{quote(session_id, safe='')}/source-cleaning-dispatch-runs",
+            parameters={"limit": max(1, min(int(limit), 100))},
+        )
+
+    def get_source_cleaning_dispatch_run(self, run_id: str) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/source-cleaning-dispatch-runs/{quote(run_id, safe='')}"
+        )
+
+    def claim_source_cleaning_dispatch_batch(
+        self,
+        run_id: str,
+        *,
+        lease_seconds: int,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/source-cleaning-dispatch-runs/{quote(run_id, safe='')}/claim",
+            method="POST",
+            body={"lease_seconds": int(lease_seconds)},
+            idempotency_key=idempotency_key,
+        )
+
+    def renew_source_cleaning_dispatch_batch(
+        self,
+        batch_id: str,
+        *,
+        lease_token: str,
+        lease_seconds: int,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/source-cleaning-dispatch-batches/{quote(batch_id, safe='')}/renew",
+            method="POST",
+            body={
+                "lease_token": lease_token,
+                "lease_seconds": int(lease_seconds),
+            },
+            idempotency_key=idempotency_key,
+        )
+
+    def release_source_cleaning_dispatch_batch(
+        self,
+        batch_id: str,
+        *,
+        lease_token: str,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/source-cleaning-dispatch-batches/{quote(batch_id, safe='')}/release",
+            method="POST",
+            body={"lease_token": lease_token},
+            idempotency_key=idempotency_key,
+        )
+
+    def inspect_source_cleaning_dispatch_extraction(
+        self,
+        batch_id: str,
+        *,
+        lease_token: str,
+        action: str,
+        arguments: dict[str, Any],
+        view: str,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/source-cleaning-dispatch-batches/{quote(batch_id, safe='')}/inspect",
+            method="POST",
+            body={
+                "lease_token": lease_token,
+                "action": action,
+                "arguments": arguments,
+                "view": view,
+            },
+            idempotency_key=idempotency_key,
+            maximum_body_bytes=16 * 1024 * 1024,
+        )
+
+    def submit_source_cleaning_dispatch_batch(
+        self,
+        batch_id: str,
+        *,
+        lease_token: str,
+        result: dict[str, Any],
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/source-cleaning-dispatch-batches/{quote(batch_id, safe='')}/submit",
+            method="POST",
+            body={"lease_token": lease_token, "result": result},
+            idempotency_key=idempotency_key,
+            maximum_body_bytes=16 * 1024 * 1024,
         )
 
     def get_session(self, session_id: str) -> dict[str, Any]:

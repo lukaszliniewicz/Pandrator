@@ -23,7 +23,7 @@ states. Cancellation is a request and may take time while a task reaches a safe
 boundary. Retrying or re-executing must use the idempotency key associated with
 the exact reviewed action.
 
-## Subtitle dispatch runs
+## Passive dispatch runs
 
 Subtitle correction and translation dispatch is passive pull work. Create a
 dispatch run, then claim and process one batch at a time; the server does not
@@ -45,3 +45,22 @@ legacy adapter path. Accepted batches advance to the next sequential claim. A
 rejected result remains repairable under its valid lease. The final accepted
 batch automatically finalizes the run. If transient materialization trouble
 leaves it `finalizing`, retry the same final submission and idempotency key.
+
+PDF/EPUB source cleaning uses the same lease and idempotency principles but a
+separate run type. Creation first queues deterministic extraction and indexing;
+claiming while it is still preparing returns `run_preparing`. Once ready, the
+run exposes six sequential editorial phases. Each phase requires an explicit
+accept/reject decision for every server proposal and permits only phase-scoped
+typed operations over disclosed block IDs.
+
+Initial evidence is bounded, but models are not confined to detector output.
+Use the leased extraction-inspection tool to browse, search, inspect context or
+structure, and batch independent lookups. Returned live blocks become audited
+valid targets. The final text-repair phase can replace a confirmed damaged
+block without rewriting the whole document.
+
+The source-cleaning dispatcher has no provider token or iteration budget.
+`evidence_limit` bounds per-phase disclosure rather than model effort. The
+final accepted phase deterministically applies and validates all operations,
+then registers a selected `clean_text` artifact. A source, selection, or output
+head change produces a finalization conflict instead of rebasing silently.
