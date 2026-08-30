@@ -1,8 +1,14 @@
 # Subtitle-to-speech pipeline and parameter reference
 
 This is the durable map of Pandrator's subtitle, correction, translation, and
-voiceover data flow as of 2026-08-30. It describes both native UI/API execution
-and passive MCP dispatch. Defaults below are the web-workspace defaults.
+voiceover data flow. It describes both native UI/API execution and passive MCP
+dispatch. Defaults below are the web-workspace defaults.
+
+For task-oriented instructions, start with
+[your first subtitles](../getting-started/first-subtitles.md),
+[your first voiceover](../getting-started/first-voiceover.md), or
+[passive dispatch](../guides/passive-dispatch.md). This page owns the technical
+stage and parameter model; the workflow guides deliberately do not repeat it.
 
 ## The pipeline in one pass
 
@@ -274,3 +280,9 @@ context or timing. `overlap_only` is the sensible first economy step; `none` is
 appropriate only when timing cannot help the task or disclosure must be
 minimized. Increase concurrency only when the latency saving matters more than
 cross-batch continuity and evolving glossary consistency.
+
+Related public guidance:
+
+- [Correction and translation](../guides/correction-and-translation.md)
+- [Pronunciation and speech text](../guides/pronunciation-and-speech.md)
+- [Supported formats and exports](formats-and-exports.md)

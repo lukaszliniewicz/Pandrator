@@ -7,11 +7,13 @@ authenticated loopback API plus a standalone setup/recovery WebUI. Explicit
 private-network and HTTPS-ingress profiles support headless servers and GPU
 pods without changing the loopback-only default.
 
-The current release is 0.9.17. For most users, the easiest installation is the
-Windows executable or Linux AppImage on the
-[Pandrator 0.8.16 release page](https://github.com/lukaszliniewicz/Pandrator/releases/tag/v.0.8.16).
+For most users, the easiest installation is the Windows executable or Linux
+AppImage on the
+[latest Pandrator release](https://github.com/lukaszliniewicz/Pandrator/releases/latest).
 These packages include their own runtime and do not require a suitable system
-Python.
+Python. The public [installation guide](https://github.com/lukaszliniewicz/Pandrator/blob/main/docs/getting-started/installation.md)
+explains download selection, checksums, and workspace choice; this component
+guide owns exact Manager behavior and operational commands.
 
 ## Safety and ownership
 
@@ -36,12 +38,12 @@ single `SHA256SUMS` file when you download it.
 
 ## Installation
 
-The native packages are the recommended installation:
+The native packages on the
+[latest release](https://github.com/lukaszliniewicz/Pandrator/releases/latest)
+are the recommended installation:
 
-- Windows:
-  [PandratorManager-0.9.17-windows-x86_64.exe](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.8.16/PandratorManager-0.9.17-windows-x86_64.exe)
-- Linux:
-  [PandratorManager-0.9.17-x86_64.AppImage](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.8.16/PandratorManager-0.9.17-x86_64.AppImage)
+- Windows: `PandratorManager-…-windows-x86_64.exe`
+- Linux: `PandratorManager-…-x86_64.AppImage`
 
 If you already have Python 3.11 or 3.12, install the Manager as an isolated
 command-line tool:
@@ -84,7 +86,7 @@ non-interactively:
 
 ```bash
 PandratorManager-x86_64.AppImage setup --workspace /path/to/parent
-PandratorManager-0.9.17-windows-x86_64.exe setup --workspace D:\path\to\parent
+PandratorManager-windows-x86_64.exe setup --workspace D:\path\to\parent
 ```
 
 `--workspace` takes precedence over `PANDRATOR_WORKSPACE`, which takes
@@ -231,7 +233,7 @@ the MCP pins and requires deliberate re-enrollment.
 
 The complete workstation, LAN, external-server, pod, and agent-host setup is in
 the
-[Pandrator MCP guide](https://github.com/lukaszliniewicz/Pandrator/tree/main/pandrator_mcp).
+[Pandrator MCP guide](https://github.com/lukaszliniewicz/Pandrator/blob/main/pandrator_mcp/README.md).
 
 ## Legacy import, releases, and uninstall
 

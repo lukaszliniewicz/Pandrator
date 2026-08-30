@@ -43,7 +43,7 @@ pandrator-installer = "pandrator_manager.compat:main"
 
 [project.urls]
 Homepage = "https://github.com/lukaszliniewicz/Pandrator"
-Documentation = "https://github.com/lukaszliniewicz/Pandrator/tree/main/pandrator_manager"
+Documentation = "https://github.com/lukaszliniewicz/Pandrator/blob/main/pandrator_manager/README.md"
 Repository = "https://github.com/lukaszliniewicz/Pandrator"
 Issues = "https://github.com/lukaszliniewicz/Pandrator/issues"
 Releases = "https://github.com/lukaszliniewicz/Pandrator/releases"

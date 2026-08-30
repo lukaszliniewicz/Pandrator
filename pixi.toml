@@ -20,6 +20,7 @@ generate-web-contract = "python scripts/generate_web_contract.py"
 check-web-contract = "python scripts/generate_web_contract.py && npm --prefix web run generate-api && git diff --exit-code -- openapi.json web/src/lib/api.generated.ts"
 generate-requirements = "python scripts/generate_requirements.py"
 check-requirements = "python scripts/generate_requirements.py --check"
+check-docs = "python scripts/check_docs.py"
 check-test-lanes = "python scripts/test_lanes.py check"
 test-fast = { cmd = "python scripts/test_lanes.py run fast-xdist", depends-on = ["check-test-lanes"] }
 test-full = { cmd = "python -m pytest -q tests", depends-on = ["check-test-lanes"] }

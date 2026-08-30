@@ -9,6 +9,14 @@ The sidecar talks only to Pandrator's versioned HTTP APIs. It does not import
 the application ORM or job queue, accept model-selected URLs, expose arbitrary
 files or commands, or store credentials in MCP arguments and results.
 
+For public workflow concepts, start with
+[passive dispatch](https://github.com/lukaszliniewicz/Pandrator/blob/main/docs/guides/passive-dispatch.md),
+[remote and headless operation](https://github.com/lukaszliniewicz/Pandrator/blob/main/docs/operations/remote-and-headless.md),
+and [privacy and security](https://github.com/lukaszliniewicz/Pandrator/blob/main/docs/security/privacy-and-security.md).
+This component guide remains the canonical source for exact MCP installation,
+target, scope, enrollment, host-configuration, diagnostic, and protocol
+behavior.
+
 ## What agents can do
 
 The current tool surface supports:
@@ -293,7 +301,7 @@ parallel supported Python and create a dedicated data root:
 ```bash
 sudo dnf install python3.12 python3.12-devel
 python3.12 -m venv ~/.local/share/pandrator/venv
-~/.local/share/pandrator/venv/bin/pip install /path/to/pandrator-0.8.16-py3-none-any.whl
+~/.local/share/pandrator/venv/bin/pip install /path/to/pandrator-VERSION-py3-none-any.whl
 ffmpeg -version
 
 export PANDRATOR_DATA_DIR="$HOME/.local/share/pandrator/data"

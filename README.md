@@ -9,76 +9,45 @@ voiceovers. It brings document preparation, transcription, optional AI
 correction and translation, speech generation, review, and export into one
 browser interface.
 
-Local speech and transcription models can keep your media on your own
-computer. Cloud language and speech providers are optional.
+Local speech and transcription models can keep media on your own computer.
+Cloud language, translation, and speech providers are optional and used only
+when you configure and select them.
 
-## Quick start
+## Install Pandrator
 
-The current release is
-[Pandrator 0.8.16](https://github.com/lukaszliniewicz/Pandrator/releases/tag/v.0.8.16)
-with Pandrator Manager 0.9.17. The Manager installs Pandrator, launches it, and
-lets you add or remove speech components later. Docker and WSL are not
-required.
+Open the [latest release](https://github.com/lukaszliniewicz/Pandrator/releases/latest)
+and choose the Manager for your operating system:
 
-### Windows
+| System | Download | Notes |
+| --- | --- | --- |
+| Windows 10 or 11, 64-bit | `PandratorManager-…-windows-x86_64.exe` | Run the executable and choose the parent folder for the installation. Windows may show an unsigned-publisher warning. |
+| Linux desktop, 64-bit | `PandratorManager-…-x86_64.AppImage` | Make the AppImage executable, run it, and choose the parent folder. |
+| Headless Linux | Linux AppImage or Python package | Pass an explicit workspace and `--no-open`; use HTTPS or a VPN for remote access. |
+| Developers | Source checkout with Pixi | Use the committed lockfile and the separate web-build environment. |
 
-1. Download
-   [PandratorManager-0.9.17-windows-x86_64.exe](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.8.16/PandratorManager-0.9.17-windows-x86_64.exe).
-2. Run it and choose the parent folder for your installation.
-3. Let the Manager install Pandrator, then open the browser interface.
-4. Under **Providers & services**, install only the local models you want.
+The Manager creates and owns one `Pandrator` workspace under the selected
+parent directory. It installs the application and only the local components
+you choose; Docker and WSL are not required. Start with one speech or
+transcription engine and add others later.
 
-The Windows executable is not Authenticode-signed, so Windows may show
-**Unknown publisher** or a SmartScreen warning. The
-[release page](https://github.com/lukaszliniewicz/Pandrator/releases/tag/v.0.8.16)
-collects the checksums for all downloadable files in one `SHA256SUMS` file.
+See the [installation guide](docs/getting-started/installation.md) for checksum
+verification, workspace selection, headless setup, and updates.
 
-### Linux
+## Choose a workflow
 
-Download the AppImage, make it executable, and run it:
+| I want to… | Start here |
+| --- | --- |
+| Turn a document into narrated audio or an M4B audiobook | [Create your first audiobook](docs/getting-started/first-audiobook.md) |
+| Transcribe media, correct subtitles, translate them, or export SRT/VTT | [Create your first subtitles](docs/getting-started/first-subtitles.md) |
+| Generate synchronized speech and produce a dubbed video | [Create your first voiceover](docs/getting-started/first-voiceover.md) |
+| Let the model in Codex, OpenCode, Claude Code, or another MCP host correct or translate queued subtitle batches | [Use passive dispatch](docs/guides/passive-dispatch.md) |
+| Connect an agent safely to Pandrator or recover a managed installation | [Pandrator MCP](pandrator_mcp/README.md) |
+| Install, update, repair, or operate local components | [Pandrator Manager](pandrator_manager/README.md) |
 
-```bash
-chmod +x PandratorManager-0.9.17-x86_64.AppImage
-./PandratorManager-0.9.17-x86_64.AppImage
-```
+The [documentation index](docs/README.md) links the complete workflow,
+operations, security, reference, and development guides.
 
-The first launch asks where to create the managed `Pandrator` folder. On a
-headless machine, choose the workspace explicitly:
-
-```bash
-./PandratorManager-0.9.17-x86_64.AppImage \
-  setup --workspace /srv/pandrator --no-open
-```
-
-If AppImage mounting is unavailable, prefix the command with
-`APPIMAGE_EXTRACT_AND_RUN=1`.
-
-### Updating
-
-Download and run the newer Manager file for your operating system. It reuses
-the remembered installation when possible; if it asks for a folder, choose the
-same parent folder as before. Then use **Review updates** in the Manager to
-prepare one plan for all available local engine updates, or review an
-individual component. Projects, generated media, and other user
-data are kept separately from replaceable application runtimes.
-
-The Manager keeps the application, model environments, caches, services, and
-data inside the selected workspace. It does not install operating-system
-packages. Calibre is optional and is needed only for MOBI conversion.
-
-### A good first setup
-
-- For a lightweight ready-made voice, start with **Kokoro**.
-- For voice cloning, start with **Qwen3 TTS Base** or **XTTS v2**.
-- For transcription and subtitles, install **CrispASR**.
-- Add an LLM provider only if you want AI-assisted correction, translation,
-  research, or speech-text optimization.
-- Add **RVC** only if you want to convert generated speech into a trained
-  target voice.
-
-You can begin with one component and add the others whenever you need them.
-
-## What you can make
+## What Pandrator can do
 
 ### Audiobooks
 
@@ -92,299 +61,96 @@ You can begin with one component and add the others whenever you need them.
 
 ### Subtitles and voiceovers
 
-- Start from SRT subtitle files or common audio and video files. WebVTT, ASS,
-  and SSA uploads are recognized as subtitle sources, while the current
-  subtitle-editing pipeline uses SRT as its working input.
-- Transcribe speech with word timestamps and optional diarization.
-- Correct, translate, split, merge, and retime subtitles in a side-by-side
-  editor.
-- Generate and synchronize dubbed speech without changing the source media.
-- Export subtitles alone or create dubbed video with original, mixed, or
-  replacement audio and soft, burned, original-language, translated, or
-  bilingual subtitles.
+- Start from SRT subtitles or common audio and video formats. WebVTT, ASS, and
+  SSA uploads are recognized while the editing pipeline uses SRT as its
+  working subtitle format.
+- Transcribe speech with timestamps and optional diarization.
+- Correct, translate, split, merge, and retime cues in a reviewable editor.
+- Generate synchronized speech without changing the source media.
+- Export subtitles, audio, or video with selectable audio and subtitle tracks.
 
 ### Voices and providers
 
-- Use local TTS services, OpenAI, Google Gemini, native ElevenLabs, or a
-  compatible custom speech endpoint.
-- Connect local OpenAI-compatible LLM servers such as LM Studio or supported
-  cloud providers.
-- Record or upload reference voices, keep transcripts with them, and preview
+- Use local TTS services or configured cloud speech providers.
+- Connect local OpenAI-compatible LLM servers and supported cloud LLMs.
+- Record or upload reference voices, retain their transcripts, and preview
   built-in voices before generation.
-- Import RVC models and retain both original and converted takes.
+- Import fine-tuned XTTS bundles and RVC models while keeping original and
+  converted takes available for review.
 
-## Choosing local models
+The [providers and voices guide](docs/guides/providers-and-voices.md) explains
+the local engines, compute choices, voice cloning, and when data leaves the
+Pandrator host.
 
-The Manager shows the available compute variants, model licences, and
-downloads before making any changes.
+## Reviewable AI, including no-extra-API dispatch
 
-| Component | Best suited to | Typical compute |
-|---|---|---|
-| Kokoro 82M | Lightweight built-in voices | CPU, CUDA, and supported modern AMD GPUs |
-| Qwen3 TTS | Built-in voices and multilingual cloning | CPU, CUDA, Vulkan, or Metal |
-| XTTS v2 | Mature multilingual voice cloning | CPU or CUDA |
-| VoxCPM2 | Large multilingual voice cloning | CUDA |
-| Fish S2 Pro | Broad-language voice cloning | Backend-dependent |
-| Voxtral 4B | Preset voices | WGPU-compatible accelerator |
-| Silero | Efficient regional language packs | CPU |
-| Chatterbox | English and multilingual cloning | CPU or CUDA |
-| Magpie 357M | Preset multilingual voices | CPU or CUDA |
-| CrispASR | Transcription, timestamps, and diarization | CPU, CUDA, Vulkan, or Apple Silicon |
-| RVC | Speech-to-speech voice conversion | CPU or CUDA |
+LLMs are optional. Pandrator can use a configured provider for document
+cleanup, subtitle correction, glossary-aware translation, research, and
+speech-text optimization. Each transformation creates a distinct revision or
+artifact; it does not silently replace the source text.
 
-Language support differs by model. Qwen3, XTTS, VoxCPM, Fish, and Chatterbox
-cover many common multilingual cloning workflows; Silero and Fish add
-especially broad regional coverage. CrispASR offers Whisper large-v3 for the
-broadest transcription coverage and Parakeet TDT for a smaller set of
-primarily European languages. Pandrator filters choices by the language and
-capabilities reported by each installed service.
+Passive dispatch provides a different route. Pandrator makes no model call:
+it snapshots the selected subtitle revision and queues deterministic, leased
+batches. The model already running in an MCP host claims one batch, returns a
+typed result over stable cue IDs, and continues sequentially. The final
+subtitle artifact appears only after every batch is validated.
 
-Hardware needs vary with model size, quantization, input length, and compute
-backend. A GPU makes many models faster, but several useful configurations run
-on CPU.
+Read [correction and translation](docs/guides/correction-and-translation.md)
+for the choice between manual review, a configured LLM, DeepL, and passive
+dispatch. The exact cue, batch, timing, speech-block, and alignment model is in
+the [subtitle pipeline reference](docs/reference/subtitle-pipeline.md).
 
-### Fine-tuned XTTS model bundles
+## Local-first does not mean local-only
 
-Pandrator can install a complete fine-tuned XTTS bundle and make it available
-in the **Model** picker. First update Pandrator and, on an existing
-installation, update or repair **XTTS v2** in Pandrator Manager as well. The
-XTTS service must support model uploads; the upload screen explains this if an
-older installed component does not.
+Pandrator binds to loopback by default and is designed for one owner. A home
+server, VPN host, external HTTPS server, or GPU pod is possible when its data,
+Manager state, identity, and network boundary are deliberately preserved.
+Pandrator is not a public multi-user service.
 
-In a session's **Generate audio** settings, select **XTTS**, enter a friendly
-model ID, and choose these four files together from one flat bundle directory:
-
-- `config.json`
-- `model.pth`
-- `speakers_xtts.pth`
-- `vocab.json`
-
-The selection must contain exactly those four names. Training run directories,
-nested checkpoint folders, and incomplete exports are rejected. Pandrator
-streams the bundle to XTTS and installs it under managed user data, so do not
-place models in a versioned service source directory. Installed model IDs
-cannot be overwritten in this release; choose a new ID when importing a newer
-bundle.
-
-## Files and exports
-
-| Category | Supported formats |
-|---|---|
-| Documents | TXT, PDF, EPUB, DOCX, MOBI, or pasted text |
-| Subtitle sources | SRT working input; WebVTT, ASS, and SSA are also recognized as subtitle sources |
-| Subtitle output | SRT or WebVTT |
-| Audio input | AAC, AIFF, FLAC, M4A/MKA, MP3, OGG, Opus, WAV, WMA |
-| Video input | MP4, MKV, WebM, AVI, MOV |
-| Audiobook and audio output | M4B, MP3, Opus, FLAC, WAV |
-| Video output | MP4-oriented export with selectable audio and subtitle tracks |
-
-URL imports use `yt-dlp` for supported public media sources. You are
-responsible for following the source service's terms and applicable law.
-
-## AI correction and translation
-
-LLMs are optional. Pandrator can use them for subtitle correction,
-glossary-aware translation, document-cleaning assistance, and pronunciation
-or speech-text improvements. Each step creates a separate, reviewable result;
-AI-optimized speech text does not silently replace the text shown in exported
-subtitles.
-
-Subtitle correction and translation can also run in **passive dispatch** mode.
-In that mode Pandrator does not call an LLM at all: it snapshots one subtitle
-revision, queues deterministic batches, and lets the model already running in
-Codex, OpenCode, Claude Code, or another MCP host claim, edit, and submit each
-batch. Claims are sequential and leased, submissions use stable cue IDs, and
-the final result is materialized only after every batch passes validation.
-This is useful when the host model is capable but you do not want—or cannot
-configure—a separate provider API inside Pandrator.
-
-Correction, LLM translation, and passive dispatch share the same quality-first
-batch, boundary-context, timing-disclosure, deletion, and glossary policies.
-Timing can be supplied in `full`, `overlap_only`, or `none` mode; it appears at
-most once per actionable cue and never leaks into boundary context. A
-translation artifact can be corrected in place as a new translation revision,
-without being mislabeled as source-language correction. The complete data-flow
-and parameter reference is in
-[SUBTITLE_PIPELINE_GUIDE.md](SUBTITLE_PIPELINE_GUIDE.md).
-
-Models can have their own temperature, reasoning, and token-price settings.
-When a provider reports an authoritative cost, Pandrator records it.
-Otherwise, it estimates the cost from token usage and your configured rates.
-
-Optional Jina research can help resolve uncertain names and terminology. It
-uses explicit search limits and keeps a source ledger with the result.
-
-### Speech optimization and pronunciation
-
-Pandrator keeps the text shown in a session separate from the text sent to a
-speech provider. Speech-text optimization is optional: it creates a separate,
-reviewable speech revision and does not silently rewrite the source or subtitle
-text. It uses Pandrator's configured multi-provider LLM adapter; Ollama is one
-possible LLM provider, not a requirement.
-
-The **Pronunciation library** is the deterministic path for known names, terms,
-and respellings:
-
-1. Open **Pronunciations**, add the written form and a lowercase structured
-   respelling, then leave it as **Needs review** until you have checked it.
-2. Approve it as **Reviewed**, choose **Global** or one session, and optionally
-   restrict it to a language and TTS backend. `und` matches any language and `*`
-   matches any backend.
-3. In a session's **Text** settings, under **Segmentation and deterministic
-   processing**, enable **Apply reviewed pronunciation-library overrides**.
-   It is enabled by default and can be turned off independently of LLM speech
-   optimization.
-
-Only reviewed entries in the applicable scope are used. Matching is bounded,
-case-insensitive, and longest-first without overlapping replacements. For
-example, a reviewed entry `existential threat` → `egzistenszial fret` makes
-the TTS request receive `egzistenszial fret` when its language/backend and
-session scope match. This is a host-side deterministic replacement, not an
-LLM suggestion. The source/display text remains `existential threat`; change
-the entry or setting, then regenerate the affected audio to hear the result.
-If you deliberately reuse an older saved speech plan, rebuild that plan too:
-the toggle does not try to reverse respellings already stored in a historical
-speech revision.
-
-This is different from generic **Search/Replace** in a text or speech revision:
-Search/Replace edits the selected segment/text revision and therefore changes
-what is stored and displayed there. The Pronunciation library changes only the
-speech payload at synthesis time. Guarded and flexible LLM speech planning can
-propose new pronunciation entries, but proposals remain inactive until you
-review them in the library.
-
-### Mixed-language speech
-
-Most local wrappers, including XTTS, accept one language for one synthesis
-request. They do not interpret tags such as `[en]...[/en]`; those tags are sent
-literally or otherwise treated as ordinary text. True inline code switching is
-therefore still experimental.
-
-When a foreign word or phrase can be isolated as its own segment, use a
-per-segment language/voice override, or select/mark the affected segments and
-choose **Generate alternate take**. The alternate dialog can choose a provider,
-model, voice, language, speech prompt, and RVC settings where that service
-supports them. A compatible multilingual voice may be reusable across the
-selected languages; otherwise choose the provider's appropriate voice. These
-are segment- or selection-level takes, not inline language tags.
-
-A possible future surgical workflow is being evaluated: generate a
-dominant-language baseline, align the tagged foreign span, regenerate only that
-span with the same compatible voice in the other language, and splice it back
-with duration/silence matching and confidence gating for review. It is not a
-shipped feature yet, and it depends on provider voice compatibility and usable
-word or character timing.
-
-### Native ElevenLabs speech
-
-ElevenLabs is available as a first-class native service under **Providers &
-services → TTS**. Configure its ElevenLabs API key in the service settings, or
-use the supported `ELEVENLABS_API_KEY` environment-variable fallback, then
-refresh the model and voice catalogues before selecting a voice. Pandrator uses
-the [native ElevenLabs API contract](https://elevenlabs.io/docs/api-reference/text-to-speech/convert);
-it is **not** an OpenAI-compatible endpoint. An OpenAI-compatible ElevenLabs
-intermediary can still be added as a custom provider using the normal
-custom-provider settings. This integration has not been live-validated here
-without an ElevenLabs key.
-
-## Updating, repair, and data
-
-Open Pandrator Manager and choose **Maintenance → Check for update** to update
-the Manager. Updates for Pandrator and local services appear as reviewable
-actions under **Install & launch** or **Providers & services**.
-
-Install, update, repair, and removal actions show what will change before they
-run. Components are staged and checked before becoming active. User data is
-kept separately and is preserved by default during uninstall; deleting it
-requires a separate confirmation.
-
-Closing the browser does not stop an active generation job. Reopen Pandrator
-from the Manager, launcher, or optional tray. Keep an independent backup of
-important projects before a major update.
-
-For command-line recovery, automation, and advanced deployment details, see
-the
-[Pandrator Manager guide](https://github.com/lukaszliniewicz/Pandrator/tree/main/pandrator_manager).
-
-## Remote and headless use
-
-Pandrator and its recovery interface listen on `127.0.0.1` by default. You can
-also run one Pandrator installation on a home server, a LAN or VPN host, an
-external server, or a GPU pod.
-
-For an Internet-facing installation, use stable HTTPS addresses through a
-reverse proxy or ingress:
-
-```bash
-pandrator-manager-launcher setup \
-  --workspace /srv/pandrator \
-  --remote-setup-url https://recovery.example.com \
-  --remote-pandrator-url https://pandrator.example.com \
-  --trusted-proxy-hops 1 \
-  --no-open
-```
-
-When the ingress runs in another container or network namespace, add
-`--network-bind-host 0.0.0.0` and restrict the listener with the platform's
-network policy. Persist both the Pandrator data directory and the Manager
-workspace. Use a VPN or HTTPS for regular remote use; plain HTTP is available
-only as an explicit trusted-private-network option.
-
-Pandrator is designed for one owner, not as a public multi-user service.
+The [remote and headless guide](docs/operations/remote-and-headless.md) covers
+supported topologies. The [privacy and security guide](docs/security/privacy-and-security.md)
+explains local and cloud data flows, credentials, diagnostics, MCP access, and
+safe remote exposure.
 
 ## Agent access with Pandrator MCP
 
-`pandrator-mcp` lets an MCP-capable agent explain Pandrator, inspect an
-installation, edit sessions safely, run workflow plans, and carry out bounded
-Manager recovery actions. The sidecar runs on the same computer as the agent
-and can connect to either a local installation or one fixed remote Pandrator
-server.
+`pandrator-mcp` is a local stdio sidecar that lets an MCP-capable agent explain
+Pandrator, inspect one fixed installation, edit sessions safely, execute
+reviewed workflow plans, process passive subtitle batches, and perform bounded
+Manager recovery. Target origins and credentials are process configuration,
+not model-selected tool arguments.
 
-It includes secret-free configuration generators for Codex, Claude Code,
-OpenCode, and Antigravity. Credentials are enrolled with owner approval and
-stored in the operating-system credential store rather than in MCP
-configuration or model-visible arguments.
-
-The MCP sidecar can also act as the worker for passive subtitle correction and
-translation: the host model processes Pandrator's queued batches with its own
-inference, so Pandrator never routes the text to another model provider.
-
-The
-[Pandrator MCP guide](https://github.com/lukaszliniewicz/Pandrator/tree/main/pandrator_mcp)
-walks through:
+The component guide documents:
 
 - local, LAN/VPN, external HTTPS, and pod targets;
-- least-privilege scopes and identity pinning;
-- owner-approved login and credential revocation;
-- optional recovery while the Pandrator application is stopped;
-- diagnostics and host configuration;
-- passive subtitle dispatch and correction of translated tracks; and
-- a guarded prompt an agent can use to help prepare a server or pod.
+- least-privilege application and Manager scopes;
+- owner-approved enrollment, identity pinning, rotation, and revocation;
+- secret-free host configuration for Codex, Claude Code, OpenCode, and
+  Antigravity;
+- passive correction and translation; and
+- diagnostics and optional recovery while Pandrator is stopped.
 
-## Privacy and security
+See the [Pandrator MCP guide](pandrator_mcp/README.md) for exact installation
+and configuration commands.
 
-- Local models keep processing on your machine. Cloud providers may receive
-  documents, subtitles, media, or voice samples and may charge for use.
-- Local access binds to loopback by default. Remote access must be enabled
-  explicitly and requires owner authentication.
-- Provider credentials are write-only through the normal API and are redacted
-  from routine diagnostics and job events.
-- The simplest credential option stores the secret in Pandrator's local
-  database. Protect the data directory and use full-disk encryption where
-  appropriate.
-- The optional `credential-stores` extra can use Windows Credential Manager,
-  macOS Keychain, or Linux Secret Service. Environment variables and
-  owner-restricted secret files are also supported.
-- For remote use, keep proxy and host validation enabled, use a dedicated data
-  root, and expose only the interfaces you need.
+## Documentation
 
-Always inspect diagnostics before sharing them, especially when third-party
-libraries or providers are involved.
+| Area | Canonical documentation |
+| --- | --- |
+| Product setup and workflows | [Public documentation](docs/README.md) |
+| Manager installation, CLI, recovery, and component operations | [Manager guide](pandrator_manager/README.md) |
+| MCP installation, targets, scopes, host configuration, and protocol behavior | [MCP guide](pandrator_mcp/README.md) |
+| Version history, downloads, and checksums | [GitHub Releases](https://github.com/lukaszliniewicz/Pandrator/releases) |
+| Bugs, support requests, and proposals | [GitHub Issues](https://github.com/lukaszliniewicz/Pandrator/issues) |
 
-## Running from source
+Public product documentation is intentionally version-agnostic where possible.
+Release-specific behavior and filenames belong on the corresponding release;
+package-specific operational contracts remain beside their packages.
 
-Packaged Manager releases are the easiest way to use Pandrator. For source
-development, install [Pixi](https://pixi.sh/) and use the committed lockfile:
+## Development
+
+For source development, install [Pixi](https://pixi.sh/) and use the committed
+lockfile:
 
 ```bash
 git clone https://github.com/lukaszliniewicz/Pandrator.git
@@ -395,52 +161,24 @@ pixi run --environment web-build web-build
 pixi run serve-web
 ```
 
-The default (`dev`) environment supplies Python 3.11, the editable workspace
-packages, and development tools. `web-build` supplies the locked Node.js toolchain; its
-`web-build` task uses `npm ci`. Run the worker in a second terminal:
+Run `pixi run run-worker` in a second terminal. See
+[development from source](docs/development/from-source.md) for environments,
+test lanes, API/client regeneration, and package checks. Read
+[contributing](docs/development/contributing.md) before preparing a change.
 
-```bash
-pixi run run-worker
-```
+## Getting help
 
-### Test lanes
-
-Validate the test-lane manifest with `pixi run check-test-lanes`.
-`test-fast` runs the measured fast lane with two file-affinity workers;
-`test-full` is the authoritative serial suite. Use `test-profile` for the
-serial suite with the 30 slowest tests reported.
-
-Use `pandrator --help` for command-line session, workflow, provider, voice,
-export, authentication, migration, and diagnostic commands. Add `--json` when
-you need machine-readable output.
-
-Python packages are also available for advanced installations and automation:
-
-```bash
-python -m pip install pandrator
-pipx install pandrator-manager
-pipx install "pandrator-mcp[credential-stores,manager]"
-```
-
-The native Manager remains the simplest choice for a complete installation
-because it supplies its own runtime and guides component setup.
-
-## Getting help and contributing
-
-Use [GitHub Issues](https://github.com/lukaszliniewicz/Pandrator/issues) for
-bug reports, workflow suggestions, and documentation corrections. Include
-your operating system, the model or provider involved, steps to reproduce the
-problem, and the Manager's reviewed **Download diagnostics** support bundle
-when an installation or service operation fails.
-
-Focused pull requests are welcome. Please keep changes scoped and include
-tests where practical.
+Start with [troubleshooting](docs/operations/troubleshooting.md). For a bug,
+open a [GitHub issue](https://github.com/lukaszliniewicz/Pandrator/issues) with
+your operating system, the affected model or provider, the action you took,
+and the smallest reproducible sequence. When an installation or service action
+fails, include the Manager's reviewed **Download diagnostics** support bundle.
+Always inspect diagnostics before sharing them.
 
 ## License
 
-Pandrator is released under the
-[MIT License](https://github.com/lukaszliniewicz/Pandrator/blob/main/LICENSE).
-This covers
-Pandrator's source code, not third-party dependencies, speech models,
-transcription models, LLMs, or voice-conversion models. Review the licence and
-usage terms shown before installing a model.
+Pandrator is released under the [MIT License](LICENSE). This covers Pandrator's
+source code, not third-party dependencies, speech models, transcription
+models, LLMs, or voice-conversion models. Review the licence and usage terms
+shown before installing a model, and make sure you have the necessary rights
+to source media and voice material.
