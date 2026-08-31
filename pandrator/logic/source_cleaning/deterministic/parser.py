@@ -33,6 +33,12 @@ BLOCK_TAGS = frozenset(
     }
 )
 
+PAGE_LABEL_TEXT_RE = re.compile(
+    r"^\s*(?:p(?:age)?[.\s]*)?(?:\d{1,6}|[ivxlcdm]{1,12})[.)]?"
+    r"(?:\s+of\s+\d{1,6})?\s*$",
+    re.IGNORECASE,
+)
+
 # Helper to find an XML element in a namespace-agnostic way
 def find_elem(element, tag_name):
     if element is None:
@@ -167,7 +173,7 @@ class EPUBHTMLParser(HTMLParser):
         # ``<div class="pagebreak">…</div>``; treating every descendant as a
         # page number silently discards the book.
         page_label_classes = {"pagenum", "pagebreak", "pb"}
-        for page_idx, (_, c_val, _, _, _, _) in enumerate(self.tag_stack):
+        for page_idx, (tag_name, c_val, _, _, _, _) in enumerate(self.tag_stack):
             classes = {c.lower() for c in c_val.split()} if c_val else set()
             if not classes.intersection(page_label_classes):
                 continue
@@ -175,7 +181,12 @@ class EPUBHTMLParser(HTMLParser):
                 descendant[0].lower() in BLOCK_TAGS
                 for descendant in self.tag_stack[page_idx + 1:]
             )
-            if not has_structural_descendant:
+            if has_structural_descendant:
+                continue
+            # Inline page-number elements remain suppressed. A block carrying
+            # a misleading pagebreak class can still contain ordinary prose;
+            # suppress it only when the text itself is a standalone page label.
+            if tag_name.lower() not in BLOCK_TAGS or PAGE_LABEL_TEXT_RE.match(data):
                 return
 
         if self.current_block_tag is not None:

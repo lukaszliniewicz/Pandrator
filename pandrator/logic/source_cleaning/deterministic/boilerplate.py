@@ -27,9 +27,13 @@ BOILERPLATE_TEXT_RE = re.compile(
     r"(?:the\s+project\s+gutenberg\s+ebook|project\s+gutenberg|"
     r"gutenberg(?:™|tm)?\s+license|"
     r"this\s+ebook\s+is\s+for\s+the\s+use\s+of\s+anyone|"
-    r"release\s+date:\s+|language:\s+|credits:\s+|"
     r"www\.gutenberg\.org|gutenberg\.org/ebooks|"
     r"all\s+rights\s+reserved|isbn\b)",
+    re.IGNORECASE,
+)
+
+GUTENBERG_METADATA_LINE_RE = re.compile(
+    r"^(?:release\s+date|language|credits):\s+\S",
     re.IGNORECASE,
 )
 
@@ -48,7 +52,7 @@ FB2_EXPORT_TEXT_RE = re.compile(
 TITLEPAGE_TEXT_RE = re.compile(
     r"^(?:illustrated\s+by\s+.+|translator:\s+.+|illustrator:\s+.+|"
     r"author:\s+.+|title:\s+.+|publisher:\s+.+|original\s+publication:\s+.+|"
-    r"copyright\b.*|\(c\)\s*.*|©\s*.*|new\s+york\b.*|london\b.*)$",
+    r"copyright\b.*|\(c\)\s*(?:19|20)\d{2}\b.*|©\s*.*|new\s+york\b.*|london\b.*)$",
     re.IGNORECASE,
 )
 
@@ -152,6 +156,7 @@ def is_boilerplate_text(text: str) -> bool:
         return False
     return bool(
         BOILERPLATE_TEXT_RE.search(normalized)
+        or GUTENBERG_METADATA_LINE_RE.match(normalized)
         or FB2_EXPORT_TEXT_RE.match(normalized)
         or is_project_gutenberg_start(normalized)
         or is_project_gutenberg_end(normalized)

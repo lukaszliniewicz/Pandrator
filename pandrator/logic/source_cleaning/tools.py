@@ -850,8 +850,15 @@ class SourceCleaningTools:
                 or "heading"
                 in {str(value).casefold() for value in block.role_candidates}
             )
+            visual_only = bool(
+                str(block.tag or "").casefold() in {"img", "image", "svg"}
+                or {str(value).casefold() for value in block.role_candidates}.intersection(
+                    {"image_alt", "deterministic_visual"}
+                )
+            )
             if (
-                (heading_like and not references)
+                visual_only
+                or (heading_like and not references)
                 or (
                     not structurally_supported
                     and not (include_ambiguous and ambiguous_only)

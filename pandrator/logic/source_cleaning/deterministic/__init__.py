@@ -109,9 +109,17 @@ def extract_clean_epub(epub_path: str, remove_footnotes: bool = False, filter_ci
             if idx in chapter_titles:
                 continue
             text = block.get("text", "").strip()
+            matched_title = _matched_toc_title(
+                doc_href,
+                block,
+                ids_by_block_index,
+                global_toc,
+            )
             if _is_standalone_chapter_number(text) and any(
                 idx < title_idx <= idx + 6 for title_idx in chapter_titles
             ):
+                continue
+            if _has_divergent_toc_title_for_number(text, matched_title):
                 continue
             if chapters.is_chapter_block(
                 block,
@@ -129,14 +137,32 @@ def extract_clean_epub(epub_path: str, remove_footnotes: bool = False, filter_ci
             if idx in chapter_titles:
                 continue
             text = block.get("text", "").strip()
-            if chapter_titles and not _is_all_caps_heading(text):
-                continue
             matched_title = _matched_toc_title(
                 doc_href,
                 block,
                 ids_by_block_index,
                 global_toc,
             )
+            if _is_toc_validated_parent_heading(
+                block,
+                idx,
+                matched_title,
+                chapter_titles,
+                metadata,
+            ):
+                chapter_titles[idx] = text
+                continue
+            if _is_toc_validated_numbered_heading(
+                blocks,
+                idx,
+                doc_href,
+                ids_by_block_index,
+                global_toc,
+            ):
+                chapter_titles[idx] = text
+                continue
+            if chapter_titles and not _is_all_caps_heading(text):
+                continue
             if _is_toc_validated_heading(
                 block,
                 matched_title,
@@ -367,6 +393,9 @@ def _titlepage_run_indexes(
             if (
                 blocks[j].get("tag", "").lower() in chapters.HEADING_TAGS
                 and _is_standalone_chapter_number(next_text)
+            ) or (
+                blocks[j].get("tag", "").lower() in chapters.HEADING_TAGS
+                and chapters.is_numbered_heading_with_title(next_text)
             ):
                 break
             if boilerplate.is_titlepage_metadata_text(next_text, metadata):
@@ -496,13 +525,22 @@ def _direct_chapter_titles(
         if container_id:
             seen_container_ids.add(container_id)
 
+        matched_title = _matched_toc_title(
+            doc_href,
+            block,
+            ids_by_block_index,
+            global_toc,
+        )
+        block_text = re.sub(r"\s+", " ", block.get("text", "") or "").strip()
+        if _has_divergent_toc_title_for_number(block_text, matched_title):
+            continue
+
         resolved = _direct_title_after_container(blocks, idx)
         if resolved:
             title_idx, title = resolved
             titles.setdefault(title_idx, title)
             continue
 
-        matched_title = _matched_toc_title(doc_href, block, ids_by_block_index, global_toc)
         if _is_usable_toc_chapter(block, matched_title, metadata, detected_lang):
             title = re.sub(r"\s+", " ", matched_title or "").strip()
             if title and not _is_standalone_chapter_number(title):
@@ -607,6 +645,86 @@ def _is_toc_validated_heading(
         metadata,
         detected_lang,
     )
+
+
+def _has_divergent_toc_title_for_number(
+    block_text: str,
+    matched_title: str | None,
+) -> bool:
+    """Do not replace a visible section number with a different TOC label."""
+    text = re.sub(r"\s+", " ", block_text or "").strip()
+    title = re.sub(r"\s+", " ", matched_title or "").strip()
+    number = text.rstrip(".)")
+    return bool(
+        _is_standalone_chapter_number(text)
+        and title
+        and _norm_title(text) != _norm_title(title)
+        and not re.match(rf"^{re.escape(number)}(?:[.)]|\s|:)", title)
+    )
+
+
+def _is_toc_validated_parent_heading(
+    block: dict,
+    block_index: int,
+    matched_title: str | None,
+    chapter_titles: dict[int, str],
+    metadata: dict,
+) -> bool:
+    """Keep an early exact TOC title above validated child chapters."""
+    if not chapter_titles or block_index > 6 or block_index >= min(chapter_titles):
+        return False
+    text = re.sub(r"\s+", " ", block.get("text", "") or "").strip()
+    title = re.sub(r"\s+", " ", matched_title or "").strip()
+    if not text or _norm_title(text) != _norm_title(title):
+        return False
+    if (
+        _is_standalone_chapter_number(text)
+        or chapters.is_non_chapter_heading_text(text)
+        or chapters.is_navigation_label(text)
+        or chapters.is_heading_fragment(text)
+        or boilerplate.is_titlepage_metadata_text(text, metadata)
+    ):
+        return False
+    return chapters.is_plausible_heading_text(text, max_chars=220)
+
+
+def _is_toc_validated_numbered_heading(
+    blocks: list[dict],
+    block_index: int,
+    doc_href: str,
+    ids_by_block_index: dict[int, list[str]],
+    global_toc: dict[str, str],
+) -> bool:
+    """Accept a bare h1/h2 number when nearby navigation validates it.
+
+    Some EPUBs put the visible number in a heading and the TOC target on the
+    first prose paragraph. The combined evidence is strong; either signal by
+    itself is deliberately insufficient.
+    """
+    block = blocks[block_index]
+    text = re.sub(r"\s+", " ", block.get("text", "") or "").strip()
+    if (
+        str(block.get("tag", "")).lower() not in {"h1", "h2"}
+        or not _is_standalone_chapter_number(text)
+    ):
+        return False
+
+    checked = 0
+    for target_block in blocks[block_index:]:
+        if not str(target_block.get("text") or "").strip():
+            continue
+        checked += 1
+        matched_title = _matched_toc_title(
+            doc_href,
+            target_block,
+            ids_by_block_index,
+            global_toc,
+        )
+        if _norm_title(matched_title or "") == _norm_title(text):
+            return True
+        if checked >= 4:
+            break
+    return False
 
 
 def _is_insertable_toc_heading(

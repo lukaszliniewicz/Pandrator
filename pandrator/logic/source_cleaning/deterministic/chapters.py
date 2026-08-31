@@ -355,10 +355,20 @@ def has_direct_chapter_semantics(block: dict) -> bool:
     if _has_non_chapter_semantics(block):
         return False
 
+    tag = str(block.get("tag", "")).lower()
     direct_values = _direct_semantic_values(block)
     class_values = _norm_values(block.get("classes", []))
     id_values = _norm_values(block.get("id", ""))
     id_values.extend(_norm_values(block.get("nested_ids", [])))
+
+    # A paragraph marked as the body text at a chapter start is not itself a
+    # chapter title. Treating the word "chapter" inside that layout class as
+    # structural semantics can turn a short opening sentence into a marker.
+    if tag == "p" and any(
+        "chapter-start" in value and ("body" in value or "text" in value)
+        for value in class_values
+    ):
+        return False
 
     for value in direct_values:
         parts = set(re.split(r"[^0-9a-zA-Z]+", value))
@@ -424,7 +434,6 @@ def is_chapter_block(
     if is_standalone_chapter_number(text):
         return bool(
             plausible
-            and tag in HEADING_TAGS
             and _has_strong_semantics(block)
         )
 

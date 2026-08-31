@@ -227,9 +227,8 @@ def is_footnote_ref(anchor: dict, lang: str = "en") -> bool:
     Always includes English anchor patterns (fn, footnote, note, ref) as a baseline.
     """
     href = anchor.get("href", "")
-    if not href or "#" not in href:
+    if not href:
         return False
-    frag = href.split("#")[-1].lower()
     cls = (anchor.get("class") or "").lower()
     id_val = (anchor.get("id") or "").lower()
     epub_type = (anchor.get("epub_type") or "").lower()
@@ -237,6 +236,25 @@ def is_footnote_ref(anchor: dict, lang: str = "en") -> bool:
     # Standard EPUB3 indicators
     if "noteref" in epub_type or "footnote" in epub_type:
         return True
+
+    target_file = os.path.basename(href.split("#", 1)[0]).lower()
+    if "#" not in href:
+        target_stem = os.path.splitext(target_file)[0]
+        marker = re.sub(r"\s+", "", str(anchor.get("content") or ""))
+        strong_target = bool(
+            re.fullmatch(
+                r"(?:footnotes?|endnotes?|fn|notes?|przypis(?:y)?|anm|jegy|prim|сноск)[-_]?\d*",
+                target_stem,
+                re.IGNORECASE,
+            )
+        )
+        strong_identity = bool(
+            re.search(r"(?:footnote|endnote|noteref|note-ref|(?:^|[_-])fn\d*)", f"{cls} {id_val}")
+        )
+        marker_like = bool(re.fullmatch(r"(?:\[?\d+\]?|[*†‡])", marker))
+        return bool(marker_like and (strong_target or strong_identity))
+
+    frag = href.split("#", 1)[1].lower()
         
     en_pattern = LANGUAGE_REGISTRY["en"]["footnote_anchors"]
     if lang != "en" and lang in LANGUAGE_REGISTRY:
@@ -246,7 +264,6 @@ def is_footnote_ref(anchor: dict, lang: str = "en") -> bool:
         keywords_pattern = en_pattern
     
     # 1. Target file name check (e.g. przypisy.html, note.html)
-    target_file = os.path.basename(href.split("#")[0]).lower()
     file_match_pat = r"note|fn|przypis|anm|jegy|prim|сноск"
     if re.search(file_match_pat, target_file) and re.search(r"\d+", frag):
         return True
@@ -349,11 +366,38 @@ def _resolve_target_document(
 def _resolve_fragment_index(target_doc: dict, fragment: str) -> int | None:
     decoded = unquote(str(fragment or ""))
     ids = dict(target_doc.get("ids") or {})
-    if decoded in ids:
-        return int(ids[decoded])
     casefolded = decoded.casefold()
-    matches = [value for key, value in ids.items() if str(key).casefold() == casefolded]
-    return int(matches[0]) if len(matches) == 1 else None
+    candidates = {
+        int(value)
+        for key, value in ids.items()
+        if str(key).casefold() == casefolded
+    }
+    blocks = target_doc.get("blocks") or []
+    for block in blocks:
+        block_ids = [block.get("id", ""), *(block.get("nested_ids") or [])]
+        if any(str(value).casefold() == casefolded for value in block_ids if value):
+            candidates.add(int(block.get("block_index", -1)))
+
+    candidates = {idx for idx in candidates if 0 <= idx < len(blocks)}
+    if not candidates:
+        return None
+
+    def candidate_score(index: int) -> tuple[int, int, int]:
+        direct_text = str(blocks[index].get("text") or "").strip()
+        resolved_text, _ = get_footnote_text_multi_block(blocks, index)
+        return (bool(direct_text), bool(resolved_text.strip()), -index)
+
+    return max(candidates, key=candidate_score)
+
+
+def _resolve_unfragmented_footnote_index(target_doc: dict) -> int | None:
+    """Resolve a fragmentless note file only when it has one text body."""
+    candidates = [
+        int(block.get("block_index", idx))
+        for idx, block in enumerate(target_doc.get("blocks") or [])
+        if str(block.get("text") or "").strip()
+    ]
+    return candidates[0] if len(candidates) == 1 else None
 
 
 def build_backlink_map(parsed_documents: dict) -> dict[tuple[str, str], dict]:
@@ -601,7 +645,7 @@ def reposition_footnotes_in_document(
         resolved_footnotes = []
         for anchor in anchors:
             href = anchor.get("href", "")
-            target_file_rel, frag_id = href.split("#", 1) if "#" in href else ("", "")
+            target_file_rel, frag_id = href.split("#", 1) if "#" in href else (href, "")
             
             matched_doc_key = _resolve_target_document(
                 doc_href,
@@ -615,7 +659,11 @@ def reposition_footnotes_in_document(
             
             if matched_doc_key:
                 target_doc = parsed_documents[matched_doc_key]
-                block_idx_target = _resolve_fragment_index(target_doc, frag_id)
+                block_idx_target = (
+                    _resolve_fragment_index(target_doc, frag_id)
+                    if frag_id
+                    else _resolve_unfragmented_footnote_index(target_doc)
+                )
                 if block_idx_target is not None:
                     target_block_text, consumed_idxs = get_footnote_text_multi_block(
                         target_doc["blocks"],

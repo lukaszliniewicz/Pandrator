@@ -954,6 +954,7 @@ class SourceCleaningTests(unittest.TestCase):
             <h1 id="chapter-one">Chapter One</h1>
             <h3 id="scene-one">1</h3>
             <p>The narrative survives the wrapper <span class="pagenum">19</span> and continues normally.</p>
+            <p class="pagebreak _idGenParaOverride-1">A substantive carry-over sentence survives its misleading class.</p>
           </div>
         </body></html>
         """
@@ -1166,6 +1167,20 @@ class SourceCleaningTests(unittest.TestCase):
                     attributes={"epub:type": "footnote"},
                     role_candidates=["footnote"],
                     raw_markup='<aside id="note-a" epub:type="footnote">1. Invented explanatory note.</aside>',
+                ),
+                SourceBlock(
+                    block_id="note-image",
+                    text="invented_note_image.gif",
+                    line_start=4,
+                    line_end=4,
+                    href="Text/notes.xhtml",
+                    tag="img",
+                    attributes={"alt": "invented_note_image.gif"},
+                    role_candidates=[
+                        "footnote",
+                        "image_alt",
+                        "deterministic_visual",
+                    ],
                 ),
             ],
         )
@@ -1616,6 +1631,26 @@ class SourceCleaningTests(unittest.TestCase):
                 allow_heading_fallback=False,
             )
         )
+        self.assertTrue(
+            chapters.is_chapter_block(
+                {"tag": "p", "classes": ["chapter-number"], "text": "4"},
+                0,
+                lang="en",
+                allow_heading_fallback=False,
+            )
+        )
+        self.assertFalse(
+            chapters.is_chapter_block(
+                {
+                    "tag": "p",
+                    "classes": ["Body-Text-Group_Body-Text--Chapter-Start"],
+                    "text": "In fact, it was not easy.",
+                },
+                0,
+                lang="en",
+                allow_heading_fallback=False,
+            )
+        )
 
     def test_deterministic_epub_extract_keeps_named_front_and_back_matter(self):
         from pandrator.logic.source_cleaning.deterministic import extract_clean_epub
@@ -1635,8 +1670,140 @@ class SourceCleaningTests(unittest.TestCase):
 
         self.assertEqual(markers, ["Chapter One"])
         self.assertIn("The narrative survives the wrapper", text)
+        self.assertIn("A substantive carry-over sentence", text)
         self.assertNotIn("[[Chapter]]1", text)
         self.assertNotIn("19", text)
+
+    def test_deterministic_boilerplate_rules_require_metadata_line_or_copyright_year(self):
+        from pandrator.logic.source_cleaning.deterministic import boilerplate
+
+        self.assertTrue(boilerplate.is_boilerplate_text("Language: English"))
+        self.assertFalse(
+            boilerplate.is_boilerplate_text(
+                "And he has invented a new language: nobody else can understand it."
+            )
+        )
+        self.assertTrue(boilerplate.is_titlepage_metadata_text("(c) 2020 Example Press", {}))
+        self.assertFalse(
+            boilerplate.is_titlepage_metadata_text(
+                "(c) Reasoned Opinion and the Commission's response.",
+                {},
+            )
+        )
+
+    def test_deterministic_titlepage_run_stops_at_numbered_section_heading(self):
+        from pandrator.logic.source_cleaning.deterministic import (
+            _strip_block_boilerplate,
+        )
+
+        blocks = [
+            {"tag": "h1", "text": "The World of Parmenides", "parts": []},
+            {"tag": "p", "text": "Essays on an Ancient Argument", "parts": []},
+            {"tag": "h2", "text": "1 THE SIGNIFICANCE OF COSMOLOGY", "parts": []},
+            {"tag": "p", "text": "The substantive discussion begins here.", "parts": []},
+        ]
+
+        cleaned = _strip_block_boilerplate(
+            blocks,
+            metadata={"title": "The World of Parmenides"},
+            detected_lang="en",
+            doc_href="Text/essay.xhtml",
+        )
+
+        self.assertEqual(
+            ["1 THE SIGNIFICANCE OF COSMOLOGY", "The substantive discussion begins here."],
+            [block["text"] for block in cleaned],
+        )
+
+    def test_deterministic_titlepage_run_does_not_promote_marketing_headings(self):
+        from pandrator.logic.source_cleaning.deterministic import (
+            _strip_block_boilerplate,
+        )
+
+        blocks = [
+            {"tag": "h1", "text": "Invented Novel", "parts": []},
+            {"tag": "h2", "text": "ANOTHER BOOK", "parts": []},
+            {"tag": "p", "text": "“Gut-wrenching.”", "parts": []},
+            {"tag": "p", "text": "—Invented Review", "parts": []},
+            {"tag": "p", "text": "The actual narrative begins in this paragraph.", "parts": []},
+        ]
+
+        cleaned = _strip_block_boilerplate(
+            blocks,
+            metadata={"title": "Invented Novel"},
+            detected_lang="en",
+            doc_href="Text/frontmatter.xhtml",
+        )
+
+        self.assertEqual(
+            ["The actual narrative begins in this paragraph."],
+            [block["text"] for block in cleaned],
+        )
+
+    def test_deterministic_bare_numeric_heading_requires_nearby_matching_toc_target(self):
+        from pandrator.logic.source_cleaning.deterministic import (
+            _has_divergent_toc_title_for_number,
+            _is_toc_validated_numbered_heading,
+            _is_toc_validated_parent_heading,
+        )
+
+        blocks = [
+            {"tag": "h2", "text": "1", "block_index": 23},
+            {"tag": "p", "text": "The chapter opens here.", "block_index": 24},
+        ]
+        ids_by_block_index = {24: ["ch01"]}
+        global_toc = {"text/body.xhtml#ch01": "1"}
+
+        self.assertTrue(
+            _is_toc_validated_numbered_heading(
+                blocks,
+                0,
+                "Text/body.xhtml",
+                ids_by_block_index,
+                global_toc,
+            )
+        )
+        self.assertFalse(
+            _is_toc_validated_numbered_heading(
+                blocks,
+                0,
+                "Text/body.xhtml",
+                ids_by_block_index,
+                {"text/body.xhtml#ch01": "Page 1"},
+            )
+        )
+        self.assertTrue(
+            _is_toc_validated_numbered_heading(
+                [
+                    {
+                        "tag": "h2",
+                        "text": "6",
+                        "block_index": 0,
+                        "id": "ch06",
+                    }
+                ],
+                0,
+                "Text/body.xhtml",
+                {},
+                {"text/body.xhtml#ch06": "6"},
+            )
+        )
+        self.assertTrue(
+            _has_divergent_toc_title_for_number("3", "Letter to a Hindu")
+        )
+        self.assertFalse(_has_divergent_toc_title_for_number("3", "3"))
+        self.assertFalse(
+            _has_divergent_toc_title_for_number("3", "3. An Invented Chapter")
+        )
+        self.assertTrue(
+            _is_toc_validated_parent_heading(
+                {"tag": "p", "text": "An Invented Work"},
+                0,
+                "An Invented Work",
+                {2: "I", 10: "II"},
+                {"title": "A Larger Collection"},
+            )
+        )
 
     def test_deterministic_epub_extract_does_not_create_chapter_for_image_only_toc_target(self):
         from pandrator.logic.source_cleaning.deterministic import extract_clean_epub
@@ -1724,6 +1891,104 @@ class SourceCleaningTests(unittest.TestCase):
             lines,
         )
 
+    def test_deterministic_footnote_resolution_accepts_unfragmented_single_note_file(self):
+        from pandrator.logic.source_cleaning.deterministic.footnotes import (
+            reposition_footnotes_in_document,
+        )
+
+        source_href = "Text/chapter.xhtml"
+        source_block = {
+            "block_index": 0,
+            "id": "",
+            "text": "The claim1.",
+            "parts": [
+                {"type": "text", "content": "The claim"},
+                {
+                    "type": "anchor",
+                    "href": "footnote1.html",
+                    "id": "footnote1",
+                    "class": "",
+                    "epub_type": "",
+                    "content": "1",
+                },
+                {"type": "text", "content": "."},
+            ],
+        }
+        note_block = {
+            "block_index": 0,
+            "id": "footnote1",
+            "text": "1. A single-file invented note body.",
+            "parts": [],
+        }
+        parsed_documents = {
+            source_href: {"blocks": [source_block], "ids": {}},
+            "Text/footnote1.html": {"blocks": [note_block], "ids": {"footnote1": 0}},
+        }
+
+        lines = reposition_footnotes_in_document(
+            source_href,
+            [source_block],
+            parsed_documents,
+            set(),
+            filter_citations=False,
+        )
+
+        self.assertEqual(
+            ["The claim1. [Footnote: A single-file invented note body.]"],
+            lines,
+        )
+
+    def test_deterministic_footnote_resolution_prefers_duplicate_id_wrapper_with_body(self):
+        from pandrator.logic.source_cleaning.deterministic.footnotes import (
+            reposition_footnotes_in_document,
+        )
+
+        source_href = "Text/chapter.xhtml"
+        source_block = {
+            "block_index": 0,
+            "id": "",
+            "text": "The recipe1.",
+            "parts": [
+                {"type": "text", "content": "The recipe"},
+                {
+                    "type": "anchor",
+                    "href": "notes.xhtml#footnote_1",
+                    "id": "",
+                    "class": "noteref",
+                    "epub_type": "noteref",
+                    "content": "1",
+                },
+                {"type": "text", "content": "."},
+            ],
+        }
+        note_blocks = [
+            {"block_index": 0, "id": "footnote_1", "text": "", "parts": []},
+            {
+                "block_index": 1,
+                "id": "",
+                "text": "* Cards used for an invented game.",
+                "parts": [],
+            },
+            {"block_index": 2, "id": "footnote_1", "text": "", "parts": []},
+        ]
+        parsed_documents = {
+            source_href: {"blocks": [source_block], "ids": {}},
+            "Text/notes.xhtml": {"blocks": note_blocks, "ids": {"footnote_1": 2}},
+        }
+
+        lines = reposition_footnotes_in_document(
+            source_href,
+            [source_block],
+            parsed_documents,
+            set(),
+            filter_citations=False,
+        )
+
+        self.assertEqual(
+            ["The recipe1. [Footnote: Cards used for an invented game.]"],
+            lines,
+        )
+
     def test_deterministic_citation_filter_keeps_editorial_apparatus_note(self):
         from pandrator.logic.source_cleaning.deterministic.footnotes import (
             classify_footnote_improved,
@@ -1762,6 +2027,32 @@ class SourceCleaningTests(unittest.TestCase):
         self.assertNotIn("toc", prose_roles)
         self.assertIn("navigation", toc_roles)
         self.assertIn("toc", toc_roles)
+
+    def test_epub_adapter_inherits_only_strong_ancestor_note_identity(self):
+        from bs4 import BeautifulSoup
+
+        from pandrator.logic.source_cleaning.epub_adapter import _infer_role_candidates
+
+        soup = BeautifulSoup(
+            '<div class="endnotes"><div class="endnote"><p>A real note body.</p></div></div>'
+            '<div class="notes"><p>A generic editorial list.</p></div>',
+            "html.parser",
+        )
+        paragraphs = soup.find_all("p")
+
+        inherited_roles = _infer_role_candidates(
+            paragraphs[0],
+            paragraphs[0].get_text(" ", strip=True),
+            "notes.xhtml",
+        )
+        generic_roles = _infer_role_candidates(
+            paragraphs[1],
+            paragraphs[1].get_text(" ", strip=True),
+            "notes.xhtml",
+        )
+
+        self.assertIn("footnote", inherited_roles)
+        self.assertNotIn("footnote", generic_roles)
 
     def test_epub_index_reserves_chapter_role_for_strong_structure(self):
         document = build_source_document(self._write_structural_chapter_components_epub_fixture())

@@ -514,6 +514,19 @@ def _inherited_attr_values(tag, attr_name: str) -> list[str]:
     return _dedupe(values)
 
 
+def _inherited_class_id_tokens(tag) -> set[str]:
+    """Collect exact class/id tokens without promoting generic note ancestry."""
+    tokens: set[str] = set()
+    current = tag
+    while current is not None and getattr(current, "name", None):
+        tokens.update(_normalize_classes(current.get("class", [])))
+        element_id = str(current.get("id") or "").strip().lower()
+        if element_id:
+            tokens.update(part for part in re.split(r"[^a-z0-9]+", element_id) if part)
+        current = current.parent
+    return tokens
+
+
 def _infer_role_candidates(tag, text: str, href: str) -> list[str]:
     roles: list[str] = []
     lowered = " ".join(
@@ -536,6 +549,10 @@ def _infer_role_candidates(tag, text: str, href: str) -> list[str]:
     if tag.name in {"aside"}:
         roles.append("side_note")
     if any(token in lowered for token in ("footnote", "endnote", "note-ref", "noteref")):
+        roles.append("footnote")
+    if _inherited_class_id_tokens(tag).intersection(
+        {"footnote", "footnotes", "endnote", "endnotes"}
+    ) and "footnote" not in roles:
         roles.append("footnote")
     
     inherited_semantics = " ".join(
