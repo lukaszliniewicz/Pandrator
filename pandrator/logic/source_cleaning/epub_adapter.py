@@ -10,7 +10,6 @@ from ebooklib import epub
 
 from .models import SourceBlock, SourceDocument
 
-
 BLOCK_TAGS = {
     "h1",
     "h2",
@@ -54,8 +53,16 @@ def build_source_document(epub_path: str) -> SourceDocument:
     line_number = 1
     source_index = 0
 
-    from pandrator.logic.source_cleaning.deterministic.parser import unpack_epub_structure
-    from pandrator.logic.source_cleaning.deterministic import toc, footnotes, boilerplate, chapters, illustrations
+    from pandrator.logic.source_cleaning.deterministic import (
+        boilerplate,
+        chapters,
+        footnotes,
+        illustrations,
+        toc,
+    )
+    from pandrator.logic.source_cleaning.deterministic.parser import (
+        unpack_epub_structure,
+    )
 
     try:
         structure = unpack_epub_structure(epub_path)
@@ -67,6 +74,10 @@ def build_source_document(epub_path: str) -> SourceDocument:
     spine = structure.get("spine", [])
     parsed_documents = structure.get("parsed_documents", {})
     total_spine_files = len(spine)
+    navigation_note_hrefs = footnotes.navigation_note_section_hrefs(
+        spine,
+        global_toc,
+    )
 
     def norm_href(h: str) -> str:
         return str(h or "").lower().replace("\\", "/").strip()
@@ -205,7 +216,7 @@ def build_source_document(epub_path: str) -> SourceDocument:
                         )
                     )
 
-                if nh not in non_narrative_files and (
+                if nh not in non_narrative_files and nh not in navigation_note_hrefs and (
                     is_ch_via_toc
                     or chapters.is_chapter_block(
                         block_dict,

@@ -15,7 +15,9 @@ from sqlalchemy.orm import Session
 
 from pandrator.logic import source_cleaning
 from pandrator.logic.source_cleaning.agent import execute_tool_action
-from pandrator.logic.source_cleaning.deterministic import extract_clean_epub
+from pandrator.logic.source_cleaning.deterministic import (
+    extract_epub_with_diagnostics,
+)
 from pandrator.logic.source_cleaning.operations import ALLOWED_METADATA_KEYS
 from pandrator.logic.source_cleaning.selectors import blocks_matching_selector
 
@@ -486,6 +488,10 @@ def _build_phase_packets(
         # the agent. Accepting a server-owned proposal may still apply its wider
         # selector or block set, but the client cannot manufacture unseen targets.
         valid_ids = {str(item["block_id"]) for item in blocks}
+        raw_source_available = isinstance(
+            document.attributes.get("epub_source_inspection_document"),
+            dict,
+        )
         packets.append(
             {
                 "phase": phase,
@@ -498,7 +504,8 @@ def _build_phase_packets(
                     "source_format": "pdf"
                     if document.source_type == "pdf_structured"
                     else "epub",
-                    "raw_markup_available": False,
+                    "raw_markup_available": raw_source_available,
+                    "raw_source_inspection_available": raw_source_available,
                     "server_owned_selector_proposals": document.source_type
                     == "pdf_structured",
                 },
@@ -960,13 +967,22 @@ class SourceCleaningDispatchRunService:
                     )
                 )
             else:
-                baseline_text = extract_clean_epub(
+                extraction_result = extract_epub_with_diagnostics(
                     str(source_path),
                     remove_footnotes=bool(settings.get("remove_footnotes", False)),
                     filter_citations=bool(settings.get("filter_citations", True)),
                 )
+                if not extraction_result.ok:
+                    raise DispatchError(
+                        extraction_result.error_code or "epub_extraction_failed",
+                        extraction_result.message,
+                        422,
+                    )
+                baseline_text = extraction_result.text
                 document = source_cleaning.build_cleaned_epub_source_document(
-                    str(source_path), baseline_text
+                    str(source_path),
+                    baseline_text,
+                    include_source_inspection=True,
                 )
                 deterministic_operations = (
                     source_cleaning.propose_embedded_chapter_operations(document)
@@ -1140,11 +1156,22 @@ class SourceCleaningDispatchRunService:
                 "inspection": {
                     "tool": "pandrator_inspect_source_cleaning_dispatch_extraction",
                     "lease_scoped": True,
-                    "views": ["working", "baseline"],
+                    "views": [
+                        "working",
+                        "baseline",
+                        *(
+                            ["source"]
+                            if dict(packet.get("capabilities") or {}).get(
+                                "raw_source_inspection_available"
+                            )
+                            else []
+                        ),
+                    ],
                     "guidance": (
                         "Initial candidates are hints. Browse, search, inspect context "
                         "or structure, and batch independent lookups when more evidence "
-                        "is needed. Returned live blocks become valid operation targets."
+                        "is needed. Working/baseline blocks can become valid operation "
+                        "targets; the source view is read-only evidence."
                     ),
                 },
             },
@@ -1362,9 +1389,23 @@ class SourceCleaningDispatchRunService:
             )
         else:
             working_document = baseline_document
-        inspected_document = (
-            baseline_document if view == "baseline" else working_document
-        )
+        if view == "source":
+            source_payload = baseline_document.attributes.get(
+                "epub_source_inspection_document"
+            )
+            if not isinstance(source_payload, dict):
+                raise DispatchError(
+                    "source_inspection_unavailable",
+                    "Raw source inspection is unavailable for this run.",
+                    409,
+                )
+            inspected_document = source_cleaning.SourceDocument.from_dict(
+                source_payload
+            )
+        else:
+            inspected_document = (
+                baseline_document if view == "baseline" else working_document
+            )
         observation = execute_tool_action(
             source_cleaning.SourceCleaningTools(inspected_document),
             command,
@@ -1372,8 +1413,13 @@ class SourceCleaningDispatchRunService:
         )
         returned_ids = _inspection_block_ids(observation)
         working_ids = {block.block_id for block in working_document.blocks}
-        promoted_ids = returned_ids & working_ids
-        baseline_only_ids = returned_ids - working_ids
+        promoted_ids = (
+            set() if view == "source" else returned_ids & working_ids
+        )
+        baseline_only_ids = (
+            returned_ids - working_ids if view == "baseline" else set()
+        )
+        source_only_ids = returned_ids if view == "source" else set()
 
         packet = dict(batch.input_json or {})
         valid_ids = {
@@ -1412,6 +1458,7 @@ class SourceCleaningDispatchRunService:
             "observation": observation,
             "promoted_block_ids": sorted(promoted_ids),
             "baseline_only_block_ids": sorted(baseline_only_ids),
+            "source_only_block_ids": sorted(source_only_ids),
             "valid_block_id_count": len(valid_ids),
             "lease_expires_at": _iso(batch.lease_expires_at),
         }

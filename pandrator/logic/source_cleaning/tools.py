@@ -784,46 +784,134 @@ class SourceCleaningTools:
         }
 
     def find_footnote_candidates(
-        self, max_candidates: int = 100
+        self,
+        max_candidates: int = 100,
+        include_ambiguous: bool = False,
     ) -> list[dict[str, Any]]:
+        references_by_target = _footnote_references_by_target(self.document.blocks)
         candidates: list[dict[str, Any]] = []
         for block in self.document.blocks:
             reasons: list[str] = []
-            evidence = " ".join(
-                [
-                    block.tag or "",
-                    block.href or "",
-                    block.element_id or "",
-                    " ".join(block.classes),
-                    " ".join(block.role_candidates),
-                    block.dom_path or "",
-                ]
-            ).lower()
-            if any(
-                token in evidence
-                for token in ("footnote", "endnote", "noteref", "note-ref")
-            ):
-                reasons.append("markup_or_role_mentions_note")
+            explicit_semantics = _has_explicit_note_semantics(block)
+            deterministic_note_file = "deterministic_footnote" in {
+                str(value).casefold() for value in block.role_candidates
+            }
+            note_identity = _has_note_identity(block)
+            note_document = _is_note_document_href(block.href)
+            references = references_by_target.get(block.block_id, [])
+            backlinks = _block_backlink_hrefs(block)
+            note_file_prose = bool(
+                deterministic_note_file
+                and str(block.tag or "").casefold()
+                in {"p", "li", "dd", "blockquote"}
+                and len(block.text.strip()) >= 32
+                and len(block.text.split()) >= 5
+            )
+            marker_prefix = bool(
+                re.match(
+                    r"^(\[\d+\]|\d{1,3}[\.)]|[*∗†‡])\s+\S+",
+                    block.text.strip(),
+                )
+            )
+
+            if explicit_semantics:
+                reasons.append("explicit_note_semantics")
+            if deterministic_note_file:
+                reasons.append("deterministic_note_file")
+            if note_file_prose:
+                reasons.append("note_file_prose")
+            if references:
+                reasons.append("resolved_reference_target")
             if block.tag == "aside":
                 reasons.append("aside_tag")
-            if re.match(r"^(\[\d+\]|\d{1,3}[\.)]|[*†‡])\s+\S+", block.text.strip()):
+            if note_identity:
+                reasons.append("note_identity")
+            if note_document:
+                reasons.append("note_document")
+            if backlinks:
+                reasons.append("backlink")
+            if marker_prefix:
                 reasons.append("note_marker_prefix")
-            if len(block.text) <= 350 and reasons:
-                candidates.append(
-                    {
-                        "block_id": block.block_id,
-                        "line": block.line_start,
-                        "text": block.text,
-                        "reasons": reasons,
-                        "href": block.href,
-                        "page": block.page,
-                        "tag": block.tag,
-                        "classes": block.classes,
-                        "element_id": block.element_id,
-                    }
-                )
 
-        return candidates[:max_candidates]
+            structurally_supported = bool(
+                explicit_semantics
+                or references
+                or (block.tag == "aside" and (marker_prefix or note_identity))
+                or (note_document and (marker_prefix or note_identity or backlinks))
+                or (
+                    deterministic_note_file
+                    and (marker_prefix or note_identity or backlinks or note_file_prose)
+                )
+            )
+            ambiguous_only = marker_prefix and not structurally_supported
+            heading_like = bool(
+                str(block.tag or "").casefold()
+                in {"h1", "h2", "h3", "h4", "h5", "h6"}
+                or "heading"
+                in {str(value).casefold() for value in block.role_candidates}
+            )
+            if (
+                (heading_like and not references)
+                or (
+                    not structurally_supported
+                    and not (include_ambiguous and ambiguous_only)
+                )
+            ):
+                continue
+
+            if references and explicit_semantics:
+                confidence = 0.98
+            elif references and (note_identity or note_document):
+                confidence = 0.93
+            elif references:
+                confidence = 0.85
+            elif explicit_semantics:
+                confidence = 0.82
+            elif block.tag == "aside" and (note_identity or marker_prefix):
+                confidence = 0.68
+            elif (note_document or deterministic_note_file) and (
+                note_identity or backlinks or marker_prefix or note_file_prose
+            ):
+                confidence = 0.62
+            else:
+                confidence = 0.25
+
+            strength = (
+                "high"
+                if confidence >= 0.8
+                else "medium"
+                if confidence >= 0.6
+                else "low"
+            )
+            candidates.append(
+                {
+                    "block_id": block.block_id,
+                    "line": block.line_start,
+                    "text": block.text,
+                    "reasons": reasons,
+                    "confidence": confidence,
+                    "evidence_strength": strength,
+                    "candidate_kind": (
+                        "ambiguous_numbered_line" if ambiguous_only else "note_body"
+                    ),
+                    "relationship": {
+                        "reference_count": len(references),
+                        "referenced_by": references[:10],
+                        "references_truncated": len(references) > 10,
+                        "backlink_hrefs": backlinks[:10],
+                    },
+                    "href": block.href,
+                    "page": block.page,
+                    "tag": block.tag,
+                    "classes": block.classes,
+                    "element_id": block.element_id,
+                }
+            )
+
+        candidates.sort(
+            key=lambda item: (-float(item["confidence"]), int(item["line"]))
+        )
+        return candidates[: max(0, int(max_candidates))]
 
     def find_metadata_candidates(self) -> dict[str, Any]:
         return {
@@ -1008,6 +1096,158 @@ class SourceCleaningTools:
             )
         )
         return suggestions[:10]
+
+
+_HREF_ATTRIBUTE_RE = re.compile(
+    r"\bhref\s*=\s*(?:([\"'])(.*?)\1|([^\s>]+))",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _block_link_hrefs(block: SourceBlock) -> list[str]:
+    hrefs: list[str] = []
+    attribute_href = block.attributes.get("href")
+    if attribute_href:
+        hrefs.append(str(attribute_href))
+    for match in _HREF_ATTRIBUTE_RE.finditer(str(block.raw_markup or "")):
+        href = match.group(2) or match.group(3) or ""
+        if href:
+            hrefs.append(href)
+    return _dedupe_values(hrefs)
+
+
+def _resolve_source_link(source_href: str | None, target: str) -> tuple[str, str]:
+    href_path, separator, fragment = str(target or "").partition("#")
+    source_path = _normalize_href_path(source_href)
+    if href_path:
+        resolved_path = posixpath.normpath(
+            posixpath.join(posixpath.dirname(source_path), unquote(href_path))
+        )
+    else:
+        resolved_path = source_path
+    return resolved_path.casefold(), unquote(fragment if separator else "").casefold()
+
+
+def _footnote_references_by_target(
+    blocks: list[SourceBlock],
+) -> dict[str, list[dict[str, Any]]]:
+    targets: dict[tuple[str, str], list[SourceBlock]] = defaultdict(list)
+    for block in blocks:
+        path = _normalize_href_path(block.href).casefold()
+        fragment = unquote(str(block.element_id or "")).casefold()
+        if path and fragment:
+            targets[(path, fragment)].append(block)
+
+    references: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for block in blocks:
+        for href in _block_link_hrefs(block):
+            path, fragment = _resolve_source_link(block.href, href)
+            if not fragment or not _is_note_reference_link(block, href, path, fragment):
+                continue
+            matched = targets.get((path, fragment), [])
+            if len(matched) != 1:
+                continue
+            target = matched[0]
+            references[target.block_id].append(
+                {
+                    "block_id": block.block_id,
+                    "line": block.line_start,
+                    "href": href,
+                }
+            )
+    return references
+
+
+def _is_note_reference_link(
+    block: SourceBlock,
+    href: str,
+    resolved_path: str,
+    fragment: str,
+) -> bool:
+    for anchor_markup in re.findall(
+        r"<a\b[^>]*>",
+        str(block.raw_markup or ""),
+        flags=re.IGNORECASE | re.DOTALL,
+    ):
+        anchor_hrefs = [
+            match.group(2) or match.group(3) or ""
+            for match in _HREF_ATTRIBUTE_RE.finditer(anchor_markup)
+        ]
+        if href in anchor_hrefs and re.search(
+            r"(?:noteref|doc-noteref|note-ref)",
+            anchor_markup,
+            flags=re.IGNORECASE,
+        ):
+            return True
+
+    if _is_note_document_href(resolved_path):
+        return True
+    return bool(
+        re.search(
+            r"(?:^|[-_:])(?:fn|footnote|endnote|note)[-_:]?[a-z]*\d+\b",
+            fragment,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _has_explicit_note_semantics(block: SourceBlock) -> bool:
+    role_tokens = {str(value).casefold() for value in block.role_candidates}
+    if role_tokens.intersection(
+        {
+            "footnote",
+            "endnote",
+            "doc-footnote",
+            "doc-endnote",
+        }
+    ):
+        return True
+    semantic_text = " ".join(
+        str(block.attributes.get(key) or "")
+        for key in ("epub:type", "role")
+    ).casefold()
+    return bool(
+        re.search(
+            r"(?:^|[^a-z0-9])(?:footnote|endnote|doc-footnote|doc-endnote)(?:$|[^a-z0-9])",
+            semantic_text,
+        )
+    )
+
+
+def _has_note_identity(block: SourceBlock) -> bool:
+    identity = " ".join(
+        [
+            str(block.element_id or ""),
+            " ".join(str(value) for value in block.classes),
+            str(block.dom_path or ""),
+        ]
+    ).casefold()
+    return bool(
+        re.search(
+            r"(?:fn|footnote|endnote|note)[-_: .]?(?:\d+|[a-z])(?:$|[^a-z0-9])",
+            identity,
+        )
+    )
+
+
+def _is_note_document_href(href: str | None) -> bool:
+    stem = posixpath.splitext(posixpath.basename(_normalize_href_path(href)))[0]
+    return bool(
+        re.fullmatch(
+            r"(?:fn|fns|footnotes?|endnotes?|notes?)(?:[-_.]?\d+)?",
+            stem,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _block_backlink_hrefs(block: SourceBlock) -> list[str]:
+    backlinks: list[str] = []
+    for href in _block_link_hrefs(block):
+        fragment = unquote(str(href).partition("#")[2]).casefold()
+        if re.search(r"(?:back|anchor|fnref|noteref|ref)[-_:]?\d*", fragment):
+            backlinks.append(href)
+    return _dedupe_values(backlinks)
 
 
 def _parse_plain_query(query: str) -> list[str]:

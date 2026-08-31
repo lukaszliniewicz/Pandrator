@@ -9,6 +9,8 @@ from .models import SourceDocument
 def build_cleaned_epub_source_document(
     source_path: str,
     extracted_text: str,
+    *,
+    include_source_inspection: bool = False,
 ) -> SourceDocument:
     """Index a deterministic EPUB baseline without reopening removed content.
 
@@ -46,8 +48,13 @@ def build_cleaned_epub_source_document(
     document.attributes["epub_baseline"] = {
         "structured_block_count": len(structured.blocks),
         "agent_block_count": len(document.blocks),
-        "raw_markup_tools_available": False,
+        "raw_markup_tools_available": include_source_inspection,
     }
+    if include_source_inspection:
+        # Read-only sidecar: passive operations still target cleaned-baseline IDs.
+        # Keeping the original block index here lets a leased model inspect raw
+        # markup and relationships without reintroducing removed source content.
+        document.attributes["epub_source_inspection_document"] = structured.to_dict()
     return document
 
 

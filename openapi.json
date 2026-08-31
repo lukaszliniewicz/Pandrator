@@ -3619,7 +3619,8 @@
             "default": "working",
             "enum": [
               "working",
-              "baseline"
+              "baseline",
+              "source"
             ],
             "title": "View",
             "type": "string"
@@ -3689,6 +3690,13 @@
             "title": "Schema Version",
             "type": "string"
           },
+          "source_only_block_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Source Only Block Ids",
+            "type": "array"
+          },
           "valid_block_id_count": {
             "minimum": 0,
             "title": "Valid Block Id Count",
@@ -3697,7 +3705,8 @@
           "view": {
             "enum": [
               "working",
-              "baseline"
+              "baseline",
+              "source"
             ],
             "title": "View",
             "type": "string"
@@ -3713,6 +3722,7 @@
           "observation",
           "promoted_block_ids",
           "baseline_only_block_ids",
+          "source_only_block_ids",
           "valid_block_id_count",
           "lease_expires_at"
         ],

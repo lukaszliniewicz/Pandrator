@@ -904,7 +904,7 @@ class SourceCleaningDispatchInspectionRequest(StrictModel):
         "find_metadata_candidates",
     ]
     arguments: dict[str, Any] = Field(default_factory=dict, max_length=100)
-    view: Literal["working", "baseline"] = "working"
+    view: Literal["working", "baseline", "source"] = "working"
 
 
 class SourceCleaningDispatchInspectionResponse(StrictModel):
@@ -913,11 +913,12 @@ class SourceCleaningDispatchInspectionResponse(StrictModel):
     batch_id: str
     phase: str
     inspection_id: str
-    view: Literal["working", "baseline"]
+    view: Literal["working", "baseline", "source"]
     action: str
     observation: Any
     promoted_block_ids: list[str]
     baseline_only_block_ids: list[str]
+    source_only_block_ids: list[str]
     valid_block_id_count: int = Field(ge=0)
     lease_expires_at: str | None
 

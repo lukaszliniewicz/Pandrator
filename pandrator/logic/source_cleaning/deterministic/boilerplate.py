@@ -46,7 +46,7 @@ FB2_EXPORT_TEXT_RE = re.compile(
 )
 
 TITLEPAGE_TEXT_RE = re.compile(
-    r"^(?:by\s+.+|illustrated\s+by\s+.+|translator:\s+.+|illustrator:\s+.+|"
+    r"^(?:illustrated\s+by\s+.+|translator:\s+.+|illustrator:\s+.+|"
     r"author:\s+.+|title:\s+.+|publisher:\s+.+|original\s+publication:\s+.+|"
     r"copyright\b.*|\(c\)\s*.*|©\s*.*|new\s+york\b.*|london\b.*)$",
     re.IGNORECASE,

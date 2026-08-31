@@ -5,6 +5,10 @@ import re
 NUM_PATTERN = r'^(?:[0-9]{1,3}|[IVXLCDM]{1,12})(?:$|\s*[\.\):–—-]\s*(?=\S))'
 _REGEX_CACHE = {}
 STANDALONE_CHAPTER_NUMBER_RE = re.compile(r"^(?:[0-9]{1,4}|[IVXLCDM]{1,12})[.)]?$", re.IGNORECASE)
+STANDALONE_ROMAN_CHAPTER_NUMBER_RE = re.compile(
+    r"^[IVXLCDM]{1,12}[.)]?$",
+    re.IGNORECASE,
+)
 NUMBERED_HEADING_WITH_TITLE_RE = re.compile(
     r"^(?:[0-9]{1,4}|[IVXLCDM]{1,12})(?:(?:[.)]\s+)|(?:\s+(?:[.•:–—-]\s*)?))(?=[^\d\s])",
     re.IGNORECASE,
@@ -38,9 +42,10 @@ NON_CHAPTER_TEXT_RE = re.compile(
     r".*table\s+of\s+contents.*|.*next\s+chapter.*|.*previous\s+chapter.*|"
     r"contents|illustrations|list\s+of\s+illustrations|"
     r"list\s+of\s+figures|list\s+of\s+tables|title\s+page|copyright|"
-    r"about\s+the\s+author|about\s+the\s+publisher|also\s+by|other\s+books|"
+    r"about\s+the\s+author|about\s+the\s+publisher|also\s+by(?:\s+.+)?|other\s+books|"
     r"bibliography|references|reference\s+list|index|notes|footnotes|endnotes|glossary|colophon|colofon|"
     r"landing\s+page|praise|advance\s+praise|"
+    r"epigraph|also\s+available(?:\s+from\s+.+)?|"
     r"dedication|widmung|titelseite|titel|title|front|"
     r"praise\s+for\s+.+|.+\bpublication|.+\bpublishing|"
     r"spis\s+treści|spis\s+tresci|inhaltsverzeichnis|inhoudsopgave|inhoud|"
@@ -70,9 +75,18 @@ CHAPTER_CLASS_EXACT = {
     "cn", "ct", "cct", "ccn", "ctag", "ctag2",
 }
 
+CHAPTER_CLASS_COMPONENTS = {
+    "chapter",
+    "chapters",
+    "chap",
+    "stave",
+    "prologue",
+    "epilogue",
+}
+
 CHAPTER_CLASS_RE = re.compile(
     r"(?:^|[-_\s])(?:chapter|chap|chapt|chapitre|capitulo|capítulo|capitolo|"
-    r"kapitel|hoofdstuk|rozdzial|rozdział|fejezet|stave|part|book|volume|"
+    r"kapitel|hoofdstuk|rozdzial|rozdział|fejezet|stave|"
     r"prologue|epilogue)(?:$|[-_\s0-9])",
     re.IGNORECASE,
 )
@@ -144,6 +158,10 @@ STANDALONE_CHAPTER_WORDS = (
 EXPLICIT_CHAPTER_RE = re.compile(r"^(?:(?:" + EXPLICIT_CHAPTER_WORDS + r")\s+(?:" + NUMERIC_WORDS + r"))\b", re.IGNORECASE)
 EMBEDDED_EXPLICIT_CHAPTER_RE = re.compile(r"\b(?:" + EXPLICIT_CHAPTER_WORDS + r")\s+(?:" + NUMERIC_WORDS + r")\b", re.IGNORECASE)
 STANDALONE_CHAPTER_RE = re.compile(r"^(?:" + STANDALONE_CHAPTER_WORDS + r")\b", re.IGNORECASE)
+REFERENCE_STYLE_CHAPTER_LABEL_RE = re.compile(
+    r"^(?:cap|ch|chapter)\.?\s+[ivxlcdm]+\.\d+$",
+    re.IGNORECASE,
+)
 
 def is_non_chapter_heading_text(text: str) -> bool:
     normalized = re.sub(r"\s+", " ", text or "").strip()
@@ -198,6 +216,10 @@ def is_heading_fragment(text: str) -> bool:
 def is_explicit_chapter_title(text: str, lang: str = "en") -> bool:
     normalized = re.sub(r"\s+", " ", text or "").strip()
     if not normalized or is_non_chapter_heading_text(normalized):
+        return False
+    # Bibliographic and footnote labels such as ``Cap i.31`` name a location
+    # inside a cited work, not a new audiobook boundary.
+    if REFERENCE_STYLE_CHAPTER_LABEL_RE.fullmatch(normalized):
         return False
     if len(normalized) >= 100:
         return False
@@ -272,11 +294,40 @@ def _has_non_chapter_semantics(block: dict) -> bool:
         if any(
             token in value
             for token in (
-                "toc", "contents", "nav", "cover", "titlepage", "copyright",
-                "license", "gutenberg", "index", "bibliography", "footnote",
-                "endnote", "note", "notes", "refnote", "reference", "citation",
-                "pagenum", "pagebreak", "author", "byline", "banner", "navigation",
-                "illustration", "figure-list"
+                "toc",
+                "contents",
+                "nav",
+                "cover",
+                "titlepage",
+                "copyright",
+                "license",
+                "gutenberg",
+                "index",
+                "bibliography",
+                "footnote",
+                "endnote",
+                "note",
+                "notes",
+                "refnote",
+                "reference",
+                "citation",
+                "pagenum",
+                "pagebreak",
+                "author",
+                "byline",
+                "banner",
+                "navigation",
+                "illustration",
+                "figure-list",
+                "epigraph",
+                "also-available",
+                "also_available",
+                "alsoavailable",
+                "also-availble",
+                "also_availble",
+                "recommendation",
+                "running-header",
+                "running_header",
             )
         ):
             return True
@@ -320,7 +371,9 @@ def has_direct_chapter_semantics(block: dict) -> bool:
     # internal headings, neither of which is a chapter boundary.
     for value in class_values:
         parts = set(re.split(r"[^0-9a-zA-Z]+", value))
-        if value in CHAPTER_CLASS_EXACT or parts.intersection(CHAPTER_CLASS_EXACT):
+        if value in CHAPTER_CLASS_EXACT or parts.intersection(
+            CHAPTER_CLASS_COMPONENTS
+        ):
             return True
         if CHAPTER_CLASS_RE.search(value):
             return True
@@ -362,14 +415,18 @@ def is_chapter_block(
     ):
         return False
 
-    if is_standalone_chapter_number(text):
-        return False
-
     numbered_heading = tag in HEADING_TAGS and is_numbered_heading_with_title(text)
     # A numbered title may legitimately end in a question mark (for example,
     # ``10 • WHAT KIND OF MAN WAS MY FATHER?``), which the general short-text
     # heuristic otherwise treats as a prose sentence.
     plausible = is_plausible_heading_text(text) or numbered_heading
+
+    if is_standalone_chapter_number(text):
+        return bool(
+            plausible
+            and tag in HEADING_TAGS
+            and _has_strong_semantics(block)
+        )
 
     # 1. Explicit EPUB semantics and known real-world chapter IDs/classes.
     if plausible and _has_strong_semantics(block):
@@ -388,7 +445,7 @@ def is_chapter_block(
     # A numbered *heading* has a title, unlike a running page label.  Keep it
     # restricted to heading elements so a numbered prose paragraph cannot turn
     # into an audiobook boundary.
-    if plausible and numbered_heading:
+    if plausible and numbered_heading and tag in {"h1", "h2"}:
         return True
 
     # Publisher chapter headings can include a book title before the explicit

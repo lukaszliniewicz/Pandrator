@@ -594,7 +594,10 @@ def execute_tool_action(
         if action == "analyze_cleanup_structure":
             return tools.analyze_cleanup_structure(max_candidates=int(arguments.get("max_candidates") or 20))
         if action == "find_footnote_candidates":
-            return tools.find_footnote_candidates(max_candidates=int(arguments.get("max_candidates") or 100))
+            return tools.find_footnote_candidates(
+                max_candidates=int(arguments.get("max_candidates") or 100),
+                include_ambiguous=bool(arguments.get("include_ambiguous", False)),
+            )
         if action == "find_metadata_candidates":
             return tools.find_metadata_candidates()
     except Exception as e:

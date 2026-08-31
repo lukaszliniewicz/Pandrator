@@ -9,6 +9,11 @@ from unittest import mock
 
 from sqlalchemy import select
 
+from pandrator.logic.source_cleaning.deterministic import (
+    EpubExtractionError,
+    EpubExtractionResult,
+    EpubSourceProbe,
+)
 from pandrator.web.api import create_app
 from pandrator.web.artifacts import ArtifactService
 from pandrator.web.auth import BootstrapTokenStore
@@ -380,6 +385,65 @@ class AgenticCleaningTests(unittest.TestCase):
                     result["artifact_id"]
                 )
                 self.assertEqual(output_path.read_text(encoding="utf-8"), cleaned)
+            finally:
+                database.dispose()
+
+    def test_epub_cleaning_rejects_unsupported_empty_input_before_artifacts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            paths = prepare_web_test_data_root(directory)
+            database = Database(paths.database)
+            try:
+                session_record = SessionService(database).create("Encrypted EPUB")
+                (paths.sessions / session_record.storage_key).mkdir()
+                source_path = paths.uploads / "book.epub"
+                source_path.write_bytes(b"test fixture")
+                source = ArtifactService(database, paths).register(
+                    source_path,
+                    kind="source",
+                    role="upload",
+                    session_id=session_record.id,
+                )
+                failure = EpubExtractionError(
+                    EpubExtractionResult(
+                        text="",
+                        category="encrypted",
+                        error_code="epub_encrypted",
+                        message="Encrypted narrative resources require keys.",
+                        probe=EpubSourceProbe(
+                            narrative_document_count=1,
+                            encrypted_narrative_resources=("EPUB/body.xhtml",),
+                        ),
+                    )
+                )
+
+                with (
+                    mock.patch(
+                        "pandrator.logic.file_handler.extract_text_from_epub",
+                        side_effect=failure,
+                    ),
+                    self.assertRaises(EpubExtractionError) as raised,
+                ):
+                    WorkflowHandlers(database, paths).clean_source(
+                        {
+                            "session_id": session_record.id,
+                            "source_artifact_id": source.id,
+                            "settings": {"agentic": False},
+                        },
+                        lambda *_args: None,
+                        threading.Event(),
+                    )
+
+                self.assertEqual("epub_encrypted", raised.exception.code)
+                with database.session() as session:
+                    generated = list(
+                        session.scalars(
+                            select(Artifact).where(
+                                Artifact.session_id == session_record.id,
+                                Artifact.role.in_(["extracted_text", "clean_text"]),
+                            )
+                        )
+                    )
+                self.assertFalse(generated)
             finally:
                 database.dispose()
 

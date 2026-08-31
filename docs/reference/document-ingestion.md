@@ -222,14 +222,35 @@ Pandrator can continue with a cleaned-text fallback and records the loss of
 raw-markup tools as a warning. A corrupt container, missing rootfile/package
 document, or unreadable archive still fails the stage.
 
+An empty result is never treated as a normal cleaned book. Pandrator reports
+encrypted/obfuscated narrative resources as unsupported, distinguishes
+image-only EPUBs that require OCR from genuinely empty publications, and
+reports readable-source/parser-empty cases as extraction failures. UI and
+passive preparation both stop before registering a misleading empty
+`clean_text` artifact or ready batch.
+
+Footnote discovery separates relationships from typography. Explicit note
+semantics, uniquely resolved noteref targets, backlinks, note identities, and
+dedicated note-file structure are useful evidence. A line merely beginning
+with `1.` is not: it may be a caption, list item, verse, or ordinary numbered
+prose. Advisory tools therefore omit bare-number candidates by default and can
+return them separately as low-confidence evidence when
+`include_ambiguous=true`. Relative EPUB paths are resolved before a unique
+basename fallback, avoiding accidental cross-links when different directories
+contain files such as `notes.xhtml`.
+
 ### Optional model cleanup and the EPUB baseline
 
 Model-assisted EPUB cleanup works on the deterministic cleaned text, not on
-the raw publisher markup. EPUB metadata and navigation hints are retained, but
-raw-markup selector tools are intentionally unavailable in that pass. This
-enforces a critical invariant: enabling a model may refine the baseline, but a
-no-op or incomplete response cannot resurrect a removed contents page,
-illustration caption, license block, citation, or footnote.
+the raw publisher markup. EPUB metadata and navigation hints are retained. In
+the app-executed provider pass, raw-markup selector tools remain unavailable.
+The passive MCP dispatcher instead persists an additional read-only structured
+source view: its host model may search and inspect publisher markup when a
+heuristic result is doubtful, but source-only block IDs cannot be submitted as
+operation targets. This enforces a critical invariant: a model may challenge
+and refine the baseline, but a no-op or incomplete response cannot resurrect a
+removed contents page, illustration caption, license block, citation, or
+footnote.
 
 This is a quality/safety tradeoff. Deterministic structure remains the source
 of truth; the model focuses on residual text-level problems. Review the clean
@@ -283,10 +304,12 @@ bounded, but it is not the model's only view: while holding the lease the model
 can browse ranges, search text or regular expressions, inspect blocks and
 context, query navigation/heading/footnote structure, preview selectors, and
 batch independent inspections over either the original baseline or the current
-working document. Returned live block IDs become auditable legal targets for
-that batch. The final phase can use `replace_block` for confirmed OCR, joining,
-encoding, or parser defects rather than forcing deletion or accepting damaged
-text.
+working document. EPUB runs add a read-only structured source view for checking
+raw markup and material absent from the deterministic baseline. Returned
+working/baseline block IDs become auditable legal targets for that batch;
+source-only IDs are reported separately and never become operation targets.
+The final phase can use `replace_block` for confirmed OCR, joining, encoding,
+or parser defects rather than forcing deletion or accepting damaged text.
 
 For PDF chapter review, weak section, numbered-note, and decorative-title
 matches stay visible as heading evidence but are not automatically proposed as

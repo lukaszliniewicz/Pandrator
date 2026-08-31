@@ -1,12 +1,37 @@
 from __future__ import annotations
 
+import collections
 import os
 import re
-import zipfile
 import urllib.parse
-import collections
 import xml.etree.ElementTree as ET
+import zipfile
 from html.parser import HTMLParser
+
+BLOCK_TAGS = frozenset(
+    {
+        "p",
+        "div",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "li",
+        "dd",
+        "dt",
+        "blockquote",
+        "aside",
+        "section",
+        "article",
+        # Older EPUBs frequently use tables for page layout. Treat cells, not
+        # table/row containers, as blocks so their text is retained once without
+        # duplicating nested paragraph content.
+        "td",
+        "th",
+    }
+)
 
 # Helper to find an XML element in a namespace-agnostic way
 def find_elem(element, tag_name):
@@ -85,8 +110,7 @@ class EPUBHTMLParser(HTMLParser):
                 self.classes[c] += 1
                 
         # Block-level tag start
-        block_tags = {"p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "li", "dd", "dt", "blockquote", "aside", "section", "article"}
-        if tag in block_tags:
+        if tag in BLOCK_TAGS:
             # If there's an existing block, close it
             self._close_current_block()
             
@@ -143,16 +167,12 @@ class EPUBHTMLParser(HTMLParser):
         # ``<div class="pagebreak">…</div>``; treating every descendant as a
         # page number silently discards the book.
         page_label_classes = {"pagenum", "pagebreak", "pb"}
-        block_tags = {
-            "p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "li",
-            "dd", "dt", "blockquote", "aside", "section", "article",
-        }
         for page_idx, (_, c_val, _, _, _, _) in enumerate(self.tag_stack):
             classes = {c.lower() for c in c_val.split()} if c_val else set()
             if not classes.intersection(page_label_classes):
                 continue
             has_structural_descendant = any(
-                descendant[0].lower() in block_tags
+                descendant[0].lower() in BLOCK_TAGS
                 for descendant in self.tag_stack[page_idx + 1:]
             )
             if not has_structural_descendant:
@@ -189,8 +209,7 @@ class EPUBHTMLParser(HTMLParser):
             })
             
         # Block tag end
-        block_tags = {"p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "li", "dd", "dt", "blockquote", "aside", "section", "article"}
-        if tag in block_tags:
+        if tag in BLOCK_TAGS:
             tag_index = -1
             for idx in range(len(self.block_stack) - 1, -1, -1):
                 if self.block_stack[idx]["tag"] == tag:
@@ -310,22 +329,29 @@ def parse_single_document(z: zipfile.ZipFile, opf_dir: str, rel_path: str) -> di
         html_data = z.read(zip_match).decode("utf-8", errors="ignore")
         # Remove comments to avoid parser confusion
         html_data = re.sub(r'<!--.*?-->', '', html_data, flags=re.DOTALL)
-    except Exception as e:
-        return {"size": 0, "blocks": [], "ids": {}, "classes": {}, "error": str(e)}
+    except (KeyError, OSError, RuntimeError, UnicodeError) as error:
+        return {
+            "size": 0,
+            "blocks": [],
+            "ids": {},
+            "classes": {},
+            "error": str(error),
+        }
         
     parser = EPUBHTMLParser(rel_path)
+    parse_error = None
     try:
         parser.feed(html_data)
         parser.close()
-    except Exception as e:
-        pass
+    except Exception as error:  # noqa: BLE001 - isolate one malformed EPUB resource
+        parse_error = str(error)
         
     return {
         "size": len(html_data),
         "blocks": parser.blocks,
         "ids": parser.ids,
         "classes": dict(parser.classes),
-        "error": None
+        "error": parse_error
     }
 
 def unpack_epub_structure(epub_path: str) -> dict:
@@ -438,7 +464,7 @@ def unpack_epub_structure(epub_path: str) -> dict:
                                 
                     for nav_point in find_all_elems(ncx_root, "navPoint"):
                         parse_navpoint(nav_point)
-                except Exception as e:
+                except (ET.ParseError, KeyError, OSError, UnicodeError, ValueError):
                     pass
             
         return {

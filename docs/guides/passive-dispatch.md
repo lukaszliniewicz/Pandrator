@@ -113,13 +113,30 @@ individual blocks and context, inspect document/navigation structure, preview
 selectors, review heading/footnote candidates, and request EPUB markup when
 the persisted index supports it. Independent inspections can be batched. Use
 `view=working` for the document after accepted earlier deletions or
-`view=baseline` to compare against the original extraction.
+`view=baseline` to compare against the original deterministic extraction. EPUB
+runs additionally expose `view=source`: a read-only structured index of the
+publisher markup, navigation, links, IDs, classes, and other evidence retained
+before deterministic cleanup. This lets the host investigate a suspected
+omission without granting raw content authority over the result.
 
 Every returned live block ID is recorded and promoted into that leased batch's
 valid evidence scope. Baseline-only blocks that an earlier accepted phase
 deleted remain inspectable for diagnosis but cannot be mutated. This preserves
 an audit trail without forcing the host model to trust the detector's initial
-candidate set.
+candidate set. IDs returned only by `view=source` are listed as
+`source_only_block_ids`; they are never promoted and cannot be used in an
+operation. To restore or repair content found only in the source view, inspect
+the surrounding baseline/working extraction and use an allowed operation over
+its live block IDs. If no corresponding live block exists, treat that as an
+extraction defect requiring explicit review rather than silently copying raw
+markup into the cleaned book.
+
+`find_footnote_candidates` is conservative by default: it returns candidates
+supported by explicit note semantics, resolved references, backlinks, note
+identity, or note-file structure. A bare numeric prefix is not enough because
+captions and numbered prose otherwise dominate the result. Set
+`include_ambiguous=true` only when you intentionally want those additional
+low-confidence numbered lines for investigation.
 
 PDF chapter proposals deliberately exclude weak section, note-number, and
 decorative-title guesses. Those headings remain in the evidence and can still

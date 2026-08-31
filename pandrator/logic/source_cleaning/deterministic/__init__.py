@@ -2,12 +2,10 @@ from __future__ import annotations
 
 import re
 
-from . import parser
-from . import toc
-from . import boilerplate
-from . import chapters
-from . import footnotes
-from . import illustrations
+from . import boilerplate, chapters, diagnostics, footnotes, illustrations, parser, toc
+from .diagnostics import EpubExtractionError as EpubExtractionError
+from .diagnostics import EpubExtractionResult as EpubExtractionResult
+from .diagnostics import EpubSourceProbe as EpubSourceProbe
 
 
 def extract_clean_epub(epub_path: str, remove_footnotes: bool = False, filter_citations: bool = True) -> str:
@@ -25,6 +23,11 @@ def extract_clean_epub(epub_path: str, remove_footnotes: bool = False, filter_ci
 
     total_spine_files = len(spine)
     content_docs = []
+    global_toc = toc.build_global_toc_map(structure)
+    navigation_note_hrefs = footnotes.navigation_note_section_hrefs(
+        spine,
+        global_toc,
+    )
 
     for idx, item in enumerate(spine):
         href = item["href"]
@@ -49,8 +52,6 @@ def extract_clean_epub(epub_path: str, remove_footnotes: bool = False, filter_ci
     extracted_chapters = []
 
     backlink_map = footnotes.build_backlink_map(parsed_docs)
-    global_toc = toc.build_global_toc_map(structure)
-
     for doc_href in content_docs:
         doc = parsed_docs[doc_href]
         blocks = _strip_block_boilerplate(
@@ -108,6 +109,10 @@ def extract_clean_epub(epub_path: str, remove_footnotes: bool = False, filter_ci
             if idx in chapter_titles:
                 continue
             text = block.get("text", "").strip()
+            if _is_standalone_chapter_number(text) and any(
+                idx < title_idx <= idx + 6 for title_idx in chapter_titles
+            ):
+                continue
             if chapters.is_chapter_block(
                 block,
                 idx,
@@ -156,6 +161,11 @@ def extract_clean_epub(epub_path: str, remove_footnotes: bool = False, filter_ci
 
         chapter_titles = _dedupe_numbered_chapter_titles(chapter_titles)
 
+        if doc_href.lower().replace("\\", "/") in navigation_note_hrefs:
+            chapter_titles = {}
+            recovered_title = None
+            allow_heading_fallback = False
+
         formatted_blocks = []
         last_chapter_title_norm = ""
 
@@ -178,7 +188,6 @@ def extract_clean_epub(epub_path: str, remove_footnotes: bool = False, filter_ci
                 if title and _norm_title(title) != last_chapter_title_norm:
                     if not title.startswith("[[Chapter]]"):
                         block_copy["text"] = f"[[Chapter]]{title}"
-                        block_copy["parts"] = [{"type": "text", "content": block_copy["text"]}]
                     last_chapter_title_norm = _norm_title(title)
 
             formatted_blocks.append(block_copy)
@@ -209,6 +218,36 @@ def extract_clean_epub(epub_path: str, remove_footnotes: bool = False, filter_ci
         full_text = full_text[:end_match.start()].strip()
 
     return full_text
+
+
+def extract_epub_with_diagnostics(
+    epub_path: str,
+    remove_footnotes: bool = False,
+    filter_citations: bool = True,
+) -> EpubExtractionResult:
+    """Extract EPUB text and classify unsupported or unexpectedly empty input.
+
+    ``extract_clean_epub`` remains the compatible string API. Product preparation
+    paths should use this result API so encryption, OCR-required publications,
+    parser gaps, and genuinely empty books do not become opaque ready baselines.
+    """
+    package_probe = diagnostics.inspect_epub_source(epub_path)
+    if package_probe.encrypted_narrative_resources:
+        return diagnostics.classify_epub_extraction("", package_probe)
+
+    text = extract_clean_epub(
+        epub_path,
+        remove_footnotes=remove_footnotes,
+        filter_citations=filter_citations,
+    )
+    if text.strip():
+        return diagnostics.classify_epub_extraction(text, package_probe)
+
+    content_probe = diagnostics.inspect_epub_source(
+        epub_path,
+        analyze_content=True,
+    )
+    return diagnostics.classify_epub_extraction(text, content_probe)
 
 
 def _strip_block_boilerplate(
@@ -324,6 +363,11 @@ def _titlepage_run_indexes(
                 j += 1
                 continue
             if chapters.is_explicit_chapter_title(next_text, lang=detected_lang):
+                break
+            if (
+                blocks[j].get("tag", "").lower() in chapters.HEADING_TAGS
+                and _is_standalone_chapter_number(next_text)
+            ):
                 break
             if boilerplate.is_titlepage_metadata_text(next_text, metadata):
                 run.append(j)
@@ -489,6 +533,8 @@ def _matched_toc_title(
         frag_key = f"{doc_href.lower()}#{str(block_id).lower()}"
         if frag_key in global_toc:
             return global_toc[frag_key]
+    if int(block.get("block_index", -1)) == 0:
+        return global_toc.get(doc_href.lower())
     return None
 
 
@@ -516,7 +562,6 @@ def _is_usable_toc_chapter(
     if chapters.is_heading_fragment(title):
         return False
 
-    block_text = block.get("text", "").strip()
     if chapters.is_explicit_chapter_title(title, lang=detected_lang):
         return True
     if chapters.is_chapter_block(block, 0, lang=detected_lang, allow_heading_fallback=False):
@@ -550,11 +595,18 @@ def _is_toc_validated_heading(
     """Use TOC metadata only to validate an already-present heading element."""
     if str(block.get("tag", "")).lower() not in chapters.HEADING_TAGS:
         return False
-    if not _is_usable_toc_chapter(block, matched_title, metadata, detected_lang):
-        return False
     block_text = re.sub(r"\s+", " ", block.get("text", "") or "").strip()
     toc_text = re.sub(r"\s+", " ", matched_title or "").strip()
-    return bool(block_text and _norm_title(block_text) == _norm_title(toc_text))
+    if not block_text or _norm_title(block_text) != _norm_title(toc_text):
+        return False
+    if chapters.STANDALONE_ROMAN_CHAPTER_NUMBER_RE.fullmatch(block_text):
+        return True
+    return _is_usable_toc_chapter(
+        block,
+        matched_title,
+        metadata,
+        detected_lang,
+    )
 
 
 def _is_insertable_toc_heading(

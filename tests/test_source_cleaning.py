@@ -3,6 +3,7 @@ import os
 import re
 import tempfile
 import unittest
+import zipfile
 from unittest.mock import patch
 
 from ebooklib import epub
@@ -157,7 +158,11 @@ class SourceCleaningTests(unittest.TestCase):
         epub_path = self._write_epub_fixture()
         cleaned_text = "[[Chapter]]Rozdzial pierwszy\n\nTo jest pierwsze zdanie powiesci."
 
-        document = build_cleaned_epub_source_document(epub_path, cleaned_text)
+        document = build_cleaned_epub_source_document(
+            epub_path,
+            cleaned_text,
+            include_source_inspection=True,
+        )
         operations = propose_embedded_chapter_operations(document)
 
         self.assertEqual(document.source_type, "epub_cleaned_text")
@@ -168,6 +173,11 @@ class SourceCleaningTests(unittest.TestCase):
         self.assertNotIn("Mapa starego miasta", document.plain_text())
         self.assertIn("deterministic_chapter", document.blocks[0].role_candidates)
         self.assertNotIn("[[Chapter]]", document.blocks[0].text)
+        source_inspection = document.attributes["epub_source_inspection_document"]
+        self.assertEqual("epub", source_inspection["source_type"])
+        self.assertTrue(
+            any(block.get("raw_markup") for block in source_inspection["blocks"])
+        )
         self.assertNotIn(
             "[[Chapter]]",
             apply_cleaning_operations(
@@ -183,7 +193,9 @@ class SourceCleaningTests(unittest.TestCase):
         )
         self.assertEqual(document.language, "pl")
         self.assertTrue(document.metadata_candidates.get("title"))
-        self.assertFalse(document.attributes["epub_baseline"]["raw_markup_tools_available"])
+        self.assertTrue(
+            document.attributes["epub_baseline"]["raw_markup_tools_available"]
+        )
 
     def test_destructive_phase_requires_inspection_before_finishing(self):
         document = build_source_document_from_text(
@@ -387,6 +399,334 @@ class SourceCleaningTests(unittest.TestCase):
             epub.Link("body.xhtml#c2", "Chapter Two", "chapter-two"),
         )
         book.spine = ["nav", toc, chapter]
+
+        epub.write_epub(epub_path, book)
+        return epub_path
+
+    def _write_byline_and_by_narrative_epub_fixture(self) -> str:
+        epub_path = os.path.join(self.temp_dir.name, "Byline and Narrative.epub")
+
+        book = epub.EpubBook()
+        book.set_identifier("fixture-byline-narrative")
+        book.set_title("The Invented Clock")
+        book.set_language("en")
+        book.add_author("Example Author")
+
+        body = epub.EpubHtml(title="Body", file_name="body.xhtml", lang="en")
+        body.content = """
+        <html>
+          <body>
+            <h1>The Invented Clock</h1>
+            <p>By Example Author</p>
+            <h1>Chapter One</h1>
+            <p>By midnight the synthetic clock had finished its careful rehearsal.</p>
+            <h2>A Turning Point</h2>
+            <p>By the river another invented sentence remained ordinary narrative.</p>
+            <p>By je zmienić, trzeba zachować ten wymyślony akapit.</p>
+          </body>
+        </html>
+        """
+
+        book.add_item(body)
+        book.add_item(epub.EpubNcx())
+        book.add_item(epub.EpubNav())
+        book.toc = (epub.Link("body.xhtml", "Chapter One", "chapter-one"),)
+        book.spine = ["nav", body]
+
+        epub.write_epub(epub_path, book)
+        return epub_path
+
+    def _write_link_rich_narrative_epub_fixture(self) -> str:
+        epub_path = os.path.join(self.temp_dir.name, "Link Rich Narrative.epub")
+
+        book = epub.EpubBook()
+        book.set_identifier("fixture-link-rich-narrative")
+        book.set_title("The Cross-Referenced Garden")
+        book.set_language("en")
+        book.add_author("Example Author")
+
+        links = []
+        extra_chapters = []
+        for index in range(2, 12):
+            chapter = epub.EpubHtml(
+                title=f"Reference {index}",
+                file_name=f"chapter{index:02d}.xhtml",
+                lang="en",
+            )
+            chapter.content = (
+                "<html><body>"
+                f"<h1>Reference {index}</h1>"
+                f"<p>Invented reference material number {index}.</p>"
+                "</body></html>"
+            )
+            book.add_item(chapter)
+            extra_chapters.append(chapter)
+            links.append(
+                f'<p><a href="chapter{index:02d}.xhtml">'
+                f"Reference {index} explains an intentionally verbose cross link "
+                "used inside this invented narrative chapter</a></p>"
+            )
+
+        body = epub.EpubHtml(title="Chapter One", file_name="chapter01.xhtml", lang="en")
+        body.content = f"""
+        <html>
+          <body>
+            <h1>Chapter One</h1>
+            <p>The gardeners met before sunrise and compared their notes about the
+            invented orchard, its changing paths, and the work planned for spring.</p>
+            <p>Their conversation continued through breakfast because each careful
+            observation affected the next experiment and deserved a complete record.</p>
+            {''.join(links)}
+            <p>This substantial prose remains part of the chapter even though the
+            reference list above links densely to many later documents in the spine.</p>
+            <p>When evening arrived, the gardeners closed the ledger and left the
+            orchard exactly as the next invented chapter expected to find it.</p>
+          </body>
+        </html>
+        """
+
+        book.add_item(body)
+        book.add_item(epub.EpubNcx())
+        book.add_item(epub.EpubNav())
+        book.toc = tuple(
+            [epub.Link("chapter01.xhtml", "Chapter One", "chapter-one")]
+            + [
+                epub.Link(
+                    f"chapter{index:02d}.xhtml",
+                    f"Reference {index}",
+                    f"reference-{index}",
+                )
+                for index in range(2, 12)
+            ]
+        )
+        book.spine = ["nav", body, *extra_chapters]
+
+        epub.write_epub(epub_path, book)
+        return epub_path
+
+    def _write_legacy_table_narrative_epub_fixture(self) -> str:
+        epub_path = os.path.join(self.temp_dir.name, "Legacy Table Narrative.epub")
+
+        book = epub.EpubBook()
+        book.set_identifier("fixture-legacy-table-narrative")
+        book.set_title("Legacy Table Narrative")
+        book.set_language("en")
+        book.add_author("Example Author")
+
+        body = epub.EpubHtml(title="Body", file_name="body.xhtml", lang="en")
+        body.content = """
+        <html>
+          <body>
+            <table>
+              <tr><td><font>Chapter One</font></td></tr>
+              <tr><td><font>The first invented table-cell paragraph survives.</font></td></tr>
+              <tr>
+                <td>Outer prefix<table><tr><td><font>Nested cell text.</font></td></tr></table>Outer suffix</td>
+              </tr>
+              <tr><th>Label</th><th>Value</th></tr>
+              <tr><td>Alpha</td><td>Beta</td></tr>
+            </table>
+          </body>
+        </html>
+        """
+
+        book.add_item(body)
+        book.add_item(epub.EpubNcx())
+        book.add_item(epub.EpubNav())
+        book.toc = (epub.Link("body.xhtml", "Chapter One", "chapter-one"),)
+        book.spine = ["nav", body]
+
+        epub.write_epub(epub_path, book)
+        return epub_path
+
+    def _write_empty_diagnostic_epub_fixture(self, kind: str) -> str:
+        epub_path = os.path.join(self.temp_dir.name, f"Diagnostic {kind}.epub")
+
+        book = epub.EpubBook()
+        book.set_identifier(f"fixture-diagnostic-{kind}")
+        book.set_title(f"Diagnostic {kind}")
+        book.set_language("en")
+
+        body = epub.EpubHtml(title="Body", file_name="body.xhtml", lang="en")
+        if kind == "image_only":
+            body.content = (
+                '<html><body><img src="page-001.jpg" alt="" /></body></html>'
+            )
+        elif kind == "parser_empty":
+            body.content = "<html><body><font>" + (
+                "Invented readable source text remains outside recognized block tags. "
+                * 8
+            ) + "</font></body></html>"
+        elif kind == "encrypted":
+            body.content = (
+                "<html><body><p>This placeholder is replaced by opaque bytes.</p>"
+                "</body></html>"
+            )
+        elif kind == "empty":
+            body.content = "<html><body><span></span></body></html>"
+        else:
+            raise AssertionError(f"Unsupported diagnostic fixture kind: {kind}")
+
+        book.add_item(body)
+        book.add_item(epub.EpubNcx())
+        book.add_item(epub.EpubNav())
+        book.toc = (epub.Link("body.xhtml", "Body", "body"),)
+        book.spine = ["nav", body]
+        epub.write_epub(epub_path, book)
+
+        if kind == "encrypted":
+            rewritten_path = f"{epub_path}.rewritten"
+            with zipfile.ZipFile(epub_path, "r") as source:
+                entries = [
+                    (info, source.read(info.filename))
+                    for info in source.infolist()
+                ]
+            body_name = next(
+                info.filename
+                for info, _data in entries
+                if info.filename.endswith("/body.xhtml")
+                or info.filename == "body.xhtml"
+            )
+            encryption_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+            <encryption xmlns="urn:oasis:names:tc:opendocument:xmlns:container"
+                        xmlns:enc="http://www.w3.org/2001/04/xmlenc#">
+              <enc:EncryptedData>
+                <enc:EncryptionMethod Algorithm="urn:example:opaque" />
+                <enc:CipherData><enc:CipherReference URI="{body_name}" /></enc:CipherData>
+              </enc:EncryptedData>
+            </encryption>
+            """
+            with zipfile.ZipFile(rewritten_path, "w") as target:
+                for info, data in entries:
+                    if info.filename == body_name:
+                        data = b"\x91\xa4\x00\xffopaque narrative bytes"
+                    target.writestr(info, data)
+                target.writestr("META-INF/encryption.xml", encryption_xml)
+            os.replace(rewritten_path, epub_path)
+
+        return epub_path
+
+    def _write_nav_backed_roman_chapters_epub_fixture(self) -> str:
+        epub_path = os.path.join(self.temp_dir.name, "Roman Chapters.epub")
+
+        book = epub.EpubBook()
+        book.set_identifier("fixture-roman-chapters")
+        book.set_title("Roman Chapters")
+        book.set_language("en")
+
+        first = epub.EpubHtml(title="I", file_name="chapter01.xhtml", lang="en")
+        first.content = """
+        <html><body>
+          <h1>Roman Chapters</h1>
+          <h2 id="chapter-one" class="h1">I</h2>
+          <p>Invented first chapter prose.</p>
+        </body></html>
+        """
+        second = epub.EpubHtml(title="II", file_name="chapter02.xhtml", lang="en")
+        second.content = """
+        <html><body><h2 class="h1">II</h2><p>Invented second chapter prose.</p></body></html>
+        """
+        numeric = epub.EpubHtml(title="7", file_name="chapter07.xhtml", lang="en")
+        numeric.content = """
+        <html><body><h2 class="chapterNumber">7</h2><p>Invented seventh chapter prose.</p></body></html>
+        """
+
+        for chapter in (first, second, numeric):
+            book.add_item(chapter)
+        book.add_item(epub.EpubNcx())
+        book.add_item(epub.EpubNav())
+        book.toc = (
+            epub.Link("chapter01.xhtml#chapter-one", "I", "chapter-one"),
+            epub.Link("chapter02.xhtml", "II", "chapter-two"),
+            epub.Link("chapter07.xhtml", "7", "chapter-seven"),
+        )
+        book.spine = ["nav", first, second, numeric]
+
+        epub.write_epub(epub_path, book)
+        return epub_path
+
+    def _write_navigation_endnote_range_epub_fixture(self) -> str:
+        epub_path = os.path.join(self.temp_dir.name, "Navigation Endnotes.epub")
+
+        book = epub.EpubBook()
+        book.set_identifier("fixture-navigation-endnotes")
+        book.set_title("Navigation Endnotes")
+        book.set_language("en")
+
+        body = epub.EpubHtml(title="Chapter One", file_name="body.xhtml", lang="en")
+        body.content = """
+        <html><body><h1>Chapter One</h1><p>Invented narrative prose.</p></body></html>
+        """
+        note_start = epub.EpubHtml(
+            title="ENDNOTES", file_name="notes-start.xhtml", lang="en"
+        )
+        note_start.content = """
+        <html><body><p>ENDNOTES</p><p>Notes are grouped by source chapter.</p></body></html>
+        """
+        note_one = epub.EpubHtml(
+            title="Note Chapter I", file_name="notes-01.xhtml", lang="en"
+        )
+        note_one.content = """
+        <html><body><p class="chapter">Chapter I</p><p>1. Invented note one.</p></body></html>
+        """
+        note_two = epub.EpubHtml(
+            title="Note Chapter II", file_name="notes-02.xhtml", lang="en"
+        )
+        note_two.content = """
+        <html><body><p class="chapter">Chapter II</p><p>2. Invented note two.</p></body></html>
+        """
+        further = epub.EpubHtml(
+            title="Further Reading", file_name="further.xhtml", lang="en"
+        )
+        further.content = """
+        <html><body><h1>Further Reading</h1><p>Invented bibliography prose.</p></body></html>
+        """
+
+        for item in (body, note_start, note_one, note_two, further):
+            book.add_item(item)
+        book.add_item(epub.EpubNcx())
+        book.add_item(epub.EpubNav())
+        book.toc = (
+            epub.Link("body.xhtml", "Chapter One", "chapter-one"),
+            epub.Link("notes-start.xhtml", "ENDNOTES", "endnotes"),
+            epub.Link("further.xhtml", "Further Reading", "further"),
+        )
+        book.spine = ["nav", body, note_start, note_one, note_two, further]
+
+        epub.write_epub(epub_path, book)
+        return epub_path
+
+    def _write_chapter_heading_footnote_epub_fixture(self) -> str:
+        epub_path = os.path.join(self.temp_dir.name, "Chapter Heading Footnote.epub")
+
+        book = epub.EpubBook()
+        book.set_identifier("fixture-chapter-heading-footnote")
+        book.set_title("Chapter Heading Footnote")
+        book.set_language("en")
+
+        body = epub.EpubHtml(title="Chapter One", file_name="body.xhtml", lang="en")
+        body.content = """
+        <html><body>
+          <h1 class="chaptertitle">Chapter One<a href="notes.xhtml#note-1" epub:type="noteref">1</a></h1>
+          <p>Invented narrative prose follows the heading.</p>
+        </body></html>
+        """
+        notes = epub.EpubHtml(title="Notes", file_name="notes.xhtml", lang="en")
+        notes.content = """
+        <html><body>
+          <aside id="note-1" epub:type="footnote">1. Invented heading note survives.</aside>
+        </body></html>
+        """
+
+        for item in (body, notes):
+            book.add_item(item)
+        book.add_item(epub.EpubNcx())
+        book.add_item(epub.EpubNav())
+        book.toc = (
+            epub.Link("body.xhtml", "Chapter One", "chapter-one"),
+            epub.Link("notes.xhtml", "Notes", "notes"),
+        )
+        book.spine = ["nav", body, notes]
 
         epub.write_epub(epub_path, book)
         return epub_path
@@ -789,6 +1129,118 @@ class SourceCleaningTests(unittest.TestCase):
         self.assertNotIn("endnote-like", result.cleaned_text)
         self.assertIn("The narrator returns to the road.", result.cleaned_text)
 
+    def test_footnote_candidates_prioritize_resolved_relationships_over_numbered_captions(self):
+        document = SourceDocument(
+            source_type="epub",
+            source_path="invented.epub",
+            filename="invented.epub",
+            blocks=[
+                SourceBlock(
+                    block_id="reference",
+                    text="Invented claim1.",
+                    line_start=1,
+                    line_end=1,
+                    href="Text/body.xhtml",
+                    tag="p",
+                    raw_markup=(
+                        '<p>Invented claim<a epub:type="noteref" '
+                        'href="notes.xhtml#Note-A">1</a>.</p>'
+                    ),
+                ),
+                SourceBlock(
+                    block_id="caption",
+                    text="1. Fragment of an invented castle drawing.",
+                    line_start=2,
+                    line_end=2,
+                    href="Text/body.xhtml",
+                    tag="p",
+                ),
+                SourceBlock(
+                    block_id="note",
+                    text="1. Invented explanatory note.",
+                    line_start=3,
+                    line_end=3,
+                    href="Text/notes.xhtml",
+                    tag="aside",
+                    element_id="note-a",
+                    attributes={"epub:type": "footnote"},
+                    role_candidates=["footnote"],
+                    raw_markup='<aside id="note-a" epub:type="footnote">1. Invented explanatory note.</aside>',
+                ),
+            ],
+        )
+
+        candidates = SourceCleaningTools(document).find_footnote_candidates()
+
+        self.assertEqual(["note"], [item["block_id"] for item in candidates])
+        self.assertEqual("high", candidates[0]["evidence_strength"])
+        self.assertEqual(1, candidates[0]["relationship"]["reference_count"])
+        self.assertEqual(
+            "reference",
+            candidates[0]["relationship"]["referenced_by"][0]["block_id"],
+        )
+
+    def test_footnote_candidates_do_not_treat_every_block_in_note_file_as_note_body(self):
+        long_note_text = (
+            "An invented unnumbered note with enough explanatory prose to review. "
+            + "Additional evidence remains part of the same note body. " * 8
+        )
+        document = SourceDocument(
+            source_type="epub",
+            source_path="invented.epub",
+            filename="invented.epub",
+            blocks=[
+                SourceBlock(
+                    block_id="heading",
+                    text="Notes",
+                    line_start=1,
+                    line_end=1,
+                    href="Text/backmatter.xhtml",
+                    tag="h1",
+                    role_candidates=["heading", "deterministic_footnote"],
+                ),
+                SourceBlock(
+                    block_id="section",
+                    text="CHARACTERS",
+                    line_start=2,
+                    line_end=2,
+                    href="Text/backmatter.xhtml",
+                    tag="div",
+                    role_candidates=["deterministic_footnote"],
+                ),
+                SourceBlock(
+                    block_id="note",
+                    text="1. Invented explanatory note.",
+                    line_start=3,
+                    line_end=3,
+                    href="Text/backmatter.xhtml",
+                    tag="p",
+                    role_candidates=["deterministic_footnote"],
+                ),
+                SourceBlock(
+                    block_id="prose-note",
+                    text=long_note_text,
+                    line_start=4,
+                    line_end=4,
+                    href="Text/backmatter.xhtml",
+                    tag="p",
+                    role_candidates=["deterministic_footnote"],
+                ),
+            ],
+        )
+
+        candidates = SourceCleaningTools(document).find_footnote_candidates()
+
+        self.assertEqual(
+            ["note", "prose-note"],
+            [item["block_id"] for item in candidates],
+        )
+        self.assertTrue(
+            all(item["evidence_strength"] == "medium" for item in candidates)
+        )
+        self.assertIn("deterministic_note_file", candidates[0]["reasons"])
+        self.assertIn("note_file_prose", candidates[1]["reasons"])
+
     def test_selector_tools_preview_and_delete_entire_epub_toc(self):
         epub_path = self._write_large_toc_epub_fixture()
 
@@ -864,6 +1316,202 @@ class SourceCleaningTests(unittest.TestCase):
         self.assertNotIn("[[Chapter]]ILLUSTRATIONS", text)
         self.assertNotIn("[[Chapter]]A Christmas Carol", text)
         self.assertNotIn("By Charles Dickens", text)
+
+    def test_deterministic_epub_extract_keeps_by_narrative_but_removes_real_byline(self):
+        from pandrator.logic.source_cleaning.deterministic import extract_clean_epub
+
+        text = extract_clean_epub(self._write_byline_and_by_narrative_epub_fixture())
+
+        self.assertNotIn("By Example Author", text)
+        self.assertIn(
+            "By midnight the synthetic clock had finished its careful rehearsal.",
+            text,
+        )
+        self.assertIn("A Turning Point", text)
+        self.assertIn(
+            "By the river another invented sentence remained ordinary narrative.",
+            text,
+        )
+        self.assertIn(
+            "By je zmienić, trzeba zachować ten wymyślony akapit.",
+            text,
+        )
+
+    def test_deterministic_epub_extract_keeps_link_rich_narrative_chapter(self):
+        from pandrator.logic.source_cleaning.deterministic import (
+            extract_clean_epub,
+            parser,
+            toc,
+        )
+
+        epub_path = self._write_link_rich_narrative_epub_fixture()
+        structure = parser.unpack_epub_structure(epub_path)
+        href = "chapter01.xhtml"
+
+        self.assertFalse(
+            toc.is_toc_file(
+                href,
+                structure["parsed_documents"][href],
+                structure["spine"],
+            )
+        )
+
+        text = extract_clean_epub(epub_path)
+        self.assertIn("[[Chapter]]Chapter One", text)
+        self.assertIn("The gardeners met before sunrise", text)
+        self.assertIn("This substantial prose remains part of the chapter", text)
+        self.assertIn("When evening arrived", text)
+
+    def test_deterministic_epub_extract_recovers_legacy_table_cell_text_once(self):
+        from pandrator.logic.source_cleaning.deterministic import extract_clean_epub
+
+        text = extract_clean_epub(self._write_legacy_table_narrative_epub_fixture())
+
+        for expected in (
+            "Chapter One",
+            "The first invented table-cell paragraph survives.",
+            "Outer prefix",
+            "Nested cell text.",
+            "Outer suffix",
+            "Label",
+            "Value",
+            "Alpha",
+            "Beta",
+        ):
+            self.assertEqual(text.count(expected), 1, expected)
+
+    def test_epub_extraction_diagnostics_classify_empty_outcomes(self):
+        from pandrator.logic.source_cleaning.deterministic import (
+            EpubExtractionError,
+            extract_epub_with_diagnostics,
+        )
+
+        expected = {
+            "encrypted": ("encrypted", "epub_encrypted"),
+            "image_only": ("image_only", "epub_ocr_required"),
+            "parser_empty": ("parser_empty", "epub_parser_empty"),
+            "empty": ("empty", "epub_empty"),
+        }
+        for kind, (category, error_code) in expected.items():
+            with self.subTest(kind=kind):
+                result = extract_epub_with_diagnostics(
+                    self._write_empty_diagnostic_epub_fixture(kind)
+                )
+                self.assertFalse(result.ok)
+                self.assertEqual(category, result.category)
+                self.assertEqual(error_code, result.error_code)
+                self.assertFalse(result.text)
+                with self.assertRaises(EpubExtractionError) as raised:
+                    result.require_text()
+                self.assertEqual(error_code, raised.exception.code)
+
+    def test_epub_extraction_diagnostics_keep_normal_text(self):
+        from pandrator.logic.source_cleaning.deterministic import (
+            extract_epub_with_diagnostics,
+        )
+
+        result = extract_epub_with_diagnostics(
+            self._write_legacy_table_narrative_epub_fixture()
+        )
+
+        self.assertTrue(result.ok)
+        self.assertEqual("normal", result.category)
+        self.assertIsNone(result.error_code)
+        self.assertIn("The first invented table-cell paragraph survives.", result.text)
+
+    def test_deterministic_epub_marks_nav_backed_roman_and_semantic_numeric_chapters(self):
+        from pandrator.logic.source_cleaning.deterministic import extract_clean_epub
+
+        text = extract_clean_epub(self._write_nav_backed_roman_chapters_epub_fixture())
+        markers = re.findall(r"\[\[Chapter\]\]([^\n]+)", text)
+
+        self.assertEqual(["I", "II", "7"], markers)
+
+    def test_deterministic_epub_preserves_endnotes_without_marking_note_chapters(self):
+        from pandrator.logic.source_cleaning.deterministic import extract_clean_epub
+
+        text = extract_clean_epub(self._write_navigation_endnote_range_epub_fixture())
+
+        self.assertIn("[[Chapter]]Chapter One", text)
+        self.assertNotIn("[[Chapter]]Chapter I", text)
+        self.assertNotIn("[[Chapter]]Chapter II", text)
+        self.assertIn("1. Invented note one.", text)
+        self.assertIn("2. Invented note two.", text)
+
+    def test_deterministic_epub_chapter_marker_preserves_heading_footnote_reference(self):
+        from pandrator.logic.source_cleaning.deterministic import extract_clean_epub
+
+        text = extract_clean_epub(self._write_chapter_heading_footnote_epub_fixture())
+
+        self.assertIn("[[Chapter]]Chapter One1", text)
+        self.assertIn("[Footnote: Invented heading note survives.]", text)
+        self.assertNotIn("\n\n1. Invented heading note survives.", text)
+
+    def test_chapter_classifier_requires_stronger_evidence_for_ambiguous_structure(self):
+        from pandrator.logic.source_cleaning.deterministic import chapters
+
+        self.assertTrue(
+            chapters.is_chapter_block(
+                {
+                    "tag": "h2",
+                    "text": "7",
+                    "classes": ["chapterNumber"],
+                },
+                0,
+                allow_heading_fallback=False,
+            )
+        )
+        for block in (
+            {
+                "tag": "h2",
+                "text": "A borrowed sentence",
+                "classes": ["chapter-epigraph"],
+            },
+            {
+                "tag": "h2",
+                "text": "Another Fine Book",
+                "classes": ["also-available-title"],
+            },
+            {
+                "tag": "p",
+                "text": "An invented epigraph sentence",
+                "classes": ["part_ext"],
+            },
+            {
+                "tag": "h2",
+                "text": "ALSO BY INVENTED AUTHOR",
+                "classes": ["chapter"],
+            },
+            {
+                "tag": "p",
+                "text": "Cap i.31",
+                "classes": ["noindent"],
+            },
+            {
+                "tag": "h4",
+                "text": "3. A nested academic section",
+                "classes": [],
+            },
+        ):
+            with self.subTest(block=block):
+                self.assertFalse(
+                    chapters.is_chapter_block(
+                        block,
+                        0,
+                        allow_heading_fallback=False,
+                    )
+                )
+        self.assertTrue(
+            chapters.is_chapter_block(
+                {
+                    "tag": "h2",
+                    "text": "3. A major numbered division",
+                    "classes": [],
+                },
+                0,
+                allow_heading_fallback=False,
+            )
+        )
 
     def test_deterministic_epub_extract_strips_visual_blocks_without_deduping_body_text(self):
         from pandrator.logic.source_cleaning.deterministic import extract_clean_epub
@@ -1012,6 +1660,85 @@ class SourceCleaningTests(unittest.TestCase):
                 9000,
                 parsed_doc={"blocks": [{"id": "note-1"}, {"id": "note-2"}]},
             )
+        )
+
+    def test_deterministic_footnote_resolution_uses_relative_path_and_tolerates_fragment_case(self):
+        from pandrator.logic.source_cleaning.deterministic.footnotes import (
+            reposition_footnotes_in_document,
+        )
+
+        source_href = "OPS/Text/chapter.xhtml"
+        source_block = {
+            "block_index": 0,
+            "id": "",
+            "text": "Invented claim1.",
+            "parts": [
+                {"type": "text", "content": "Invented claim"},
+                {
+                    "type": "anchor",
+                    "href": "../Notes/notes.xhtml#Note-1",
+                    "id": "",
+                    "class": "noteref",
+                    "epub_type": "noteref",
+                    "content": "1",
+                },
+                {"type": "text", "content": "."},
+            ],
+        }
+        parsed_documents = {
+            source_href: {"blocks": [source_block], "ids": {}},
+            "OPS/Wrong/notes.xhtml": {
+                "blocks": [
+                    {
+                        "block_index": 0,
+                        "id": "note-1",
+                        "text": "1. Wrong duplicate-basename note.",
+                        "parts": [],
+                    }
+                ],
+                "ids": {"note-1": 0},
+            },
+            "OPS/Notes/notes.xhtml": {
+                "blocks": [
+                    {
+                        "block_index": 0,
+                        "id": "note-1",
+                        "text": "1. Correct invented note body.",
+                        "parts": [],
+                    }
+                ],
+                "ids": {"note-1": 0},
+            },
+        }
+
+        lines = reposition_footnotes_in_document(
+            source_href,
+            [source_block],
+            parsed_documents,
+            set(),
+            filter_citations=False,
+        )
+
+        self.assertEqual(
+            ["Invented claim1. [Footnote: Correct invented note body.]"],
+            lines,
+        )
+
+    def test_deterministic_citation_filter_keeps_editorial_apparatus_note(self):
+        from pandrator.logic.source_cleaning.deterministic.footnotes import (
+            classify_footnote_improved,
+        )
+
+        editorial = 'The Edited Draft has: “First Evenings” (p. 13).'
+        bibliography = "Invented Author, Sample Book (Example Press, 2019), p. 13."
+
+        self.assertEqual(
+            classify_footnote_improved(editorial, "en")["class"],
+            "narrative",
+        )
+        self.assertEqual(
+            classify_footnote_improved(bibliography, "en")["class"],
+            "reference",
         )
 
     def test_epub_internal_noteref_is_not_navigation_or_toc(self):
@@ -1320,8 +2047,13 @@ class SourceCleaningTests(unittest.TestCase):
         self.assertEqual(repeated[0]["text"], "Running Header")
         self.assertEqual(repeated[0]["count"], 3)
 
-        footnotes = tools.find_footnote_candidates()
+        self.assertEqual(tools.find_footnote_candidates(), [])
+        footnotes = tools.find_footnote_candidates(include_ambiguous=True)
         self.assertEqual(len(footnotes), 2)
+        self.assertTrue(
+            all(item["candidate_kind"] == "ambiguous_numbered_line" for item in footnotes)
+        )
+        self.assertTrue(all(item["evidence_strength"] == "low" for item in footnotes))
 
         headings = tools.find_heading_candidates()
         heading_texts = {item["text"] for item in headings}

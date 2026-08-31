@@ -588,7 +588,7 @@ Inspection command schema:
 {{"action":"find_heading_candidates","arguments":{{"max_candidates":80}}}}
 {{"action":"analyze_chapter_structure","arguments":{{"max_candidates":80}}}}
 {{"action":"analyze_cleanup_structure","arguments":{{"max_candidates":20}}}}
-{{"action":"find_footnote_candidates","arguments":{{"max_candidates":80}}}}
+{{"action":"find_footnote_candidates","arguments":{{"max_candidates":80,"include_ambiguous":false}}}}
 {{"action":"find_metadata_candidates","arguments":{{}}}}
 {{"action":"evaluate_operations","arguments":{{"operations":[{{"op":"delete_range","start_line":1,"end_line":5,"reason":"confirmed front matter"}}]}}}}
 

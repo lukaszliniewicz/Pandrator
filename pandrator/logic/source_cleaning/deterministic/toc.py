@@ -1,6 +1,23 @@
 from __future__ import annotations
 
 import os
+import re
+
+_NARRATIVE_MIN_UNLINKED_WORDS = 60
+_NARRATIVE_MIN_PROSE_BLOCKS = 3
+
+
+def _has_sustained_narrative(unlinked_words: int, prose_blocks: int) -> bool:
+    """Protect content-rich documents from whole-file TOC deletion.
+
+    Link density is useful evidence for navigation, but it is not safe deletion
+    authority when a document also contains several substantial prose blocks.
+    Preserving an unusually verbose TOC is preferable to dropping a chapter.
+    """
+    return (
+        unlinked_words >= _NARRATIVE_MIN_UNLINKED_WORDS
+        and prose_blocks >= _NARRATIVE_MIN_PROSE_BLOCKS
+    )
 
 def is_toc_file(href: str, parsed_doc: dict, spine: list[dict]) -> bool:
     """
@@ -10,18 +27,18 @@ def is_toc_file(href: str, parsed_doc: dict, spine: list[dict]) -> bool:
     name_lower = href.lower()
     
     # 1. Explicit filename checks (word-tokenized to prevent false positives like 'anavenger' or 'apinkstocking')
-    import re
     base_name = os.path.splitext(os.path.basename(name_lower))[0]
     clean_name = re.sub(r'[^a-z]', ' ', base_name)
     words = clean_name.split()
-    if any(w in ['toc', 'contents', 'nav', 'navigation'] for w in words):
-        return True
+    filename_is_toc = any(w in ['toc', 'contents', 'nav', 'navigation'] for w in words)
         
     # Gather anchors in this document and calculate word metrics
     blocks = parsed_doc.get("blocks", [])
     anchors = []
     total_words = 0
     link_words = 0
+    unlinked_words = 0
+    prose_blocks = 0
     
     from .footnotes import is_footnote_ref
     spine_hrefs = {item["href"].lower() for item in spine}
@@ -30,13 +47,21 @@ def is_toc_file(href: str, parsed_doc: dict, spine: list[dict]) -> bool:
         text = block.get("text", "")
         words = text.split()
         total_words += len(words)
-        
+
+        block_link_words = 0
         for part in block.get("parts", []):
             if part.get("type") == "anchor":
                 anchors.append(part)
                 if not is_footnote_ref(part):
                     content = part.get("content", "")
-                    link_words += len(content.split())
+                    part_word_count = len(content.split())
+                    link_words += part_word_count
+                    block_link_words += part_word_count
+
+        block_unlinked_words = max(0, len(words) - block_link_words)
+        unlinked_words += block_unlinked_words
+        if block_unlinked_words >= 14 and re.search(r"[.!?](?:[\"'”’)]*)\s*$", text):
+            prose_blocks += 1
                     
     link_word_ratio = link_words / max(1, total_words)
                 
@@ -65,7 +90,13 @@ def is_toc_file(href: str, parsed_doc: dict, spine: list[dict]) -> bool:
             
     # 3. Apply Heuristics
     num_unique_targets = len(unique_targets)
-    
+
+    if _has_sustained_narrative(unlinked_words, prose_blocks):
+        return False
+
+    if filename_is_toc:
+        return True
+
     # Enforce link word ratio check to prevent regular chapters with cross-references from being classified as TOC
     if link_word_ratio < 0.3:
         return False
@@ -75,10 +106,10 @@ def is_toc_file(href: str, parsed_doc: dict, spine: list[dict]) -> bool:
         return True
         
     # High unique target files count with high density of links pointing to them
-    if num_unique_targets > 4 and (num_spine_links / max(1, total_words)) > 0.08:
-        return True
-        
-    return False
+    return (
+        num_unique_targets > 4
+        and (num_spine_links / max(1, total_words)) > 0.08
+    )
 
 def build_global_toc_map(structure: dict) -> dict[str, str]:
     """

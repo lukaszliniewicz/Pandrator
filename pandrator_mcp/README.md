@@ -90,9 +90,19 @@ The claim's candidates are a starting point, not a heuristic gate. While the
 lease is active, use
 `pandrator_inspect_source_cleaning_dispatch_extraction` to browse, search,
 inspect context or structure, preview selectors, and batch independent
-lookups. Returned live block IDs are added to the batch's audited valid scope.
-The final `text_repair` phase permits targeted `replace_block` corrections for
-confirmed extraction defects.
+lookups. Use `view: working` for the result of accepted earlier phases and
+`view: baseline` for the original deterministic extraction. EPUB runs also
+offer a read-only `view: source` over the structured publisher markup, so a
+host model can investigate doubtful omissions, links, IDs, and formatting.
+Working/baseline IDs returned by inspection are added to the batch's audited
+valid scope; source-only IDs are reported separately and can never be mutation
+targets. The final `text_repair` phase permits targeted `replace_block`
+corrections for confirmed extraction defects.
+
+Footnote inspection returns structurally supported candidates by default.
+Plain numbered lines are deliberately withheld because captions, lists, and
+numbered prose are common; request `include_ambiguous: true` to inspect those
+low-confidence lines when the edition warrants a broader search.
 
 There is no provider, model-token, or iteration budget in this passive path.
 `evidence_limit` is only a per-phase transport bound: default 500, range

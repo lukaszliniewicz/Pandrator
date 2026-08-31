@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-import os
-import re
 import collections
+import os
+import posixpath
+import re
+from urllib.parse import unquote
 
 # Centralized configurations for all 13 supported languages
 LANGUAGE_REGISTRY = {
@@ -305,10 +307,59 @@ def split_sentences_regex(text: str) -> list[str]:
         
     return [s for s in sentences if s]
 
+def _normalize_archive_path(value: str) -> str:
+    decoded = unquote(str(value or "").split("?", 1)[0]).replace("\\", "/")
+    normalized = posixpath.normpath(decoded).lstrip("/")
+    return "" if normalized == "." else normalized.casefold()
+
+
+def _resolve_target_document(
+    referencing_href: str,
+    target_file: str,
+    parsed_documents: dict,
+) -> str | None:
+    """Resolve an EPUB link by archive path; use basename only when unique."""
+    if target_file:
+        resolved = posixpath.normpath(
+            posixpath.join(
+                posixpath.dirname(str(referencing_href or "").replace("\\", "/")),
+                unquote(str(target_file)).replace("\\", "/"),
+            )
+        )
+    else:
+        resolved = referencing_href
+    normalized = _normalize_archive_path(resolved)
+    exact = [
+        key
+        for key in parsed_documents
+        if _normalize_archive_path(str(key)) == normalized
+    ]
+    if len(exact) == 1:
+        return exact[0]
+
+    basename = posixpath.basename(normalized)
+    fallback = [
+        key
+        for key in parsed_documents
+        if posixpath.basename(_normalize_archive_path(str(key))) == basename
+    ]
+    return fallback[0] if len(fallback) == 1 else None
+
+
+def _resolve_fragment_index(target_doc: dict, fragment: str) -> int | None:
+    decoded = unquote(str(fragment or ""))
+    ids = dict(target_doc.get("ids") or {})
+    if decoded in ids:
+        return int(ids[decoded])
+    casefolded = decoded.casefold()
+    matches = [value for key, value in ids.items() if str(key).casefold() == casefolded]
+    return int(matches[0]) if len(matches) == 1 else None
+
+
 def build_backlink_map(parsed_documents: dict) -> dict[tuple[str, str], dict]:
     """
     Builds a pre-indexed backlink map for the entire EPUB.
-    Maps (referencing_doc_basename, number_string) -> target_block (footnote text block)
+    Maps (resolved referencing document, number string) to a footnote body.
     """
     backlink_map = {}
     for doc_href, doc in parsed_documents.items():
@@ -318,15 +369,22 @@ def build_backlink_map(parsed_documents: dict) -> dict[tuple[str, str], dict]:
                     href = part.get("href", "")
                     if "#" in href:
                         target_file, target_frag = href.split("#", 1)
-                        target_file_basename = os.path.basename(target_file).lower()
                         target_frag_lower = target_frag.lower()
                         
                         num_match = re.search(r"\d+", target_frag_lower)
                         if num_match:
                             num = num_match.group(0)
                             if "fnanchor" in target_frag_lower or any(kw in target_frag_lower for kw in ["ref", "anchor", "back"]):
-                                target_basename = target_file_basename if target_file_basename else os.path.basename(doc_href).lower()
-                                backlink_map[(target_basename, num)] = block
+                                target_doc = _resolve_target_document(
+                                    doc_href,
+                                    target_file,
+                                    parsed_documents,
+                                )
+                                if target_doc:
+                                    backlink_map.setdefault(
+                                        (_normalize_archive_path(target_doc), num),
+                                        block,
+                                    )
     return backlink_map
 
 def find_gutenberg_fallback_footnote(referencing_href: str, frag_id: str, backlink_map: dict) -> dict | None:
@@ -337,8 +395,20 @@ def find_gutenberg_fallback_footnote(referencing_href: str, frag_id: str, backli
     if not num_match:
         return None
     num = num_match.group(0)
-    ref_basename = os.path.basename(referencing_href).lower()
-    return backlink_map.get((ref_basename, num))
+    return backlink_map.get((_normalize_archive_path(referencing_href), num))
+
+
+EDITORIAL_APPARATUS_RE = re.compile(
+    r"^(?:[a-z]+\s+\d{1,2},\s+\d{4}\.\s+)?"
+    r"(?:the\s+)?"
+    r"(?:(?:corrected|edited|handwritten|typed|original|published|revised|"
+    r"copy-edited)\s+)*"
+    r"(?:draft|manuscript|edition|translation|text|copy|black\s+book\s+\d+)\s+"
+    r"(?:has|have|had|reads?|continues?|adds?|substitutes?|omits?|deletes?|"
+    r"replaces?|gives?|states?|notes?)\b",
+    re.IGNORECASE,
+)
+
 
 def classify_footnote_improved(text: str, lang: str) -> dict:
     """Language-aware footnote citation classifier that protects quotes and grammatical clauses."""
@@ -374,6 +444,11 @@ def classify_footnote_improved(text: str, lang: str) -> dict:
     
     if has_cjk or has_explanation:
         return {"class": "narrative", "reason": "explanation_override"}
+
+    # Variant readings and manuscript notes are editorial content, even when
+    # their short, capitalized form resembles a bibliography entry.
+    if EDITORIAL_APPARATUS_RE.match(text_clean):
+        return {"class": "narrative", "reason": "editorial_apparatus_override"}
         
     # Check for strong citation indicators
     strong_cite_pat = config["citation_indicators"]
@@ -453,7 +528,10 @@ def is_backlink_fragment(frag: str) -> bool:
         return True
     return False
 
-def get_footnote_text_multi_block(blocks: list[dict], start_idx: int, doc_href: str, resolved_set: set) -> tuple[str, list[int]]:
+def get_footnote_text_multi_block(
+    blocks: list[dict],
+    start_idx: int,
+) -> tuple[str, list[int]]:
     start_block = blocks[start_idx]
     start_text = start_block["text"].strip()
     consumed_indices = [start_idx]
@@ -525,16 +603,11 @@ def reposition_footnotes_in_document(
             href = anchor.get("href", "")
             target_file_rel, frag_id = href.split("#", 1) if "#" in href else ("", "")
             
-            if not target_file_rel:
-                target_href = doc_href
-            else:
-                target_href = target_file_rel
-                
-            matched_doc_key = None
-            for key in parsed_documents:
-                if os.path.basename(key).lower() == os.path.basename(target_href).lower():
-                    matched_doc_key = key
-                    break
+            matched_doc_key = _resolve_target_document(
+                doc_href,
+                target_file_rel,
+                parsed_documents,
+            )
                     
             target_block = None
             consumed_idxs = []
@@ -542,9 +615,12 @@ def reposition_footnotes_in_document(
             
             if matched_doc_key:
                 target_doc = parsed_documents[matched_doc_key]
-                if frag_id in target_doc.get("ids", {}):
-                    block_idx_target = target_doc["ids"][frag_id]
-                    target_block_text, consumed_idxs = get_footnote_text_multi_block(target_doc["blocks"], block_idx_target, matched_doc_key, repositioned_block_ids)
+                block_idx_target = _resolve_fragment_index(target_doc, frag_id)
+                if block_idx_target is not None:
+                    target_block_text, consumed_idxs = get_footnote_text_multi_block(
+                        target_doc["blocks"],
+                        block_idx_target,
+                    )
                     target_block = {
                         "text": target_block_text,
                         "href": matched_doc_key,
@@ -681,3 +757,41 @@ def is_footnote_file(
         return _looks_like_dedicated_note_document(parsed_doc)
 
     return False
+
+
+_NAVIGATION_NOTE_SECTION_RE = re.compile(
+    r"^(?:notes?|footnotes?|endnotes?|przypisy?|anmerkungen|noten|notas?)$",
+    re.IGNORECASE,
+)
+_NAVIGATION_NOTE_SUBHEADING_RE = re.compile(
+    r"^(?:(?:chapter|part|book)\s+(?:\d+|[ivxlcdm]+)|(?:\d+|[ivxlcdm]+)[.)]?)$",
+    re.IGNORECASE,
+)
+
+
+def navigation_note_section_hrefs(
+    spine: list[dict],
+    toc_map: dict[str, str],
+) -> set[str]:
+    """Return a navigation-declared note range without deleting its text.
+
+    Some converted books split endnotes into hundreds of generic XHTML files
+    whose internal headings repeat source chapter labels. The navigation marks
+    only the beginning of the note range. Suppressing chapter markers across
+    that range preserves every note while avoiding audiobook chapter pollution.
+    """
+    note_hrefs: set[str] = set()
+    inside_note_section = False
+    for item in spine:
+        href = str(item.get("href") or "").lower().replace("\\", "/")
+        title = re.sub(r"\s+", " ", str(toc_map.get(href) or "")).strip()
+        if title:
+            if _NAVIGATION_NOTE_SECTION_RE.fullmatch(title):
+                inside_note_section = True
+            elif inside_note_section and not _NAVIGATION_NOTE_SUBHEADING_RE.fullmatch(
+                title
+            ):
+                inside_note_section = False
+        if inside_note_section:
+            note_hrefs.add(href)
+    return note_hrefs

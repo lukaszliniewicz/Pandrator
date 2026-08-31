@@ -3921,7 +3921,7 @@ export interface components {
              * @default working
              * @enum {string}
              */
-            view?: "working" | "baseline";
+            view?: "working" | "baseline" | "source";
         };
         /** SourceCleaningDispatchInspectionResponse */
         SourceCleaningDispatchInspectionResponse: {
@@ -3949,13 +3949,15 @@ export interface components {
              * @constant
              */
             schema_version?: "1";
+            /** Source Only Block Ids */
+            source_only_block_ids: string[];
             /** Valid Block Id Count */
             valid_block_id_count: number;
             /**
              * View
              * @enum {string}
              */
-            view: "working" | "baseline";
+            view: "working" | "baseline" | "source";
         };
         /** SourceCleaningDispatchOperation */
         SourceCleaningDispatchOperation: {

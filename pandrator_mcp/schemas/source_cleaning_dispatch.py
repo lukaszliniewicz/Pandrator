@@ -100,7 +100,7 @@ class InspectSourceCleaningDispatchExtractionInput(ToolInput):
         "find_metadata_candidates",
     ]
     arguments: dict[str, Any] = Field(default_factory=dict, max_length=100)
-    view: Literal["working", "baseline"] = "working"
+    view: Literal["working", "baseline", "source"] = "working"
     idempotency_key: str = Field(
         min_length=8,
         max_length=200,

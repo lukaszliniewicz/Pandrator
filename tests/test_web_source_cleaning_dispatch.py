@@ -7,13 +7,19 @@ from unittest.mock import patch
 from sqlalchemy import select
 
 from pandrator.logic.source_cleaning import SourceBlock, SourceDocument
+from pandrator.logic.source_cleaning.deterministic import (
+    EpubExtractionResult,
+    EpubSourceProbe,
+)
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
+from pandrator.web.dispatch import DispatchError
 from pandrator.web.models import (
     Artifact,
     SessionSource,
     SourceAsset,
     SourceCleaningDispatchBatch,
+    SourceCleaningDispatchRun,
 )
 from pandrator.web.schemas import (
     SourceCleaningDispatchBatchClaimResponse,
@@ -167,8 +173,8 @@ class SourceCleaningDispatchWebTests(unittest.TestCase):
         }
         with (
             patch(
-                "pandrator.web.source_cleaning_dispatch.extract_clean_epub",
-                return_value=document.plain_text(),
+                "pandrator.web.source_cleaning_dispatch.extract_epub_with_diagnostics",
+                return_value=EpubExtractionResult.success(document.plain_text()),
             ),
             patch(
                 "pandrator.web.source_cleaning_dispatch.source_cleaning."
@@ -292,6 +298,49 @@ class SourceCleaningDispatchWebTests(unittest.TestCase):
         self.assertNotIn("Table of Contents", output)
         self.assertNotIn("Copyright 2026", output)
 
+    def test_epub_dispatch_fails_before_artifacts_or_batches_for_encrypted_input(self):
+        session_id, source_id = self._source()
+        created = self._create(session_id, source_id)
+        result = EpubExtractionResult(
+            text="",
+            category="encrypted",
+            error_code="epub_encrypted",
+            message="Encrypted narrative resources require keys.",
+            probe=EpubSourceProbe(
+                narrative_document_count=1,
+                encrypted_narrative_resources=("EPUB/body.xhtml",),
+            ),
+        )
+
+        with (
+            patch(
+                "pandrator.web.source_cleaning_dispatch.extract_epub_with_diagnostics",
+                return_value=result,
+            ),
+            self.assertRaises(DispatchError) as raised,
+        ):
+            self.extension["source_cleaning_dispatch"].prepare_run(
+                created["run_id"], lambda _fraction, _message: None, Event()
+            )
+
+        self.assertEqual("epub_encrypted", raised.exception.code)
+        with self.extension["database"].session() as db_session:
+            run = db_session.get(SourceCleaningDispatchRun, created["run_id"])
+            self.assertIsNotNone(run)
+            assert run is not None
+            self.assertEqual("failed", run.status)
+            self.assertEqual("epub_encrypted", run.error_code)
+            self.assertIsNone(run.baseline_artifact_id)
+            self.assertIsNone(run.index_artifact_id)
+            batches = list(
+                db_session.scalars(
+                    select(SourceCleaningDispatchBatch).where(
+                        SourceCleaningDispatchBatch.dispatch_run_id == run.id
+                    )
+                )
+            )
+            self.assertFalse(batches)
+
     def test_leased_inspection_search_promotes_returned_blocks(self):
         session_id, source_id = self._source()
         created = self._create(session_id, source_id)
@@ -321,8 +370,8 @@ class SourceCleaningDispatchWebTests(unittest.TestCase):
         )
         with (
             patch(
-                "pandrator.web.source_cleaning_dispatch.extract_clean_epub",
-                return_value=document.plain_text(),
+                "pandrator.web.source_cleaning_dispatch.extract_epub_with_diagnostics",
+                return_value=EpubExtractionResult.success(document.plain_text()),
             ),
             patch(
                 "pandrator.web.source_cleaning_dispatch.source_cleaning."
@@ -379,14 +428,87 @@ class SourceCleaningDispatchWebTests(unittest.TestCase):
             self.assertIn("distant-defect", batch.input_json["valid_block_ids"])
             self.assertEqual(1, len(batch.input_json["inspection_log"]))
 
+    def test_epub_source_inspection_is_read_only_and_does_not_promote_raw_ids(self):
+        session_id, source_id = self._source()
+        created = self._create(session_id, source_id)
+        document = self._document("book.epub")
+        source_document = SourceDocument(
+            source_type="epub",
+            source_path="book.epub",
+            filename="book.epub",
+            blocks=[
+                SourceBlock(
+                    block_id="raw-only",
+                    text="An invented raw extraction clue.",
+                    line_start=1,
+                    line_end=1,
+                    href="Text/chapter.xhtml",
+                    tag="p",
+                    raw_markup="<p>An invented raw extraction clue.</p>",
+                )
+            ],
+        )
+        document.attributes["epub_source_inspection_document"] = (
+            source_document.to_dict()
+        )
+        with (
+            patch(
+                "pandrator.web.source_cleaning_dispatch.extract_epub_with_diagnostics",
+                return_value=EpubExtractionResult.success(document.plain_text()),
+            ),
+            patch(
+                "pandrator.web.source_cleaning_dispatch.source_cleaning."
+                "build_cleaned_epub_source_document",
+                return_value=document,
+            ),
+            patch(
+                "pandrator.web.source_cleaning_dispatch.source_cleaning."
+                "propose_embedded_chapter_operations",
+                return_value=[],
+            ),
+        ):
+            self.extension["source_cleaning_dispatch"].prepare_run(
+                created["run_id"], lambda _fraction, _message: None, Event()
+            )
+
+        claim = self.client.post(
+            f"/api/v1/source-cleaning-dispatch-runs/{created['run_id']}/claim",
+            json={},
+            headers=self._headers("source-cleaning-raw-inspect-claim"),
+        ).get_json()
+        self.assertIn("source", claim["task"]["inspection"]["views"])
+        self.assertTrue(
+            claim["batch"]["capabilities"]["raw_source_inspection_available"]
+        )
+
+        response = self.client.post(
+            f"/api/v1/source-cleaning-dispatch-batches/{claim['batch_id']}/inspect",
+            json={
+                "lease_token": claim["lease_token"],
+                "action": "search",
+                "arguments": {"query": "raw extraction clue", "max_hits": 10},
+                "view": "source",
+            },
+            headers=self._headers("source-cleaning-raw-inspect-search"),
+        )
+
+        self.assertEqual(200, response.status_code, response.get_json())
+        inspected = response.get_json()
+        self.assertEqual([], inspected["promoted_block_ids"])
+        self.assertEqual(["raw-only"], inspected["source_only_block_ids"])
+        with self.extension["database"].session() as db_session:
+            batch = db_session.get(SourceCleaningDispatchBatch, claim["batch_id"])
+            assert batch is not None
+            self.assertNotIn("raw-only", batch.input_json["valid_block_ids"])
+
     def test_custom_operation_cannot_target_an_unexposed_block(self):
         session_id, source_id = self._source()
         created = self._create(session_id, source_id)
         document = self._document("book.epub")
         with (
             patch(
-                "pandrator.web.source_cleaning_dispatch.extract_clean_epub",
-                return_value=document.plain_text(),
+                "pandrator.web.source_cleaning_dispatch.extract_epub_with_diagnostics",
+                return_value=EpubExtractionResult.success(document.plain_text()),
             ),
             patch(
                 "pandrator.web.source_cleaning_dispatch.source_cleaning."
