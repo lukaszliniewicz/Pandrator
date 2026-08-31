@@ -395,12 +395,14 @@
           )
         )
           return false;
-        const planningMode = String(
+        const storedPlanningMode = String(
           value(
             'speech_optimization_mode',
             payload?.effective?.speech_optimization_mode ?? 'guarded'
           )
         );
+        const planningMode =
+          storedPlanningMode === 'legacy' ? 'guarded' : storedPlanningMode;
         if (key === 'speech_plan_min_retention')
           return planningMode === 'flexible';
         if (
@@ -428,6 +430,18 @@
   async function load() {
     payload = await sessionApi.settings(sessionId, section);
     override = { ...(payload.override ?? {}), ...initialOverride };
+    if (
+      section === 'text' &&
+      String(
+        override.speech_optimization_mode ??
+          payload?.effective?.speech_optimization_mode ??
+          'guarded'
+      ) === 'legacy'
+    ) {
+      override = { ...override, speech_optimization_mode: 'guarded' };
+      message =
+        'The retired speech optimizer will migrate to Guarded when you save.';
+    }
     if (Object.keys(initialOverride).length)
       message = 'Unsaved changes from the stage editor are ready to review.';
   }

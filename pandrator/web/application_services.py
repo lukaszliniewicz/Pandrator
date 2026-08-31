@@ -28,6 +28,7 @@ from .pronunciations import PronunciationLibrary
 from .session_forks import SessionForkService
 from .sessions import SessionService
 from .source_cleaning_dispatch import SourceCleaningDispatchRunService
+from .speech_optimization_dispatch import SpeechOptimizationDispatchRunService
 from .startup import StartupMaintenance
 from .subtitle_review import SubtitleReviewService
 from .tts_providers import TtsCatalogueService, TtsProviderRegistry
@@ -80,6 +81,7 @@ class ApplicationServices:
     subtitle_review: SubtitleReviewService
     dispatch: DispatchRunService
     source_cleaning_dispatch: SourceCleaningDispatchRunService
+    speech_optimization_dispatch: SpeechOptimizationDispatchRunService
     bootstrap: BootstrapTokenStore
     session_directory: Callable[[str], Path]
 
@@ -203,6 +205,11 @@ class ApplicationServices:
             jobs=jobs,
             workspace_settings=workspace_settings,
         )
+        speech_optimization_dispatch = SpeechOptimizationDispatchRunService(
+            database,
+            artifacts,
+            session_directory,
+        )
         return cls(
             paths=paths,
             migration=migration,
@@ -236,6 +243,7 @@ class ApplicationServices:
             subtitle_review=subtitle_review,
             dispatch=dispatch,
             source_cleaning_dispatch=source_cleaning_dispatch,
+            speech_optimization_dispatch=speech_optimization_dispatch,
             bootstrap=bootstrap_tokens or BootstrapTokenStore(),
             session_directory=session_directory,
         )
@@ -275,6 +283,7 @@ class ApplicationServices:
             "subtitle_review": self.subtitle_review,
             "dispatch": self.dispatch,
             "source_cleaning_dispatch": self.source_cleaning_dispatch,
+            "speech_optimization_dispatch": self.speech_optimization_dispatch,
             "bootstrap": self.bootstrap,
             "migration": self.migration,
             "services": self,

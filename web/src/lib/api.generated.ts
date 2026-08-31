@@ -1685,6 +1685,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{sessionId}/speech-optimization-dispatch-runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listSpeechOptimizationDispatchRuns"];
+        put?: never;
+        post: operations["createSpeechOptimizationDispatchRun"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{sessionId}/stages/{stageKey}/artifacts": {
         parameters: {
             query?: never;
@@ -2015,6 +2031,86 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["restoreSourceAsset"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/speech-optimization-dispatch-batches/{batchId}/release": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["releaseSpeechOptimizationDispatchBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/speech-optimization-dispatch-batches/{batchId}/renew": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["renewSpeechOptimizationDispatchBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/speech-optimization-dispatch-batches/{batchId}/submit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["submitSpeechOptimizationDispatchBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/speech-optimization-dispatch-runs/{runId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getSpeechOptimizationDispatchRun"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/speech-optimization-dispatch-runs/{runId}/claim": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["claimSpeechOptimizationDispatchBatch"];
         delete?: never;
         options?: never;
         head?: never;
@@ -4088,6 +4184,257 @@ export interface components {
         SourceUrlRequest: {
             /** Url */
             url: string;
+        };
+        /** SpeechOptimizationDispatchBatchClaimResponse */
+        SpeechOptimizationDispatchBatchClaimResponse: {
+            batch: components["schemas"]["SpeechOptimizationDispatchClaimedBatch"];
+            /** Batch Id */
+            batch_id: string;
+            /** Batch Ordinal */
+            batch_ordinal: number;
+            /** Batch Status */
+            batch_status: string;
+            /** Lease Expires At */
+            lease_expires_at: string | null;
+            /** Lease Token */
+            lease_token: string;
+            /** Run Id */
+            run_id: string;
+            /** Run Status */
+            run_status: string;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version?: "1";
+            /** Status */
+            status: string;
+            task: components["schemas"]["SpeechOptimizationDispatchTaskContract"];
+        };
+        /** SpeechOptimizationDispatchBatchSubmitRequest */
+        SpeechOptimizationDispatchBatchSubmitRequest: {
+            /** Lease Token */
+            lease_token: string;
+            result: components["schemas"]["SpeechOptimizationDispatchResult"];
+        };
+        /** SpeechOptimizationDispatchBatchSubmitResponse */
+        SpeechOptimizationDispatchBatchSubmitResponse: {
+            /** Accepted */
+            accepted: boolean;
+            /** Batch Count */
+            batch_count: number;
+            /** Batch Id */
+            batch_id: string;
+            /** Batch Status */
+            batch_status: string;
+            /** Completed Batch Count */
+            completed_batch_count: number;
+            /** Completed Batches */
+            completed_batches: number;
+            /**
+             * Error Code
+             * @default null
+             */
+            error_code?: string | null;
+            /**
+             * Error Message
+             * @default null
+             */
+            error_message?: string | null;
+            /**
+             * Final Artifact Id
+             * @default null
+             */
+            final_artifact_id?: string | null;
+            /** Finalized */
+            finalized: boolean;
+            /**
+             * Output Role
+             * @constant
+             */
+            output_role: "tts_optimized";
+            /** Remaining Batches */
+            remaining_batches: number;
+            /**
+             * Result Artifact Id
+             * @default null
+             */
+            result_artifact_id?: string | null;
+            /**
+             * Result Revision Id
+             * @default null
+             */
+            result_revision_id?: string | null;
+            /** Run Id */
+            run_id: string;
+            /** Run Status */
+            run_status: string;
+            /** Status */
+            status: string;
+            /** Total Batches */
+            total_batches: number;
+        };
+        /** SpeechOptimizationDispatchBoundaryUnit */
+        SpeechOptimizationDispatchBoundaryUnit: {
+            /** Language */
+            language: string;
+            /**
+             * Speaker
+             * @default null
+             */
+            speaker?: string | null;
+            /** Text */
+            text: string;
+        };
+        /** SpeechOptimizationDispatchClaimedBatch */
+        SpeechOptimizationDispatchClaimedBatch: {
+            context: components["schemas"]["SpeechOptimizationDispatchContext"];
+            /**
+             * Id Namespace
+             * @constant
+             */
+            id_namespace: "speech_optimization_unit";
+            /** Unit Count */
+            unit_count: number;
+            /** Units */
+            units: components["schemas"]["SpeechOptimizationDispatchUnit"][];
+            /** Valid Unit Ids */
+            valid_unit_ids: number[];
+        };
+        /** SpeechOptimizationDispatchContext */
+        SpeechOptimizationDispatchContext: {
+            /** Following Source */
+            following_source: components["schemas"]["SpeechOptimizationDispatchBoundaryUnit"][];
+            /** Previous Output */
+            previous_output: components["schemas"]["SpeechOptimizationDispatchBoundaryUnit"][];
+        };
+        /** SpeechOptimizationDispatchItem */
+        SpeechOptimizationDispatchItem: {
+            /** Text */
+            text: string;
+            /** Unit Id */
+            unit_id: number;
+        };
+        /** SpeechOptimizationDispatchResult */
+        SpeechOptimizationDispatchResult: {
+            /** Items */
+            items: components["schemas"]["SpeechOptimizationDispatchItem"][];
+            /**
+             * Kind
+             * @constant
+             */
+            kind: "speech_optimization";
+        };
+        /** SpeechOptimizationDispatchRunCreateRequest */
+        SpeechOptimizationDispatchRunCreateRequest: {
+            /**
+             * Char Limit
+             * @description Target source characters per transport batch. A single source unit is never split and may exceed this value. This is not a model-token or iteration budget.
+             * @default 20000
+             */
+            char_limit?: number;
+            /**
+             * Context After
+             * @default 2
+             */
+            context_after?: number;
+            /**
+             * Context Before
+             * @default 4
+             */
+            context_before?: number;
+            /**
+             * Include Timing
+             * @default true
+             */
+            include_timing?: boolean;
+            /**
+             * Instructions
+             * @default
+             */
+            instructions?: string;
+            /**
+             * Language
+             * @default null
+             */
+            language?: string | null;
+            /**
+             * Max Units Per Batch
+             * @default 100
+             */
+            max_units_per_batch?: number;
+            /**
+             * Source Artifact Id
+             * @default null
+             */
+            source_artifact_id?: string | null;
+            /**
+             * Tts Service
+             * @default null
+             */
+            tts_service?: string | null;
+            /**
+             * Voice Language
+             * @default null
+             */
+            voice_language?: string | null;
+        };
+        /** SpeechOptimizationDispatchTaskContract */
+        SpeechOptimizationDispatchTaskContract: {
+            /** Instructions */
+            instructions: string;
+            /**
+             * Kind
+             * @constant
+             */
+            kind: "speech_optimization";
+            /** Language */
+            language: string;
+            /**
+             * Output Role
+             * @constant
+             */
+            output_role: "tts_optimized";
+            /** Result Contract */
+            result_contract: {
+                [key: string]: unknown;
+            };
+            /**
+             * Tts Service
+             * @default null
+             */
+            tts_service?: string | null;
+            /**
+             * Voice Language
+             * @default null
+             */
+            voice_language?: string | null;
+        };
+        /** SpeechOptimizationDispatchUnit */
+        SpeechOptimizationDispatchUnit: {
+            /** Language */
+            language: string;
+            /**
+             * Speaker
+             * @default null
+             */
+            speaker?: string | null;
+            /** Text */
+            text: string;
+            /** @default null */
+            timing?: components["schemas"]["SpeechOptimizationDispatchUnitTiming"] | null;
+            /** Unit Id */
+            unit_id: number;
+        };
+        /** SpeechOptimizationDispatchUnitTiming */
+        SpeechOptimizationDispatchUnitTiming: {
+            /** Duration Ms */
+            duration_ms: number;
+            /** End Ms */
+            end_ms: number;
+            /** Start Ms */
+            start_ms: number;
         };
         /** StageSelectionUpdate */
         StageSelectionUpdate: {
@@ -7233,6 +7580,53 @@ export interface operations {
             };
         };
     };
+    listSpeechOptimizationDispatchRuns: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Speech-optimization dispatch run metadata */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createSpeechOptimizationDispatchRun: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Required for automation principals and strongly recommended for every retryable write. */
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SpeechOptimizationDispatchRunCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Passive speech-optimization run created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     listStageArtifacts: {
         parameters: {
             query?: {
@@ -7807,6 +8201,147 @@ export interface operations {
             };
         };
     };
+    releaseSpeechOptimizationDispatchBatch: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Required for automation principals and strongly recommended for every retryable write. */
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                batchId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DispatchBatchReleaseRequest"];
+            };
+        };
+        responses: {
+            /** @description Batch returned to ready */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    renewSpeechOptimizationDispatchBatch: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Required for automation principals and strongly recommended for every retryable write. */
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                batchId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DispatchBatchRenewRequest"];
+            };
+        };
+        responses: {
+            /** @description Lease renewed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    submitSpeechOptimizationDispatchBatch: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Required for automation principals and strongly recommended for every retryable write. */
+                "Idempotency-Key": string;
+            };
+            path: {
+                batchId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SpeechOptimizationDispatchBatchSubmitRequest"];
+            };
+        };
+        responses: {
+            /** @description Speech-text batch accepted */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SpeechOptimizationDispatchBatchSubmitResponse"];
+                };
+            };
+            /** @description Batch accepted; finalization continues */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SpeechOptimizationDispatchBatchSubmitResponse"];
+                };
+            };
+        };
+    };
+    getSpeechOptimizationDispatchRun: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Speech-optimization dispatch run metadata */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    claimSpeechOptimizationDispatchBatch: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Required for automation principals and strongly recommended for every retryable write. */
+                "Idempotency-Key": string;
+            };
+            path: {
+                runId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DispatchBatchClaimRequest"];
+            };
+        };
+        responses: {
+            /** @description Claimed speech-text optimization batch */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SpeechOptimizationDispatchBatchClaimResponse"];
+                };
+            };
+        };
+    };
     getSystemIdentity: {
         parameters: {
             query?: never;
@@ -7928,7 +8463,9 @@ export interface operations {
     initializeChunkUpload: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                "If-Match": string;
+            };
             path?: never;
             cookie?: never;
         };

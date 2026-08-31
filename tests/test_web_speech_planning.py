@@ -9,6 +9,7 @@ from pandrator.web.speech_planning import (
     SPEECH_PROMPT_REVISION,
     detect_candidates,
     plan_speech_text,
+    plan_speech_text_batch,
 )
 
 
@@ -34,6 +35,71 @@ def _decision_for(candidate):
 
 
 class SpeechPlanningTests(unittest.TestCase):
+    def test_batch_planning_keeps_valid_siblings_and_retries_duplicate_item(self):
+        calls = []
+
+        def complete(*, messages, **_kwargs):
+            calls.append(messages)
+            content = messages[-1]["content"]
+            if content.startswith("Plan these speech units:\n"):
+                payload = json.loads(content.split("Plan these speech units:\n", 1)[1])
+                first, second = payload["items"]
+
+                def plan(item):
+                    return {
+                        "case_id": item["case"]["case_id"],
+                        "decisions": [],
+                        "discoveries": [],
+                        "prosody": [],
+                    }
+
+                return json.dumps(
+                    {
+                        "items": [
+                            {
+                                "batch_item_id": first["batch_item_id"],
+                                "plan": plan(first),
+                            },
+                            {
+                                "batch_item_id": second["batch_item_id"],
+                                "plan": plan(second),
+                            },
+                            {
+                                "batch_item_id": second["batch_item_id"],
+                                "plan": plan(second),
+                            },
+                        ]
+                    }
+                )
+            payload = json.loads(
+                content.split("Plan this single speech sentence:\n", 1)[1]
+            )
+            return json.dumps(
+                {
+                    "case_id": payload["case_id"],
+                    "decisions": [],
+                    "discoveries": [],
+                    "prosody": [],
+                }
+            )
+
+        result = plan_speech_text_batch(
+            [
+                {"text": "A sentence.", "language": "en"},
+                {"text": "Another sentence.", "language": "en"},
+            ],
+            mode="guarded",
+            model_name="local/test",
+            llm_settings=SimpleNamespace(),
+            completion_func=complete,
+        )
+
+        self.assertEqual(2, len(result.results))
+        self.assertEqual(
+            ["valid", "valid"], [item.plan["status"] for item in result.results]
+        )
+        self.assertEqual(2, len(calls))
+
     def test_polish_guidance_uses_language_not_voice_language_and_normalizes_codes(
         self,
     ):

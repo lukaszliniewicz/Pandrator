@@ -18,14 +18,20 @@
       "audiences": ["new_user", "operator"],
       "related_tools": [
         "pandrator_get_capabilities",
+        "pandrator_browse_local_sources",
+        "pandrator_import_local_source",
         "pandrator_get_workflow",
         "pandrator_create_source_cleaning_dispatch_run",
         "pandrator_get_source_cleaning_dispatch_run",
         "pandrator_claim_source_cleaning_dispatch_batch",
-        "pandrator_submit_source_cleaning_dispatch_batch"
+        "pandrator_submit_source_cleaning_dispatch_batch",
+        "pandrator_create_speech_optimization_dispatch_run",
+        "pandrator_get_speech_optimization_dispatch_run",
+        "pandrator_claim_speech_optimization_dispatch_batch",
+        "pandrator_submit_speech_optimization_dispatch_batch"
       ],
       "minimum_application_version": "0.8.16",
-      "revision": 2,
+      "revision": 4,
       "file": "audiobooks.md"
     },
     {
@@ -50,11 +56,18 @@
         "pandrator_claim_source_cleaning_dispatch_batch",
         "pandrator_renew_source_cleaning_dispatch_batch",
         "pandrator_release_source_cleaning_dispatch_batch",
-        "pandrator_submit_source_cleaning_dispatch_batch"
+        "pandrator_submit_source_cleaning_dispatch_batch",
+        "pandrator_create_speech_optimization_dispatch_run",
+        "pandrator_list_speech_optimization_dispatch_runs",
+        "pandrator_get_speech_optimization_dispatch_run",
+        "pandrator_claim_speech_optimization_dispatch_batch",
+        "pandrator_renew_speech_optimization_dispatch_batch",
+        "pandrator_release_speech_optimization_dispatch_batch",
+        "pandrator_submit_speech_optimization_dispatch_batch"
       ],
       "minimum_application_version": "0.8.16",
       "minimum_manager_version": "0.9.0",
-      "revision": 3,
+      "revision": 4,
       "file": "durable-work.md"
     },
     {
@@ -88,9 +101,14 @@
       "title": "Providers, models, and voices",
       "summary": "Provider readiness, credential boundaries, model availability, and voice selection.",
       "audiences": ["new_user", "operator", "administrator"],
-      "related_tools": ["pandrator_get_provider_status", "pandrator_get_voice_catalog"],
+      "related_tools": [
+        "pandrator_get_provider_status",
+        "pandrator_get_tts_catalog",
+        "pandrator_configure_tts",
+        "pandrator_get_voice_catalog"
+      ],
       "minimum_application_version": "0.8.16",
-      "revision": 1,
+      "revision": 2,
       "file": "providers-and-voices.md"
     },
     {
@@ -142,6 +160,10 @@
       "audiences": ["new_user", "operator"],
       "related_tools": [
         "pandrator_get_provider_status",
+        "pandrator_browse_local_sources",
+        "pandrator_import_local_source",
+        "pandrator_get_tts_catalog",
+        "pandrator_configure_tts",
         "pandrator_get_voice_catalog",
         "pandrator_get_workflow",
         "pandrator_create_dispatch_run",
@@ -150,10 +172,20 @@
         "pandrator_claim_dispatch_batch",
         "pandrator_renew_dispatch_batch",
         "pandrator_release_dispatch_batch",
-        "pandrator_submit_dispatch_batch"
+        "pandrator_submit_dispatch_batch",
+        "pandrator_create_speech_optimization_dispatch_run",
+        "pandrator_list_speech_optimization_dispatch_runs",
+        "pandrator_get_speech_optimization_dispatch_run",
+        "pandrator_claim_speech_optimization_dispatch_batch",
+        "pandrator_renew_speech_optimization_dispatch_batch",
+        "pandrator_release_speech_optimization_dispatch_batch",
+        "pandrator_submit_speech_optimization_dispatch_batch",
+        "pandrator_list_generation_runs",
+        "pandrator_plan_export_variant",
+        "pandrator_download_artifact"
       ],
       "minimum_application_version": "0.8.16",
-      "revision": 2,
+      "revision": 4,
       "file": "dubbing-voiceover.md"
     },
     {
@@ -161,9 +193,20 @@
       "title": "Pandrator workflows",
       "summary": "How audiobook, subtitle, and voiceover sessions move through inspect, plan, execute, and review.",
       "audiences": ["new_user", "operator", "developer"],
-      "related_tools": ["pandrator_recommend_next_steps", "pandrator_get_workflow"],
+      "related_tools": [
+        "pandrator_recommend_next_steps",
+        "pandrator_get_target_status",
+        "pandrator_browse_local_sources",
+        "pandrator_import_local_source",
+        "pandrator_get_tts_catalog",
+        "pandrator_configure_tts",
+        "pandrator_get_workflow",
+        "pandrator_list_generation_runs",
+        "pandrator_plan_export_variant",
+        "pandrator_download_artifact"
+      ],
       "minimum_application_version": "0.8.16",
-      "revision": 1,
+      "revision": 2,
       "file": "workflows.md"
     }
   ]

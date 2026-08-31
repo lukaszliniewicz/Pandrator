@@ -4044,6 +4044,621 @@
         "title": "SourceUrlRequest",
         "type": "object"
       },
+      "SpeechOptimizationDispatchBatchClaimResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "batch": {
+            "$ref": "#/components/schemas/SpeechOptimizationDispatchClaimedBatch"
+          },
+          "batch_id": {
+            "title": "Batch Id",
+            "type": "string"
+          },
+          "batch_ordinal": {
+            "minimum": 1,
+            "title": "Batch Ordinal",
+            "type": "integer"
+          },
+          "batch_status": {
+            "title": "Batch Status",
+            "type": "string"
+          },
+          "lease_expires_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lease Expires At"
+          },
+          "lease_token": {
+            "title": "Lease Token",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "run_status": {
+            "title": "Run Status",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "1",
+            "default": "1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "task": {
+            "$ref": "#/components/schemas/SpeechOptimizationDispatchTaskContract"
+          }
+        },
+        "required": [
+          "run_id",
+          "batch_id",
+          "batch_ordinal",
+          "status",
+          "run_status",
+          "batch_status",
+          "task",
+          "batch",
+          "lease_token",
+          "lease_expires_at"
+        ],
+        "title": "SpeechOptimizationDispatchBatchClaimResponse",
+        "type": "object"
+      },
+      "SpeechOptimizationDispatchBatchSubmitRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "lease_token": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Lease Token",
+            "type": "string"
+          },
+          "result": {
+            "$ref": "#/components/schemas/SpeechOptimizationDispatchResult"
+          }
+        },
+        "required": [
+          "lease_token",
+          "result"
+        ],
+        "title": "SpeechOptimizationDispatchBatchSubmitRequest",
+        "type": "object"
+      },
+      "SpeechOptimizationDispatchBatchSubmitResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "accepted": {
+            "title": "Accepted",
+            "type": "boolean"
+          },
+          "batch_count": {
+            "minimum": 1,
+            "title": "Batch Count",
+            "type": "integer"
+          },
+          "batch_id": {
+            "title": "Batch Id",
+            "type": "string"
+          },
+          "batch_status": {
+            "title": "Batch Status",
+            "type": "string"
+          },
+          "completed_batch_count": {
+            "minimum": 0,
+            "title": "Completed Batch Count",
+            "type": "integer"
+          },
+          "completed_batches": {
+            "minimum": 0,
+            "title": "Completed Batches",
+            "type": "integer"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error Code"
+          },
+          "error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error Message"
+          },
+          "final_artifact_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Final Artifact Id"
+          },
+          "finalized": {
+            "title": "Finalized",
+            "type": "boolean"
+          },
+          "output_role": {
+            "const": "tts_optimized",
+            "title": "Output Role",
+            "type": "string"
+          },
+          "remaining_batches": {
+            "minimum": 0,
+            "title": "Remaining Batches",
+            "type": "integer"
+          },
+          "result_artifact_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Result Artifact Id"
+          },
+          "result_revision_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Result Revision Id"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "run_status": {
+            "title": "Run Status",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "total_batches": {
+            "minimum": 1,
+            "title": "Total Batches",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "run_id",
+          "batch_id",
+          "output_role",
+          "status",
+          "run_status",
+          "batch_status",
+          "accepted",
+          "completed_batch_count",
+          "completed_batches",
+          "batch_count",
+          "total_batches",
+          "remaining_batches",
+          "finalized"
+        ],
+        "title": "SpeechOptimizationDispatchBatchSubmitResponse",
+        "type": "object"
+      },
+      "SpeechOptimizationDispatchBoundaryUnit": {
+        "additionalProperties": false,
+        "properties": {
+          "language": {
+            "title": "Language",
+            "type": "string"
+          },
+          "speaker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Speaker"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text",
+          "language"
+        ],
+        "title": "SpeechOptimizationDispatchBoundaryUnit",
+        "type": "object"
+      },
+      "SpeechOptimizationDispatchClaimedBatch": {
+        "additionalProperties": false,
+        "properties": {
+          "context": {
+            "$ref": "#/components/schemas/SpeechOptimizationDispatchContext"
+          },
+          "id_namespace": {
+            "const": "speech_optimization_unit",
+            "title": "Id Namespace",
+            "type": "string"
+          },
+          "unit_count": {
+            "maximum": 500,
+            "minimum": 1,
+            "title": "Unit Count",
+            "type": "integer"
+          },
+          "units": {
+            "items": {
+              "$ref": "#/components/schemas/SpeechOptimizationDispatchUnit"
+            },
+            "title": "Units",
+            "type": "array"
+          },
+          "valid_unit_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Valid Unit Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id_namespace",
+          "unit_count",
+          "valid_unit_ids",
+          "units",
+          "context"
+        ],
+        "title": "SpeechOptimizationDispatchClaimedBatch",
+        "type": "object"
+      },
+      "SpeechOptimizationDispatchContext": {
+        "additionalProperties": false,
+        "properties": {
+          "following_source": {
+            "items": {
+              "$ref": "#/components/schemas/SpeechOptimizationDispatchBoundaryUnit"
+            },
+            "title": "Following Source",
+            "type": "array"
+          },
+          "previous_output": {
+            "items": {
+              "$ref": "#/components/schemas/SpeechOptimizationDispatchBoundaryUnit"
+            },
+            "title": "Previous Output",
+            "type": "array"
+          }
+        },
+        "required": [
+          "previous_output",
+          "following_source"
+        ],
+        "title": "SpeechOptimizationDispatchContext",
+        "type": "object"
+      },
+      "SpeechOptimizationDispatchItem": {
+        "additionalProperties": false,
+        "properties": {
+          "text": {
+            "maxLength": 4194304,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          },
+          "unit_id": {
+            "minimum": 1,
+            "title": "Unit Id",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "unit_id",
+          "text"
+        ],
+        "title": "SpeechOptimizationDispatchItem",
+        "type": "object"
+      },
+      "SpeechOptimizationDispatchResult": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/SpeechOptimizationDispatchItem"
+            },
+            "maxItems": 500,
+            "minItems": 1,
+            "title": "Items",
+            "type": "array"
+          },
+          "kind": {
+            "const": "speech_optimization",
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "items"
+        ],
+        "title": "SpeechOptimizationDispatchResult",
+        "type": "object"
+      },
+      "SpeechOptimizationDispatchRunCreateRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "char_limit": {
+            "default": 20000,
+            "description": "Target source characters per transport batch. A single source unit is never split and may exceed this value. This is not a model-token or iteration budget.",
+            "maximum": 1000000,
+            "minimum": 1,
+            "title": "Char Limit",
+            "type": "integer"
+          },
+          "context_after": {
+            "default": 2,
+            "maximum": 20,
+            "minimum": 0,
+            "title": "Context After",
+            "type": "integer"
+          },
+          "context_before": {
+            "default": 4,
+            "maximum": 20,
+            "minimum": 0,
+            "title": "Context Before",
+            "type": "integer"
+          },
+          "include_timing": {
+            "default": true,
+            "title": "Include Timing",
+            "type": "boolean"
+          },
+          "instructions": {
+            "default": "",
+            "maxLength": 16000,
+            "title": "Instructions",
+            "type": "string"
+          },
+          "language": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Language"
+          },
+          "max_units_per_batch": {
+            "default": 100,
+            "maximum": 500,
+            "minimum": 1,
+            "title": "Max Units Per Batch",
+            "type": "integer"
+          },
+          "source_artifact_id": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Source Artifact Id"
+          },
+          "tts_service": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Tts Service"
+          },
+          "voice_language": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Voice Language"
+          }
+        },
+        "title": "SpeechOptimizationDispatchRunCreateRequest",
+        "type": "object"
+      },
+      "SpeechOptimizationDispatchTaskContract": {
+        "additionalProperties": false,
+        "properties": {
+          "instructions": {
+            "title": "Instructions",
+            "type": "string"
+          },
+          "kind": {
+            "const": "speech_optimization",
+            "title": "Kind",
+            "type": "string"
+          },
+          "language": {
+            "title": "Language",
+            "type": "string"
+          },
+          "output_role": {
+            "const": "tts_optimized",
+            "title": "Output Role",
+            "type": "string"
+          },
+          "result_contract": {
+            "additionalProperties": true,
+            "title": "Result Contract",
+            "type": "object"
+          },
+          "tts_service": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Tts Service"
+          },
+          "voice_language": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Voice Language"
+          }
+        },
+        "required": [
+          "kind",
+          "output_role",
+          "language",
+          "instructions",
+          "result_contract"
+        ],
+        "title": "SpeechOptimizationDispatchTaskContract",
+        "type": "object"
+      },
+      "SpeechOptimizationDispatchUnit": {
+        "additionalProperties": false,
+        "properties": {
+          "language": {
+            "title": "Language",
+            "type": "string"
+          },
+          "speaker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Speaker"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "timing": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SpeechOptimizationDispatchUnitTiming"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "unit_id": {
+            "minimum": 1,
+            "title": "Unit Id",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "unit_id",
+          "text",
+          "language"
+        ],
+        "title": "SpeechOptimizationDispatchUnit",
+        "type": "object"
+      },
+      "SpeechOptimizationDispatchUnitTiming": {
+        "additionalProperties": false,
+        "properties": {
+          "duration_ms": {
+            "exclusiveMinimum": 0,
+            "title": "Duration Ms",
+            "type": "integer"
+          },
+          "end_ms": {
+            "exclusiveMinimum": 0,
+            "title": "End Ms",
+            "type": "integer"
+          },
+          "start_ms": {
+            "minimum": 0,
+            "title": "Start Ms",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "start_ms",
+          "end_ms",
+          "duration_ms"
+        ],
+        "title": "SpeechOptimizationDispatchUnitTiming",
+        "type": "object"
+      },
       "StageSelectionUpdate": {
         "additionalProperties": false,
         "properties": {
@@ -4972,7 +5587,20 @@
           "200": {
             "description": "Range-capable artifact content"
           }
-        }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
       }
     },
     "/api/v1/artifacts/{artifactId}/context": {
@@ -4992,7 +5620,20 @@
           "200": {
             "description": "Artifact lineage context for comparison"
           }
-        }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
       }
     },
     "/api/v1/artifacts/{artifactId}/optimization-review": {
@@ -6748,7 +7389,20 @@
           "200": {
             "description": "TTS readiness and catalogues"
           }
-        }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
       }
     },
     "/api/v1/services/tts/discover": {
@@ -7469,7 +8123,20 @@
           "200": {
             "description": "Named generation runs"
           }
-        }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
       },
       "post": {
         "operationId": "startGenerationRun",
@@ -8187,6 +8854,91 @@
             "description": "Source detached"
           }
         }
+      }
+    },
+    "/api/v1/sessions/{sessionId}/speech-optimization-dispatch-runs": {
+      "get": {
+        "operationId": "listSpeechOptimizationDispatchRuns",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Speech-optimization dispatch run metadata"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
+      },
+      "post": {
+        "operationId": "createSpeechOptimizationDispatchRun",
+        "parameters": [
+          {
+            "description": "Required for automation principals and strongly recommended for every retryable write.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SpeechOptimizationDispatchRunCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Passive speech-optimization run created"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.run"
+            ]
+          }
+        ]
       }
     },
     "/api/v1/sessions/{sessionId}/stages/{stageKey}/artifacts": {
@@ -9046,6 +9798,279 @@
         }
       }
     },
+    "/api/v1/speech-optimization-dispatch-batches/{batchId}/release": {
+      "post": {
+        "operationId": "releaseSpeechOptimizationDispatchBatch",
+        "parameters": [
+          {
+            "description": "Required for automation principals and strongly recommended for every retryable write.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "batchId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DispatchBatchReleaseRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Batch returned to ready"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.run"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/speech-optimization-dispatch-batches/{batchId}/renew": {
+      "post": {
+        "operationId": "renewSpeechOptimizationDispatchBatch",
+        "parameters": [
+          {
+            "description": "Required for automation principals and strongly recommended for every retryable write.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "batchId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DispatchBatchRenewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Lease renewed"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.run"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/speech-optimization-dispatch-batches/{batchId}/submit": {
+      "post": {
+        "operationId": "submitSpeechOptimizationDispatchBatch",
+        "parameters": [
+          {
+            "description": "Required for automation principals and strongly recommended for every retryable write.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "batchId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SpeechOptimizationDispatchBatchSubmitRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpeechOptimizationDispatchBatchSubmitResponse"
+                }
+              }
+            },
+            "description": "Speech-text batch accepted"
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpeechOptimizationDispatchBatchSubmitResponse"
+                }
+              }
+            },
+            "description": "Batch accepted; finalization continues"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.run"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/speech-optimization-dispatch-runs/{runId}": {
+      "get": {
+        "operationId": "getSpeechOptimizationDispatchRun",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "runId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Speech-optimization dispatch run metadata"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/speech-optimization-dispatch-runs/{runId}/claim": {
+      "post": {
+        "operationId": "claimSpeechOptimizationDispatchBatch",
+        "parameters": [
+          {
+            "description": "Required for automation principals and strongly recommended for every retryable write.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "runId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DispatchBatchClaimRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpeechOptimizationDispatchBatchClaimResponse"
+                }
+              }
+            },
+            "description": "Claimed speech-text optimization batch"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.run"
+            ]
+          }
+        ]
+      }
+    },
     "/api/v1/system/identity": {
       "get": {
         "operationId": "getSystemIdentity",
@@ -9157,6 +10182,16 @@
     "/api/v1/uploads/init": {
       "post": {
         "operationId": "initializeChunkUpload",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -9171,7 +10206,20 @@
           "201": {
             "description": "Chunk upload initialized"
           }
-        }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
+            ]
+          }
+        ]
       }
     },
     "/api/v1/uploads/{uploadId}": {
@@ -9191,7 +10239,20 @@
           "204": {
             "description": "Chunk upload canceled"
           }
-        }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
+            ]
+          }
+        ]
       },
       "get": {
         "operationId": "getChunkUpload",
@@ -9209,7 +10270,20 @@
           "200": {
             "description": "Chunk upload status"
           }
-        }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
       }
     },
     "/api/v1/uploads/{uploadId}/chunks/{index}": {
@@ -9238,7 +10312,20 @@
           "200": {
             "description": "Chunk accepted"
           }
-        }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
+            ]
+          }
+        ]
       }
     },
     "/api/v1/uploads/{uploadId}/complete": {
@@ -9258,7 +10345,20 @@
           "201": {
             "description": "Upload promoted"
           }
-        }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
+            ]
+          }
+        ]
       }
     },
     "/api/v1/voices": {

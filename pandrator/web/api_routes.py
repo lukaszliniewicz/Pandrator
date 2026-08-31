@@ -153,6 +153,9 @@ from .source_cleaning_dispatch_routes import (
     register_source_cleaning_dispatch_routes,
 )
 from .source_resolution import resolve_primary_source
+from .speech_optimization_dispatch_routes import (
+    register_speech_optimization_dispatch_routes,
+)
 from .voice_library import (
     ensure_bundled_voice,
     is_bundled_voice,
@@ -329,7 +332,10 @@ def _xtts_service_endpoint_base(catalogue: dict[str, Any]) -> tuple[str, str | N
             else ""
         )
         if not endpoint_base:
-            return "", "Pandrator Manager has not provided an XTTS endpoint for model management."
+            return (
+                "",
+                "Pandrator Manager has not provided an XTTS endpoint for model management.",
+            )
     try:
         # Validate here once, so all lifecycle proxy routes produce the same
         # connection error rather than constructing an unsafe outbound URL.
@@ -371,9 +377,15 @@ def _xtts_lifecycle_item(item: Any) -> dict[str, Any] | None:
         "is_default": bool(item.get("is_default")) if lifecycle_supported else False,
         "is_local": bool(item.get("is_local")) if lifecycle_supported else False,
         "removable": bool(item.get("removable")) if lifecycle_supported else False,
-        "source": str(item.get("source") or ("local" if lifecycle_supported else "unknown")),
-        "relative_path": item.get("relative_path") if isinstance(item.get("relative_path"), str) else None,
-        "bundle_complete": bool(item.get("bundle_complete")) if lifecycle_supported else True,
+        "source": str(
+            item.get("source") or ("local" if lifecycle_supported else "unknown")
+        ),
+        "relative_path": item.get("relative_path")
+        if isinstance(item.get("relative_path"), str)
+        else None,
+        "bundle_complete": bool(item.get("bundle_complete"))
+        if lifecycle_supported
+        else True,
         "lifecycle_supported": lifecycle_supported,
     }
 
@@ -711,6 +723,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     register_workflow_plan_routes(app, context)
     register_dispatch_routes(app, context)
     register_source_cleaning_dispatch_routes(app, context)
+    register_speech_optimization_dispatch_routes(app, context)
 
     @app.get("/api/v1/health")
     def health():
@@ -1074,7 +1087,10 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         try:
             wrapper_response = requests.get(
                 _xtts_models_endpoint(endpoint_base),
-                headers={"Accept": "application/json", "Authorization": "Bearer sk-placeholder"},
+                headers={
+                    "Accept": "application/json",
+                    "Authorization": "Bearer sk-placeholder",
+                },
                 timeout=(5, 20),
             )
         except requests.Timeout:
@@ -1099,12 +1115,18 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             return error_response(
                 "xtts_model_list_rejected",
                 _xtts_wrapper_error_message(wrapper_response),
-                wrapper_response.status_code if wrapper_response.status_code < 500 else 502,
+                wrapper_response.status_code
+                if wrapper_response.status_code < 500
+                else 502,
                 _xtts_wrapper_error_details(wrapper_response),
             )
         try:
             wrapper_payload = wrapper_response.json()
-            wrapper_items = wrapper_payload.get("data") if isinstance(wrapper_payload, dict) else None
+            wrapper_items = (
+                wrapper_payload.get("data")
+                if isinstance(wrapper_payload, dict)
+                else None
+            )
         except ValueError:
             wrapper_items = None
         if not isinstance(wrapper_items, list):
@@ -1125,7 +1147,10 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         try:
             health_response = requests.get(
                 _xtts_health_endpoint(endpoint_base),
-                headers={"Accept": "application/json", "Authorization": "Bearer sk-placeholder"},
+                headers={
+                    "Accept": "application/json",
+                    "Authorization": "Bearer sk-placeholder",
+                },
                 timeout=(2, 5),
             )
             health_payload = health_response.json()
@@ -1133,7 +1158,11 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 version = str(health_payload.get("version") or "").strip()
                 status = str(health_payload.get("status") or "").strip()
                 if version or status:
-                    wrapper = {key: value for key, value in {"version": version, "status": status}.items() if value}
+                    wrapper = {
+                        key: value
+                        for key, value in {"version": version, "status": status}.items()
+                        if value
+                    }
         except (requests.RequestException, ValueError):
             # Listing remains useful when old wrappers do not expose health.
             pass
@@ -1163,11 +1192,14 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         model_ids = [
             str(value or "").strip() for value in request.form.getlist("model_id")
         ]
-        model_id_error = _xtts_model_id_error(model_ids[0]) if len(model_ids) == 1 else ""
+        model_id_error = (
+            _xtts_model_id_error(model_ids[0]) if len(model_ids) == 1 else ""
+        )
         if len(model_ids) != 1 or model_id_error:
             return error_response(
                 "validation_error",
-                model_id_error or "Upload exactly one model_id field with the XTTS bundle.",
+                model_id_error
+                or "Upload exactly one model_id field with the XTTS bundle.",
                 422,
             )
         if set(request.files.keys()) != {"files"}:
@@ -1309,7 +1341,10 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         try:
             wrapper_response = requests.delete(
                 _xtts_models_endpoint(endpoint_base, model_id),
-                headers={"Accept": "application/json", "Authorization": "Bearer sk-placeholder"},
+                headers={
+                    "Accept": "application/json",
+                    "Authorization": "Bearer sk-placeholder",
+                },
                 timeout=(10, 120),
             )
         except requests.Timeout:
@@ -1341,7 +1376,9 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             return error_response(
                 "xtts_model_delete_rejected",
                 _xtts_wrapper_error_message(wrapper_response),
-                wrapper_response.status_code if wrapper_response.status_code < 500 else 502,
+                wrapper_response.status_code
+                if wrapper_response.status_code < 500
+                else 502,
                 _xtts_wrapper_error_details(wrapper_response),
             )
         try:
@@ -3674,7 +3711,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                         413,
                     )
                 try:
-                    from PIL import Image
+                    from PIL import Image, UnidentifiedImageError
 
                     with Image.open(temporary) as image:
                         if image.format not in {"JPEG", "PNG", "WEBP"}:
@@ -3685,7 +3722,12 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                                 "Artwork dimensions are invalid or exceed 100 megapixels."
                             )
                         image.verify()
-                except Exception as error:
+                except (
+                    Image.DecompressionBombError,
+                    OSError,
+                    UnidentifiedImageError,
+                    ValueError,
+                ) as error:
                     return error_response(
                         "invalid_cover",
                         f"Cover artwork is not a readable image: {error}",
@@ -3747,6 +3789,72 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         payload = ChunkUploadInitialize.model_validate(
             request.get_json(silent=True) or {}
         )
+        idempotency_key, idempotency_error = mutation_idempotency_key()
+        if idempotency_error is not None:
+            return idempotency_error
+        if idempotency_key is not None:
+            upload_id = str(uuid.uuid4())
+            created_directory: Path | None = None
+            try:
+                with database.immediate_session() as db_session:
+                    reservation = services.idempotency.begin(
+                        db_session,
+                        principal=context.guards.principal(),
+                        operation_id="initializeChunkUpload",
+                        idempotency_key=idempotency_key,
+                        payload=payload.model_dump(mode="json"),
+                    )
+                    if reservation.response is not None:
+                        result, status_code = reservation.response
+                        response = jsonify(result)
+                        response.status_code = status_code
+                        response.headers["Idempotency-Replayed"] = "true"
+                        return response
+                    record = chunk_uploads.initialize_in_session(
+                        db_session,
+                        filename=payload.filename,
+                        size_bytes=payload.size_bytes,
+                        mime_type=payload.mime_type,
+                        session_id=payload.session_id,
+                        expected_hash=payload.sha256,
+                        chunk_size=payload.chunk_size,
+                        max_size=int(
+                            app.config.get(
+                                "MAX_UPLOAD_SIZE",
+                                100 * 1024 * 1024 * 1024,
+                            )
+                        ),
+                        upload_id=upload_id,
+                    )
+                    created_directory = paths.managed_path(
+                        record.temporary_relative_path
+                    )
+                    result = chunk_uploads.status_payload(record)
+                    services.idempotency.complete(
+                        db_session,
+                        reservation,
+                        response=result,
+                        status_code=201,
+                        resource_kind="upload",
+                        resource_id=upload_id,
+                    )
+                return jsonify(result), 201
+            except KeyError:
+                if created_directory is not None:
+                    shutil.rmtree(created_directory, ignore_errors=True)
+                return error_response("not_found", "Session not found.", 404)
+            except (
+                IdempotencyConflict,
+                IdempotencyInProgress,
+                ValueError,
+            ) as error:
+                if created_directory is not None:
+                    shutil.rmtree(created_directory, ignore_errors=True)
+                return idempotency_failure(error)
+            except Exception:
+                if created_directory is not None:
+                    shutil.rmtree(created_directory, ignore_errors=True)
+                raise
         try:
             result = chunk_uploads.initialize(
                 filename=payload.filename,
@@ -5507,9 +5615,9 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 "sample_artifact_id": artifact_id,
                 "settings": settings,
             },
-            resource_keys=[f"stt:{str(settings.get('stt_compute_backend') or 'auto')}"]
+            resource_keys=[f"stt:{settings.get('stt_compute_backend') or 'auto'!s}"]
             + (
-                [f"gpu:{str(settings.get('stt_compute_backend'))}"]
+                [f"gpu:{settings.get('stt_compute_backend')!s}"]
                 if str(settings.get("stt_compute_backend") or "").lower()
                 in {"cuda", "vulkan", "metal"}
                 else []

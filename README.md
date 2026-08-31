@@ -40,7 +40,8 @@ verification, workspace selection, headless setup, and updates.
 | Turn a document into narrated audio or an M4B audiobook | [Create your first audiobook](docs/getting-started/first-audiobook.md) |
 | Transcribe media, correct subtitles, translate them, or export SRT/VTT | [Create your first subtitles](docs/getting-started/first-subtitles.md) |
 | Generate synchronized speech and produce a dubbed video | [Create your first voiceover](docs/getting-started/first-voiceover.md) |
-| Let the model in Codex, OpenCode, Claude Code, or another MCP host process subtitle or PDF/EPUB cleanup batches | [Use passive dispatch](docs/guides/passive-dispatch.md) |
+| Let the model in Codex, OpenCode, Claude Code, or another MCP host process subtitle, document-cleanup, or speech-text batches | [Use passive dispatch](docs/guides/passive-dispatch.md) |
+| Ask an agent to take a local file through processing and return verified deliverables | [Run an end-to-end agent workflow](docs/guides/agent-workflows.md) |
 | Connect an agent safely to Pandrator or recover a managed installation | [Pandrator MCP](pandrator_mcp/README.md) |
 | Install, update, repair, or operate local components | [Pandrator Manager](pandrator_manager/README.md) |
 
@@ -90,10 +91,11 @@ speech-text optimization. Each transformation creates a distinct revision or
 artifact; it does not silently replace the source text.
 
 Passive dispatch provides a different route. Pandrator makes no model call:
-it snapshots the selected subtitle revision and queues deterministic, leased
-batches. The model already running in an MCP host claims one batch, returns a
-typed result over stable cue IDs, and continues sequentially. The final
-subtitle artifact appears only after every batch is validated.
+it snapshots the selected source and queues deterministic, leased subtitle,
+document-cleanup, or speech-text packets. The model already running in an MCP
+host claims one packet, returns a typed result over stable identities, and
+continues sequentially. The final artifact appears only after every packet is
+validated.
 
 Read [correction and translation](docs/guides/correction-and-translation.md)
 for the choice between manual review, a configured LLM, DeepL, and passive
@@ -116,9 +118,12 @@ safe remote exposure.
 
 `pandrator-mcp` is a local stdio sidecar that lets an MCP-capable agent explain
 Pandrator, inspect one fixed installation, edit sessions safely, execute
-reviewed workflow plans, process passive subtitle and document-cleaning
-batches, and perform bounded Manager recovery. Target origins and credentials
-are process configuration, not model-selected tool arguments.
+reviewed workflow plans, process passive subtitle, document-cleaning, and
+speech-text batches, import files from approved named roots, resolve live TTS
+catalog choices, export explicit output variants, download verified artifacts,
+and perform bounded Manager recovery. Target origins, absolute filesystem
+paths, and credentials are process configuration, not model-selected tool
+arguments.
 
 The component guide documents:
 
@@ -127,7 +132,10 @@ The component guide documents:
 - owner-approved enrollment, identity pinning, rotation, and revocation;
 - secret-free host configuration for Codex, Claude Code, OpenCode, and
   Antigravity;
-- passive subtitle correction/translation and PDF/EPUB source cleanup; and
+- passive subtitle correction/translation, PDF/EPUB source cleanup, and
+  speech-text optimization;
+- resumable local/remote source transfer and verified output delivery;
+- live provider/model/voice selection and typed output variants; and
 - diagnostics and optional recovery while Pandrator is stopped.
 
 See the [Pandrator MCP guide](pandrator_mcp/README.md) for exact installation
@@ -139,6 +147,7 @@ and configuration commands.
 | --- | --- |
 | Product setup and workflows | [Public documentation](docs/README.md) |
 | PDF/EPUB ingestion, OCR, cleanup, and narration parameters | [Document-ingestion reference](docs/reference/document-ingestion.md) |
+| Standalone, generation-time, and passive speech-text optimization | [Speech-optimization reference](docs/reference/speech-optimization.md) |
 | Manager installation, CLI, recovery, and component operations | [Manager guide](pandrator_manager/README.md) |
 | MCP installation, targets, scopes, host configuration, and protocol behavior | [MCP guide](pandrator_mcp/README.md) |
 | Version history, downloads, and checksums | [GitHub Releases](https://github.com/lukaszliniewicz/Pandrator/releases) |

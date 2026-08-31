@@ -24,10 +24,15 @@ The current tool surface supports:
 - packaged, versioned explanations of Pandrator and its workflows;
 - target, capability, session, workflow, source, artifact, provider, voice,
   durable-work, and redacted-event inspection;
+- safe browsing of operator-approved local roots, resumable source import, and
+  verified artifact download without putting file bytes in model context;
 - session creation and revision-safe session, source, and settings changes;
+- catalog-backed TTS service, model, and voice selection plus typed export
+  variants and generation-run selection;
 - immutable workflow planning followed by explicit execution;
-- passive subtitle correction/translation and PDF/EPUB source-cleaning runs
-  with sequential pull, short-lived batch leases, and typed submissions;
+- passive subtitle correction/translation, PDF/EPUB source-cleaning, and
+  speech-text optimization runs with sequential pull, short-lived batch
+  leases, and typed submissions;
 - durable-work cancellation;
 - Manager status and diagnostics;
 - immutable Manager component plans, runtime control, and plan execution; and
@@ -111,9 +116,31 @@ safety ceiling. After the last phase, Pandrator applies and validates the
 accepted operations and selects the resulting `clean_text` artifact. Normal
 workflow planning can then continue with narration preparation.
 
-The source must already be managed and attached. This tool family does not
-turn an arbitrary model-supplied filesystem path into a source; use the normal
-upload flow or attach a source returned by `pandrator_list_sources`.
+The source must already be managed and attached. Use
+`pandrator_import_local_source` for a file beneath an operator-approved named
+root, or attach a source returned by `pandrator_list_sources`. The cleanup
+tools themselves never accept an arbitrary filesystem path.
+
+### Speech-optimization dispatch
+
+After narration preparation or subtitle translation/correction, call
+`pandrator_create_speech_optimization_dispatch_run` to let the MCP host model
+prepare text for speech without a Pandrator LLM provider. Sources are managed
+SRT, prepared-narration JSON, or TXT artifacts; PDF/EPUB and media inputs must
+first pass through extraction or transcription.
+
+Claim batches sequentially. The claim's `batch.units` are the only actionable
+items and carry stable `unit_id` values, language, optional speaker, and—when
+requested—one timing object per SRT unit. Boundary context is read-only and
+never repeats timing. Submit `kind: speech_optimization` with every `unit_id`
+exactly once, in order, leaving text unchanged when no improvement is needed.
+
+`char_limit` and `max_units_per_batch` are transport bounds rather than model
+budgets. Defaults are 20,000 characters and 100 units; supported maxima are
+1,000,000 and 500. Pandrator neither chooses nor calls a model, and the host may
+subdivide a claimed batch internally. The final accepted batch materializes a
+normal `tts_optimized` artifact, pinned against source, selection, and output
+changes. Finish this stage before starting speech generation.
 
 Guidance remains available even when no target can be reached.
 
@@ -128,11 +155,23 @@ without abruptly abandoning existing integrations.
 
 Tools expose JSON Schema inputs, annotations, structured JSON results, and a
 text JSON fallback. Tool, resource, and prompt discovery are deterministic.
+Expected business failures are returned as normal MCP tool results with
+`isError: true` and a typed Pandrator error object in the text. Modern list
+results include private-cache hints and every ordinary result carries the
+required `resultType` through the SDK.
+
 For stdio, stdout is reserved exclusively for newline-delimited MCP frames;
 dependency diagnostics from both tool and resource handlers are redirected to
 stderr. Protocol discovery, structured-content fallback, modern stdio, legacy
 negotiation, annotations, and stdout-noise containment are covered by the
 contract tests.
+
+The server deliberately does not advertise deprecated protocol Roots,
+Sampling, or Logging capabilities. Its named local roots are ordinary sidecar
+configuration, not the deprecated MCP Roots feature. Pandrator's durable work
+and passive dispatch handles remain explicit tool arguments rather than using
+the optional Tasks extension; this keeps long-running application state usable
+by both modern and maintained legacy hosts.
 
 ## Install
 
@@ -180,6 +219,67 @@ Use `--config PATH` or `PANDRATOR_MCP_CONFIG` to select another file.
 `pandrator-mcp print-config` prints a public projection without credential
 references.
 
+### Approved local files and outputs
+
+The operator—not the model—chooses which sidecar-host directories are visible.
+Expose each source directory under an opaque name and configure one output
+directory:
+
+```console
+pandrator-mcp target source-root-add local downloads /home/me/Downloads
+pandrator-mcp target source-root-add local library /mnt/storage/14-Library
+pandrator-mcp target output-root-set local /home/me/Pandrator-outputs
+pandrator-mcp target source-root-list local
+```
+
+Use Windows absolute paths when the sidecar runs on Windows. The MCP model sees
+root names and relative entries, never these absolute paths. Symlinks are not
+offered for import, and the importer opens every path component without
+following symlinks.
+
+`pandrator_browse_local_sources` lists approved entries.
+`pandrator_import_local_source` hashes the selected regular file, reuses an
+identical managed source when possible, otherwise uploads it in resumable
+chunks, and then attaches it with the inspected session revision. Upload state
+and completion results are replayable, so an interrupted model turn can safely
+continue.
+
+“Local” here means local to the stdio sidecar. Pandrator itself may be on the
+same computer or at a fixed remote target. For a remote target the sidecar
+streams bytes directly over the authenticated Pandrator API; the bytes are
+never encoded into an MCP tool result or model prompt.
+
+`pandrator_download_artifact` performs the reverse operation. It streams one
+immutable artifact into the approved output root, resumes a partial transfer
+with HTTP Range, verifies size and SHA-256 metadata, and atomically publishes
+the completed file. It never returns the remote server's storage path.
+
+### End-to-end agent workflow
+
+For a request such as “take the course video in Downloads, transcribe it,
+correct and translate the subtitles, generate a voiceover, and give me two
+final variants,” the intended sequence is:
+
+1. call `pandrator_recommend_next_steps`, target status, and the matching guide;
+2. browse an approved root, create or inspect a session, and import the source;
+3. plan and execute transcription, then poll the returned work to terminal;
+4. run passive correction and translation sequentially, with the host model
+   producing and submitting each batch itself;
+5. optionally run passive speech optimization before generation;
+6. resolve live TTS choices with `pandrator_get_tts_catalog`, inspect the TTS
+   settings revision, and apply exact IDs with `pandrator_configure_tts`;
+7. plan and execute generation, poll it to terminal, and inspect generation
+   runs;
+8. create and execute one `pandrator_plan_export_variant` per requested output;
+   then
+9. list the resulting artifacts and download each requested deliverable.
+
+Service, model, and voice names mentioned by a user are preferences or
+examples. The agent must match them against the live catalog and ask for a
+choice only when the requested option is absent or ambiguous. Upload chunking,
+download resumption, and retry transport details are automatic rather than
+model-facing knobs.
+
 ### Scope recipes
 
 Request only the authority the agent needs:
@@ -188,9 +288,12 @@ Request only the authority the agent needs:
 |---|---|
 | Explain and inspect | `app.read` |
 | Create and edit sessions | `app.read`, `app.write` |
+| Import approved local files or configure TTS | `app.read`, `app.write` |
 | Run and cancel workflows | `app.read`, `app.write`, `app.run`, `app.cancel` |
+| Complete media-to-deliverables workflow | `app.read`, `app.write`, `app.run` (add `app.cancel` if cancellation is required) |
 | Correct or translate subtitles through dispatch | `app.read`, `app.run` |
 | Clean an attached PDF or EPUB through passive dispatch | `app.read`, `app.run` |
+| Optimize prepared speech text through passive dispatch | `app.read`, `app.run` |
 | Inspect Manager through Pandrator | add `manager.read` |
 | Start or stop managed runtimes | add `manager.runtime` |
 | Execute reviewed Manager plans | add `manager.mutate` |

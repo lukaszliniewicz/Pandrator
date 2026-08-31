@@ -4,6 +4,12 @@ The MCP server is normally a local stdio sidecar launched by an agent host. One
 process is bound to one named target chosen in host configuration, outside
 model-visible tool arguments.
 
+Approved source and output roots belong to the sidecar host, independently of
+the target location. A workstation sidecar can therefore import a file from
+its Downloads directory into a remote Pandrator server and later download the
+server's immutable result. Both transfers stream outside model context and can
+resume after interruption.
+
 ## Local managed installation
 
 The profile contains the Pandrator Manager workspace. The sidecar validates the
@@ -103,5 +109,8 @@ it. None of these local commands deletes remote Pandrator data.
 - Target profiles contain credential handles, never secret values.
 - Connection URLs, tokens, proxy choices, and CA paths are process
   configuration and never MCP tool inputs.
+- Absolute local paths are also profile configuration. Tools expose only root
+  names and relative entries, and a remote target never returns its storage
+  path.
 - Local logout and profile removal do not claim server-side revocation; revoke
   as the target owner first, then clean up the workstation.

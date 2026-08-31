@@ -9,8 +9,9 @@ import json
 import re
 import shutil
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
 from pandrator.logic.llm_handler import (
     ChatCompletionResult,
@@ -18,7 +19,6 @@ from pandrator.logic.llm_handler import (
 )
 
 from .pronunciations import render_respelling, validate_respelling
-
 
 ALLOWED_ACTIONS = {"pronounce", "verbalize", "spell_letters", "keep", "uncertain"}
 ALLOWED_CONFIDENCE = {"high", "medium", "low"}
@@ -137,7 +137,7 @@ COMMON_TITLECASE_WORDS = frozenset(
 )
 
 
-SPEECH_PROMPT_REVISION = 2
+SPEECH_PROMPT_REVISION = 3
 POLISH_PRONUNCIATION_GUIDANCE = """For Polish-target speech, evaluate pronunciation candidates using Polish grapheme-to-phoneme behavior. An i after a consonant can soften or palatalize that consonant. If the target pronunciation keeps a consonant hard, choose an orthographic form that preserves the hardness, often y or another context-appropriate vowel. Do not apply this mechanically: judge the complete pronunciation, the surrounding sounds, and Polish inflection."""
 
 
@@ -220,6 +220,12 @@ class SpeechPlanAttempt:
 class SpeechPlanResult:
     text: str
     plan: dict[str, Any]
+    responses: list[ChatCompletionResult] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class SpeechPlanBatchResult:
+    results: list[SpeechPlanResult]
     responses: list[ChatCompletionResult] = field(default_factory=list)
 
 
@@ -820,6 +826,201 @@ def _prompt_payload(
     return payload
 
 
+def _batch_prompt_payload(
+    text: str,
+    *,
+    language: str,
+    voice_language: str,
+    mode: str,
+    known_pronunciations: list[dict[str, Any]],
+) -> dict[str, Any]:
+    display_text = " ".join(str(text or "").split())
+    candidates, known = detect_candidates(
+        display_text,
+        language=language,
+        known_pronunciations=known_pronunciations,
+    )
+    tokens = tokenize(display_text)
+    protected_template, placeholder_counts = build_protected_template(
+        display_text,
+        candidates,
+        known,
+    )
+    case_id = hashlib.sha256(
+        f"{language}\0{voice_language}\0{display_text}".encode()
+    ).hexdigest()[:16]
+    return _prompt_payload(
+        case_id=case_id,
+        language=language,
+        voice_language=voice_language,
+        display_text=display_text,
+        deterministic_text=display_text,
+        tokens=tokens,
+        candidates=candidates,
+        known=known,
+        protected_template=protected_template,
+        placeholder_counts=placeholder_counts,
+        mode=mode,
+    )
+
+
+def plan_speech_text_batch(
+    cases: list[dict[str, Any]],
+    *,
+    mode: str,
+    model_name: str,
+    llm_settings: Any,
+    cancel_event: Any | None = None,
+    min_retention: float = 0.9,
+    max_attempts_per_mode: int = 1,
+    completion_func: Callable[..., Any] | None = None,
+) -> SpeechPlanBatchResult:
+    """Plan several independent units in one request, validating each separately.
+
+    A malformed or invalid item is retried through the existing single-unit
+    protocol. Valid siblings remain accepted, so batching changes transport cost
+    rather than the protected-template authority boundary.
+    """
+    if not cases:
+        return SpeechPlanBatchResult(results=[])
+    requested_mode = "flexible" if mode == "flexible" else "guarded"
+    prepared: list[dict[str, Any]] = []
+    for index, case in enumerate(cases, start=1):
+        text = str(case.get("text") or "")
+        language = str(case.get("language") or "en")
+        voice_language = str(case.get("voice_language") or language)
+        known = [
+            dict(item)
+            for item in (case.get("known_pronunciations") or [])
+            if isinstance(item, dict)
+        ]
+        prepared.append(
+            {
+                "batch_item_id": f"B{index}",
+                "text": text,
+                "language": language,
+                "voice_language": voice_language,
+                "known_pronunciations": known,
+                "payload": _batch_prompt_payload(
+                    text,
+                    language=language,
+                    voice_language=voice_language,
+                    mode=requested_mode,
+                    known_pronunciations=known,
+                ),
+            }
+        )
+    base_prompt = (
+        (
+            FLEXIBLE_SYSTEM_PROMPT
+            if requested_mode == "flexible"
+            else GUARDED_SYSTEM_PROMPT
+        )
+        .partition("Return JSON only:")[0]
+        .rstrip()
+    )
+    guidance = [speech_pronunciation_guidance(item["language"]) for item in prepared]
+    guidance = list(dict.fromkeys(item for item in guidance if item))
+    system_prompt = (
+        base_prompt
+        + "\n\nYou receive several independently protected cases in one transport "
+        "request. Neighboring cases are context for disambiguation only. Never "
+        "move text, decisions, discoveries, tokens, or placeholders between cases. "
+        "Return every batch_item_id exactly once and preserve its inner case_id. "
+        'Return JSON only as {"items":[{"batch_item_id":"B1","plan":'
+        "{the complete single-case plan object}}]}."
+    )
+    if guidance:
+        system_prompt += "\n\n" + "\n\n".join(guidance)
+    request_payload = {
+        "mode": requested_mode,
+        "items": [
+            {
+                "batch_item_id": item["batch_item_id"],
+                "case": item["payload"],
+            }
+            for item in prepared
+        ],
+    }
+    if cancel_event is not None and cancel_event.is_set():
+        raise RuntimeError("Speech planning was canceled.")
+    completion = completion_func or chat_completion_with_metadata
+    kwargs = {
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {
+                "role": "user",
+                "content": "Plan these speech units:\n"
+                + json.dumps(request_payload, ensure_ascii=False, indent=2),
+            },
+        ],
+        "model_name": model_name,
+        "llm_settings": llm_settings,
+    }
+    if completion_func is None:
+        kwargs["cancel_event"] = cancel_event
+    response = completion(**kwargs)
+    raw = response if isinstance(response, str) else getattr(response, "content", "")
+    parsed, _parse_note = _extract_json(raw)
+    raw_items = parsed.get("items") if isinstance(parsed, dict) else None
+    returned: dict[str, dict[str, Any]] = {}
+    duplicate_ids: set[str] = set()
+    if isinstance(raw_items, list):
+        for item in raw_items:
+            if not isinstance(item, dict):
+                continue
+            batch_item_id = str(item.get("batch_item_id") or "")
+            plan = item.get("plan")
+            if batch_item_id in returned:
+                duplicate_ids.add(batch_item_id)
+            elif batch_item_id and isinstance(plan, dict):
+                returned[batch_item_id] = plan
+    for batch_item_id in duplicate_ids:
+        returned.pop(batch_item_id, None)
+
+    responses = [] if isinstance(response, str) else [response]
+    results: list[SpeechPlanResult] = []
+    for item in prepared:
+        returned_plan = returned.get(item["batch_item_id"])
+        validated: SpeechPlanResult | None = None
+        if returned_plan is not None:
+            validated = plan_speech_text(
+                item["text"],
+                language=item["language"],
+                voice_language=item["voice_language"],
+                mode=requested_mode,
+                model_name=model_name,
+                llm_settings=llm_settings,
+                known_pronunciations=item["known_pronunciations"],
+                cancel_event=cancel_event,
+                min_retention=min_retention,
+                max_attempts_per_mode=1,
+                completion_func=lambda returned_plan=returned_plan, **_kwargs: (
+                    json.dumps(returned_plan, ensure_ascii=False)
+                ),
+            )
+            if validated.plan.get("status") != "valid":
+                validated = None
+        if validated is None:
+            validated = plan_speech_text(
+                item["text"],
+                language=item["language"],
+                voice_language=item["voice_language"],
+                mode=requested_mode,
+                model_name=model_name,
+                llm_settings=llm_settings,
+                known_pronunciations=item["known_pronunciations"],
+                cancel_event=cancel_event,
+                min_retention=min_retention,
+                max_attempts_per_mode=max_attempts_per_mode,
+                completion_func=completion_func,
+            )
+            responses.extend(validated.responses)
+            validated.responses = []
+        results.append(validated)
+    return SpeechPlanBatchResult(results=results, responses=responses)
+
+
 def plan_speech_text(
     text: str,
     *,
@@ -838,7 +1039,7 @@ def plan_speech_text(
     display_text = " ".join(str(text or "").split())
     deterministic_text = display_text
     case_id = hashlib.sha256(
-        f"{language}\0{voice_language}\0{display_text}".encode("utf-8")
+        f"{language}\0{voice_language}\0{display_text}".encode()
     ).hexdigest()[:16]
     candidates, known = detect_candidates(
         deterministic_text,

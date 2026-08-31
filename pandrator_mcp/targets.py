@@ -57,6 +57,23 @@ class TargetIdentityExpectation(BaseModel):
         return normalize_origin(str(value)) if value else None
 
 
+class LocalSourceRoot(BaseModel):
+    """Human-approved filesystem root exposed to MCP by opaque name only."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    name: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
+    path: str
+
+    @field_validator("path", mode="before")
+    @classmethod
+    def validate_path(cls, value: object) -> str:
+        path = Path(str(value)).expanduser()
+        if not path.is_absolute():
+            raise ValueError("A local source root must be an absolute path.")
+        return str(path.resolve(strict=False))
+
+
 class TargetProfile(BaseModel):
     """Persisted target configuration; credential fields are handles only."""
 
@@ -84,6 +101,8 @@ class TargetProfile(BaseModel):
     manager_credential_expires_at: str | None = None
     application_credential: CredentialReference | None = None
     manager_recovery_credential: CredentialReference | None = None
+    local_source_roots: tuple[LocalSourceRoot, ...] = ()
+    local_output_root: str | None = None
     expected_identity: TargetIdentityExpectation = Field(default_factory=TargetIdentityExpectation)
 
     @field_validator(
@@ -106,6 +125,28 @@ class TargetProfile(BaseModel):
             raise ValueError("A configured CA bundle path must be absolute.")
         return str(path)
 
+    @field_validator("local_output_root", mode="before")
+    @classmethod
+    def validate_local_output_root(cls, value: object) -> str | None:
+        if not value:
+            return None
+        path = Path(str(value)).expanduser()
+        if not path.is_absolute():
+            raise ValueError("The local output root must be an absolute path.")
+        return str(path.resolve(strict=False))
+
+    @field_validator("local_source_roots", mode="after")
+    @classmethod
+    def validate_local_source_roots(
+        cls,
+        value: tuple[LocalSourceRoot, ...],
+    ) -> tuple[LocalSourceRoot, ...]:
+        if len(value) > 32:
+            raise ValueError("At most 32 local source roots may be configured.")
+        if len({item.name.casefold() for item in value}) != len(value):
+            raise ValueError("Local source root names must be unique.")
+        return value
+
     @field_validator(
         "automation_client_id",
         "manager_automation_client_id",
@@ -121,13 +162,9 @@ class TargetProfile(BaseModel):
         try:
             parsed = uuid.UUID(str(value))
         except ValueError as error:
-            raise ValueError(
-                "The automation client ID must be a UUID."
-            ) from error
+            raise ValueError("The automation client ID must be a UUID.") from error
         if parsed.version != 4:
-            raise ValueError(
-                "The automation client ID must be a random UUID."
-            )
+            raise ValueError("The automation client ID must be a random UUID.")
         return str(parsed)
 
     @field_validator("requested_application_scopes", mode="before")
@@ -140,14 +177,9 @@ class TargetProfile(BaseModel):
         selected = tuple(dict.fromkeys(values))
         unknown = set(selected) - APPLICATION_SCOPES
         if unknown:
-            raise ValueError(
-                "Unknown application scope(s): "
-                + ", ".join(sorted(unknown))
-            )
+            raise ValueError("Unknown application scope(s): " + ", ".join(sorted(unknown)))
         if not selected:
-            raise ValueError(
-                "At least one application scope must be requested."
-            )
+            raise ValueError("At least one application scope must be requested.")
         return selected
 
     @field_validator("manager_requested_scopes", mode="before")
@@ -160,14 +192,9 @@ class TargetProfile(BaseModel):
         selected = tuple(dict.fromkeys(values))
         unknown = set(selected) - MANAGER_RECOVERY_SCOPES
         if unknown:
-            raise ValueError(
-                "Unknown Manager recovery scope(s): "
-                + ", ".join(sorted(unknown))
-            )
+            raise ValueError("Unknown Manager recovery scope(s): " + ", ".join(sorted(unknown)))
         if not selected:
-            raise ValueError(
-                "At least one Manager recovery scope must be requested."
-            )
+            raise ValueError("At least one Manager recovery scope must be requested.")
         return selected
 
     @field_validator("allowed_private_cidrs", mode="before")
@@ -481,6 +508,34 @@ class TargetStore:
         self.save(profiles.values())
         return removed
 
+    def configure_local_paths(
+        self,
+        name: str,
+        *,
+        source_roots: tuple[LocalSourceRoot, ...] | None = None,
+        output_root: str | None | object = ...,
+    ) -> TargetProfile:
+        profiles = {item.name: item for item in self.load(missing_ok=False)}
+        try:
+            current = profiles[name]
+        except KeyError as error:
+            raise TargetResolutionError(
+                "The selected Pandrator MCP target does not exist.",
+                details={"target": name},
+            ) from error
+        changes: dict[str, object] = {}
+        if source_roots is not None:
+            changes["local_source_roots"] = source_roots
+        if output_root is not ...:
+            changes["local_output_root"] = output_root
+        updated = current.model_copy(update=changes)
+        # model_copy deliberately skips validation; round-trip through the
+        # model because these paths form a security boundary.
+        updated = TargetProfile.model_validate(updated.model_dump(mode="json"))
+        profiles[name] = updated
+        self.save(profiles.values())
+        return updated
+
     def update_identity(
         self,
         name: str,
@@ -510,9 +565,7 @@ class TargetStore:
     ) -> TargetProfile:
         """Add an unenrolled recovery endpoint without replacing the target."""
 
-        profiles = {
-            item.name: item for item in self.load(missing_ok=False)
-        }
+        profiles = {item.name: item for item in self.load(missing_ok=False)}
         try:
             current = profiles[name]
         except KeyError as error:
@@ -525,9 +578,7 @@ class TargetStore:
                 "This target already has an enrolled Manager recovery "
                 "credential. Revoke it before changing recovery identity."
             )
-        identity = current.expected_identity.model_copy(
-            update={"manager_instance_id": None}
-        )
+        identity = current.expected_identity.model_copy(update={"manager_instance_id": None})
         updated = current.model_copy(
             update={
                 "manager_recovery_origin": origin,
@@ -544,9 +595,7 @@ class TargetStore:
                 "expected_identity": identity,
             }
         )
-        profiles[name] = TargetProfile.model_validate(
-            updated.model_dump(mode="python")
-        )
+        profiles[name] = TargetProfile.model_validate(updated.model_dump(mode="python"))
         self.save(profiles.values())
         return profiles[name]
 
@@ -563,9 +612,7 @@ class TargetStore:
     ) -> TargetProfile:
         """Atomically persist only non-secret enrollment metadata."""
 
-        profiles = {
-            item.name: item for item in self.load(missing_ok=False)
-        }
+        profiles = {item.name: item for item in self.load(missing_ok=False)}
         try:
             current = profiles[name]
         except KeyError as error:
@@ -583,9 +630,7 @@ class TargetStore:
                 "credential_expires_at": credential_expires_at,
             }
         )
-        profiles[name] = TargetProfile.model_validate(
-            updated.model_dump(mode="python")
-        )
+        profiles[name] = TargetProfile.model_validate(updated.model_dump(mode="python"))
         self.save(profiles.values())
         return profiles[name]
 
@@ -602,9 +647,7 @@ class TargetStore:
     ) -> TargetProfile:
         """Persist recovery enrollment metadata without its credential value."""
 
-        profiles = {
-            item.name: item for item in self.load(missing_ok=False)
-        }
+        profiles = {item.name: item for item in self.load(missing_ok=False)}
         try:
             current = profiles[name]
         except KeyError as error:
@@ -615,20 +658,14 @@ class TargetStore:
         updated = current.model_copy(
             update={
                 "expected_identity": identity,
-                "manager_recovery_credential": (
-                    manager_recovery_credential
-                ),
+                "manager_recovery_credential": (manager_recovery_credential),
                 "manager_automation_client_id": automation_client_id,
                 "manager_requested_scopes": requested_scopes,
                 "manager_enrolled_subject": enrolled_subject,
-                "manager_credential_expires_at": (
-                    credential_expires_at
-                ),
+                "manager_credential_expires_at": (credential_expires_at),
             }
         )
-        profiles[name] = TargetProfile.model_validate(
-            updated.model_dump(mode="python")
-        )
+        profiles[name] = TargetProfile.model_validate(updated.model_dump(mode="python"))
         self.save(profiles.values())
         return profiles[name]
 
@@ -640,9 +677,7 @@ class TargetStore:
     ) -> TargetProfile:
         """Forget one local credential handle without changing target trust."""
 
-        profiles = {
-            item.name: item for item in self.load(missing_ok=False)
-        }
+        profiles = {item.name: item for item in self.load(missing_ok=False)}
         try:
             current = profiles[name]
         except KeyError as error:
@@ -663,8 +698,6 @@ class TargetStore:
                 "manager_credential_expires_at": None,
             }
         updated = current.model_copy(update=changes)
-        profiles[name] = TargetProfile.model_validate(
-            updated.model_dump(mode="python")
-        )
+        profiles[name] = TargetProfile.model_validate(updated.model_dump(mode="python"))
         self.save(profiles.values())
         return profiles[name]

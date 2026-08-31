@@ -91,11 +91,11 @@ def _restore_optimization_unit(
         )
     raw_items = raw.get("items")
     if not isinstance(raw_items, list):
-        raise ValueError(f"Speech-optimization checkpoint {key} has no items.")
+        raise TypeError(f"Speech-optimization checkpoint {key} has no items.")
     restored: dict[int, str] = {}
     for item in raw_items:
         if not isinstance(item, Mapping):
-            raise ValueError(
+            raise TypeError(
                 f"Speech-optimization checkpoint {key} has an invalid item."
             )
         try:
@@ -159,11 +159,11 @@ def _parse_batch_response(value: str, expected_indexes: list[int]) -> dict[int, 
         ) from error
     rows = payload.get("items") if isinstance(payload, dict) else payload
     if not isinstance(rows, list):
-        raise RuntimeError("LLM speech optimization JSON must contain an items list.")
+        raise TypeError("LLM speech optimization JSON must contain an items list.")
     parsed: dict[int, str] = {}
     for row in rows:
         if not isinstance(row, dict):
-            raise RuntimeError("Every optimized item must be a JSON object.")
+            raise TypeError("Every optimized item must be a JSON object.")
         try:
             index = int(str(row.get("index")))
         except (TypeError, ValueError) as error:
@@ -411,10 +411,15 @@ def _optimize_with_speech_plans(
     completed_units: Mapping[str, Mapping[str, Any]] | None,
     on_unit_completed: UnitCompletedCallback | None,
 ) -> tuple[list[str], OptimizationUsage]:
-    """Plan one stable sentence per call and compile only validated responses."""
-    from .speech_planning import SPEECH_PROMPT_REVISION, plan_speech_text
+    """Plan stable units in optional transport batches with per-unit validation."""
+    from .speech_planning import (
+        SPEECH_PROMPT_REVISION,
+        plan_speech_text,
+        plan_speech_text_batch,
+    )
 
     workers = max(1, min(16, int(settings.get("llm_concurrent_calls") or 1)))
+    batch_size = max(1, min(64, int(settings.get("llm_tts_batch_size") or 1)))
     default_language = str(
         settings.get("language")
         or settings.get("target_language")
@@ -447,9 +452,7 @@ def _optimize_with_speech_plans(
 
     checkpoint_lock = Lock()
 
-    def process(index: int, text: str):
-        if cancel_event.is_set():
-            return index, text, {}, OptimizationUsage()
+    def restore(index: int):
         unit_key = optimization_unit_key([index], stage=0)
         raw = completed_units.get(unit_key, {}) if completed_units else {}
         raw_plan = raw.get("plan") if isinstance(raw, Mapping) else None
@@ -463,14 +466,17 @@ def _optimize_with_speech_plans(
             and raw_plan.get("prompt_revision") == SPEECH_PROMPT_REVISION
             else None
         )
-        if restored is not None:
-            restored_items, restored_usage = restored
-            return (
-                index,
-                restored_items[index],
-                dict(raw_plan) if isinstance(raw_plan, Mapping) else {},
-                restored_usage,
-            )
+        if restored is None:
+            return None
+        restored_items, restored_usage = restored
+        return (
+            index,
+            restored_items[index],
+            dict(raw_plan),
+            restored_usage,
+        )
+
+    def context(index: int, text: str) -> dict[str, Any]:
         language = (
             str(languages[index] or default_language)
             if languages and index < len(languages)
@@ -486,55 +492,123 @@ def _optimize_with_speech_plans(
             if known_pronunciation_resolver is not None
             else []
         )
-        result = plan_speech_text(
-            text,
-            language=language,
-            voice_language=voice_language,
-            mode=mode,
-            model_name=model_name,
-            llm_settings=llm_settings,
-            known_pronunciations=known,
-            cancel_event=cancel_event,
-            min_retention=float(settings.get("speech_plan_min_retention") or 0.9),
-            max_attempts_per_mode=structured_attempts,
-        )
-        unit_usage = OptimizationUsage()
-        for response in result.responses:
-            unit_usage.add(response)
-        if on_unit_completed is not None:
-            payload = {
-                "version": 1,
-                "kind": "tts_optimization_plan",
-                "stage": 0,
-                "original_indices": [index],
-                "items": [{"index": index, "text": result.text}],
-                "plan": result.plan,
-                "cost": unit_usage.cost,
-                "response_count": unit_usage.response_count,
-                "usage": unit_usage.usage,
-                "cost_sources": unit_usage.cost_sources,
-            }
-            with checkpoint_lock:
-                on_unit_completed(optimization_unit_key([index], stage=0), payload)
-        return index, result.text, result.plan, unit_usage
+        return {
+            "text": text,
+            "language": language,
+            "voice_language": voice_language,
+            "known_pronunciations": known,
+        }
+
+    def checkpoint(
+        index: int,
+        revised: str,
+        plan: dict[str, Any],
+        unit_usage: OptimizationUsage,
+    ) -> None:
+        if on_unit_completed is None:
+            return
+        payload = {
+            "version": 1,
+            "kind": "tts_optimization_plan",
+            "stage": 0,
+            "original_indices": [index],
+            "items": [{"index": index, "text": revised}],
+            "plan": plan,
+            "cost": unit_usage.cost,
+            "response_count": unit_usage.response_count,
+            "usage": unit_usage.usage,
+            "cost_sources": unit_usage.cost_sources,
+        }
+        with checkpoint_lock:
+            on_unit_completed(optimization_unit_key([index], stage=0), payload)
+
+    def process(batch: list[tuple[int, str]]):
+        if cancel_event.is_set():
+            return [
+                (index, text, {}, OptimizationUsage()) for index, text in batch
+            ], OptimizationUsage()
+        completed_items: list[tuple[int, str, dict[str, Any], OptimizationUsage]] = []
+        pending: list[tuple[int, str]] = []
+        batch_usage = OptimizationUsage()
+        for index, text in batch:
+            restored = restore(index)
+            if restored is None:
+                pending.append((index, text))
+            else:
+                completed_items.append(restored)
+                batch_usage.merge(restored[3])
+        if not pending:
+            return completed_items, batch_usage
+
+        contexts = [context(index, text) for index, text in pending]
+        if len(contexts) == 1:
+            result = plan_speech_text(
+                contexts[0]["text"],
+                language=contexts[0]["language"],
+                voice_language=contexts[0]["voice_language"],
+                mode=mode,
+                model_name=model_name,
+                llm_settings=llm_settings,
+                known_pronunciations=contexts[0]["known_pronunciations"],
+                cancel_event=cancel_event,
+                min_retention=float(settings.get("speech_plan_min_retention") or 0.9),
+                max_attempts_per_mode=structured_attempts,
+            )
+            results = [result]
+            responses = result.responses
+        else:
+            planned = plan_speech_text_batch(
+                contexts,
+                mode=mode,
+                model_name=model_name,
+                llm_settings=llm_settings,
+                cancel_event=cancel_event,
+                min_retention=float(settings.get("speech_plan_min_retention") or 0.9),
+                max_attempts_per_mode=structured_attempts,
+            )
+            results = planned.results
+            responses = planned.responses
+        request_usage = OptimizationUsage()
+        for response in responses:
+            request_usage.add(response)
+        batch_usage.merge(request_usage)
+        for offset, ((index, _text), result) in enumerate(
+            zip(pending, results, strict=True)
+        ):
+            # Shared batch usage is stored once so checkpoint restoration neither
+            # loses nor multiplies provider cost/token accounting.
+            checkpoint_usage = request_usage if offset == 0 else OptimizationUsage()
+            checkpoint(index, result.text, result.plan, checkpoint_usage)
+            completed_items.append((index, result.text, result.plan, checkpoint_usage))
+        completed_items.sort(key=lambda item: item[0])
+        return completed_items, batch_usage
 
     completed = 0
+    batches = [
+        populated[offset : offset + batch_size]
+        for offset in range(0, len(populated), batch_size)
+    ]
     with ThreadPoolExecutor(
         max_workers=workers,
         thread_name_prefix="speech-plan",
     ) as executor:
-        futures = {
-            executor.submit(process, index, text): index for index, text in populated
-        }
+        futures = {executor.submit(process, batch): batch for batch in batches}
         for future in as_completed(futures):
-            index, revised, plan, unit_usage = future.result()
-            output[index] = revised
-            usage.merge(unit_usage)
+            revised_items, batch_usage = future.result()
+            public_items = [
+                (index, revised) for index, revised, _plan, _usage in revised_items
+            ]
+            plan_items = [
+                (index, revised, plan) for index, revised, plan, _usage in revised_items
+            ]
+            for index, revised in public_items:
+                output[index] = revised
+            usage.merge(batch_usage)
             if on_batch:
-                on_batch([(index, revised)])
+                on_batch(public_items)
             if on_plan_batch:
-                on_plan_batch([(index, revised, plan)])
-            completed += 1
+                on_plan_batch(plan_items)
+            completed += len(revised_items)
             progress(
                 completed / max(1, len(populated)),
                 f"Planned speech for {completed} of {len(populated)} text units",

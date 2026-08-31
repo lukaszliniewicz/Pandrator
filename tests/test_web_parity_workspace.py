@@ -1073,9 +1073,28 @@ class WebParityWorkspaceTests(unittest.TestCase):
                 "sha256": hashlib.sha256(content).hexdigest(),
                 "chunk_size": 1024 * 1024,
             },
-            headers=self.headers,
+            headers={
+                **self.headers,
+                "Idempotency-Key": "upload:meeting:1",
+            },
         )
         self.assertEqual(201, initialized.status_code, initialized.get_json())
+        replayed = self.client.post(
+            "/api/v1/uploads/init",
+            json={
+                "filename": "meeting.srt",
+                "size_bytes": len(content),
+                "session_id": record["id"],
+                "sha256": hashlib.sha256(content).hexdigest(),
+                "chunk_size": 1024 * 1024,
+            },
+            headers={
+                **self.headers,
+                "Idempotency-Key": "upload:meeting:1",
+            },
+        )
+        self.assertEqual(initialized.get_json()["id"], replayed.get_json()["id"])
+        self.assertEqual("true", replayed.headers["Idempotency-Replayed"])
         upload_id = initialized.get_json()["id"]
         response = self.client.put(
             f"/api/v1/uploads/{upload_id}/chunks/0",
@@ -1093,6 +1112,14 @@ class WebParityWorkspaceTests(unittest.TestCase):
             f"/api/v1/uploads/{upload_id}/complete", headers=self.headers
         )
         self.assertEqual(201, completed.status_code, completed.get_json())
+        completed_again = self.client.post(
+            f"/api/v1/uploads/{upload_id}/complete", headers=self.headers
+        )
+        self.assertEqual(201, completed_again.status_code, completed_again.get_json())
+        self.assertEqual(completed.get_json(), completed_again.get_json())
+        completed_status = self.client.get(f"/api/v1/uploads/{upload_id}").get_json()
+        self.assertEqual("completed", completed_status["state"])
+        self.assertEqual(completed.get_json(), completed_status["result"])
         sources = self.client.get("/api/v1/sources").get_json()["items"]
         attached = self.client.get(
             f"/api/v1/sessions/{record['id']}/sources"
@@ -1390,7 +1417,11 @@ class WebParityWorkspaceTests(unittest.TestCase):
                 "segments": [
                     {"text": "First.", "voice": "stored-first", "language": "de"},
                     {"text": "Second.", "voice": "stored-second", "language": "it"},
-                    {"text": "Keep this take.", "voice": "stored-third", "language": "es"},
+                    {
+                        "text": "Keep this take.",
+                        "voice": "stored-third",
+                        "language": "es",
+                    },
                 ]
             },
             headers=self.headers,
@@ -1449,15 +1480,22 @@ class WebParityWorkspaceTests(unittest.TestCase):
 
         self.assertEqual(202, retry.status_code, retry.get_json())
         self.assertEqual(source["id"], retry.get_json()["source_generation_run_id"])
-        self.assertEqual(alternate, retry.get_json()["settings_snapshot"]["selected_segment_override"])
+        self.assertEqual(
+            alternate,
+            retry.get_json()["settings_snapshot"]["selected_segment_override"],
+        )
         self.assertNotIn("text", retry.get_json()["settings_snapshot"])
         self.assertNotIn("audio", retry.get_json()["settings_snapshot"])
         self.assertNotIn("output", retry.get_json()["settings_snapshot"])
         with database.session() as session:
             run = session.get(GenerationRun, retry.get_json()["id"])
             self.assertEqual("Chatterbox", run.settings_snapshot_json["tts"]["service"])
-            self.assertEqual("chatterbox-alt", run.settings_snapshot_json["tts"]["model"])
-            self.assertEqual("alternate-reference", run.settings_snapshot_json["tts"]["voice"])
+            self.assertEqual(
+                "chatterbox-alt", run.settings_snapshot_json["tts"]["model"]
+            )
+            self.assertEqual(
+                "alternate-reference", run.settings_snapshot_json["tts"]["voice"]
+            )
             self.assertEqual("fr", run.settings_snapshot_json["tts"]["language"])
             self.assertTrue(run.settings_snapshot_json["rvc"]["enabled"])
             persisted = list(
@@ -1518,8 +1556,12 @@ class WebParityWorkspaceTests(unittest.TestCase):
         with database.session() as session:
             first_run = session.get(GenerationRun, first.get_json()["id"])
             second_run = session.get(GenerationRun, second.get_json()["id"])
-            self.assertEqual("first-preset", first_run.settings_snapshot_json["tts"]["model"])
-            self.assertEqual("second-preset", second_run.settings_snapshot_json["tts"]["model"])
+            self.assertEqual(
+                "first-preset", first_run.settings_snapshot_json["tts"]["model"]
+            )
+            self.assertEqual(
+                "second-preset", second_run.settings_snapshot_json["tts"]["model"]
+            )
             self.assertIsNone(first_run.source_generation_run_id)
             self.assertIsNone(second_run.source_generation_run_id)
 
@@ -1614,7 +1656,9 @@ class WebParityWorkspaceTests(unittest.TestCase):
         self.assertFalse(retry.get_json()["reused_run"])
         with database.session() as session:
             new_run = session.get(GenerationRun, retry.get_json()["id"])
-            self.assertEqual("preset-two", new_run.settings_snapshot_json["tts"]["model"])
+            self.assertEqual(
+                "preset-two", new_run.settings_snapshot_json["tts"]["model"]
+            )
 
     def test_generation_runs_have_readable_labels_and_can_be_deleted_with_their_takes(
         self,

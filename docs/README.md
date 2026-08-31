@@ -15,6 +15,7 @@ read it in order.
 | Choose a model, provider, or voice | [Providers and voices](guides/providers-and-voices.md) |
 | Decide how correction or translation should run | [Correction and translation](guides/correction-and-translation.md) |
 | Use the model already running in an MCP host | [Passive dispatch](guides/passive-dispatch.md) |
+| Take a local file through an agent-run workflow and return deliverables | [End-to-end agent workflows](guides/agent-workflows.md) |
 | Fix names or prepare text specifically for speech | [Pronunciation and speech text](guides/pronunciation-and-speech.md) |
 | Diagnose a problem | [Troubleshooting](operations/troubleshooting.md) |
 
@@ -33,11 +34,14 @@ interfaces live in the [Pandrator Manager guide](../pandrator_manager/README.md)
 - [Supported formats and exports](reference/formats-and-exports.md)
 - [Document ingestion and narration pipeline](reference/document-ingestion.md)
 - [Subtitle-to-speech pipeline and parameters](reference/subtitle-pipeline.md)
+- [Speech-text optimization and dispatch](reference/speech-optimization.md)
 
 The document reference covers upload lineage, PDF layout/OCR, EPUB structure,
 cleanup, narration preparation, and generation segments. The subtitle reference
 explains the durable distinction between timed words, display cues, LLM
-batches, speech blocks, generation takes, and alignment.
+batches, speech blocks, generation takes, and alignment. The speech reference
+compares standalone, generation-time, and passive optimization and documents
+their batching and validation contracts.
 
 ## MCP and agents
 

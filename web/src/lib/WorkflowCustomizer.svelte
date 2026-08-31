@@ -268,9 +268,9 @@
                       setSpeechOptimizationTiming(event.currentTarget.value)}
                     class="mt-3 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-xs"
                     ><option value="document"
-                      >Before generation · whole document</option
+                      >Before generation · reviewable revision</option
                     ><option value="generation"
-                      >During generation · segment batches</option
+                      >During generation · final speech units</option
                     ></select
                   >{/if}
               </div>{/if}

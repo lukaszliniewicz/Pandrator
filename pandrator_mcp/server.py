@@ -18,15 +18,20 @@ from .request_context import begin_request, end_request
 from .results import ToolOutcome
 from .schemas import (
     AttachExistingSourceInput,
+    BrowseLocalSourcesInput,
     CancelWorkInput,
     CapabilitiesInput,
     ClaimDispatchBatchInput,
     ClaimSourceCleaningDispatchBatchInput,
+    ClaimSpeechOptimizationDispatchBatchInput,
+    ConfigureTtsInput,
     ControlRuntimeInput,
     CreateDispatchRunInput,
     CreateSessionInput,
     CreateSourceCleaningDispatchRunInput,
+    CreateSpeechOptimizationDispatchRunInput,
     DispatchStructuredResultInput,
+    DownloadArtifactInput,
     ExecuteComponentPlanInput,
     ExecuteWorkflowPlanInput,
     ExplainSystemInput,
@@ -34,45 +39,60 @@ from .schemas import (
     GetSessionInput,
     GetSessionSettingsInput,
     GetSourceCleaningDispatchRunInput,
+    GetSpeechOptimizationDispatchRunInput,
     GetWorkflowInput,
     GetWorkInput,
     GetWorkLogInput,
     GuideTopic,
+    ImportLocalSourceInput,
     InspectSourceCleaningDispatchExtractionInput,
     ListArtifactsInput,
     ListDispatchRunsInput,
+    ListGenerationRunsInput,
     ListSessionsInput,
     ListSourceCleaningDispatchRunsInput,
     ListSourcesInput,
+    ListSpeechOptimizationDispatchRunsInput,
     ListWorkInput,
     ManagerDesiredComponentInput,
     PlanComponentChangeInput,
+    PlanExportVariantInput,
     PlanWorkflowInput,
     ProviderStatusInput,
     RecommendNextStepsInput,
     ReleaseDispatchBatchInput,
     ReleaseSourceCleaningDispatchBatchInput,
+    ReleaseSpeechOptimizationDispatchBatchInput,
     RenewDispatchBatchInput,
     RenewSourceCleaningDispatchBatchInput,
+    RenewSpeechOptimizationDispatchBatchInput,
     SourceCleaningDispatchResultInput,
+    SpeechOptimizationDispatchResultInput,
     SubmitDispatchBatchInput,
     SubmitSourceCleaningDispatchBatchInput,
+    SubmitSpeechOptimizationDispatchBatchInput,
     SystemStatusInput,
     TargetStatusInput,
+    TtsCatalogInput,
     UpdateSessionInput,
     UpdateSessionSettingsInput,
     VoiceCatalogInput,
 )
 from .tools import (
     attach_existing_source,
+    browse_local_sources,
     cancel_work,
     capabilities,
     claim_dispatch_batch,
     claim_source_cleaning_dispatch_batch,
+    claim_speech_optimization_dispatch_batch,
+    configure_tts,
     control_runtime,
     create_dispatch_run,
     create_session,
     create_source_cleaning_dispatch_run,
+    create_speech_optimization_dispatch_run,
+    download_artifact,
     execute_component_plan,
     execute_workflow_plan,
     explain_system,
@@ -80,30 +100,39 @@ from .tools import (
     get_session,
     get_session_settings,
     get_source_cleaning_dispatch_run,
+    get_speech_optimization_dispatch_run,
     get_work,
     get_work_log,
     get_workflow,
+    import_local_source,
     inspect_source_cleaning_dispatch_extraction,
     list_artifacts,
     list_dispatch_runs,
+    list_generation_runs,
     list_sessions,
     list_source_cleaning_dispatch_runs,
     list_sources,
+    list_speech_optimization_dispatch_runs,
     list_work,
     manager_doctor,
     manager_status,
     plan_component_change,
+    plan_export_variant,
     plan_workflow,
     provider_status,
     recommend_next_steps,
     release_dispatch_batch,
     release_source_cleaning_dispatch_batch,
+    release_speech_optimization_dispatch_batch,
     renew_dispatch_batch,
     renew_source_cleaning_dispatch_batch,
+    renew_speech_optimization_dispatch_batch,
     submit_dispatch_batch,
     submit_source_cleaning_dispatch_batch,
+    submit_speech_optimization_dispatch_batch,
     system_status,
     target_status,
+    tts_catalog,
     update_session,
     update_session_settings,
     voice_catalog,
@@ -112,7 +141,7 @@ from .tools import (
 _STDOUT_GUARD = threading.Lock()
 
 
-def _tool_failure(error: PandratorMcpError, request_id: str) -> RuntimeError:
+def _tool_failure(error: PandratorMcpError, request_id: str) -> Exception:
     failure = ToolFailure(
         code=error.code,
         message=str(error),
@@ -120,7 +149,12 @@ def _tool_failure(error: PandratorMcpError, request_id: str) -> RuntimeError:
         details=error.details,
         retryable=error.retryable,
     )
-    return RuntimeError(failure.model_dump_json())
+    # Import lazily so ordinary CLI/configuration operations remain usable
+    # without importing the protocol runtime. ToolError is the SDK's expected
+    # business-failure channel and becomes a normal tool result with isError.
+    from mcp.server.mcpserver.exceptions import ToolError
+
+    return ToolError(failure.model_dump_json())
 
 
 def _guarded_call(function, *args) -> tuple[str, Any]:
@@ -184,10 +218,16 @@ def build_server(runtime: McpRuntime):
         "Pandrator",
         version=__version__,
         instructions=(
-            "Explain Pandrator using packaged guides and inspect only the "
-            "configured target. Never ask for connection URLs or credentials "
-            "inside tool calls. Consequential workflow execution must use an "
-            "exact, unexpired plan and the confirmations the user reviewed."
+            "Start unfamiliar work with pandrator_recommend_next_steps, the "
+            "guide index, target status, and capabilities. Operate only on the "
+            "configured target and approved local path roots; never request "
+            "connection URLs or credentials in tool arguments. Resolve TTS "
+            "service, model, and voice names from the live catalog instead of "
+            "assuming examples exist. Passive workflows are sequential: claim "
+            "one batch, return every required ID exactly once, submit, and "
+            "follow next_actions until complete. Consequential execution must "
+            "use an exact unexpired plan and every reviewed confirmation. Poll "
+            "durable work until terminal before using its outputs."
         ),
     )
     read_only = ToolAnnotations(read_only_hint=True, open_world_hint=False)
@@ -297,6 +337,34 @@ def build_server(runtime: McpRuntime):
         return _call(capabilities, runtime, CapabilitiesInput())
 
     @server.tool(
+        name="pandrator_browse_local_sources",
+        title="Browse approved local source roots",
+        annotations=read_only,
+    )
+    def local_sources_browse_tool(
+        root: Annotated[str | None, Field(max_length=80)] = None,
+        directory: Annotated[str, Field(max_length=1024)] = "",
+        query: Annotated[str | None, Field(max_length=160)] = None,
+        recursive: bool = False,
+        sort: Literal["modified_desc", "name_asc"] = "modified_desc",
+        limit: Annotated[int, Field(ge=1, le=200)] = 50,
+    ) -> dict[str, Any]:
+        """List opaque roots or safe relative paths; never expose absolute paths."""
+
+        return _call(
+            browse_local_sources,
+            runtime,
+            BrowseLocalSourcesInput(
+                root=root,
+                directory=directory,
+                query=query,
+                recursive=recursive,
+                sort=sort,
+                limit=limit,
+            ),
+        )
+
+    @server.tool(
         name="pandrator_list_sessions",
         title="List Pandrator sessions",
         annotations=read_only,
@@ -392,6 +460,41 @@ def build_server(runtime: McpRuntime):
             list_sources,
             runtime,
             ListSourcesInput(state=state, limit=limit),
+        )
+
+    @server.tool(
+        name="pandrator_import_local_source",
+        title="Import and attach a local source",
+        annotations=write_action,
+    )
+    def local_source_import_tool(
+        session_id: str,
+        root: Annotated[str, Field(min_length=1, max_length=80)],
+        relative_path: Annotated[str, Field(min_length=1, max_length=2048)],
+        expected_session_revision: Annotated[int, Field(ge=1)],
+        idempotency_key: Annotated[
+            str,
+            Field(
+                min_length=8,
+                max_length=200,
+                pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$",
+            ),
+        ],
+        role: Literal["primary", "reference"] = "primary",
+    ) -> dict[str, Any]:
+        """Stream one approved local file via resumable upload and attach it once."""
+
+        return _call(
+            import_local_source,
+            runtime,
+            ImportLocalSourceInput(
+                session_id=session_id,
+                root=root,
+                relative_path=relative_path,
+                role=role,
+                expected_session_revision=expected_session_revision,
+                idempotency_key=idempotency_key,
+            ),
         )
 
     @server.tool(
@@ -827,7 +930,7 @@ def build_server(runtime: McpRuntime):
                 pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$",
             ),
         ],
-        view: Literal["working", "baseline"] = "working",
+        view: Literal["working", "baseline", "source"] = "working",
     ) -> dict[str, Any]:
         """Browse/search the full pinned extraction and authorize returned blocks."""
 
@@ -868,6 +971,219 @@ def build_server(runtime: McpRuntime):
             submit_source_cleaning_dispatch_batch,
             runtime,
             SubmitSourceCleaningDispatchBatchInput(
+                batch_id=batch_id,
+                lease_token=lease_token,
+                result=result,
+                idempotency_key=idempotency_key,
+            ),
+        )
+
+    @server.tool(
+        name="pandrator_create_speech_optimization_dispatch_run",
+        title="Create a passive speech-optimization run",
+        annotations=write_action,
+    )
+    def speech_optimization_dispatch_create_tool(
+        session_id: str,
+        idempotency_key: Annotated[
+            str,
+            Field(
+                min_length=8,
+                max_length=200,
+                pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$",
+            ),
+        ],
+        source_artifact_id: Annotated[
+            str | None,
+            Field(min_length=1, max_length=80),
+        ] = None,
+        language: Annotated[
+            str | None,
+            Field(min_length=1, max_length=40),
+        ] = None,
+        voice_language: Annotated[
+            str | None,
+            Field(min_length=1, max_length=40),
+        ] = None,
+        tts_service: Annotated[
+            str | None,
+            Field(min_length=1, max_length=80),
+        ] = None,
+        instructions: Annotated[str, Field(max_length=16_000)] = "",
+        char_limit: Annotated[int, Field(ge=1, le=1_000_000)] = 20_000,
+        max_units_per_batch: Annotated[int, Field(ge=1, le=500)] = 100,
+        context_before: Annotated[int, Field(ge=0, le=20)] = 4,
+        context_after: Annotated[int, Field(ge=0, le=20)] = 2,
+        include_timing: bool = True,
+    ) -> dict[str, Any]:
+        """Queue speech-text batches for this MCP model; no provider is called."""
+
+        return _call(
+            create_speech_optimization_dispatch_run,
+            runtime,
+            CreateSpeechOptimizationDispatchRunInput(
+                session_id=session_id,
+                source_artifact_id=source_artifact_id,
+                language=language,
+                voice_language=voice_language,
+                tts_service=tts_service,
+                instructions=instructions,
+                char_limit=char_limit,
+                max_units_per_batch=max_units_per_batch,
+                context_before=context_before,
+                context_after=context_after,
+                include_timing=include_timing,
+                idempotency_key=idempotency_key,
+            ),
+        )
+
+    @server.tool(
+        name="pandrator_list_speech_optimization_dispatch_runs",
+        title="List passive speech-optimization runs",
+        annotations=read_only,
+    )
+    def speech_optimization_dispatch_list_tool(
+        session_id: str,
+        limit: Annotated[int, Field(ge=1, le=100)] = 50,
+    ) -> dict[str, Any]:
+        """List run metadata without exposing speech text or lease capabilities."""
+
+        return _call(
+            list_speech_optimization_dispatch_runs,
+            runtime,
+            ListSpeechOptimizationDispatchRunsInput(
+                session_id=session_id,
+                limit=limit,
+            ),
+        )
+
+    @server.tool(
+        name="pandrator_get_speech_optimization_dispatch_run",
+        title="Inspect a passive speech-optimization run",
+        annotations=read_only,
+    )
+    def speech_optimization_dispatch_get_tool(run_id: str) -> dict[str, Any]:
+        """Inspect progress and final artifact metadata without batch contents."""
+
+        return _call(
+            get_speech_optimization_dispatch_run,
+            runtime,
+            GetSpeechOptimizationDispatchRunInput(run_id=run_id),
+        )
+
+    @server.tool(
+        name="pandrator_claim_speech_optimization_dispatch_batch",
+        title="Claim a passive speech-text batch",
+        annotations=write_action,
+    )
+    def speech_optimization_dispatch_claim_tool(
+        run_id: str,
+        idempotency_key: Annotated[
+            str,
+            Field(
+                min_length=8,
+                max_length=200,
+                pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$",
+            ),
+        ],
+        lease_seconds: Annotated[int, Field(ge=30, le=3_600)] = 900,
+    ) -> dict[str, Any]:
+        """Claim the next sequential units plus read-only boundary context."""
+
+        return _call(
+            claim_speech_optimization_dispatch_batch,
+            runtime,
+            ClaimSpeechOptimizationDispatchBatchInput(
+                run_id=run_id,
+                lease_seconds=lease_seconds,
+                idempotency_key=idempotency_key,
+            ),
+        )
+
+    @server.tool(
+        name="pandrator_renew_speech_optimization_dispatch_batch",
+        title="Renew a speech-optimization lease",
+        annotations=write_action,
+    )
+    def speech_optimization_dispatch_renew_tool(
+        batch_id: str,
+        lease_token: Annotated[str, Field(min_length=1, max_length=160)],
+        idempotency_key: Annotated[
+            str,
+            Field(
+                min_length=8,
+                max_length=200,
+                pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$",
+            ),
+        ],
+        lease_seconds: Annotated[int, Field(ge=30, le=3_600)] = 900,
+    ) -> dict[str, Any]:
+        """Renew only the matching speech-text batch lease."""
+
+        return _call(
+            renew_speech_optimization_dispatch_batch,
+            runtime,
+            RenewSpeechOptimizationDispatchBatchInput(
+                batch_id=batch_id,
+                lease_token=lease_token,
+                lease_seconds=lease_seconds,
+                idempotency_key=idempotency_key,
+            ),
+        )
+
+    @server.tool(
+        name="pandrator_release_speech_optimization_dispatch_batch",
+        title="Release a speech-optimization lease",
+        annotations=write_action,
+    )
+    def speech_optimization_dispatch_release_tool(
+        batch_id: str,
+        lease_token: Annotated[str, Field(min_length=1, max_length=160)],
+        idempotency_key: Annotated[
+            str,
+            Field(
+                min_length=8,
+                max_length=200,
+                pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$",
+            ),
+        ],
+    ) -> dict[str, Any]:
+        """Return an unfinished speech-text batch to the ready queue."""
+
+        return _call(
+            release_speech_optimization_dispatch_batch,
+            runtime,
+            ReleaseSpeechOptimizationDispatchBatchInput(
+                batch_id=batch_id,
+                lease_token=lease_token,
+                idempotency_key=idempotency_key,
+            ),
+        )
+
+    @server.tool(
+        name="pandrator_submit_speech_optimization_dispatch_batch",
+        title="Submit a passive speech-text batch",
+        annotations=write_action,
+    )
+    def speech_optimization_dispatch_submit_tool(
+        batch_id: str,
+        lease_token: Annotated[str, Field(min_length=1, max_length=160)],
+        result: SpeechOptimizationDispatchResultInput,
+        idempotency_key: Annotated[
+            str,
+            Field(
+                min_length=8,
+                max_length=200,
+                pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$",
+            ),
+        ],
+    ) -> dict[str, Any]:
+        """Return every unit exactly once so Pandrator can materialize the revision."""
+
+        return _call(
+            submit_speech_optimization_dispatch_batch,
+            runtime,
+            SubmitSpeechOptimizationDispatchBatchInput(
                 batch_id=batch_id,
                 lease_token=lease_token,
                 result=result,
@@ -1001,13 +1317,7 @@ def build_server(runtime: McpRuntime):
             "workflow_preset": workflow_preset,
             "included_stages": included_stages,
         }
-        values.update(
-            {
-                key: value
-                for key, value in optional.items()
-                if value is not None
-            }
-        )
+        values.update({key: value for key, value in optional.items() if value is not None})
         return _call(
             update_session,
             runtime,
@@ -1091,6 +1401,7 @@ def build_server(runtime: McpRuntime):
             "clean_source",
             "prepare_text",
             "optimize_document",
+            "optimize_tts",
             "generate_audio",
             "export",
         ] = "generate_audio",
@@ -1109,6 +1420,38 @@ def build_server(runtime: McpRuntime):
                 session_id=session_id,
                 target_stage=target_stage,
                 overrides=overrides or {},
+                expires_in_minutes=expires_in_minutes,
+            ),
+        )
+
+    @server.tool(
+        name="pandrator_plan_export_variant",
+        title="Preview a typed export variant",
+        annotations=read_only,
+    )
+    def export_variant_plan_tool(
+        session_id: str,
+        generation_run_id: Annotated[str | None, Field(max_length=80)] = None,
+        export_mode: Literal["media", "subtitles", "text"] = "media",
+        audio_mode: Literal["preserve", "mixed", "dubbing_only"] = "mixed",
+        subtitle_mode: Literal["none", "soft", "burned"] = "none",
+        subtitle_selection: Literal["source", "translation", "dual"] = "translation",
+        subtitle_format: Literal["srt", "vtt"] = "srt",
+        expires_in_minutes: Annotated[int, Field(ge=1, le=60)] = 30,
+    ) -> dict[str, Any]:
+        """Create the ordinary immutable workflow plan for one explicit output."""
+
+        return _call(
+            plan_export_variant,
+            runtime,
+            PlanExportVariantInput(
+                session_id=session_id,
+                generation_run_id=generation_run_id,
+                export_mode=export_mode,
+                audio_mode=audio_mode,
+                subtitle_mode=subtitle_mode,
+                subtitle_selection=subtitle_selection,
+                subtitle_format=subtitle_format,
                 expires_in_minutes=expires_in_minutes,
             ),
         )
@@ -1162,6 +1505,26 @@ def build_server(runtime: McpRuntime):
         )
 
     @server.tool(
+        name="pandrator_download_artifact",
+        title="Download an artifact to the approved output root",
+        annotations=write_action,
+    )
+    def artifact_download_tool(
+        artifact_id: Annotated[str, Field(min_length=1, max_length=80)],
+        filename: Annotated[str | None, Field(max_length=255)] = None,
+    ) -> dict[str, Any]:
+        """Resume and verify one immutable artifact without exposing server paths."""
+
+        return _call(
+            download_artifact,
+            runtime,
+            DownloadArtifactInput(
+                artifact_id=artifact_id,
+                filename=filename,
+            ),
+        )
+
+    @server.tool(
         name="pandrator_get_provider_status",
         title="Inspect Pandrator provider readiness",
         annotations=read_only,
@@ -1175,6 +1538,68 @@ def build_server(runtime: McpRuntime):
             provider_status,
             runtime,
             ProviderStatusInput(include_disabled=include_disabled),
+        )
+
+    @server.tool(
+        name="pandrator_get_tts_catalog",
+        title="Inspect TTS services, models, and voices",
+        annotations=read_only,
+    )
+    def tts_catalog_tool(
+        service_id: Annotated[str | None, Field(max_length=160)] = None,
+        refresh: bool = False,
+    ) -> dict[str, Any]:
+        """Resolve current TTS choices without exposing credentials or endpoints."""
+
+        return _call(
+            tts_catalog,
+            runtime,
+            TtsCatalogInput(service_id=service_id, refresh=refresh),
+        )
+
+    @server.tool(
+        name="pandrator_configure_tts",
+        title="Configure a catalog-backed TTS selection",
+        annotations=write_action,
+    )
+    def tts_configure_tool(
+        session_id: str,
+        service_id: Annotated[str, Field(min_length=1, max_length=160)],
+        expected_revision: Annotated[int, Field(ge=0)],
+        idempotency_key: Annotated[
+            str,
+            Field(
+                min_length=8,
+                max_length=200,
+                pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$",
+            ),
+        ],
+        model: Annotated[str | None, Field(max_length=300)] = None,
+        voice: Annotated[str | None, Field(max_length=300)] = None,
+        language: Annotated[
+            str | None,
+            Field(min_length=2, max_length=40),
+        ] = None,
+        style_instructions: Annotated[
+            str | None,
+            Field(max_length=12_000),
+        ] = None,
+    ) -> dict[str, Any]:
+        """Validate exact catalog IDs and update only the session's TTS override."""
+
+        return _call(
+            configure_tts,
+            runtime,
+            ConfigureTtsInput(
+                session_id=session_id,
+                service_id=service_id,
+                model=model,
+                voice=voice,
+                language=language,
+                style_instructions=style_instructions,
+                expected_revision=expected_revision,
+                idempotency_key=idempotency_key,
+            ),
         )
 
     @server.tool(
@@ -1192,6 +1617,23 @@ def build_server(runtime: McpRuntime):
             voice_catalog,
             runtime,
             VoiceCatalogInput(language=language, limit=limit),
+        )
+
+    @server.tool(
+        name="pandrator_list_generation_runs",
+        title="List reviewable generation runs",
+        annotations=read_only,
+    )
+    def generation_runs_tool(
+        session_id: str,
+        limit: Annotated[int, Field(ge=1, le=100)] = 20,
+    ) -> dict[str, Any]:
+        """List generation run summaries for review or export selection."""
+
+        return _call(
+            list_generation_runs,
+            runtime,
+            ListGenerationRunsInput(session_id=session_id, limit=limit),
         )
 
     @server.tool(
@@ -1472,6 +1914,54 @@ def build_server(runtime: McpRuntime):
             f"Help the user produce subtitles with this outcome: {goal}\n"
             "Read the subtitles guide, inspect the session workflow and artifacts, "
             "and preserve review revisions before any consequential execution."
+        )
+
+    @server.prompt(name="produce_voiceover_end_to_end")
+    def produce_voiceover_end_to_end_prompt(goal: str) -> str:
+        """Guide a provider-agnostic media-to-deliverables workflow."""
+
+        return (
+            f"Complete this Pandrator outcome end to end: {goal}\n"
+            "Begin with pandrator_recommend_next_steps, target status, and the "
+            "voiceover guide. Use pandrator_browse_local_sources only on approved "
+            "named roots; create or inspect the session, then call "
+            "pandrator_import_local_source for the selected relative file. Plan and execute "
+            "transcription, polling its durable work to terminal. Use passive "
+            "subtitle dispatch for correction and translation: claim exactly one "
+            "batch, produce the requested text yourself, submit every required ID "
+            "once, and repeat until complete. If speech optimization is wanted, use "
+            "its passive dispatcher the same way. Resolve the TTS service, model, "
+            "and voice from pandrator_get_tts_catalog; examples in the user's goal "
+            "are preferences, never hard-coded identifiers. Call "
+            "pandrator_configure_tts, plan and execute generation, and poll to terminal. "
+            "Use pandrator_list_generation_runs before "
+            "pandrator_plan_export_variant for each requested output. Execute every "
+            "exact export plan, poll it to terminal, list its artifacts, and call "
+            "pandrator_download_artifact for requested outputs. Report artifact IDs "
+            "and local paths."
+        )
+
+    @server.prompt(name="run_passive_processing")
+    def run_passive_processing_prompt(
+        kind: Literal[
+            "subtitle_correction",
+            "subtitle_translation",
+            "source_cleanup",
+            "speech_optimization",
+        ],
+        goal: str,
+    ) -> str:
+        """Guide one model-operated passive dispatch loop."""
+
+        return (
+            f"Perform passive {kind} for this outcome: {goal}\n"
+            "Read the matching guide and inspect the session and selected source. "
+            "Create the matching dispatch run with the user's quality instructions. "
+            "Do not configure an external model provider: you are the processor. "
+            "Claim one sequential batch, obey the packet's operation contract, return "
+            "every required item ID exactly once, submit the typed result, and follow "
+            "next_actions. Renew the lease before it expires when needed. Continue "
+            "until the run is terminal, then inspect the resulting artifact."
         )
 
     @server.prompt(name="diagnose_failed_work")

@@ -48,13 +48,18 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(
                     [
                         "pandrator_attach_existing_source",
+                        "pandrator_browse_local_sources",
                         "pandrator_cancel_work",
                         "pandrator_claim_dispatch_batch",
                         "pandrator_claim_source_cleaning_dispatch_batch",
+                        "pandrator_claim_speech_optimization_dispatch_batch",
+                        "pandrator_configure_tts",
                         "pandrator_control_runtime",
                         "pandrator_create_dispatch_run",
                         "pandrator_create_session",
                         "pandrator_create_source_cleaning_dispatch_run",
+                        "pandrator_create_speech_optimization_dispatch_run",
+                        "pandrator_download_artifact",
                         "pandrator_execute_component_plan",
                         "pandrator_execute_workflow_plan",
                         "pandrator_explain_system",
@@ -64,30 +69,39 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                         "pandrator_get_session",
                         "pandrator_get_session_settings",
                         "pandrator_get_source_cleaning_dispatch_run",
+                        "pandrator_get_speech_optimization_dispatch_run",
                         "pandrator_get_system_status",
                         "pandrator_get_target_status",
+                        "pandrator_get_tts_catalog",
                         "pandrator_get_voice_catalog",
                         "pandrator_get_work",
                         "pandrator_get_work_log",
                         "pandrator_get_workflow",
+                        "pandrator_import_local_source",
                         "pandrator_inspect_source_cleaning_dispatch_extraction",
                         "pandrator_list_artifacts",
                         "pandrator_list_dispatch_runs",
+                        "pandrator_list_generation_runs",
                         "pandrator_list_sessions",
                         "pandrator_list_source_cleaning_dispatch_runs",
                         "pandrator_list_sources",
+                        "pandrator_list_speech_optimization_dispatch_runs",
                         "pandrator_list_work",
                         "pandrator_manager_doctor",
                         "pandrator_manager_status",
                         "pandrator_plan_component_change",
+                        "pandrator_plan_export_variant",
                         "pandrator_plan_workflow",
                         "pandrator_recommend_next_steps",
                         "pandrator_release_dispatch_batch",
                         "pandrator_release_source_cleaning_dispatch_batch",
+                        "pandrator_release_speech_optimization_dispatch_batch",
                         "pandrator_renew_dispatch_batch",
                         "pandrator_renew_source_cleaning_dispatch_batch",
+                        "pandrator_renew_speech_optimization_dispatch_batch",
                         "pandrator_submit_dispatch_batch",
                         "pandrator_submit_source_cleaning_dispatch_batch",
+                        "pandrator_submit_speech_optimization_dispatch_batch",
                         "pandrator_update_session",
                         "pandrator_update_session_settings",
                     ],
@@ -117,27 +131,32 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                         tool.annotations.read_only_hint,
                     )
                 dispatch_tools = {
-                    tool.name: tool
-                    for tool in listed.tools
-                    if "dispatch" in tool.name
+                    tool.name: tool for tool in listed.tools if "dispatch" in tool.name
                 }
                 self.assertEqual(
                     {
                         "pandrator_claim_dispatch_batch",
                         "pandrator_claim_source_cleaning_dispatch_batch",
+                        "pandrator_claim_speech_optimization_dispatch_batch",
                         "pandrator_create_dispatch_run",
                         "pandrator_create_source_cleaning_dispatch_run",
+                        "pandrator_create_speech_optimization_dispatch_run",
                         "pandrator_get_dispatch_run",
                         "pandrator_get_source_cleaning_dispatch_run",
+                        "pandrator_get_speech_optimization_dispatch_run",
                         "pandrator_inspect_source_cleaning_dispatch_extraction",
                         "pandrator_list_dispatch_runs",
                         "pandrator_list_source_cleaning_dispatch_runs",
+                        "pandrator_list_speech_optimization_dispatch_runs",
                         "pandrator_release_dispatch_batch",
                         "pandrator_release_source_cleaning_dispatch_batch",
+                        "pandrator_release_speech_optimization_dispatch_batch",
                         "pandrator_renew_dispatch_batch",
                         "pandrator_renew_source_cleaning_dispatch_batch",
+                        "pandrator_renew_speech_optimization_dispatch_batch",
                         "pandrator_submit_dispatch_batch",
                         "pandrator_submit_source_cleaning_dispatch_batch",
+                        "pandrator_submit_speech_optimization_dispatch_batch",
                     },
                     set(dispatch_tools),
                 )
@@ -146,6 +165,8 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                     "pandrator_get_dispatch_run",
                     "pandrator_list_source_cleaning_dispatch_runs",
                     "pandrator_get_source_cleaning_dispatch_run",
+                    "pandrator_list_speech_optimization_dispatch_runs",
+                    "pandrator_get_speech_optimization_dispatch_run",
                 ):
                     self.assertTrue(dispatch_tools[name].annotations.read_only_hint)
                 for name in set(dispatch_tools) - {
@@ -153,6 +174,8 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                     "pandrator_get_dispatch_run",
                     "pandrator_list_source_cleaning_dispatch_runs",
                     "pandrator_get_source_cleaning_dispatch_run",
+                    "pandrator_list_speech_optimization_dispatch_runs",
+                    "pandrator_get_speech_optimization_dispatch_run",
                 }:
                     self.assertFalse(dispatch_tools[name].annotations.read_only_hint)
                 for name in (
@@ -162,6 +185,9 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                     "pandrator_renew_source_cleaning_dispatch_batch",
                     "pandrator_release_source_cleaning_dispatch_batch",
                     "pandrator_submit_source_cleaning_dispatch_batch",
+                    "pandrator_renew_speech_optimization_dispatch_batch",
+                    "pandrator_release_speech_optimization_dispatch_batch",
+                    "pandrator_submit_speech_optimization_dispatch_batch",
                     "pandrator_inspect_source_cleaning_dispatch_extraction",
                 ):
                     self.assertIn(
@@ -222,6 +248,18 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                     "durable-work",
                     alias_result.structured_content["result"]["topic"],
                 )
+                failed = await client.call_tool(
+                    "pandrator_list_sessions",
+                    {},
+                )
+                self.assertTrue(failed.is_error)
+                failure_text = failed.content[0].text
+                failure = json.loads(failure_text[failure_text.index("{") :])
+                self.assertIn(
+                    failure["code"],
+                    {"application_unavailable", "network_policy_denied"},
+                )
+                self.assertTrue(failure["request_id"])
 
                 resources = await client.list_resources()
                 self.assertIn(
@@ -244,11 +282,25 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                         "diagnose_failed_work",
                         "dub_media",
                         "produce_subtitles",
+                        "produce_voiceover_end_to_end",
                         "repair_pandrator_instance",
+                        "run_passive_processing",
                         "start_audiobook",
                     ],
                     sorted(prompt.name for prompt in prompts.prompts),
                 )
+                prompt = await client.get_prompt(
+                    "produce_voiceover_end_to_end",
+                    {"goal": "Create translated course deliverables."},
+                )
+                prompt_text = "\n".join(
+                    item.content.text
+                    for item in prompt.messages
+                    if hasattr(item.content, "text")
+                )
+                self.assertIn("pandrator_browse_local_sources", prompt_text)
+                self.assertIn("pandrator_get_tts_catalog", prompt_text)
+                self.assertIn("download", prompt_text.casefold())
 
     async def test_maintained_legacy_protocol_mode_negotiates(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -762,6 +762,124 @@ class DispatchBatchSubmitResponse(StrictModel):
     error_message: str | None = None
 
 
+class SpeechOptimizationDispatchRunCreateRequest(StrictModel):
+    source_artifact_id: str | None = Field(default=None, min_length=1, max_length=80)
+    language: str | None = Field(default=None, min_length=1, max_length=40)
+    voice_language: str | None = Field(default=None, min_length=1, max_length=40)
+    tts_service: str | None = Field(default=None, min_length=1, max_length=80)
+    instructions: str = Field(default="", max_length=16_000)
+    char_limit: int = Field(
+        default=20_000,
+        ge=1,
+        le=1_000_000,
+        description=(
+            "Target source characters per transport batch. A single source unit "
+            "is never split and may exceed this value. This is not a model-token "
+            "or iteration budget."
+        ),
+    )
+    max_units_per_batch: int = Field(default=100, ge=1, le=500)
+    context_before: int = Field(default=4, ge=0, le=20)
+    context_after: int = Field(default=2, ge=0, le=20)
+    include_timing: bool = True
+
+
+class SpeechOptimizationDispatchItem(StrictModel):
+    unit_id: int = Field(ge=1)
+    text: str = Field(min_length=1, max_length=4 * 1024 * 1024)
+
+
+class SpeechOptimizationDispatchResult(StrictModel):
+    kind: Literal["speech_optimization"]
+    items: list[SpeechOptimizationDispatchItem] = Field(
+        min_length=1,
+        max_length=500,
+    )
+
+
+class SpeechOptimizationDispatchBatchSubmitRequest(StrictModel):
+    lease_token: str = Field(min_length=1, max_length=160)
+    result: SpeechOptimizationDispatchResult
+
+
+class SpeechOptimizationDispatchUnitTiming(StrictModel):
+    start_ms: int = Field(ge=0)
+    end_ms: int = Field(gt=0)
+    duration_ms: int = Field(gt=0)
+
+
+class SpeechOptimizationDispatchUnit(StrictModel):
+    unit_id: int = Field(ge=1)
+    text: str
+    language: str
+    speaker: str | None = None
+    timing: SpeechOptimizationDispatchUnitTiming | None = None
+
+
+class SpeechOptimizationDispatchBoundaryUnit(StrictModel):
+    text: str
+    language: str
+    speaker: str | None = None
+
+
+class SpeechOptimizationDispatchContext(StrictModel):
+    previous_output: list[SpeechOptimizationDispatchBoundaryUnit]
+    following_source: list[SpeechOptimizationDispatchBoundaryUnit]
+
+
+class SpeechOptimizationDispatchClaimedBatch(StrictModel):
+    id_namespace: Literal["speech_optimization_unit"]
+    unit_count: int = Field(ge=1, le=500)
+    valid_unit_ids: list[int]
+    units: list[SpeechOptimizationDispatchUnit]
+    context: SpeechOptimizationDispatchContext
+
+
+class SpeechOptimizationDispatchTaskContract(StrictModel):
+    kind: Literal["speech_optimization"]
+    output_role: Literal["tts_optimized"]
+    language: str
+    voice_language: str | None = None
+    tts_service: str | None = None
+    instructions: str
+    result_contract: dict[str, Any]
+
+
+class SpeechOptimizationDispatchBatchClaimResponse(StrictModel):
+    schema_version: Literal["1"] = "1"
+    run_id: str
+    batch_id: str
+    batch_ordinal: int = Field(ge=1)
+    status: str
+    run_status: str
+    batch_status: str
+    task: SpeechOptimizationDispatchTaskContract
+    batch: SpeechOptimizationDispatchClaimedBatch
+    lease_token: str
+    lease_expires_at: str | None
+
+
+class SpeechOptimizationDispatchBatchSubmitResponse(StrictModel):
+    run_id: str
+    batch_id: str
+    output_role: Literal["tts_optimized"]
+    status: str
+    run_status: str
+    batch_status: str
+    accepted: bool
+    completed_batch_count: int = Field(ge=0)
+    completed_batches: int = Field(ge=0)
+    batch_count: int = Field(ge=1)
+    total_batches: int = Field(ge=1)
+    remaining_batches: int = Field(ge=0)
+    result_artifact_id: str | None = None
+    final_artifact_id: str | None = None
+    finalized: bool
+    result_revision_id: str | None = None
+    error_code: str | None = None
+    error_message: str | None = None
+
+
 class SourceCleaningDispatchRunCreateRequest(StrictModel):
     source_artifact_id: str | None = Field(default=None, min_length=1, max_length=80)
     instructions: str = Field(default="", max_length=16_000)
@@ -1044,6 +1162,18 @@ SCHEMA_MODELS = {
         DispatchTaskContract,
         DispatchBatchClaimResponse,
         DispatchBatchSubmitResponse,
+        SpeechOptimizationDispatchRunCreateRequest,
+        SpeechOptimizationDispatchItem,
+        SpeechOptimizationDispatchResult,
+        SpeechOptimizationDispatchBatchSubmitRequest,
+        SpeechOptimizationDispatchUnitTiming,
+        SpeechOptimizationDispatchUnit,
+        SpeechOptimizationDispatchBoundaryUnit,
+        SpeechOptimizationDispatchContext,
+        SpeechOptimizationDispatchClaimedBatch,
+        SpeechOptimizationDispatchTaskContract,
+        SpeechOptimizationDispatchBatchClaimResponse,
+        SpeechOptimizationDispatchBatchSubmitResponse,
         SourceCleaningDispatchRunCreateRequest,
         SourceCleaningDispatchDecision,
         SourceCleaningDispatchOperation,

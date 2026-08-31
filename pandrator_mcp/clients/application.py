@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import re
 import threading
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any, cast
 from urllib.parse import quote
 
@@ -27,6 +30,7 @@ _IDEMPOTENCY_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$")
 _PASSTHROUGH_ERROR_CODES = frozenset(
     {
         "batch_completed",
+        "batch_not_ready",
         "confirmation_required",
         "dispatch_busy",
         "dispatch_sequential",
@@ -34,6 +38,7 @@ _PASSTHROUGH_ERROR_CODES = frozenset(
         "finalization_conflict",
         "finalization_incomplete",
         "ineligible_source",
+        "ineligible_session",
         "invalid_kind",
         "invalid_model_response",
         "invalid_cleanup_result",
@@ -43,6 +48,7 @@ _PASSTHROUGH_ERROR_CODES = frozenset(
         "idempotency_key_required",
         "lease_conflict",
         "lease_expired",
+        "materialization_failed",
         "not_found",
         "plan_consumed",
         "plan_digest_mismatch",
@@ -56,13 +62,19 @@ _PASSTHROUGH_ERROR_CODES = frozenset(
         "result_phase_mismatch",
         "run_not_claimable",
         "run_preparing",
+        "run_busy",
+        "run_completed",
+        "run_failed",
+        "run_finalizing",
         "run_not_preparable",
         "scope_denied",
         "session_busy",
         "source_changed",
+        "source_empty",
         "source_deleted",
         "source_hash_missing",
         "source_hash_unavailable",
+        "source_invalid",
         "source_language_mismatch",
         "source_language_missing",
         "source_not_found",
@@ -76,6 +88,7 @@ _PASSTHROUGH_ERROR_CODES = frozenset(
         "index_unavailable",
         "target_identity_mismatch",
         "target_language_required",
+        "unsupported_source_format",
         "validation_error",
     }
 )
@@ -386,6 +399,190 @@ class ApplicationClient:
             )
         return payload
 
+    def _request_binary_json(
+        self,
+        path: str,
+        *,
+        method: str,
+        body: bytes,
+        content_type: str,
+        extra_headers: dict[str, str] | None = None,
+        _allow_local_retry: bool = True,
+    ) -> dict[str, Any]:
+        """Send one bounded binary body through the normal target boundary."""
+
+        if method.upper() != "PUT":
+            raise ValueError("Binary application requests are limited to PUT.")
+        if len(body) > 16 * 1024 * 1024:
+            raise ValueError("Binary application request exceeds 16 MiB.")
+        target = self.binding.resolve()
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": content_type,
+            **correlation_headers(),
+            **(extra_headers or {}),
+        }
+        reference = target.application_credential
+        if reference is not None:
+            secret = self.credentials.resolve(reference, audience="application")
+            headers["Authorization"] = f"Bearer {secret.reveal()}"
+        elif target.mode != TargetMode.LOCAL_MANAGED or self._local_bootstrap is None:
+            raise PandratorMcpError(
+                "authentication_required",
+                "This target has no application credential enrollment.",
+            )
+        verify: bool | str = target.application.ca_bundle or True
+        proxies = (
+            {
+                "http": target.application.proxy_origin,
+                "https": target.application.proxy_origin,
+            }
+            if target.application.proxy_origin
+            else {}
+        )
+        try:
+            with self._session_lock:
+                url = self._url(target, path)
+                adapter: PinnedAddressAdapter | None = None
+                prior_adapter = None
+                if isinstance(self.session, requests.Session):
+                    prior_adapter = self.session.get_adapter(url)
+                    adapter = PinnedAddressAdapter(
+                        target.application.origin,
+                        target.application.addresses,
+                    )
+                    self.session.mount(f"{target.application.origin}/", adapter)
+                try:
+                    if (
+                        target.application_credential is None
+                        and target.application.origin not in self._local_authenticated_origins
+                    ):
+                        assert self._local_bootstrap is not None
+                        csrf_token = self._local_bootstrap(target, self.session)
+                        if csrf_token:
+                            self._local_csrf_tokens[target.application.origin] = csrf_token
+                        self._local_authenticated_origins.add(target.application.origin)
+                    csrf_token = self._local_csrf_tokens.get(target.application.origin)
+                    if target.application_credential is None and csrf_token:
+                        headers["X-CSRF-Token"] = csrf_token
+                    response = self.session.put(
+                        url,
+                        data=body,
+                        headers=headers,
+                        timeout=max(self.timeout_seconds, 120.0),
+                        allow_redirects=False,
+                        stream=True,
+                        verify=verify,
+                        proxies=proxies,
+                    )
+                    if 300 <= response.status_code < 400:
+                        response.close()
+                        raise PandratorMcpError(
+                            "network_policy_denied",
+                            "Pandrator target redirects are not allowed.",
+                        )
+                    chunks: list[bytes] = []
+                    size = 0
+                    try:
+                        for chunk in response.iter_content(chunk_size=64 * 1024):
+                            size += len(chunk)
+                            if size > self.maximum_response_bytes:
+                                raise PandratorMcpError(
+                                    "response_too_large",
+                                    "The Pandrator response exceeded the configured size limit.",
+                                )
+                            chunks.append(chunk)
+                        status_code = response.status_code
+                    finally:
+                        response.close()
+                finally:
+                    if adapter is not None and prior_adapter is not None:
+                        self.session.mount(
+                            f"{target.application.origin}/",
+                            prior_adapter,
+                        )
+                        adapter.close()
+        except requests.exceptions.SSLError as error:
+            raise PandratorMcpError(
+                "tls_validation_failed",
+                "The target's TLS identity could not be validated.",
+            ) from error
+        except requests.RequestException as error:
+            raise PandratorMcpError(
+                "application_unavailable",
+                "The Pandrator application is unavailable.",
+                retryable=True,
+            ) from error
+        raw = b"".join(chunks)
+        try:
+            payload = json.loads(raw.decode("utf-8")) if raw else {}
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise PandratorMcpError(
+                "downstream_unavailable",
+                "Pandrator returned an invalid JSON response.",
+            ) from error
+        if status_code == 401 and target.mode == TargetMode.LOCAL_MANAGED and _allow_local_retry:
+            with self._session_lock:
+                self._local_authenticated_origins.discard(target.application.origin)
+                self._local_csrf_tokens.pop(target.application.origin, None)
+            return self._request_binary_json(
+                path,
+                method=method,
+                body=body,
+                content_type=content_type,
+                extra_headers=extra_headers,
+                _allow_local_retry=False,
+            )
+        if status_code == 401:
+            raise PandratorMcpError(
+                "authentication_required",
+                "The Pandrator application credential was rejected.",
+            )
+        if status_code == 403:
+            raise PandratorMcpError(
+                "scope_denied",
+                "The enrolled application principal lacks the required scope.",
+            )
+        if status_code == 404:
+            raise PandratorMcpError("not_found", "The Pandrator resource was not found.")
+        if status_code == 409:
+            raise PandratorMcpError(
+                "revision_conflict",
+                "The Pandrator resource changed since it was inspected.",
+                details={"status": status_code},
+            )
+        if status_code == 422:
+            raise PandratorMcpError(
+                "validation_error",
+                "Pandrator rejected one or more request fields.",
+                details={"status": status_code},
+            )
+        if status_code >= 400:
+            downstream = payload.get("error") if isinstance(payload, dict) else None
+            downstream = downstream if isinstance(downstream, dict) else {}
+            code = str(downstream.get("code") or "")
+            if code in _PASSTHROUGH_ERROR_CODES:
+                details = downstream.get("details")
+                details = details if isinstance(details, dict) else {}
+                raise PandratorMcpError(
+                    cast(FailureCode, code),
+                    str(downstream.get("message") or "Pandrator rejected the request.")[:2_000],
+                    details={**details, "status": status_code},
+                    retryable=bool(details.get("retryable")),
+                )
+            raise PandratorMcpError(
+                "downstream_unavailable",
+                "Pandrator rejected the binary request.",
+                details={"status": status_code},
+                retryable=status_code >= 500,
+            )
+        if not isinstance(payload, dict):
+            raise PandratorMcpError(
+                "downstream_unavailable",
+                "Pandrator returned an unexpected JSON value.",
+            )
+        return payload
+
     def health(self) -> dict[str, Any]:
         return self._request_json("/api/v1/health", authenticated=False)
 
@@ -450,6 +647,9 @@ class ApplicationClient:
     def capabilities(self) -> dict[str, Any]:
         return self._request_json("/api/v1/capabilities")
 
+    def auth_status(self) -> dict[str, Any]:
+        return self._request_json("/api/v1/auth/status")
+
     def target_summary(self) -> dict[str, Any]:
         target = self.binding.resolve()
         return {
@@ -496,9 +696,7 @@ class ApplicationClient:
     ) -> dict[str, Any]:
         resolved_timing_context_mode = timing_context_mode
         if resolved_timing_context_mode is None:
-            resolved_timing_context_mode = (
-                "full" if include_timing_context is not False else "none"
-            )
+            resolved_timing_context_mode = "full" if include_timing_context is not False else "none"
         return self._request_json(
             f"/api/v1/sessions/{quote(session_id, safe='')}/dispatch-runs",
             method="POST",
@@ -655,9 +853,7 @@ class ApplicationClient:
         )
 
     def get_source_cleaning_dispatch_run(self, run_id: str) -> dict[str, Any]:
-        return self._request_json(
-            f"/api/v1/source-cleaning-dispatch-runs/{quote(run_id, safe='')}"
-        )
+        return self._request_json(f"/api/v1/source-cleaning-dispatch-runs/{quote(run_id, safe='')}")
 
     def claim_source_cleaning_dispatch_batch(
         self,
@@ -742,6 +938,122 @@ class ApplicationClient:
             body={"lease_token": lease_token, "result": result},
             idempotency_key=idempotency_key,
             maximum_body_bytes=16 * 1024 * 1024,
+        )
+
+    def create_speech_optimization_dispatch_run(
+        self,
+        session_id: str,
+        *,
+        source_artifact_id: str | None,
+        language: str | None,
+        voice_language: str | None,
+        tts_service: str | None,
+        instructions: str,
+        char_limit: int,
+        max_units_per_batch: int,
+        context_before: int,
+        context_after: int,
+        include_timing: bool,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "instructions": instructions,
+            "char_limit": int(char_limit),
+            "max_units_per_batch": int(max_units_per_batch),
+            "context_before": int(context_before),
+            "context_after": int(context_after),
+            "include_timing": bool(include_timing),
+        }
+        optional = {
+            "source_artifact_id": source_artifact_id,
+            "language": language,
+            "voice_language": voice_language,
+            "tts_service": tts_service,
+        }
+        body.update({key: value for key, value in optional.items() if value is not None})
+        return self._request_json(
+            f"/api/v1/sessions/{quote(session_id, safe='')}/speech-optimization-dispatch-runs",
+            method="POST",
+            body=body,
+            idempotency_key=idempotency_key,
+        )
+
+    def list_speech_optimization_dispatch_runs(
+        self,
+        session_id: str,
+        *,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/sessions/{quote(session_id, safe='')}/speech-optimization-dispatch-runs",
+            parameters={"limit": max(1, min(int(limit), 100))},
+        )
+
+    def get_speech_optimization_dispatch_run(self, run_id: str) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/speech-optimization-dispatch-runs/{quote(run_id, safe='')}"
+        )
+
+    def claim_speech_optimization_dispatch_batch(
+        self,
+        run_id: str,
+        *,
+        lease_seconds: int,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/speech-optimization-dispatch-runs/{quote(run_id, safe='')}/claim",
+            method="POST",
+            body={"lease_seconds": int(lease_seconds)},
+            idempotency_key=idempotency_key,
+        )
+
+    def renew_speech_optimization_dispatch_batch(
+        self,
+        batch_id: str,
+        *,
+        lease_token: str,
+        lease_seconds: int,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/speech-optimization-dispatch-batches/{quote(batch_id, safe='')}/renew",
+            method="POST",
+            body={
+                "lease_token": lease_token,
+                "lease_seconds": int(lease_seconds),
+            },
+            idempotency_key=idempotency_key,
+        )
+
+    def release_speech_optimization_dispatch_batch(
+        self,
+        batch_id: str,
+        *,
+        lease_token: str,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/speech-optimization-dispatch-batches/{quote(batch_id, safe='')}/release",
+            method="POST",
+            body={"lease_token": lease_token},
+            idempotency_key=idempotency_key,
+        )
+
+    def submit_speech_optimization_dispatch_batch(
+        self,
+        batch_id: str,
+        *,
+        lease_token: str,
+        result: dict[str, Any],
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/speech-optimization-dispatch-batches/{quote(batch_id, safe='')}/submit",
+            method="POST",
+            body={"lease_token": lease_token, "result": result},
+            idempotency_key=idempotency_key,
+            maximum_body_bytes=4 * 1024 * 1024,
         )
 
     def get_session(self, session_id: str) -> dict[str, Any]:
@@ -859,6 +1171,286 @@ class ApplicationClient:
         if session_id:
             parameters["session_id"] = session_id
         return self._request_json("/api/v1/artifacts", parameters=parameters)
+
+    def artifact_context(self, artifact_id: str) -> dict[str, Any]:
+        return self._request_json(f"/api/v1/artifacts/{quote(artifact_id, safe='')}/context")
+
+    def initialize_upload(
+        self,
+        *,
+        filename: str,
+        size_bytes: int,
+        mime_type: str | None,
+        sha256: str,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            "/api/v1/uploads/init",
+            method="POST",
+            body={
+                "filename": filename,
+                "size_bytes": int(size_bytes),
+                "mime_type": mime_type,
+                "sha256": sha256,
+            },
+            idempotency_key=idempotency_key,
+        )
+
+    def upload_status(self, upload_id: str) -> dict[str, Any]:
+        return self._request_json(f"/api/v1/uploads/{quote(upload_id, safe='')}")
+
+    def upload_chunk(
+        self,
+        upload_id: str,
+        index: int,
+        body: bytes,
+        *,
+        sha256: str,
+    ) -> dict[str, Any]:
+        return self._request_binary_json(
+            f"/api/v1/uploads/{quote(upload_id, safe='')}/chunks/{int(index)}",
+            method="PUT",
+            body=body,
+            content_type="application/octet-stream",
+            extra_headers={"X-Chunk-SHA256": sha256},
+        )
+
+    def complete_upload(self, upload_id: str) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/uploads/{quote(upload_id, safe='')}/complete",
+            method="POST",
+            body={},
+        )
+
+    def tts_catalog(self, *, refresh: bool = False) -> dict[str, Any]:
+        return self._request_json(
+            "/api/v1/services/tts",
+            parameters={"refresh": "true"} if refresh else None,
+        )
+
+    def list_generation_runs(self, session_id: str) -> dict[str, Any]:
+        return self._request_json(f"/api/v1/sessions/{quote(session_id, safe='')}/generation-runs")
+
+    def download_artifact(
+        self,
+        artifact_id: str,
+        destination: Path,
+        *,
+        expected_size: int,
+        expected_hash: str | None,
+        _allow_local_retry: bool = True,
+    ) -> dict[str, Any]:
+        """Resume one immutable artifact into a caller-approved local path."""
+
+        partial = destination.with_name(f".{destination.name}.part")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if destination.is_symlink() or partial.is_symlink():
+            raise PandratorMcpError(
+                "network_policy_denied",
+                "Local artifact destinations may not be symbolic links.",
+            )
+        if destination.is_file():
+            size = destination.stat().st_size
+            digest = self._sha256_path(destination)
+            if size == expected_size and (not expected_hash or digest == expected_hash):
+                return {
+                    "path": str(destination),
+                    "size_bytes": size,
+                    "sha256": digest,
+                    "resumed": False,
+                    "reused": True,
+                }
+            raise PandratorMcpError(
+                "revision_conflict",
+                "The local output path already contains different content.",
+            )
+        if destination.exists() and not destination.is_file():
+            raise PandratorMcpError(
+                "revision_conflict",
+                "The local output path is not a regular file destination.",
+            )
+        if partial.exists() and not partial.is_file():
+            raise PandratorMcpError(
+                "revision_conflict",
+                "The resumable local output path is not a regular file.",
+            )
+        offset = partial.stat().st_size if partial.is_file() else 0
+        if offset > expected_size:
+            partial.unlink(missing_ok=True)
+            offset = 0
+        target = self.binding.resolve()
+        headers = {"Accept": "application/octet-stream", **correlation_headers()}
+        if offset:
+            headers["Range"] = f"bytes={offset}-"
+            if expected_hash:
+                headers["If-Range"] = f'"{expected_hash}"'
+        reference = target.application_credential
+        if reference is not None:
+            secret = self.credentials.resolve(reference, audience="application")
+            headers["Authorization"] = f"Bearer {secret.reveal()}"
+        elif target.mode != TargetMode.LOCAL_MANAGED or self._local_bootstrap is None:
+            raise PandratorMcpError(
+                "authentication_required",
+                "This target has no application credential enrollment.",
+            )
+        verify: bool | str = target.application.ca_bundle or True
+        proxies = (
+            {
+                "http": target.application.proxy_origin,
+                "https": target.application.proxy_origin,
+            }
+            if target.application.proxy_origin
+            else {}
+        )
+        url = self._url(
+            target,
+            f"/api/v1/artifacts/{quote(artifact_id, safe='')}/content",
+        )
+        try:
+            with self._session_lock:
+                adapter: PinnedAddressAdapter | None = None
+                prior_adapter = None
+                if isinstance(self.session, requests.Session):
+                    prior_adapter = self.session.get_adapter(url)
+                    adapter = PinnedAddressAdapter(
+                        target.application.origin,
+                        target.application.addresses,
+                    )
+                    self.session.mount(f"{target.application.origin}/", adapter)
+                try:
+                    if (
+                        target.application_credential is None
+                        and target.application.origin not in self._local_authenticated_origins
+                    ):
+                        assert self._local_bootstrap is not None
+                        csrf_token = self._local_bootstrap(target, self.session)
+                        if csrf_token:
+                            self._local_csrf_tokens[target.application.origin] = csrf_token
+                        self._local_authenticated_origins.add(target.application.origin)
+                    response = self.session.get(
+                        url,
+                        headers=headers,
+                        timeout=max(self.timeout_seconds, 120.0),
+                        allow_redirects=False,
+                        stream=True,
+                        verify=verify,
+                        proxies=proxies,
+                    )
+                    if 300 <= response.status_code < 400:
+                        response.close()
+                        raise PandratorMcpError(
+                            "network_policy_denied",
+                            "Pandrator target redirects are not allowed.",
+                        )
+                    if (
+                        response.status_code == 401
+                        and target.mode == TargetMode.LOCAL_MANAGED
+                        and target.application_credential is None
+                        and _allow_local_retry
+                    ):
+                        response.close()
+                        self._local_authenticated_origins.discard(target.application.origin)
+                        self._local_csrf_tokens.pop(
+                            target.application.origin,
+                            None,
+                        )
+                        return self.download_artifact(
+                            artifact_id,
+                            destination,
+                            expected_size=expected_size,
+                            expected_hash=expected_hash,
+                            _allow_local_retry=False,
+                        )
+                    if response.status_code not in {200, 206}:
+                        status = response.status_code
+                        response.close()
+                        if status == 401:
+                            raise PandratorMcpError(
+                                "authentication_required",
+                                "The Pandrator application credential was rejected.",
+                            )
+                        if status == 403:
+                            raise PandratorMcpError(
+                                "scope_denied",
+                                "The enrolled application principal lacks the required scope.",
+                            )
+                        if status == 404:
+                            raise PandratorMcpError(
+                                "not_found",
+                                "The requested artifact was not found.",
+                            )
+                        raise PandratorMcpError(
+                            "downstream_unavailable",
+                            "Pandrator could not stream the requested artifact.",
+                            details={"status": status},
+                            retryable=status >= 500,
+                        )
+                    append = response.status_code == 206 and offset > 0
+                    if not append:
+                        offset = 0
+                    flags = (
+                        os.O_WRONLY
+                        | os.O_CREAT
+                        | getattr(os, "O_CLOEXEC", 0)
+                        | getattr(os, "O_NOFOLLOW", 0)
+                        | (os.O_APPEND if append else os.O_TRUNC)
+                    )
+                    try:
+                        descriptor = os.open(partial, flags, 0o600)
+                        with os.fdopen(descriptor, "ab" if append else "wb") as output:
+                            for chunk in response.iter_content(chunk_size=1024 * 1024):
+                                if chunk:
+                                    output.write(chunk)
+                            output.flush()
+                            os.fsync(output.fileno())
+                    finally:
+                        response.close()
+                finally:
+                    if adapter is not None and prior_adapter is not None:
+                        self.session.mount(
+                            f"{target.application.origin}/",
+                            prior_adapter,
+                        )
+                        adapter.close()
+        except requests.exceptions.SSLError as error:
+            raise PandratorMcpError(
+                "tls_validation_failed",
+                "The target's TLS identity could not be validated.",
+            ) from error
+        except requests.RequestException as error:
+            raise PandratorMcpError(
+                "application_unavailable",
+                "The artifact download was interrupted and can be resumed.",
+                retryable=True,
+            ) from error
+        size = partial.stat().st_size
+        digest = self._sha256_path(partial)
+        if size != expected_size or (expected_hash and digest != expected_hash):
+            raise PandratorMcpError(
+                "source_changed",
+                "The downloaded artifact did not match its immutable metadata.",
+                details={
+                    "expected_size": expected_size,
+                    "actual_size": size,
+                },
+                retryable=size < expected_size,
+            )
+        os.replace(partial, destination)
+        return {
+            "path": str(destination),
+            "size_bytes": size,
+            "sha256": digest,
+            "resumed": offset > 0,
+            "reused": False,
+        }
+
+    @staticmethod
+    def _sha256_path(path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            while chunk := handle.read(1024 * 1024):
+                digest.update(chunk)
+        return digest.hexdigest()
 
     def list_providers(self) -> dict[str, Any]:
         return self._request_json("/api/v1/providers")

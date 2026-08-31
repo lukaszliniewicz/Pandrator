@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import (
@@ -22,7 +22,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
 def utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def new_id() -> str:
@@ -883,6 +883,7 @@ class UploadSessionRecord(Base):
     state: Mapped[str] = mapped_column(
         String(32), nullable=False, default="open", index=True
     )
+    result_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False
     )
@@ -1131,6 +1132,102 @@ class SourceCleaningDispatchBatch(Base):
         DateTime(timezone=True), index=True
     )
     normalized_output_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    output_hash: Mapped[str | None] = mapped_column(String(64))
+    submission_key: Mapped[str | None] = mapped_column(String(200))
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+
+class SpeechOptimizationDispatchRun(Base):
+    """A provider-free, externally processed speech-text optimisation run."""
+
+    __tablename__ = "speech_optimization_dispatch_runs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    source_artifact_id: Mapped[str] = mapped_column(
+        ForeignKey("artifacts.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    source_state: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="current"
+    )
+    source_content_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    source_format: Mapped[str] = mapped_column(String(16), nullable=False)
+    language: Mapped[str] = mapped_column(String(40), nullable=False, default="auto")
+    voice_language: Mapped[str | None] = mapped_column(String(40))
+    tts_service: Mapped[str | None] = mapped_column(String(80))
+    settings_json: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
+    selection_snapshot_json: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
+    input_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    output_head_artifact_id: Mapped[str | None] = mapped_column(
+        ForeignKey("artifacts.id", ondelete="SET NULL"), index=True
+    )
+    result_artifact_id: Mapped[str | None] = mapped_column(
+        ForeignKey("artifacts.id", ondelete="SET NULL"), index=True
+    )
+    result_revision_id: Mapped[str | None] = mapped_column(
+        ForeignKey("document_revisions.id", ondelete="SET NULL"), index=True
+    )
+    status: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="ready", index=True
+    )
+    batch_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    completed_batch_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    error_code: Mapped[str | None] = mapped_column(String(120))
+    error_message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False, index=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False, index=True
+    )
+
+
+class SpeechOptimizationDispatchBatch(Base):
+    """One durable, lease-scoped batch of immutable speech-text units."""
+
+    __tablename__ = "speech_optimization_dispatch_batches"
+    __table_args__ = (
+        UniqueConstraint(
+            "dispatch_run_id",
+            "ordinal",
+            name="uq_speech_optimization_dispatch_batch_ordinal",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    dispatch_run_id: Mapped[str] = mapped_column(
+        ForeignKey("speech_optimization_dispatch_runs.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    input_json: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
+    input_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="ready", index=True
+    )
+    lease_token: Mapped[str | None] = mapped_column(String(160))
+    claim_key: Mapped[str | None] = mapped_column(String(200))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), index=True
+    )
+    normalized_output_json: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON)
     output_hash: Mapped[str | None] = mapped_column(String(64))
     submission_key: Mapped[str | None] = mapped_column(String(200))
     accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

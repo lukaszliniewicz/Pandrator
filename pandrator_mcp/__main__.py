@@ -32,6 +32,7 @@ from .settings import McpSettings, default_configuration_path
 from .targets import (
     APPLICATION_SCOPES,
     MANAGER_RECOVERY_SCOPES,
+    LocalSourceRoot,
     TargetIdentityExpectation,
     TargetProfile,
     TargetRegistry,
@@ -74,16 +75,10 @@ def _credential_reference(
 def _profile_from_args(args: argparse.Namespace) -> TargetProfile:
     mode = _MODE_ALIASES[args.mode]
     application_client_id = (
-        str(args.client_id or uuid.uuid4())
-        if mode != TargetMode.LOCAL_MANAGED
-        else None
+        str(args.client_id or uuid.uuid4()) if mode != TargetMode.LOCAL_MANAGED else None
     )
     manager_client_id = (
-        str(
-            args.recovery_client_id
-            or application_client_id
-            or uuid.uuid4()
-        )
+        str(args.recovery_client_id or application_client_id or uuid.uuid4())
         if args.recovery_origin
         else None
     )
@@ -99,9 +94,7 @@ def _profile_from_args(args: argparse.Namespace) -> TargetProfile:
         proxy_origin=args.proxy_origin,
         automation_client_id=application_client_id,
         automation_client_name=args.client_name,
-        requested_application_scopes=tuple(
-            args.scope or ("app.read",)
-        ),
+        requested_application_scopes=tuple(args.scope or ("app.read",)),
         application_credential=_credential_reference(
             args.credential_backend,
             args.credential_reference,
@@ -109,9 +102,7 @@ def _profile_from_args(args: argparse.Namespace) -> TargetProfile:
         ),
         manager_automation_client_id=manager_client_id,
         manager_automation_client_name=args.recovery_client_name,
-        manager_requested_scopes=tuple(
-            args.recovery_scope or ("manager.read",)
-        ),
+        manager_requested_scopes=tuple(args.recovery_scope or ("manager.read",)),
         manager_recovery_credential=_credential_reference(
             args.recovery_credential_backend,
             args.recovery_credential_reference,
@@ -130,36 +121,24 @@ def _public_profile(profile: TargetProfile) -> dict[str, object]:
         "explicit_proxy_configured": bool(profile.proxy_origin),
         "private_cidr_count": len(profile.allowed_private_cidrs),
         "application_credential_configured": (profile.application_credential is not None),
-        "automation_client_configured": bool(
-            profile.automation_client_id
-        ),
-        "requested_application_scopes": list(
-            profile.requested_application_scopes
-        ),
+        "automation_client_configured": bool(profile.automation_client_id),
+        "requested_application_scopes": list(profile.requested_application_scopes),
         "enrolled_subject": profile.enrolled_subject,
         "credential_expires_at": profile.credential_expires_at,
         "manager_recovery_configured": (profile.manager_recovery_origin is not None),
         "manager_recovery_credential_configured": (profile.manager_recovery_credential is not None),
-        "manager_automation_client_configured": bool(
-            profile.manager_automation_client_id
-        ),
-        "manager_requested_scopes": list(
-            profile.manager_requested_scopes
-        ),
-        "manager_enrolled_subject": (
-            profile.manager_enrolled_subject
-        ),
-        "manager_credential_expires_at": (
-            profile.manager_credential_expires_at
-        ),
+        "manager_automation_client_configured": bool(profile.manager_automation_client_id),
+        "manager_requested_scopes": list(profile.manager_requested_scopes),
+        "manager_enrolled_subject": (profile.manager_enrolled_subject),
+        "manager_credential_expires_at": (profile.manager_credential_expires_at),
+        "local_source_root_names": [item.name for item in profile.local_source_roots],
+        "local_output_root_configured": bool(profile.local_output_root),
         "identity_pinned": bool(profile.expected_identity.application_instance_id),
     }
 
 
 def _target_profile(store: TargetStore, name: str) -> TargetProfile:
-    return TargetRegistry(
-        store.load(missing_ok=False)
-    ).get(name)
+    return TargetRegistry(store.load(missing_ok=False)).get(name)
 
 
 def _revocation_guidance(
@@ -172,8 +151,7 @@ def _revocation_guidance(
                 "audience": "application",
                 "client_id": profile.automation_client_id,
                 "owner_command": (
-                    "pandrator auth automation-client revoke "
-                    f"{profile.automation_client_id} --yes"
+                    f"pandrator auth automation-client revoke {profile.automation_client_id} --yes"
                 ),
             }
         )
@@ -276,8 +254,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         choices=sorted(MANAGER_RECOVERY_SCOPES),
         help=(
-            "Manager recovery scope to request during its separate "
-            "enrollment; repeat as needed."
+            "Manager recovery scope to request during its separate enrollment; repeat as needed."
         ),
     )
     add.add_argument(
@@ -288,6 +265,41 @@ def build_parser() -> argparse.ArgumentParser:
     add.add_argument("--replace", action="store_true")
 
     target_commands.add_parser("list", help="List target profiles.")
+
+    source_root_add = target_commands.add_parser(
+        "source-root-add",
+        help="Expose one human-approved local directory by an opaque name.",
+    )
+    source_root_add.add_argument("name", help="Target profile name.")
+    source_root_add.add_argument("root_name")
+    source_root_add.add_argument("path", type=Path)
+    source_root_add.add_argument("--replace", action="store_true")
+
+    source_root_list = target_commands.add_parser(
+        "source-root-list",
+        help="List local source roots for one target.",
+    )
+    source_root_list.add_argument("name")
+
+    source_root_remove = target_commands.add_parser(
+        "source-root-remove",
+        help="Stop exposing one named local source root.",
+    )
+    source_root_remove.add_argument("name")
+    source_root_remove.add_argument("root_name")
+
+    output_root_set = target_commands.add_parser(
+        "output-root-set",
+        help="Choose where downloaded artifacts are materialized locally.",
+    )
+    output_root_set.add_argument("name")
+    output_root_set.add_argument("path", type=Path)
+
+    output_root_clear = target_commands.add_parser(
+        "output-root-clear",
+        help="Disable local artifact materialization for one target.",
+    )
+    output_root_clear.add_argument("name")
 
     remove = target_commands.add_parser("remove", help="Remove a target profile.")
     remove.add_argument("name")
@@ -386,17 +398,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--recovery-scope",
         action="append",
         choices=sorted(MANAGER_RECOVERY_SCOPES),
-        help=(
-            "Override the profile's Manager recovery scopes; "
-            "repeat as needed."
-        ),
+        help=("Override the profile's Manager recovery scopes; repeat as needed."),
     )
 
     configure_recovery = target_commands.add_parser(
         "configure-recovery",
         help=(
-            "Add an exact HTTPS Manager recovery origin without "
-            "replacing the application target."
+            "Add an exact HTTPS Manager recovery origin without replacing the application target."
         ),
     )
     configure_recovery.add_argument("name")
@@ -405,8 +413,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--client-id",
         type=uuid.UUID,
         help=(
-            "Optional recovery client UUID; defaults to the target's "
-            "application client identity."
+            "Optional recovery client UUID; defaults to the target's application client identity."
         ),
     )
     configure_recovery.add_argument(
@@ -417,10 +424,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--recovery-scope",
         action="append",
         choices=sorted(MANAGER_RECOVERY_SCOPES),
-        help=(
-            "Manager recovery scope to request; repeat as needed. "
-            "Defaults to manager.read."
-        ),
+        help=("Manager recovery scope to request; repeat as needed. Defaults to manager.read."),
     )
 
     pin = target_commands.add_parser(
@@ -462,9 +466,7 @@ def build_parser() -> argparse.ArgumentParser:
     host_config.add_argument(
         "--executable",
         default="pandrator-mcp",
-        help=(
-            "Executable name or absolute path the host should launch."
-        ),
+        help=("Executable name or absolute path the host should launch."),
     )
     _add_config_argument(host_config)
 
@@ -554,13 +556,8 @@ def main(argv: list[str] | None = None) -> int:
             _print_json(
                 {
                     "schema_version": "1",
-                    "configuration_path": str(
-                        args.config.expanduser().resolve(strict=False)
-                    ),
-                    "targets": [
-                        _public_profile(profile)
-                        for profile in profiles
-                    ],
+                    "configuration_path": str(args.config.expanduser().resolve(strict=False)),
+                    "targets": [_public_profile(profile) for profile in profiles],
                 }
             )
             return 0
@@ -578,6 +575,97 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
             if args.target_command == "list":
                 _print_json({"targets": [_public_profile(profile) for profile in store.load()]})
+                return 0
+            if args.target_command == "source-root-add":
+                profile = _target_profile(store, args.name)
+                roots = list(profile.local_source_roots)
+                matching = next(
+                    (
+                        index
+                        for index, item in enumerate(roots)
+                        if item.name.casefold() == args.root_name.casefold()
+                    ),
+                    None,
+                )
+                root = LocalSourceRoot(
+                    name=args.root_name,
+                    path=str(args.path.expanduser().resolve(strict=False)),
+                )
+                if matching is not None:
+                    if not args.replace:
+                        raise ValueError(
+                            "That local source root already exists; use --replace explicitly."
+                        )
+                    roots[matching] = root
+                else:
+                    roots.append(root)
+                updated = store.configure_local_paths(
+                    args.name,
+                    source_roots=tuple(roots),
+                )
+                _print_json(
+                    {
+                        "saved": True,
+                        "target": updated.name,
+                        "source_root": root.model_dump(mode="json"),
+                    }
+                )
+                return 0
+            if args.target_command == "source-root-list":
+                profile = _target_profile(store, args.name)
+                _print_json(
+                    {
+                        "target": profile.name,
+                        "source_roots": [
+                            item.model_dump(mode="json") for item in profile.local_source_roots
+                        ],
+                    }
+                )
+                return 0
+            if args.target_command == "source-root-remove":
+                profile = _target_profile(store, args.name)
+                remaining_roots = tuple(
+                    item
+                    for item in profile.local_source_roots
+                    if item.name.casefold() != args.root_name.casefold()
+                )
+                if len(remaining_roots) == len(profile.local_source_roots):
+                    raise ValueError("That local source root is not configured.")
+                store.configure_local_paths(args.name, source_roots=remaining_roots)
+                _print_json(
+                    {
+                        "saved": True,
+                        "target": profile.name,
+                        "removed_source_root": args.root_name,
+                    }
+                )
+                return 0
+            if args.target_command == "output-root-set":
+                path = str(args.path.expanduser().resolve(strict=False))
+                updated = store.configure_local_paths(
+                    args.name,
+                    output_root=path,
+                )
+                _print_json(
+                    {
+                        "saved": True,
+                        "target": updated.name,
+                        "local_output_root": updated.local_output_root,
+                    }
+                )
+                return 0
+            if args.target_command == "output-root-clear":
+                updated = store.configure_local_paths(
+                    args.name,
+                    output_root=None,
+                )
+                _print_json(
+                    {
+                        "saved": True,
+                        "target": updated.name,
+                        "local_output_root": None,
+                    }
+                )
                 return 0
             if args.target_command == "remove":
                 if not args.yes:
@@ -622,30 +710,19 @@ def main(argv: list[str] | None = None) -> int:
                 _print_json(
                     {
                         "removed": removed.name,
-                        "local_credentials_deleted": (
-                            deleted_audiences
-                        ),
+                        "local_credentials_deleted": (deleted_audiences),
                         "local_credentials_preserved": bool(
-                            configured_audiences
-                            and args.keep_local_credentials
+                            configured_audiences and args.keep_local_credentials
                         ),
                         "remote_clients_revoked": False,
-                        "remote_revocation": _revocation_guidance(
-                            profile
-                        ),
+                        "remote_revocation": _revocation_guidance(profile),
                     }
                 )
                 return 0
             if args.target_command == "logout":
                 if not args.yes:
-                    raise ValueError(
-                        "Credential logout requires --yes confirmation."
-                    )
-                audience = (
-                    "manager_recovery"
-                    if args.manager_recovery
-                    else "application"
-                )
+                    raise ValueError("Credential logout requires --yes confirmation.")
+                audience = "manager_recovery" if args.manager_recovery else "application"
                 before = _target_profile(store, args.name)
                 _updated, deleted = _delete_local_enrollment(
                     store,
@@ -653,9 +730,7 @@ def main(argv: list[str] | None = None) -> int:
                     audience=audience,
                 )
                 guidance = [
-                    item
-                    for item in _revocation_guidance(before)
-                    if item["audience"] == audience
+                    item for item in _revocation_guidance(before) if item["audience"] == audience
                 ]
                 _print_json(
                     {
@@ -682,56 +757,37 @@ def main(argv: list[str] | None = None) -> int:
                 profile = registry.get(args.name)
                 if args.manager_recovery:
                     if args.scope:
-                        raise ValueError(
-                            "Use --recovery-scope with "
-                            "--manager-recovery."
-                        )
+                        raise ValueError("Use --recovery-scope with --manager-recovery.")
                     if args.expires_in_days > 30:
-                        raise ValueError(
-                            "Manager recovery credentials may last at "
-                            "most 30 days."
-                        )
+                        raise ValueError("Manager recovery credentials may last at most 30 days.")
                     summary = enroll_manager_recovery(
                         profile=profile,
                         binding=registry.bind(args.name),
                         store=store,
                         credentials=CredentialResolver(),
-                        scopes=tuple(
-                            args.recovery_scope
-                            or profile.manager_requested_scopes
-                        ),
+                        scopes=tuple(args.recovery_scope or profile.manager_requested_scopes),
                         expires_in_days=args.expires_in_days,
                         headless=args.headless,
                         open_browser=not args.no_open_browser,
                         timeout_seconds=args.timeout,
                         credential_backend=args.credential_backend,
-                        credential_reference=(
-                            args.credential_reference
-                        ),
+                        credential_reference=(args.credential_reference),
                     )
                 else:
                     if args.recovery_scope:
-                        raise ValueError(
-                            "--recovery-scope requires "
-                            "--manager-recovery."
-                        )
+                        raise ValueError("--recovery-scope requires --manager-recovery.")
                     summary = enroll_target(
                         profile=profile,
                         binding=registry.bind(args.name),
                         store=store,
                         credentials=CredentialResolver(),
-                        scopes=tuple(
-                            args.scope
-                            or profile.requested_application_scopes
-                        ),
+                        scopes=tuple(args.scope or profile.requested_application_scopes),
                         expires_in_days=args.expires_in_days,
                         headless=args.headless,
                         open_browser=not args.no_open_browser,
                         timeout_seconds=args.timeout,
                         credential_backend=args.credential_backend,
-                        credential_reference=(
-                            args.credential_reference
-                        ),
+                        credential_reference=(args.credential_reference),
                     )
                 _print_json(summary.as_dict())
                 return 0
@@ -739,15 +795,9 @@ def main(argv: list[str] | None = None) -> int:
                 updated = store.configure_manager_recovery(
                     args.name,
                     origin=args.origin,
-                    requested_scopes=tuple(
-                        args.recovery_scope or ("manager.read",)
-                    ),
+                    requested_scopes=tuple(args.recovery_scope or ("manager.read",)),
                     client_name=args.client_name,
-                    client_id=(
-                        str(args.client_id)
-                        if args.client_id
-                        else None
-                    ),
+                    client_id=(str(args.client_id) if args.client_id else None),
                 )
                 _print_json(
                     {

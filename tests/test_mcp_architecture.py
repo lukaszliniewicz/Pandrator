@@ -325,40 +325,44 @@ class McpArchitectureTests(unittest.TestCase):
                 "pandrator_attach_existing_source",
                 "pandrator_claim_dispatch_batch",
                 "pandrator_claim_source_cleaning_dispatch_batch",
+                "pandrator_claim_speech_optimization_dispatch_batch",
+                "pandrator_configure_tts",
                 "pandrator_control_runtime",
                 "pandrator_create_dispatch_run",
                 "pandrator_create_source_cleaning_dispatch_run",
+                "pandrator_create_speech_optimization_dispatch_run",
                 "pandrator_create_session",
                 "pandrator_execute_component_plan",
                 "pandrator_execute_workflow_plan",
+                "pandrator_download_artifact",
+                "pandrator_import_local_source",
                 "pandrator_inspect_source_cleaning_dispatch_extraction",
                 "pandrator_release_dispatch_batch",
                 "pandrator_release_source_cleaning_dispatch_batch",
+                "pandrator_release_speech_optimization_dispatch_batch",
                 "pandrator_renew_dispatch_batch",
                 "pandrator_renew_source_cleaning_dispatch_batch",
+                "pandrator_renew_speech_optimization_dispatch_batch",
                 "pandrator_submit_dispatch_batch",
                 "pandrator_submit_source_cleaning_dispatch_batch",
+                "pandrator_submit_speech_optimization_dispatch_batch",
                 "pandrator_update_session",
                 "pandrator_update_session_settings",
             },
             {action.name for action in mutating if action.enabled},
         )
-        self.assertTrue(all(action.requires_idempotency for action in mutating))
         self.assertTrue(
-            ACTION_CATALOG.get(
-                "pandrator_execute_workflow_plan"
-            ).requires_confirmation
+            all(
+                action.requires_idempotency
+                or action.name == "pandrator_download_artifact"
+                for action in mutating
+            )
         )
         self.assertTrue(
-            ACTION_CATALOG.get(
-                "pandrator_plan_workflow"
-            ).enabled
+            ACTION_CATALOG.get("pandrator_execute_workflow_plan").requires_confirmation
         )
-        self.assertTrue(
-            ACTION_CATALOG.get(
-                "pandrator_plan_component_change"
-            ).enabled
-        )
+        self.assertTrue(ACTION_CATALOG.get("pandrator_plan_workflow").enabled)
+        self.assertTrue(ACTION_CATALOG.get("pandrator_plan_component_change").enabled)
         self.assertTrue(
             all(
                 action.enabled

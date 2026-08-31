@@ -53,18 +53,15 @@ def _guard_overrides(
     if isinstance(value, dict):
         for key, item in value.items():
             normalized = str(key).strip().lower().replace("-", "_")
-            if (
-                normalized in _CONNECTION_OR_SECRET_KEYS
-                or normalized.endswith(
-                    (
-                        "_api_key",
-                        "_credential",
-                        "_password",
-                        "_private_key",
-                        "_secret",
-                        "_token",
-                        "_url",
-                    )
+            if normalized in _CONNECTION_OR_SECRET_KEYS or normalized.endswith(
+                (
+                    "_api_key",
+                    "_credential",
+                    "_password",
+                    "_private_key",
+                    "_secret",
+                    "_token",
+                    "_url",
                 )
             ):
                 raise ValueError(
@@ -93,6 +90,7 @@ class PlanWorkflowInput(ToolInput):
         "clean_source",
         "prepare_text",
         "optimize_document",
+        "optimize_tts",
         "generate_audio",
         "export",
     ] = "generate_audio"
@@ -114,13 +112,9 @@ class PlanWorkflowInput(ToolInput):
                 allow_nan=False,
             ).encode("utf-8")
         except (TypeError, ValueError) as error:
-            raise ValueError(
-                "Workflow overrides must be finite JSON values."
-            ) from error
+            raise ValueError("Workflow overrides must be finite JSON values.") from error
         if len(encoded) > 128 * 1024:
-            raise ValueError(
-                "Workflow overrides exceed the MCP size limit."
-            )
+            raise ValueError("Workflow overrides exceed the MCP size limit.")
         return value
 
 

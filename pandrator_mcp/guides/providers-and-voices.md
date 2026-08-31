@@ -15,9 +15,20 @@ Before planning generation:
 
 1. inspect capabilities;
 2. inspect provider status;
-3. inspect the voice catalog;
-4. verify language and model compatibility; and
-5. review the plan's provider disclosures.
+3. call `pandrator_get_tts_catalog`, refreshing it when current readiness or a
+   dynamic catalog matters;
+4. inspect the managed voice catalog and its ready provider registrations;
+5. verify language, model, and voice compatibility;
+6. inspect the session's current `tts` settings revision;
+7. call `pandrator_configure_tts` with exact advertised IDs; and
+8. review the generation plan's provider disclosures.
+
+Names in a user's request may be examples, display labels, or stale catalog
+values. Match case-insensitively only after the catalog has supplied a unique
+canonical service/model/voice value. A managed voice is usable only when its
+registration for the chosen service is `ready`; send the provider's registered
+voice ID, not Pandrator's display name. Ask the user when a materially different
+substitution would be required.
 
 Credentials belong in Pandrator's credential store or an approved MCP
 credential backend. Never paste a provider key into a tool argument, target

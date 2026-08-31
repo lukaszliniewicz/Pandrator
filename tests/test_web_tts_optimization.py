@@ -24,6 +24,54 @@ from tests.web_test_support import prepare_web_test_data_root
 
 
 class TtsOptimizationUnitTests(unittest.TestCase):
+    def test_structured_mode_batches_multiple_units_when_configured(self):
+        planned = SimpleNamespace(
+            results=[
+                SimpleNamespace(
+                    text="Doctor Jones",
+                    plan={"prompt_revision": SPEECH_PROMPT_REVISION},
+                    responses=[],
+                ),
+                SimpleNamespace(
+                    text="Room one oh one",
+                    plan={"prompt_revision": SPEECH_PROMPT_REVISION},
+                    responses=[],
+                ),
+            ],
+            responses=[
+                ChatCompletionResult(
+                    content="{}",
+                    cost=0.03,
+                    usage={"prompt_tokens": 12, "completion_tokens": 5},
+                )
+            ],
+        )
+        with (
+            mock.patch(
+                "pandrator.web.speech_planning.plan_speech_text_batch",
+                return_value=planned,
+            ) as batch_plan,
+            mock.patch("pandrator.web.speech_planning.plan_speech_text") as single_plan,
+        ):
+            output, usage = optimize_texts(
+                ["Dr. Jones", "Room 101"],
+                {
+                    "speech_optimization_mode": "guarded",
+                    "llm_tts_batch_size": 2,
+                    "llm_concurrent_calls": 1,
+                },
+                SimpleNamespace(),
+                "provider/model",
+                threading.Event(),
+                lambda *_args: None,
+            )
+
+        self.assertEqual(["Doctor Jones", "Room one oh one"], output)
+        batch_plan.assert_called_once()
+        single_plan.assert_not_called()
+        self.assertEqual(1, usage.response_count)
+        self.assertAlmostEqual(0.03, usage.cost)
+
     def test_prompt_sequence_uses_explicit_multi_stage_prompts(self):
         self.assertEqual(
             ["First:", "Second:"],
@@ -419,6 +467,77 @@ class TtsOptimizationHandlerTests(unittest.TestCase):
                 for value, detail in progress_updates
                 if detail == "Speech optimization preview ready"
             ),
+        )
+
+    def test_standalone_guarded_mode_uses_document_request_batch_size(self):
+        source_path = self.session_dir / "guarded-source.srt"
+        source_path.write_text(
+            "1\n00:00:00,000 --> 00:00:01,000\nDr. Jones\n\n"
+            "2\n00:00:01,100 --> 00:00:02,000\nRoom 101\n",
+            encoding="utf-8",
+        )
+        source = self.artifacts.register(
+            source_path,
+            kind="srt",
+            role="transcription",
+            session_id=self.session.id,
+        )
+        handlers = WorkflowHandlers(self.database, self.paths)
+        hydrated = {
+            "speech_optimization_mode": "guarded",
+            "speech_plan_save_proposals": False,
+            "llm_tts_batch_size": 1,
+            "llm_tts_document_batch_size": 2,
+            "llm_concurrent_calls": 1,
+            "llm_provider_configs": [],
+            "llm_default_model": "provider/model",
+            "tts_optimization_model": "provider/model",
+            "request_timeout_seconds": 30,
+            "language": "en",
+        }
+        planned = SimpleNamespace(
+            results=[
+                SimpleNamespace(
+                    text="Doctor Jones",
+                    plan={"prompt_revision": SPEECH_PROMPT_REVISION},
+                    responses=[],
+                ),
+                SimpleNamespace(
+                    text="Room one oh one",
+                    plan={"prompt_revision": SPEECH_PROMPT_REVISION},
+                    responses=[],
+                ),
+            ],
+            responses=[],
+        )
+
+        with (
+            mock.patch.object(
+                handlers, "_with_database_llm_settings", return_value=hydrated
+            ),
+            mock.patch(
+                "pandrator.web.speech_planning.plan_speech_text_batch",
+                return_value=planned,
+            ) as batch_plan,
+            mock.patch("pandrator.web.speech_planning.plan_speech_text") as single_plan,
+        ):
+            result = handlers.optimize_tts(
+                {
+                    "session_id": self.session.id,
+                    "source_artifact_id": source.id,
+                    "settings": {"llm_tts_document_batch_size": 2},
+                },
+                lambda *_args: None,
+                threading.Event(),
+            )
+
+        batch_plan.assert_called_once()
+        single_plan.assert_not_called()
+        optimized, output_path = self.artifacts.resolve(result["artifact_id"])
+        self.assertEqual(2, optimized.metadata_json["batch_size"])
+        self.assertEqual(
+            ["Doctor Jones", "Room one oh one"],
+            [item.text for item in parse_srt(output_path.read_text(encoding="utf-8"))],
         )
 
     def test_failed_optimization_resumes_from_persisted_batch(self):

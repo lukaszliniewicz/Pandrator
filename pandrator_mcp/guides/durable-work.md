@@ -64,3 +64,11 @@ The source-cleaning dispatcher has no provider token or iteration budget.
 final accepted phase deterministically applies and validates all operations,
 then registers a selected `clean_text` artifact. A source, selection, or output
 head change produces a finalization conflict instead of rebasing silently.
+
+Speech-text optimization is the third passive run family. It starts ready from
+a managed SRT, narration JSON, or TXT artifact, then exposes sequential batches
+of stable `unit_id` values. Timing is present once on actionable SRT units and
+absent from read-only boundary context. Submit every unit exactly once and in
+order. Character and unit limits bound transport, not model tokens or effort;
+Pandrator calls no model. The final batch registers `tts_optimized` only if the
+pinned source, relevant selections, and previous output head remain unchanged.

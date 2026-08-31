@@ -1243,32 +1243,48 @@ class SourceLibraryService:
         kind: str | None = None,
     ) -> SourceAsset:
         with self.database.session() as session:
-            artifact = session.get(Artifact, artifact_id)
-            if artifact is None:
-                raise KeyError(artifact_id)
-            asset = session.scalar(
-                select(SourceAsset).where(SourceAsset.artifact_id == artifact_id)
+            asset = self.ensure_for_artifact_in_session(
+                session,
+                artifact_id,
+                display_name=display_name,
+                kind=kind,
             )
-            if asset is None:
-                name = display_name or str(
-                    (artifact.metadata_json or {}).get("original_filename")
-                    or Path(artifact.relative_path).name
-                )
-                asset = SourceAsset(
-                    artifact_id=artifact.id,
-                    display_name=name,
-                    kind=kind or Path(name).suffix.lower().lstrip(".") or artifact.kind,
-                    mime_type=artifact.mime_type,
-                    size_bytes=artifact.size_bytes,
-                    content_hash=artifact.content_hash,
-                    metadata_json={"legacy_session_id": artifact.session_id}
-                    if artifact.session_id
-                    else {},
-                )
-                session.add(asset)
-                session.flush()
             session.expunge(asset)
             return asset
+
+    @staticmethod
+    def ensure_for_artifact_in_session(
+        session: Session,
+        artifact_id: str,
+        *,
+        display_name: str | None = None,
+        kind: str | None = None,
+    ) -> SourceAsset:
+        artifact = session.get(Artifact, artifact_id)
+        if artifact is None:
+            raise KeyError(artifact_id)
+        asset = session.scalar(
+            select(SourceAsset).where(SourceAsset.artifact_id == artifact_id)
+        )
+        if asset is None:
+            name = display_name or str(
+                (artifact.metadata_json or {}).get("original_filename")
+                or Path(artifact.relative_path).name
+            )
+            asset = SourceAsset(
+                artifact_id=artifact.id,
+                display_name=name,
+                kind=kind or Path(name).suffix.lower().lstrip(".") or artifact.kind,
+                mime_type=artifact.mime_type,
+                size_bytes=artifact.size_bytes,
+                content_hash=artifact.content_hash,
+                metadata_json={"legacy_session_id": artifact.session_id}
+                if artifact.session_id
+                else {},
+            )
+            session.add(asset)
+            session.flush()
+        return asset
 
     def attach(
         self,
@@ -1633,13 +1649,9 @@ class GenerationService:
         if not isinstance(current_tts, dict):
             return None
         service_value = str(
-            selected_tts.get("service")
-            or selected_tts.get("tts_service")
-            or ""
+            selected_tts.get("service") or selected_tts.get("tts_service") or ""
         ).strip()
-        endpoint_value = str(
-            selected_tts.get("openai_audio_endpoint") or ""
-        ).strip()
+        endpoint_value = str(selected_tts.get("openai_audio_endpoint") or "").strip()
         generic_service = service_value.casefold().replace("-", "_") in {
             "custom",
             "openai_compatible",
@@ -1655,9 +1667,7 @@ class GenerationService:
                 service
                 for candidate in candidates
                 if candidate
-                for service in [
-                    tts_handler.get_service_config(current_tts, candidate)
-                ]
+                for service in [tts_handler.get_service_config(current_tts, candidate)]
                 if service is not None
             ),
             None,
@@ -1678,9 +1688,7 @@ class GenerationService:
             (
                 item
                 for item in configured_records
-                if str(
-                    item.get("id") or item.get("name") or item.get("provider") or ""
-                )
+                if str(item.get("id") or item.get("name") or item.get("provider") or "")
                 .strip()
                 .casefold()
                 .replace("-", "_")

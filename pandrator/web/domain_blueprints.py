@@ -31,8 +31,17 @@ def route_domain(rule: str) -> str:
             "/api/v1/dispatch-batches",
             "/api/v1/source-cleaning-dispatch-runs",
             "/api/v1/source-cleaning-dispatch-batches",
+            "/api/v1/speech-optimization-dispatch-runs",
+            "/api/v1/speech-optimization-dispatch-batches",
         )
-    ) or "/dispatch-runs" in rule or "/source-cleaning-dispatch-runs" in rule:
+    ) or any(
+        marker in rule
+        for marker in (
+            "/dispatch-runs",
+            "/source-cleaning-dispatch-runs",
+            "/speech-optimization-dispatch-runs",
+        )
+    ):
         return "workflow"
     if rule.startswith("/api/v1/auth/"):
         return "auth"

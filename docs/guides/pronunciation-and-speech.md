@@ -38,14 +38,26 @@ reverse respellings already stored in a historical speech revision.
 ## Speech-text optimization
 
 Optimization can prepare numbers, abbreviations, punctuation, pronunciation,
-or phrasing for a particular TTS service. It uses the configured
+or phrasing for a particular TTS service. Native execution uses the configured
 multi-provider LLM adapter; no particular provider such as Ollama is required.
-The result is a distinct speech revision that must be reviewed.
+Passive MCP execution instead lets the model already running in the host claim
+and return speech-text batches without a Pandrator model call. Both create a
+distinct speech revision that must be reviewed.
 
 Whole-document optimization and generation-time batch optimization are two
 places to perform similar work. Avoid enabling both accidentally. If an LLM
 proposes a pronunciation-library entry, it remains inactive until you review
 and approve it.
+
+Guarded mode is the normal constrained speech planner. Flexible mode allows
+more speech-only punctuation and phrasing freedom inside a protected template.
+The retired prompt-rewrite mode is no longer a user choice. For a small local
+model, set units per model request to `1`; a capable model can process larger
+requests while Pandrator still validates every unit independently.
+
+See the [speech-optimization reference](../reference/speech-optimization.md)
+for standalone versus generation-time behavior, batching, settings, source
+formats, and the passive dispatch contract.
 
 ## Mixed-language speech
 

@@ -1,3 +1,4 @@
+import hashlib
 import ipaddress
 import json
 import re
@@ -185,6 +186,86 @@ def create_test_ca(directory: Path) -> tuple[Path, Path, Path]:
 
 
 class ApplicationClientTests(unittest.TestCase):
+    def test_upload_catalog_and_generation_helpers_use_bounded_routes(self):
+        origin = "http://127.0.0.1:8097"
+        session = FakeSession(
+            [
+                FakeResponse(201, {"id": "upload-1", "chunk_count": 1}),
+                FakeResponse(200, {"index": 0}),
+                FakeResponse(201, {"artifact_id": "artifact-1"}),
+                FakeResponse(200, {"services": []}),
+                FakeResponse(200, {"items": []}),
+            ]
+        )
+        client = ApplicationClient(
+            local_registry(origin).bind("local"),
+            CredentialResolver(()),
+            session=session,
+            local_bootstrap=lambda _target, _session: "csrf-value",
+        )
+
+        client.initialize_upload(
+            filename="course.mp4",
+            size_bytes=4,
+            mime_type="video/mp4",
+            sha256="a" * 64,
+            idempotency_key="upload:course:1",
+        )
+        client.upload_chunk("upload-1", 0, b"data", sha256="b" * 64)
+        client.complete_upload("upload-1")
+        client.tts_catalog(refresh=True)
+        client.list_generation_runs("session-1")
+
+        initialized, chunk, completed, catalog, runs = session.calls
+        self.assertTrue(initialized["url"].endswith("/api/v1/uploads/init"))
+        self.assertEqual("upload:course:1", initialized["headers"]["Idempotency-Key"])
+        self.assertEqual("PUT", chunk["method"])
+        self.assertEqual(b"data", chunk["data"])
+        self.assertEqual("b" * 64, chunk["headers"]["X-Chunk-SHA256"])
+        self.assertTrue(completed["url"].endswith("/api/v1/uploads/upload-1/complete"))
+        self.assertEqual({"refresh": "true"}, catalog["params"])
+        self.assertTrue(
+            runs["url"].endswith("/api/v1/sessions/session-1/generation-runs")
+        )
+
+    def test_artifact_download_resumes_and_rejects_symlink_partials(self):
+        origin = "http://127.0.0.1:8097"
+        content = b"abcdef"
+        session = FakeSession([FakeResponse(206, body=content[3:])])
+        client = ApplicationClient(
+            local_registry(origin).bind("local"),
+            CredentialResolver(()),
+            session=session,
+            local_bootstrap=lambda _target, _session: "csrf-value",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "final.bin"
+            partial = Path(directory) / ".final.bin.part"
+            partial.write_bytes(content[:3])
+            result = client.download_artifact(
+                "artifact-1",
+                destination,
+                expected_size=len(content),
+                expected_hash=hashlib.sha256(content).hexdigest(),
+            )
+            self.assertTrue(result["resumed"])
+            self.assertEqual(content, destination.read_bytes())
+            self.assertEqual("bytes=3-", session.calls[0]["headers"]["Range"])
+
+            other = Path(directory) / "other.bin"
+            other.write_bytes(b"do not overwrite")
+            malicious = Path(directory) / ".blocked.bin.part"
+            malicious.symlink_to(other)
+            with self.assertRaises(PandratorMcpError) as captured:
+                client.download_artifact(
+                    "artifact-2",
+                    Path(directory) / "blocked.bin",
+                    expected_size=4,
+                    expected_hash=None,
+                )
+            self.assertEqual("network_policy_denied", captured.exception.code)
+            self.assertEqual(b"do not overwrite", other.read_bytes())
+
     def test_session_write_methods_map_exact_bodies_and_revisions(self):
         origin = "http://127.0.0.1:8097"
         session = FakeSession(
@@ -359,7 +440,10 @@ class ApplicationClientTests(unittest.TestCase):
         client.submit_dispatch_batch(
             "batch-1",
             lease_token="lease-capability",
-            result={"kind": "translation", "translations": [{"cue_id": 1, "text": "Cześć"}]},
+            result={
+                "kind": "translation",
+                "translations": [{"cue_id": 1, "text": "Cześć"}],
+            },
             idempotency_key="dispatch:submit:1",
         )
 
@@ -420,6 +504,111 @@ class ApplicationClientTests(unittest.TestCase):
         self.assertEqual("dispatch:renew:1", renew["headers"]["Idempotency-Key"])
         self.assertEqual("dispatch:release:1", release["headers"]["Idempotency-Key"])
         self.assertEqual("dispatch:submit:1", submit["headers"]["Idempotency-Key"])
+
+    def test_speech_optimization_dispatch_maps_exact_routes_and_bodies(self):
+        origin = "http://127.0.0.1:8097"
+        session = FakeSession(
+            [
+                FakeResponse(201, {"id": "run-1", "status": "ready"}),
+                FakeResponse(200, {"items": []}),
+                FakeResponse(200, {"id": "run-1", "status": "ready"}),
+                FakeResponse(200, {"batch_id": "batch-1"}),
+                FakeResponse(200, {"batch_id": "batch-1"}),
+                FakeResponse(200, {"batch_id": "batch-1"}),
+                FakeResponse(200, {"batch_id": "batch-1", "accepted": True}),
+            ]
+        )
+        client = ApplicationClient(
+            local_registry(origin).bind("local"),
+            CredentialResolver(()),
+            session=session,
+            local_bootstrap=lambda _target, _session: "csrf-value",
+        )
+
+        client.create_speech_optimization_dispatch_run(
+            "session-1",
+            source_artifact_id=None,
+            language="en",
+            voice_language="en-US",
+            tts_service="xtts",
+            instructions="Natural delivery.",
+            char_limit=50_000,
+            max_units_per_batch=200,
+            context_before=5,
+            context_after=3,
+            include_timing=True,
+            idempotency_key="speech:create:1",
+        )
+        client.list_speech_optimization_dispatch_runs("session-1", limit=30)
+        client.get_speech_optimization_dispatch_run("run-1")
+        client.claim_speech_optimization_dispatch_batch(
+            "run-1",
+            lease_seconds=900,
+            idempotency_key="speech:claim:1",
+        )
+        client.renew_speech_optimization_dispatch_batch(
+            "batch-1",
+            lease_token="lease-capability",
+            lease_seconds=600,
+            idempotency_key="speech:renew:1",
+        )
+        client.release_speech_optimization_dispatch_batch(
+            "batch-1",
+            lease_token="lease-capability",
+            idempotency_key="speech:release:1",
+        )
+        client.submit_speech_optimization_dispatch_batch(
+            "batch-1",
+            lease_token="lease-capability",
+            result={
+                "kind": "speech_optimization",
+                "items": [{"unit_id": 1, "text": "Doctor Jones"}],
+            },
+            idempotency_key="speech:submit:1",
+        )
+
+        create, listed, fetched, claim, renew, release, submit = session.calls
+        self.assertEqual(
+            {
+                "instructions": "Natural delivery.",
+                "char_limit": 50_000,
+                "max_units_per_batch": 200,
+                "context_before": 5,
+                "context_after": 3,
+                "include_timing": True,
+                "language": "en",
+                "voice_language": "en-US",
+                "tts_service": "xtts",
+            },
+            json.loads(create["data"]),
+        )
+        self.assertTrue(
+            create["url"].endswith(
+                "/api/v1/sessions/session-1/speech-optimization-dispatch-runs"
+            )
+        )
+        self.assertEqual({"limit": 30}, listed["params"])
+        self.assertTrue(
+            fetched["url"].endswith("/api/v1/speech-optimization-dispatch-runs/run-1")
+        )
+        self.assertEqual({"lease_seconds": 900}, json.loads(claim["data"]))
+        self.assertEqual(
+            {"lease_token": "lease-capability", "lease_seconds": 600},
+            json.loads(renew["data"]),
+        )
+        self.assertEqual(
+            {"lease_token": "lease-capability"}, json.loads(release["data"])
+        )
+        self.assertEqual(
+            {
+                "lease_token": "lease-capability",
+                "result": {
+                    "kind": "speech_optimization",
+                    "items": [{"unit_id": 1, "text": "Doctor Jones"}],
+                },
+            },
+            json.loads(submit["data"]),
+        )
 
     def test_dispatch_error_codes_preserve_backend_message_and_details(self):
         origin = "http://127.0.0.1:8097"

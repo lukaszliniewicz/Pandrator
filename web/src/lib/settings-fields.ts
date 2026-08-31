@@ -108,8 +108,7 @@ const CHOICES: Record<string, SettingOption[]> = {
   ],
   speech_optimization_mode: [
     option('guarded', 'Guarded speech plan (recommended)'),
-    option('flexible', 'Flexible contextual rewrite'),
-    option('legacy', 'Legacy whole-text prompt')
+    option('flexible', 'Flexible contextual rewrite')
   ],
   web_research_provider: [option('jina', 'Jina Reader')],
   web_research_mode: [
@@ -385,8 +384,8 @@ export function settingLabel(key: string): string {
       'Optimize and review the document before generation',
     apply_reviewed_pronunciations:
       'Apply reviewed pronunciation-library overrides',
-    llm_tts_batch_size: 'Segments per inline JSON batch',
-    llm_tts_document_batch_size: 'Segments per document JSON batch',
+    llm_tts_batch_size: 'Units per generation-time model request',
+    llm_tts_document_batch_size: 'Units per document model request',
     tts_batch_size: 'Segments per streaming speech batch',
     tts_optimization_model: 'Speech optimization model',
     reasoning_effort: 'Reasoning level',

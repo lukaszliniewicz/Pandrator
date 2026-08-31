@@ -43,9 +43,23 @@ policy in addition to application scopes.
 **Target replacement.** Enrollment pins application ID, canonical origin, and
 Manager ID. A mismatch fails closed and requires explicit re-enrollment.
 
-**Replay or duplicate mutation.** Every mutation requires an idempotency key.
-Plan-backed operations bind that key to the authenticated subject, target,
-action, normalized argument digest, and immutable plan digest.
+**Replay or duplicate mutation.** Every network or application-state mutation
+requires an idempotency key. Plan-backed operations bind that key to the
+authenticated subject, target, action, normalized argument digest, and
+immutable plan digest.
+
+Artifact download is the narrow exception: its identity is the immutable
+artifact ID plus a sanitized filename inside one configured output root.
+Existing matching bytes are reused, conflicting bytes fail closed, partial
+bytes are resumed and verified, and publication is atomic.
+
+**Filesystem escape or local-file exfiltration.** Models can select only an
+operator-approved root name and a relative path returned by browsing. Absolute
+paths are never returned by tools. Import walks path components with no-follow
+file descriptors, excludes symlinks, accepts only non-empty regular files, and
+rechecks file identity and metadata after streaming. Download sanitizes the
+leaf filename, rejects symlink destinations, and remains inside the configured
+output root.
 
 **Prompt injection from source content.** Guides are packaged product
 knowledge, not retrieval over user documents. Source text is data, never tool
@@ -65,6 +79,8 @@ auditable work records provide independent enforcement layers.
    accepted and rejected address sets.
 5. Target identity changes, TLS failures, redirects, oversized responses, and
    unavailable credential backends fail closed.
-6. No remote Manager mutation ships before the versioned automation enrollment
+6. Approved-root containment, symlink rejection, resumable upload replay, and
+   artifact download integrity have regression tests.
+7. No remote Manager mutation ships before the versioned automation enrollment
    contract, target-side policy, scopes, idempotency, plan digest, and audit
    controls are implemented together.

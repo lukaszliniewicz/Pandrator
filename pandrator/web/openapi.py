@@ -1543,6 +1543,147 @@ def build_openapi_document() -> dict:
                     },
                 }
             },
+            "/api/v1/sessions/{sessionId}/speech-optimization-dispatch-runs": {
+                "post": {
+                    "operationId": "createSpeechOptimizationDispatchRun",
+                    "parameters": [idempotency_header(required=False)],
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/SpeechOptimizationDispatchRunCreateRequest"
+                                }
+                            }
+                        },
+                    },
+                    "responses": {
+                        "201": {
+                            "description": "Passive speech-optimization run created"
+                        }
+                    },
+                },
+                "get": {
+                    "operationId": "listSpeechOptimizationDispatchRuns",
+                    "responses": {
+                        "200": {
+                            "description": "Speech-optimization dispatch run metadata"
+                        }
+                    },
+                },
+            },
+            "/api/v1/speech-optimization-dispatch-runs/{runId}": {
+                "get": {
+                    "operationId": "getSpeechOptimizationDispatchRun",
+                    "responses": {
+                        "200": {
+                            "description": "Speech-optimization dispatch run metadata"
+                        }
+                    },
+                }
+            },
+            "/api/v1/speech-optimization-dispatch-runs/{runId}/claim": {
+                "post": {
+                    "operationId": "claimSpeechOptimizationDispatchBatch",
+                    "parameters": [idempotency_header(required=True)],
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/DispatchBatchClaimRequest"
+                                }
+                            }
+                        },
+                    },
+                    "responses": {
+                        "200": {
+                            "description": "Claimed speech-text optimization batch",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "$ref": "#/components/schemas/SpeechOptimizationDispatchBatchClaimResponse"
+                                    }
+                                }
+                            },
+                        }
+                    },
+                }
+            },
+            "/api/v1/speech-optimization-dispatch-batches/{batchId}/renew": {
+                "post": {
+                    "operationId": "renewSpeechOptimizationDispatchBatch",
+                    "parameters": [idempotency_header(required=False)],
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/DispatchBatchRenewRequest"
+                                }
+                            }
+                        },
+                    },
+                    "responses": {"200": {"description": "Lease renewed"}},
+                }
+            },
+            "/api/v1/speech-optimization-dispatch-batches/{batchId}/release": {
+                "post": {
+                    "operationId": "releaseSpeechOptimizationDispatchBatch",
+                    "parameters": [idempotency_header(required=False)],
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/DispatchBatchReleaseRequest"
+                                }
+                            }
+                        },
+                    },
+                    "responses": {
+                        "200": {"description": "Batch returned to ready"}
+                    },
+                }
+            },
+            "/api/v1/speech-optimization-dispatch-batches/{batchId}/submit": {
+                "post": {
+                    "operationId": "submitSpeechOptimizationDispatchBatch",
+                    "parameters": [idempotency_header(required=True)],
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/SpeechOptimizationDispatchBatchSubmitRequest"
+                                }
+                            }
+                        },
+                    },
+                    "responses": {
+                        "200": {
+                            "description": "Speech-text batch accepted",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "$ref": "#/components/schemas/SpeechOptimizationDispatchBatchSubmitResponse"
+                                    }
+                                }
+                            },
+                        },
+                        "202": {
+                            "description": "Batch accepted; finalization continues",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "$ref": "#/components/schemas/SpeechOptimizationDispatchBatchSubmitResponse"
+                                    }
+                                }
+                            },
+                        },
+                    },
+                }
+            },
             "/api/v1/parity": {
                 "get": operation("getParityRegistry", "Qt-to-web parity registry")
             },
@@ -2090,6 +2231,7 @@ def build_openapi_document() -> dict:
             "put",
         ),
         ("/api/v1/sessions/{sessionId}/sources", "post"),
+        ("/api/v1/uploads/init", "post"),
     ):
         parameters = paths[path][method].setdefault("parameters", [])
         if not any(item.get("name") == "If-Match" for item in parameters):
@@ -2143,6 +2285,41 @@ def build_openapi_document() -> dict:
             "post",
             "app.run",
         ),
+        (
+            "/api/v1/sessions/{sessionId}/speech-optimization-dispatch-runs",
+            "get",
+            "app.read",
+        ),
+        (
+            "/api/v1/sessions/{sessionId}/speech-optimization-dispatch-runs",
+            "post",
+            "app.run",
+        ),
+        (
+            "/api/v1/speech-optimization-dispatch-runs/{runId}",
+            "get",
+            "app.read",
+        ),
+        (
+            "/api/v1/speech-optimization-dispatch-runs/{runId}/claim",
+            "post",
+            "app.run",
+        ),
+        (
+            "/api/v1/speech-optimization-dispatch-batches/{batchId}/renew",
+            "post",
+            "app.run",
+        ),
+        (
+            "/api/v1/speech-optimization-dispatch-batches/{batchId}/release",
+            "post",
+            "app.run",
+        ),
+        (
+            "/api/v1/speech-optimization-dispatch-batches/{batchId}/submit",
+            "post",
+            "app.run",
+        ),
         ("/api/v1/sessions/{sessionId}", "get", "app.read"),
         ("/api/v1/sessions/{sessionId}", "patch", "app.write"),
         ("/api/v1/sessions/{sessionId}/forks", "post", "app.write"),
@@ -2167,8 +2344,16 @@ def build_openapi_document() -> dict:
             "app.run",
         ),
         ("/api/v1/artifacts", "get", "app.read"),
+        ("/api/v1/artifacts/{artifactId}/context", "get", "app.read"),
+        ("/api/v1/artifacts/{artifactId}/content", "get", "app.read"),
         ("/api/v1/providers", "get", "app.read"),
+        ("/api/v1/services/tts", "get", "app.read"),
         ("/api/v1/voices", "get", "app.read"),
+        (
+            "/api/v1/sessions/{sessionId}/generation-runs",
+            "get",
+            "app.read",
+        ),
         ("/api/v1/work", "get", "app.read"),
         ("/api/v1/work/{jobId}", "get", "app.read"),
         ("/api/v1/work/{jobId}/events", "get", "app.read"),
@@ -2184,6 +2369,11 @@ def build_openapi_document() -> dict:
             "app.write",
         ),
         ("/api/v1/sources", "get", "app.read"),
+        ("/api/v1/uploads/init", "post", "app.write"),
+        ("/api/v1/uploads/{uploadId}", "get", "app.read"),
+        ("/api/v1/uploads/{uploadId}", "delete", "app.write"),
+        ("/api/v1/uploads/{uploadId}/chunks/{index}", "put", "app.write"),
+        ("/api/v1/uploads/{uploadId}/complete", "post", "app.write"),
         (
             "/api/v1/sessions/{sessionId}/sources",
             "post",

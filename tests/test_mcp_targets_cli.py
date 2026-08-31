@@ -15,6 +15,7 @@ from pandrator_mcp.credentials import (
 from pandrator_mcp.errors import TargetResolutionError
 from pandrator_mcp.network_policy import TargetMode
 from pandrator_mcp.targets import (
+    LocalSourceRoot,
     TargetIdentityExpectation,
     TargetProfile,
     TargetStore,
@@ -38,6 +39,29 @@ class MemoryCredentialBackend:
 
 
 class TargetStoreTests(unittest.TestCase):
+    def test_local_roots_round_trip_without_entering_tool_arguments(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            store = TargetStore(base / "targets.json")
+            store.put(
+                TargetProfile(
+                    name="local",
+                    mode=TargetMode.LOCAL_MANAGED,
+                    workspace=str(base),
+                )
+            )
+            updated = store.configure_local_paths(
+                "local",
+                source_roots=(
+                    LocalSourceRoot(name="downloads", path=str(base / "inputs")),
+                ),
+                output_root=str(base / "outputs"),
+            )
+            self.assertEqual("downloads", updated.local_source_roots[0].name)
+            loaded = store.load(missing_ok=False)[0]
+            self.assertEqual(str(base / "inputs"), loaded.local_source_roots[0].path)
+            self.assertEqual(str(base / "outputs"), loaded.local_output_root)
+
     def test_atomic_store_round_trip_update_and_remove(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "nested" / "targets.json"
@@ -168,6 +192,53 @@ class TargetCliTests(unittest.TestCase):
             )
             self.assertIn('"remote_clients_revoked": false', output)
 
+    def test_local_source_and_output_roots_are_managed_explicitly(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            config = str(base / "targets.json")
+            result, _output, error = self.invoke(
+                "target",
+                "--config",
+                config,
+                "add",
+                "local",
+                "--mode",
+                "local",
+                "--workspace",
+                str(base),
+            )
+            self.assertEqual(0, result, error)
+            result, output, error = self.invoke(
+                "target",
+                "--config",
+                config,
+                "source-root-add",
+                "local",
+                "downloads",
+                str(base / "Downloads"),
+            )
+            self.assertEqual(0, result, error)
+            self.assertIn('"name": "downloads"', output)
+            result, output, error = self.invoke(
+                "target",
+                "--config",
+                config,
+                "output-root-set",
+                "local",
+                str(base / "outputs"),
+            )
+            self.assertEqual(0, result, error)
+            self.assertIn(str(base / "outputs"), output)
+            result, output, error = self.invoke(
+                "target",
+                "--config",
+                config,
+                "source-root-list",
+                "local",
+            )
+            self.assertEqual(0, result, error)
+            self.assertIn("downloads", output)
+
     def test_logout_deletes_keyring_secret_and_retains_remote_guidance(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "targets.json"
@@ -289,9 +360,7 @@ class TargetCliTests(unittest.TestCase):
                     name="remote",
                     mode=TargetMode.EXTERNAL_HTTPS,
                     application_origin="https://pandrator.example",
-                    manager_recovery_origin=(
-                        "https://recovery.pandrator.example"
-                    ),
+                    manager_recovery_origin=("https://recovery.pandrator.example"),
                     manager_recovery_credential=CredentialReference(
                         backend="keyring",
                         reference="remote/recovery",

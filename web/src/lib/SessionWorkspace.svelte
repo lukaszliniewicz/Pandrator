@@ -169,6 +169,7 @@
   let preventSubtitleRemoval = $state(false);
   let optimizationBatchSize = $state(3);
   let documentOptimizationBatchSize = $state(8);
+  let speechOptimizationMode = $state<'guarded' | 'flexible'>('guarded');
   let optimizationMultiStage = $state(false);
   let optimizationFirstPrompt = $state('');
   let optimizationSecondPrompt = $state('');
@@ -714,6 +715,10 @@
     documentOptimizationBatchSize = Number(
       saved.llm_tts_document_batch_size ?? 8
     );
+    speechOptimizationMode =
+      String(saved.speech_optimization_mode ?? 'guarded') === 'flexible'
+        ? 'flexible'
+        : 'guarded';
     optimizationMultiStage = Boolean(saved.llm_multi_stage ?? false);
     optimizationFirstPrompt = String(saved.first_prompt ?? '');
     optimizationSecondPrompt = String(saved.second_prompt ?? '');
@@ -1822,6 +1827,7 @@
             llm_processing_enabled: optimizationEnabled,
             llm_tts_document_optimization: documentOptimizationEnabled,
             tts_optimization_model: model === 'default' ? '' : model,
+            speech_optimization_mode: speechOptimizationMode,
             llm_tts_batch_size: optimizationBatchSize,
             llm_tts_document_batch_size: documentOptimizationBatchSize,
             llm_concurrent_calls: optimizationConcurrent,
@@ -1840,6 +1846,7 @@
           value: {
             llm_tts_document_optimization: documentOptimizationEnabled,
             tts_optimization_model: model === 'default' ? '' : model,
+            speech_optimization_mode: speechOptimizationMode,
             llm_tts_document_batch_size: documentOptimizationBatchSize,
             llm_concurrent_calls: optimizationConcurrent,
             llm_multi_stage: optimizationMultiStage,
@@ -1963,6 +1970,7 @@
         ...common,
         llm_tts_optimization: optimizationEnabled,
         llm_tts_document_optimization: documentOptimizationEnabled,
+        speech_optimization_mode: speechOptimizationMode,
         llm_tts_batch_size:
           optimizationTiming === 'document'
             ? documentOptimizationBatchSize
@@ -1979,6 +1987,7 @@
       stageSettings[key] = {
         ...common,
         llm_tts_document_optimization: documentOptimizationEnabled,
+        speech_optimization_mode: speechOptimizationMode,
         llm_tts_document_batch_size: documentOptimizationBatchSize,
         llm_tts_batch_size: documentOptimizationBatchSize,
         combined_prompt: optimizationPrompt,
@@ -2437,14 +2446,14 @@
               /></label
             >
             <p class="muted mt-2 text-xs leading-relaxed">
-              1 preserves full continuity and is the quality-first default.
-              Higher values process independent batches in parallel for speed.
+              1 is the quality-first default. Higher values process independent
+              requests in parallel for speed.
               {#if settingsStage.key === 'correct'}Parallel correction cannot
                 include the preceding corrected batch.{:else if settingsStage.key === 'translate'}Parallel
-                translation cannot include the preceding translation or glossary
-                terms discovered by sibling batches.{:else}Optimization batches
-                are independent, so parallel processing does not carry context
-                between them.{/if}
+              translation cannot include the preceding translation or glossary
+                terms discovered by sibling batches.{:else}Units inside one
+                optimization request share context. Parallel requests do not
+                carry discoveries between them.{/if}
             </p>
           </div>
         {/if}
@@ -3079,10 +3088,10 @@
                   class="mt-1 accent-[var(--accent)]"
                 /><span
                   ><strong class="block"
-                    >Before generation · whole document</strong
+                    >Before generation · reviewable revision</strong
                   ><span class="muted mt-1 block text-xs"
-                    >Create an editable before-and-after artifact, review it,
-                    then release the LLM before TTS starts.</span
+                    >Process the document's existing narration units, create an
+                    editable before-and-after artifact, and review it before TTS.</span
                   ></span
                 ></label
               ><label
@@ -3094,18 +3103,31 @@
                   class="mt-1 accent-[var(--accent)]"
                 /><span
                   ><strong class="block"
-                    >During generation · segment batches</strong
+                    >During generation · final speech units</strong
                   ><span class="muted mt-1 block text-xs"
-                    >Optimize indexed batches as synthesis begins and compare
-                    the result in the generation drawer.</span
+                    >Optimize the final synthesis units as generation begins and
+                    compare each result in the generation drawer.</span
                   ></span
                 ></label
               >
             </div>
           </fieldset>
+          <label class="text-sm font-semibold"
+            >Speech-planning policy<select
+              bind:value={speechOptimizationMode}
+              class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
+            >
+              <option value="guarded">Guarded · safest</option>
+              <option value="flexible">Flexible · contextual rewrite</option>
+            </select><span
+              class="muted mt-2 block text-xs font-normal leading-relaxed"
+              >Guarded changes only validated speech candidates. Flexible may
+              revise phrasing but must preserve protected text and meaning.</span
+            ></label
+          >
           <div>
             <label class="text-sm font-semibold"
-              >Segments per JSON batch{#if optimizationTiming === 'document'}<input
+              >Units per model request{#if optimizationTiming === 'document'}<input
                   type="number"
                   min="1"
                   max="64"
@@ -3118,49 +3140,12 @@
                   bind:value={optimizationBatchSize}
                   class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
                 />{/if}</label
-            >
+              ><p class="muted mt-2 text-xs leading-relaxed">
+                Use 1 for small local models. Larger values reduce request
+                overhead and provide neighboring context; every unit is still
+                validated and stored independently.
+              </p>
           </div>
-          <label
-            class="flex items-start gap-3 rounded-xl border border-[var(--line)] p-4"
-            ><input
-              type="checkbox"
-              bind:checked={optimizationMultiStage}
-              class="mt-1 size-4 accent-[var(--accent)]"
-            /><span
-              ><span class="block text-sm font-semibold"
-                >Use divided prompts</span
-              ><span class="muted mt-1 block text-xs"
-                >Each non-empty prompt runs sequentially over the same indexed
-                JSON batch.</span
-              ></span
-            ></label
-          >
-          {#if optimizationMultiStage}<label class="text-sm font-semibold"
-              >First prompt<textarea
-                bind:value={optimizationFirstPrompt}
-                rows="3"
-                class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
-              ></textarea></label
-            ><label class="text-sm font-semibold"
-              >Second prompt<textarea
-                bind:value={optimizationSecondPrompt}
-                rows="3"
-                class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
-              ></textarea></label
-            ><label class="text-sm font-semibold"
-              >Third prompt<textarea
-                bind:value={optimizationThirdPrompt}
-                rows="3"
-                class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
-              ></textarea></label
-            >{:else}<label class="text-sm font-semibold"
-              >Single optimization prompt<textarea
-                bind:value={optimizationPrompt}
-                rows="5"
-                placeholder="Leave blank for Pandrator's safe default"
-                class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
-              ></textarea></label
-            >{/if}
         {/if}
         {#if settingsStage.key === 'clean_source'}<label
             class="flex items-start gap-3 rounded-xl border border-[var(--line)] p-4"
