@@ -148,6 +148,14 @@ class WorkspaceLayout:
         return self.state / "client.secret"
 
     @property
+    def mcp_credential(self) -> Path:
+        return self.state / "mcp.secret"
+
+    @property
+    def mcp_configuration(self) -> Path:
+        return self.state / "mcp-targets.json"
+
+    @property
     def network_configuration(self) -> Path:
         return self.state / "network.json"
 

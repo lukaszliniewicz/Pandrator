@@ -134,7 +134,7 @@ major update. More detail is in
 Python packages are intended for advanced installations and automation:
 
 ```bash
-python -m pip install pandrator
+python -m pip install "pandrator[automation]"
 pipx install pandrator-manager
 pipx install "pandrator-mcp[credential-stores,manager]"
 ```
@@ -143,3 +143,8 @@ A Python package installation does not enable autostart, launch a daemon,
 install a component, or request elevation. The native Manager remains the
 simplest complete installation. Contributors should use the
 [source-development guide](../development/from-source.md).
+
+The `automation` extra places the MCP runtime in the Pandrator environment so
+a current Manager can supervise the local HTTP service. It does not expose a
+remote listener; remote agent workstations still install the standalone MCP
+command shown above.

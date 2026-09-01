@@ -53,6 +53,17 @@ class DependencyManifestTests(unittest.TestCase):
                 self.assertEqual(metadata["license"], "MIT")
                 self.assertEqual(metadata["license-files"], ["LICENSE"])
 
+    def test_application_automation_extra_installs_the_managed_mcp_runtime(self):
+        root = Path(__file__).resolve().parents[1]
+        metadata = tomllib.loads(
+            (root / "pyproject.toml").read_text(encoding="utf-8")
+        )["project"]
+
+        self.assertEqual(
+            ["pandrator-mcp[manager]>=0.3,<1"],
+            metadata["optional-dependencies"]["automation"],
+        )
+
     def test_requirements_are_current_projections_of_project_metadata(self):
         for destination, source, extras in TARGETS:
             with self.subTest(destination=destination.name):

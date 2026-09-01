@@ -73,6 +73,12 @@ application identity, and run `doctor` before enabling writes. Optional
 app-down Manager recovery uses a different origin, audience, credential, and
 enrollment.
 
+The Manager-owned Streamable HTTP MCP is deliberately loopback-only and is not
+the remote deployment surface. Do not forward port 8099 through ingress. The
+agent-workstation stdio process preserves approved local-file access without
+creating a second public listener. See [agent connections](agent-connections.md)
+for the transport choice.
+
 The sidecar rejects model-supplied destinations, redirects, unexpected DNS
 zones, identity changes, and credential substitution. Exact configuration and
 scope commands are in the [MCP guide](../../pandrator_mcp/README.md).

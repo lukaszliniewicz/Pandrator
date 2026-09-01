@@ -10,7 +10,7 @@ import zipfile
 from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 from urllib.parse import urlsplit
 
 from dulwich import porcelain
@@ -53,7 +53,15 @@ from ..releases.handoff import (
 )
 from ..releases.models import ReleaseArtifact
 from ..releases.slots import ReleaseSlotManager
-from ..runtime_specs import pandrator_runtime_specs
+from ..runtime_specs import (
+    PANDRATOR_API_SERVICE,
+    PANDRATOR_CORE_SERVICES,
+    PANDRATOR_MCP_SERVICE,
+    PANDRATOR_SERVICE_START_ORDER,
+    PANDRATOR_SERVICE_STOP_ORDER,
+    PANDRATOR_WORKER_SERVICE,
+    pandrator_runtime_specs,
+)
 from ..state import ManagerStore
 from ..supervisor import ProcessSupervisor
 from ..tls import CABundleSelection, dulwich_config_with_ca
@@ -755,7 +763,7 @@ class FilesystemTaskHandler:
             for service in execution.supervisor.snapshot()
         }
         services: dict[str, dict] = {}
-        for service_id in ("pandrator.worker", "pandrator.api"):
+        for service_id in PANDRATOR_SERVICE_STOP_ORDER:
             snapshot = snapshots.get(service_id)
             spec = execution.supervisor.spec(service_id)
             if snapshot is None and spec is None:
@@ -823,12 +831,9 @@ class FilesystemTaskHandler:
         del task
         if execution.supervisor is None:
             return
-        services = (
-            result.get("services")
-            if isinstance(result.get("services"), dict)
-            else {}
-        )
-        for service_id in ("pandrator.api", "pandrator.worker"):
+        raw_services: object = result.get("services")
+        services: dict[str, Any] = raw_services if isinstance(raw_services, dict) else {}
+        for service_id in PANDRATOR_SERVICE_START_ORDER:
             previous = services.get(service_id)
             if not isinstance(previous, dict):
                 continue
@@ -894,12 +899,16 @@ class FilesystemTaskHandler:
             spec.service_id: spec
             for spec in pandrator_runtime_specs(execution.context.layout)
         }
-        if set(new_specs) != {"pandrator.api", "pandrator.worker"}:
+        if not PANDRATOR_CORE_SERVICES.issubset(new_specs):
             raise RuntimeError(
                 "The activated application did not produce its required services."
             )
-        for service_id in ("pandrator.api", "pandrator.worker"):
-            execution.supervisor.replace_spec(new_specs[service_id])
+        for service_id in PANDRATOR_SERVICE_STOP_ORDER:
+            if service_id not in new_specs and execution.supervisor.spec(service_id) is not None:
+                execution.supervisor.unregister(service_id)
+        for service_id in PANDRATOR_SERVICE_START_ORDER:
+            if service_id in new_specs:
+                execution.supervisor.replace_spec(new_specs[service_id])
 
         stopped = self._prior(
             execution,
@@ -918,7 +927,7 @@ class FilesystemTaskHandler:
                 )
             )
             for key, value in previous_services.items()
-            if key == "pandrator.worker"
+            if key == PANDRATOR_WORKER_SERVICE
         )
         keep_api = keep_worker or requested_running or any(
             bool(
@@ -929,16 +938,30 @@ class FilesystemTaskHandler:
                 )
             )
             for key, value in previous_services.items()
-            if key == "pandrator.api"
+            if key == PANDRATOR_API_SERVICE
         )
+        keep_mcp = PANDRATOR_MCP_SERVICE in new_specs and keep_api
 
         # Starting the new API both applies its idempotent database migrations
         # and proves the fixed service/protocol/version health contract.
-        api = execution.supervisor.start("pandrator.api")
+        api = execution.supervisor.start(PANDRATOR_API_SERVICE)
         if keep_worker:
-            execution.supervisor.start("pandrator.worker")
+            execution.supervisor.start(PANDRATOR_WORKER_SERVICE)
+        mcp_error = None
+        if keep_mcp:
+            try:
+                execution.supervisor.start(PANDRATOR_MCP_SERVICE)
+            except Exception as error:
+                mcp_error = str(error) or "Pandrator MCP could not be started."
+                execution.context.event_sink.emit(
+                    "application.mcp_start_failed",
+                    {"error": mcp_error, "action": "release-activate"},
+                    component_id="pandrator",
+                    operation_id=execution.operation.id,
+                    service_id=PANDRATOR_MCP_SERVICE,
+                )
         if not keep_api:
-            execution.supervisor.stop("pandrator.api")
+            execution.supervisor.stop(PANDRATOR_API_SERVICE)
         execution.check_cancelled()
         ownership = {
             "path": str(execution.context.layout.root / "app"),
@@ -973,9 +996,11 @@ class FilesystemTaskHandler:
                 else None
             ),
             "kept_running": {
-                "pandrator.api": keep_api,
-                "pandrator.worker": keep_worker,
+                PANDRATOR_API_SERVICE: keep_api,
+                PANDRATOR_MCP_SERVICE: keep_mcp and mcp_error is None,
+                PANDRATOR_WORKER_SERVICE: keep_worker,
             },
+            "mcp_error": mcp_error,
             "ownership": ownership,
             "release_activation": release_activation,
         }
@@ -992,7 +1017,7 @@ class FilesystemTaskHandler:
             snapshots = {
                 service.id: service for service in supervisor.snapshot()
             }
-            for service_id in ("pandrator.worker", "pandrator.api"):
+            for service_id in PANDRATOR_SERVICE_STOP_ORDER:
                 selected = snapshots.get(service_id)
                 if selected is not None and (
                     selected.process is not None
@@ -1017,16 +1042,15 @@ class FilesystemTaskHandler:
             "release:stop-application",
             {},
         )
-        previous_services = (
-            stopped_result.get("services")
-            if isinstance(stopped_result.get("services"), dict)
-            else {}
+        raw_previous_services: object = stopped_result.get("services")
+        previous_services: dict[str, Any] = (
+            raw_previous_services if isinstance(raw_previous_services, dict) else {}
         )
-        for service_id in ("pandrator.worker", "pandrator.api"):
+        for service_id in PANDRATOR_SERVICE_STOP_ORDER:
             current = supervisor.spec(service_id)
             if current is not None:
                 supervisor.unregister(service_id)
-        for service_id in ("pandrator.api", "pandrator.worker"):
+        for service_id in PANDRATOR_SERVICE_START_ORDER:
             previous = previous_services.get(service_id)
             serialized = (
                 previous.get("spec")
@@ -1726,19 +1750,41 @@ class FilesystemTaskHandler:
             }
             # A component update activates a new application slot before this
             # task refreshes the launch contracts. ProcessSupervisor correctly
-            # refuses to replace a running contract, so quiesce the worker and
-            # API first. Starting the worker below also starts its API
-            # dependency.
-            for service_id in ("pandrator.worker", "pandrator.api"):
+            # refuses to replace a running contract, so quiesce every
+            # application-owned service first.
+            for service_id in PANDRATOR_SERVICE_STOP_ORDER:
                 if service_id in running:
                     execution.supervisor.stop(service_id)
+            selected_ids = {
+                specification.service_id for specification in specifications
+            }
+            for service_id in PANDRATOR_SERVICE_STOP_ORDER:
+                if (
+                    service_id not in selected_ids
+                    and execution.supervisor.spec(service_id) is not None
+                ):
+                    execution.supervisor.unregister(service_id)
             for specification in specifications:
                 execution.supervisor.replace_spec(specification)
-            service = execution.supervisor.start("pandrator.worker")
-        except Exception as error:
-            for service_id in ("pandrator.worker", "pandrator.api"):
+            service = execution.supervisor.start(PANDRATOR_WORKER_SERVICE)
+            mcp_error = None
+            if PANDRATOR_MCP_SERVICE in selected_ids:
                 try:
-                    execution.supervisor.stop(service_id)
+                    execution.supervisor.start(PANDRATOR_MCP_SERVICE)
+                except Exception as error:
+                    mcp_error = str(error) or "Pandrator MCP could not be started."
+                    execution.context.event_sink.emit(
+                        "application.mcp_start_failed",
+                        {"error": mcp_error, "action": "install"},
+                        component_id="pandrator",
+                        operation_id=execution.operation.id,
+                        service_id=PANDRATOR_MCP_SERVICE,
+                    )
+        except Exception as error:
+            for service_id in PANDRATOR_SERVICE_STOP_ORDER:
+                try:
+                    if execution.supervisor.spec(service_id) is not None:
+                        execution.supervisor.stop(service_id)
                 except Exception:
                     pass
             execution.context.event_sink.emit(
@@ -1762,6 +1808,7 @@ class FilesystemTaskHandler:
                 if service.health is not None
                 else None
             ),
+            "mcp_error": mcp_error,
         }
 
     def _rollback_start_application(
@@ -1772,8 +1819,9 @@ class FilesystemTaskHandler:
     ) -> None:
         if execution.supervisor is None or not result.get("started"):
             return
-        execution.supervisor.stop("pandrator.worker")
-        execution.supervisor.stop("pandrator.api")
+        for service_id in PANDRATOR_SERVICE_STOP_ORDER:
+            if execution.supervisor.spec(service_id) is not None:
+                execution.supervisor.stop(service_id)
 
     def _execute_stop_service(
         self,

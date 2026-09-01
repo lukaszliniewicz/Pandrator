@@ -1,4 +1,4 @@
-"""Secret-free local-stdio configuration for supported MCP hosts."""
+"""Configuration renderers for supported MCP hosts."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 
 HostKind = Literal[
     "codex",
@@ -124,11 +125,9 @@ def render_host_config(
         payload = {
             "$schema": "https://opencode.ai/config.json",
             "mcp": {
-                "servers": {
-                    selected_name: {
-                        "type": "local",
-                        "command": [command, *arguments],
-                    }
+                selected_name: {
+                    "type": "local",
+                    "command": [command, *arguments],
                 }
             },
         }
@@ -158,4 +157,105 @@ def render_host_config(
             )
             + "\n"
         ),
+    )
+
+
+def render_http_host_config(
+    host: HostKind,
+    *,
+    endpoint: str,
+    bearer_token: str,
+    server_name: str = "pandrator",
+) -> HostConfig:
+    """Render an explicitly secret-bearing local HTTP host configuration."""
+
+    if host not in {
+        "codex",
+        "claude-code",
+        "opencode",
+        "antigravity",
+    }:
+        raise ValueError(f"Unsupported MCP host: {host}")
+    selected_name = _validated_name(server_name)
+    selected_endpoint = str(endpoint or "").strip().rstrip("/")
+    parsed = urlsplit(selected_endpoint)
+    if (
+        parsed.scheme != "http"
+        or parsed.hostname not in {"127.0.0.1", "::1"}
+        or parsed.path != "/mcp"
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError(
+            "Managed MCP host configuration requires the loopback HTTP /mcp endpoint."
+        )
+    token = str(bearer_token or "").strip()
+    if len(token) < 43 or len(token) > 4096 or any(character.isspace() for character in token):
+        raise ValueError("The managed MCP bearer credential is invalid.")
+    authorization = f"Bearer {token}"
+
+    if host == "codex":
+        quoted_name = json.dumps(selected_name, ensure_ascii=False)
+        content = (
+            f"[mcp_servers.{quoted_name}]\n"
+            f"url = {json.dumps(selected_endpoint, ensure_ascii=False)}\n"
+            "enabled = true\n"
+            'default_tools_approval_mode = "writes"\n'
+            "startup_timeout_sec = 20\n"
+            "tool_timeout_sec = 120\n\n"
+            f"[mcp_servers.{quoted_name}.http_headers]\n"
+            f"Authorization = {json.dumps(authorization, ensure_ascii=False)}\n"
+        )
+        return HostConfig(
+            host=host,
+            server_name=selected_name,
+            content_type="application/toml",
+            suggested_filename=".codex/config.toml",
+            content=content,
+        )
+
+    if host == "opencode":
+        payload = {
+            "$schema": "https://opencode.ai/config.json",
+            "mcp": {
+                selected_name: {
+                    "type": "remote",
+                    "url": selected_endpoint,
+                    "enabled": True,
+                    "oauth": False,
+                    "headers": {"Authorization": authorization},
+                }
+            },
+        }
+        filename = "opencode.json"
+    elif host == "claude-code":
+        payload = {
+            "mcpServers": {
+                selected_name: {
+                    "type": "http",
+                    "url": selected_endpoint,
+                    "headers": {"Authorization": authorization},
+                }
+            }
+        }
+        filename = ".mcp.json"
+    else:
+        payload = {
+            "mcpServers": {
+                selected_name: {
+                    "serverUrl": selected_endpoint,
+                    "headers": {"Authorization": authorization},
+                }
+            }
+        }
+        filename = ".agents/mcp_config.json"
+
+    return HostConfig(
+        host=host,
+        server_name=selected_name,
+        content_type="application/json",
+        suggested_filename=filename,
+        content=json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
     )

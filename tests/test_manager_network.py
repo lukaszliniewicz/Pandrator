@@ -114,7 +114,7 @@ class NetworkConfigurationTests(unittest.TestCase):
                     crispasr if component_id == "crispasr" else None
                 ),
             ):
-                api, worker = pandrator_runtime_specs(
+                api, mcp, worker = pandrator_runtime_specs(
                     layout,
                     exposure=exposure,
                     preferences={
@@ -131,6 +131,11 @@ class NetworkConfigurationTests(unittest.TestCase):
             "http://127.0.0.1:8097/api/v1/health",
             api.readiness.url,
         )
+        self.assertEqual("pandrator.mcp", mcp.service_id)
+        self.assertEqual("http://127.0.0.1:8099/health", mcp.readiness.url)
+        self.assertEqual(("pandrator.api",), mcp.dependencies)
+        self.assertIn(str(layout.mcp_credential), mcp.arguments)
+        self.assertIn(str(layout.mcp_configuration), mcp.arguments)
         self.assertEqual("moss", api.environment["CRISPASR_DEFAULT_ENGINE"])
         self.assertEqual(
             str(crispasr_executable),

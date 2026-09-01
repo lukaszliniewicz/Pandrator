@@ -55,11 +55,19 @@ multi-user service or treat owner credentials as tenant isolation.
 
 ## MCP boundary
 
-`pandrator-mcp` runs as a local stdio sidecar beside the agent host and is bound
-to one named target at startup. Tool schemas do not accept origins, proxies,
-CA paths, tokens, or arbitrary files. The sidecar validates network zone,
-redirect policy, target identity, scopes, response bounds, and credential
-audience before forwarding a bounded application or Manager operation.
+`pandrator-mcp` can run as a Manager-owned loopback Streamable HTTP service or
+as a local stdio process beside the agent host. Both are bound to one target.
+Tool schemas do not accept origins, proxies, CA paths, tokens, or arbitrary
+files. The adapter validates network zone, redirect policy, target identity,
+scopes, response bounds, and credential audience before forwarding a bounded
+application or Manager operation.
+
+Managed HTTP uses a separate owner-protected bearer file and accepts protocol
+requests only on loopback. It validates `Host` and `Origin`; its bearer is not
+an application token and is never returned through Manager or MCP tools. Host
+configuration containing that bearer is private user configuration. Remote
+deployments should keep using stdio beside the agent and a fixed authenticated
+Pandrator HTTPS target rather than publishing the loopback MCP service.
 
 Application and app-down Manager recovery use separate audiences and
 credentials. The Manager's permanent local bearer remains on the target host.

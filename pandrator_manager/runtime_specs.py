@@ -22,6 +22,20 @@ from .models import (
 from .network import EndpointExposure
 from .releases.bundles import active_release_bundle
 
+PANDRATOR_API_SERVICE = "pandrator.api"
+PANDRATOR_MCP_SERVICE = "pandrator.mcp"
+PANDRATOR_WORKER_SERVICE = "pandrator.worker"
+PANDRATOR_MCP_PORT = 8099
+PANDRATOR_CORE_SERVICES = frozenset(
+    {PANDRATOR_API_SERVICE, PANDRATOR_WORKER_SERVICE}
+)
+PANDRATOR_SERVICE_START_ORDER = (
+    PANDRATOR_API_SERVICE,
+    PANDRATOR_WORKER_SERVICE,
+    PANDRATOR_MCP_SERVICE,
+)
+PANDRATOR_SERVICE_STOP_ORDER = tuple(reversed(PANDRATOR_SERVICE_START_ORDER))
+
 _FISHS2_MODEL_FILENAMES = {
     "f16": "s2-pro-f16.gguf",
     "q8_0": "s2-pro-q8_0.gguf",
@@ -100,6 +114,24 @@ def _supports_serve_option(root: Path, option: str) -> bool:
     return option in source
 
 
+def _supports_managed_mcp(root: Path, python: Path) -> bool:
+    """Detect the MCP module without executing an untrusted application runtime."""
+
+    if (root / "pandrator_mcp" / "__main__.py").is_file():
+        return True
+    candidates: tuple[Path, ...]
+    if os.name == "nt":
+        candidates = (python.parent / "Lib" / "site-packages",)
+    else:
+        candidates = tuple(
+            (python.parent.parent / "lib").glob("python*/site-packages")
+        )
+    return any(
+        (candidate / "pandrator_mcp" / "__main__.py").is_file()
+        for candidate in candidates
+    )
+
+
 def pandrator_runtime_specs(
     layout: WorkspaceLayout,
     *,
@@ -108,6 +140,8 @@ def pandrator_runtime_specs(
     bootstrap_token: str = "",
     exposure: EndpointExposure | None = None,
     preferences: dict[str, str] | None = None,
+    mcp_port: int = PANDRATOR_MCP_PORT,
+    mcp_supported: bool | None = None,
 ) -> tuple[ManagedProcessSpec, ...]:
     selected_exposure = exposure or EndpointExposure(
         bind_host=host,
@@ -141,6 +175,14 @@ def pandrator_runtime_specs(
     else:
         executable = str(runtime_python(layout))
         command_prefix = ()
+    selected_python = Path(executable) if not command_prefix else runtime_python(layout)
+    include_mcp = (
+        _supports_managed_mcp(root, selected_python)
+        if mcp_supported is None
+        else bool(mcp_supported)
+    )
+    if include_mcp and mcp_port == port:
+        raise ValueError("Pandrator API and MCP require distinct fixed ports.")
     environment = {
         "PANDRATOR_DATA_DIR": str(layout.data),
         "CRISPASR_CACHE_DIR": str(layout.cache / "crispasr"),
@@ -198,9 +240,9 @@ def pandrator_runtime_specs(
         if selected_exposure.allow_insecure_remote:
             api_arguments += ("--allow-insecure-remote",)
     probe_base_url = selected_exposure.local_base_url
-    return (
+    specifications: list[ManagedProcessSpec] = [
         ManagedProcessSpec(
-            service_id="pandrator.api",
+            service_id=PANDRATOR_API_SERVICE,
             component_id="pandrator",
             label="Pandrator API",
             executable=executable,
@@ -231,9 +273,49 @@ def pandrator_runtime_specs(
             # environment from the lock file before the HTTP server appears.
             startup_timeout_seconds=15 * 60,
             restart=RestartPolicy(maximum_restarts=3),
-        ),
+        )
+    ]
+    if include_mcp:
+        specifications.append(
+            ManagedProcessSpec(
+                service_id=PANDRATOR_MCP_SERVICE,
+                component_id="pandrator",
+                label="Pandrator MCP",
+                executable=executable,
+                arguments=(
+                    *command_prefix,
+                    "-m",
+                    "pandrator_mcp",
+                    "http",
+                    "--workspace",
+                    str(layout.workspace),
+                    "--config",
+                    str(layout.mcp_configuration),
+                    "--token-file",
+                    str(layout.mcp_credential),
+                    "--host",
+                    "127.0.0.1",
+                    "--port",
+                    str(mcp_port),
+                ),
+                cwd=str(root),
+                environment=worker_environment,
+                ports=(mcp_port,),
+                dependencies=(PANDRATOR_API_SERVICE,),
+                readiness=HealthProbeSpec(
+                    kind="http",
+                    url=f"http://127.0.0.1:{mcp_port}/health",
+                    expected_service="pandrator-mcp",
+                    expected_protocol="2026-07-28",
+                ),
+                startup_timeout_seconds=60,
+                restart=RestartPolicy(maximum_restarts=3),
+                required=False,
+            )
+        )
+    specifications.append(
         ManagedProcessSpec(
-            service_id="pandrator.worker",
+            service_id=PANDRATOR_WORKER_SERVICE,
             component_id="pandrator",
             label="Pandrator worker",
             executable=executable,
@@ -247,11 +329,12 @@ def pandrator_runtime_specs(
             ),
             cwd=str(root),
             environment=worker_environment,
-            dependencies=("pandrator.api",),
+            dependencies=(PANDRATOR_API_SERVICE,),
             readiness=HealthProbeSpec(kind="none"),
             restart=RestartPolicy(maximum_restarts=3),
-        ),
+        )
     )
+    return tuple(specifications)
 
 
 def silero_runtime_spec(

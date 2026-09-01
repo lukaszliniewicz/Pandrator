@@ -16,6 +16,7 @@ read it in order.
 | Decide how correction or translation should run | [Correction and translation](guides/correction-and-translation.md) |
 | Use the model already running in an MCP host | [Passive dispatch](guides/passive-dispatch.md) |
 | Take a local file through an agent-run workflow and return deliverables | [End-to-end agent workflows](guides/agent-workflows.md) |
+| Connect Codex, OpenCode, Claude Code, or Antigravity | [Agent connections](operations/agent-connections.md) |
 | Fix names or prepare text specifically for speech | [Pronunciation and speech text](guides/pronunciation-and-speech.md) |
 | Diagnose a problem | [Troubleshooting](operations/troubleshooting.md) |
 
@@ -23,6 +24,7 @@ read it in order.
 
 - [Updates, data, repair, and removal](operations/updates-data-and-repair.md)
 - [Remote and headless deployments](operations/remote-and-headless.md)
+- [Agent connections and MCP transports](operations/agent-connections.md)
 - [Troubleshooting](operations/troubleshooting.md)
 - [Privacy and security](security/privacy-and-security.md)
 

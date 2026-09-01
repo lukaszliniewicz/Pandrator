@@ -412,6 +412,19 @@ class ManagerClient:
     def services(self) -> list[dict]:
         return self.request("GET", "/v1/services").json()["items"]
 
+    def application(self, action: str | None = None) -> dict:
+        if action is None:
+            return self.request("GET", "/v1/application").json()
+        if action not in {"start", "stop", "restart"}:
+            raise ValueError("Application action must be start, stop, or restart.")
+        return self.request(
+            "POST",
+            f"/v1/application/{action}",
+            json_payload={},
+            idempotency_key=str(uuid.uuid4()),
+            timeout=10 * 60,
+        ).json()
+
     def releases(self) -> dict:
         return self.request("GET", "/v1/releases").json()
 

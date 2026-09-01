@@ -1,9 +1,11 @@
 # Pandrator MCP
 
-`pandrator-mcp` is a local stdio sidecar for explaining Pandrator, inspecting
-an instance, and carrying out bounded application and Manager actions. It can
-control Pandrator on the same computer, a trusted LAN or VPN, an external
-HTTPS server, or a pod.
+`pandrator-mcp` is Pandrator's MCP adapter for explaining the application,
+inspecting an instance, and carrying out bounded application and Manager
+actions. A compatible local Manager supervises an authenticated loopback
+Streamable HTTP service; stdio remains available for remote targets, older
+hosts, and explicit process-per-target use. It can control Pandrator on the
+same computer, a trusted LAN or VPN, an external HTTPS server, or a pod.
 
 The sidecar talks only to Pandrator's versioned HTTP APIs. It does not import
 the application ORM or job queue, accept model-selected URLs, expose arbitrary
@@ -160,6 +162,12 @@ Expected business failures are returned as normal MCP tool results with
 results include private-cache hints and every ordinary result carries the
 required `resultType` through the SDK.
 
+Managed HTTP follows the final stateless request model at `/mcp`, binds only to
+a loopback IP, validates `Host` and `Origin`, caps request bodies at 16 MiB, and
+requires a separate pre-provisioned bearer on every protocol request. The
+Manager probes its unauthenticated, non-sensitive `/health` identity endpoint.
+The HTTP bearer is not an application or Manager token.
+
 For stdio, stdout is reserved exclusively for newline-delimited MCP frames;
 dependency diagnostics from both tool and resource handlers are redirected to
 stderr. Protocol discovery, structured-content fallback, modern stdio, legacy
@@ -197,7 +205,42 @@ then save tokens in Windows Credential Manager, macOS Keychain, or Linux
 Secret Service. The `manager` extra supports local Manager discovery; you may
 omit it when the sidecar will use only external targets.
 
-For a local Manager installation:
+## Choose a transport
+
+### Managed local HTTP
+
+When the active application runtime includes Pandrator's `automation` extra,
+the Manager registers optional service `pandrator.mcp`. Starting Pandrator
+starts the core API and worker, then the HTTP MCP. An MCP startup failure is
+reported in `GET /v1/application`, `GET /v1/services`, and the service log, but
+does not stop the browser application.
+
+The endpoint is `http://127.0.0.1:8099/mcp`. The Manager creates a distinct
+owner-protected credential at `<workspace>/Pandrator/state/mcp.secret` and a
+non-secret target file at
+`<workspace>/Pandrator/state/mcp-targets.json`. The managed target is named
+`managed-local`.
+
+Generate a host fragment only in a private local terminal. The acknowledgement
+flag is required because the fragment contains the HTTP bearer:
+
+```console
+pandrator-manager --workspace /path/to/parent mcp-config codex --include-credential
+pandrator-manager --workspace /path/to/parent mcp-config claude-code --include-credential
+pandrator-manager --workspace /path/to/parent mcp-config opencode --include-credential
+pandrator-manager --workspace /path/to/parent mcp-config antigravity --include-credential
+```
+
+Merge it into the host's private user configuration. Do not commit it or paste
+it into a prompt. In a development or custom installation without the Manager
+wrapper, invoke `pandrator-mcp managed-host-config` directly with the same host,
+workspace, and acknowledgement flag. The public
+[agent-connection guide](https://github.com/lukaszliniewicz/Pandrator/blob/main/docs/operations/agent-connections.md)
+explains the transport choice and local-root configuration.
+
+### Stdio
+
+For an explicit stdio target backed by a local Manager installation:
 
 ```console
 pandrator-mcp target add local --mode local --workspace C:\Pandrator
@@ -233,7 +276,19 @@ pandrator-mcp target output-root-set local /home/me/Pandrator-outputs
 pandrator-mcp target source-root-list local
 ```
 
-Use Windows absolute paths when the sidecar runs on Windows. The MCP model sees
+For managed HTTP, use target `managed-local` and pass the managed target file:
+
+```console
+pandrator-mcp target --config /path/to/parent/Pandrator/state/mcp-targets.json \
+  source-root-add managed-local downloads /home/me/Downloads
+pandrator-mcp target --config /path/to/parent/Pandrator/state/mcp-targets.json \
+  output-root-set managed-local /home/me/Pandrator-outputs
+```
+
+Restart Pandrator after changing the managed roots so the persistent HTTP
+service reloads them.
+
+Use Windows absolute paths when the adapter runs on Windows. The MCP model sees
 root names and relative entries, never these absolute paths. Symlinks are not
 offered for import, and the importer opens every path component without
 following symlinks.
@@ -245,8 +300,9 @@ chunks, and then attaches it with the inspected session revision. Upload state
 and completion results are replayable, so an interrupted model turn can safely
 continue.
 
-“Local” here means local to the stdio sidecar. Pandrator itself may be on the
-same computer or at a fixed remote target. For a remote target the sidecar
+“Local” means local to the MCP process: the Manager-owned service for managed
+HTTP, or the agent-host process for stdio. Pandrator itself may be on the same
+computer or at a fixed remote target. For a remote target the stdio process
 streams bytes directly over the authenticated Pandrator API; the bytes are
 never encoded into an MCP tool result or model prompt.
 
@@ -505,7 +561,7 @@ Review generated infrastructure as carefully as application code. The agent
 can accelerate setup, but the operator still owns DNS, certificate, firewall,
 volume, and exposure decisions.
 
-## Configure an MCP host
+## Configure a stdio MCP host
 
 Generate a secret-free local-stdio fragment after the target exists:
 
@@ -529,7 +585,7 @@ Use `--executable ABSOLUTE_PATH` if the host does not inherit the shell's
 |---|---|---|
 | Codex | `[mcp_servers."…"]` TOML | `.codex/config.toml` |
 | Claude Code | stdio `mcpServers` JSON | `.mcp.json` |
-| OpenCode V2 | `mcp.servers` local-command JSON | `opencode.json` |
+| OpenCode | `mcp` local-command JSON | `opencode.json` |
 | Antigravity | stdio `mcpServers` JSON | `.agents/mcp_config.json` |
 
 Merge the fragment into an existing host file rather than overwriting
@@ -551,6 +607,11 @@ The generated Codex fragment uses `default_tools_approval_mode = "writes"`.
 Interactive writes therefore remain reviewable. A non-interactive `codex
 exec` run rejects an approval-requiring write unless the operator explicitly
 selects an appropriate approval policy for that already reviewed action.
+
+For managed local HTTP, use `pandrator-manager mcp-config` from
+[Choose a transport](#choose-a-transport). Unlike these stdio fragments, that
+output necessarily contains the dedicated HTTP bearer and belongs only in a
+private user configuration.
 
 ## Diagnostics and lifecycle
 
@@ -598,6 +659,8 @@ logout, preventing an old native secret from becoming an invisible orphan.
   tools cannot supply a different destination.
 - Tokens are resolved from the credential store and are never accepted in MCP
   arguments.
+- Managed HTTP accepts only its distinct file-backed bearer, binds to loopback,
+  and validates `Host` and `Origin`; it is not a public remote listener.
 - Inherited HTTP proxy settings, redirects, and model-supplied URLs are
   ignored or rejected.
 - Internet targets require HTTPS and public DNS addresses. LAN targets must

@@ -496,16 +496,10 @@ class TrayApplication:
         open_desktop_url(self.client.recovery_url())
 
     def start_pandrator(self, _icon=None, _item=None) -> None:
-        self.client.runtime(
-            "start",
-            ("pandrator.api", "pandrator.worker"),
-        )
+        self.client.application("start")
 
     def stop_pandrator(self, _icon=None, _item=None) -> None:
-        self.client.runtime(
-            "stop",
-            ("pandrator.worker", "pandrator.api"),
-        )
+        self.client.application("stop")
 
     def quit_tray(self, icon=None, _item=None) -> None:
         self._menu_refresh_stop.set()

@@ -51,7 +51,12 @@ from ..network import (
     save_network_configuration,
 )
 from ..processes import CommandRunner, CommandSpec
-from ..runtime_specs import pandrator_runtime_specs
+from ..runtime_specs import (
+    PANDRATOR_API_SERVICE,
+    PANDRATOR_MCP_SERVICE,
+    PANDRATOR_WORKER_SERVICE,
+    pandrator_runtime_specs,
+)
 from ..supervisor import ProcessSupervisor
 from .openapi import build_openapi
 from .schemas import (
@@ -1005,10 +1010,16 @@ def create_api(
         services = {
             service.id: service
             for service in supervisor.snapshot()
-            if service.id in {"pandrator.api", "pandrator.worker"}
+            if service.id
+            in {
+                PANDRATOR_API_SERVICE,
+                PANDRATOR_MCP_SERVICE,
+                PANDRATOR_WORKER_SERVICE,
+            }
         }
-        api_service = services.get("pandrator.api")
-        worker_service = services.get("pandrator.worker")
+        api_service = services.get(PANDRATOR_API_SERVICE)
+        mcp_service = services.get(PANDRATOR_MCP_SERVICE)
+        worker_service = services.get(PANDRATOR_WORKER_SERVICE)
         state = (
             str(component["inspection"]["state"])
             if component is not None
@@ -1017,6 +1028,13 @@ def create_api(
         installed = state in {"present", "degraded"}
         api_running = bool(api_service and api_service.process)
         worker_running = bool(worker_service and worker_service.process)
+        mcp_running = bool(mcp_service and mcp_service.process)
+        mcp_healthy = bool(
+            mcp_running
+            and mcp_service
+            and mcp_service.health
+            and mcp_service.health.state.value == "healthy"
+        )
         healthy = bool(
             api_running
             and worker_running
@@ -1030,10 +1048,18 @@ def create_api(
             "running": api_running and worker_running,
             "healthy": healthy,
             "endpoint": api_service.endpoint if api_service else None,
+            "mcp_available": mcp_service is not None,
+            "mcp_running": mcp_running,
+            "mcp_healthy": mcp_healthy,
+            "mcp_endpoint": (
+                f"{str(mcp_service.endpoint).rstrip('/')}/mcp"
+                if mcp_service and mcp_service.endpoint
+                else None
+            ),
             "browser_url": application_exposure_state["value"].browser_base_url,
             "services": [
                 service.model_dump(mode="json")
-                for service in (api_service, worker_service)
+                for service in (api_service, mcp_service, worker_service)
                 if service is not None
             ],
         }
@@ -1109,14 +1135,23 @@ def create_api(
         return decorate
 
     def refresh_application_specs() -> None:
+        application_service_ids = {
+            PANDRATOR_API_SERVICE,
+            PANDRATOR_MCP_SERVICE,
+            PANDRATOR_WORKER_SERVICE,
+        }
         active = {
             service.id
             for service in supervisor.snapshot()
             if service.process is not None
-            and service.id in {"pandrator.api", "pandrator.worker"}
+            and service.id in application_service_ids
         }
-        if active:
+        if active.intersection(
+            {PANDRATOR_API_SERVICE, PANDRATOR_WORKER_SERVICE}
+        ):
             return
+        if PANDRATOR_MCP_SERVICE in active:
+            supervisor.stop(PANDRATOR_MCP_SERVICE)
         specifications = pandrator_runtime_specs(
             application.context.layout,
             exposure=application_exposure_state["value"],
@@ -1138,8 +1173,27 @@ def create_api(
                 {"missing": missing},
                 409,
             )
+        selected_ids = {specification.service_id for specification in specifications}
+        for service_id in application_service_ids - selected_ids:
+            if supervisor.spec(service_id) is not None:
+                supervisor.unregister(service_id)
         for specification in specifications:
             supervisor.replace_spec(specification)
+
+    def start_mcp_if_available() -> str | None:
+        if supervisor.spec(PANDRATOR_MCP_SERVICE) is None:
+            return None
+        try:
+            supervisor.start(PANDRATOR_MCP_SERVICE)
+        except Exception as error:
+            logging.exception("Pandrator MCP could not be started")
+            emit_application_event(
+                "application.mcp_start_failed",
+                "start",
+                error=str(error),
+            )
+            return str(error) or "Pandrator MCP could not be started."
+        return None
 
     @lifecycle_guard("start")
     def start_application() -> dict:
@@ -1147,7 +1201,7 @@ def create_api(
         try:
             ensure_application_installed()
             refresh_application_specs()
-            supervisor.start("pandrator.worker")
+            supervisor.start(PANDRATOR_WORKER_SERVICE)
         except Exception as error:
             emit_application_event(
                 "application.action_failed",
@@ -1161,7 +1215,8 @@ def create_api(
                 str(error) or "Pandrator could not be started.",
                 http_status=409,
             ) from error
-        emit_application_event("application.started", "start")
+        mcp_error = start_mcp_if_available()
+        emit_application_event("application.started", "start", error=mcp_error)
         if application_environment is not None:
             application_environment.pop("PANDRATOR_OWNER_PASSWORD", None)
         return application_snapshot()
@@ -1170,8 +1225,20 @@ def create_api(
     def stop_application() -> dict:
         emit_application_event("application.action_requested", "stop")
         try:
-            supervisor.stop("pandrator.worker")
-            supervisor.stop("pandrator.api")
+            failures: list[str] = []
+            for service_id in (
+                PANDRATOR_MCP_SERVICE,
+                PANDRATOR_WORKER_SERVICE,
+                PANDRATOR_API_SERVICE,
+            ):
+                if supervisor.spec(service_id) is None:
+                    continue
+                try:
+                    supervisor.stop(service_id)
+                except Exception as error:
+                    failures.append(f"{service_id}: {error}")
+            if failures:
+                raise RuntimeError("; ".join(failures))
         except Exception as error:
             emit_application_event(
                 "application.action_failed",
@@ -1263,10 +1330,21 @@ def create_api(
         emit_application_event("application.action_requested", "restart")
         try:
             ensure_application_installed()
-            supervisor.stop("pandrator.worker")
-            supervisor.stop("pandrator.api")
+            failures: list[str] = []
+            for service_id in (
+                PANDRATOR_MCP_SERVICE,
+                PANDRATOR_WORKER_SERVICE,
+                PANDRATOR_API_SERVICE,
+            ):
+                if supervisor.spec(service_id) is not None:
+                    try:
+                        supervisor.stop(service_id)
+                    except Exception as error:
+                        failures.append(f"{service_id}: {error}")
+            if failures:
+                raise RuntimeError("; ".join(failures))
             refresh_application_specs()
-            supervisor.start("pandrator.worker")
+            supervisor.start(PANDRATOR_WORKER_SERVICE)
         except Exception as error:
             emit_application_event(
                 "application.action_failed",
@@ -1280,7 +1358,8 @@ def create_api(
                 str(error) or "Pandrator could not be restarted.",
                 http_status=409,
             ) from error
-        emit_application_event("application.restarted", "restart")
+        mcp_error = start_mcp_if_available()
+        emit_application_event("application.restarted", "restart", error=mcp_error)
         return jsonify(application_snapshot())
 
     @api.post("/v1/application/launch")
@@ -1709,7 +1788,11 @@ def create_api(
         )
         if (
             action in {"start", "restart"}
-            and {"pandrator.api", "pandrator.worker"}.intersection(selected)
+            and {
+                PANDRATOR_API_SERVICE,
+                PANDRATOR_MCP_SERVICE,
+                PANDRATOR_WORKER_SERVICE,
+            }.intersection(selected)
         ):
             # The daemon registers a conservative fallback before a first
             # Pandrator installation exists. Recompose that launch contract

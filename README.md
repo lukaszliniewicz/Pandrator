@@ -42,7 +42,7 @@ verification, workspace selection, headless setup, and updates.
 | Generate synchronized speech and produce a dubbed video | [Create your first voiceover](docs/getting-started/first-voiceover.md) |
 | Let the model in Codex, OpenCode, Claude Code, or another MCP host process subtitle, document-cleanup, or speech-text batches | [Use passive dispatch](docs/guides/passive-dispatch.md) |
 | Ask an agent to take a local file through processing and return verified deliverables | [Run an end-to-end agent workflow](docs/guides/agent-workflows.md) |
-| Connect an agent safely to Pandrator or recover a managed installation | [Pandrator MCP](pandrator_mcp/README.md) |
+| Connect an agent safely to Pandrator or recover a managed installation | [Connect an MCP host](docs/operations/agent-connections.md) |
 | Install, update, repair, or operate local components | [Pandrator Manager](pandrator_manager/README.md) |
 
 The [documentation index](docs/README.md) links the complete workflow,
@@ -116,8 +116,8 @@ safe remote exposure.
 
 ## Agent access with Pandrator MCP
 
-`pandrator-mcp` is a local stdio sidecar that lets an MCP-capable agent explain
-Pandrator, inspect one fixed installation, edit sessions safely, execute
+`pandrator-mcp` lets an MCP-capable agent explain Pandrator, inspect one fixed
+installation, edit sessions safely, execute
 reviewed workflow plans, process passive subtitle, document-cleaning, and
 speech-text batches, import files from approved named roots, resolve live TTS
 catalog choices, export explicit output variants, download verified artifacts,
@@ -125,13 +125,18 @@ and perform bounded Manager recovery. Target origins, absolute filesystem
 paths, and credentials are process configuration, not model-selected tool
 arguments.
 
+On a compatible local Manager installation, Pandrator exposes an authenticated
+loopback Streamable HTTP MCP automatically. Stdio remains available for older
+hosts, source development, and the recommended remote topology where the MCP
+process runs beside the agent and connects to a fixed HTTPS Pandrator target.
+
 The component guide documents:
 
 - local, LAN/VPN, external HTTPS, and pod targets;
 - least-privilege application and Manager scopes;
 - owner-approved enrollment, identity pinning, rotation, and revocation;
-- secret-free host configuration for Codex, Claude Code, OpenCode, and
-  Antigravity;
+- managed local HTTP and secret-free stdio host configuration for Codex,
+  Claude Code, OpenCode, and Antigravity;
 - passive subtitle correction/translation, PDF/EPUB source cleanup, and
   speech-text optimization;
 - resumable local/remote source transfer and verified output delivery;

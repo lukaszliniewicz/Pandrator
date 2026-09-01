@@ -7321,6 +7321,7 @@ packages:
   - requests>=2.32,<3
   - sqlalchemy>=2.0,<3
   - waitress>=3.0,<4
+  - pandrator-mcp[manager]>=0.3,<1 ; extra == 'automation'
   - onnxruntime>=1.20,<2 ; extra == 'ocr'
   - paddleocr==3.7.0 ; extra == 'ocr'
   - nemo-text-processing==1.2.0 ; extra == 'text-normalization'

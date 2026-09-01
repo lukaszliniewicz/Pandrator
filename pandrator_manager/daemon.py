@@ -300,6 +300,7 @@ def run_daemon(
     operation_engine = None
     try:
         secret = ensure_client_secret(layout.credential)
+        ensure_client_secret(layout.mcp_credential)
         owner_password = str(
             os.environ.pop("PANDRATOR_OWNER_PASSWORD", "") or ""
         )

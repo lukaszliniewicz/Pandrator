@@ -142,8 +142,10 @@ def exec_transition_spec(directory: str, *, port: int) -> ManagedProcessSpec:
             "executable": bash,
             "arguments": (
                 "-c",
-                "sleep 0.3; exec "
-                f"{shlex.quote(sys.executable)} -c {shlex.quote(server_code)}",
+                (
+                    "sleep 0.3; exec "
+                    f"{shlex.quote(sys.executable)} -c {shlex.quote(server_code)}"
+                ),
             ),
         }
     )
@@ -924,6 +926,13 @@ class ApiContractTests(unittest.TestCase):
         worker_service.model_dump.return_value = {
             "id": "pandrator.worker"
         }
+        mcp_service = mock.Mock(
+            id="pandrator.mcp",
+            process=mock.Mock(),
+            endpoint="http://127.0.0.1:8099",
+        )
+        mcp_service.health.state.value = "healthy"
+        mcp_service.model_dump.return_value = {"id": "pandrator.mcp"}
         handoff = mock.Mock(status_code=200)
         handoff.json.return_value = {"token": "browser-token"}
 
@@ -941,7 +950,7 @@ class ApiContractTests(unittest.TestCase):
             mock.patch.object(
                 self.supervisor,
                 "snapshot",
-                return_value=[api_service, worker_service],
+                return_value=[api_service, mcp_service, worker_service],
             ),
             mock.patch(
                 "pandrator_manager.api.app.requests.Session"
@@ -962,6 +971,13 @@ class ApiContractTests(unittest.TestCase):
         self.assertEqual(
             "http://127.0.0.1:8097/#bootstrap=browser-token",
             response.get_json()["launch_url"],
+        )
+        application = response.get_json()["application"]
+        self.assertTrue(application["mcp_available"])
+        self.assertTrue(application["mcp_healthy"])
+        self.assertEqual(
+            "http://127.0.0.1:8099/mcp",
+            application["mcp_endpoint"],
         )
         outbound.post.assert_called_once_with(
             "http://127.0.0.1:8097/api/v1/auth/manager-browser-bootstrap",

@@ -9,7 +9,8 @@ import tempfile
 import time
 import unittest
 import zipfile
-from contextlib import closing
+from contextlib import closing, redirect_stderr, redirect_stdout
+from io import StringIO
 from pathlib import Path
 from unittest import mock
 
@@ -22,6 +23,7 @@ from pandrator_manager.artifacts import (
     ArtifactSpec,
     SafeExtractor,
 )
+from pandrator_manager.cli import main as manager_cli_main
 from pandrator_manager.components import ComponentRegistry, builtin_registry
 from pandrator_manager.components.builtin import (
     BUILTIN_COMPONENTS,
@@ -93,6 +95,136 @@ class WorkspaceLayoutTests(unittest.TestCase):
                 layout.require_within(layout.services / "xtts"),
                 layout.services / "xtts",
             )
+
+
+class ManagerMcpConfigCliTests(unittest.TestCase):
+    def test_mcp_config_requires_explicit_credential_acknowledgement(self):
+        output = StringIO()
+        error = StringIO()
+        with mock.patch(
+            "pandrator_manager.cli.ManagerClient.ensure_running"
+        ) as ensure_running, redirect_stdout(output), redirect_stderr(error):
+            result = manager_cli_main(["mcp-config", "codex"])
+
+        self.assertEqual(2, result)
+        ensure_running.assert_not_called()
+        self.assertNotIn("Authorization", output.getvalue())
+        self.assertIn("--include-credential", error.getvalue())
+
+    def test_mcp_config_uses_the_private_application_runtime(self):
+        with tempfile.TemporaryDirectory() as directory:
+            layout = WorkspaceLayout.from_value(directory)
+            runtime = Path(directory) / "runtime-python"
+            runtime.touch()
+            rendered = "[mcp_servers.pandrator]\nurl = 'http://127.0.0.1:8099/mcp'\n"
+            completed = subprocess.CompletedProcess(
+                args=(),
+                returncode=0,
+                stdout=rendered,
+                stderr="",
+            )
+            output = StringIO()
+            with mock.patch(
+                "pandrator_manager.cli.ManagerClient.ensure_running",
+                return_value=mock.Mock(layout=layout),
+            ), mock.patch(
+                "pandrator_manager.cli.runtime_python",
+                return_value=runtime,
+            ), mock.patch(
+                "pandrator_manager.cli.application_root",
+                return_value=Path(directory),
+            ), mock.patch(
+                "pandrator_manager.cli.subprocess.run",
+                return_value=completed,
+            ) as run, redirect_stdout(output):
+                result = manager_cli_main(
+                    [
+                        "--workspace",
+                        directory,
+                        "mcp-config",
+                        "codex",
+                        "--include-credential",
+                    ]
+                )
+
+        self.assertEqual(0, result)
+        self.assertEqual(rendered, output.getvalue())
+        command = run.call_args.args[0]
+        self.assertEqual(str(runtime), command[0])
+        self.assertIn("managed-host-config", command)
+        self.assertIn(str(layout.workspace), command)
+        self.assertNotIn("Authorization", " ".join(command))
+
+    def test_mcp_paths_wraps_the_managed_target_without_target_plumbing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            layout = WorkspaceLayout.from_value(directory)
+            layout.mcp_configuration.parent.mkdir(parents=True)
+            layout.mcp_configuration.write_text("{}", encoding="utf-8")
+            source = Path(directory) / "Downloads"
+            with mock.patch(
+                "pandrator_manager.cli.ManagerClient.ensure_running",
+                return_value=mock.Mock(layout=layout),
+            ), mock.patch(
+                "pandrator_manager.cli._run_application_mcp",
+                return_value='{"saved": true}\n',
+            ) as run, redirect_stdout(StringIO()):
+                result = manager_cli_main(
+                    [
+                        "--workspace",
+                        directory,
+                        "mcp-paths",
+                        "source-add",
+                        "downloads",
+                        str(source),
+                    ]
+                )
+
+        self.assertEqual(0, result)
+        self.assertEqual(
+            (
+                "target",
+                "--config",
+                str(layout.mcp_configuration),
+                "source-root-add",
+                "managed-local",
+                "downloads",
+                str(source.resolve()),
+            ),
+            run.call_args.args[1],
+        )
+
+    def test_mcp_paths_list_combines_sources_with_output_readiness(self):
+        with tempfile.TemporaryDirectory() as directory:
+            layout = WorkspaceLayout.from_value(directory)
+            layout.mcp_configuration.parent.mkdir(parents=True)
+            layout.mcp_configuration.write_text("{}", encoding="utf-8")
+            output = StringIO()
+            with mock.patch(
+                "pandrator_manager.cli.ManagerClient.ensure_running",
+                return_value=mock.Mock(layout=layout),
+            ), mock.patch(
+                "pandrator_manager.cli._run_application_mcp",
+                side_effect=(
+                    '{"source_roots": [{"name": "downloads", "path": "/input"}]}',
+                    (
+                        '{"targets": [{"name": "managed-local", '
+                        '"local_output_root_configured": true}]}'
+                    ),
+                ),
+            ), redirect_stdout(output):
+                result = manager_cli_main(
+                    [
+                        "--workspace",
+                        directory,
+                        "mcp-paths",
+                        "list",
+                    ]
+                )
+
+        self.assertEqual(0, result)
+        payload = json.loads(output.getvalue())
+        self.assertEqual("downloads", payload["source_roots"][0]["name"])
+        self.assertTrue(payload["output_root_configured"])
 
 
 class StateStoreTests(unittest.TestCase):

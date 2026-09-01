@@ -32,6 +32,7 @@ from .models import (
     OperationKind,
     OperationRecord,
 )
+from .runtime_specs import application_root, runtime_python
 from .uninstall import (
     clear_uninstall_status,
     read_uninstall_status,
@@ -90,6 +91,59 @@ def _parser() -> argparse.ArgumentParser:
     daemon.add_argument("--no-silero", action="store_true")
     subparsers.add_parser("start-manager", help="Start or connect to the manager.")
     subparsers.add_parser("stop-manager", help="Stop only the manager daemon.")
+
+    mcp_config = subparsers.add_parser(
+        "mcp-config",
+        help="Print a local HTTP MCP configuration for an agent host.",
+    )
+    mcp_config.add_argument(
+        "host",
+        choices=("codex", "claude-code", "opencode", "antigravity"),
+    )
+    mcp_config.add_argument(
+        "--server-name",
+        default="pandrator",
+        help="Override the host-visible MCP server name.",
+    )
+    mcp_config.add_argument(
+        "--include-credential",
+        action="store_true",
+        help=(
+            "Acknowledge that the generated fragment contains a secret and "
+            "must be stored in a private user configuration."
+        ),
+    )
+
+    mcp_paths = subparsers.add_parser(
+        "mcp-paths",
+        help="Manage the local directories exposed to the managed MCP.",
+    )
+    mcp_path_commands = mcp_paths.add_subparsers(
+        dest="mcp_path_command",
+        required=True,
+    )
+    mcp_path_commands.add_parser("list", help="List approved local paths.")
+    source_add = mcp_path_commands.add_parser(
+        "source-add",
+        help="Expose one local input directory under an opaque name.",
+    )
+    source_add.add_argument("name")
+    source_add.add_argument("path", type=Path)
+    source_add.add_argument("--replace", action="store_true")
+    source_remove = mcp_path_commands.add_parser(
+        "source-remove",
+        help="Stop exposing one named local input directory.",
+    )
+    source_remove.add_argument("name")
+    output_set = mcp_path_commands.add_parser(
+        "output-set",
+        help="Choose the local directory for downloaded artifacts.",
+    )
+    output_set.add_argument("path", type=Path)
+    mcp_path_commands.add_parser(
+        "output-clear",
+        help="Disable local artifact materialization.",
+    )
 
     for command in ("release-plan", "release-update"):
         release = subparsers.add_parser(
@@ -346,6 +400,142 @@ def _wait_for_operation(
     return operation
 
 
+def _run_application_mcp(
+    client: ManagerClient,
+    arguments: tuple[str, ...],
+) -> str:
+    """Run a bounded MCP administration command in the application runtime."""
+
+    layout = client.layout
+    python = runtime_python(layout)
+    root = application_root(layout)
+    if not python.is_file():
+        raise ValueError(
+            "The Pandrator application runtime is unavailable; repair the "
+            "installation before administering MCP."
+        )
+    command = (str(python), "-m", "pandrator_mcp", *arguments)
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=str(root),
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise ValueError(
+            "The Pandrator application runtime could not run the MCP "
+            "administration command."
+        ) from error
+    if completed.returncode != 0 or not completed.stdout.strip():
+        raise ValueError(
+            "The installed application runtime could not complete the MCP "
+            "administration command; repair or update the installation."
+        )
+    return completed.stdout
+
+
+def _print_mcp_host_config(
+    args: argparse.Namespace,
+    client: ManagerClient,
+) -> int:
+    """Print a credential-bearing host fragment only after acknowledgement."""
+
+    output = _run_application_mcp(
+        client,
+        (
+            "managed-host-config",
+            args.host,
+            "--workspace",
+            str(client.layout.workspace),
+            "--server-name",
+            args.server_name,
+            "--include-credential",
+        ),
+    )
+    print(output, end="")
+    return 0
+
+
+def _configure_mcp_paths(
+    args: argparse.Namespace,
+    client: ManagerClient,
+) -> int:
+    """Manage the fixed managed-local target without exposing target internals."""
+
+    configuration = str(client.layout.mcp_configuration)
+    if not client.layout.mcp_configuration.is_file():
+        raise ValueError(
+            "The managed MCP target has not been initialized; start Pandrator "
+            "once, then configure its local paths."
+        )
+    prefix = ("target", "--config", configuration)
+    if args.mcp_path_command == "list":
+        source_payload: dict[str, Any] = json.loads(
+            _run_application_mcp(
+                client,
+                (*prefix, "source-root-list", "managed-local"),
+            )
+        )
+        public_payload: dict[str, Any] = json.loads(
+            _run_application_mcp(
+                client,
+                ("print-config", "--config", configuration),
+            )
+        )
+        managed: dict[str, Any] = next(
+            (
+                item
+                for item in public_payload.get("targets", ())
+                if item.get("name") == "managed-local"
+            ),
+            {},
+        )
+        _render(
+            {
+                "source_roots": source_payload.get("source_roots", ()),
+                "output_root_configured": bool(
+                    managed.get("local_output_root_configured")
+                ),
+            },
+            as_json=True,
+        )
+        return 0
+    command: tuple[str, ...]
+    if args.mcp_path_command == "source-add":
+        command = (
+            *prefix,
+            "source-root-add",
+            "managed-local",
+            str(args.name),
+            str(args.path.expanduser().resolve(strict=False)),
+        )
+        if args.replace:
+            command = (*command, "--replace")
+    elif args.mcp_path_command == "source-remove":
+        command = (
+            *prefix,
+            "source-root-remove",
+            "managed-local",
+            str(args.name),
+        )
+    elif args.mcp_path_command == "output-set":
+        command = (
+            *prefix,
+            "output-root-set",
+            "managed-local",
+            str(args.path.expanduser().resolve(strict=False)),
+        )
+    else:
+        command = (*prefix, "output-root-clear", "managed-local")
+    output = _run_application_mcp(client, command)
+    print(output, end="")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
@@ -379,7 +569,17 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 0
 
+        if args.command == "mcp-config" and not args.include_credential:
+            raise ValueError(
+                "Refusing to print a bearer credential without "
+                "--include-credential."
+            )
+
         client = ManagerClient.ensure_running(args.workspace)
+        if args.command == "mcp-config":
+            return _print_mcp_host_config(args, client)
+        if args.command == "mcp-paths":
+            return _configure_mcp_paths(args, client)
         if args.command == "automation-client":
             if args.automation_client_command == "list":
                 payload = client.request(

@@ -79,7 +79,7 @@ class HostConfigurationTests(unittest.TestCase):
                     configuration_path=configuration,
                 ).content
             )
-            opencode_server = opencode["mcp"]["servers"][
+            opencode_server = opencode["mcp"][
                 "pandrator-production"
             ]
             self.assertEqual("local", opencode_server["type"])

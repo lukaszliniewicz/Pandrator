@@ -118,6 +118,32 @@ The first command is read-only. The action is available only when the
 Manager's component definition has a supported recipe; see
 [Current component coverage](#current-component-coverage).
 
+### Connect a local agent
+
+When the installed application includes Pandrator's automation support, the
+Manager supervises an authenticated MCP service on the local computer. Generate
+the configuration fragment for the agent host in a private terminal:
+
+```bash
+pandrator-manager --workspace /path/to/workspace mcp-config codex --include-credential
+```
+
+Replace `codex` with `claude-code`, `opencode`, or `antigravity` as needed. The
+explicit flag is required because the fragment contains an owner credential;
+never paste it into a prompt or commit it.
+
+Approve local input and output directories without locating the application's
+private Python environment:
+
+```bash
+pandrator-manager --workspace /path/to/workspace mcp-paths source-add downloads /home/me/Downloads
+pandrator-manager --workspace /path/to/workspace mcp-paths output-set /home/me/Pandrator-outputs
+pandrator-manager --workspace /path/to/workspace mcp-paths list
+```
+
+Start Pandrator once before configuring paths. The full transport and host
+guide is [Connect an agent to Pandrator](https://github.com/lukaszliniewicz/Pandrator/blob/main/docs/operations/agent-connections.md).
+
 Runtime and recovery examples:
 
 ```bash
@@ -131,6 +157,13 @@ pandrator-manager --workspace /path/to/workspace autostart enable
 Use `--json` for automation. The manager API and operation records are
 versioned; clients should use stable component and service IDs rather than
 persisting transient loopback ports.
+
+When the active Pandrator application bundle includes its automation extra,
+the Manager also registers optional service `pandrator.mcp`. It binds to
+loopback, depends on the application API, and is started and stopped with the
+application. Its failure is reported without preventing the core browser and
+worker services from running. Exact agent-host configuration belongs to the
+[Pandrator MCP guide](https://github.com/lukaszliniewicz/Pandrator/blob/main/pandrator_mcp/README.md).
 
 ## Headless and remote deployment
 

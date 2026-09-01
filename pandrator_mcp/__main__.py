@@ -16,7 +16,7 @@ from .clients import (
     bootstrap_local_application,
     discover_local_application,
 )
-from .context import build_runtime
+from .context import build_managed_runtime, build_runtime
 from .credentials import CredentialReference, CredentialResolver
 from .doctor import diagnose_target
 from .enrollment import (
@@ -25,7 +25,8 @@ from .enrollment import (
     registry_for_store,
 )
 from .errors import PandratorMcpError
-from .host_config import render_host_config
+from .host_config import render_host_config, render_http_host_config
+from .http import MCP_HTTP_HOST, MCP_HTTP_PATH, MCP_HTTP_PORT, read_bearer_token, run_http_server
 from .network_policy import TargetMode
 from .server import build_server
 from .settings import McpSettings, default_configuration_path
@@ -210,6 +211,16 @@ def build_parser() -> argparse.ArgumentParser:
     stdio = subcommands.add_parser("stdio", help="Run the local stdio MCP server.")
     stdio.add_argument("--target", required=True)
     _add_config_argument(stdio)
+
+    http = subcommands.add_parser(
+        "http",
+        help="Run the Manager-owned authenticated loopback HTTP MCP server.",
+    )
+    http.add_argument("--workspace", type=Path, required=True)
+    http.add_argument("--token-file", type=Path, required=True)
+    http.add_argument("--host", default=MCP_HTTP_HOST)
+    http.add_argument("--port", type=int, default=MCP_HTTP_PORT)
+    _add_config_argument(http)
 
     target = subcommands.add_parser(
         "target",
@@ -470,6 +481,41 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_config_argument(host_config)
 
+    managed_host_config = subcommands.add_parser(
+        "managed-host-config",
+        help=(
+            "Render a local HTTP host configuration containing the managed "
+            "MCP bearer credential."
+        ),
+    )
+    managed_host_config.add_argument(
+        "host",
+        choices=(
+            "codex",
+            "claude-code",
+            "opencode",
+            "antigravity",
+        ),
+    )
+    managed_host_config.add_argument("--workspace", type=Path, required=True)
+    managed_host_config.add_argument(
+        "--server-name",
+        default="pandrator",
+        help="Override the host-visible MCP server name.",
+    )
+    managed_host_config.add_argument(
+        "--endpoint",
+        default=f"http://{MCP_HTTP_HOST}:{MCP_HTTP_PORT}{MCP_HTTP_PATH}",
+    )
+    managed_host_config.add_argument(
+        "--include-credential",
+        action="store_true",
+        help=(
+            "Acknowledge that the generated fragment contains a secret and "
+            "must be stored in a private user configuration."
+        ),
+    )
+
     print_config = subcommands.add_parser(
         "print-config",
         help="Print the public, secret-free target configuration.",
@@ -527,6 +573,18 @@ def main(argv: list[str] | None = None) -> int:
             )
             build_server(runtime).run()
             return 0
+        if args.command == "http":
+            runtime = build_managed_runtime(
+                args.workspace,
+                configuration_path=args.config,
+            )
+            run_http_server(
+                runtime,
+                token_file=args.token_file,
+                host=args.host,
+                port=args.port,
+            )
+            return 0
         if args.command == "doctor":
             report = diagnose_target(
                 McpSettings(
@@ -546,6 +604,24 @@ def main(argv: list[str] | None = None) -> int:
                 target=args.target,
                 configuration_path=args.config,
                 executable=args.executable,
+                server_name=args.server_name,
+            )
+            print(rendered.content, end="")
+            return 0
+        if args.command == "managed-host-config":
+            if not args.include_credential:
+                raise ValueError(
+                    "Refusing to print a bearer credential without "
+                    "--include-credential."
+                )
+            workspace = args.workspace.expanduser().resolve(strict=False)
+            token = read_bearer_token(
+                workspace / "Pandrator" / "state" / "mcp.secret"
+            )
+            rendered = render_http_host_config(
+                args.host,
+                endpoint=args.endpoint,
+                bearer_token=token,
                 server_name=args.server_name,
             )
             print(rendered.content, end="")
