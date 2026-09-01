@@ -1397,9 +1397,7 @@ def build_openapi_document() -> dict:
                 "get": {
                     "operationId": "listSourceCleaningDispatchRuns",
                     "responses": {
-                        "200": {
-                            "description": "Source-cleaning dispatch run metadata"
-                        }
+                        "200": {"description": "Source-cleaning dispatch run metadata"}
                     },
                 },
             },
@@ -1407,9 +1405,7 @@ def build_openapi_document() -> dict:
                 "get": {
                     "operationId": "getSourceCleaningDispatchRun",
                     "responses": {
-                        "200": {
-                            "description": "Source-cleaning dispatch run metadata"
-                        }
+                        "200": {"description": "Source-cleaning dispatch run metadata"}
                     },
                 }
             },
@@ -1472,9 +1468,7 @@ def build_openapi_document() -> dict:
                             }
                         },
                     },
-                    "responses": {
-                        "200": {"description": "Phase returned to ready"}
-                    },
+                    "responses": {"200": {"description": "Phase returned to ready"}},
                 }
             },
             "/api/v1/source-cleaning-dispatch-batches/{batchId}/inspect": {
@@ -1641,9 +1635,7 @@ def build_openapi_document() -> dict:
                             }
                         },
                     },
-                    "responses": {
-                        "200": {"description": "Batch returned to ready"}
-                    },
+                    "responses": {"200": {"description": "Batch returned to ready"}},
                 }
             },
             "/api/v1/speech-optimization-dispatch-batches/{batchId}/submit": {
@@ -1694,6 +1686,11 @@ def build_openapi_document() -> dict:
             },
             "/api/v1/services/tts": {
                 "get": operation("listTtsServices", "TTS readiness and catalogues")
+            },
+            "/api/v1/services/stt": {
+                "get": operation(
+                    "listSttServices", "Cloud STT profiles and configured connections"
+                )
             },
             "/api/v1/services/tts/xtts/models": {
                 "get": {
@@ -2347,6 +2344,7 @@ def build_openapi_document() -> dict:
         ("/api/v1/artifacts/{artifactId}/context", "get", "app.read"),
         ("/api/v1/artifacts/{artifactId}/content", "get", "app.read"),
         ("/api/v1/providers", "get", "app.read"),
+        ("/api/v1/services/stt", "get", "app.read"),
         ("/api/v1/services/tts", "get", "app.read"),
         ("/api/v1/voices", "get", "app.read"),
         (

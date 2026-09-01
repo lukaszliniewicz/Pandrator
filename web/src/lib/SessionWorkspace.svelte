@@ -18,7 +18,7 @@
     X
   } from '@lucide/svelte';
   import { jobApi, sessionApi } from './domain-api';
-  import { voiceApi } from './admin-api';
+  import { speechRecognitionApi, voiceApi } from './admin-api';
   import type {
     OutcomePlan,
     RuntimeCapabilities,
@@ -26,6 +26,7 @@
     SettingsPayload,
     StageRerunImpact,
     StageSettingsMismatch,
+    SttCatalogue,
     SubtitleReviewCatalogItem,
     TtsCatalogue,
     TtsService,
@@ -72,6 +73,12 @@
   let outcome = $derived(initialOutcome);
   let capabilities = $state<RuntimeCapabilities>({});
   let ttsCatalogue = $state<TtsCatalogue>({ services: [] });
+  let sttCatalogue = $state<SttCatalogue>({
+    services: [],
+    profiles: [],
+    value: {},
+    revision: 0
+  });
   let libraryVoices = $state<VoiceRecord[]>([]);
   let llmModels = $state<
     {
@@ -133,6 +140,7 @@
   let sttChunkSeconds = $state(0);
   let sttChunkOverlap = $state(3);
   let sttHotwords = $state('');
+  let sttTranscribeStyle = $state('readability');
   let sttLidBackend = $state('whisper');
   let sttBeamSize = $state(1);
   let parakeetDecoder = $state('tdt');
@@ -285,6 +293,14 @@
     }
   }
 
+  async function loadSttCatalogue() {
+    try {
+      sttCatalogue = await speechRecognitionApi.catalogue();
+    } catch {
+      sttCatalogue = { services: [], profiles: [], value: {}, revision: 0 };
+    }
+  }
+
   async function loadSubtitleCatalog() {
     try {
       const response = await sessionApi.subtitleCatalog(session.id);
@@ -337,9 +353,16 @@
     (capabilities?.stt?.compute_backends ?? []).includes(name);
   const normalizeSttEngine = (value: unknown) => {
     const normalized = String(value ?? '').toLowerCase();
+    if (normalized.includes('azure') && normalized.includes('mai'))
+      return 'azure_mai_transcribe_1_5';
     if (normalized.includes('moss')) return 'moss';
     return normalized.includes('parakeet') ? 'parakeet' : 'whisper';
   };
+  const isCloudStt = (engine: string) =>
+    sttCatalogue.services.some(
+      (service) =>
+        service.id.replaceAll('-', '_') === engine.replaceAll('-', '_')
+    );
   const sttOptionLabel = (engineId: string, label: string, timing: string) => {
     const info = capabilities?.stt?.models?.[engineId] ?? {};
     const readiness = info.default
@@ -560,7 +583,8 @@
       return;
     }
     const dependencies: Promise<void>[] = [];
-    if (stage.key === 'transcribe') dependencies.push(loadCapabilities());
+    if (stage.key === 'transcribe')
+      dependencies.push(loadCapabilities(), loadSttCatalogue());
     if (
       [
         'correct',
@@ -661,6 +685,7 @@
     sttChunkSeconds = Number(saved.stt_chunk_seconds ?? 0);
     sttChunkOverlap = Number(saved.stt_chunk_overlap_seconds ?? 3);
     sttHotwords = String(saved.stt_hotwords ?? '');
+    sttTranscribeStyle = String(saved.stt_transcribe_style ?? 'readability');
     sttLidBackend = String(saved.stt_lid_backend ?? 'whisper');
     sttBeamSize = Number(saved.stt_beam_size ?? 1);
     parakeetDecoder = String(saved.parakeet_decoder ?? 'tdt');
@@ -1896,6 +1921,7 @@
         stt_chunk_seconds: sttEngine === 'moss' ? 0 : sttChunkSeconds,
         stt_chunk_overlap_seconds: sttChunkOverlap,
         stt_hotwords: sttHotwords,
+        stt_transcribe_style: sttTranscribeStyle,
         stt_lid_backend: sttLidBackend,
         stt_beam_size: sttBeamSize,
         parakeet_decoder: parakeetDecoder,
@@ -2450,7 +2476,7 @@
               requests in parallel for speed.
               {#if settingsStage.key === 'correct'}Parallel correction cannot
                 include the preceding corrected batch.{:else if settingsStage.key === 'translate'}Parallel
-              translation cannot include the preceding translation or glossary
+                translation cannot include the preceding translation or glossary
                 terms discovered by sibling batches.{:else}Units inside one
                 optimization request share context. Parallel requests do not
                 carry discoveries between them.{/if}
@@ -2660,10 +2686,15 @@
                   'MOSS Transcribe-Diarize 0.9B',
                   'native speakers + CTC words'
                 )}</option
+              >{#each sttCatalogue.services as service}<option
+                  value={service.id}
+                  >{service.name} · cloud word timestamps</option
+                >{/each}
               ></select
             ><span class="muted mt-1 block text-xs"
-              >CrispASR downloads a model the first time you use it; the
-              installer-selected model is the default.</span
+              >{isCloudStt(sttEngine)
+                ? 'The selected connection runs remotely; audio is sent to its configured provider.'
+                : 'CrispASR downloads a model the first time you use it; the installer-selected model is the default.'}</span
             ></label
           >
           {#if ttsModelAcquisitionHint}
@@ -2671,87 +2702,24 @@
               {ttsModelAcquisitionHint}
             </p>
           {/if}
-          <label class="text-sm font-semibold"
-            >Model precision<select
-              bind:value={sttQuantization}
-              class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
-              ><option value="f16">Full F16</option
-              >{#if sttEngine === 'whisper'}<option value="q5_0"
-                  >Q5_0 · 1.08 GB</option
-                >{:else if sttEngine === 'parakeet'}<option value="q8_0"
-                  >Q8_0 · 745 MB</option
-                ><option value="q5_0">Q5_0 · 541 MB</option><option value="q4_k"
-                  >Q4_K · 489 MB</option
-                >{:else}<option value="q8_0">Q8_0 · recommended</option><option
-                  value="q4_k">Q4_K</option
-                >{/if}</select
-            ><span class="muted mt-1 block text-xs"
-              >F16 maximizes fidelity; quantized files reduce download and
-              memory use.</span
-            ></label
-          >
-          <div class="grid gap-3 sm:grid-cols-[1fr_7rem]">
-            <label class="text-sm font-semibold"
-              >Compute backend<select
-                bind:value={sttComputeBackend}
-                class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
-                ><option value="auto">Automatic</option><option
-                  value="cpu"
-                  disabled={!supportsSttCompute('cpu')}>CPU</option
-                ><option value="cuda" disabled={!supportsSttCompute('cuda')}
-                  >CUDA</option
-                ><option value="vulkan" disabled={!supportsSttCompute('vulkan')}
-                  >Vulkan</option
-                ><option value="metal" disabled={!supportsSttCompute('metal')}
-                  >Metal</option
-                ></select
-              ><span class="muted mt-1 block text-xs"
-                >Only backends compiled into the installed CrispASR runtime can
-                be forced.</span
-              ></label
-            ><label class="text-sm font-semibold"
-              >Device<input
-                type="number"
-                min="0"
-                disabled={['auto', 'cpu'].includes(sttComputeBackend)}
-                bind:value={sttDevice}
-                class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal disabled:opacity-40"
-              /></label
-            >
-          </div>
-          {#if sttEngine === 'moss'}
+          {#if isCloudStt(sttEngine)}
             <div
               class="rounded-xl border border-[var(--line)] bg-[var(--accent-soft)] p-4"
             >
               <div class="text-sm font-semibold">
-                Native speaker turns with local CTC timing
+                Remote timed transcription
               </div>
               <p class="muted mt-1 text-xs leading-relaxed">
-                MOSS detects the language and speaker changes. Each turn is then
-                aligned separately with Canary CTC and a small acoustic margin,
-                avoiding long-recording alignment drift.
+                Pandrator sends the normalized WAV to this provider and accepts
+                the result only when it includes genuine word-level spans.
+                Diarization is not available for this profile.
               </p>
-              <div class="mt-3 grid gap-3 sm:grid-cols-2">
-                <label class="flex items-center gap-3 text-xs font-semibold"
-                  ><input
-                    type="checkbox"
-                    bind:checked={mossCtcAlignmentEnabled}
-                    class="size-4 accent-[var(--accent)]"
-                  /> Word-level CTC alignment</label
-                ><label class="text-xs font-semibold"
-                  >CTC padding (s)<input
-                    type="number"
-                    min="0"
-                    max="2"
-                    step="0.1"
-                    disabled={!mossCtcAlignmentEnabled}
-                    bind:value={mossCtcPaddingSeconds}
-                    class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal disabled:opacity-40"
-                  /></label
-                >
-              </div>
+              <a
+                href="/providers?tab=speech&service=stt"
+                class="mt-3 inline-flex text-xs font-semibold text-[var(--accent)]"
+                >Manage recognition connection</a
+              >
             </div>
-          {:else}
             <div class="grid gap-3 sm:grid-cols-2">
               <label class="text-sm font-semibold"
                 >Source language<select
@@ -2762,184 +2730,300 @@
                     >{/each}</select
                 ></label
               ><label class="text-sm font-semibold"
-                >Language detector<select
-                  bind:value={sttLidBackend}
+                >Transcript style<select
+                  bind:value={sttTranscribeStyle}
                   class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
-                  ><option value="whisper">Whisper tiny</option><option
-                    value="ecapa">ECAPA (recommended)</option
-                  ><option value="silero">Silero</option><option value="off"
-                    >Off</option
+                  ><option value="readability">Readable transcript</option
+                  ><option value="verbatim">Verbatim · preserve fillers</option
                   ></select
                 ></label
               >
             </div>
-          {/if}
-          {#if sttEngine === 'moss'}<label
-              class="flex items-start gap-3 text-sm font-semibold"
-              ><input
-                type="checkbox"
-                bind:checked={mossVadEnabled}
-                class="mt-0.5 size-4 accent-[var(--accent)]"
-              />
-              <span
-                >Voice activity detection<span
-                  class="muted mt-1 block text-xs font-normal"
-                  >Off by default so native speaker tracking keeps the longest
-                  context. The normal chunker still seeks low-energy cut points.</span
-                ></span
+            <label class="text-sm font-semibold"
+              >Phrase hints<textarea
+                rows="2"
+                bind:value={sttHotwords}
+                placeholder="Names and terminology, comma-separated"
+                class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
+              ></textarea><span class="muted mt-1 block text-xs font-normal"
+                >Sent as the provider's phrase list; useful for names and
+                specialist terms.</span
               ></label
-            >{:else}<label class="flex items-center gap-3 text-sm font-semibold"
-              ><input
-                type="checkbox"
-                bind:checked={vadEnabled}
-                class="size-4 accent-[var(--accent)]"
-              /> Voice activity detection</label
-            >{/if}
-          {#if sttEngine === 'moss' ? mossVadEnabled : vadEnabled}<div
-              class="grid grid-cols-2 gap-3"
             >
-              <label class="text-xs font-semibold"
-                >VAD model<select
-                  bind:value={vadModel}
-                  class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
-                  ><option value="silero">Silero · general purpose</option
-                  ><option value="firered">FireRedVAD · robust</option><option
-                    value="marblenet">MarbleNet · compact</option
-                  ><option value="whisper-vad"
-                    >Whisper VAD · experimental</option
+          {:else}
+            <label class="text-sm font-semibold"
+              >Model precision<select
+                bind:value={sttQuantization}
+                class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
+                ><option value="f16">Full F16</option
+                >{#if sttEngine === 'whisper'}<option value="q5_0"
+                    >Q5_0 · 1.08 GB</option
+                  >{:else if sttEngine === 'parakeet'}<option value="q8_0"
+                    >Q8_0 · 745 MB</option
+                  ><option value="q5_0">Q5_0 · 541 MB</option><option
+                    value="q4_k">Q4_K · 489 MB</option
+                  >{:else}<option value="q8_0">Q8_0 · recommended</option
+                  ><option value="q4_k">Q4_K</option>{/if}</select
+              ><span class="muted mt-1 block text-xs"
+                >F16 maximizes fidelity; quantized files reduce download and
+                memory use.</span
+              ></label
+            >
+            <div class="grid gap-3 sm:grid-cols-[1fr_7rem]">
+              <label class="text-sm font-semibold"
+                >Compute backend<select
+                  bind:value={sttComputeBackend}
+                  class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
+                  ><option value="auto">Automatic</option><option
+                    value="cpu"
+                    disabled={!supportsSttCompute('cpu')}>CPU</option
+                  ><option value="cuda" disabled={!supportsSttCompute('cuda')}
+                    >CUDA</option
+                  ><option
+                    value="vulkan"
+                    disabled={!supportsSttCompute('vulkan')}>Vulkan</option
+                  ><option value="metal" disabled={!supportsSttCompute('metal')}
+                    >Metal</option
                   ></select
+                ><span class="muted mt-1 block text-xs"
+                  >Only backends compiled into the installed CrispASR runtime
+                  can be forced.</span
                 ></label
-              ><label class="text-xs font-semibold"
-                >VAD threshold<span
-                  class="mt-1 grid min-h-10 grid-cols-[1fr_2.5rem] items-center gap-2 rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3"
-                  ><input
-                    type="range"
-                    min="0"
-                    max="1"
-                    step="0.05"
-                    bind:value={vadThreshold}
-                    class="w-full accent-[var(--accent)]"
-                  /><output class="text-right text-xs font-bold"
-                    >{Number(vadThreshold).toFixed(2)}</output
+              ><label class="text-sm font-semibold"
+                >Device<input
+                  type="number"
+                  min="0"
+                  disabled={['auto', 'cpu'].includes(sttComputeBackend)}
+                  bind:value={sttDevice}
+                  class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal disabled:opacity-40"
+                /></label
+              >
+            </div>
+            {#if sttEngine === 'moss'}
+              <div
+                class="rounded-xl border border-[var(--line)] bg-[var(--accent-soft)] p-4"
+              >
+                <div class="text-sm font-semibold">
+                  Native speaker turns with local CTC timing
+                </div>
+                <p class="muted mt-1 text-xs leading-relaxed">
+                  MOSS detects the language and speaker changes. Each turn is
+                  then aligned separately with Canary CTC and a small acoustic
+                  margin, avoiding long-recording alignment drift.
+                </p>
+                <div class="mt-3 grid gap-3 sm:grid-cols-2">
+                  <label class="flex items-center gap-3 text-xs font-semibold"
+                    ><input
+                      type="checkbox"
+                      bind:checked={mossCtcAlignmentEnabled}
+                      class="size-4 accent-[var(--accent)]"
+                    /> Word-level CTC alignment</label
+                  ><label class="text-xs font-semibold"
+                    >CTC padding (s)<input
+                      type="number"
+                      min="0"
+                      max="2"
+                      step="0.1"
+                      disabled={!mossCtcAlignmentEnabled}
+                      bind:value={mossCtcPaddingSeconds}
+                      class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal disabled:opacity-40"
+                    /></label
+                  >
+                </div>
+              </div>
+            {:else}
+              <div class="grid gap-3 sm:grid-cols-2">
+                <label class="text-sm font-semibold"
+                  >Source language<select
+                    bind:value={originalLanguage}
+                    class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
+                    >{#each LANGUAGE_OPTIONS as item}<option value={item.value}
+                        >{item.label}</option
+                      >{/each}</select
+                  ></label
+                ><label class="text-sm font-semibold"
+                  >Language detector<select
+                    bind:value={sttLidBackend}
+                    class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
+                    ><option value="whisper">Whisper tiny</option><option
+                      value="ecapa">ECAPA (recommended)</option
+                    ><option value="silero">Silero</option><option value="off"
+                      >Off</option
+                    ></select
+                  ></label
+                >
+              </div>
+            {/if}
+            {#if sttEngine === 'moss'}<label
+                class="flex items-start gap-3 text-sm font-semibold"
+                ><input
+                  type="checkbox"
+                  bind:checked={mossVadEnabled}
+                  class="mt-0.5 size-4 accent-[var(--accent)]"
+                />
+                <span
+                  >Voice activity detection<span
+                    class="muted mt-1 block text-xs font-normal"
+                    >Off by default so native speaker tracking keeps the longest
+                    context. The normal chunker still seeks low-energy cut
+                    points.</span
                   ></span
                 ></label
-              ><label class="text-xs font-semibold"
-                >Minimum speech (ms)<input
-                  type="number"
-                  min="0"
-                  bind:value={vadMinSpeech}
-                  class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
-                /></label
-              ><label class="text-xs font-semibold"
-                >Minimum silence (ms)<input
-                  type="number"
-                  min="0"
-                  bind:value={vadMinSilence}
-                  class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
-                /></label
-              ><label class="text-xs font-semibold"
-                >Maximum speech (s)<input
-                  type="number"
-                  min="1"
-                  bind:value={vadMaxSpeech}
-                  class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
-                /></label
-              ><label class="text-xs font-semibold"
-                >Speech padding (ms)<input
-                  type="number"
-                  min="0"
-                  bind:value={vadSpeechPad}
-                  class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
-                /></label
+              >{:else}<label
+                class="flex items-center gap-3 text-sm font-semibold"
+                ><input
+                  type="checkbox"
+                  bind:checked={vadEnabled}
+                  class="size-4 accent-[var(--accent)]"
+                /> Voice activity detection</label
+              >{/if}
+            {#if sttEngine === 'moss' ? mossVadEnabled : vadEnabled}<div
+                class="grid grid-cols-2 gap-3"
               >
-            </div>{/if}
-          <details class="rounded-xl border border-[var(--line)] p-4">
-            <summary class="cursor-pointer text-sm font-semibold"
-              >Decoder and long-form controls</summary
-            >
-            <div class="mt-4 grid grid-cols-2 gap-3">
-              <label class="text-xs font-semibold"
-                >Threads (0 = automatic)<input
-                  type="number"
-                  min="0"
-                  bind:value={sttThreads}
-                  class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
-                /></label
-              ><label class="text-xs font-semibold"
-                >Beam size<input
-                  type="number"
-                  min="1"
-                  max="16"
-                  bind:value={sttBeamSize}
-                  class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
-                /></label
-              >{#if sttEngine === 'parakeet'}<label
-                  class="text-xs font-semibold"
-                  >Parakeet decoder<select
-                    bind:value={parakeetDecoder}
+                <label class="text-xs font-semibold"
+                  >VAD model<select
+                    bind:value={vadModel}
                     class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
-                    ><option value="tdt">TDT greedy / beam</option><option
-                      value="maes">MAES beam</option
-                    ><option value="ctc">CTC greedy</option></select
+                    ><option value="silero">Silero · general purpose</option
+                    ><option value="firered">FireRedVAD · robust</option><option
+                      value="marblenet">MarbleNet · compact</option
+                    ><option value="whisper-vad"
+                      >Whisper VAD · experimental</option
+                    ></select
                   ></label
-                >{/if}{#if sttEngine === 'moss'}<label
-                  class="text-xs font-semibold"
-                  >Maximum MOSS context (s)<input
-                    type="number"
-                    min="30"
-                    max="120"
-                    step="1"
-                    bind:value={mossMaxChunkSeconds}
-                    class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
-                  /></label
-                >{:else}<label class="text-xs font-semibold"
-                  >Forced chunk size (s, 0 = default)<input
-                    type="number"
-                    min="0"
-                    step="1"
-                    bind:value={sttChunkSeconds}
-                    class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
-                  /></label
-                >{/if}{#if sttEngine === 'moss'}<label
-                  class="text-xs font-semibold"
-                  >MOSS chunk overlap (s)<input
-                    type="number"
-                    min="0"
-                    step="0.5"
-                    bind:value={mossChunkOverlap}
-                    class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
-                  /><span class="muted mt-1 block font-normal"
-                    >0 prevents duplicated speech and conflicting speaker IDs at
-                    chunk seams.</span
+                ><label class="text-xs font-semibold"
+                  >VAD threshold<span
+                    class="mt-1 grid min-h-10 grid-cols-[1fr_2.5rem] items-center gap-2 rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3"
+                    ><input
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.05"
+                      bind:value={vadThreshold}
+                      class="w-full accent-[var(--accent)]"
+                    /><output class="text-right text-xs font-bold"
+                      >{Number(vadThreshold).toFixed(2)}</output
+                    ></span
                   ></label
-                >{:else}<label class="text-xs font-semibold"
-                  >Chunk overlap (s)<input
+                ><label class="text-xs font-semibold"
+                  >Minimum speech (ms)<input
                     type="number"
                     min="0"
-                    step="0.5"
-                    bind:value={sttChunkOverlap}
+                    bind:value={vadMinSpeech}
                     class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
                   /></label
-                >{/if}
-              ><label class="col-span-2 text-xs font-semibold"
-                >Hotwords<textarea
-                  rows="2"
-                  bind:value={sttHotwords}
-                  placeholder="Names and terminology, comma-separated"
-                  class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
-                ></textarea></label
+                ><label class="text-xs font-semibold"
+                  >Minimum silence (ms)<input
+                    type="number"
+                    min="0"
+                    bind:value={vadMinSilence}
+                    class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                  /></label
+                ><label class="text-xs font-semibold"
+                  >Maximum speech (s)<input
+                    type="number"
+                    min="1"
+                    bind:value={vadMaxSpeech}
+                    class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                  /></label
+                ><label class="text-xs font-semibold"
+                  >Speech padding (ms)<input
+                    type="number"
+                    min="0"
+                    bind:value={vadSpeechPad}
+                    class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                  /></label
+                >
+              </div>{/if}
+            <details class="rounded-xl border border-[var(--line)] p-4">
+              <summary class="cursor-pointer text-sm font-semibold"
+                >Decoder and long-form controls</summary
               >
-            </div>
-            {#if sttEngine === 'moss'}<p class="muted mt-3 text-xs">
-                Pandrator uses the longest safe MOSS window, then lets CrispASR
-                seek the lowest-energy point near its limit. Speaker IDs remain
-                local to a chunk; speaker-change boundaries are preserved.
-              </p>{:else}<p class="muted mt-3 text-xs">
-                Parakeet normally preserves full context and handles long
-                recordings internally. Force chunking only for constrained
-                systems or diagnostics.
-              </p>{/if}
-          </details>
+              <div class="mt-4 grid grid-cols-2 gap-3">
+                <label class="text-xs font-semibold"
+                  >Threads (0 = automatic)<input
+                    type="number"
+                    min="0"
+                    bind:value={sttThreads}
+                    class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                  /></label
+                ><label class="text-xs font-semibold"
+                  >Beam size<input
+                    type="number"
+                    min="1"
+                    max="16"
+                    bind:value={sttBeamSize}
+                    class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                  /></label
+                >{#if sttEngine === 'parakeet'}<label
+                    class="text-xs font-semibold"
+                    >Parakeet decoder<select
+                      bind:value={parakeetDecoder}
+                      class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                      ><option value="tdt">TDT greedy / beam</option><option
+                        value="maes">MAES beam</option
+                      ><option value="ctc">CTC greedy</option></select
+                    ></label
+                  >{/if}{#if sttEngine === 'moss'}<label
+                    class="text-xs font-semibold"
+                    >Maximum MOSS context (s)<input
+                      type="number"
+                      min="30"
+                      max="120"
+                      step="1"
+                      bind:value={mossMaxChunkSeconds}
+                      class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                    /></label
+                  >{:else}<label class="text-xs font-semibold"
+                    >Forced chunk size (s, 0 = default)<input
+                      type="number"
+                      min="0"
+                      step="1"
+                      bind:value={sttChunkSeconds}
+                      class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                    /></label
+                  >{/if}{#if sttEngine === 'moss'}<label
+                    class="text-xs font-semibold"
+                    >MOSS chunk overlap (s)<input
+                      type="number"
+                      min="0"
+                      step="0.5"
+                      bind:value={mossChunkOverlap}
+                      class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                    /><span class="muted mt-1 block font-normal"
+                      >0 prevents duplicated speech and conflicting speaker IDs
+                      at chunk seams.</span
+                    ></label
+                  >{:else}<label class="text-xs font-semibold"
+                    >Chunk overlap (s)<input
+                      type="number"
+                      min="0"
+                      step="0.5"
+                      bind:value={sttChunkOverlap}
+                      class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                    /></label
+                  >{/if}
+                ><label class="col-span-2 text-xs font-semibold"
+                  >Hotwords<textarea
+                    rows="2"
+                    bind:value={sttHotwords}
+                    placeholder="Names and terminology, comma-separated"
+                    class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                  ></textarea></label
+                >
+              </div>
+              {#if sttEngine === 'moss'}<p class="muted mt-3 text-xs">
+                  Pandrator uses the longest safe MOSS window, then lets
+                  CrispASR seek the lowest-energy point near its limit. Speaker
+                  IDs remain local to a chunk; speaker-change boundaries are
+                  preserved.
+                </p>{:else}<p class="muted mt-3 text-xs">
+                  Parakeet normally preserves full context and handles long
+                  recordings internally. Force chunking only for constrained
+                  systems or diagnostics.
+                </p>{/if}
+            </details>
+          {/if}
           <div class="rounded-xl border border-[var(--line)] p-4">
             <div class="text-sm font-semibold">
               Readable subtitle composition
@@ -3091,7 +3175,8 @@
                     >Before generation · reviewable revision</strong
                   ><span class="muted mt-1 block text-xs"
                     >Process the document's existing narration units, create an
-                    editable before-and-after artifact, and review it before TTS.</span
+                    editable before-and-after artifact, and review it before
+                    TTS.</span
                   ></span
                 ></label
               ><label
@@ -3140,11 +3225,12 @@
                   bind:value={optimizationBatchSize}
                   class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
                 />{/if}</label
-              ><p class="muted mt-2 text-xs leading-relaxed">
-                Use 1 for small local models. Larger values reduce request
-                overhead and provide neighboring context; every unit is still
-                validated and stored independently.
-              </p>
+            >
+            <p class="muted mt-2 text-xs leading-relaxed">
+              Use 1 for small local models. Larger values reduce request
+              overhead and provide neighboring context; every unit is still
+              validated and stored independently.
+            </p>
           </div>
         {/if}
         {#if settingsStage.key === 'clean_source'}<label

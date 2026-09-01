@@ -60,8 +60,12 @@ class DubbingSettingsTests(unittest.TestCase):
             providers,
         )
 
-        self.assertEqual(migrated["translation_model"], "custom:local-openai/local-model")
-        self.assertEqual(migrated["correction_model"], "custom:local-openai/local-model")
+        self.assertEqual(
+            migrated["translation_model"], "custom:local-openai/local-model"
+        )
+        self.assertEqual(
+            migrated["correction_model"], "custom:local-openai/local-model"
+        )
 
     def test_deepl_translation_keeps_correction_on_global_default(self):
         migrated = settings.migrate_dubbing_payload(
@@ -97,6 +101,19 @@ class DubbingSettingsTests(unittest.TestCase):
         self.assertEqual(migrated["stt_model_quantization"], "q8_0")
         self.assertNotIn("parakeet_quantization", migrated)
 
+    def test_azure_cloud_engine_is_preserved_during_migration(self):
+        migrated = settings.migrate_dubbing_payload(
+            {
+                "stt_engine": "azure_mai_transcribe_1_5",
+                "stt_transcribe_style": "verbatim",
+            },
+            self.providers,
+        )
+
+        self.assertEqual(migrated["stt_engine"], "azure_mai_transcribe_1_5")
+        self.assertEqual(migrated["stt_backend"], "azure_mai_transcribe_1_5")
+        self.assertEqual(migrated["stt_transcribe_style"], "verbatim")
+
     def test_moss_defaults_to_long_chunks_native_turns_and_padded_ctc(self):
         migrated = settings.migrate_dubbing_payload(
             {"stt_engine": "moss-diarize"},
@@ -129,7 +146,9 @@ class DubbingSettingsTests(unittest.TestCase):
         translation = llm_config.resolve_dubbing_llm_settings(base, stage="translation")
 
         self.assertEqual(correction.model_name, "default")
-        self.assertEqual(correction.llm_settings["default_model"], "openai/gpt-5.4-mini")
+        self.assertEqual(
+            correction.llm_settings["default_model"], "openai/gpt-5.4-mini"
+        )
         self.assertEqual(translation.model_name, "gemini/gemini-3-flash-preview")
 
 

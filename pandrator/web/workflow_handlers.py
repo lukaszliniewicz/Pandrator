@@ -35,6 +35,7 @@ from .audio_verification import add_run_rms_warning, run_rms_outliers, verify_au
 from .credentials import (
     auxiliary_credential_key,
     database_reference,
+    hydrate_stt_settings,
     hydrate_tts_settings,
     resolve_secret_reference,
 )
@@ -2469,10 +2470,16 @@ class WorkflowHandlers:
         progress(0.05, "Preparing transcription")
         if cancel_event.is_set():
             return {}
+        submitted_settings = dict(payload.get("settings") or {})
+        runtime_settings = hydrate_stt_settings(
+            self.database,
+            self.paths,
+            submitted_settings,
+        )
         transcription_result = transcribe_source_file_with_metadata(
             session_dir,
             source_path,
-            dict(payload.get("settings") or {}),
+            runtime_settings,
             ffmpeg_executable=str(payload.get("ffmpeg_executable") or "ffmpeg"),
             crispasr_executable=str(payload.get("crispasr_executable") or ""),
             progress_callback=_scaled_progress_callback(progress, 0.05, 0.85),
@@ -3721,10 +3728,15 @@ class WorkflowHandlers:
         )
         operation_dir.mkdir(parents=True, exist_ok=True)
         progress(0.05, "Preparing reference transcription")
+        runtime_settings = hydrate_stt_settings(
+            self.database,
+            self.paths,
+            dict(payload.get("settings") or {}),
+        )
         transcription_result = transcribe_source_file_with_metadata(
             operation_dir,
             sample_path,
-            dict(payload.get("settings") or {}),
+            runtime_settings,
             ffmpeg_executable=str(payload.get("ffmpeg_executable") or "ffmpeg"),
             crispasr_executable=str(payload.get("crispasr_executable") or ""),
             progress_callback=_scaled_progress_callback(progress, 0.05, 0.85),

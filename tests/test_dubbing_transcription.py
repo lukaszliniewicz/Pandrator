@@ -1,7 +1,6 @@
 import io
 import json
 import os
-import subprocess
 import tempfile
 import unittest
 import wave
@@ -11,7 +10,6 @@ from unittest.mock import Mock, patch
 
 from pandrator.logic import dubbing_handler
 from pandrator.logic.dubbing import crispasr, srt_utils, stt_backends, transcription
-
 
 SAMPLE_SRT = """1
 00:00:00,000 --> 00:00:01,000
@@ -25,7 +23,11 @@ def _crisp_json(words=None):
         {"text": "friend.", "offsets": {"from": 420, "to": 900}},
     ]
     return {
-        "crispasr": {"backend": "whisper", "model": "ggml-large-v3.bin", "language": "en"},
+        "crispasr": {
+            "backend": "whisper",
+            "model": "ggml-large-v3.bin",
+            "language": "en",
+        },
         "transcription": [
             {
                 "offsets": {"from": 0, "to": 900},
@@ -49,10 +51,13 @@ class CrispASRTranscriptionTests(unittest.TestCase):
             requested["timeout"] = timeout
             return Download(b"model-bytes")
 
-        with tempfile.TemporaryDirectory() as cache_dir, patch.object(
-            crispasr.platform,
-            "system",
-            return_value="Windows",
+        with (
+            tempfile.TemporaryDirectory() as cache_dir,
+            patch.object(
+                crispasr.platform,
+                "system",
+                return_value="Windows",
+            ),
         ):
             path = crispasr._prefetch_windows_model(
                 {
@@ -75,10 +80,13 @@ class CrispASRTranscriptionTests(unittest.TestCase):
         self.assertEqual(requested["timeout"], 60)
 
     def test_windows_prefetch_reuses_existing_nonempty_model(self):
-        with tempfile.TemporaryDirectory() as cache_dir, patch.object(
-            crispasr.platform,
-            "system",
-            return_value="Windows",
+        with (
+            tempfile.TemporaryDirectory() as cache_dir,
+            patch.object(
+                crispasr.platform,
+                "system",
+                return_value="Windows",
+            ),
         ):
             existing = Path(cache_dir) / "parakeet-tdt-0.6b-v3-q4_k.gguf"
             existing.write_bytes(b"cached")
@@ -100,10 +108,13 @@ class CrispASRTranscriptionTests(unittest.TestCase):
         class Download(io.BytesIO):
             headers = {"Content-Length": "9"}
 
-        with tempfile.TemporaryDirectory() as cache_dir, patch.object(
-            crispasr.platform,
-            "system",
-            return_value="Windows",
+        with (
+            tempfile.TemporaryDirectory() as cache_dir,
+            patch.object(
+                crispasr.platform,
+                "system",
+                return_value="Windows",
+            ),
         ):
             path = crispasr._prefetch_windows_vad_model(
                 {
@@ -121,10 +132,13 @@ class CrispASRTranscriptionTests(unittest.TestCase):
         class Download(io.BytesIO):
             headers = {"Content-Length": "7"}
 
-        with tempfile.TemporaryDirectory() as cache_dir, patch.object(
-            crispasr.platform,
-            "system",
-            return_value="Windows",
+        with (
+            tempfile.TemporaryDirectory() as cache_dir,
+            patch.object(
+                crispasr.platform,
+                "system",
+                return_value="Windows",
+            ),
         ):
             path = crispasr._prefetch_windows_moss_aligner(
                 {
@@ -145,7 +159,9 @@ class CrispASRTranscriptionTests(unittest.TestCase):
             commands.append(command)
             output_base = Path(command[command.index("-of") + 1])
             Path(f"{output_base}.srt").write_text(SAMPLE_SRT, encoding="utf-8")
-            Path(f"{output_base}.json").write_text(json.dumps(_crisp_json()), encoding="utf-8")
+            Path(f"{output_base}.json").write_text(
+                json.dumps(_crisp_json()), encoding="utf-8"
+            )
             return SimpleNamespace(stdout=b"", stderr=b"")
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -154,18 +170,22 @@ class CrispASRTranscriptionTests(unittest.TestCase):
             model_path.write_bytes(b"cached-model")
             vad_model_path = model_path.parent / "ggml-silero-v6.2.0.bin"
             vad_model_path.write_bytes(b"vad-model")
-            with patch.object(
-                crispasr,
-                "_prefetch_windows_model",
-                return_value=model_path,
-            ), patch.object(
-                crispasr,
-                "_prefetch_windows_vad_model",
-                return_value=vad_model_path,
-            ), patch.object(
-                crispasr,
-                "_prefetch_windows_moss_aligner",
-                return_value=None,
+            with (
+                patch.object(
+                    crispasr,
+                    "_prefetch_windows_model",
+                    return_value=model_path,
+                ),
+                patch.object(
+                    crispasr,
+                    "_prefetch_windows_vad_model",
+                    return_value=vad_model_path,
+                ),
+                patch.object(
+                    crispasr,
+                    "_prefetch_windows_moss_aligner",
+                    return_value=None,
+                ),
             ):
                 crispasr.transcribe(
                     Path(temp_dir) / "audio.wav",
@@ -186,9 +206,13 @@ class CrispASRTranscriptionTests(unittest.TestCase):
 
     def test_legacy_backend_names_migrate_to_crispasr_engines(self):
         self.assertEqual(stt_backends.normalize_stt_backend("whisperx"), "whisper")
-        self.assertEqual(stt_backends.normalize_stt_backend("parakeet_onnx"), "parakeet")
+        self.assertEqual(
+            stt_backends.normalize_stt_backend("parakeet_onnx"), "parakeet"
+        )
         self.assertEqual(crispasr.normalize_engine("parakeet-tdt-0.6b-v3"), "parakeet")
-        self.assertEqual(crispasr.normalize_engine("moss-transcribe-diarize-0.9b"), "moss")
+        self.assertEqual(
+            crispasr.normalize_engine("moss-transcribe-diarize-0.9b"), "moss"
+        )
 
     def test_moss_command_uses_native_diarization_long_energy_chunks_and_q8(self):
         command = crispasr.build_command(
@@ -273,24 +297,34 @@ class CrispASRTranscriptionTests(unittest.TestCase):
         self.assertEqual(command[command.index("--device") + 1], "1")
         self.assertEqual(command[command.index("-l") + 1], "pl")
         self.assertEqual(command[command.index("--vad-threshold") + 1], "0.42")
-        self.assertEqual(command[command.index("--vad-min-silence-duration-ms") + 1], "450")
+        self.assertEqual(
+            command[command.index("--vad-min-silence-duration-ms") + 1], "450"
+        )
 
     def test_parakeet_command_pins_unquantized_v3_and_native_timing(self):
         command = crispasr.build_command(
             "audio.wav",
             "output",
-            {"stt_engine": "parakeet", "stt_compute_backend": "auto", "crispasr_vad_enabled": False},
+            {
+                "stt_engine": "parakeet",
+                "stt_compute_backend": "auto",
+                "crispasr_vad_enabled": False,
+            },
             executable="crispasr-test",
         )
 
-        self.assertIn("cstr/parakeet-tdt-0.6b-v3-GGUF:parakeet-tdt-0.6b-v3.gguf", command)
+        self.assertIn(
+            "cstr/parakeet-tdt-0.6b-v3-GGUF:parakeet-tdt-0.6b-v3.gguf", command
+        )
         self.assertNotIn("q4", " ".join(command).lower())
         self.assertNotIn("-dtw", command)
         self.assertNotIn("--gpu-backend", command)
         self.assertNotIn("--vad", command)
         self.assertIn("-ojf", command)
 
-    def test_model_specific_quantization_and_advanced_decoder_controls_are_forwarded(self):
+    def test_model_specific_quantization_and_advanced_decoder_controls_are_forwarded(
+        self,
+    ):
         parakeet = crispasr.build_command(
             "audio.wav",
             "output",
@@ -313,7 +347,9 @@ class CrispASRTranscriptionTests(unittest.TestCase):
         self.assertEqual(parakeet[parakeet.index("--threads") + 1], "6")
         self.assertEqual(parakeet[parakeet.index("--chunk-seconds") + 1], "120")
         self.assertEqual(parakeet[parakeet.index("--chunk-overlap") + 1], "2.5")
-        self.assertEqual(parakeet[parakeet.index("--hotwords") + 1], "Pandrator,CrispASR")
+        self.assertEqual(
+            parakeet[parakeet.index("--hotwords") + 1], "Pandrator,CrispASR"
+        )
         self.assertEqual(parakeet[parakeet.index("--lid-backend") + 1], "ecapa")
         self.assertEqual(parakeet[parakeet.index("--beam-size") + 1], "4")
         self.assertEqual(parakeet[parakeet.index("--parakeet-decoder") + 1], "maes")
@@ -353,18 +389,33 @@ class CrispASRTranscriptionTests(unittest.TestCase):
         )
 
         self.assertEqual(command[command.index("--vad-threshold") + 1], "0.0")
-        self.assertEqual(command[command.index("--vad-min-speech-duration-ms") + 1], "0")
-        self.assertEqual(command[command.index("--vad-min-silence-duration-ms") + 1], "0")
+        self.assertEqual(
+            command[command.index("--vad-min-speech-duration-ms") + 1], "0"
+        )
+        self.assertEqual(
+            command[command.index("--vad-min-silence-duration-ms") + 1], "0"
+        )
         self.assertEqual(command[command.index("--vad-speech-pad-ms") + 1], "0")
 
     def test_nonempty_transcript_without_words_is_rejected(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             metadata = Path(temp_dir) / "output.json"
             metadata.write_text(
-                json.dumps({"transcription": [{"text": "Words are missing.", "offsets": {"from": 0, "to": 500}}]}),
+                json.dumps(
+                    {
+                        "transcription": [
+                            {
+                                "text": "Words are missing.",
+                                "offsets": {"from": 0, "to": 500},
+                            }
+                        ]
+                    }
+                ),
                 encoding="utf-8",
             )
-            with self.assertRaisesRegex(crispasr.CrispASRError, "did not return word timestamps"):
+            with self.assertRaisesRegex(
+                crispasr.CrispASRError, "did not return word timestamps"
+            ):
                 crispasr._validate_word_timestamps(metadata)
             crispasr._validate_word_timestamps(metadata, require_words=False)
 
@@ -378,7 +429,10 @@ class CrispASRTranscriptionTests(unittest.TestCase):
                             {
                                 "text": "Aligned.",
                                 "words": [
-                                    {"text": "Aligned.", "offsets": {"from": 0, "to": 500}}
+                                    {
+                                        "text": "Aligned.",
+                                        "offsets": {"from": 0, "to": 500},
+                                    }
                                 ],
                             },
                             {"text": "This must not disappear."},
@@ -440,13 +494,19 @@ class CrispASRTranscriptionTests(unittest.TestCase):
                 executable="crispasr-test",
                 run_func=fake_align,
             )
-            result = json.loads(metadata.read_text(encoding="utf-8"))["transcription"][0]
+            result = json.loads(metadata.read_text(encoding="utf-8"))["transcription"][
+                0
+            ]
 
         self.assertEqual(result["id"], "moss-1")
-        self.assertEqual([word["text"] for word in result["words"]], ["Hello", "there."])
+        self.assertEqual(
+            [word["text"] for word in result["words"]], ["Hello", "there."]
+        )
         self.assertEqual(result["words"][0]["offsets"], {"from": 1100, "to": 1400})
         self.assertEqual(result["words"][1]["offsets"], {"from": 1500, "to": 1900})
-        self.assertTrue(all(word["speaker"] == "(Speaker 2)" for word in result["words"]))
+        self.assertTrue(
+            all(word["speaker"] == "(Speaker 2)" for word in result["words"])
+        )
 
     def test_runtime_probe_reports_compiled_compute_backends(self):
         version_output = """=== build info ===
@@ -455,8 +515,12 @@ class CrispASRTranscriptionTests(unittest.TestCase):
 """
         result = stt_backends.probe_crispasr_runtime(
             environ={"CRISPASR_EXECUTABLE": "C:/tools/crispasr.exe"},
-            path_exists=lambda path: str(path).replace("\\", "/") == "C:/tools/crispasr.exe",
-            run_func=lambda *_args, **_kwargs: SimpleNamespace(stdout=version_output, stderr=""),
+            path_exists=lambda path: (
+                str(path).replace("\\", "/") == "C:/tools/crispasr.exe"
+            ),
+            run_func=lambda *_args, **_kwargs: SimpleNamespace(
+                stdout=version_output, stderr=""
+            ),
         )
 
         self.assertTrue(result.installed)
@@ -473,7 +537,9 @@ class CrispASRTranscriptionTests(unittest.TestCase):
                 return SimpleNamespace(stderr=b"")
             output_base = Path(command[command.index("-of") + 1])
             Path(f"{output_base}.srt").write_text(SAMPLE_SRT, encoding="utf-8")
-            Path(f"{output_base}.json").write_text(json.dumps(_crisp_json()), encoding="utf-8")
+            Path(f"{output_base}.json").write_text(
+                json.dumps(_crisp_json()), encoding="utf-8"
+            )
             return SimpleNamespace(stdout=b"", stderr=b"")
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -495,9 +561,68 @@ class CrispASRTranscriptionTests(unittest.TestCase):
             self.assertEqual(result.engine, "whisper")
             self.assertEqual(result.compute_backend, "cpu")
             self.assertIn("-dtw", commands[1])
-            segments = srt_utils.parse_srt(Path(result.srt_path).read_text(encoding="utf-8"))
+            segments = srt_utils.parse_srt(
+                Path(result.srt_path).read_text(encoding="utf-8")
+            )
             self.assertEqual(segments[0].text, "Hello friend.")
             self.assertGreaterEqual(segments[0].end_ms - segments[0].start_ms, 833)
+
+    def test_transcribe_source_dispatches_cloud_after_ffmpeg_normalization(self):
+        calls = []
+
+        def fake_run(command, **_kwargs):
+            calls.append(command)
+            Path(command[-1]).write_bytes(b"wav")
+            return SimpleNamespace(stderr=b"")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "meeting.mp4"
+            source.write_bytes(b"video")
+            words_path = Path(temp_dir) / "meeting_words.json"
+            words_path.write_text(
+                json.dumps(
+                    {
+                        "schema": "pandrator.transcript.v1",
+                        "source_format": "azure-speech-fast-transcription",
+                        "segments": [
+                            {
+                                "id": "azure-1",
+                                "start_ms": 0,
+                                "end_ms": 900,
+                                "text": "Hello friend.",
+                                "words": [
+                                    {"text": "Hello", "start_ms": 0, "end_ms": 400},
+                                    {"text": "friend.", "start_ms": 450, "end_ms": 900},
+                                ],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            srt_path = Path(temp_dir) / "meeting.srt"
+            srt_path.write_text("", encoding="utf-8")
+            cloud_result = crispasr.CrispASRTranscriptionResult(
+                srt_path=str(srt_path),
+                word_timestamps_path=str(words_path),
+                engine="azure_mai_transcribe_1_5",
+                compute_backend="remote",
+            )
+            with patch.object(
+                transcription.cloud_stt, "transcribe", return_value=cloud_result
+            ) as cloud:
+                result = transcription.transcribe_source_file_with_metadata(
+                    temp_dir,
+                    source,
+                    {"stt_engine": "azure_mai_transcribe_1_5"},
+                    run_func=fake_run,
+                )
+
+            cloud.assert_called_once()
+            self.assertEqual(result.engine, "azure_mai_transcribe_1_5")
+            self.assertEqual(result.compute_backend, "remote")
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(Path(cloud.call_args.args[0]).suffix, ".wav")
 
     def test_missing_full_json_is_a_hard_failure(self):
         def fake_run(command, **_kwargs):
@@ -506,7 +631,9 @@ class CrispASRTranscriptionTests(unittest.TestCase):
             return SimpleNamespace(stdout=b"", stderr=b"")
 
         with tempfile.TemporaryDirectory() as temp_dir:
-            with self.assertRaisesRegex(crispasr.CrispASRError, "both SRT and full JSON"):
+            with self.assertRaisesRegex(
+                crispasr.CrispASRError, "both SRT and full JSON"
+            ):
                 crispasr.transcribe(
                     Path(temp_dir) / "audio.wav",
                     session_dir=temp_dir,
@@ -520,12 +647,15 @@ class CrispASRTranscriptionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             transcribed_path = os.path.join(temp_dir, "clip.srt")
             Path(transcribed_path).write_text(SAMPLE_SRT, encoding="utf-8")
-            with patch(
-                "pandrator.logic.dubbing_handler.transcribe_video_file",
-                return_value=transcribed_path,
-            ), patch(
-                "pandrator.logic.dubbing_handler.correct_srt_file_with_result",
-            ) as native_correction:
+            with (
+                patch(
+                    "pandrator.logic.dubbing_handler.transcribe_video_file",
+                    return_value=transcribed_path,
+                ),
+                patch(
+                    "pandrator.logic.dubbing_handler.correct_srt_file_with_result",
+                ) as native_correction,
+            ):
                 result = dubbing_handler.transcribe_video_with_metadata(
                     temp_dir,
                     os.path.join(temp_dir, "clip.mp4"),

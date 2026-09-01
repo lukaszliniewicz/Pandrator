@@ -99,6 +99,7 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "stt_chunk_seconds": 0,
         "stt_chunk_overlap_seconds": 3.0,
         "stt_hotwords": "",
+        "stt_transcribe_style": "readability",
         "stt_lid_backend": "whisper",
         "stt_beam_size": 1,
         "parakeet_decoder": "tdt",
@@ -1020,6 +1021,57 @@ class WorkspaceSettingsService:
                     resolved["tts"]["model"] = model
                 if voice:
                     resolved["tts"]["voice"] = voice
+        if "stt" in resolved:
+            with self.database.session() as session:
+                connections = session.get(AppSetting, "services.stt")
+                connection_value = (
+                    connections.value_json
+                    if connections and isinstance(connections.value_json, dict)
+                    else {}
+                )
+            snapshot = snapshots["stt"]
+            selection_seed = _merge(
+                snapshot["builtin"],
+                snapshot["global"],
+                connection_value,
+                snapshot.get("session_context", {}),
+                snapshot["override"],
+                override.get("stt", {}),
+            )
+            selected_id = (
+                str(
+                    selection_seed.get("stt_engine")
+                    or selection_seed.get("stt_backend")
+                    or "whisper"
+                )
+                .strip()
+                .lower()
+                .replace("-", "_")
+            )
+            selected = next(
+                (
+                    item
+                    for item in connection_value.get("provider_configs", [])
+                    if isinstance(item, dict)
+                    and str(item.get("id") or "").strip().lower().replace("-", "_")
+                    == selected_id
+                ),
+                None,
+            )
+            provider_defaults = (
+                selected.get("settings")
+                if selected and isinstance(selected.get("settings"), dict)
+                else {}
+            )
+            resolved["stt"] = _merge(
+                snapshot["builtin"],
+                snapshot["global"],
+                connection_value,
+                provider_defaults,
+                snapshot.get("session_context", {}),
+                snapshot["override"],
+                override.get("stt", {}),
+            )
         safe = _secret_free(resolved)
         return safe, stable_hash(safe)
 

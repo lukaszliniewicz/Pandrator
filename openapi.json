@@ -7382,6 +7382,29 @@
         }
       }
     },
+    "/api/v1/services/stt": {
+      "get": {
+        "operationId": "listSttServices",
+        "responses": {
+          "200": {
+            "description": "Cloud STT profiles and configured connections"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
+      }
+    },
     "/api/v1/services/tts": {
       "get": {
         "operationId": "listTtsServices",

@@ -56,6 +56,7 @@
       'stt_compute_backend',
       'stt_compute_device',
       'stt_language',
+      'stt_transcribe_style',
       'whisper_prompt',
       'moss_max_chunk_seconds',
       'moss_chunk_overlap_seconds',

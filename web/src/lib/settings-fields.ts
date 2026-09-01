@@ -71,7 +71,16 @@ const CHOICES: Record<string, SettingOption[]> = {
   stt_engine: [
     option('whisper', 'Whisper large-v3'),
     option('parakeet', 'Parakeet 0.6B v3'),
-    option('moss', 'MOSS Transcribe-Diarize 0.9B')
+    option('moss', 'MOSS Transcribe-Diarize 0.9B'),
+    option('azure_mai_transcribe_1_5', 'Azure Speech · MAI-Transcribe-1.5')
+  ],
+  stt_transcribe_style: [
+    option('readability', 'Readable transcript'),
+    option('verbatim', 'Verbatim · preserve fillers')
+  ],
+  azure_speech_output_format: [
+    option('audio-24khz-160kbitrate-mono-mp3', 'MP3 · 24 kHz · 160 kbps'),
+    option('riff-24khz-16bit-mono-pcm', 'WAV · 24 kHz · 16-bit PCM')
   ],
   stt_model_quantization: [
     option('f16', 'FP16 (full precision)'),
@@ -346,7 +355,8 @@ export function numberPresentation(key: string): NumberPresentation {
     mix_release_ms: { min: 10, max: 5000, step: 10 },
     temperature: { min: 0, max: 2, step: 0.05 },
     fishs2_temperature: { min: 0, max: 2, step: 0.05 },
-    chatterbox_temperature: { min: 0, max: 2, step: 0.05 }
+    chatterbox_temperature: { min: 0, max: 2, step: 0.05 },
+    azure_speech_style_degree: { min: 0.01, max: 2, step: 0.01 }
   };
   return meta[key] ?? { min: 0, step: 'any', range: RANGE_KEYS.has(key) };
 }
@@ -420,6 +430,9 @@ export function settingLabel(key: string): string {
     second_prompt: 'Second optimization prompt',
     third_prompt: 'Third optimization prompt',
     generation_prompt: 'Speech direction',
+    azure_speech_style: 'Azure speaking style (optional)',
+    azure_speech_style_degree: 'Azure style intensity',
+    azure_speech_output_format: 'Azure audio format',
     silero_stress_mode: 'Stress handling',
     silero_sample_rate: 'Sample rate',
     synchronization_delay_ms: 'Maximum voiceover start delay',

@@ -87,7 +87,12 @@
     ],
     silero: ['silero_stress_mode', 'silero_sample_rate'],
     openai: ['openai_audio_instructions'],
-    gemini: ['openai_audio_instructions']
+    gemini: ['openai_audio_instructions'],
+    azure_speech_mai_voice_2: [
+      'azure_speech_style',
+      'azure_speech_style_degree',
+      'azure_speech_output_format'
+    ]
   };
 
   type ServicePayload = TtsCatalogue & {
@@ -214,12 +219,21 @@
       default_voice: candidate.default_voice,
       voice_catalogues:
         candidate.voice_catalogues ?? existing.voice_catalogues ?? {},
+      voice_metadata: candidate.voice_metadata ?? existing.voice_metadata ?? {},
+      model_catalog: candidate.model_catalog ?? existing.model_catalog ?? [],
       default_voices: candidate.default_voices ?? existing.default_voices ?? {},
       default_voices_by_language:
         candidate.default_voices_by_language ??
         existing.default_voices_by_language ??
         {},
       settings: candidate.settings ?? existing.settings ?? {},
+      generation_prompt_models:
+        candidate.generation_prompt_models ??
+        existing.generation_prompt_models ??
+        [],
+      model_voice_modes:
+        candidate.model_voice_modes ?? existing.model_voice_modes ?? {},
+      pricing: candidate.pricing ?? existing.pricing,
       supports_prebuilt_voices: candidate.supports_prebuilt_voices,
       credential_required:
         candidate.credential_required ?? existing.credential_required ?? false,
@@ -375,7 +389,6 @@
     delete baseRecord.manager_supported_actions;
     delete baseRecord.manager_endpoint_read_only;
     delete baseRecord.manager_service;
-    delete baseRecord.credential_required;
     const credential = removeEditingApiKey
       ? { clear_api_key: true }
       : {
@@ -854,7 +867,9 @@
                 ? 'Google service-account JSON'
                 : normalizedId(editing) === 'elevenlabs'
                   ? 'ElevenLabs API key'
-                  : 'API key'}
+                  : normalizedId(editing) === 'azure_speech_mai_voice_2'
+                    ? 'Azure Speech key'
+                    : 'API key'}
               multiline={normalizedId(editing) === 'vertex_ai'}
             />
           </div>

@@ -18,6 +18,10 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from pandrator.logic.dubbing.cloud_stt import (
+    CloudSTTConfigurationError,
+    normalize_azure_speech_api_base,
+)
 from pandrator.runtime import DataPaths
 
 from .database import Database
@@ -54,6 +58,9 @@ TTS_SERVICE_ENVS: dict[str, str] = {
     "kobold_qwen": "KOBOLD_QWEN_API_KEY",
     "elevenlabs": "ELEVENLABS_API_KEY",
 }
+STT_SERVICE_ENVS: dict[str, str] = {
+    "azure_mai_transcribe_1_5": "AZURE_SPEECH_KEY",
+}
 SHARED_PROVIDER_CREDENTIALS = {"openai", "gemini", "vertex_ai"}
 AUXILIARY_CREDENTIALS: tuple[dict[str, str], ...] = (
     {
@@ -70,7 +77,9 @@ AUXILIARY_CREDENTIALS: tuple[dict[str, str], ...] = (
     },
 )
 
-_SENSITIVE_FIELD = re.compile(r"(^|_)(api_key|password|secret|credential)s?$", re.IGNORECASE)
+_SENSITIVE_FIELD = re.compile(
+    r"(^|_)(api_key|password|secret|credential)s?$", re.IGNORECASE
+)
 _ENVIRONMENT_VARIABLE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _TEXT_SECRET_ASSIGNMENT = re.compile(
     r"(?i)\b(api[_-]?key|access[_-]?token|refresh[_-]?token|authorization|password|secret)"
@@ -110,7 +119,9 @@ class CredentialConfiguration:
 
 
 def normalize_credential_id(value: object) -> str:
-    normalized = re.sub(r"[^a-z0-9._-]+", "-", str(value or "").strip().lower()).strip("-")
+    normalized = re.sub(r"[^a-z0-9._-]+", "-", str(value or "").strip().lower()).strip(
+        "-"
+    )
     if not normalized:
         raise ValueError("Credential identifiers must include letters or numbers.")
     return normalized
@@ -122,6 +133,10 @@ def provider_credential_key(provider_id: object) -> str:
 
 def tts_credential_key(service_id: object) -> str:
     return f"tts:{normalize_credential_id(service_id).replace('-', '_')}"
+
+
+def stt_credential_key(service_id: object) -> str:
+    return f"stt:{normalize_credential_id(service_id).replace('-', '_')}"
 
 
 def shared_provider_credential_key(provider_id: object) -> str:
@@ -137,7 +152,10 @@ def llm_provider_credential_key(
     normalized = normalize_credential_id(provider_key).replace("-", "_")
     metadata = options or {}
     profile_id = str(metadata.get("profile_id") or "").strip().lower()
-    is_custom = bool(metadata.get("is_custom") or profile_id in {"custom-openai", "lm-studio", "ollama"})
+    is_custom = bool(
+        metadata.get("is_custom")
+        or profile_id in {"custom-openai", "lm-studio", "ollama"}
+    )
     if normalized in SHARED_PROVIDER_CREDENTIALS and not is_custom:
         return shared_provider_credential_key(normalized)
     return provider_credential_key(provider_id)
@@ -150,6 +168,11 @@ def tts_service_credential_key(service_id: object) -> str:
     return tts_credential_key(normalized)
 
 
+def stt_service_credential_key(service_id: object) -> str:
+    normalized = normalize_credential_id(service_id).replace("-", "_")
+    return stt_credential_key(normalized)
+
+
 def auxiliary_credential_key(credential_id: object) -> str:
     return f"aux:{normalize_credential_id(credential_id)}"
 
@@ -160,7 +183,11 @@ def database_reference(key: str) -> str:
 
 def reference_key(reference: object) -> str:
     value = str(reference or "").strip()
-    return value[len(DATABASE_REFERENCE_PREFIX) :].strip() if value.startswith(DATABASE_REFERENCE_PREFIX) else ""
+    return (
+        value[len(DATABASE_REFERENCE_PREFIX) :].strip()
+        if value.startswith(DATABASE_REFERENCE_PREFIX)
+        else ""
+    )
 
 
 def credential_backend(reference: object) -> str:
@@ -233,7 +260,9 @@ def secret_file_reference(path: object) -> str:
 
 def _read_secret_file(path: Path) -> str:
     if not path.is_file():
-        raise FileNotFoundError("The configured secret file does not exist or is not a regular file.")
+        raise FileNotFoundError(
+            "The configured secret file does not exist or is not a regular file."
+        )
     metadata = path.stat()
     if metadata.st_size > 1024 * 1024:
         raise ValueError("Secret files must be no larger than 1 MiB.")
@@ -319,7 +348,9 @@ def credential_backend_profiles() -> list[dict[str, Any]]:
     ]
 
 
-def upsert_credential(session: Session, key: str, label: str, secret_value: object) -> StoredCredential:
+def upsert_credential(
+    session: Session, key: str, label: str, secret_value: object
+) -> StoredCredential:
     value = str(secret_value or "").strip()
     if not value:
         raise ValueError("API keys cannot be blank.")
@@ -354,15 +385,21 @@ def resolve_secret_reference(
     value = str(reference or "").strip()
     fallback = str(fallback_environment_variable or "").strip()
     if not value:
-        return ResolvedCredential(environment_variable=fallback, source="environment" if fallback else "none")
+        return ResolvedCredential(
+            environment_variable=fallback, source="environment" if fallback else "none"
+        )
     if value.startswith(DATABASE_REFERENCE_PREFIX):
         key = reference_key(value)
         if key:
             with database.session() as session:
                 record = session.get(StoredCredential, key)
                 if record is not None:
-                    return ResolvedCredential(value=str(record.secret_value or ""), source="database")
-        return ResolvedCredential(environment_variable=fallback, source="environment" if fallback else "none")
+                    return ResolvedCredential(
+                        value=str(record.secret_value or ""), source="database"
+                    )
+        return ResolvedCredential(
+            environment_variable=fallback, source="environment" if fallback else "none"
+        )
     if value.startswith(ENVIRONMENT_REFERENCE_PREFIX):
         environment_variable = value[len(ENVIRONMENT_REFERENCE_PREFIX) :].strip()
         if environment_variable:
@@ -375,14 +412,18 @@ def resolve_secret_reference(
         target = value[len(KEYRING_REFERENCE_PREFIX) :].strip()
         service, separator, username = target.partition("/")
         if not separator or not service or not username:
-            raise ValueError("Keyring secret references must use keyring:<service>/<username>.")
+            raise ValueError(
+                "Keyring secret references must use keyring:<service>/<username>."
+            )
         try:
             keyring, _backend = _load_keyring()
             secret_value = str(keyring.get_password(service, username) or "")
         except RuntimeError:
             raise
         except Exception as error:
-            raise RuntimeError("The operating-system credential store could not be read.") from error
+            raise RuntimeError(
+                "The operating-system credential store could not be read."
+            ) from error
         return ResolvedCredential(value=secret_value, source="keyring")
     if value.startswith(SECRET_FILE_REFERENCE_PREFIX):
         configured_path = value[len(SECRET_FILE_REFERENCE_PREFIX) :].strip()
@@ -397,16 +438,23 @@ def resolve_secret_reference(
         if not key:
             raise ValueError("File secret references must use file:<key>.")
         if not paths.secrets_file.is_file():
-            return ResolvedCredential(environment_variable=fallback, source="environment" if fallback else "none")
+            return ResolvedCredential(
+                environment_variable=fallback,
+                source="environment" if fallback else "none",
+            )
         if os.name != "nt":
             mode = stat.S_IMODE(paths.secrets_file.stat().st_mode)
             if mode & (stat.S_IRWXG | stat.S_IRWXO):
-                raise PermissionError("The headless secrets file must only be accessible by its owner.")
+                raise PermissionError(
+                    "The headless secrets file must only be accessible by its owner."
+                )
         payload = json.loads(paths.secrets_file.read_text(encoding="utf-8"))
         if not isinstance(payload, dict):
             raise ValueError("The headless secrets file must contain a JSON object.")
         return ResolvedCredential(value=str(payload.get(key) or ""), source="file")
-    raise ValueError("Secret references must use db:, env:, keyring:, file-path:, or legacy file:.")
+    raise ValueError(
+        "Secret references must use db:, env:, keyring:, file-path:, or legacy file:."
+    )
 
 
 def _delete_keyring_reference(reference: str) -> bool:
@@ -428,7 +476,9 @@ def _delete_keyring_reference(reference: str) -> bool:
                 return True
         except Exception:
             pass
-        raise RuntimeError("The old operating-system credential could not be removed.") from error
+        raise RuntimeError(
+            "The old operating-system credential could not be removed."
+        ) from error
     return True
 
 
@@ -477,7 +527,9 @@ def configure_credential_reference(
 
     selected = str(backend or "database").strip().lower()
     if selected not in {"database", "environment", "keyring", "file"}:
-        raise ValueError("Credential storage must be database, environment, keyring, or file.")
+        raise ValueError(
+            "Credential storage must be database, environment, keyring, or file."
+        )
     current = str(current_reference or "").strip()
     submitted = str(secret_value or "").strip()
     desired: str | None
@@ -506,17 +558,27 @@ def configure_credential_reference(
             except RuntimeError:
                 raise
             except Exception as error:
-                raise RuntimeError("The operating-system credential store could not save the value.") from error
+                raise RuntimeError(
+                    "The operating-system credential store could not save the value."
+                ) from error
             if not stored or not secrets.compare_digest(stored, submitted):
-                raise RuntimeError("The operating-system credential store did not verify the saved value.")
+                raise RuntimeError(
+                    "The operating-system credential store did not verify the saved value."
+                )
         elif current != desired:
-            raise ValueError("Enter the credential value before moving it to the operating-system store.")
+            raise ValueError(
+                "Enter the credential value before moving it to the operating-system store."
+            )
         resolved = resolve_secret_reference(database, paths, desired)
         if not resolved.configured:
-            raise ValueError("The operating-system credential store does not contain this credential.")
+            raise ValueError(
+                "The operating-system credential store does not contain this credential."
+            )
     elif selected == "environment":
         if submitted:
-            raise ValueError("Do not send a credential value when using an environment variable.")
+            raise ValueError(
+                "Do not send a credential value when using an environment variable."
+            )
         desired = environment_reference(locator)
         resolved = resolve_secret_reference(database, paths, desired)
         if not resolved.configured:
@@ -557,7 +619,10 @@ def credential_status(
             reference,
             fallback_environment_variable=fallback_environment_variable,
         )
-        return {"credential_configured": resolved.configured, "credential_source": resolved.source}
+        return {
+            "credential_configured": resolved.configured,
+            "credential_source": resolved.source,
+        }
     except (OSError, RuntimeError, ValueError, json.JSONDecodeError):
         return {"credential_configured": False, "credential_source": "unavailable"}
 
@@ -608,32 +673,43 @@ def provider_credential_status(
             fallback_environment_variable=fallback_environment_variable,
             shared=shared,
         )
-        return {"credential_configured": resolved.configured, "credential_source": resolved.source}
+        return {
+            "credential_configured": resolved.configured,
+            "credential_source": resolved.source,
+        }
     except (OSError, RuntimeError, ValueError, json.JSONDecodeError):
         return {"credential_configured": False, "credential_source": "unavailable"}
 
 
 def is_sensitive_field(key: object) -> bool:
     normalized = re.sub(r"[-\s]+", "_", str(key or "").strip().lower())
-    return bool(_SENSITIVE_FIELD.search(normalized)) or normalized.endswith(("_token", "_private_key", "_secret_key")) or normalized in {
-        "access_token",
-        "refresh_token",
-        "azure_ad_token",
-        "hf_token",
-        "auth_token",
-        "bearer_token",
-        "token",
-        "private_key",
-        "secret_key",
-        "subscription_key",
-        "authorization",
-        "proxy_authorization",
-    }
+    return (
+        bool(_SENSITIVE_FIELD.search(normalized))
+        or normalized.endswith(("_token", "_private_key", "_secret_key"))
+        or normalized
+        in {
+            "access_token",
+            "refresh_token",
+            "azure_ad_token",
+            "hf_token",
+            "auth_token",
+            "bearer_token",
+            "token",
+            "private_key",
+            "secret_key",
+            "subscription_key",
+            "authorization",
+            "proxy_authorization",
+        }
+    )
 
 
 def contains_inline_secret(value: Any) -> bool:
     if isinstance(value, dict):
-        return any(is_sensitive_field(key) or contains_inline_secret(item) for key, item in value.items())
+        return any(
+            is_sensitive_field(key) or contains_inline_secret(item)
+            for key, item in value.items()
+        )
     if isinstance(value, list):
         return any(contains_inline_secret(item) for item in value)
     return False
@@ -655,7 +731,9 @@ def redact_inline_secrets(value: Any) -> Any:
 
 def validate_provider_options(options: dict[str, Any] | None) -> None:
     if contains_inline_secret(options or {}):
-        raise ValueError("Provider secrets must be saved in the API key field, not advanced options.")
+        raise ValueError(
+            "Provider secrets must be saved in the API key field, not advanced options."
+        )
 
 
 def validate_vertex_service_account_json(value: object) -> dict[str, Any]:
@@ -693,7 +771,10 @@ def prepare_tts_settings_for_storage(
     prepared = copy.deepcopy(value)
     previous = previous_value if isinstance(previous_value, dict) else {}
     previous_records = {
-        str(item.get("id") or item.get("name") or item.get("provider") or "").strip().lower().replace("-", "_"): item
+        str(item.get("id") or item.get("name") or item.get("provider") or "")
+        .strip()
+        .lower()
+        .replace("-", "_"): item
         for item in previous.get("provider_configs", [])
         if isinstance(item, dict)
     }
@@ -704,15 +785,17 @@ def prepare_tts_settings_for_storage(
     for record in records:
         if not isinstance(record, dict):
             continue
-        service_id = str(record.get("id") or record.get("name") or record.get("provider") or "").strip()
+        service_id = str(
+            record.get("id") or record.get("name") or record.get("provider") or ""
+        ).strip()
         if not service_id:
             raise ValueError("Every TTS provider configuration requires an ID.")
         normalized_id = service_id.lower().replace("-", "_")
         current_ids.add(normalized_id)
         previous_record = previous_records.get(normalized_id, {})
-        connection_mode = str(
-            record.get("connection_mode") or "external"
-        ).strip().lower()
+        connection_mode = (
+            str(record.get("connection_mode") or "external").strip().lower()
+        )
         if connection_mode not in {"external", "managed_local"}:
             raise ValueError(
                 "TTS connection mode must be 'external' or 'managed_local'."
@@ -742,7 +825,9 @@ def prepare_tts_settings_for_storage(
         requested_backend = record.pop("credential_backend", None)
         requested_locator = record.pop("credential_reference", "")
         delete_previous = bool(record.pop("delete_previous_credential", False))
-        existing_reference = str(record.get("secret_ref") or previous_record.get("secret_ref") or "").strip()
+        existing_reference = str(
+            record.get("secret_ref") or previous_record.get("secret_ref") or ""
+        ).strip()
         if submitted_key and normalized_id == "vertex_ai":
             validate_vertex_service_account_json(submitted_key)
         if requested_backend is not None or submitted_key:
@@ -753,7 +838,9 @@ def prepare_tts_settings_for_storage(
                 paths,
                 key=key,
                 label=f"{record.get('name') or service_id} API key",
-                current_reference=str(previous_record.get("secret_ref") or existing_reference),
+                current_reference=str(
+                    previous_record.get("secret_ref") or existing_reference
+                ),
                 backend=requested_backend or "database",
                 locator=requested_locator,
                 secret_value=submitted_key,
@@ -789,6 +876,168 @@ def prepare_tts_settings_for_storage(
     return prepared
 
 
+def prepare_stt_settings_for_storage(
+    session: Session,
+    database: Database,
+    paths: DataPaths,
+    value: Any,
+    previous_value: Any,
+) -> dict[str, Any]:
+    """Move submitted cloud-STT keys into credential storage.
+
+    Recognition profiles deliberately use their own settings catalogue and
+    write-only credential references.
+    """
+
+    if not isinstance(value, dict):
+        raise ValueError("STT service settings must be an object.")
+    prepared = copy.deepcopy(value)
+    previous = previous_value if isinstance(previous_value, dict) else {}
+    previous_records = {
+        str(item.get("id") or "").strip().lower().replace("-", "_"): item
+        for item in previous.get("provider_configs", [])
+        if isinstance(item, dict)
+    }
+    records = prepared.get("provider_configs")
+    if not isinstance(records, list):
+        return prepared
+    current_ids: set[str] = set()
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        service_id = str(record.get("id") or "").strip()
+        if not service_id:
+            raise ValueError("Every STT provider configuration requires an ID.")
+        normalized_id = service_id.lower().replace("-", "_")
+        expected_environment = STT_SERVICE_ENVS.get(normalized_id)
+        if expected_environment is None:
+            raise ValueError(f"Unsupported STT provider configuration: {service_id}")
+        for endpoint_field in ("api_base", "base_url"):
+            if record.get(endpoint_field):
+                endpoint = str(record[endpoint_field]).strip().rstrip("/")
+                if (
+                    endpoint.casefold()
+                    == "https://your-resource-name.cognitiveservices.azure.com"
+                ):
+                    record[endpoint_field] = (
+                        "https://YOUR-RESOURCE-NAME.cognitiveservices.azure.com"
+                    )
+                else:
+                    try:
+                        record[endpoint_field] = normalize_azure_speech_api_base(
+                            endpoint
+                        )
+                    except CloudSTTConfigurationError as error:
+                        raise ValueError(str(error)) from error
+        record["id"] = normalized_id
+        record["api_key_env"] = expected_environment
+        current_ids.add(normalized_id)
+        previous_record = previous_records.get(normalized_id, {})
+        record.pop("credential_configured", None)
+        record.pop("credential_source", None)
+        record.pop("previous_credential_retained", None)
+        submitted_key = str(record.pop("api_key", "") or "").strip()
+        clear_key = bool(record.pop("clear_api_key", False))
+        requested_backend = record.pop("credential_backend", None)
+        requested_locator = record.pop("credential_reference", "")
+        delete_previous = bool(record.pop("delete_previous_credential", False))
+        existing_reference = str(
+            record.get("secret_ref") or previous_record.get("secret_ref") or ""
+        ).strip()
+        if requested_backend is not None or submitted_key:
+            key = stt_service_credential_key(normalized_id)
+            configured = configure_credential_reference(
+                session,
+                database,
+                paths,
+                key=key,
+                label=f"{record.get('name') or service_id} API key",
+                current_reference=str(
+                    previous_record.get("secret_ref") or existing_reference
+                ),
+                backend=requested_backend or "database",
+                locator=requested_locator,
+                secret_value=submitted_key,
+                delete_previous=delete_previous,
+            )
+            if configured.reference:
+                record["secret_ref"] = configured.reference
+            else:
+                record.pop("secret_ref", None)
+        elif clear_key:
+            current_reference = existing_reference or database_reference(
+                stt_service_credential_key(normalized_id)
+            )
+            delete_managed_reference(
+                session,
+                current_reference,
+                preserve_shared=False,
+            )
+            record.pop("secret_ref", None)
+        elif existing_reference:
+            record["secret_ref"] = existing_reference
+    for normalized_id, previous_record in previous_records.items():
+        if normalized_id in current_ids:
+            continue
+        previous_reference = str(previous_record.get("secret_ref") or "").strip()
+        delete_managed_reference(
+            session,
+            previous_reference
+            or database_reference(stt_service_credential_key(normalized_id)),
+            preserve_shared=False,
+        )
+    if contains_inline_secret(prepared):
+        raise ValueError("STT credentials must be saved in the API key field.")
+    return prepared
+
+
+def hydrate_stt_settings(
+    database: Database,
+    paths: DataPaths,
+    settings: dict[str, Any],
+) -> dict[str, Any]:
+    """Inject only the selected cloud-recognition credential at runtime."""
+
+    hydrated = copy.deepcopy(settings or {})
+    service_id = (
+        str(hydrated.get("stt_engine") or hydrated.get("stt_backend") or "whisper")
+        .strip()
+        .lower()
+        .replace("-", "_")
+    )
+    records = [
+        dict(item)
+        for item in hydrated.get("provider_configs", [])
+        if isinstance(item, dict)
+    ]
+    record = next(
+        (
+            item
+            for item in records
+            if str(item.get("id") or "").strip().lower().replace("-", "_") == service_id
+        ),
+        None,
+    )
+    if record is None:
+        return hydrated
+    fallback_env = STT_SERVICE_ENVS.get(service_id, "")
+    resolved = resolve_provider_credential(
+        database,
+        paths,
+        service_id,
+        record.get("secret_ref"),
+        fallback_environment_variable=fallback_env,
+        shared=False,
+    )
+    if resolved.value:
+        record["api_key"] = resolved.value
+        record["api_key_env"] = ""
+    elif resolved.environment_variable:
+        record["api_key_env"] = resolved.environment_variable
+    hydrated["provider_configs"] = records
+    return hydrated
+
+
 def hydrate_tts_settings(
     database: Database,
     paths: DataPaths,
@@ -801,15 +1050,25 @@ def hydrate_tts_settings(
     from pandrator.logic import tts_handler
 
     hydrated = copy.deepcopy(settings or {})
-    selected_value = str(hydrated.get("service") or hydrated.get("tts_service") or "XTTS")
-    if selected_value.strip().lower() in {"openai compatible", "openai-compatible", "custom"}:
+    selected_value = str(
+        hydrated.get("service") or hydrated.get("tts_service") or "XTTS"
+    )
+    if selected_value.strip().lower() in {
+        "openai compatible",
+        "openai-compatible",
+        "custom",
+    }:
         selected_value = str(hydrated.get("openai_audio_endpoint") or selected_value)
     selected = tts_handler.get_service_config(hydrated, selected_value)
     if selected is None:
         return hydrated
-    service_id = str(selected.get("id") or selected_value).strip().lower().replace("-", "_")
+    service_id = (
+        str(selected.get("id") or selected_value).strip().lower().replace("-", "_")
+    )
     configured_provider_ids = configured_tts_provider_ids(hydrated)
-    fallback_env = str(selected.get("api_key_env") or TTS_SERVICE_ENVS.get(service_id, ""))
+    fallback_env = str(
+        selected.get("api_key_env") or TTS_SERVICE_ENVS.get(service_id, "")
+    )
     resolved = resolve_provider_credential(
         database,
         paths,
@@ -817,12 +1076,20 @@ def hydrate_tts_settings(
         selected.get("secret_ref"),
         fallback_environment_variable=fallback_env,
     )
-    records = [dict(item) for item in hydrated.get("provider_configs", []) if isinstance(item, dict)]
+    records = [
+        dict(item)
+        for item in hydrated.get("provider_configs", [])
+        if isinstance(item, dict)
+    ]
     record = next(
         (
             item
             for item in records
-            if str(item.get("id") or item.get("name") or "").strip().lower().replace("-", "_") == service_id
+            if str(item.get("id") or item.get("name") or "")
+            .strip()
+            .lower()
+            .replace("-", "_")
+            == service_id
         ),
         None,
     )
@@ -850,7 +1117,6 @@ def hydrate_tts_settings(
         ),
     )
     if connection_mode == "managed_local":
-
         binding = binding_for_provider(service_id)
         if binding is None:
             raise ValueError(
@@ -900,7 +1166,9 @@ def auxiliary_reference_map(session: Session) -> dict[str, str]:
     }
 
 
-def set_auxiliary_reference(session: Session, credential_id: object, reference: str | None) -> None:
+def set_auxiliary_reference(
+    session: Session, credential_id: object, reference: str | None
+) -> None:
     normalized = normalize_credential_id(credential_id)
     record = session.get(AppSetting, AUXILIARY_REFERENCES_SETTING)
     values = auxiliary_reference_map(session)
@@ -964,7 +1232,9 @@ def _secret_references(value: Any) -> set[str]:
     return references
 
 
-def redact_secret_text(value: object, secret_values: list[str] | tuple[str, ...] = ()) -> str:
+def redact_secret_text(
+    value: object, secret_values: list[str] | tuple[str, ...] = ()
+) -> str:
     """Remove known values and common inline assignments from diagnostic text."""
 
     text = str(value or "")
@@ -982,7 +1252,13 @@ def redact_secret_text(value: object, secret_values: list[str] | tuple[str, ...]
 class SecretRedactor:
     """Short-lived cache of configured values used to sanitize logs and failures."""
 
-    def __init__(self, database: Database, paths: DataPaths | None = None, *, ttl_seconds: float = 30.0):
+    def __init__(
+        self,
+        database: Database,
+        paths: DataPaths | None = None,
+        *,
+        ttl_seconds: float = 30.0,
+    ):
         self.database = database
         self.paths = paths or DataPaths(database.path.parent)
         self.ttl_seconds = max(1.0, float(ttl_seconds))
@@ -1005,10 +1281,13 @@ class SecretRedactor:
             )
             for setting in session.scalars(select(AppSetting.value_json)).all():
                 references.update(_secret_references(setting))
-        environment_names = set(DEFAULT_PROVIDER_ENVS.values()) | set(TTS_SERVICE_ENVS.values())
+        environment_names = (
+            set(DEFAULT_PROVIDER_ENVS.values())
+            | set(TTS_SERVICE_ENVS.values())
+            | set(STT_SERVICE_ENVS.values())
+        )
         environment_names.update(
-            str(profile["environment_variable"])
-            for profile in AUXILIARY_CREDENTIALS
+            str(profile["environment_variable"]) for profile in AUXILIARY_CREDENTIALS
         )
         for reference in references:
             if reference.startswith(ENVIRONMENT_REFERENCE_PREFIX):
@@ -1018,12 +1297,16 @@ class SecretRedactor:
             if reference.startswith(DATABASE_REFERENCE_PREFIX):
                 continue
             try:
-                resolved = resolve_secret_reference(self.database, self.paths, reference)
+                resolved = resolve_secret_reference(
+                    self.database, self.paths, reference
+                )
                 values.add(resolved.resolved_value())
             except (OSError, RuntimeError, ValueError, json.JSONDecodeError):
                 continue
         values.update(os.environ.get(name, "") for name in environment_names)
-        return tuple(sorted({item for item in values if len(item) >= 4}, key=len, reverse=True))
+        return tuple(
+            sorted({item for item in values if len(item) >= 4}, key=len, reverse=True)
+        )
 
     def values(self) -> tuple[str, ...]:
         now = time.monotonic()

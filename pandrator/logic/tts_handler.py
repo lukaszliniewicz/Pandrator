@@ -3,6 +3,7 @@ import copy
 import io
 import json
 import logging
+import math
 import os
 import re
 import time
@@ -11,6 +12,7 @@ from contextlib import ExitStack
 from queue import Queue
 from threading import Event, Lock, Thread
 from urllib.parse import quote, urljoin, urlparse, urlunparse
+from xml.sax.saxutils import escape as escape_xml
 
 import requests
 from pydub import AudioSegment
@@ -29,6 +31,13 @@ from .retry_utils import (
     retryable_error,
     status_code_from_error,
     wait_for_retry,
+)
+from .tts_provider_profiles import (
+    AZURE_SPEECH_ADAPTER,
+    AZURE_SPEECH_MODELS,
+    AZURE_SPEECH_OUTPUT_FORMAT,
+    AZURE_SPEECH_VOICE_CATALOGUES,
+    AZURE_SPEECH_VOICES,
 )
 
 _litellm_speech = None
@@ -377,7 +386,13 @@ OPENAI_PROVIDER = "openai"
 GEMINI_PROVIDER = "gemini"
 VERTEX_PROVIDER = "vertex_ai"
 ELEVENLABS_PROVIDER = "elevenlabs"
-SUPPORTED_AUDIO_PROVIDERS = {OPENAI_PROVIDER, GEMINI_PROVIDER, ELEVENLABS_PROVIDER}
+AZURE_SPEECH_PROVIDER = "azure"
+SUPPORTED_AUDIO_PROVIDERS = {
+    OPENAI_PROVIDER,
+    GEMINI_PROVIDER,
+    ELEVENLABS_PROVIDER,
+    AZURE_SPEECH_PROVIDER,
+}
 
 OPENAI_TTS_MODELS = [
     "gpt-4o-mini-tts",
@@ -412,13 +427,9 @@ class ElevenLabsCatalogError(RuntimeError):
         elif self.status_code == 429:
             message = f"ElevenLabs rate limit reached while listing {operation}."
         elif self.status_code >= 500:
-            message = (
-                f"ElevenLabs returned HTTP {self.status_code} while listing {operation}."
-            )
+            message = f"ElevenLabs returned HTTP {self.status_code} while listing {operation}."
         elif self.status_code:
-            message = (
-                f"ElevenLabs returned HTTP {self.status_code} while listing {operation}."
-            )
+            message = f"ElevenLabs returned HTTP {self.status_code} while listing {operation}."
         else:
             message = f"Could not reach ElevenLabs while listing {operation}."
         super().__init__(message)
@@ -439,6 +450,7 @@ def normalize_elevenlabs_language_code(language_value: object) -> str:
     if not re.fullmatch(r"[a-z]{2}(?:-[a-z]{2,8})?", normalized):
         return ""
     return normalized.split("-", 1)[0]
+
 
 GENERATION_PROMPT_MODELS_FIELD = "generation_prompt_models"
 KOBOLD_QWEN_GENERATION_PROMPT_MODELS = ["Prebuilt Voices", "qwen3-tts-customvoice"]
@@ -597,6 +609,7 @@ SUPPORTED_CUSTOM_TTS_ADAPTERS = {
     OPENAI_COMPAT_ADAPTER,
     GENERIC_JSON_ADAPTER,
     ELEVENLABS_NATIVE_ADAPTER,
+    AZURE_SPEECH_ADAPTER,
 }
 
 
@@ -619,6 +632,8 @@ def _normalize_custom_adapter(raw_adapter: str | None) -> str:
         "elevenlabs": ELEVENLABS_NATIVE_ADAPTER,
         "elevenlabs_native": ELEVENLABS_NATIVE_ADAPTER,
         "eleven_labs": ELEVENLABS_NATIVE_ADAPTER,
+        "azure": AZURE_SPEECH_ADAPTER,
+        "azure_speech": AZURE_SPEECH_ADAPTER,
     }
     return aliases.get(normalized, OPENAI_COMPAT_ADAPTER)
 
@@ -651,7 +666,27 @@ def _normalize_adapter_config(raw_config) -> dict[str, object]:
         if str(key).strip() and isinstance(value, (str, int, float, bool, type(None)))
     }
 
-    return {
+    metadata: dict[str, object] = {}
+    for key in (
+        "model_catalog",
+        "voice_catalogues",
+        "voice_metadata",
+        "default_voices",
+        "default_voices_by_language",
+        "pricing",
+    ):
+        value = config.get(key)
+        if isinstance(value, (dict, list)):
+            metadata[key] = copy.deepcopy(value)
+    generation_prompt_models = config.get(GENERATION_PROMPT_MODELS_FIELD)
+    if isinstance(generation_prompt_models, list):
+        metadata[GENERATION_PROMPT_MODELS_FIELD] = [
+            str(model).strip()
+            for model in generation_prompt_models
+            if str(model).strip()
+        ]
+
+    normalized = {
         "adapter": adapter,
         "profile_id": str(config.get("profile_id") or "").strip(),
         "speech_path": str(config.get("speech_path") or "").strip(),
@@ -661,7 +696,15 @@ def _normalize_adapter_config(raw_config) -> dict[str, object]:
         "request_defaults": normalized_defaults,
         "auth_mode": str(config.get("auth_mode") or "bearer").strip().lower(),
         "direct_http": _coerce_bool(config.get("direct_http"), False),
+        "credential_required": _coerce_bool(
+            config.get("credential_required"), False
+        ),
     }
+    key_env = str(config.get("api_key_env") or "").strip()
+    if key_env:
+        normalized["api_key_env"] = key_env
+    normalized.update(metadata)
+    return normalized
 
 
 def _normalize_provider_id(raw_value: str | None) -> str:
@@ -1347,7 +1390,7 @@ def get_provider_configs(tts_settings) -> list[dict[str, object]]:
             if not default_model:
                 default_model = (
                     models[0]
-                    if models
+                    if models and adapter != AZURE_SPEECH_ADAPTER
                     else (
                         _provider_default_model(provider_key)
                         if adapter == OPENAI_COMPAT_ADAPTER and not profile_id
@@ -1369,7 +1412,7 @@ def get_provider_configs(tts_settings) -> list[dict[str, object]]:
             if not default_voice:
                 default_voice = (
                     voices[0]
-                    if voices
+                    if voices and adapter != AZURE_SPEECH_ADAPTER
                     else (
                         _provider_default_voice(provider_key)
                         if adapter == OPENAI_COMPAT_ADAPTER and not profile_id
@@ -1390,13 +1433,24 @@ def get_provider_configs(tts_settings) -> list[dict[str, object]]:
             )
             for key in (
                 "settings",
+                "model_catalog",
                 "voice_catalogues",
+                "voice_metadata",
                 "default_voices",
                 "default_voices_by_language",
                 "pricing",
             ):
-                if isinstance(raw_provider.get(key), dict):
-                    record[key] = copy.deepcopy(raw_provider[key])
+                value = raw_provider.get(key)
+                if isinstance(value, dict) or (
+                    key == "model_catalog" and isinstance(value, list)
+                ):
+                    record[key] = copy.deepcopy(value)
+            if isinstance(raw_provider.get(GENERATION_PROMPT_MODELS_FIELD), list):
+                record[GENERATION_PROMPT_MODELS_FIELD] = [
+                    str(model).strip()
+                    for model in raw_provider[GENERATION_PROMPT_MODELS_FIELD]
+                    if str(model).strip()
+                ]
 
             custom_configs[provider_id] = record
 
@@ -1465,7 +1519,7 @@ def save_provider(
             False,
             get_provider_configs(tts_settings),
             "",
-            "Provider type must be OpenAI or Gemini compatible.",
+            "Provider type must be OpenAI, Gemini, or Azure compatible.",
         )
 
     normalized_api_base = _normalize_base_url(api_base, "")
@@ -1517,6 +1571,10 @@ def save_provider(
         parsed_models = _parse_model_list(
             existing.get("models", []), normalized_provider_type
         )
+    if not parsed_models and isinstance(source_adapter_config, dict):
+        parsed_models = _parse_model_list(
+            source_adapter_config.get("models", []), normalized_provider_type
+        )
     profile_id = str(normalized_adapter_config.get("profile_id") or "")
     if not parsed_models and adapter == OPENAI_COMPAT_ADAPTER and not profile_id:
         parsed_models = list(_provider_model_catalog(normalized_provider_type))
@@ -1535,6 +1593,10 @@ def save_provider(
     if not parsed_voices and existing is not None:
         parsed_voices = _parse_voice_list(
             existing.get("voices", []), normalized_provider_type
+        )
+    if not parsed_voices and isinstance(source_adapter_config, dict):
+        parsed_voices = _parse_voice_list(
+            source_adapter_config.get("voices", []), normalized_provider_type
         )
     if not parsed_voices and adapter == OPENAI_COMPAT_ADAPTER and not profile_id:
         parsed_voices = list(
@@ -2076,6 +2138,9 @@ def _normalize_audio_provider(raw_provider: str | None) -> str:
         "eleven-labs": ELEVENLABS_PROVIDER,
         "eleven_labs": ELEVENLABS_PROVIDER,
         "elevenlabs": ELEVENLABS_PROVIDER,
+        "azure": AZURE_SPEECH_PROVIDER,
+        "azure-speech": AZURE_SPEECH_PROVIDER,
+        "azure_speech": AZURE_SPEECH_PROVIDER,
     }
     provider = aliases.get(provider, provider)
     return provider if provider in SUPPORTED_AUDIO_PROVIDERS else ""
@@ -2480,12 +2545,13 @@ def _parse_openai_audio_endpoints(tts_settings: dict) -> dict[str, dict[str, obj
 
         default_model = str(provider_record.get("default_model", "")).strip()
         profile_id = str(provider_record.get("profile_id") or "")
-        if not default_model and not profile_id:
+        adapter = _normalize_custom_adapter(provider_record.get("adapter"))
+        if not default_model and not profile_id and adapter == OPENAI_COMPAT_ADAPTER:
             default_model = _provider_default_model(provider)
         default_model = _normalize_model_for_provider(default_model, provider)
 
         default_voice = str(provider_record.get("default_voice", "")).strip()
-        if not default_voice and not profile_id:
+        if not default_voice and not profile_id and adapter == OPENAI_COMPAT_ADAPTER:
             default_voice = _provider_default_voice(provider)
         default_voice = _normalize_voice_for_provider(default_voice, provider)
 
@@ -2501,7 +2567,7 @@ def _parse_openai_audio_endpoints(tts_settings: dict) -> dict[str, dict[str, obj
             "default_voice": default_voice,
             "models": list(provider_record.get("models") or []),
             "voices": list(provider_record.get("voices") or []),
-            "adapter": str(provider_record.get("adapter") or OPENAI_COMPAT_ADAPTER),
+            "adapter": adapter,
             "profile_id": profile_id,
             "speech_path": str(provider_record.get("speech_path") or ""),
             "models_path": str(provider_record.get("models_path") or ""),
@@ -2510,6 +2576,23 @@ def _parse_openai_audio_endpoints(tts_settings: dict) -> dict[str, dict[str, obj
             "request_defaults": dict(provider_record.get("request_defaults") or {}),
             "auth_mode": str(provider_record.get("auth_mode") or "bearer"),
             "direct_http": _coerce_bool(provider_record.get("direct_http"), False),
+            "model_catalog": copy.deepcopy(provider_record.get("model_catalog") or []),
+            "voice_catalogues": copy.deepcopy(
+                provider_record.get("voice_catalogues") or {}
+            ),
+            "voice_metadata": copy.deepcopy(
+                provider_record.get("voice_metadata") or {}
+            ),
+            "default_voices": copy.deepcopy(
+                provider_record.get("default_voices") or {}
+            ),
+            "default_voices_by_language": copy.deepcopy(
+                provider_record.get("default_voices_by_language") or {}
+            ),
+            "generation_prompt_models": copy.deepcopy(
+                provider_record.get(GENERATION_PROMPT_MODELS_FIELD) or []
+            ),
+            "pricing": copy.deepcopy(provider_record.get("pricing") or {}),
         }
 
     return endpoints
@@ -2587,18 +2670,199 @@ def _configured_endpoint_auth_headers(endpoint: dict[str, object]) -> dict[str, 
     if key_env:
         env_value = os.getenv(key_env, "").strip()
         if env_value:
-            return (
-                {"api-key": env_value}
-                if str(endpoint.get("auth_mode") or "").lower() == "api-key"
-                else _openai_auth_headers(env_value)
-            )
+            auth_mode = str(endpoint.get("auth_mode") or "").lower()
+            if auth_mode == "subscription-key":
+                return {"Ocp-Apim-Subscription-Key": env_value}
+            if auth_mode == "api-key":
+                return {"api-key": env_value}
+            return _openai_auth_headers(env_value)
 
     explicit_key = str(endpoint.get("api_key", "") or "").strip()
     if not explicit_key:
         return {}
+    if str(endpoint.get("auth_mode") or "").lower() == "subscription-key":
+        return {"Ocp-Apim-Subscription-Key": explicit_key}
     if str(endpoint.get("auth_mode") or "").lower() == "api-key":
         return {"api-key": explicit_key}
     return _openai_auth_headers(explicit_key)
+
+
+def _resolve_azure_speech_api_key(endpoint: dict[str, object]) -> str:
+    key_env = str(endpoint.get("api_key_env") or "AZURE_SPEECH_KEY").strip()
+    if key_env:
+        environment_key = os.getenv(key_env, "").strip()
+        if environment_key:
+            return environment_key
+    return str(endpoint.get("api_key") or "").strip()
+
+
+def _azure_speech_catalog_values(
+    endpoint: dict[str, object], model: str, key: str
+) -> list[str]:
+    catalogues = endpoint.get("voice_catalogues")
+    if isinstance(catalogues, dict) and key == "voices":
+        configured = catalogues.get(model)
+        if isinstance(configured, list):
+            return [str(value).strip() for value in configured if str(value).strip()]
+    configured = endpoint.get(key)
+    if isinstance(configured, list):
+        return [str(value).strip() for value in configured if str(value).strip()]
+    if key == "models":
+        return list(AZURE_SPEECH_MODELS)
+    return list(AZURE_SPEECH_VOICES)
+
+
+def _canonical_azure_speech_model(endpoint: dict[str, object], value: str) -> str:
+    normalized = str(value or "").strip()
+    del endpoint
+    allowed = list(AZURE_SPEECH_MODELS)
+    by_lower = {item.lower(): item for item in allowed}
+    canonical = by_lower.get(normalized.lower())
+    if canonical:
+        return canonical
+    raise ValueError(
+        "Azure Speech model must be one of: " + ", ".join(AZURE_SPEECH_MODELS)
+    )
+
+
+def _canonical_azure_speech_voice(
+    endpoint: dict[str, object], model: str, value: str
+) -> str:
+    normalized = str(value or "").strip()
+    del endpoint
+    allowed = list(AZURE_SPEECH_VOICE_CATALOGUES.get(model, ()))
+    by_lower = {item.lower(): item for item in allowed}
+    canonical = by_lower.get(normalized.lower())
+    if canonical:
+        return canonical
+    raise ValueError(
+        f"Azure Speech voice must be a published prebuilt voice for {model}."
+    )
+
+
+def _validate_azure_speech_request(
+    endpoint: dict[str, object], tts_settings: dict
+) -> tuple[str, str, str, str]:
+    base_url = str(endpoint.get("base_url") or "").strip().rstrip("/")
+    parsed = urlparse(base_url)
+    hostname = str(parsed.hostname or "").lower()
+    if parsed.scheme.lower() != "https" or not hostname or "your" in hostname:
+        raise ValueError(
+            "Azure Speech requires a non-placeholder HTTPS base URL for your Speech resource."
+        )
+
+    api_key = _resolve_azure_speech_api_key(endpoint)
+    if not api_key:
+        raise ValueError(
+            "Azure Speech requires a subscription key (set AZURE_SPEECH_KEY or configure a key)."
+        )
+
+    model_value = str(
+        tts_settings.get("model")
+        or tts_settings.get("xtts_model")
+        or endpoint.get("default_model")
+        or ""
+    ).strip()
+    if not model_value:
+        raise ValueError("Azure Speech requires a model selection.")
+    model = _canonical_azure_speech_model(endpoint, model_value)
+
+    voice_value = str(
+        tts_settings.get("voice")
+        or tts_settings.get("speaker")
+        or endpoint.get("default_voice")
+        or ""
+    ).strip()
+    if not voice_value:
+        raise ValueError("Azure Speech requires a prebuilt voice selection.")
+    voice = _canonical_azure_speech_voice(endpoint, model, voice_value)
+
+    speech_path = str(endpoint.get("speech_path") or "/cognitiveservices/v1").strip()
+    if not speech_path:
+        raise ValueError("Azure Speech requires a configured speech path.")
+    return base_url, model, voice, api_key
+
+
+def _azure_speech_ssml(text: str, model: str, voice: str, tts_settings: dict) -> str:
+    del model  # The selected model is encoded in the full Azure voice ID.
+    locale_match = re.match(r"^([A-Za-z]{2,3}-[A-Za-z]{2,3})-", voice)
+    locale = locale_match.group(1) if locale_match else "en-US"
+    escaped_locale = escape_xml(locale, {'"': "&quot;", "'": "&apos;"})
+    escaped_voice = escape_xml(voice, {'"': "&quot;", "'": "&apos;"})
+    escaped_text = escape_xml(str(text or ""))
+
+    speed = _coerce_float(tts_settings.get("speed"), 1.0)
+    if not math.isfinite(speed):
+        speed = 1.0
+    speed = min(2.0, max(0.5, speed))
+    rate_percent = round((speed - 1.0) * 100)
+    rate = f"{rate_percent:+d}%"
+    body = f'<prosody rate="{rate}">{escaped_text}</prosody>'
+
+    style = str(tts_settings.get("azure_speech_style") or "").strip()
+    if style:
+        escaped_style = escape_xml(style, {'"': "&quot;", "'": "&apos;"})
+        style_attributes = [f'style="{escaped_style}"']
+        raw_style_degree = tts_settings.get("azure_speech_style_degree")
+        if raw_style_degree not in (None, ""):
+            style_degree = _coerce_float(raw_style_degree, math.nan)
+            if not math.isfinite(style_degree) or not 0.01 <= style_degree <= 2.0:
+                raise ValueError(
+                    "Azure Speech style degree must be between 0.01 and 2.0."
+                )
+            style_attributes.append(f'styledegree="{style_degree:g}"')
+        attributes = " ".join(style_attributes)
+        body = f"<mstts:express-as {attributes}>{body}</mstts:express-as>"
+
+    return (
+        '<speak version="1.0" '
+        'xmlns="http://www.w3.org/2001/10/synthesis" '
+        'xmlns:mstts="http://www.w3.org/2001/mstts" '
+        f'xml:lang="{escaped_locale}">'
+        f'<voice xml:lang="{escaped_locale}" name="{escaped_voice}">'
+        f"{body}</voice></speak>"
+    )
+
+
+def _request_azure_speech_audio(
+    text: str, tts_settings: dict, endpoint: dict[str, object]
+) -> requests.Response:
+    base_url, model, voice, api_key = _validate_azure_speech_request(
+        endpoint, tts_settings
+    )
+    request_defaults = endpoint.get("request_defaults")
+    default_output_format = (
+        request_defaults.get("output_format")
+        if isinstance(request_defaults, dict)
+        else ""
+    )
+    output_format = (
+        str(
+            tts_settings.get("azure_speech_output_format")
+            or tts_settings.get("output_format")
+            or default_output_format
+            or AZURE_SPEECH_OUTPUT_FORMAT
+        ).strip()
+        or AZURE_SPEECH_OUTPUT_FORMAT
+    )
+    speech_path = str(endpoint.get("speech_path") or "/cognitiveservices/v1").strip()
+    ssml = _azure_speech_ssml(text, model, voice, tts_settings)
+    url = _configured_endpoint_url(base_url, speech_path)
+    try:
+        return requests.post(
+            url,
+            headers={
+                "Content-Type": "application/ssml+xml",
+                "X-Microsoft-OutputFormat": output_format,
+                "Ocp-Apim-Subscription-Key": api_key,
+            },
+            data=ssml,
+            timeout=TTS_GENERATION_TIMEOUT_SECONDS,
+        )
+    except requests.exceptions.Timeout as error:
+        raise RuntimeError("Azure Speech request timed out.") from error
+    except requests.exceptions.RequestException as error:
+        raise RuntimeError(f"Azure Speech request failed: {error}") from error
 
 
 def _elevenlabs_base_url(base_url: str | None = "") -> str:
@@ -2690,17 +2954,18 @@ def _request_elevenlabs_audio(
         if isinstance(request_defaults, dict)
         else ""
     )
-    output_format = str(
-        tts_settings.get("elevenlabs_output_format")
-        or tts_settings.get("output_format")
-        or tts_settings.get("response_format")
-        or default_output_format
+    output_format = (
+        str(
+            tts_settings.get("elevenlabs_output_format")
+            or tts_settings.get("output_format")
+            or tts_settings.get("response_format")
+            or default_output_format
+            or ELEVENLABS_TTS_OUTPUT_FORMAT
+        ).strip()
         or ELEVENLABS_TTS_OUTPUT_FORMAT
-    ).strip() or ELEVENLABS_TTS_OUTPUT_FORMAT
-    payload = {"text": str(text), "model_id": model_id}
-    language_code = normalize_elevenlabs_language_code(
-        tts_settings.get("language")
     )
+    payload = {"text": str(text), "model_id": model_id}
+    language_code = normalize_elevenlabs_language_code(tts_settings.get("language"))
     if (
         language_code
         and model_id.lower() not in ELEVENLABS_MODELS_WITHOUT_LANGUAGE_CODE
@@ -2877,6 +3142,38 @@ def check_openai_audio_connection(tts_settings: dict) -> tuple[bool, str]:
     if endpoint is None:
         return False, error
 
+    if _normalize_custom_adapter(endpoint.get("adapter")) == AZURE_SPEECH_ADAPTER:
+        speech_path = str(
+            endpoint.get("speech_path") or "/cognitiveservices/v1"
+        ).strip()
+        if not speech_path:
+            return (
+                False,
+                f"Endpoint '{endpoint['name']}' has no configured speech route.",
+            )
+        try:
+            response = requests.get(
+                _configured_endpoint_url(str(endpoint["base_url"]), speech_path),
+                headers=_configured_endpoint_auth_headers(endpoint),
+                timeout=8,
+            )
+        except requests.exceptions.RequestException as error:
+            return False, f"Could not connect to endpoint '{endpoint['name']}': {error}"
+        if response.status_code in {401, 403}:
+            return (
+                False,
+                f"Endpoint '{endpoint['name']}' rejected the configured Azure Speech subscription key with status {response.status_code}.",
+            )
+        if response.status_code == 404 or response.status_code >= 500:
+            return (
+                False,
+                f"Endpoint '{endpoint['name']}' returned {response.status_code} for configured speech route {speech_path}.",
+            )
+        return (
+            True,
+            f"Connected to endpoint '{endpoint['name']}' at configured speech route {speech_path}.",
+        )
+
     if _normalize_custom_adapter(endpoint.get("adapter")) == GENERIC_JSON_ADAPTER:
         speech_path = str(endpoint.get("speech_path") or "").strip()
         if not speech_path:
@@ -3041,7 +3338,10 @@ def get_openai_audio_voices_fallback(tts_settings: dict) -> list[str]:
     if endpoint is None:
         return []
 
-    selected_model = str(tts_settings.get("xtts_model") or "").strip() or default_model
+    selected_model = (
+        str(tts_settings.get("model") or tts_settings.get("xtts_model") or "").strip()
+        or default_model
+    )
     selected_model = _normalize_model_for_provider(selected_model, provider)
 
     builtin_voices = (
@@ -3097,6 +3397,11 @@ def get_openai_audio_models(tts_settings: dict) -> list[str]:
     )
     if endpoint is None:
         return []
+
+    if _normalize_custom_adapter(endpoint.get("adapter")) == AZURE_SPEECH_ADAPTER:
+        return _dedupe_ordered(
+            [default_model] + _azure_speech_catalog_values(endpoint, "", "models")
+        )
 
     if _normalize_custom_adapter(endpoint.get("adapter")) == GENERIC_JSON_ADAPTER:
         models = list(endpoint.get("models") or [])
@@ -3173,6 +3478,23 @@ def get_openai_audio_voices(tts_settings: dict) -> list[str]:
     )
     if endpoint is None:
         return []
+
+    if _normalize_custom_adapter(endpoint.get("adapter")) == AZURE_SPEECH_ADAPTER:
+        selected_model = str(
+            tts_settings.get("model") or tts_settings.get("xtts_model") or ""
+        ).strip()
+        selected_model = selected_model or default_model
+        selected_model = _normalize_model_for_provider(selected_model, provider)
+        default_voices = endpoint.get("default_voices")
+        model_default_voice = (
+            str(default_voices.get(selected_model) or "").strip()
+            if isinstance(default_voices, dict)
+            else ""
+        )
+        return _dedupe_ordered(
+            [model_default_voice or default_voice]
+            + _azure_speech_catalog_values(endpoint, selected_model, "voices")
+        )
 
     if _normalize_custom_adapter(endpoint.get("adapter")) == GENERIC_JSON_ADAPTER:
         voices = list(endpoint.get("voices") or [])
@@ -5185,6 +5507,9 @@ def _request_openai_compatible_audio(
     endpoint, error = resolve_openai_audio_endpoint(tts_settings)
     if endpoint is None:
         raise RuntimeError(error)
+
+    if _normalize_custom_adapter(endpoint.get("adapter")) == AZURE_SPEECH_ADAPTER:
+        return _request_azure_speech_audio(text, tts_settings, endpoint)
 
     if _normalize_custom_adapter(endpoint.get("adapter")) == ELEVENLABS_NATIVE_ADAPTER:
         return _request_elevenlabs_audio(text, tts_settings, endpoint=endpoint)

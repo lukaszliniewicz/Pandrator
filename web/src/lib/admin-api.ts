@@ -4,6 +4,7 @@ import type {
   JobRecord,
   RuntimeCapabilities,
   RvcModelCatalogue,
+  SttCatalogue,
   TtsCatalogue,
   TtsDiscovery
 } from './api-models';
@@ -307,6 +308,10 @@ export const speechServiceApi = {
         body
       }
     )
+};
+
+export const speechRecognitionApi = {
+  catalogue: () => apiJson<SttCatalogue>('/api/v1/services/stt')
 };
 
 export const voiceApi = {

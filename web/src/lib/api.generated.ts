@@ -1173,6 +1173,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/services/stt": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listSttServices"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/services/tts": {
         parameters: {
             query?: never;
@@ -6536,6 +6552,24 @@ export interface operations {
         responses: {
             /** @description Queued */
             202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listSttServices: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Cloud STT profiles and configured connections */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -56,6 +56,7 @@ from .credentials import (
     database_reference,
     delete_managed_reference,
     llm_provider_credential_key,
+    prepare_stt_settings_for_storage,
     prepare_tts_settings_for_storage,
     provider_credential_key,
     provider_credential_status,
@@ -1077,6 +1078,16 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         response.headers["ETag"] = f'"{revision}"'
         return response
 
+    @app.get("/api/v1/services/stt")
+    @require_auth
+    def stt_services():
+        from .stt_providers import stt_catalogue_snapshot
+
+        payload, revision = stt_catalogue_snapshot(database, paths)
+        response = jsonify(payload)
+        response.headers["ETag"] = f'"{revision}"'
+        return response
+
     @app.get("/api/v1/services/tts/xtts/models")
     @require_auth
     def xtts_models_list():
@@ -1545,11 +1556,20 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                         record.value_json if record is not None else {},
                     )
                     if setting_key == "services.tts"
+                    else prepare_stt_settings_for_storage(
+                        db_session,
+                        database,
+                        paths,
+                        payload.value,
+                        record.value_json if record is not None else {},
+                    )
+                    if setting_key == "services.stt"
                     else payload.value
                 )
-                if setting_key != "services.tts" and contains_inline_secret(
-                    prepared_value
-                ):
+                if setting_key not in {
+                    "services.tts",
+                    "services.stt",
+                } and contains_inline_secret(prepared_value):
                     raise ValueError(
                         "API keys and other credentials must be saved in provider settings."
                     )

@@ -118,6 +118,210 @@ class TTSHandlerTests(unittest.TestCase):
         self.assertEqual({"api-key": "azure-secret"}, post.call_args.kwargs["headers"])
         self.assertEqual("my-tts-deployment", post.call_args.kwargs["json"]["model"])
 
+    def test_azure_speech_native_adapter_posts_escaped_ssml_with_subscription_key(
+        self,
+    ):
+        settings = {
+            "service": tts_handler.OPENAI_COMPAT_SERVICE,
+            "openai_audio_endpoint": "azure-speech-mai-voice-2",
+            "model": "MAI-Voice-2",
+            "voice": "en-US-Ethan:MAI-Voice-2",
+            "speed": 1.25,
+            "azure_speech_style": "excited",
+            "azure_speech_style_degree": 1.2,
+            "generation_prompt": "must never enter Azure SSML",
+            "provider_configs": [
+                {
+                    "id": "azure-speech-mai-voice-2",
+                    "name": "Azure Speech · MAI Voice 2",
+                    "provider": "azure",
+                    "api_base": "https://eastus.tts.speech.microsoft.com",
+                    "adapter": "azure_speech",
+                    "profile_id": "azure-speech-mai-voice-2",
+                    "speech_path": "/cognitiveservices/v1",
+                    "auth_mode": "subscription-key",
+                    "direct_http": True,
+                    "credential_required": True,
+                    "api_key": "azure-secret",
+                    "api_key_env": "AZURE_SPEECH_KEY",
+                    "models": ["MAI-Voice-2", "MAI-Voice-2-Flash"],
+                    "default_model": "MAI-Voice-2",
+                    "voices": ["en-US-Ethan:MAI-Voice-2"],
+                    "default_voice": "en-US-Ethan:MAI-Voice-2",
+                    "voice_catalogues": {"MAI-Voice-2": ["en-US-Ethan:MAI-Voice-2"]},
+                }
+            ],
+        }
+        response = Mock(status_code=200)
+
+        provider = tts_handler.get_service_config(
+            settings, "azure-speech-mai-voice-2"
+        )
+        self.assertIsNotNone(provider)
+        self.assertIs(provider["credential_required"], True)
+
+        with patch(
+            "pandrator.logic.tts_handler.requests.post", return_value=response
+        ) as post:
+            actual = tts_handler._request_openai_compatible_audio(
+                'A & <tag> "quoted"', settings
+            )
+
+        self.assertIs(actual, response)
+        self.assertEqual(
+            "https://eastus.tts.speech.microsoft.com/cognitiveservices/v1",
+            post.call_args.args[0],
+        )
+        self.assertEqual(
+            {
+                "Content-Type": "application/ssml+xml",
+                "X-Microsoft-OutputFormat": "audio-24khz-160kbitrate-mono-mp3",
+                "Ocp-Apim-Subscription-Key": "azure-secret",
+            },
+            post.call_args.kwargs["headers"],
+        )
+        self.assertNotIn("Authorization", post.call_args.kwargs["headers"])
+        self.assertNotIn("Bearer", str(post.call_args.kwargs["headers"]))
+        self.assertNotIn("json", post.call_args.kwargs)
+        ssml = post.call_args.kwargs["data"]
+        self.assertIn('name="en-US-Ethan:MAI-Voice-2"', ssml)
+        self.assertIn('A &amp; &lt;tag&gt; "quoted"', ssml)
+        self.assertIn('<mstts:express-as style="excited" styledegree="1.2">', ssml)
+        self.assertIn('<prosody rate="+25%">', ssml)
+        self.assertNotIn("must never enter Azure SSML", ssml)
+
+    def test_azure_speech_native_adapter_supports_flash_voice_and_custom_format(self):
+        settings = {
+            "service": tts_handler.OPENAI_COMPAT_SERVICE,
+            "openai_audio_endpoint": "azure-speech-mai-voice-2",
+            "xtts_model": "MAI-Voice-2-Flash",
+            "speaker": "en-US-Ethan:MAI-Voice-2-Flash",
+            "azure_speech_output_format": "riff-24khz-16bit-mono-pcm",
+            "provider_configs": [
+                {
+                    "id": "azure-speech-mai-voice-2",
+                    "provider": "azure",
+                    "api_base": "https://westus.tts.speech.microsoft.com",
+                    "adapter": "azure_speech",
+                    "speech_path": "/cognitiveservices/v1",
+                    "auth_mode": "subscription-key",
+                    "api_key": "secret",
+                    "models": ["MAI-Voice-2", "MAI-Voice-2-Flash"],
+                    "voices": ["en-US-Ethan:MAI-Voice-2-Flash"],
+                    "voice_catalogues": {
+                        "MAI-Voice-2-Flash": ["en-US-Ethan:MAI-Voice-2-Flash"]
+                    },
+                    "default_model": "MAI-Voice-2-Flash",
+                    "default_voice": "en-US-Ethan:MAI-Voice-2-Flash",
+                }
+            ],
+        }
+        with patch("pandrator.logic.tts_handler.requests.post") as post:
+            post.return_value.status_code = 200
+            tts_handler._request_openai_compatible_audio("Flash", settings)
+
+        self.assertEqual(
+            "riff-24khz-16bit-mono-pcm",
+            post.call_args.kwargs["headers"]["X-Microsoft-OutputFormat"],
+        )
+        self.assertIn("en-US-Ethan:MAI-Voice-2-Flash", post.call_args.kwargs["data"])
+        self.assertIn('<prosody rate="+0%">', post.call_args.kwargs["data"])
+        self.assertNotIn("express-as", post.call_args.kwargs["data"])
+
+    def test_azure_speech_voice_catalogue_uses_model_specific_default(self):
+        settings = {
+            "service": tts_handler.OPENAI_COMPAT_SERVICE,
+            "openai_audio_endpoint": "azure",
+            "model": "MAI-Voice-2-Flash",
+            "provider_configs": [
+                {
+                    "id": "azure",
+                    "provider": "azure",
+                    "api_base": "https://eastus.tts.speech.microsoft.com",
+                    "adapter": "azure_speech",
+                    "models": ["MAI-Voice-2", "MAI-Voice-2-Flash"],
+                    "default_model": "MAI-Voice-2",
+                    "default_voice": "en-US-Ethan:MAI-Voice-2",
+                    "default_voices": {
+                        "MAI-Voice-2": "en-US-Ethan:MAI-Voice-2",
+                        "MAI-Voice-2-Flash": "en-US-Ethan:MAI-Voice-2-Flash",
+                    },
+                    "voice_catalogues": {
+                        "MAI-Voice-2-Flash": [
+                            "en-US-Ethan:MAI-Voice-2-Flash",
+                            "en-US-Harper:MAI-Voice-2-Flash",
+                        ]
+                    },
+                }
+            ],
+        }
+
+        voices = tts_handler.get_openai_audio_voices(settings)
+
+        self.assertEqual("en-US-Ethan:MAI-Voice-2-Flash", voices[0])
+        self.assertNotIn("en-US-Ethan:MAI-Voice-2", voices)
+
+    def test_azure_speech_rejects_invalid_style_degree(self):
+        settings = {
+            "speed": 1,
+            "azure_speech_style": "excited",
+            "azure_speech_style_degree": "loud-ish",
+        }
+
+        with self.assertRaisesRegex(ValueError, "style degree"):
+            tts_handler._azure_speech_ssml(
+                "Text", "MAI-Voice-2", "en-US-Ethan:MAI-Voice-2", settings
+            )
+
+    def test_azure_speech_native_adapter_rejects_invalid_configuration(self):
+        base = {
+            "service": tts_handler.OPENAI_COMPAT_SERVICE,
+            "openai_audio_endpoint": "azure",
+            "model": "MAI-Voice-2",
+            "voice": "en-US-Ethan:MAI-Voice-2",
+            "provider_configs": [
+                {
+                    "id": "azure",
+                    "provider": "azure",
+                    "api_base": "https://eastus.tts.speech.microsoft.com",
+                    "adapter": "azure_speech",
+                    "speech_path": "/cognitiveservices/v1",
+                    "auth_mode": "subscription-key",
+                    "api_key": "secret",
+                    "models": ["MAI-Voice-2"],
+                    "voices": ["en-US-Ethan:MAI-Voice-2"],
+                    "voice_catalogues": {"MAI-Voice-2": ["en-US-Ethan:MAI-Voice-2"]},
+                    "default_model": "MAI-Voice-2",
+                    "default_voice": "en-US-Ethan:MAI-Voice-2",
+                }
+            ],
+        }
+        cases = (
+            (
+                {"api_base": "https://YOUR-REGION.tts.speech.microsoft.com"},
+                "HTTPS base URL",
+            ),
+            ({"api_base": "http://eastus.tts.speech.microsoft.com"}, "HTTPS base URL"),
+            ({"api_key": ""}, "subscription key"),
+            ({"default_model": ""}, "model"),
+            ({"default_voice": ""}, "voice"),
+            ({"voice": "cloned-voice"}, "published prebuilt voice"),
+        )
+        for override, expected in cases:
+            with self.subTest(expected=expected):
+                settings = dict(base)
+                settings["provider_configs"] = [
+                    {**base["provider_configs"][0], **override}
+                ]
+                if "default_model" in override:
+                    settings["model"] = ""
+                if "default_voice" in override:
+                    settings["voice"] = ""
+                if "voice" in override:
+                    settings["voice"] = override["voice"]
+                with self.assertRaisesRegex(ValueError, expected):
+                    tts_handler._request_openai_compatible_audio("text", settings)
+
     def test_vertex_tts_wraps_raw_pcm_as_wav(self):
         pcm = b"\x00\x00\x01\x00"
         response = Mock()

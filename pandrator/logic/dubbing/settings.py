@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from .stt_backends import normalize_stt_backend
 
 TRANSLATION_BACKEND_LLM = "llm"
 TRANSLATION_BACKEND_DEEPL = "deepl"
@@ -35,7 +36,11 @@ def normalize_provider_id(raw_value: str | None) -> str:
 
 def normalize_translation_backend(raw_value: str | None) -> str:
     normalized = str(raw_value or "").strip().lower()
-    return TRANSLATION_BACKEND_DEEPL if normalized == TRANSLATION_BACKEND_DEEPL else TRANSLATION_BACKEND_LLM
+    return (
+        TRANSLATION_BACKEND_DEEPL
+        if normalized == TRANSLATION_BACKEND_DEEPL
+        else TRANSLATION_BACKEND_LLM
+    )
 
 
 def _provider_by_id(
@@ -56,7 +61,9 @@ def _provider_for_bare_model(
     matches: list[dict[str, Any]] = []
     for provider in provider_configs:
         models = provider.get("models", [])
-        if isinstance(models, list) and model_name in {str(model).strip() for model in models}:
+        if isinstance(models, list) and model_name in {
+            str(model).strip() for model in models
+        }:
             matches.append(provider)
     return matches[0] if len(matches) == 1 else None
 
@@ -84,18 +91,25 @@ def normalize_native_llm_model(
     if normalized_model.startswith("custom:"):
         remainder = normalized_model[len("custom:") :]
         custom_provider_id, separator, custom_model_id = remainder.partition("/")
-        if not separator or not custom_provider_id.strip() or not custom_model_id.strip():
+        if (
+            not separator
+            or not custom_provider_id.strip()
+            or not custom_model_id.strip()
+        ):
             return "default"
         if providers and _provider_by_id(custom_provider_id, providers) is None:
             return "default"
         return normalized_model
 
-    provider = _provider_by_id(normalized_provider_id, providers) if normalized_provider_id else None
+    provider = (
+        _provider_by_id(normalized_provider_id, providers)
+        if normalized_provider_id
+        else None
+    )
     if provider and provider.get("is_custom", False):
         model_id = normalized_model
         custom_prefix = f"{normalized_provider_id}/"
-        if model_id.startswith(custom_prefix):
-            model_id = model_id[len(custom_prefix) :]
+        model_id = model_id.removeprefix(custom_prefix)
         return f"custom:{normalized_provider_id}/{model_id}"
 
     if normalized_model.startswith("models/"):
@@ -107,7 +121,9 @@ def normalize_native_llm_model(
     if provider is None:
         provider = _provider_for_bare_model(normalized_model, providers)
 
-    provider_key = str(provider.get("provider") or "").strip().lower() if provider else ""
+    provider_key = (
+        str(provider.get("provider") or "").strip().lower() if provider else ""
+    )
     if not provider_key:
         lowered = normalized_model.lower()
         if lowered.startswith("claude"):
@@ -131,18 +147,10 @@ def migrate_dubbing_payload(
     if "stt_language" not in migrated:
         migrated["stt_language"] = str(migrated.get("whisper_language") or "English")
 
-    legacy_stt = str(migrated.get("stt_engine") or migrated.get("stt_backend") or "whisper").strip().lower()
-    if legacy_stt in {
-        "moss", "moss-diarize", "moss_diarize", "moss-transcribe-diarize",
-        "moss_transcribe_diarize", "moss-diarize-0.9b", "moss-transcribe-diarize-0.9b",
-    }:
-        stt_engine = "moss"
-    elif legacy_stt in {
-        "parakeet", "parakeet_onnx", "parakeet-onnx", "onnx_parakeet", "onnx-parakeet"
-    }:
-        stt_engine = "parakeet"
-    else:
-        stt_engine = "whisper"
+    legacy_stt = str(
+        migrated.get("stt_engine") or migrated.get("stt_backend") or "whisper"
+    ).strip()
+    stt_engine = normalize_stt_backend(legacy_stt)
     migrated["stt_engine"] = stt_engine
     migrated["stt_backend"] = stt_engine
     legacy_quantization = migrated.get("stt_model_quantization")
@@ -152,14 +160,23 @@ def migrate_dubbing_payload(
         )
     normalized_quantization = str(legacy_quantization).strip().lower().replace("-", "_")
     migrated["stt_model_quantization"] = {
-        "": "f16", "fp16": "f16", "float16": "f16", "int8": "q8_0",
-        "q8": "q8_0", "q5": "q5_0", "q4": "q4_k", "q4_k_m": "q4_k",
+        "": "f16",
+        "fp16": "f16",
+        "float16": "f16",
+        "int8": "q8_0",
+        "q8": "q8_0",
+        "q5": "q5_0",
+        "q4": "q4_k",
+        "q4_k_m": "q4_k",
     }.get(normalized_quantization, normalized_quantization)
-    migrated["stt_compute_backend"] = str(migrated.get("stt_compute_backend") or "auto").strip().lower()
+    migrated["stt_compute_backend"] = (
+        str(migrated.get("stt_compute_backend") or "auto").strip().lower()
+    )
     migrated.setdefault("stt_threads", 0)
     migrated.setdefault("stt_chunk_seconds", 0.0)
     migrated.setdefault("stt_chunk_overlap_seconds", 3.0)
     migrated.setdefault("stt_hotwords", "")
+    migrated.setdefault("stt_transcribe_style", "readability")
     migrated.setdefault("stt_lid_backend", "whisper")
     migrated.setdefault("stt_beam_size", 1)
     migrated.setdefault("parakeet_decoder", "tdt")
@@ -171,7 +188,9 @@ def migrate_dubbing_payload(
     migrated.setdefault("moss_ctc_padding_seconds", 0.5)
     migrated.setdefault("crispasr_vad_model", "silero")
     if "crispasr_vad_enabled" not in migrated:
-        migrated["crispasr_vad_enabled"] = bool(migrated.get("parakeet_vad_enabled", True))
+        migrated["crispasr_vad_enabled"] = bool(
+            migrated.get("parakeet_vad_enabled", True)
+        )
     legacy_vad_fields = {
         "crispasr_vad_threshold": ("parakeet_vad_threshold", 0.5),
         "crispasr_vad_min_speech_ms": ("parakeet_vad_min_speech_ms", 250),
@@ -183,7 +202,9 @@ def migrate_dubbing_payload(
         if current_field not in migrated:
             migrated[current_field] = migrated.get(legacy_field, default)
     if "speech_block_merge_threshold" not in migrated:
-        migrated["speech_block_merge_threshold"] = migrated.get("subtitle_merge_threshold", 250)
+        migrated["speech_block_merge_threshold"] = migrated.get(
+            "subtitle_merge_threshold", 250
+        )
     migrated.setdefault("speech_block_min_chars", 10)
     migrated.setdefault("speech_block_max_chars", 220)
     migrated.setdefault("speech_block_continuation_threshold_ms", 3000)
@@ -200,7 +221,9 @@ def migrate_dubbing_payload(
             normalize_provider_id(legacy_provider) == TRANSLATION_BACKEND_DEEPL
             or legacy_model.lower() == TRANSLATION_BACKEND_DEEPL
         )
-        explicit_backend = TRANSLATION_BACKEND_DEEPL if is_legacy_deepl else TRANSLATION_BACKEND_LLM
+        explicit_backend = (
+            TRANSLATION_BACKEND_DEEPL if is_legacy_deepl else TRANSLATION_BACKEND_LLM
+        )
 
     backend = normalize_translation_backend(str(explicit_backend))
     migrated["translation_backend"] = backend
@@ -217,8 +240,12 @@ def migrate_dubbing_payload(
 
     correction_model = migrated.get("correction_model")
     if correction_model is None:
-        correction_model = legacy_model if backend == TRANSLATION_BACKEND_LLM else "default"
-        correction_provider = legacy_provider if backend == TRANSLATION_BACKEND_LLM else ""
+        correction_model = (
+            legacy_model if backend == TRANSLATION_BACKEND_LLM else "default"
+        )
+        correction_provider = (
+            legacy_provider if backend == TRANSLATION_BACKEND_LLM else ""
+        )
     else:
         correction_provider = ""
     migrated["correction_model"] = normalize_native_llm_model(
@@ -257,6 +284,7 @@ def normalize_dubbing_state(
         "stt_chunk_seconds",
         "stt_chunk_overlap_seconds",
         "stt_hotwords",
+        "stt_transcribe_style",
         "stt_lid_backend",
         "stt_beam_size",
         "parakeet_decoder",

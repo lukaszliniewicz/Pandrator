@@ -567,6 +567,46 @@ export type TtsDiscovery = Partial<TtsService> & {
   error?: string;
 };
 
+export type SttService = {
+  id: string;
+  name: string;
+  description?: string;
+  adapter?: string;
+  api_base?: string;
+  transcription_path?: string;
+  model?: string;
+  models?: string[];
+  api_key_env?: string;
+  secret_ref?: string;
+  source_url?: string;
+  word_timestamps?: boolean | 'conditional' | 'unverified';
+  diarization?: boolean;
+  languages?: string[];
+  settings?: Record<string, unknown>;
+  credential_required?: boolean;
+  credential_configured?: boolean;
+  credential_source?: string;
+  credential_backend?: 'database' | 'environment' | 'keyring' | 'file';
+  credential_reference?: string | null;
+  clear_api_key?: boolean;
+  delete_previous_credential?: boolean;
+  api_key?: string;
+  [key: string]: unknown;
+};
+
+export type SttSettingsValue = {
+  provider_configs?: SttService[];
+  [key: string]: unknown;
+};
+
+export type SttCatalogue = {
+  services: SttService[];
+  profiles: SttService[];
+  value: SttSettingsValue;
+  revision: number;
+  default_service?: string;
+};
+
 export type XttsModelUpload = {
   id: string;
   object: string;
