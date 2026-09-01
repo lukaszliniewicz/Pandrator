@@ -30,7 +30,7 @@
         "pandrator_claim_speech_optimization_dispatch_batch",
         "pandrator_submit_speech_optimization_dispatch_batch"
       ],
-      "minimum_application_version": "0.8.16",
+      "minimum_application_version": "0.8.17",
       "revision": 4,
       "file": "audiobooks.md"
     },
@@ -65,7 +65,7 @@
         "pandrator_release_speech_optimization_dispatch_batch",
         "pandrator_submit_speech_optimization_dispatch_batch"
       ],
-      "minimum_application_version": "0.8.16",
+      "minimum_application_version": "0.8.17",
       "minimum_manager_version": "0.9.0",
       "revision": 4,
       "file": "durable-work.md"
@@ -107,7 +107,7 @@
         "pandrator_configure_tts",
         "pandrator_get_voice_catalog"
       ],
-      "minimum_application_version": "0.8.16",
+      "minimum_application_version": "0.8.17",
       "revision": 2,
       "file": "providers-and-voices.md"
     },
@@ -184,7 +184,7 @@
         "pandrator_plan_export_variant",
         "pandrator_download_artifact"
       ],
-      "minimum_application_version": "0.8.16",
+      "minimum_application_version": "0.8.17",
       "revision": 4,
       "file": "dubbing-voiceover.md"
     },
@@ -205,7 +205,7 @@
         "pandrator_plan_export_variant",
         "pandrator_download_artifact"
       ],
-      "minimum_application_version": "0.8.16",
+      "minimum_application_version": "0.8.17",
       "revision": 2,
       "file": "workflows.md"
     }

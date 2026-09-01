@@ -146,7 +146,7 @@ Guidance remains available even when no target can be reached.
 
 ### MCP protocol compatibility
 
-Version 0.2.0 pins the official Python SDK 2.1.1 and supports the final
+Version 0.3.0 pins the official Python SDK 2.1.1 and supports the final
 [MCP 2026-07-28 specification](https://modelcontextprotocol.io/specification/2026-07-28).
 Modern hosts connect through `server/discover` and attach the negotiated
 protocol metadata to requests; maintained older hosts can still use the legacy
@@ -175,9 +175,10 @@ by both modern and maintained legacy hosts.
 
 ## Install
 
-The current release is 0.2.0 and requires Pandrator 0.8.16 or newer. With
-Python 3.11 or 3.12, install it as an
-isolated command-line tool:
+The current release is 0.3.0 and can target Pandrator 0.8.16 or newer. The
+source-cleaning, speech-optimization, and end-to-end workflow tools require
+Pandrator 0.8.17. With Python 3.11 or 3.12, install it as an isolated
+command-line tool:
 
 ```console
 pipx install "pandrator-mcp[credential-stores,manager]"
