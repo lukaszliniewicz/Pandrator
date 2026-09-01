@@ -2408,6 +2408,14 @@ class SourceCleaningTests(unittest.TestCase):
         self.assertIn("Chapitre I", result.cleaned_text)
 
     def test_pdf_output_rejoins_clear_layout_seams_after_marginal_deletion(self):
+        prose_attributes = {
+            "page_size": [500, 700],
+            "font_size": 11,
+            "source_lines": 2,
+            "source_method": "native",
+            "reading_order": "top_to_bottom",
+            "direction": [1.0, 0.0],
+        }
         document = SourceDocument(
             source_type="pdf_structured",
             source_path="fixture.pdf",
@@ -2415,10 +2423,11 @@ class SourceCleaningTests(unittest.TestCase):
             blocks=[
                 SourceBlock(
                     "pdf:1:1",
-                    "The sentence continues into",
+                    "The sentence deliberately continues into the next nearby source block",
                     1,
                     1,
                     page=1,
+                    attributes={**prose_attributes, "bbox": [72, 100, 430, 150]},
                 ),
                 SourceBlock(
                     "pdf:1:2",
@@ -2427,21 +2436,29 @@ class SourceCleaningTests(unittest.TestCase):
                     2,
                     page=1,
                     role_candidates=["page_number", "repeated_marginal"],
+                    attributes={**prose_attributes, "bbox": [245, 680, 255, 690]},
                 ),
                 SourceBlock(
-                    "pdf:2:1",
+                    "pdf:1:3",
                     "Running Header",
                     3,
                     3,
-                    page=2,
+                    page=1,
                     role_candidates=["repeated_marginal"],
+                    attributes={**prose_attributes, "bbox": [72, 20, 180, 30]},
                 ),
                 SourceBlock(
-                    "pdf:2:2",
-                    "the next physical page without an audible paragraph break.",
+                    "pdf:1:4",
+                    "the nearby continuation without an audible paragraph break.",
                     4,
                     4,
-                    page=2,
+                    page=1,
+                    attributes={
+                        **prose_attributes,
+                        "bbox": [72, 155, 430, 220],
+                        "layout_continuation_from_block_id": "pdf:1:1",
+                        "layout_continuation_join": "space",
+                    },
                 ),
                 SourceBlock("pdf:2:3", "Chapter 2", 5, 5, page=2),
                 SourceBlock(
@@ -2459,14 +2476,15 @@ class SourceCleaningTests(unittest.TestCase):
             [
                 {
                     "op": "delete_blocks",
-                    "block_ids": ["pdf:1:2", "pdf:2:1"],
+                    "block_ids": ["pdf:1:2", "pdf:1:3"],
                     "reason": "verified running margins",
                 }
             ],
         )
 
         self.assertIn(
-            "The sentence continues into the next physical page without an audible "
+            "The sentence deliberately continues into the next nearby source block "
+            "the nearby continuation without an audible "
             "paragraph break.",
             result.cleaned_text,
         )

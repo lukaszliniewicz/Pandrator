@@ -3,7 +3,6 @@ from __future__ import annotations
 import difflib
 import json
 import os
-import re
 from typing import Any
 
 from .models import CleaningResult, SourceBlock, SourceDocument
@@ -364,7 +363,6 @@ def apply_cleaning_operations(
 
     cleaned_lines: list[str] = []
     last_output_block_id = ""
-    last_output_block: SourceBlock | None = None
     last_output_was_chapter = False
     joined_page_continuations = 0
     joined_layout_continuations = 0
@@ -382,6 +380,12 @@ def apply_cleaning_operations(
             block.attributes.get("continuation_from_block_id") or ""
         )
         continuation_mode = str(block.attributes.get("continuation_join") or "")
+        layout_continuation_from = str(
+            block.attributes.get("layout_continuation_from_block_id") or ""
+        )
+        layout_continuation_mode = str(
+            block.attributes.get("layout_continuation_join") or ""
+        )
         if (
             not is_chapter
             and continuation_from
@@ -395,22 +399,17 @@ def apply_cleaning_operations(
         elif (
             not is_chapter
             and not last_output_was_chapter
+            and layout_continuation_from
+            and layout_continuation_from == last_output_block_id
             and cleaned_lines
-            and last_output_block is not None
-            and _is_soft_pdf_layout_continuation(
-                document,
-                last_output_block,
-                block,
-                cleaned_lines[-1],
-                text,
-            )
         ):
-            cleaned_lines[-1] = _join_soft_layout_continuation(cleaned_lines[-1], text)
+            cleaned_lines[-1] = _join_page_continuation(
+                cleaned_lines[-1], text, layout_continuation_mode
+            )
             joined_layout_continuations += 1
         else:
             cleaned_lines.append(text)
         last_output_block_id = block.block_id
-        last_output_block = block
         last_output_was_chapter = is_chapter
 
     original_lines = document.plain_lines()
@@ -561,66 +560,6 @@ def _join_page_continuation(previous: str, current: str, mode: str) -> str:
     current_text = str(current or "").lstrip()
     if mode == "remove_hyphen" and previous_text.endswith(("-", "\u00ad")):
         return f"{previous_text[:-1]}{current_text}"
-    return f"{previous_text} {current_text}".strip()
-
-
-_LOWERCASE_START_RE = re.compile(r"^[\s\"\'“‘(\[]*[a-zà-öø-ÿ]")
-_STRONG_SENTENCE_END_RE = re.compile(r"[.!?…][\"\'”’)*\]]*$")
-_MAJOR_HEADING_RE = re.compile(
-    r"^(?:chapter|part|book|volume)\s+(?:[0-9]+|[ivxlcdm]+|one|two|three|four|five|six|seven|eight|nine|ten)\s*$",
-    re.IGNORECASE,
-)
-_NON_NARRATIVE_ROLES = {
-    "page_number",
-    "repeated_marginal",
-    "toc",
-    "toc_candidate",
-    "non_narrative_section",
-    "metadata",
-    "boilerplate",
-}
-
-
-def _is_soft_pdf_layout_continuation(
-    document: SourceDocument,
-    previous_block: SourceBlock,
-    current_block: SourceBlock,
-    previous_text: str,
-    current_text: str,
-) -> bool:
-    """Join only syntactically clear PDF block seams left by columns/pages.
-
-    Structured PDF extraction intentionally keeps blocks independently inspectable.
-    Once reviewed deletions are applied, however, those physical blocks must not
-    become audible paragraph pauses in the cleaned text.  This conservative rule
-    handles lowercase prose continuations and split words while keeping EPUB
-    paragraphs and structural/non-narrative boundaries intact.
-    """
-
-    if not str(document.source_type or "").startswith("pdf"):
-        return False
-    left = str(previous_text or "").rstrip()
-    right = str(current_text or "").lstrip()
-    if not left or not right or not _LOWERCASE_START_RE.match(right):
-        return False
-    if _STRONG_SENTENCE_END_RE.search(left):
-        return False
-    if _MAJOR_HEADING_RE.match(left):
-        return False
-    previous_roles = set(previous_block.role_candidates)
-    current_roles = set(current_block.role_candidates)
-    if previous_roles & _NON_NARRATIVE_ROLES or current_roles & _NON_NARRATIVE_ROLES:
-        return False
-    previous_page = previous_block.page
-    current_page = current_block.page
-    return not (
-        previous_page and current_page and not 0 <= current_page - previous_page <= 1
-    )
-
-
-def _join_soft_layout_continuation(previous: str, current: str) -> str:
-    previous_text = str(previous or "").rstrip()
-    current_text = str(current or "").lstrip()
-    if previous_text.endswith(("-", "\u00ad")):
-        return f"{previous_text[:-1]}{current_text}"
+    if mode == "keep_hyphen" and previous_text.endswith("-"):
+        return f"{previous_text}{current_text}"
     return f"{previous_text} {current_text}".strip()
