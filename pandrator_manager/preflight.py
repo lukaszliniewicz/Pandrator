@@ -8,6 +8,7 @@ import socket
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from .artifacts import ArtifactDownloader, ArtifactSpec
 from .components import ComponentRegistry
 from .components.host import (
     detect_compute,
@@ -62,11 +63,7 @@ class HostPreflight:
     ) -> tuple[PreflightCheck, ...]:
         checks: list[PreflightCheck] = []
         detected_compute = detect_compute(self.context)
-        mutating_components = {
-            str(task.component_id)
-            for task in tasks
-            if task.component_id
-        }
+        mutating_components = {str(task.component_id) for task in tasks if task.component_id}
         estimated_disk = sum(task.estimated_disk_bytes for task in tasks)
         try:
             free_disk = shutil.disk_usage(self.context.layout.root).free
@@ -82,19 +79,14 @@ class HostPreflight:
         else:
             required = estimated_disk + _RESERVED_DISK_BYTES
             approximate = any(
-                self.registry.definition(component_id).size_provenance
-                == SizeProvenance.ESTIMATE
+                self.registry.definition(component_id).size_provenance == SizeProvenance.ESTIMATE
                 for component_id in mutating_components
             )
             sufficient = free_disk >= required
             checks.append(
                 PreflightCheck(
                     code="disk.headroom",
-                    status=(
-                        "pass"
-                        if sufficient
-                        else ("warning" if approximate else "error")
-                    ),
+                    status=("pass" if sufficient else ("warning" if approximate else "error")),
                     message=(
                         "Workspace disk headroom is sufficient."
                         if sufficient
@@ -116,9 +108,8 @@ class HostPreflight:
                     },
                 )
             )
-        if any(task.kind == "stage_component" for task in tasks) and not any(
-            task.estimated_download_bytes or task.estimated_disk_bytes
-            for task in tasks
+        if any(task.kind in {"stage_component", "stage_audio_cpp"} for task in tasks) and not any(
+            task.estimated_download_bytes or task.estimated_disk_bytes for task in tasks
         ):
             checks.append(
                 PreflightCheck(
@@ -148,7 +139,7 @@ class HostPreflight:
                     details={"path": str(candidate.resolve(strict=False))},
                 )
             )
-        if any(task.kind == "stage_component" for task in tasks):
+        if any(task.kind in {"stage_component", "stage_audio_cpp"} for task in tasks):
             try:
                 ca_bundle = select_ca_bundle(self.context.environment)
             except ManagerError as error:
@@ -165,10 +156,7 @@ class HostPreflight:
                     PreflightCheck(
                         code="tls.ca_bundle",
                         status="pass",
-                        message=(
-                            "A verified CA bundle is available for secure "
-                            "source downloads."
-                        ),
+                        message=("A verified CA bundle is available for secure source downloads."),
                         details=ca_bundle.diagnostic_payload(),
                     )
                 )
@@ -182,9 +170,7 @@ class HostPreflight:
         required_tools = {
             tool
             for component_id in mutating_components
-            for tool in self.registry.definition(
-                component_id
-            ).required_runtime_tools
+            for tool in self.registry.definition(component_id).required_runtime_tools
         }
         if "pixi" in required_tools:
             try:
@@ -258,8 +244,7 @@ class HostPreflight:
                                 )
                                 if selected_desired.compute == ComputeVariant.AUTO
                                 else (
-                                    f"{definition.label} can use "
-                                    f"{effective_compute.value.upper()}."
+                                    f"{definition.label} can use {effective_compute.value.upper()}."
                                 )
                             ),
                             details={
@@ -271,9 +256,7 @@ class HostPreflight:
                     )
             if os.name == "nt":
                 projected = (
-                    component_container(self.context.layout, component_id)
-                    / "versions"
-                    / ("r" * 80)
+                    component_container(self.context.layout, component_id) / "versions" / ("r" * 80)
                 )
                 if len(str(projected)) >= 230:
                     checks.append(
@@ -288,20 +271,13 @@ class HostPreflight:
                             details={"projected_length": len(str(projected))},
                         )
                     )
-            if (
-                definition.default_port
-                and definition.default_port not in checked_ports
-            ):
+            if definition.default_port and definition.default_port not in checked_ports:
                 checked_ports.add(definition.default_port)
                 available = self._port_available(definition.default_port)
                 checks.append(
                     PreflightCheck(
                         code=f"port.{definition.default_port}",
-                        status=(
-                            "pass"
-                            if available
-                            else "warning"
-                        ),
+                        status=("pass" if available else "warning"),
                         message=(
                             f"Port {definition.default_port} is available."
                             if available
@@ -364,16 +340,43 @@ class HostPreflight:
                     )
                 )
 
-        for component_id, selected in desired.items():
-            if (
-                selected.present
-                and bool(selected.options.get("offline"))
-                and any(
-                    task.kind == "stage_component"
-                    and task.component_id == component_id
-                    for task in tasks
+        for task in tasks:
+            if task.kind != "stage_audio_cpp":
+                continue
+            assets = task.inputs.get("assets")
+            checks.append(
+                PreflightCheck(
+                    code=f"source.{task.component_id}",
+                    status="pass" if isinstance(assets, list) and assets else "error",
+                    message=(
+                        "The pinned audio.cpp runtime archives will be downloaded "
+                        "over HTTPS and verified before activation."
+                        if isinstance(assets, list) and assets
+                        else "The audio.cpp runtime archive contract is missing."
+                    ),
+                    details={
+                        "transport": "https",
+                        "assets": [
+                            str(item.get("filename")) for item in assets if isinstance(item, dict)
+                        ]
+                        if isinstance(assets, list)
+                        else [],
+                    },
                 )
-            ):
+            )
+
+        for component_id, selected in desired.items():
+            if not (selected.present and bool(selected.options.get("offline"))):
+                continue
+            component_tasks = tuple(
+                task
+                for task in tasks
+                if task.component_id == component_id
+                and task.kind in {"stage_component", "stage_audio_cpp"}
+            )
+            if not component_tasks:
+                continue
+            if component_id != "audio_cpp":
                 checks.append(
                     PreflightCheck(
                         code=f"offline.{component_id}",
@@ -384,6 +387,52 @@ class HostPreflight:
                         ),
                     )
                 )
+                continue
+            task = component_tasks[0]
+            assets = task.inputs.get("assets")
+            missing: list[str] = []
+            if not isinstance(assets, list):
+                missing.append("runtime asset contract")
+            else:
+                for raw_asset in assets:
+                    if not isinstance(raw_asset, dict):
+                        missing.append("invalid runtime asset")
+                        continue
+                    try:
+                        filename = str(raw_asset["filename"])
+                        specification = ArtifactSpec(
+                            url=str(raw_asset["url"]),
+                            sha256=str(raw_asset["sha256"]),
+                            filename=filename,
+                        )
+                    except (KeyError, TypeError, ValueError):
+                        missing.append("invalid runtime asset")
+                        continue
+                    candidate = self.context.layout.cache / "artifacts" / "audio_cpp" / filename
+                    if not ArtifactDownloader.matches(candidate, specification):
+                        missing.append(filename)
+            checks.append(
+                PreflightCheck(
+                    code="offline.audio_cpp",
+                    status="error",
+                    message=(
+                        "Offline audio.cpp installation is not yet supported. "
+                        "Pandrator verifies the runtime and immutable model payloads, "
+                        "but the Manager does not yet cache model packages for offline "
+                        "reuse, so the selected models still require an online fetch."
+                        + (
+                            " Missing or invalid runtime archives: " + ", ".join(missing)
+                            if missing
+                            else ""
+                        )
+                    ),
+                    details={
+                        "missing": missing,
+                        "runtime_cache_complete": not missing,
+                        "model_cache_supported": False,
+                    },
+                )
+            )
         return tuple(checks)
 
     @staticmethod
@@ -394,11 +443,6 @@ class HostPreflight:
         raise ManagerError(
             "preflight_failed",
             "The host failed one or more operation preflight checks.",
-            {
-                "checks": [
-                    check.model_dump(mode="json")
-                    for check in failures
-                ]
-            },
+            {"checks": [check.model_dump(mode="json") for check in failures]},
             409,
         )

@@ -47,6 +47,11 @@ def mark_provider_registrations_stale(
     changed = False
     for service_id, raw in list(providers.items()):
         registration = dict(raw or {})
+        if registration.get("resource_kind") == "linked_reference":
+            # A linked registration follows the local voice.  It is not a
+            # provider-side copy that becomes stale when a newer sample or
+            # reviewed transcript is added.
+            continue
         if (
             sample_id
             and registration.get("sample_id")
@@ -139,6 +144,9 @@ def voice_payload(
     providers = dict(metadata.get("providers") or {})
     for service_id, raw in list(providers.items()):
         registration = dict(raw or {})
+        if registration.get("resource_kind") == "linked_reference":
+            providers[service_id] = registration
+            continue
         registered_sample = str(registration.get("sample_id") or "")
         if registration.get("status") == "ready" and (
             not registered_sample

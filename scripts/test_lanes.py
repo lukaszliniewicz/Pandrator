@@ -23,6 +23,7 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_dependency_manifests.py",
         "tests/test_dubbing_artifacts.py",
         "tests/test_dubbing_boundary_correction.py",
+        "tests/test_dubbing_cloud_stt.py",
         "tests/test_dubbing_credentials.py",
         "tests/test_dubbing_llm_correction.py",
         "tests/test_dubbing_llm_translation.py",
@@ -58,6 +59,7 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_installer_web_readiness.py",
     ),
     "manager-serial": (
+        "tests/test_manager_audiocpp.py",
         "tests/test_manager_automation.py",
         "tests/test_manager_build.py",
         "tests/test_manager_control_plane.py",

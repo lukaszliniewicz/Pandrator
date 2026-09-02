@@ -8,9 +8,10 @@ import os
 import re
 import time
 import wave
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from queue import Queue
-from threading import Event, Lock, Thread
+from threading import Event, Lock, RLock, Thread
+from typing import Any
 from urllib.parse import quote, urljoin, urlparse, urlunparse
 from xml.sax.saxutils import escape as escape_xml
 
@@ -33,6 +34,9 @@ from .retry_utils import (
     wait_for_retry,
 )
 from .tts_provider_profiles import (
+    AUDIO_CPP_MODEL_CATALOG,
+    AUDIO_CPP_MODEL_VOICE_MODES,
+    AUDIO_CPP_PREBUILT_VOICES,
     AZURE_SPEECH_ADAPTER,
     AZURE_SPEECH_MODELS,
     AZURE_SPEECH_OUTPUT_FORMAT,
@@ -44,6 +48,14 @@ _litellm_speech = None
 _litellm_speech_import_attempted = False
 _litellm_speech_import_error: BaseException | None = None
 _litellm_speech_import_lock = Lock()
+
+# audio.cpp keeps resident model state, so requests to one normalized endpoint
+# must never overlap.  RLocks intentionally allow the ordered batch adapter to
+# hold the endpoint lock while each item enters text_to_audio again.
+_audio_cpp_endpoint_locks_guard = Lock()
+_audio_cpp_endpoint_locks: dict[str, RLock] = {}
+AUDIO_CPP_API_BASE_URL = "http://127.0.0.1:8060"
+AUDIO_CPP_MAX_REFERENCE_BYTES = 5 * 1024 * 1024
 
 
 def _import_litellm_speech_client():
@@ -551,6 +563,7 @@ DEFAULT_TTS_PRICING = {
 }
 
 FIRST_CLASS_SERVICE_ORDER = [
+    "audio_cpp",
     "xtts",
     "voxcpm",
     "fishs2",
@@ -567,6 +580,7 @@ FIRST_CLASS_SERVICE_ORDER = [
 ]
 FIRST_CLASS_SERVICE_IDS = set(FIRST_CLASS_SERVICE_ORDER)
 FIRST_CLASS_SERVICE_NAMES = {
+    "audio_cpp": "audio.cpp",
     "xtts": "XTTS",
     "voxcpm": "VoxCPM",
     "fishs2": "FishS2",
@@ -582,6 +596,9 @@ FIRST_CLASS_SERVICE_NAMES = {
     ELEVENLABS_PROVIDER: ELEVENLABS_SERVICE,
 }
 SERVICE_ID_ALIASES = {
+    "audio.cpp": "audio_cpp",
+    "audio-cpp": "audio_cpp",
+    "audiocpp": "audio_cpp",
     "voxcpm2": "voxcpm",
     "voxcpm-2": "voxcpm",
     "fish-s2": "fishs2",
@@ -603,10 +620,12 @@ SERVICE_ID_ALIASES = {
 }
 PREBUILT_VOICE_PROVIDER_FIELD = "supports_prebuilt_voices"
 OPENAI_COMPAT_ADAPTER = "openai_compatible"
+AUDIO_CPP_ADAPTER = "audio_cpp"
 GENERIC_JSON_ADAPTER = "generic_json"
 ELEVENLABS_NATIVE_ADAPTER = "elevenlabs_native"
 SUPPORTED_CUSTOM_TTS_ADAPTERS = {
     OPENAI_COMPAT_ADAPTER,
+    AUDIO_CPP_ADAPTER,
     GENERIC_JSON_ADAPTER,
     ELEVENLABS_NATIVE_ADAPTER,
     AZURE_SPEECH_ADAPTER,
@@ -621,11 +640,13 @@ def _read_setting(settings, key: str, default=None):
     return getattr(settings, key, default)
 
 
-def _normalize_custom_adapter(raw_adapter: str | None) -> str:
+def _normalize_custom_adapter(raw_adapter: object) -> str:
     normalized = str(raw_adapter or "").strip().lower().replace("-", "_")
     aliases = {
         "openai": OPENAI_COMPAT_ADAPTER,
         "openai_compatible": OPENAI_COMPAT_ADAPTER,
+        "audio_cpp": AUDIO_CPP_ADAPTER,
+        "audiocpp": AUDIO_CPP_ADAPTER,
         "generic": GENERIC_JSON_ADAPTER,
         "json": GENERIC_JSON_ADAPTER,
         "generic_json": GENERIC_JSON_ADAPTER,
@@ -648,7 +669,7 @@ def _normalize_adapter_config(raw_config) -> dict[str, object]:
         key: str(request_fields.get(key) or "").strip()
         for key in ("text", "model", "voice", "speed", "format")
     }
-    if adapter == OPENAI_COMPAT_ADAPTER:
+    if adapter in {OPENAI_COMPAT_ADAPTER, AUDIO_CPP_ADAPTER}:
         normalized_fields = {
             "text": "input",
             "model": "model",
@@ -669,6 +690,7 @@ def _normalize_adapter_config(raw_config) -> dict[str, object]:
     metadata: dict[str, object] = {}
     for key in (
         "model_catalog",
+        "model_voice_modes",
         "voice_catalogues",
         "voice_metadata",
         "default_voices",
@@ -696,10 +718,15 @@ def _normalize_adapter_config(raw_config) -> dict[str, object]:
         "request_defaults": normalized_defaults,
         "auth_mode": str(config.get("auth_mode") or "bearer").strip().lower(),
         "direct_http": _coerce_bool(config.get("direct_http"), False),
-        "credential_required": _coerce_bool(
-            config.get("credential_required"), False
-        ),
+        "credential_required": _coerce_bool(config.get("credential_required"), False),
+        "voice_reference_text": str(
+            config.get("voice_reference_text") or "ignored"
+        ).strip()
+        or "ignored",
     }
+    for key in ("supports_voice_cloning", "supports_voice_deletion"):
+        if key in config:
+            normalized[key] = _coerce_bool(config.get(key), False)
     key_env = str(config.get("api_key_env") or "").strip()
     if key_env:
         normalized["api_key_env"] = key_env
@@ -746,6 +773,7 @@ def _parse_voice_list(raw_voices, provider: str) -> list[str]:
 
 def _default_service_configs() -> list[dict[str, object]]:
     local_services = [
+        ("audio_cpp", AUDIO_CPP_API_BASE_URL),
         ("xtts", XTTS_API_BASE_URL),
         ("voxcpm", VOXCPM_API_BASE_URL),
         ("fishs2", FISHS2_API_BASE_URL),
@@ -757,6 +785,13 @@ def _default_service_configs() -> list[dict[str, object]]:
         ("kobold_qwen", KOBOLD_QWEN_API_BASE_URL),
     ]
     local_catalogues: dict[str, tuple[list[str], str, list[str], str, bool]] = {
+        "audio_cpp": (
+            ["qwen3_tts_1_7b_base_q8_0"],
+            "qwen3_tts_1_7b_base_q8_0",
+            [],
+            "",
+            True,
+        ),
         "xtts": ([XTTS_DEFAULT_MODEL], XTTS_DEFAULT_MODEL, [], "", False),
         "voxcpm": (
             list(VOXCPM_TTS_MODELS),
@@ -840,6 +875,35 @@ def _default_service_configs() -> list[dict[str, object]]:
                 model: "prebuilt" if prebuilt else "cloning" for model in models
             },
         }
+        if service_id == "audio_cpp":
+            record.update(
+                {
+                    "provider": "audio_cpp",
+                    "adapter": AUDIO_CPP_ADAPTER,
+                    "speech_path": "/v1/audio/speech",
+                    "models_path": "/v1/models",
+                    "voices_path": "/v1/audio/voices",
+                    "auth_mode": "none",
+                    "direct_http": True,
+                    "credential_required": False,
+                    "supports_dynamic_catalog": True,
+                    "supports_voice_cloning": True,
+                    "supports_voice_deletion": False,
+                    "voice_reference_text": "optional",
+                    "model_catalog": copy.deepcopy(AUDIO_CPP_MODEL_CATALOG),
+                    "model_voice_modes": copy.deepcopy(AUDIO_CPP_MODEL_VOICE_MODES),
+                    "voice_catalogues": {
+                        "qwen3_tts_1_7b_customvoice_q8_0": list(KOBOLD_QWEN_TTS_VOICES),
+                        "magpie_tts_q8_0": magpie_voice_catalog(),
+                        "pocket_tts_english_q8_0": ["alba"],
+                    },
+                    "default_voices": {
+                        "qwen3_tts_1_7b_customvoice_q8_0": KOBOLD_QWEN_DEFAULT_VOICE,
+                        "magpie_tts_q8_0": magpie_voice_catalog()[0],
+                        "pocket_tts_english_q8_0": "alba",
+                    },
+                }
+            )
         if service_id == "kobold_qwen":
             # Qwen exposes two different model capabilities through one API.
             # Keep their catalogues separate so clients never offer a preset to
@@ -1013,6 +1077,21 @@ def _merge_service_config(
         record[PREBUILT_VOICE_PROVIDER_FIELD] = bool(
             raw_record[PREBUILT_VOICE_PROVIDER_FIELD]
         )
+    for key in (
+        "model_catalog",
+        "model_voice_modes",
+        "voice_reference_text",
+        "supports_voice_cloning",
+        "supports_voice_deletion",
+    ):
+        if key in raw_record:
+            value = raw_record[key]
+            if key in {"supports_voice_cloning", "supports_voice_deletion"}:
+                record[key] = bool(value)
+            elif key == "voice_reference_text":
+                record[key] = str(value or "").strip() or "ignored"
+            elif isinstance(value, (dict, list)):
+                record[key] = copy.deepcopy(value)
 
     models = _parse_model_list(raw_record.get("models", []), provider_key)
     if models:
@@ -1383,8 +1462,16 @@ def get_provider_configs(tts_settings) -> list[dict[str, object]]:
             if default_model and default_model not in models:
                 models.insert(0, default_model)
 
-            if not models and adapter == OPENAI_COMPAT_ADAPTER and not profile_id:
-                builtin_models = _provider_model_catalog(provider_key)
+            if (
+                not models
+                and adapter in {OPENAI_COMPAT_ADAPTER, AUDIO_CPP_ADAPTER}
+                and not profile_id
+            ):
+                builtin_models = (
+                    [str(item["id"]) for item in AUDIO_CPP_MODEL_CATALOG]
+                    if adapter == AUDIO_CPP_ADAPTER
+                    else _provider_model_catalog(provider_key)
+                )
                 models = list(builtin_models)
 
             if not default_model:
@@ -1393,7 +1480,8 @@ def get_provider_configs(tts_settings) -> list[dict[str, object]]:
                     if models and adapter != AZURE_SPEECH_ADAPTER
                     else (
                         _provider_default_model(provider_key)
-                        if adapter == OPENAI_COMPAT_ADAPTER and not profile_id
+                        if adapter in {OPENAI_COMPAT_ADAPTER, AUDIO_CPP_ADAPTER}
+                        and not profile_id
                         else ""
                     )
                 )
@@ -1406,8 +1494,16 @@ def get_provider_configs(tts_settings) -> list[dict[str, object]]:
             if default_voice and default_voice not in voices:
                 voices.insert(0, default_voice)
 
-            if not voices and adapter == OPENAI_COMPAT_ADAPTER and not profile_id:
-                voices = _provider_voice_catalog(provider_key, default_model)
+            if (
+                not voices
+                and adapter in {OPENAI_COMPAT_ADAPTER, AUDIO_CPP_ADAPTER}
+                and not profile_id
+            ):
+                voices = (
+                    list(AUDIO_CPP_PREBUILT_VOICES)
+                    if adapter == AUDIO_CPP_ADAPTER
+                    else _provider_voice_catalog(provider_key, default_model)
+                )
 
             if not default_voice:
                 default_voice = (
@@ -1415,7 +1511,8 @@ def get_provider_configs(tts_settings) -> list[dict[str, object]]:
                     if voices and adapter != AZURE_SPEECH_ADAPTER
                     else (
                         _provider_default_voice(provider_key)
-                        if adapter == OPENAI_COMPAT_ADAPTER and not profile_id
+                        if adapter in {OPENAI_COMPAT_ADAPTER, AUDIO_CPP_ADAPTER}
+                        and not profile_id
                         else ""
                     )
                 )
@@ -1445,6 +1542,18 @@ def get_provider_configs(tts_settings) -> list[dict[str, object]]:
                     key == "model_catalog" and isinstance(value, list)
                 ):
                     record[key] = copy.deepcopy(value)
+            for key in (
+                "voice_reference_text",
+                "supports_voice_cloning",
+                "supports_voice_deletion",
+            ):
+                if key in raw_provider:
+                    record[key] = (
+                        _coerce_bool(raw_provider.get(key), False)
+                        if key != "voice_reference_text"
+                        else str(raw_provider.get(key) or "ignored").strip()
+                        or "ignored"
+                    )
             if isinstance(raw_provider.get(GENERATION_PROMPT_MODELS_FIELD), list):
                 record[GENERATION_PROMPT_MODELS_FIELD] = [
                     str(model).strip()
@@ -1716,6 +1825,46 @@ def _configured_endpoint_url(base_url: str, path: str) -> str:
         parsed._replace(path="", params="", query="", fragment="")
     ).rstrip("/")
     return urljoin(f"{origin}/", normalized_path.lstrip("/"))
+
+
+def _audio_cpp_endpoint_key(base_url: str) -> str:
+    """Return a stable endpoint identity without request or voice data."""
+    normalized = str(base_url or "").strip().rstrip("/")
+    parsed = urlparse(normalized)
+    scheme = parsed.scheme.lower()
+    hostname = (parsed.hostname or "").lower()
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
+    if port is None:
+        port = 443 if scheme == "https" else 80
+    path = parsed.path.rstrip("/") or "/"
+    return f"{scheme}://{hostname}:{port}{path}"
+
+
+def _audio_cpp_endpoint_lock_for(base_url: str) -> RLock:
+    key = _audio_cpp_endpoint_key(base_url)
+    with _audio_cpp_endpoint_locks_guard:
+        lock = _audio_cpp_endpoint_locks.get(key)
+        if lock is None:
+            lock = RLock()
+            _audio_cpp_endpoint_locks[key] = lock
+        return lock
+
+
+@contextmanager
+def audio_cpp_endpoint_lock(tts_settings: dict):
+    """Serialize synthesis requests to one audio.cpp endpoint across jobs."""
+    endpoint, _error = resolve_openai_audio_endpoint(tts_settings)
+    if (
+        endpoint is None
+        or _normalize_custom_adapter(endpoint.get("adapter")) != AUDIO_CPP_ADAPTER
+    ):
+        yield
+        return
+    with _audio_cpp_endpoint_lock_for(str(endpoint.get("base_url") or "")):
+        yield
 
 
 def _coerce_bool(value, default: bool) -> bool:
@@ -2200,6 +2349,8 @@ def _provider_voice_catalog(provider: str, model_name: str = "") -> list[str]:
 
 def _provider_for_tts_service(raw_service: str | None) -> str:
     normalized = str(raw_service or "").strip().lower()
+    if normalized in {"audio.cpp", "audio_cpp", "audio-cpp", "audiocpp"}:
+        return AUDIO_CPP_ADAPTER
     if normalized == OPENAI_SERVICE.lower():
         return OPENAI_PROVIDER
     if normalized in {GEMINI_SERVICE.lower(), LEGACY_GEMINI_SERVICE.lower()}:
@@ -2209,28 +2360,58 @@ def _provider_for_tts_service(raw_service: str | None) -> str:
     return ""
 
 
-def _service_audio_endpoint(tts_settings, provider: str) -> dict[str, str]:
-    normalized_provider = _normalize_audio_provider(provider)
+def _service_audio_endpoint(tts_settings, provider: str) -> dict[str, object]:
+    normalized_provider = (
+        AUDIO_CPP_ADAPTER
+        if str(provider or "").strip().lower().replace("-", "_")
+        in {"audio_cpp", "audiocpp"}
+        else _normalize_audio_provider(provider)
+    )
     service = get_service_config(tts_settings, normalized_provider)
     if service is None:
         service = get_service_config({}, normalized_provider) or {}
+    base_url = str(service.get("api_base") or "").strip()
+    if normalized_provider == AUDIO_CPP_ADAPTER:
+        base_url = str(
+            _read_setting(tts_settings, "audio_cpp_base_url", "") or base_url
+        ).strip()
 
     return {
         "name": normalized_provider,
         "display_name": str(service.get("name") or normalized_provider),
-        "base_url": str(service.get("api_base") or ""),
+        "base_url": base_url,
         "api_key": str(service.get("api_key") or ""),
         "api_key_env": str(service.get("api_key_env") or ""),
         "secret_ref": str(service.get("secret_ref") or ""),
         "provider": normalized_provider,
+        "adapter": str(service.get("adapter") or ""),
         "default_model": str(
-            service.get("default_model") or _provider_default_model(normalized_provider)
+            service.get("default_model")
+            or (
+                ""
+                if normalized_provider == AUDIO_CPP_ADAPTER
+                else _provider_default_model(normalized_provider)
+            )
         ),
         "default_voice": str(
-            service.get("default_voice") or _provider_default_voice(normalized_provider)
+            service.get("default_voice")
+            or (
+                ""
+                if normalized_provider == AUDIO_CPP_ADAPTER
+                else _provider_default_voice(normalized_provider)
+            )
         ),
         "models": list(service.get("models") or []),
         "voices": list(service.get("voices") or []),
+        "speech_path": str(service.get("speech_path") or ""),
+        "models_path": str(service.get("models_path") or ""),
+        "voices_path": str(service.get("voices_path") or ""),
+        "auth_mode": str(service.get("auth_mode") or "bearer"),
+        "direct_http": bool(service.get("direct_http")),
+        "model_catalog": copy.deepcopy(service.get("model_catalog") or []),
+        "model_voice_modes": copy.deepcopy(service.get("model_voice_modes") or {}),
+        "voice_catalogues": copy.deepcopy(service.get("voice_catalogues") or {}),
+        "voice_reference_text": str(service.get("voice_reference_text") or "ignored"),
     }
 
 
@@ -2632,6 +2813,15 @@ def resolve_openai_audio_endpoint(
 
     first_name = sorted(endpoints.keys())[0]
     return endpoints[first_name], ""
+
+
+def resolve_custom_tts_adapter_id(tts_settings: dict) -> str:
+    """Return the selected custom endpoint's normalized transport adapter."""
+
+    endpoint, _ = resolve_openai_audio_endpoint(tts_settings)
+    if endpoint is None:
+        return ""
+    return _normalize_custom_adapter(str(endpoint.get("adapter") or ""))
 
 
 def should_show_xtts_advanced_settings(tts_settings: dict) -> bool:
@@ -3142,6 +3332,31 @@ def check_openai_audio_connection(tts_settings: dict) -> tuple[bool, str]:
     if endpoint is None:
         return False, error
 
+    if _normalize_custom_adapter(endpoint.get("adapter")) == AUDIO_CPP_ADAPTER:
+        try:
+            response = requests.get(
+                _configured_endpoint_url(str(endpoint["base_url"]), "/health"),
+                headers=_configured_endpoint_auth_headers(endpoint),
+                timeout=8,
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except (requests.exceptions.RequestException, ValueError) as error:
+            return False, f"Could not connect to audio.cpp endpoint: {error}"
+        if not isinstance(payload, dict) or payload.get("status") != "ok":
+            return False, "audio.cpp returned an invalid health response."
+        model_count = payload.get("models")
+        model_summary = (
+            str(model_count) if isinstance(model_count, int) else "unknown number of"
+        )
+        return (
+            True,
+            (
+                f"Connected to audio.cpp ({payload.get('backend') or 'unknown'} backend, "
+                f"{model_summary} configured models)."
+            ),
+        )
+
     if _normalize_custom_adapter(endpoint.get("adapter")) == AZURE_SPEECH_ADAPTER:
         speech_path = str(
             endpoint.get("speech_path") or "/cognitiveservices/v1"
@@ -3390,6 +3605,83 @@ def _extract_generic_catalog(payload, kind: str) -> list[str]:
     return _dedupe_ordered(values)
 
 
+def _audio_cpp_model_is_supported(item: dict[str, object]) -> bool:
+    model_id = str(item.get("id") or "").strip().casefold()
+    family = str(item.get("family") or "").strip().lower()
+    # Breeze is present only on audio.cpp's development line. Keep it out of
+    # Pandrator until a stable release package is available.
+    return family != "breeze_tts" and not model_id.startswith("breeze")
+
+
+def get_audio_cpp_model_catalog(
+    base_url: str,
+    *,
+    models_path: str = "/v1/models",
+    headers: dict[str, str] | None = None,
+    request_session: requests.Session | None = None,
+) -> list[dict[str, object]]:
+    """Fetch configured speech-capable models without leaking server paths."""
+
+    client = request_session or requests
+    with _audio_cpp_endpoint_lock_for(base_url):
+        response = client.get(
+            _configured_endpoint_url(base_url, models_path),
+            headers=headers or {},
+            timeout=8,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    candidates = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(candidates, list):
+        raise ValueError(  # noqa: TRY004 - malformed remote payload, not caller type
+            "audio.cpp returned an invalid model catalogue."
+        )
+
+    result: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for raw_item in candidates:
+        if not isinstance(raw_item, dict):
+            continue
+        model_id = str(raw_item.get("id") or "").strip()
+        task = str(raw_item.get("task") or "").strip().lower()
+        if not model_id or model_id in seen:
+            continue
+        if task and task not in {"tts", "clon", "vdes"}:
+            continue
+        if not _audio_cpp_model_is_supported(raw_item):
+            continue
+        seen.add(model_id)
+        item: dict[str, object] = {"id": model_id}
+        for key in ("object", "owned_by", "family", "task", "mode", "loaded"):
+            value = raw_item.get(key)
+            if isinstance(value, (str, bool, int, float)):
+                item[key] = value
+        result.append(item)
+    return result
+
+
+def get_audio_cpp_voice_catalog(
+    base_url: str,
+    model: str,
+    *,
+    voices_path: str = "/v1/audio/voices",
+    headers: dict[str, str] | None = None,
+    request_session: requests.Session | None = None,
+) -> list[str]:
+    """Fetch voice presets and voice-dir entries for one configured model."""
+
+    client = request_session or requests
+    with _audio_cpp_endpoint_lock_for(base_url):
+        response = client.get(
+            _configured_endpoint_url(base_url, voices_path),
+            headers=headers or {},
+            params={"model": model},
+            timeout=8,
+        )
+        response.raise_for_status()
+        return _extract_generic_catalog(response.json(), "voices")
+
+
 def get_openai_audio_models(tts_settings: dict) -> list[str]:
     """Fetches model IDs from the configured custom audio endpoint."""
     endpoint, provider, default_model, _ = _resolve_openai_audio_provider_context(
@@ -3397,6 +3689,14 @@ def get_openai_audio_models(tts_settings: dict) -> list[str]:
     )
     if endpoint is None:
         return []
+
+    if _normalize_custom_adapter(endpoint.get("adapter")) == AUDIO_CPP_ADAPTER:
+        entries = get_audio_cpp_model_catalog(
+            str(endpoint["base_url"]),
+            models_path=str(endpoint.get("models_path") or "/v1/models"),
+            headers=_configured_endpoint_auth_headers(endpoint),
+        )
+        return [str(item["id"]) for item in entries]
 
     if _normalize_custom_adapter(endpoint.get("adapter")) == AZURE_SPEECH_ADAPTER:
         return _dedupe_ordered(
@@ -3478,6 +3778,22 @@ def get_openai_audio_voices(tts_settings: dict) -> list[str]:
     )
     if endpoint is None:
         return []
+
+    if _normalize_custom_adapter(endpoint.get("adapter")) == AUDIO_CPP_ADAPTER:
+        selected_model = str(
+            tts_settings.get("model")
+            or tts_settings.get("xtts_model")
+            or default_model
+            or ""
+        ).strip()
+        if not selected_model:
+            return []
+        return get_audio_cpp_voice_catalog(
+            str(endpoint["base_url"]),
+            selected_model,
+            voices_path=str(endpoint.get("voices_path") or "/v1/audio/voices"),
+            headers=_configured_endpoint_auth_headers(endpoint),
+        )
 
     if _normalize_custom_adapter(endpoint.get("adapter")) == AZURE_SPEECH_ADAPTER:
         selected_model = str(
@@ -5396,6 +5712,198 @@ def _build_openai_compatible_audio_payload(
     return payload
 
 
+_AUDIO_CPP_QWEN_LANGUAGE_NAMES = {
+    "en": "English",
+    "zh": "Chinese",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "de": "German",
+    "fr": "French",
+    "ru": "Russian",
+    "pt": "Portuguese",
+    "es": "Spanish",
+    "it": "Italian",
+}
+
+
+def _audio_cpp_model_metadata(model: str, endpoint: dict) -> dict[str, object]:
+    normalized = str(model or "").strip().casefold()
+    configured_modes = endpoint.get("model_voice_modes")
+    mode = ""
+    if isinstance(configured_modes, dict):
+        mode = next(
+            (
+                str(value or "").strip().lower()
+                for key, value in configured_modes.items()
+                if str(key or "").strip().casefold() == normalized
+            ),
+            "",
+        )
+    live_item: dict[str, object] = {}
+    configured_catalog = endpoint.get("model_catalog")
+    if isinstance(configured_catalog, list):
+        live_item = next(
+            (
+                dict(item)
+                for item in configured_catalog
+                if isinstance(item, dict)
+                and str(item.get("id") or "").strip().casefold() == normalized
+            ),
+            {},
+        )
+    for item in AUDIO_CPP_MODEL_CATALOG:
+        if str(item.get("id") or "").casefold() == normalized:
+            result = {**item}
+            for key in ("family", "voice_mode", "experimental"):
+                if live_item.get(key) is not None:
+                    result[key] = live_item[key]
+            if live_item.get("mode") and not result.get("voice_mode"):
+                result["voice_mode"] = live_item["mode"]
+            if mode:
+                result["voice_mode"] = mode
+            return result
+    if live_item:
+        result = {"id": model, **live_item}
+        if mode:
+            result["voice_mode"] = mode
+        elif result.get("mode") and not result.get("voice_mode"):
+            result["voice_mode"] = result["mode"]
+        return result
+    if mode:
+        return {"id": model, "voice_mode": mode}
+
+    if "customvoice" in normalized or "magpie" in normalized:
+        inferred_mode = "prebuilt"
+    elif "pocket" in normalized:
+        inferred_mode = "hybrid"
+    else:
+        inferred_mode = "cloning"
+    if "qwen" in normalized:
+        family = "qwen3_tts"
+    elif "fish" in normalized:
+        family = "fish_audio_s2"
+    elif "voxcpm" in normalized:
+        family = "voxcpm2"
+    elif "chatterbox" in normalized:
+        family = "chatterbox"
+    elif "omni" in normalized:
+        family = "omnivoice"
+    elif "pocket" in normalized:
+        family = "pocket_tts"
+    elif "firered" in normalized:
+        family = "fireredtts3"
+    elif "magpie" in normalized:
+        family = "magpie_tts"
+    else:
+        family = ""
+    return {"id": model, "family": family, "voice_mode": inferred_mode}
+
+
+def _audio_cpp_language(model: str, language: object) -> str:
+    normalized = str(language or "").strip().lower().replace("_", "-")
+    if not normalized or normalized in {"auto", "unknown", "und"}:
+        return ""
+    iso = normalized.split("-", 1)[0]
+    metadata = _audio_cpp_model_metadata(model, {})
+    if metadata.get("family") == "qwen3_tts":
+        return _AUDIO_CPP_QWEN_LANGUAGE_NAMES.get(iso, "")
+    return iso
+
+
+def _build_audio_cpp_audio_payload(
+    text: str,
+    tts_settings: dict,
+    endpoint: dict,
+) -> dict:
+    """Build audio.cpp's direct HTTP speech request."""
+
+    model = str(
+        tts_settings.get("xtts_model")
+        or tts_settings.get("model")
+        or endpoint.get("default_model")
+        or ""
+    ).strip()
+    if not model:
+        raise ValueError(
+            "Select one of the model IDs configured in the audio.cpp server."
+        )
+
+    payload: dict[str, Any] = {
+        "model": model,
+        "input": text,
+        "response_format": "wav",
+    }
+    voice = str(tts_settings.get("speaker") or tts_settings.get("voice") or "").strip()
+    if voice:
+        payload["voice"] = voice
+
+    language = _audio_cpp_language(
+        model,
+        tts_settings.get("language") or tts_settings.get("target_language") or "",
+    )
+    if language:
+        payload["language"] = language
+
+    instructions = str(
+        tts_settings.get("generation_prompt")
+        or tts_settings.get("openai_audio_instructions")
+        or ""
+    ).strip()
+    if instructions:
+        payload["instructions"] = instructions
+
+    metadata = _audio_cpp_model_metadata(model, endpoint)
+    voice_mode = str(metadata.get("voice_mode") or "cloning").lower()
+    is_prebuilt = voice_mode == "prebuilt"
+    reference_text = str(tts_settings.get("audio_cpp_reference_text") or "").strip()
+    if reference_text and not is_prebuilt:
+        payload["reference_text"] = reference_text
+    voice_ref = tts_settings.get("audio_cpp_voice_ref")
+    if not is_prebuilt and isinstance(voice_ref, dict) and voice_ref:
+        payload["voice_ref"] = dict(voice_ref)
+
+    for key in (
+        "speed",
+        "seed",
+        "temperature",
+        "top_k",
+        "top_p",
+        "max_tokens",
+        "max_steps",
+        "repetition_penalty",
+        "guidance_scale",
+        "num_inference_steps",
+    ):
+        value = tts_settings.get(f"audio_cpp_{key}")
+        if value in (None, "") and key == "speed":
+            value = tts_settings.get("speed")
+        if value not in (None, ""):
+            payload[key] = (
+                str(value)
+                if key == "seed"
+                and isinstance(value, int)
+                and not isinstance(value, bool)
+                and value >= 2**53
+                else value
+            )
+
+    raw_options = tts_settings.get("audio_cpp_options")
+    if raw_options is None:
+        raw_options = tts_settings.get("options")
+    options = dict(raw_options) if isinstance(raw_options, dict) else {}
+    family = str(metadata.get("family") or "").lower()
+    linked_reference = isinstance(voice_ref, dict)
+    if linked_reference and family == "omnivoice" and not reference_text:
+        raise ValueError(
+            "OmniVoice linked voice references require a reviewed transcript."
+        )
+    if linked_reference and family == "qwen3_tts":
+        options["x_vector_only_mode"] = not bool(reference_text)
+    if options:
+        payload["options"] = options
+    return payload
+
+
 def _build_guided_speech_prompt(text: str, generation_prompt: str) -> str:
     """Combine Gemini performance direction and transcript without making it ambiguous."""
     return (
@@ -5502,11 +6010,25 @@ def _request_litellm_audio(
 
 
 def _request_openai_compatible_audio(
-    text: str, tts_settings: dict
+    text: str,
+    tts_settings: dict,
+    *,
+    request_session: requests.Session | None = None,
 ) -> requests.Response:
     endpoint, error = resolve_openai_audio_endpoint(tts_settings)
     if endpoint is None:
         raise RuntimeError(error)
+
+    if _normalize_custom_adapter(endpoint.get("adapter")) == AUDIO_CPP_ADAPTER:
+        payload = _build_audio_cpp_audio_payload(text, tts_settings, endpoint)
+        speech_path = str(endpoint.get("speech_path") or "/v1/audio/speech")
+        transport = request_session or requests
+        return transport.post(
+            _configured_endpoint_url(str(endpoint["base_url"]), speech_path),
+            headers=_configured_endpoint_auth_headers(endpoint),
+            json=payload,
+            timeout=TTS_GENERATION_TIMEOUT_SECONDS,
+        )
 
     if _normalize_custom_adapter(endpoint.get("adapter")) == AZURE_SPEECH_ADAPTER:
         return _request_azure_speech_audio(text, tts_settings, endpoint)
@@ -6297,11 +6819,45 @@ def text_to_audio(
     cancel_event=None,
     retry_callback=None,
     recovery_callback=None,
+    request_session: requests.Session | None = None,
+    _audio_cpp_lock_held: bool = False,
+    audio_cpp_base_url: str = AUDIO_CPP_API_BASE_URL,
 ) -> AudioSegment | None:
     """
     Generates audio from text using the specified TTS service.
     `tts_settings` is a dictionary-like object (e.g., a dataclass).
     """
+    service_hint = str(tts_settings.get("service") or "").strip().lower()
+    if service_hint in {"audio.cpp", "audio_cpp", "audio-cpp", "audiocpp"}:
+        tts_settings = dict(tts_settings)
+        tts_settings.setdefault("audio_cpp_base_url", audio_cpp_base_url)
+    if not _audio_cpp_lock_held:
+        endpoint, _error = resolve_openai_audio_endpoint(tts_settings)
+        if (
+            endpoint is not None
+            and _normalize_custom_adapter(endpoint.get("adapter")) == AUDIO_CPP_ADAPTER
+        ):
+            with audio_cpp_endpoint_lock(tts_settings):
+                return text_to_audio(
+                    text,
+                    tts_settings,
+                    xtts_base_url=xtts_base_url,
+                    voxcpm_base_url=voxcpm_base_url,
+                    fishs2_base_url=fishs2_base_url,
+                    voxtral_base_url=voxtral_base_url,
+                    kokoro_base_url=kokoro_base_url,
+                    silero_base_url=silero_base_url,
+                    chatterbox_base_url=chatterbox_base_url,
+                    kobold_qwen_base_url=kobold_qwen_base_url,
+                    magpie_base_url=magpie_base_url,
+                    audio_cpp_base_url=audio_cpp_base_url,
+                    max_attempts=max_attempts,
+                    cancel_event=cancel_event,
+                    retry_callback=retry_callback,
+                    recovery_callback=recovery_callback,
+                    request_session=request_session,
+                    _audio_cpp_lock_held=True,
+                )
     # Visual subtitle wrapping must never leak into provider payloads.  This
     # also makes direct callers consistent with dubbing speech blocks.
     text = re.sub(r"\s+", " ", str(text or "")).strip()
@@ -6350,14 +6906,18 @@ def text_to_audio(
                 )
             elif service == "Magpie":
                 response = _request_magpie_audio(text, tts_settings, magpie_base_url)
-            elif service in {
+            elif service_hint in {"audio.cpp", "audio_cpp", "audio-cpp"} or service in {
                 OPENAI_SERVICE,
                 GEMINI_SERVICE,
                 LEGACY_GEMINI_SERVICE,
                 OPENAI_COMPAT_SERVICE,
                 LEGACY_OPENAI_COMPAT_SERVICE,
             }:
-                response = _request_openai_compatible_audio(text, tts_settings)
+                response = _request_openai_compatible_audio(
+                    text,
+                    tts_settings,
+                    request_session=request_session,
+                )
             elif str(service).strip().lower() in {
                 ELEVENLABS_SERVICE.lower(),
                 ELEVENLABS_PROVIDER,

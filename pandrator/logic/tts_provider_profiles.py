@@ -1,9 +1,82 @@
 import copy
 
+from ..constants import magpie_voice_catalog
+
 OPENAI_ADAPTER = "openai_compatible"
+AUDIO_CPP_ADAPTER = "audio_cpp"
 GENERIC_JSON_ADAPTER = "generic_json"
 ELEVENLABS_NATIVE_ADAPTER = "elevenlabs_native"
 AZURE_SPEECH_ADAPTER = "azure_speech"
+
+# audio.cpp v0.7.1 ships these model families.  The server remains the source
+# of truth when it advertises a live catalogue; these entries keep a fresh or
+# offline first-class service useful before its catalogue has been refreshed.
+AUDIO_CPP_MODEL_CATALOG = [
+    {
+        "id": "qwen3_tts_1_7b_base_q8_0",
+        "family": "qwen3_tts",
+        "voice_mode": "cloning",
+        "recommended_chunk_characters": 300,
+    },
+    {
+        "id": "qwen3_tts_1_7b_customvoice_q8_0",
+        "family": "qwen3_tts",
+        "voice_mode": "prebuilt",
+        "recommended_chunk_characters": 300,
+    },
+    {
+        "id": "fish_audio_s2_pro_q8_0",
+        "family": "fish_audio_s2",
+        "voice_mode": "cloning",
+    },
+    {
+        "id": "voxcpm2_q8_0",
+        "family": "voxcpm2",
+        "voice_mode": "cloning",
+    },
+    {
+        "id": "magpie_tts_q8_0",
+        "family": "magpie_tts",
+        "voice_mode": "prebuilt",
+    },
+    {
+        "id": "chatterbox_q8_0",
+        "family": "chatterbox",
+        "voice_mode": "cloning",
+    },
+    {
+        "id": "omnivoice_q8_0",
+        "family": "omnivoice",
+        "voice_mode": "cloning",
+    },
+    {
+        "id": "pocket_tts_english_q8_0",
+        "family": "pocket_tts",
+        "voice_mode": "hybrid",
+    },
+    {
+        "id": "fireredtts3_base_q8_0",
+        "family": "fireredtts3",
+        "voice_mode": "cloning",
+        "experimental": True,
+    },
+]
+AUDIO_CPP_MODEL_VOICE_MODES = {
+    item["id"]: item["voice_mode"] for item in AUDIO_CPP_MODEL_CATALOG
+}
+AUDIO_CPP_PREBUILT_VOICES = [
+    "Aiden",
+    "Dylan",
+    "Eric",
+    "Ono_Anna",
+    "Ryan",
+    "Serena",
+    "Sohee",
+    "Uncle_Fu",
+    "Vivian",
+    *magpie_voice_catalog(),
+    "alba",
+]
 
 AZURE_SPEECH_MODELS = ["MAI-Voice-2", "MAI-Voice-2-Flash"]
 AZURE_SPEECH_DEFAULT_MODEL = "MAI-Voice-2"
@@ -1061,6 +1134,66 @@ def _openai_profile(
     }
 
 
+def _audio_cpp_profile() -> dict:
+    """Return the opt-in profile for an externally managed audio.cpp server."""
+
+    model_catalog = copy.deepcopy(AUDIO_CPP_MODEL_CATALOG)
+    model_ids = [str(item["id"]) for item in model_catalog]
+    prebuilt_voices = list(dict.fromkeys(AUDIO_CPP_PREBUILT_VOICES))
+
+    return {
+        "id": "audio-cpp-experimental",
+        "profile_id": "audio-cpp-experimental",
+        "name": "External audio.cpp endpoint",
+        "description": (
+            "Externally managed audio.cpp server with live model and model-specific "
+            "voice discovery. The legacy profile ID remains compatible."
+        ),
+        "source_url": "https://github.com/0xShug0/audio.cpp",
+        "api_base": "http://127.0.0.1:8080",
+        "provider": "openai",
+        "adapter": AUDIO_CPP_ADAPTER,
+        "speech_path": "/v1/audio/speech",
+        "models_path": "/v1/models",
+        "voices_path": "/v1/audio/voices",
+        "request_fields": {
+            "text": "input",
+            "model": "model",
+            "voice": "voice",
+            "speed": "",
+            "format": "response_format",
+        },
+        "request_defaults": {},
+        "models": model_ids,
+        "model_catalog": model_catalog,
+        "model_voice_modes": copy.deepcopy(AUDIO_CPP_MODEL_VOICE_MODES),
+        # audio.cpp voice names are model-specific. Keep the provider-wide
+        # fallback empty so Qwen, Magpie, and Pocket presets never leak into
+        # cloning-only models when the live catalogue is unavailable.
+        "voices": [],
+        "voice_catalogues": {
+            "qwen3_tts_1_7b_customvoice_q8_0": prebuilt_voices[:9],
+            "magpie_tts_q8_0": list(magpie_voice_catalog()),
+            "pocket_tts_english_q8_0": ["alba"],
+        },
+        "supports_prebuilt_voices": True,
+        "supports_voice_cloning": True,
+        "supports_voice_deletion": False,
+        "voice_reference_text": "optional",
+        "auth_mode": "none",
+        "direct_http": True,
+        "models_are_manual": False,
+        "credential_required": False,
+        "notes": (
+            "Start audiocpp_server with its JSON config, then refresh the TTS "
+            "catalogue. Configure audio.cpp voice presets or voice_dir (including "
+            "prompt_text where a model needs a reference transcript). Pandrator "
+            "links Voice Library references locally; it does not upload or delete "
+            "server voices."
+        ),
+    }
+
+
 def _generic_profile(
     profile_id: str,
     name: str,
@@ -1232,6 +1365,7 @@ _VOXTRAL_RUST_VOICES = [
 
 
 TTS_PROVIDER_PROFILES = [
+    _audio_cpp_profile(),
     _elevenlabs_profile(),
     _azure_speech_profile(),
     _openai_profile(

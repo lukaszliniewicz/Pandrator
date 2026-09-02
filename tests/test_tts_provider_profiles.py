@@ -15,6 +15,7 @@ class TTSProviderProfileTests(unittest.TestCase):
                 profile["adapter"],
                 {
                     "openai_compatible",
+                    "audio_cpp",
                     "generic_json",
                     "elevenlabs_native",
                     "azure_speech",
@@ -70,6 +71,37 @@ class TTSProviderProfileTests(unittest.TestCase):
         )
         self.assertNotIn("styletts2-sillytavern", profiles)
         self.assertNotIn("voxcpm-nanovllm", profiles)
+
+    def test_audio_cpp_profile_is_external_dynamic_and_keyless(self):
+        profile = tts_provider_profiles.get_tts_provider_profile(
+            "audio-cpp-experimental"
+        )
+
+        self.assertIsNotNone(profile)
+        self.assertEqual("audio_cpp", profile["adapter"])
+        self.assertEqual("http://127.0.0.1:8080", profile["api_base"])
+        self.assertEqual("/v1/audio/speech", profile["speech_path"])
+        self.assertEqual("/v1/models", profile["models_path"])
+        self.assertEqual("/v1/audio/voices", profile["voices_path"])
+        self.assertIn("qwen3_tts_1_7b_base_q8_0", profile["models"])
+        self.assertIn("fireredtts3_base_q8_0", profile["models"])
+        qwen_models = {
+            item["id"]: item
+            for item in profile["model_catalog"]
+            if item["id"].startswith("qwen3_tts_")
+        }
+        self.assertEqual(
+            300, qwen_models["qwen3_tts_1_7b_base_q8_0"]["recommended_chunk_characters"]
+        )
+        self.assertEqual(
+            300,
+            qwen_models["qwen3_tts_1_7b_customvoice_q8_0"][
+                "recommended_chunk_characters"
+            ],
+        )
+        self.assertFalse(profile["models_are_manual"])
+        self.assertFalse(profile["credential_required"])
+        self.assertTrue(profile["direct_http"])
 
     def test_azure_speech_profile_has_static_models_voices_and_safe_pricing(self):
         profile = tts_provider_profiles.get_tts_provider_profile(

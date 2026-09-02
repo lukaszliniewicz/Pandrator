@@ -11,6 +11,7 @@ from unittest import mock
 
 from sqlalchemy import select
 
+from pandrator.logic import tts_handler
 from pandrator.web.api import create_app
 from pandrator.web.artifacts import ArtifactService
 from pandrator.web.auth import BootstrapTokenStore
@@ -550,6 +551,197 @@ class InstallerAsrPreferenceTests(unittest.TestCase):
 
 
 class VoiceProviderPublishTests(unittest.TestCase):
+    def test_audio_cpp_publish_links_local_sample_and_unpublish_never_calls_remote(
+        self,
+    ):
+        with tempfile.TemporaryDirectory() as directory:
+            paths = prepare_web_test_data_root(directory)
+            database = Database(paths.database)
+            try:
+                with database.session() as session:
+                    voice = Voice(name="Linked narrator", language="en")
+                    session.add(voice)
+                    session.flush()
+                    voice_id = voice.id
+                sample_path = paths.voices / voice_id / "sample.wav"
+                sample_path.parent.mkdir(parents=True)
+                sample_path.write_bytes(silent_wav())
+                artifact = ArtifactService(database, paths).register(
+                    sample_path,
+                    kind="audio",
+                    role="voice_sample",
+                )
+                with database.session() as session:
+                    session.add(
+                        VoiceSample(
+                            voice_id=voice_id,
+                            artifact_id=artifact.id,
+                            transcript="Reviewed audio.cpp reference.",
+                            transcript_reviewed=True,
+                        )
+                    )
+
+                handler = WorkflowHandlers(database, paths)
+                with mock.patch.object(handler.tts_providers, "upload_voice") as upload:
+                    linked = handler.publish_voice(
+                        {
+                            "voice_id": voice_id,
+                            "service_id": "audio_cpp",
+                            "service": "audio.cpp",
+                        },
+                        lambda *_args: None,
+                        threading.Event(),
+                    )
+                upload.assert_not_called()
+                self.assertTrue(linked["linked"])
+
+                prepared = handler.prepare_audio_cpp_voice_reference(
+                    {
+                        "service": "audio_cpp",
+                        "xtts_model": "qwen3_tts_1_7b_base_q8_0",
+                        "speaker": linked["provider_voice_id"],
+                    }
+                )
+                self.assertEqual(
+                    "Reviewed audio.cpp reference.",
+                    prepared["audio_cpp_reference_text"],
+                )
+                self.assertTrue(
+                    prepared["audio_cpp_voice_ref"]["data"].startswith(
+                        "data:audio/wav;base64,"
+                    )
+                )
+                self.assertEqual(1, len(handler._audio_cpp_voice_ref_cache))
+
+                with mock.patch.object(handler.tts_providers, "delete_voice") as remove:
+                    unlinked = handler.unpublish_voice(
+                        {
+                            "voice_id": voice_id,
+                            "service_id": "audio_cpp",
+                            "service": "audio.cpp",
+                            "expected_voice_revision": linked["voice_revision"],
+                        },
+                        lambda *_args: None,
+                        threading.Event(),
+                    )
+                remove.assert_not_called()
+                self.assertFalse(unlinked["remote_deleted"])
+                with database.session() as session:
+                    stored = session.get(Voice, voice_id)
+                    self.assertNotIn(
+                        "audio_cpp",
+                        stored.metadata_json.get("providers", {}),
+                    )
+            finally:
+                database.dispose()
+
+    def test_audio_cpp_external_profile_keeps_exact_registration_id(self):
+        with tempfile.TemporaryDirectory() as directory:
+            paths = prepare_web_test_data_root(directory)
+            database = Database(paths.database)
+            try:
+                with database.session() as session:
+                    voice = Voice(name="External narrator", language="en")
+                    session.add(voice)
+                    session.add(
+                        AppSetting(
+                            key="services.tts",
+                            value_json={
+                                "provider_configs": [
+                                    {
+                                        "id": "audio-cpp-experimental",
+                                        "name": "External audio.cpp",
+                                        "provider": "openai",
+                                        "api_base": "http://127.0.0.1:8080",
+                                        "adapter": "audio_cpp",
+                                        "speech_path": "/v1/audio/speech",
+                                        "models": ["qwen3_tts_1_7b_base_q8_0"],
+                                        "voices": [],
+                                        "supports_voice_cloning": True,
+                                        "supports_voice_deletion": False,
+                                        "voice_reference_text": "optional",
+                                        "auth_mode": "none",
+                                    }
+                                ]
+                            },
+                        )
+                    )
+                    session.flush()
+                    voice_id = voice.id
+                sample_path = paths.voices / voice_id / "sample.wav"
+                sample_path.parent.mkdir(parents=True)
+                sample_path.write_bytes(silent_wav())
+                artifact = ArtifactService(database, paths).register(
+                    sample_path,
+                    kind="audio",
+                    role="voice_sample",
+                )
+                with database.session() as session:
+                    session.add(
+                        VoiceSample(
+                            voice_id=voice_id,
+                            artifact_id=artifact.id,
+                            transcript="External profile reference.",
+                            transcript_reviewed=True,
+                        )
+                    )
+
+                handler = WorkflowHandlers(database, paths)
+                linked = handler.publish_voice(
+                    {
+                        "voice_id": voice_id,
+                        "service_id": "audio-cpp-experimental",
+                        "service": "External audio.cpp",
+                    },
+                    lambda *_args: None,
+                    threading.Event(),
+                )
+                with database.session() as session:
+                    stored = session.get(Voice, voice_id)
+                    self.assertIn(
+                        "audio-cpp-experimental",
+                        stored.metadata_json.get("providers", {}),
+                    )
+
+                prepared = handler.prepare_audio_cpp_voice_reference(
+                    {
+                        "service": tts_handler.OPENAI_COMPAT_SERVICE,
+                        "openai_audio_endpoint": "audio-cpp-experimental",
+                        "provider_configs": [
+                            {
+                                "id": "audio-cpp-experimental",
+                                "name": "External audio.cpp",
+                                "provider": "openai",
+                                "api_base": "http://127.0.0.1:8080",
+                                "adapter": "audio_cpp",
+                                "speech_path": "/v1/audio/speech",
+                                "models": ["qwen3_tts_1_7b_base_q8_0"],
+                                "voices": [],
+                            }
+                        ],
+                        "xtts_model": "qwen3_tts_1_7b_base_q8_0",
+                        "speaker": linked["provider_voice_id"],
+                    }
+                )
+                self.assertEqual(
+                    "External profile reference.",
+                    prepared["audio_cpp_reference_text"],
+                )
+
+                unlinked = handler.unpublish_voice(
+                    {
+                        "voice_id": voice_id,
+                        "service_id": "audio-cpp-experimental",
+                        "service": "External audio.cpp",
+                        "expected_voice_revision": linked["voice_revision"],
+                    },
+                    lambda *_args: None,
+                    threading.Event(),
+                )
+                self.assertFalse(unlinked["remote_deleted"])
+            finally:
+                database.dispose()
+
     def test_managed_fish_publish_resolves_endpoint_when_job_runs(self):
         class FakeManager:
             configured = True

@@ -8,6 +8,7 @@
     CircleAlert,
     CloudUpload,
     Library,
+    Link2,
     LoaderCircle,
     Mic,
     Pencil,
@@ -17,6 +18,7 @@
     Settings2,
     Square,
     Trash2,
+    Unlink,
     Volume2,
     WandSparkles
   } from '@lucide/svelte';
@@ -152,6 +154,15 @@
   );
   const providerRegistration = $derived(
     selected?.metadata_json?.providers?.[providerTarget?.id ?? '']
+  );
+  const isLinkedRegistration = (
+    registration: VoiceProviderRegistration | undefined,
+    service?: TtsService
+  ) =>
+    registration?.resource_kind === 'linked_reference' ||
+    service?.adapter === 'audio_cpp';
+  const providerUsesLinkedReferences = $derived(
+    isLinkedRegistration(providerRegistration, providerTarget)
   );
   const providerNeedsReviewedTranscript = $derived(
     providerTarget?.voice_reference_text === 'required' &&
@@ -289,7 +300,12 @@
       await loadVoices();
       if (selected) await choose(selected);
       if (announce)
-        notice = `${service?.name ?? serviceId} provider copy removed.`;
+        notice = isLinkedRegistration(
+          selected?.metadata_json?.providers?.[serviceId],
+          service
+        )
+          ? `${service?.name ?? serviceId} reference link removed.`
+          : `${service?.name ?? serviceId} provider copy removed.`;
     } finally {
       const next = { ...removingProviders };
       delete next[serviceId];
@@ -299,9 +315,13 @@
 
   async function removeProvider(serviceId: string) {
     const service = ttsServices.find((item) => item.id === serviceId);
+    const registration = selected?.metadata_json?.providers?.[serviceId];
+    const linked = isLinkedRegistration(registration, service);
     if (
       !window.confirm(
-        `Remove this managed voice copy from ${service?.name ?? serviceId}? Existing generated audio will remain, but future generation with this provider voice will stop working until it is uploaded again.`
+        linked
+          ? `Unlink this local reference from ${service?.name ?? serviceId}? Existing generated audio will remain, but future generation cannot use the link until you add it again.`
+          : `Remove this managed voice copy from ${service?.name ?? serviceId}? Existing generated audio will remain, but future generation with this provider voice will stop working until it is uploaded again.`
       )
     )
       return;
@@ -650,7 +670,9 @@
     if (!selected || !providerTarget || !samples.length || publishing) return;
     publishing = true;
     error = '';
-    notice = `Uploading ${selected.name} to ${providerTarget.name}…`;
+    notice = providerUsesLinkedReferences
+      ? `Linking ${selected.name} to ${providerTarget.name}…`
+      : `Uploading ${selected.name} to ${providerTarget.name}…`;
     try {
       const job = await voiceApi.publish(
         selected.id,
@@ -665,10 +687,17 @@
         throw new Error(`${providerTarget.name} did not return a voice ID.`);
       await loadVoices();
       if (selected) await choose(selected);
-      notice = `${selected?.name ?? 'Voice'} is ready in ${providerTarget.name} as “${providerVoiceId}”.`;
+      notice = providerUsesLinkedReferences
+        ? `${selected?.name ?? 'Voice'} is linked to its newest local sample for ${providerTarget.name}.`
+        : `${selected?.name ?? 'Voice'} is ready in ${providerTarget.name} as “${providerVoiceId}”.`;
       onvoicepublished?.(providerVoiceId);
     } catch (caught) {
-      report(caught, `Could not upload the voice to ${providerTarget.name}: `);
+      report(
+        caught,
+        providerUsesLinkedReferences
+          ? `Could not link the voice to ${providerTarget.name}: `
+          : `Could not upload the voice to ${providerTarget.name}: `
+      );
     } finally {
       publishing = false;
     }
@@ -1060,16 +1089,25 @@
                 <div class="flex items-center gap-2 font-semibold">
                   {#if providerRegistration?.status === 'ready'}<CheckCircle2
                       size={17}
+                    />{:else if providerUsesLinkedReferences}<Link2
+                      size={17}
                     />{:else}<CloudUpload size={17} />{/if} Use with {providerTarget.name}
                 </div>
                 <p class="muted mt-1 text-xs">
-                  {#if providerRegistration?.status === 'ready'}Uploaded as “{providerRegistration.voice_id}”.
-                    The provider copy matches the current reference.{:else if providerRegistration?.status === 'stale'}Uploaded
+                  {#if providerRegistration?.status === 'ready' && providerUsesLinkedReferences}Linked
+                    to the newest readable local sample. Replacing the sample
+                    automatically updates what audio.cpp uses; the audio is
+                    encoded only when synthesis starts.{:else if providerRegistration?.status === 'ready'}Uploaded
+                    as “{providerRegistration.voice_id}”. The provider copy
+                    matches the current reference.{:else if providerRegistration?.status === 'stale'}Uploaded
                     as “{providerRegistration.voice_id}”, but the local
                     reference changed. Upload again to refresh it.{:else if providerNeedsReviewedTranscript}This
                     provider needs an accurate reviewed transcript for the
                     newest sample. Transcribe or enter it below, then save the
-                    review.{:else if samples.some((sample) => sample.available !== false)}Uploads
+                    review.{:else if providerUsesLinkedReferences && samples.some((sample) => sample.available !== false)}Links
+                    this voice to its newest normalized local sample. A reviewed
+                    transcript improves Qwen cloning and is required when you
+                    synthesize with OmniVoice.{:else if samples.some((sample) => sample.available !== false)}Uploads
                     the newest normalized sample and stores the exact provider
                     voice ID returned by the API.{:else}Add, replace, or record
                     a readable sample first; local library names are not sent to
@@ -1078,8 +1116,10 @@
                 {#if providerTarget.available === false}<p
                     class="mt-1 text-xs text-[var(--warning)]"
                   >
-                    {providerTarget.availability_reason ||
-                      'Start this service before uploading.'}
+                    {providerUsesLinkedReferences
+                      ? 'You can create the local link now; start audio.cpp before synthesis.'
+                      : providerTarget.availability_reason ||
+                        'Start this service before uploading.'}
                   </p>{/if}
               </div>
               <button
@@ -1089,26 +1129,36 @@
                 ) ||
                   publishing ||
                   providerNeedsReviewedTranscript ||
-                  providerTarget.available === false}
+                  (providerTarget.available === false &&
+                    !providerUsesLinkedReferences)}
                 class="btn btn-primary disabled:opacity-40"
                 >{#if publishing}<LoaderCircle
                     class="animate-spin"
                     size={16}
+                  />{:else if providerUsesLinkedReferences}<Link2
+                    size={16}
                   />{:else}<CloudUpload size={16} />{/if}
                 {publishing
-                  ? 'Uploading…'
+                  ? providerUsesLinkedReferences
+                    ? 'Linking…'
+                    : 'Uploading…'
                   : providerRegistration?.status === 'ready'
-                    ? 'Update provider voice'
-                    : `Upload to ${providerTarget.name}`}</button
+                    ? providerUsesLinkedReferences
+                      ? 'Refresh link'
+                      : 'Update provider voice'
+                    : providerUsesLinkedReferences
+                      ? `Link to ${providerTarget.name}`
+                      : `Upload to ${providerTarget.name}`}</button
               >
             </section>
           {/if}
           {#if providerRegistrations.length}
             <section class="mb-5 rounded-2xl border border-[var(--line)] p-4">
-              <h3 class="font-semibold">Provider copies</h3>
+              <h3 class="font-semibold">Provider links and copies</h3>
               <p class="muted mt-1 text-xs">
-                These are separate managed copies. Removing one does not delete
-                the local voice or previously generated audio.
+                Links keep using your newest local sample; copies live in the
+                provider. Removing either does not delete the local voice or
+                previously generated audio.
               </p>
               <div class="mt-3 space-y-2">
                 {#each providerRegistrations as item}
@@ -1129,10 +1179,12 @@
                         class="muted mt-1 truncate text-xs"
                         title={item.registration.voice_id}
                       >
-                        Provider ID: {item.registration.voice_id ?? 'unknown'}
+                        {isLinkedRegistration(item.registration, item.service)
+                          ? `Local reference link: ${item.registration.voice_id ?? 'unknown'}`
+                          : `Provider ID: ${item.registration.voice_id ?? 'unknown'}`}
                       </p>
                     </div>
-                    {#if item.registration.managed_by === 'pandrator' && item.service?.supports_voice_deletion}
+                    {#if item.registration.managed_by === 'pandrator' && (item.service?.supports_voice_deletion || isLinkedRegistration(item.registration, item.service))}
                       <button
                         type="button"
                         onclick={() => removeProvider(item.serviceId)}
@@ -1142,10 +1194,17 @@
                         {#if removingProviders[item.serviceId]}<LoaderCircle
                             size={14}
                             class="animate-spin"
+                          />{:else if isLinkedRegistration(item.registration, item.service)}<Unlink
+                            size={14}
                           />{:else}<Trash2 size={14} />{/if}
                         {removingProviders[item.serviceId]
                           ? 'Removing…'
-                          : 'Remove from provider'}
+                          : isLinkedRegistration(
+                                item.registration,
+                                item.service
+                              )
+                            ? 'Unlink'
+                            : 'Remove from provider'}
                       </button>
                     {:else}
                       <span class="muted max-w-52 text-right text-xs">
@@ -1409,12 +1468,13 @@
       {#if providerRegistrations.length}
         <fieldset class="mt-5 space-y-2">
           <legend class="mb-2 text-sm font-semibold">
-            Also remove managed provider copies (optional)
+            Also remove provider links and managed copies (optional)
           </legend>
           {#each providerRegistrations as item}
             {@const removable =
               item.registration.managed_by === 'pandrator' &&
-              item.service?.supports_voice_deletion === true}
+              (item.service?.supports_voice_deletion === true ||
+                isLinkedRegistration(item.registration, item.service))}
             <label
               class="flex items-start gap-3 rounded-xl border border-[var(--line)] p-3"
               class:opacity-60={!removable}
@@ -1431,7 +1491,9 @@
                 >
                 <span class="muted mt-0.5 block text-xs">
                   {removable
-                    ? 'Remove the Pandrator-managed copy before deleting locally.'
+                    ? isLinkedRegistration(item.registration, item.service)
+                      ? 'Remove the local audio.cpp link before deleting this voice.'
+                      : 'Remove the Pandrator-managed copy before deleting locally.'
                     : item.registration.managed_by !== 'pandrator'
                       ? 'Legacy registration: ownership cannot be verified, so remote deletion is disabled.'
                       : 'This provider does not support remote voice deletion.'}
@@ -1442,8 +1504,8 @@
         </fieldset>
       {/if}
       <p class="muted mt-4 text-xs">
-        If a selected provider cleanup fails, the local voice will be retained
-        so you can retry without losing its samples.
+        If selected link or provider cleanup fails, the local voice will be
+        retained so you can retry without losing its samples.
       </p>
       <div class="mt-6 flex justify-end gap-2">
         <button

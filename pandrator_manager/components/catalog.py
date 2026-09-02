@@ -121,6 +121,144 @@ PRESENTATIONS: dict[str, ComponentPresentation] = {
             "files and generated media are stored separately."
         ),
     ),
+    "audio_cpp": ComponentPresentation(
+        section=ComponentSection.TEXT_TO_SPEECH,
+        order=5,
+        summary=(
+            "A pinned native audio.cpp runtime with selectable local GGUF "
+            "models for cloning and pre-built voices."
+        ),
+        guidance=(
+            "The manager installs audio.cpp v0.7.1 and the selected models into "
+            "one versioned service slot. Choose at least one model package. CPU, "
+            "Vulkan, and CUDA are available on Windows and Linux x86_64. The "
+            "best-effort Linux CUDA build has not yet been tested on NVIDIA "
+            "hardware. FireRedTTS3 Base is experimental. Breeze is not included "
+            "until a stable package is available."
+        ),
+        languages=(
+            "Qwen3: Chinese, English, French, German, Italian, Japanese, Korean, "
+            "Portuguese, Russian, Spanish",
+            "Fish Audio: English, Chinese, Japanese",
+            "VoxCPM2: 30+ languages",
+            "Magpie: 9 languages",
+            "OmniVoice: 600+ languages",
+            "PocketTTS: English, German, Italian, Portuguese, Spanish",
+            "FireRedTTS3: 24 languages plus Chinese dialects",
+        ),
+        capabilities=(
+            capability("voice_cloning", "Voice cloning"),
+            capability("prebuilt_voices", "Pre-built voices"),
+            capability("multilingual", "Multilingual"),
+            capability("native_runtime", "Native runtime"),
+        ),
+        models=(
+            model(
+                "qwen3_tts_1_7b_base_q8_0",
+                "Qwen3 TTS 1.7B Base Q8_0",
+                description="Reference-audio cloning with the default Q8_0 GGUF package.",
+                license_name="Apache-2.0",
+                license_url="https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+                usage_note=COMMERCIAL_APACHE,
+                capabilities=("voice_cloning",),
+                estimated_download_bytes=2_695_175_104,
+            ),
+            model(
+                "qwen3_tts_1_7b_customvoice_q8_0",
+                "Qwen3 TTS 1.7B CustomVoice Q8_0",
+                description="Named built-in speakers without a reference recording.",
+                license_name="Apache-2.0",
+                license_url="https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+                usage_note=COMMERCIAL_APACHE,
+                capabilities=("prebuilt_voices",),
+                estimated_download_bytes=2_817_044_064,
+            ),
+            model(
+                "fish_audio_s2_pro_q8_0",
+                "Fish Audio S2 Pro Q8_0",
+                description="Expressive multilingual synthesis and reference-audio cloning.",
+                license_name="Fish Audio Research License",
+                license_url="https://huggingface.co/rodrigomt/s2-pro-gguf/blob/main/LICENSE.md",
+                usage_note=(
+                    "Research and non-commercial use; commercial use requires a "
+                    "separate Fish Audio licence."
+                ),
+                capabilities=("voice_cloning", "multilingual"),
+                estimated_download_bytes=6_317_911_232,
+            ),
+            model(
+                "voxcpm2_q8_0",
+                "VoxCPM2 Q8_0",
+                description="High-fidelity multilingual speech with a reference voice.",
+                license_name="Apache-2.0",
+                license_url="https://huggingface.co/openbmb/VoxCPM2",
+                usage_note=COMMERCIAL_APACHE,
+                capabilities=("voice_cloning", "multilingual"),
+                estimated_download_bytes=2_955_000_480,
+            ),
+            model(
+                "magpie_tts_q8_0",
+                "MagpieTTS Multilingual 357M Q8_0",
+                description="Five pre-built speakers across nine supported languages.",
+                license_name="NVIDIA Open Model License",
+                license_url="https://huggingface.co/nvidia/magpie_tts_multilingual_357m",
+                usage_note=(
+                    "Review NVIDIA's model terms and the model card before "
+                    "commercial distribution."
+                ),
+                capabilities=("prebuilt_voices", "multilingual"),
+                estimated_download_bytes=1_562_142_912,
+            ),
+            model(
+                "chatterbox_q8_0",
+                "Chatterbox Q8_0",
+                description="Expressive multilingual synthesis from a reference recording.",
+                license_name="MIT",
+                license_url="https://huggingface.co/ResembleAI/chatterbox",
+                usage_note=COMMERCIAL_MIT,
+                capabilities=("voice_cloning", "multilingual"),
+                estimated_download_bytes=2_088_393_668,
+            ),
+            model(
+                "omnivoice_q8_0",
+                "OmniVoice Q8_0",
+                description="Massively multilingual cloning and voice design.",
+                license_name="See model card",
+                license_url="https://huggingface.co/k2-fsa/OmniVoice",
+                usage_note="Review the authoritative model card before use or redistribution.",
+                capabilities=("voice_cloning", "multilingual"),
+                estimated_download_bytes=1_350_288_416,
+            ),
+            model(
+                "pocket_tts_english_q8_0",
+                "PocketTTS English Q8_0",
+                description="Small CPU-friendly English TTS and voice-cloning package.",
+                license_name="See model card",
+                license_url="https://huggingface.co/kyutai/pocket-tts",
+                usage_note="Review the model card's licence and gated-use conditions.",
+                capabilities=("voice_cloning", "prebuilt_voices"),
+                estimated_download_bytes=134_051_128,
+            ),
+            model(
+                "fireredtts3_base_q8_0",
+                "FireRedTTS3 Base Q8_0 (experimental)",
+                description="Experimental multilingual reference-audio cloning package.",
+                license_name="See model card",
+                license_url="https://huggingface.co/FireRedTeam/FireRedTTS3",
+                usage_note="Experimental selection; review the authoritative model card before use.",
+                capabilities=("voice_cloning", "multilingual"),
+                estimated_download_bytes=4_180_334_848,
+            ),
+        ),
+        estimated_download_bytes=24 * GiB,
+        estimated_installed_bytes=30 * GiB,
+        size_note=(
+            "Estimate includes the pinned native runtime and all nine selectable "
+            "Q8_0 model packages. Per-model sizes were sampled from the upstream "
+            "package manager on 2026-09-02. Model files are fetched from an immutable "
+            "repository revision and verified with Pandrator-pinned SHA-256 digests."
+        ),
+    ),
     "kokoro": ComponentPresentation(
         section=ComponentSection.TEXT_TO_SPEECH,
         order=10,

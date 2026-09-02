@@ -9,6 +9,7 @@
     Crop,
     LoaderCircle,
     Library,
+    Link2,
     Play,
     Plus,
     RefreshCw,
@@ -1372,6 +1373,13 @@
       .replaceAll('-', '_')
       .replaceAll(' ', '_')
   );
+  const audioCppLinkedReferences = $derived(
+    selectedTtsService?.adapter === 'audio_cpp'
+  );
+  const selectedModelNeedsReviewedTranscript = $derived(
+    selectedTtsService?.voice_reference_text === 'required' ||
+      (audioCppLinkedReferences && ttsModel.toLowerCase().includes('omnivoice'))
+  );
   const supportsXttsModelUpload = $derived(
     selectedTtsServiceId === 'xtts' &&
       Boolean(selectedTtsService?.supports_model_upload)
@@ -1397,14 +1405,24 @@
     Boolean(
       selectedTtsService?.supports_batch_synthesis &&
       selectedTtsService?.batch_synthesis?.streaming &&
-      selectedTtsService?.batch_synthesis?.protocol === 'ndjson-v1'
+      ['ndjson-v1', 'pandrator-ordered-serial-v1'].includes(
+        selectedTtsService?.batch_synthesis?.protocol ?? ''
+      )
     )
   );
   const maximumTtsBatchSize = $derived(
     Number(selectedTtsService?.batch_synthesis?.max_batch_size ?? 32)
   );
-  const qwenVoiceCloning = $derived(
-    selectedTtsService?.model_voice_modes?.[ttsModel] === 'cloning' ||
+  const selectedModelVoiceMode = $derived(
+    selectedTtsService?.model_voice_modes?.[ttsModel] ?? ''
+  );
+  const selectedModelUsesReferences = $derived(
+    ['cloning', 'hybrid'].includes(selectedModelVoiceMode) ||
+      (selectedTtsServiceId === 'kobold_qwen' &&
+        ttsModel.toLowerCase() === 'voice cloning')
+  );
+  const selectedModelIsCloningOnly = $derived(
+    selectedModelVoiceMode === 'cloning' ||
       (selectedTtsServiceId === 'kobold_qwen' &&
         ttsModel.toLowerCase() === 'voice cloning')
   );
@@ -1412,7 +1430,10 @@
     Boolean(selectedTtsService?.supports_voice_cloning)
   );
   const supportsPrebuiltVoices = $derived(
-    Boolean(selectedTtsService?.supports_prebuilt_voices && !qwenVoiceCloning)
+    Boolean(
+      selectedTtsService?.supports_prebuilt_voices &&
+      !selectedModelIsCloningOnly
+    )
   );
   const selectedModelVoiceIds = $derived(
     selectedTtsService?.voice_catalogues?.[ttsModel] ??
@@ -1477,7 +1498,7 @@
     Array.from(
       new Set(
         [
-          ...(qwenVoiceCloning ? selectedModelVoiceIds : []),
+          ...(selectedModelUsesReferences ? selectedModelVoiceIds : []),
           ...(selectedTtsService?.live_voices ?? []),
           ...publishedProviderVoices,
           ...(!selectedTtsService?.supports_prebuilt_voices
@@ -1588,7 +1609,8 @@
   const showClonedVoices = $derived(
     Boolean(
       supportsCloningVoices &&
-      (!selectedTtsService?.supports_prebuilt_voices || qwenVoiceCloning)
+      (!selectedTtsService?.supports_prebuilt_voices ||
+        selectedModelUsesReferences)
     )
   );
   const localVoiceChoices = $derived(
@@ -1598,7 +1620,7 @@
           voice.metadata_json?.providers?.[selectedTtsServiceId];
         const hasSample = Number(voice.available_sample_count ?? 0) > 0;
         const needsTranscript = Boolean(
-          selectedTtsService?.voice_reference_text === 'required' &&
+          selectedModelNeedsReviewedTranscript &&
           !voice.preferred_sample_transcript_reviewed
         );
         return { voice, registration, hasSample, needsTranscript };
@@ -1621,21 +1643,23 @@
     }
     if (
       Number(voice.available_sample_count ?? 0) < 1 ||
-      (selectedTtsService?.voice_reference_text === 'required' &&
+      (selectedModelNeedsReviewedTranscript &&
         !voice.preferred_sample_transcript_reviewed)
     ) {
       await openVoiceLibrary('references', selectedTtsServiceId, voice.id);
       return;
     }
-    if (selectedTtsService?.available === false) {
+    if (selectedTtsService?.available === false && !audioCppLinkedReferences) {
       error =
         selectedTtsService.availability_reason ||
-        'Start the speech service before uploading a voice.';
+        `Start the speech service before ${audioCppLinkedReferences ? 'linking' : 'uploading'} a voice.`;
       return;
     }
     if (publishingLibraryVoiceId) return;
     publishingLibraryVoiceId = voice.id;
-    voicePublishStatus = `Uploading ${voice.name} to ${selectedTtsService?.name ?? selectedTtsServiceId}…`;
+    voicePublishStatus = audioCppLinkedReferences
+      ? `Linking ${voice.name} to ${selectedTtsService?.name ?? selectedTtsServiceId}…`
+      : `Uploading ${voice.name} to ${selectedTtsService?.name ?? selectedTtsServiceId}…`;
     error = '';
     try {
       const queued = await voiceApi.publish(
@@ -1666,7 +1690,13 @@
                       {}),
                     voice_id: providerVoiceId,
                     status: 'ready',
-                    managed_by: 'pandrator'
+                    managed_by: 'pandrator',
+                    ...(audioCppLinkedReferences
+                      ? {
+                          resource_kind: 'linked_reference',
+                          protocol: 'pandrator-linked-voices-v1'
+                        }
+                      : {})
                   }
                 }
               }
@@ -1699,7 +1729,9 @@
         )
       };
       voiceName = providerVoiceId;
-      voicePublishStatus = `${voice.name} is ready and selected.`;
+      voicePublishStatus = audioCppLinkedReferences
+        ? `${voice.name} is linked and selected.`
+        : `${voice.name} is ready and selected.`;
     } catch (caught) {
       voicePublishStatus = '';
       error = `Could not prepare ${voice.name}: ${errorMessage(caught)}`;
@@ -2107,7 +2139,7 @@
     if (!settingsStage) return;
     const key = settingsStage.key;
     if (key === 'generate_audio' && publishingLibraryVoiceId) {
-      error = 'Wait for the selected library voice to finish uploading.';
+      error = `Wait for the selected library voice to finish ${audioCppLinkedReferences ? 'linking' : 'uploading'}.`;
       return;
     }
     if (key === 'generate_audio' && !selectedTtsServiceAvailable) {
@@ -2124,8 +2156,7 @@
           (voice) => voice.toLowerCase() === voiceName.toLowerCase()
         ))
     ) {
-      error =
-        'Choose a provider-ready cloned voice, or create and upload one through the Voice Library.';
+      error = `Choose a ready cloned voice, or create and ${audioCppLinkedReferences ? 'link' : 'upload'} one through the Voice Library.`;
       return;
     }
     if (
@@ -3586,7 +3617,9 @@
             <div class="flex flex-wrap items-center justify-between gap-3">
               <p class="muted text-xs">
                 {showClonedVoices
-                  ? 'Provider-ready voices can be selected above. Local voices can be prepared in one click below.'
+                  ? audioCppLinkedReferences
+                    ? 'Linked local voices can be selected above. Qwen benefits from a reviewed transcript; OmniVoice requires one.'
+                    : 'Provider-ready voices can be selected above. Local voices can be prepared in one click below.'
                   : 'Only voices supported by the selected model are shown.'}
               </p>
               {#if showClonedVoices}<button
@@ -3612,8 +3645,9 @@
                       Available from your Voice Library
                     </h4>
                     <p class="muted mt-1 text-xs">
-                      Choose a local voice; Pandrator uploads or refreshes only
-                      that voice, then selects it automatically.
+                      {audioCppLinkedReferences
+                        ? 'Choose a local voice; Pandrator links its newest sample without making a provider-side copy, then selects it automatically.'
+                        : 'Choose a local voice; Pandrator uploads or refreshes only that voice, then selects it automatically.'}
                     </p>
                   </div>
                   <button
@@ -3641,14 +3675,20 @@
                           </div>
                           <div class="muted mt-0.5 text-xs">
                             {choice.voice.language || 'Language not set'} · {ready
-                              ? 'ready in provider'
+                              ? audioCppLinkedReferences
+                                ? 'linked to newest sample'
+                                : 'ready in provider'
                               : choice.registration?.status === 'stale'
-                                ? 'provider copy needs update'
+                                ? audioCppLinkedReferences
+                                  ? 'link needs refresh'
+                                  : 'provider copy needs update'
                                 : !choice.hasSample
                                   ? 'sample needed'
                                   : choice.needsTranscript
                                     ? 'reviewed transcript needed'
-                                    : 'ready to upload'}
+                                    : audioCppLinkedReferences
+                                      ? 'ready to link'
+                                      : 'ready to upload'}
                           </div>
                         </div>
                         <button
@@ -3657,6 +3697,7 @@
                           disabled={preparing ||
                             (Boolean(publishingLibraryVoiceId) && !preparing) ||
                             (selectedTtsService?.available === false &&
+                              !audioCppLinkedReferences &&
                               !ready &&
                               choice.hasSample &&
                               !choice.needsTranscript)}
@@ -3668,9 +3709,13 @@
                               class="animate-spin"
                             />{:else if ready}<CheckCircle2
                               size={15}
+                            />{:else if audioCppLinkedReferences}<Link2
+                              size={15}
                             />{:else}<CloudUpload size={15} />{/if}
                           {preparing
-                            ? 'Uploading…'
+                            ? audioCppLinkedReferences
+                              ? 'Linking…'
+                              : 'Uploading…'
                             : ready
                               ? voiceName === choice.registration?.voice_id
                                 ? 'Selected'
@@ -3680,8 +3725,12 @@
                                 : choice.needsTranscript
                                   ? 'Review text'
                                   : choice.registration?.status === 'stale'
-                                    ? 'Update & use'
-                                    : 'Upload & use'}
+                                    ? audioCppLinkedReferences
+                                      ? 'Refresh & use'
+                                      : 'Update & use'
+                                    : audioCppLinkedReferences
+                                      ? 'Link & use'
+                                      : 'Upload & use'}
                         </button>
                       </article>
                     {/each}

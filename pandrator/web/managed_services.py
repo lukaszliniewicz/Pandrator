@@ -18,6 +18,12 @@ class ManagedTtsBinding:
 MANAGED_TTS_BINDINGS: dict[str, ManagedTtsBinding] = {
     binding.provider_id: binding
     for binding in (
+        ManagedTtsBinding(
+            "audio_cpp",
+            "audio_cpp",
+            "tts.audio_cpp",
+            "audio_cpp_base_url",
+        ),
         ManagedTtsBinding("xtts", "xtts", "tts.xtts", "xtts_base_url"),
         ManagedTtsBinding("voxcpm", "voxcpm", "tts.voxcpm", "voxcpm_base_url"),
         ManagedTtsBinding(
@@ -60,6 +66,8 @@ def normalize_tts_provider_id(value: object) -> str:
         .replace(" ", "_")
     )
     return {
+        "audio.cpp": "audio_cpp",
+        "audiocpp": "audio_cpp",
         "fish_s2": "fishs2",
         "fish_speech": "fishs2",
         "fishs2_cpp": "fishs2",

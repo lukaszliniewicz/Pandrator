@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import logging
@@ -11,6 +12,7 @@ import shutil
 import subprocess
 import threading
 import time
+from collections import OrderedDict
 from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
@@ -559,6 +561,24 @@ def _managed_provider_voice_id(voice: Voice) -> str:
     return f"pandrator-{label}-{voice.id.replace('-', '')[:10]}"
 
 
+def _normalized_provider_registration_id(value: object) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", str(value or "").strip().casefold()).strip(
+        "_"
+    )
+
+
+def _secret_free_tts_settings(settings: dict[str, Any]) -> dict[str, Any]:
+    """Keep useful runtime settings while excluding inline audio references."""
+    result = deepcopy(settings or {})
+    for key in (
+        "audio_cpp_voice_ref",
+        "audio_cpp_voice_ref_hash",
+        "audio_cpp_reference_text",
+    ):
+        result.pop(key, None)
+    return result
+
+
 class WorkflowHandlers:
     def __init__(
         self,
@@ -577,6 +597,8 @@ class WorkflowHandlers:
             tts_providers = TtsProviderRegistry()
         self.tts_providers = tts_providers
         self.manager_bridge = manager_bridge
+        self._audio_cpp_voice_ref_cache: OrderedDict[str, str] = OrderedDict()
+        self._audio_cpp_voice_ref_cache_lock = threading.Lock()
         from .job_handler_domains import build_workflow_handler_registry
 
         self.handler_registry = build_workflow_handler_registry(self)
@@ -642,6 +664,144 @@ class WorkflowHandlers:
 
         return self.handler_registry.as_dict()
 
+    def prepare_audio_cpp_voice_reference(
+        self,
+        settings: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Link the selected local voice to the newest ready WAV reference."""
+        prepared = deepcopy(settings or {})
+        if self.tts_providers.service_id_for_settings(prepared) != "audio_cpp":
+            return prepared
+        if "audio_cpp_voice_ref" in prepared:
+            return prepared
+
+        from pandrator.logic import tts_handler
+
+        registration_ids = {"audio_cpp"}
+        endpoint, _error = tts_handler.resolve_openai_audio_endpoint(prepared)
+        if endpoint is not None and (
+            str(endpoint.get("adapter") or "").strip().casefold().replace("-", "_")
+            == "audio_cpp"
+        ):
+            registration_ids.add(
+                _normalized_provider_registration_id(endpoint.get("name"))
+            )
+
+        selected = str(prepared.get("voice") or prepared.get("speaker") or "").strip()
+        if not selected:
+            return prepared
+        selected_key = selected.casefold()
+        match: tuple[str, Path, Artifact, VoiceSample] | None = None
+        with self.database.session() as session:
+            for voice in session.scalars(select(Voice)).all():
+                providers = dict((voice.metadata_json or {}).get("providers") or {})
+                registration = None
+                for provider_id, raw_registration in providers.items():
+                    normalized_provider = _normalized_provider_registration_id(
+                        provider_id
+                    )
+                    if normalized_provider not in registration_ids or not isinstance(
+                        raw_registration, dict
+                    ):
+                        continue
+                    if (
+                        str(raw_registration.get("resource_kind") or "")
+                        != "linked_reference"
+                        or str(raw_registration.get("status") or "") != "ready"
+                    ):
+                        continue
+                    candidate_names = {
+                        voice.name,
+                        str(raw_registration.get("voice_id") or ""),
+                        str(raw_registration.get("provider_voice_id") or ""),
+                    }
+                    if selected_key not in {
+                        name.strip().casefold()
+                        for name in candidate_names
+                        if name.strip()
+                    }:
+                        continue
+                    registration = raw_registration
+                    break
+                if registration is None:
+                    continue
+
+                samples = list(
+                    session.scalars(
+                        select(VoiceSample)
+                        .where(VoiceSample.voice_id == voice.id)
+                        .order_by(VoiceSample.created_at.desc())
+                    ).all()
+                )
+                sample = next(
+                    (
+                        item
+                        for item in samples
+                        if sample_file_status(session, self.paths, item)[0] == "ready"
+                    ),
+                    None,
+                )
+                if sample is None:
+                    raise ValueError(
+                        f"Linked audio.cpp voice '{voice.name}' has no readable sample."
+                    )
+                artifact = session.get(Artifact, sample.artifact_id)
+                status, path = sample_file_status(session, self.paths, sample)
+                if artifact is None or status != "ready" or path is None:
+                    raise ValueError(
+                        f"Linked audio.cpp voice '{voice.name}' has no readable sample."
+                    )
+                if path.suffix.lower() != ".wav":
+                    raise ValueError(
+                        "audio.cpp linked voice references require a normalized WAV sample."
+                    )
+                try:
+                    size_bytes = path.stat().st_size
+                except OSError as error:
+                    raise ValueError(
+                        "The audio.cpp linked voice sample could not be read."
+                    ) from error
+                if size_bytes > 5 * 1024 * 1024:
+                    raise ValueError(
+                        "audio.cpp linked voice references must be at most 5 MiB."
+                    )
+                content_hash = str(artifact.content_hash or "").strip()
+                if not content_hash:
+                    digest = hashlib.sha256()
+                    with path.open("rb") as handle:
+                        while chunk := handle.read(1024 * 1024):
+                            digest.update(chunk)
+                    content_hash = digest.hexdigest()
+                match = (content_hash, path, artifact, sample)
+                break
+
+        if match is None:
+            return prepared
+        content_hash, path, _artifact, sample = match
+        with self._audio_cpp_voice_ref_cache_lock:
+            encoded = self._audio_cpp_voice_ref_cache.get(content_hash)
+            if encoded is None:
+                encoded = "data:audio/wav;base64," + base64.b64encode(
+                    path.read_bytes()
+                ).decode("ascii")
+                self._audio_cpp_voice_ref_cache[content_hash] = encoded
+                self._audio_cpp_voice_ref_cache.move_to_end(content_hash)
+                while len(self._audio_cpp_voice_ref_cache) > 8:
+                    self._audio_cpp_voice_ref_cache.popitem(last=False)
+            else:
+                self._audio_cpp_voice_ref_cache.move_to_end(content_hash)
+        prepared["audio_cpp_voice_ref"] = {
+            "type": "base64",
+            "data": encoded,
+        }
+        prepared["audio_cpp_voice_ref_hash"] = content_hash
+        prepared["audio_cpp_reference_text"] = (
+            str(sample.transcript or "").strip() if sample.transcript_reviewed else ""
+        )
+        return deepcopy(prepared)
+
+    _prepare_audio_cpp_voice_reference = prepare_audio_cpp_voice_reference
+
     def preview_tts_voice(self, payload, progress, cancel_event):
         """Generate a short managed preview without mutating a session plan."""
 
@@ -661,6 +821,7 @@ class WorkflowHandlers:
         service_id = str(settings.get("preview_service_id") or "").lower()
         api_base = str(settings.get("preview_api_base") or "").strip()
         url_key = {
+            "audio_cpp": "audio_cpp_base_url",
             "xtts": "xtts_base_url",
             "voxcpm": "voxcpm_base_url",
             "fishs2": "fishs2_base_url",
@@ -673,6 +834,7 @@ class WorkflowHandlers:
         }.get(service_id)
         if url_key and api_base:
             urls[url_key] = api_base
+        settings = self.prepare_audio_cpp_voice_reference(settings)
         self._ensure_qwen_cloned_voice(
             settings,
             base_url=urls["kobold_qwen_base_url"],
@@ -716,7 +878,7 @@ class WorkflowHandlers:
             target,
             kind="audio",
             role="tts_voice_preview",
-            settings=settings,
+            settings=_secret_free_tts_settings(settings),
             metadata={
                 **preview_identity,
                 "service": settings.get("service"),
@@ -3957,6 +4119,69 @@ class WorkflowHandlers:
         )
         base_url = str(service_config.get("api_base") or "").strip()
         service_name = str(service_config.get("name") or service_name).strip()
+        service_adapter = (
+            str(service_config.get("adapter") or "").strip().lower().replace("-", "_")
+        )
+        if service_adapter == "audio_cpp":
+            registration_service_id = str(
+                service_config.get("id") or service_id
+            ).strip()
+            reviewed_transcript = (
+                str(sample.transcript or "").strip()
+                if sample.transcript_reviewed
+                else ""
+            )
+            provider_voice_id = _managed_provider_voice_id(voice)
+            sample_hash = str(sample_artifact.content_hash or "").strip()
+            if not sample_hash:
+                sample_hash = hashlib.sha256(sample_path.read_bytes()).hexdigest()
+            registration = {
+                "voice_id": provider_voice_id,
+                "provider_voice_id": provider_voice_id,
+                "sample_id": sample.id,
+                "sample_hash": sample_hash,
+                "source_audio_hash": sample_hash,
+                "status": "ready",
+                "updated_at": utcnow().isoformat(),
+                "managed_by": "pandrator",
+                "protocol": "pandrator-linked-voices-v1",
+                "resource_kind": "linked_reference",
+                "endpoint_fingerprint": _provider_endpoint_fingerprint(base_url),
+                "reference_text_mode": "optional",
+                "reference_text_hash": (
+                    hashlib.sha256(reviewed_transcript.encode("utf-8")).hexdigest()
+                    if reviewed_transcript
+                    else None
+                ),
+            }
+            with self.database.session() as session:
+                voice = session.get(Voice, voice_id)
+                if voice is None:
+                    raise ValueError("Voice was removed before it could be linked.")
+                current_sample = session.get(VoiceSample, sample.id)
+                if (
+                    current_sample is None
+                    or current_sample.artifact_id != sample.artifact_id
+                ):
+                    raise ValueError(
+                        "The voice sample changed before it could be linked."
+                    )
+                metadata = deepcopy(voice.metadata_json or {})
+                providers = dict(metadata.get("providers") or {})
+                providers[registration_service_id] = registration
+                metadata["providers"] = providers
+                voice.metadata_json = metadata
+                voice.revision += 1
+                voice.updated_at = utcnow()
+                next_voice_revision = voice.revision
+            progress(1.0, f"{voice_name} is ready in {service_name}")
+            return {
+                "voice_id": voice_id,
+                "service_id": service_id,
+                "provider_voice_id": provider_voice_id,
+                "voice_revision": next_voice_revision,
+                "linked": True,
+            }
         reference_text_mode = str(
             service_config.get("voice_reference_text") or "ignored"
         )
@@ -4067,7 +4292,11 @@ class WorkflowHandlers:
                 raise ValueError(
                     "The provider registration has no Pandrator ownership proof."
                 )
-            provider_voice_id = str(registration.get("voice_id") or "").strip()
+            provider_voice_id = str(
+                registration.get("voice_id")
+                or registration.get("provider_voice_id")
+                or ""
+            ).strip()
             if not provider_voice_id:
                 raise ValueError("The provider registration has no remote voice ID.")
 
@@ -4097,6 +4326,39 @@ class WorkflowHandlers:
         service_config = (
             tts_handler.get_service_config(runtime_settings, service_id) or {}
         )
+        service_adapter = (
+            str(service_config.get("adapter") or "").strip().lower().replace("-", "_")
+        )
+        if (
+            registration.get("resource_kind") == "linked_reference"
+            and service_adapter == "audio_cpp"
+        ):
+            with self.database.session() as session:
+                voice = session.get(Voice, voice_id)
+                if voice is None:
+                    raise ValueError("Voice not found.")
+                metadata = deepcopy(voice.metadata_json or {})
+                providers = dict(metadata.get("providers") or {})
+                current = dict(providers.get(service_id) or {})
+                if current.get("resource_kind") != "linked_reference":
+                    raise ValueError(
+                        "The linked voice registration changed while removing it."
+                    )
+                providers.pop(service_id, None)
+                metadata["providers"] = providers
+                voice.metadata_json = metadata
+                voice.revision += 1
+                voice.updated_at = utcnow()
+                next_revision = voice.revision
+            progress(1.0, f"{service_name} link removed")
+            return {
+                "voice_id": voice_id,
+                "service_id": service_id,
+                "provider_voice_id": provider_voice_id,
+                "remote_deleted": False,
+                "linked": True,
+                "voice_revision": next_revision,
+            }
         if not bool(service_config.get("supports_voice_deletion")):
             raise ValueError(
                 f"{service_name} does not advertise provider-side voice deletion."
@@ -4891,7 +5153,7 @@ class WorkflowHandlers:
                 )
                 or 0
             )
-            stored_settings = dict(settings)
+            stored_settings = _secret_free_tts_settings(settings)
             if source_artifact_id:
                 stored_settings["_source_artifact_id"] = source_artifact_id
             revision = GenerationPlanRevision(
@@ -4990,6 +5252,7 @@ class WorkflowHandlers:
         return {
             key: str(settings.get(setting_key) or default)
             for key, setting_key, default in (
+                ("audio_cpp_base_url", "audio_cpp_base_url", "http://127.0.0.1:8060"),
                 ("xtts_base_url", "xtts_base_url", "http://127.0.0.1:8020"),
                 ("voxcpm_base_url", "voxcpm_base_url", "http://127.0.0.1:8020"),
                 ("fishs2_base_url", "fishs2_base_url", "http://127.0.0.1:8020"),
@@ -5773,6 +6036,9 @@ class WorkflowHandlers:
                     language=self._usable_language(record.get("language")),
                     voice=str(record.get("voice") or "").strip() or None,
                 )
+                segment_tts_settings = self.prepare_audio_cpp_voice_reference(
+                    segment_tts_settings
+                )
                 self._ensure_qwen_cloned_voice(
                     segment_tts_settings,
                     base_url=tts_urls["kobold_qwen_base_url"],
@@ -5828,6 +6094,9 @@ class WorkflowHandlers:
                     settings,
                     language=self._usable_language(record.get("language")),
                     voice=str(record.get("voice") or "").strip() or None,
+                )
+                segment_tts_settings = self.prepare_audio_cpp_voice_reference(
+                    segment_tts_settings
                 )
                 self._ensure_qwen_cloned_voice(
                     segment_tts_settings,
@@ -5906,7 +6175,7 @@ class WorkflowHandlers:
                 role="generation_take",
                 session_id=session_id,
                 parent_ids=[source_artifact.id],
-                settings=segment_tts_settings,
+                settings=_secret_free_tts_settings(segment_tts_settings),
                 metadata={
                     "generation_segment_id": generation_segment_id,
                     "kind": "tts",
@@ -6197,11 +6466,13 @@ class WorkflowHandlers:
         snapshot = (
             deepcopy(resolved_snapshot) if isinstance(resolved_snapshot, dict) else {}
         )
+        snapshot = _secret_free_tts_settings(snapshot)
         # The resolved sections are the immutable source of truth. Merge the
         # flattened stage values as compatibility aliases so direct Run Now
         # choices (service, model, voice, and language) cannot be lost.
-        snapshot["tts"] = {**dict(snapshot.get("tts") or {}), **settings}
-        snapshot["audio"] = {**dict(snapshot.get("audio") or {}), **settings}
+        safe_settings = _secret_free_tts_settings(settings)
+        snapshot["tts"] = {**dict(snapshot.get("tts") or {}), **safe_settings}
+        snapshot["audio"] = {**dict(snapshot.get("audio") or {}), **safe_settings}
         snapshot["text"] = {
             **dict(snapshot.get("text") or {}),
             "llm_tts_optimization": bool(settings.get("llm_tts_optimization")),
@@ -6353,6 +6624,7 @@ class WorkflowHandlers:
                 selected_tts_override,
             )
             explicit_endpoint_keys = {
+                "audio_cpp_base_url",
                 "openai_audio_endpoint",
                 "xtts_base_url",
                 "voxcpm_base_url",
@@ -6534,6 +6806,9 @@ class WorkflowHandlers:
                         language=seed["language"],
                         voice=seed["voice"],
                     )
+                    segment_tts_settings = self.prepare_audio_cpp_voice_reference(
+                        segment_tts_settings
+                    )
                     self._ensure_qwen_cloned_voice(
                         segment_tts_settings,
                         base_url=tts_urls["kobold_qwen_base_url"],
@@ -6673,6 +6948,9 @@ class WorkflowHandlers:
                             language=segment_language,
                             voice=segment_voice,
                         )
+                        segment_tts_settings = self.prepare_audio_cpp_voice_reference(
+                            segment_tts_settings
+                        )
                         self._ensure_qwen_cloned_voice(
                             segment_tts_settings,
                             base_url=tts_urls["kobold_qwen_base_url"],
@@ -6763,9 +7041,10 @@ class WorkflowHandlers:
                 take_path = take_dir / f"{take_kind}-{new_id()}.wav"
                 exported = audio.export(take_path, format="wav")
                 exported.close()
+                stored_take_settings = _secret_free_tts_settings(take_settings)
                 prepared_artifact = self.artifacts.prepare_registration(
                     take_path,
-                    settings=take_settings,
+                    settings=stored_take_settings,
                 )
                 with self.database.session() as session:
                     segment = session.get(GenerationSegment, segment_id)
@@ -6776,7 +7055,7 @@ class WorkflowHandlers:
                         role="generation_take",
                         session_id=session_id,
                         parent_ids=([source_artifact.id] if operation == "rvc" else []),
-                        settings=take_settings,
+                        settings=stored_take_settings,
                         metadata={
                             "generation_segment_id": segment_id,
                             "generation_run_id": run_id,

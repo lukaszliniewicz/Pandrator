@@ -31,6 +31,7 @@ from pandrator.web.workflow_handlers import (
     WorkflowHandlers,
     _apply_selected_segment_tts_override,
     _fraction_message_callback,
+    _secret_free_tts_settings,
     _source_cleaning_progress_callback,
 )
 from pandrator.web.tts_optimization import OptimizationUsage
@@ -86,6 +87,20 @@ class WebWorkflowHandlerTests(unittest.TestCase):
         self.assertEqual(effective["language"], "auto")
         self.assertEqual(effective["max_sentence_length"], 200)
         self.assertTrue(effective["normalize_all_caps"])
+
+    def test_audio_cpp_runtime_reference_fields_are_not_persisted(self):
+        self.assertEqual(
+            {"service": "audio_cpp", "speaker": "pandrator-narrator"},
+            _secret_free_tts_settings(
+                {
+                    "service": "audio_cpp",
+                    "speaker": "pandrator-narrator",
+                    "audio_cpp_voice_ref": {"type": "base64", "data": "secret"},
+                    "audio_cpp_voice_ref_hash": "reference-hash",
+                    "audio_cpp_reference_text": "Reviewed transcript.",
+                }
+            ),
+        )
 
     def test_fraction_message_progress_uses_the_primary_work_counter(self):
         updates = []

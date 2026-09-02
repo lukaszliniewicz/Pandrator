@@ -5596,7 +5596,16 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         )
         if service is None:
             return error_response("not_found", "TTS service not found.", 404)
-        if not bool(service.get("supports_voice_deletion")):
+        service_adapter = (
+            str(service.get("adapter") or "")
+            .strip()
+            .lower()
+            .replace("-", "_")
+        )
+        linked_reference = registration.get("resource_kind") == "linked_reference"
+        if not bool(service.get("supports_voice_deletion")) and not (
+            linked_reference and service_adapter == "audio_cpp"
+        ):
             return error_response(
                 "unsupported",
                 "This TTS service does not advertise provider-side voice deletion.",

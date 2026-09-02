@@ -19,6 +19,7 @@ test('generation and voice controls expose resolved selection semantics', () => 
   const runDialogs = source('WorkflowRunDialogs.svelte');
   const workspace = source('SessionWorkspace.svelte');
   const voiceLibrary = source('VoiceLibraryModal.svelte');
+  const voiceManager = source('VoiceManager.svelte');
 
   expect(models).toContain('resolved_input?:');
   expect(models).toContain('reasons?: string[];');
@@ -46,6 +47,13 @@ test('generation and voice controls expose resolved selection semantics', () => 
   expect(workspace).toContain('available: true');
   expect(workspace).toContain('clonedVoiceGroups');
   expect(workspace).toContain('Multilingual / language not set');
+  expect(workspace).toContain('audioCppLinkedReferences');
+  expect(workspace).toContain('pandrator-ordered-serial-v1');
+  expect(workspace).toContain("protocol: 'pandrator-linked-voices-v1'");
+  expect(workspace).toContain('Qwen benefits from a reviewed transcript');
+  expect(voiceManager).toContain("resource_kind === 'linked_reference'");
+  expect(voiceManager).toContain('Link to ${providerTarget.name}');
+  expect(voiceManager).toContain('Provider links and copies');
 });
 
 test('generation settings make source, availability, voice language, and reuse choices visible', async ({

@@ -5,7 +5,7 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import MagicMock, Mock, patch
 
-from pandrator.logic import tts_handler
+from pandrator.logic import tts_handler, tts_provider_profiles
 
 
 class TTSHandlerTests(unittest.TestCase):
@@ -31,22 +31,24 @@ class TTSHandlerTests(unittest.TestCase):
             tts_handler._litellm_speech = None
             tts_handler._litellm_speech_import_attempted = False
             tts_handler._litellm_speech_import_error = None
-            with patch(
-                "pandrator.logic.tts_handler._import_litellm_speech_client",
-                side_effect=slow_import,
+            with (
+                patch(
+                    "pandrator.logic.tts_handler._import_litellm_speech_client",
+                    side_effect=slow_import,
+                ),
+                ThreadPoolExecutor(max_workers=8) as executor,
             ):
-                with ThreadPoolExecutor(max_workers=8) as executor:
-                    first = executor.submit(tts_handler._get_litellm_speech_client)
-                    self.assertTrue(started.wait(timeout=1))
-                    remaining = [
-                        executor.submit(tts_handler._get_litellm_speech_client)
-                        for _index in range(7)
-                    ]
-                    release.set()
-                    results = [
-                        first.result(),
-                        *(future.result() for future in remaining),
-                    ]
+                first = executor.submit(tts_handler._get_litellm_speech_client)
+                self.assertTrue(started.wait(timeout=1))
+                remaining = [
+                    executor.submit(tts_handler._get_litellm_speech_client)
+                    for _index in range(7)
+                ]
+                release.set()
+                results = [
+                    first.result(),
+                    *(future.result() for future in remaining),
+                ]
         finally:
             (
                 tts_handler._litellm_speech,
@@ -154,9 +156,7 @@ class TTSHandlerTests(unittest.TestCase):
         }
         response = Mock(status_code=200)
 
-        provider = tts_handler.get_service_config(
-            settings, "azure-speech-mai-voice-2"
-        )
+        provider = tts_handler.get_service_config(settings, "azure-speech-mai-voice-2")
         self.assertIsNotNone(provider)
         self.assertIs(provider["credential_required"], True)
 
@@ -586,6 +586,173 @@ class TTSHandlerTests(unittest.TestCase):
             {"language": "en", "text": "Hello", "speaker": "alice", "rate": 1.2},
         )
 
+    def test_audio_cpp_provider_round_trip_preserves_adapter(self):
+        profile = tts_provider_profiles.get_tts_provider_profile(
+            "audio-cpp-experimental"
+        )
+        success, providers, provider_id, message = tts_handler.save_provider(
+            {"provider_configs": []},
+            provider_name=profile["name"],
+            provider_type=profile["provider"],
+            api_base=profile["api_base"],
+            models=profile["models"],
+            voices=profile["voices"],
+            supports_prebuilt_voices=profile["supports_prebuilt_voices"],
+            provider_id=profile["id"],
+            adapter_config=profile,
+        )
+
+        self.assertTrue(success, message)
+        self.assertEqual("audio-cpp-experimental", provider_id)
+        self.assertEqual("audio_cpp", providers[0]["adapter"])
+        self.assertIn("qwen3_tts_1_7b_base_q8_0", providers[0]["models"])
+        self.assertIn("fireredtts3_base_q8_0", providers[0]["models"])
+
+    def test_audio_cpp_generation_sends_language_and_omits_empty_voice(self):
+        settings = {
+            "service": tts_handler.OPENAI_COMPAT_SERVICE,
+            "openai_audio_endpoint": "audio-cpp-experimental",
+            "xtts_model": "chatterbox",
+            "speaker": "",
+            "language": "pl",
+            "generation_prompt": "Warm and measured delivery.",
+            "speed": 1.5,
+            "audio_cpp_reference_text": "Reference transcript.",
+            "provider_configs": [
+                {
+                    "id": "audio-cpp-experimental",
+                    "name": "audio.cpp",
+                    "provider": "openai",
+                    "api_base": "http://127.0.0.1:8080",
+                    "adapter": "audio_cpp",
+                    "speech_path": "/v1/audio/speech",
+                    "models": [],
+                    "voices": [],
+                    "auth_mode": "none",
+                }
+            ],
+        }
+
+        with patch("pandrator.logic.tts_handler.requests.post") as post:
+            tts_handler._request_openai_compatible_audio("Cześć", settings)
+
+        self.assertEqual(
+            "http://127.0.0.1:8080/v1/audio/speech", post.call_args.args[0]
+        )
+        self.assertEqual(
+            {
+                "model": "chatterbox",
+                "input": "Cześć",
+                "response_format": "wav",
+                "speed": 1.5,
+                "language": "pl",
+                "instructions": "Warm and measured delivery.",
+                "reference_text": "Reference transcript.",
+            },
+            post.call_args.kwargs["json"],
+        )
+        self.assertEqual({}, post.call_args.kwargs["headers"])
+
+    def test_audio_cpp_serializes_full_width_seed_as_string(self):
+        endpoint = {"default_model": "magpie-tts", "default_voice": ""}
+        safe = tts_handler._build_audio_cpp_audio_payload(
+            "Hello",
+            {"audio_cpp_seed": 2**53 - 1},
+            endpoint,
+        )
+        full_width = tts_handler._build_audio_cpp_audio_payload(
+            "Hello",
+            {"audio_cpp_seed": 2**53},
+            endpoint,
+        )
+
+        self.assertEqual(2**53 - 1, safe["seed"])
+        self.assertEqual(str(2**53), full_width["seed"])
+
+    def test_audio_cpp_qwen_uses_reviewed_transcript_or_xvector_fallback(self):
+        endpoint = {
+            "default_model": "qwen3_tts_1_7b_base_q8_0",
+            "model_catalog": tts_provider_profiles.AUDIO_CPP_MODEL_CATALOG,
+        }
+        voice_ref = {"type": "base64", "data": "UklGRg=="}
+
+        reviewed = tts_handler._build_audio_cpp_audio_payload(
+            "Hello",
+            {
+                "audio_cpp_voice_ref": voice_ref,
+                "audio_cpp_reference_text": "Reviewed words.",
+                "language": "en-US",
+            },
+            endpoint,
+        )
+        unreviewed = tts_handler._build_audio_cpp_audio_payload(
+            "Hello",
+            {"audio_cpp_voice_ref": voice_ref, "language": "en"},
+            endpoint,
+        )
+
+        self.assertEqual("English", reviewed["language"])
+        self.assertEqual("Reviewed words.", reviewed["reference_text"])
+        self.assertFalse(reviewed["options"]["x_vector_only_mode"])
+        self.assertTrue(unreviewed["options"]["x_vector_only_mode"])
+
+    def test_audio_cpp_omnivoice_rejects_unreviewed_linked_reference(self):
+        with self.assertRaisesRegex(ValueError, "reviewed transcript"):
+            tts_handler._build_audio_cpp_audio_payload(
+                "Hello",
+                {
+                    "xtts_model": "omnivoice_q8_0",
+                    "audio_cpp_voice_ref": {
+                        "type": "base64",
+                        "data": "UklGRg==",
+                    },
+                },
+                {},
+            )
+
+    def test_audio_cpp_catalog_filters_non_speech_models_and_server_paths(self):
+        model_response = Mock()
+        model_response.json.return_value = {
+            "data": [
+                {
+                    "id": "fish-audio-s2-pro",
+                    "family": "fish_audio",
+                    "task": "tts",
+                    "mode": "offline",
+                    "loaded": True,
+                    "path": "/private/models/fish",
+                },
+                {"id": "qwen3-asr", "task": "asr", "path": "/private/asr"},
+                {
+                    "id": "breeze-clone",
+                    "family": "breeze_tts",
+                    "task": "clon",
+                    "mode": "offline",
+                },
+                {"id": "firered-clone", "task": "clon", "mode": "offline"},
+            ]
+        }
+        voice_response = Mock()
+        voice_response.json.return_value = {"voices": ["narrator", "narrator"]}
+        with patch(
+            "pandrator.logic.tts_handler.requests.get",
+            side_effect=[model_response, voice_response],
+        ) as get:
+            models = tts_handler.get_audio_cpp_model_catalog("http://127.0.0.1:8080")
+            voices = tts_handler.get_audio_cpp_voice_catalog(
+                "http://127.0.0.1:8080", "fish-audio-s2-pro"
+            )
+
+        self.assertEqual(
+            ["fish-audio-s2-pro", "firered-clone"],
+            [item["id"] for item in models],
+        )
+        self.assertNotIn("path", models[0])
+        self.assertEqual(["narrator"], voices)
+        self.assertEqual(
+            {"model": "fish-audio-s2-pro"}, get.call_args_list[1].kwargs["params"]
+        )
+
     def test_generic_provider_connection_uses_safe_get_on_configured_route(self):
         settings = {
             "service": tts_handler.OPENAI_COMPAT_SERVICE,
@@ -816,7 +983,7 @@ class TTSHandlerTests(unittest.TestCase):
             )
 
             mock_post.assert_called_once()
-            called_args, called_kwargs = mock_post.call_args
+            _called_args, called_kwargs = mock_post.call_args
             payload = called_kwargs["json"]
             self.assertEqual(payload["model"], "chatterbox-turbo")
             self.assertEqual(payload["input"], "Hello world")
@@ -845,7 +1012,7 @@ class TTSHandlerTests(unittest.TestCase):
             )
 
             mock_post.assert_called_once()
-            called_args, called_kwargs = mock_post.call_args
+            _called_args, called_kwargs = mock_post.call_args
             payload = called_kwargs["json"]
             self.assertEqual(payload["model"], "chatterbox-multilingual")
             self.assertEqual(payload["input"], "Bonjour")

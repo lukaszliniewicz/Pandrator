@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
+import sys
 import tempfile
 import zipfile
 from contextlib import nullcontext
@@ -18,6 +20,15 @@ from dulwich.repo import Repo
 
 from ..artifacts import ArtifactDownloader, ArtifactSpec, SafeExtractor
 from ..components import ComponentRegistry
+from ..components.audiocpp import (
+    AUDIO_CPP_MODEL_REPOSITORY,
+    AUDIO_CPP_MODEL_REVISION,
+    AUDIO_CPP_VERSION,
+    AudioCppModelPackage,
+    model_package,
+    server_config,
+    source_markers_for,
+)
 from ..components.crispasr import CRISPASR_VERSION
 from ..components.runtime_bootstrap import generated_runtime_files
 from ..components.slots import (
@@ -98,9 +109,7 @@ def _is_tls_verification_error(error: BaseException) -> bool:
         for nested in (selected.__cause__, selected.__context__):
             if isinstance(nested, BaseException):
                 pending.append(nested)
-        pending.extend(
-            item for item in selected.args if isinstance(item, BaseException)
-        )
+        pending.extend(item for item in selected.args if isinstance(item, BaseException))
     return False
 
 
@@ -148,9 +157,7 @@ class OperationTaskContext:
     prior_results: dict[str, dict]
     cancellation: object
     release_authority: ReleaseAuthority | None = None
-    service_spec_factory: (
-        Callable[[str, object], ManagedProcessSpec | None] | None
-    ) = None
+    service_spec_factory: Callable[[str, object], ManagedProcessSpec | None] | None = None
 
     def check_cancelled(self) -> None:
         self.cancellation.raise_if_requested()
@@ -209,6 +216,7 @@ class FilesystemTaskHandler:
         {
             "stage_component",
             "stage_crispasr",
+            "stage_audio_cpp",
             "verify_component",
             "activate_component",
             "validate_service",
@@ -260,12 +268,7 @@ class FilesystemTaskHandler:
         execution: OperationTaskContext,
         component_id: str,
     ) -> Path:
-        target = (
-            execution.context.layout.staging
-            / execution.operation.id
-            / component_id
-            / "source"
-        )
+        target = execution.context.layout.staging / execution.operation.id / component_id / "source"
         return execution.context.layout.require_within(
             target,
             roots=(execution.context.layout.staging,),
@@ -303,9 +306,7 @@ class FilesystemTaskHandler:
             )
             shutil.rmtree(target)
         target.parent.mkdir(parents=True, exist_ok=True)
-        git_config, ca_bundle = dulwich_config_with_ca(
-            execution.context.environment
-        )
+        git_config, ca_bundle = dulwich_config_with_ca(execution.context.environment)
         try:
             cloned = porcelain.clone(
                 definition.repo_url,
@@ -360,8 +361,7 @@ class FilesystemTaskHandler:
             )
         except Exception as error:
             raise RuntimeError(
-                f"{definition.label} source revision "
-                f"{requested} could not be checked out."
+                f"{definition.label} source revision {requested} could not be checked out."
             ) from error
         selected = cls._revision(target)
         if not selected.casefold().startswith(requested.casefold()):
@@ -390,9 +390,7 @@ class FilesystemTaskHandler:
                 filename=filename,
             )
         except (KeyError, TypeError, ValueError) as error:
-            raise UnsupportedTask(
-                "The CrispASR asset contract is invalid."
-            ) from error
+            raise UnsupportedTask("The CrispASR asset contract is invalid.") from error
         if (
             not filename
             or filename in {".", ".."}
@@ -400,9 +398,7 @@ class FilesystemTaskHandler:
             or "\\" in filename
             or Path(filename).name != filename
         ):
-            raise UnsupportedTask(
-                "The CrispASR asset filename is not a safe cache basename."
-            )
+            raise UnsupportedTask("The CrispASR asset filename is not a safe cache basename.")
 
         target = self._staging_source(execution, definition.id)
         executable_name = "crispasr.exe" if os.name == "nt" else "crispasr"
@@ -415,8 +411,7 @@ class FilesystemTaskHandler:
             return {
                 "staged_path": str(target),
                 "revision": (
-                    f"crispasr-{CRISPASR_VERSION}-"
-                    f"{task.inputs.get('effective_compute') or 'cpu'}"
+                    f"crispasr-{CRISPASR_VERSION}-{task.inputs.get('effective_compute') or 'cpu'}"
                 ),
                 "reused": True,
             }
@@ -430,12 +425,7 @@ class FilesystemTaskHandler:
             shutil.rmtree(staging_root)
         staging_root.mkdir(parents=True, exist_ok=True)
 
-        cache_path = (
-            execution.context.layout.cache
-            / "artifacts"
-            / "crispasr"
-            / filename
-        )
+        cache_path = execution.context.layout.cache / "artifacts" / "crispasr" / filename
         selected = ArtifactDownloader(
             cancellation=execution.cancellation,
             environment=execution.context.environment,
@@ -443,17 +433,11 @@ class FilesystemTaskHandler:
         unpacked = staging_root / "unpacked"
         SafeExtractor().extract(selected, unpacked)
         executable = next(
-            (
-                candidate
-                for candidate in unpacked.rglob(executable_name)
-                if candidate.is_file()
-            ),
+            (candidate for candidate in unpacked.rglob(executable_name) if candidate.is_file()),
             None,
         )
         if executable is None:
-            raise RuntimeError(
-                f"The verified CrispASR archive did not contain {executable_name}."
-            )
+            raise RuntimeError(f"The verified CrispASR archive did not contain {executable_name}.")
         shutil.copytree(executable.parent, target)
         staged_executable = target / executable_name
         if os.name != "nt":
@@ -471,25 +455,15 @@ class FilesystemTaskHandler:
         )
         version_output = "\n".join((probe.stdout, probe.stderr))
         if f"version       : {CRISPASR_VERSION}" not in version_output:
-            raise RuntimeError(
-                "The verified CrispASR binary reported an unexpected version."
-            )
+            raise RuntimeError("The verified CrispASR binary reported an unexpected version.")
         _atomic_json(
             target / "install.json",
             {
                 "version": CRISPASR_VERSION,
-                "requested_backend": str(
-                    task.inputs.get("requested_compute") or "auto"
-                ),
-                "effective_backend": str(
-                    task.inputs.get("effective_compute") or "cpu"
-                ),
-                "runtime_variant": str(
-                    raw_asset.get("runtime_variant") or "cpu"
-                ),
-                "compiled_backends": list(
-                    raw_asset.get("compiled_backends") or ()
-                ),
+                "requested_backend": str(task.inputs.get("requested_compute") or "auto"),
+                "effective_backend": str(task.inputs.get("effective_compute") or "cpu"),
+                "runtime_variant": str(raw_asset.get("runtime_variant") or "cpu"),
+                "compiled_backends": list(raw_asset.get("compiled_backends") or ()),
                 "asset": filename,
                 "sha256": specification.sha256,
                 "default_model": (
@@ -498,8 +472,7 @@ class FilesystemTaskHandler:
                     .get("engine", "moss-transcribe-diarize-0.9b")
                 ),
                 "default_quantization": (
-                    (task.inputs.get("resolved") or {}).get("quantization")
-                    or "q8_0"
+                    (task.inputs.get("resolved") or {}).get("quantization") or "q8_0"
                 ),
             },
         )
@@ -508,11 +481,313 @@ class FilesystemTaskHandler:
         return {
             "staged_path": str(target),
             "revision": (
-                f"crispasr-{CRISPASR_VERSION}-"
-                f"{task.inputs.get('effective_compute') or 'cpu'}"
+                f"crispasr-{CRISPASR_VERSION}-{task.inputs.get('effective_compute') or 'cpu'}"
             ),
             "reused": False,
             "asset_path": str(selected),
+        }
+
+    @staticmethod
+    def _source_markers(execution: OperationTaskContext, definition) -> tuple[str, ...]:
+        if definition.id == "audio_cpp":
+            return source_markers_for(execution.context.system)
+        return definition.source_markers
+
+    @staticmethod
+    def _safe_archive_filename(filename: str, label: str) -> None:
+        if (
+            not filename
+            or filename in {".", ".."}
+            or "/" in filename
+            or "\\" in filename
+            or Path(filename).name != filename
+        ):
+            raise UnsupportedTask(f"The {label} archive filename is not a safe cache basename.")
+
+    @staticmethod
+    def _merge_model_package_provenance(
+        marker: Path,
+        package: AudioCppModelPackage,
+    ) -> None:
+        package_id = package.id
+        payload: dict[str, Any] = {}
+        if marker.is_file():
+            try:
+                selected = json.loads(marker.read_text(encoding="utf-8"))
+            except (OSError, TypeError, ValueError, json.JSONDecodeError) as error:
+                raise RuntimeError(
+                    f"audio.cpp model package marker for {package_id} is invalid."
+                ) from error
+            if not isinstance(selected, dict):
+                raise RuntimeError(f"audio.cpp model package marker for {package_id} is invalid.")
+            payload = selected
+        payload.update(
+            {
+                "package_id": package_id,
+                "provenance": {
+                    "manager": "audio.cpp tools/model_manager_v2.py",
+                    "repository": AUDIO_CPP_MODEL_REPOSITORY,
+                    "requested_revision": AUDIO_CPP_MODEL_REVISION,
+                    "digest_verified": True,
+                    "sha256": dict(zip(package.files, package.sha256, strict=True)),
+                },
+            }
+        )
+        _atomic_json(marker, payload)
+
+    @staticmethod
+    def _pin_audio_cpp_model_specs(
+        specs_root: Path,
+        packages: list[AudioCppModelPackage],
+    ) -> None:
+        """Override selected upstream package specs with our immutable revision."""
+
+        remaining = {package.id for package in packages}
+        for path in sorted(specs_root.glob("*.json")):
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, json.JSONDecodeError) as error:
+                raise RuntimeError(f"Invalid audio.cpp model spec: {path.name}.") from error
+            entries = payload.get("packages") if isinstance(payload, dict) else None
+            if not isinstance(entries, list):
+                continue
+            changed = False
+            for entry in entries:
+                if not isinstance(entry, dict) or entry.get("id") not in remaining:
+                    continue
+                download = entry.get("download")
+                if download is None:
+                    download = {}
+                    entry["download"] = download
+                if not isinstance(download, dict):
+                    raise RuntimeError(
+                        f"Invalid audio.cpp download spec for {entry.get('id')}."
+                    )
+                download["revision"] = AUDIO_CPP_MODEL_REVISION
+                remaining.remove(str(entry["id"]))
+                changed = True
+            if changed:
+                _atomic_json(path, payload)
+        if remaining:
+            raise RuntimeError(
+                "The verified audio.cpp archive did not contain model specs for: "
+                + ", ".join(sorted(remaining))
+                + "."
+            )
+
+    @staticmethod
+    def _sha256_file(path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            while chunk := handle.read(1024 * 1024):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    def _execute_stage_audio_cpp(
+        self,
+        execution: OperationTaskContext,
+        task: TaskSpec,
+    ) -> dict:
+        """Acquire the signed runtime and stage model-manager packages."""
+
+        execution.check_cancelled()
+        definition = self._definition(execution, task)
+        raw_assets = task.inputs.get("assets")
+        if not isinstance(raw_assets, list) or not raw_assets:
+            raise UnsupportedTask("The audio.cpp runtime asset contract is missing.")
+        specifications: list[tuple[dict, ArtifactSpec]] = []
+        try:
+            for raw_asset in raw_assets:
+                if not isinstance(raw_asset, dict):
+                    raise ValueError("asset entry is not an object")
+                filename = str(raw_asset["filename"])
+                self._safe_archive_filename(filename, "audio.cpp runtime")
+                specifications.append(
+                    (
+                        raw_asset,
+                        ArtifactSpec(
+                            url=str(raw_asset["url"]),
+                            sha256=str(raw_asset["sha256"]),
+                            filename=filename,
+                        ),
+                    )
+                )
+        except (KeyError, TypeError, ValueError) as error:
+            raise UnsupportedTask("The audio.cpp runtime asset contract is invalid.") from error
+
+        raw_models = task.inputs.get("models")
+        if not isinstance(raw_models, list) or not raw_models:
+            raise UnsupportedTask("The audio.cpp model package contract is missing.")
+        try:
+            packages = [model_package(str(package_id)) for package_id in raw_models]
+        except ValueError as error:
+            raise UnsupportedTask(str(error)) from error
+        if len({package.id for package in packages}) != len(packages):
+            raise UnsupportedTask("The audio.cpp model package contract contains duplicates.")
+
+        target = self._staging_source(execution, definition.id)
+        markers = self._source_markers(execution, definition)
+        if target.is_dir() and self._markers_present(target, markers):
+            if all(
+                package.marker_path(target / "models").is_file()
+                and all(
+                    path.is_file() and self._sha256_file(path) == expected_sha256
+                    for path, expected_sha256 in zip(
+                        package.required_paths(target / "models"),
+                        package.sha256,
+                        strict=True,
+                    )
+                )
+                for package in packages
+            ):
+                return {
+                    "staged_path": str(target),
+                    "revision": (
+                        f"audio-cpp-{task.inputs.get('version') or AUDIO_CPP_VERSION}-"
+                        f"{task.inputs.get('effective_compute') or 'cpu'}"
+                    ),
+                    "models": [package.id for package in packages],
+                    "reused": True,
+                }
+
+        staging_root = target.parent
+        execution.context.layout.require_within(
+            staging_root,
+            roots=(execution.context.layout.staging,),
+        )
+        if staging_root.exists():
+            shutil.rmtree(staging_root)
+        staging_root.mkdir(parents=True, exist_ok=True)
+        unpacked = staging_root / "unpacked"
+        offline = bool(task.inputs.get("offline"))
+        if offline:
+            raise UnsupportedTask(
+                "Offline audio.cpp installation is unavailable because the Manager "
+                "does not yet cache model packages for offline reuse. Pandrator "
+                "verifies immutable model payloads, but model installation still "
+                "requires an online fetch."
+            )
+        selected_assets: list[str] = []
+        for raw_asset, specification in specifications:
+            execution.check_cancelled()
+            cache_path = (
+                execution.context.layout.cache / "artifacts" / "audio_cpp" / specification.filename
+            )
+            selected = ArtifactDownloader(
+                cancellation=execution.cancellation,
+                environment=execution.context.environment,
+            ).download(specification, cache_path, offline=offline)
+            SafeExtractor().extract(selected, unpacked)
+            selected_assets.append(str(raw_asset.get("filename") or specification.filename))
+
+        # v0.7.1 archives are intentionally root-normalized: the server binary,
+        # model-manager script, and model_specs directory live directly below
+        # the archive root. Refuse an unexpected enclosing/member root instead
+        # of guessing and risking a broken or transient path in the slot.
+        server_name = (
+            "audiocpp_server.exe"
+            if execution.context.system.casefold() == "windows"
+            else "audiocpp_server"
+        )
+        server_source = unpacked / server_name
+        manager_source = unpacked / "tools" / "model_manager_v2.py"
+        if not server_source.is_file() or not manager_source.is_file():
+            missing = [
+                str(path.relative_to(unpacked))
+                for path in (server_source, manager_source)
+                if not path.is_file()
+            ]
+            raise RuntimeError(
+                "The verified audio.cpp archive did not contain the expected "
+                "archive-root files: " + ", ".join(missing) + "."
+            )
+        self._pin_audio_cpp_model_specs(unpacked / "model_specs", packages)
+        target.mkdir(parents=True, exist_ok=True)
+        for source in unpacked.iterdir():
+            destination = target / source.name
+            if source.is_dir():
+                shutil.copytree(source, destination)
+            else:
+                shutil.copy2(source, destination)
+        staged_server = target / server_name
+        if execution.context.system.casefold() != "windows":
+            staged_server.chmod(staged_server.stat().st_mode | 0o755)
+
+        models_root = target / "models"
+        invocations: list[list[str]] = []
+        for package in packages:
+            execution.check_cancelled()
+            invocation = [
+                sys.executable,
+                str(target / "tools" / "model_manager_v2.py"),
+                "install",
+                package.id,
+                "--models-root",
+                str(models_root),
+            ]
+            invocations.append(invocation)
+            CommandRunner(
+                cancellation=execution.cancellation,
+                base_environment=execution.context.environment,
+            ).run(
+                CommandSpec(
+                    argv=tuple(invocation),
+                    cwd=target,
+                    timeout_seconds=2 * 60 * 60,
+                    label=f"audio-cpp-model-{package.id}",
+                )
+            )
+            missing_outputs = [
+                path for path in package.required_paths(models_root) if not path.is_file()
+            ]
+            if missing_outputs:
+                raise RuntimeError(
+                    f"audio.cpp model manager did not install every required file "
+                    f"for {package.id}: "
+                    + ", ".join(str(path.relative_to(models_root)) for path in missing_outputs)
+                )
+            for path, expected_sha256 in zip(
+                package.required_paths(models_root), package.sha256, strict=True
+            ):
+                actual_sha256 = self._sha256_file(path)
+                if actual_sha256 != expected_sha256:
+                    raise RuntimeError(
+                        f"audio.cpp model package {package.id} failed SHA-256 verification: "
+                        f"{path.relative_to(models_root)}."
+                    )
+            self._merge_model_package_provenance(
+                package.marker_path(models_root),
+                package,
+            )
+
+        effective = str(task.inputs.get("effective_compute") or "cpu")
+        _atomic_json(
+            target / "server.json", server_config(effective, [package.id for package in packages])
+        )
+        _atomic_json(
+            target / "install.json",
+            {
+                "component": definition.id,
+                "version": str(task.inputs.get("version") or AUDIO_CPP_VERSION),
+                "requested_backend": str(task.inputs.get("requested_compute") or "auto"),
+                "effective_backend": effective,
+                "assets": selected_assets,
+                "models": [package.id for package in packages],
+                "model_revision": AUDIO_CPP_MODEL_REVISION,
+                "model_digest_verification": "sha256",
+            },
+        )
+        shutil.rmtree(unpacked)
+        execution.check_cancelled()
+        return {
+            "staged_path": str(target),
+            "revision": (
+                f"audio-cpp-{task.inputs.get('version') or AUDIO_CPP_VERSION}-{effective}"
+            ),
+            "models": [package.id for package in packages],
+            "assets": selected_assets,
+            "model_manager": invocations,
+            "reused": False,
         }
 
     def _execute_preflight_operation(
@@ -529,12 +804,7 @@ class FilesystemTaskHandler:
             tasks=execution.plan.tasks,
         )
         HostPreflight.require_success(checks)
-        return {
-            "checks": [
-                check.model_dump(mode="json")
-                for check in checks
-            ]
-        }
+        return {"checks": [check.model_dump(mode="json") for check in checks]}
 
     @staticmethod
     def _authority(execution: OperationTaskContext) -> ReleaseAuthority:
@@ -564,9 +834,7 @@ class FilesystemTaskHandler:
         try:
             return execution.prior_results[task_id]
         except KeyError:
-            raise RuntimeError(
-                f"Missing successful prerequisite result: {task_id}"
-            ) from None
+            raise RuntimeError(f"Missing successful prerequisite result: {task_id}") from None
 
     def _execute_verify_release(
         self,
@@ -582,13 +850,8 @@ class FilesystemTaskHandler:
                 http_status=500,
             )
         release = self._authority(execution).verify(manifest_value)
-        planned_artifact = self._release_artifact(
-            task.inputs.get("artifact")
-        )
-        if (
-            planned_artifact.model_dump(mode="json")
-            != release.artifact.model_dump(mode="json")
-        ):
+        planned_artifact = self._release_artifact(task.inputs.get("artifact"))
+        if planned_artifact.model_dump(mode="json") != release.artifact.model_dump(mode="json"):
             raise ManagerError(
                 "release_plan_changed",
                 "The host artifact selected during execution differs from "
@@ -637,14 +900,9 @@ class FilesystemTaskHandler:
             "version": release.manifest.payload.version,
             "sequence": release.manifest.payload.sequence,
             "manifest_digest": release.manifest.digest,
-            "verified_key_ids": list(
-                release.manifest.verified_key_ids
-            ),
+            "verified_key_ids": list(release.manifest.verified_key_ids),
             "artifact": release.artifact.model_dump(mode="json"),
-            "checks": [
-                check.model_dump(mode="json")
-                for check in selected_checks
-            ],
+            "checks": [check.model_dump(mode="json") for check in selected_checks],
         }
 
     def _execute_download_release(
@@ -705,12 +963,7 @@ class FilesystemTaskHandler:
             )
         product = str(task.inputs.get("product") or "")
         version = str(task.inputs.get("version") or "")
-        target = (
-            execution.context.layout.staging
-            / execution.operation.id
-            / "release"
-            / "bundle"
-        )
+        target = execution.context.layout.staging / execution.operation.id / "release" / "bundle"
         target = execution.context.layout.require_within(
             target,
             roots=(execution.context.layout.staging,),
@@ -755,13 +1008,8 @@ class FilesystemTaskHandler:
     ) -> dict:
         del task
         if execution.supervisor is None:
-            raise UnsupportedTask(
-                "Application release activation requires the process supervisor."
-            )
-        snapshots = {
-            service.id: service
-            for service in execution.supervisor.snapshot()
-        }
+            raise UnsupportedTask("Application release activation requires the process supervisor.")
+        snapshots = {service.id: service for service in execution.supervisor.snapshot()}
         services: dict[str, dict] = {}
         for service_id in PANDRATOR_SERVICE_STOP_ORDER:
             snapshot = snapshots.get(service_id)
@@ -769,22 +1017,11 @@ class FilesystemTaskHandler:
             if snapshot is None and spec is None:
                 continue
             services[service_id] = {
-                "was_running": bool(
-                    snapshot is not None and snapshot.process is not None
-                ),
-                "desired_running": bool(
-                    snapshot is not None and snapshot.desired_running
-                ),
-                "spec": (
-                    spec.model_dump(mode="json")
-                    if spec is not None
-                    else None
-                ),
+                "was_running": bool(snapshot is not None and snapshot.process is not None),
+                "desired_running": bool(snapshot is not None and snapshot.desired_running),
+                "spec": (spec.model_dump(mode="json") if spec is not None else None),
             }
-            if snapshot is not None and (
-                snapshot.process is not None
-                or snapshot.desired_running
-            ):
+            if snapshot is not None and (snapshot.process is not None or snapshot.desired_running):
                 execution.supervisor.stop(service_id)
         return {"services": services}
 
@@ -846,9 +1083,7 @@ class FilesystemTaskHandler:
         task: TaskSpec,
     ) -> dict:
         if execution.supervisor is None:
-            raise UnsupportedTask(
-                "Application release activation requires the process supervisor."
-            )
+            raise UnsupportedTask("Application release activation requires the process supervisor.")
         manifest_value = task.inputs.get("manifest")
         if not isinstance(manifest_value, dict):
             raise ManagerError(
@@ -861,10 +1096,7 @@ class FilesystemTaskHandler:
             expected_product="pandrator",
         )
         artifact = self._release_artifact(task.inputs.get("artifact"))
-        if (
-            artifact.model_dump(mode="json")
-            != release.artifact.model_dump(mode="json")
-        ):
+        if artifact.model_dump(mode="json") != release.artifact.model_dump(mode="json"):
             raise ManagerError(
                 "release_plan_changed",
                 "The activation artifact differs from the reviewed release plan.",
@@ -896,13 +1128,10 @@ class FilesystemTaskHandler:
             version=release.manifest.payload.version,
         )
         new_specs = {
-            spec.service_id: spec
-            for spec in pandrator_runtime_specs(execution.context.layout)
+            spec.service_id: spec for spec in pandrator_runtime_specs(execution.context.layout)
         }
         if not PANDRATOR_CORE_SERVICES.issubset(new_specs):
-            raise RuntimeError(
-                "The activated application did not produce its required services."
-            )
+            raise RuntimeError("The activated application did not produce its required services.")
         for service_id in PANDRATOR_SERVICE_STOP_ORDER:
             if service_id not in new_specs and execution.supervisor.spec(service_id) is not None:
                 execution.supervisor.unregister(service_id)
@@ -915,30 +1144,26 @@ class FilesystemTaskHandler:
             "release:stop-application",
         ).get("services")
         previous_services = stopped if isinstance(stopped, dict) else {}
-        requested_running = bool(
-            task.inputs.get("start_after_activation")
-        )
+        requested_running = bool(task.inputs.get("start_after_activation"))
         keep_worker = requested_running or any(
             bool(
                 isinstance(value, dict)
-                and (
-                    value.get("was_running")
-                    or value.get("desired_running")
-                )
+                and (value.get("was_running") or value.get("desired_running"))
             )
             for key, value in previous_services.items()
             if key == PANDRATOR_WORKER_SERVICE
         )
-        keep_api = keep_worker or requested_running or any(
-            bool(
-                isinstance(value, dict)
-                and (
-                    value.get("was_running")
-                    or value.get("desired_running")
+        keep_api = (
+            keep_worker
+            or requested_running
+            or any(
+                bool(
+                    isinstance(value, dict)
+                    and (value.get("was_running") or value.get("desired_running"))
                 )
+                for key, value in previous_services.items()
+                if key == PANDRATOR_API_SERVICE
             )
-            for key, value in previous_services.items()
-            if key == PANDRATOR_API_SERVICE
         )
         keep_mcp = PANDRATOR_MCP_SERVICE in new_specs and keep_api
 
@@ -983,18 +1208,12 @@ class FilesystemTaskHandler:
             "slot_path": str(validated.root),
             "envelope": release.envelope,
             "artifact": release.artifact.model_dump(mode="json"),
-            "verified_key_ids": list(
-                release.manifest.verified_key_ids
-            ),
+            "verified_key_ids": list(release.manifest.verified_key_ids),
         }
         return {
             "journal": journal,
             "active_path": str(validated.root),
-            "api_health": (
-                api.health.model_dump(mode="json")
-                if api.health is not None
-                else None
-            ),
+            "api_health": (api.health.model_dump(mode="json") if api.health is not None else None),
             "kept_running": {
                 PANDRATOR_API_SERVICE: keep_api,
                 PANDRATOR_MCP_SERVICE: keep_mcp and mcp_error is None,
@@ -1014,14 +1233,11 @@ class FilesystemTaskHandler:
         del task
         supervisor = execution.supervisor
         if supervisor is not None:
-            snapshots = {
-                service.id: service for service in supervisor.snapshot()
-            }
+            snapshots = {service.id: service for service in supervisor.snapshot()}
             for service_id in PANDRATOR_SERVICE_STOP_ORDER:
                 selected = snapshots.get(service_id)
                 if selected is not None and (
-                    selected.process is not None
-                    or selected.desired_running
+                    selected.process is not None or selected.desired_running
                 ):
                     supervisor.stop(service_id)
         ReleaseSlotManager(
@@ -1030,11 +1246,7 @@ class FilesystemTaskHandler:
         ).rollback_activation(
             operation_id=execution.operation.id,
             product="pandrator",
-            result=(
-                result.get("journal")
-                if isinstance(result.get("journal"), dict)
-                else None
-            ),
+            result=(result.get("journal") if isinstance(result.get("journal"), dict) else None),
         )
         if supervisor is None:
             return
@@ -1052,15 +1264,9 @@ class FilesystemTaskHandler:
                 supervisor.unregister(service_id)
         for service_id in PANDRATOR_SERVICE_START_ORDER:
             previous = previous_services.get(service_id)
-            serialized = (
-                previous.get("spec")
-                if isinstance(previous, dict)
-                else None
-            )
+            serialized = previous.get("spec") if isinstance(previous, dict) else None
             if isinstance(serialized, dict):
-                supervisor.register(
-                    ManagedProcessSpec.model_validate(serialized)
-                )
+                supervisor.register(ManagedProcessSpec.model_validate(serialized))
 
     def _execute_prepare_manager_handoff(
         self,
@@ -1079,10 +1285,7 @@ class FilesystemTaskHandler:
             expected_product="pandrator-manager",
         )
         artifact = self._release_artifact(task.inputs.get("artifact"))
-        if (
-            artifact.model_dump(mode="json")
-            != release.artifact.model_dump(mode="json")
-        ):
+        if artifact.model_dump(mode="json") != release.artifact.model_dump(mode="json"):
             raise ManagerError(
                 "release_plan_changed",
                 "The manager handoff artifact differs from the reviewed plan.",
@@ -1128,16 +1331,11 @@ class FilesystemTaskHandler:
                 "Uninstall requires the live manager supervisor.",
                 http_status=409,
             )
-        before = {
-            service.id: service.model_dump(mode="json")
-            for service in supervisor.snapshot()
-        }
+        before = {service.id: service.model_dump(mode="json") for service in supervisor.snapshot()}
         stopped = supervisor.stop_all()
         after = {service.id: service for service in supervisor.snapshot()}
         still_live = [
-            service_id
-            for service_id, service in after.items()
-            if service.process is not None
+            service_id for service_id, service in after.items() if service.process is not None
         ]
         if still_live:
             raise ManagerError(
@@ -1172,11 +1370,7 @@ class FilesystemTaskHandler:
             if not (desired_running or was_running):
                 continue
             current = next(
-                (
-                    service
-                    for service in supervisor.snapshot()
-                    if service.id == service_id
-                ),
+                (service for service in supervisor.snapshot() if service.id == service_id),
                 None,
             )
             if current is None or current.process is None:
@@ -1185,9 +1379,7 @@ class FilesystemTaskHandler:
     @staticmethod
     def _link_like(path: Path) -> bool:
         junction = getattr(path, "is_junction", None)
-        return path.is_symlink() or bool(
-            junction is not None and junction()
-        )
+        return path.is_symlink() or bool(junction is not None and junction())
 
     def _execute_export_uninstall_data(
         self,
@@ -1270,9 +1462,7 @@ class FilesystemTaskHandler:
             with zipfile.ZipFile(temporary, "r") as verification:
                 bad_member = verification.testzip()
                 if bad_member is not None:
-                    raise RuntimeError(
-                        f"Export verification failed at {bad_member}."
-                    )
+                    raise RuntimeError(f"Export verification failed at {bad_member}.")
             os.replace(temporary, destination)
         finally:
             try:
@@ -1300,10 +1490,7 @@ class FilesystemTaskHandler:
             return
         destination = Path(destination_value).expanduser().resolve(strict=False)
         impact = execution.plan.impacts.get("uninstall")
-        if (
-            isinstance(impact, dict)
-            and impact.get("export_data") == str(destination)
-        ):
+        if isinstance(impact, dict) and impact.get("export_data") == str(destination):
             try:
                 destination.unlink()
             except FileNotFoundError:
@@ -1323,10 +1510,7 @@ class FilesystemTaskHandler:
             )
         purge_data = bool(task.inputs.get("purge_data"))
         export_data = task.inputs.get("export_data")
-        if (
-            purge_data != bool(impact.get("purge_data"))
-            or export_data != impact.get("export_data")
-        ):
+        if purge_data != bool(impact.get("purge_data")) or export_data != impact.get("export_data"):
             raise ManagerError(
                 "invalid_uninstall_operation",
                 "The uninstall handoff differs from the reviewed plan.",
@@ -1373,9 +1557,7 @@ class FilesystemTaskHandler:
         tool = str(task.inputs.get("tool") or "")
         version = str(task.inputs.get("version") or "")
         if tool != "pixi" or version != PIXI_VERSION:
-            raise UnsupportedTask(
-                f"Unsupported runtime tool requirement: {tool} {version}"
-            )
+            raise UnsupportedTask(f"Unsupported runtime tool requirement: {tool} {version}")
         bootstrapper = PixiBootstrapper(
             execution.context,
             runner=CommandRunner(
@@ -1399,8 +1581,7 @@ class FilesystemTaskHandler:
             execution.context.layout.backups / execution.operation.id,
             replace_existing=manager_owned,
             offline=any(
-                bool(state.options.get("offline"))
-                for state in execution.plan.desired.values()
+                bool(state.options.get("offline")) for state in execution.plan.desired.values()
             ),
         )
 
@@ -1452,19 +1633,15 @@ class FilesystemTaskHandler:
             root,
             roots=(execution.context.layout.staging,),
         )
-        missing = [
-            marker
-            for marker in definition.source_markers
-            if not (root / marker).exists()
-        ]
+        source_markers = self._source_markers(execution, definition)
+        missing = [marker for marker in source_markers if not (root / marker).exists()]
         if missing:
             raise RuntimeError(
-                f"{definition.label} staging is incomplete; missing "
-                + ", ".join(missing)
+                f"{definition.label} staging is incomplete; missing " + ", ".join(missing)
             )
         return {
             "verified_path": str(root),
-            "markers": list(definition.source_markers),
+            "markers": list(source_markers),
             "revision": stage["revision"],
         }
 
@@ -1482,11 +1659,12 @@ class FilesystemTaskHandler:
             roots=(execution.context.layout.staging,),
         )
         revision = str(stage["revision"] or execution.operation.id)
-        safe_revision = "".join(
-            character
-            for character in revision
-            if character.isalnum() or character in "._-"
-        )[:80] or execution.operation.id
+        safe_revision = (
+            "".join(
+                character for character in revision if character.isalnum() or character in "._-"
+            )[:80]
+            or execution.operation.id
+        )
         container = component_container(execution.context.layout, definition.id)
         versions = container / "versions"
         destination = versions / safe_revision
@@ -1503,29 +1681,22 @@ class FilesystemTaskHandler:
         )
         if activation_journal.is_file():
             try:
-                journal = json.loads(
-                    activation_journal.read_text(encoding="utf-8")
-                )
+                journal = json.loads(activation_journal.read_text(encoding="utf-8"))
             except (OSError, ValueError, TypeError, json.JSONDecodeError) as error:
-                raise RuntimeError(
-                    f"{definition.label} activation journal is invalid."
-                ) from error
+                raise RuntimeError(f"{definition.label} activation journal is invalid.") from error
             if (
                 not isinstance(journal, dict)
                 or journal.get("component_id") != definition.id
                 or journal.get("destination") != str(destination)
             ):
                 raise RuntimeError(
-                    f"{definition.label} activation journal does not match "
-                    "the planned slot."
+                    f"{definition.label} activation journal does not match the planned slot."
                 )
             previous_pointer = journal.get("previous_pointer")
             created_slot = bool(journal.get("created_slot"))
         else:
             try:
-                previous_pointer = json.loads(
-                    pointer.read_text(encoding="utf-8")
-                )
+                previous_pointer = json.loads(pointer.read_text(encoding="utf-8"))
             except (OSError, ValueError, TypeError, json.JSONDecodeError):
                 previous_pointer = None
             created_slot = not destination.is_dir()
@@ -1538,8 +1709,12 @@ class FilesystemTaskHandler:
                     "previous_pointer": previous_pointer,
                 },
             )
+        source_markers = self._source_markers(execution, definition)
         if destination.is_dir():
-            if not self._markers_present(destination, definition.source_markers):
+            if not self._markers_present(
+                destination,
+                source_markers,
+            ):
                 raise RuntimeError(
                     f"Existing {definition.label} slot {safe_revision} is incomplete."
                 )
@@ -1561,7 +1736,7 @@ class FilesystemTaskHandler:
             "evidence": {
                 "operation_id": execution.operation.id,
                 "revision": safe_revision,
-                "markers": list(definition.source_markers),
+                "markers": list(source_markers),
             },
         }
         return {
@@ -1594,9 +1769,7 @@ class FilesystemTaskHandler:
             if not journal_path.is_file():
                 return
             try:
-                journal = json.loads(
-                    journal_path.read_text(encoding="utf-8")
-                )
+                journal = json.loads(journal_path.read_text(encoding="utf-8"))
             except (OSError, ValueError, TypeError, json.JSONDecodeError) as error:
                 raise RuntimeError(
                     f"{definition.label} activation rollback journal is invalid."
@@ -1606,9 +1779,7 @@ class FilesystemTaskHandler:
                 or journal.get("component_id") != definition.id
                 or not isinstance(journal.get("destination"), str)
             ):
-                raise RuntimeError(
-                    f"{definition.label} activation rollback journal is invalid."
-                )
+                raise RuntimeError(f"{definition.label} activation rollback journal is invalid.")
             result = {
                 "active_path": journal.get("destination"),
                 "created_slot": bool(journal.get("created_slot")),
@@ -1616,9 +1787,7 @@ class FilesystemTaskHandler:
             }
         removal_guard = nullcontext()
         if definition.service_key and execution.supervisor is not None:
-            removal_guard = execution.supervisor.component_slot_removal_guard(
-                definition.id
-            )
+            removal_guard = execution.supervisor.component_slot_removal_guard(definition.id)
         with removal_guard:
             pointer = component_pointer(execution.context.layout, definition.id)
             previous = result.get("previous_pointer")
@@ -1649,9 +1818,7 @@ class FilesystemTaskHandler:
     ) -> dict:
         definition = self._definition(execution, task)
         if execution.supervisor is None or execution.service_spec_factory is None:
-            raise UnsupportedTask(
-                f"{definition.label} service validation is unavailable."
-            )
+            raise UnsupportedTask(f"{definition.label} service validation is unavailable.")
         desired = execution.plan.desired[definition.id]
         resolved = execution.registry.driver(definition.id).resolve(
             execution.context,
@@ -1660,9 +1827,7 @@ class FilesystemTaskHandler:
         )
         spec = execution.service_spec_factory(definition.id, resolved)
         if spec is None:
-            raise UnsupportedTask(
-                f"{definition.label} has no managed runtime specification."
-            )
+            raise UnsupportedTask(f"{definition.label} has no managed runtime specification.")
         previous_spec = execution.supervisor.replace_spec(spec)
         try:
             service = execution.supervisor.start(spec.service_id)
@@ -1685,9 +1850,7 @@ class FilesystemTaskHandler:
             "health": service.health.model_dump(mode="json") if service.health else None,
             "kept_running": keep_running,
             "previous_spec": (
-                previous_spec.model_dump(mode="json")
-                if previous_spec is not None
-                else None
+                previous_spec.model_dump(mode="json") if previous_spec is not None else None
             ),
         }
 
@@ -1704,9 +1867,7 @@ class FilesystemTaskHandler:
             execution.supervisor.stop(service_id)
         previous = result.get("previous_spec")
         if isinstance(previous, dict):
-            execution.supervisor.replace_spec(
-                ManagedProcessSpec.model_validate(previous)
-            )
+            execution.supervisor.replace_spec(ManagedProcessSpec.model_validate(previous))
         else:
             execution.supervisor.unregister(service_id)
 
@@ -1725,9 +1886,7 @@ class FilesystemTaskHandler:
         if crispasr is not None and crispasr.present:
             engine = str(crispasr.options.get("engine") or "").strip()
             quantization = str(
-                crispasr.quantization
-                or crispasr.options.get("quantization")
-                or ""
+                crispasr.quantization or crispasr.options.get("quantization") or ""
             ).strip()
             if engine:
                 preferences["CRISPASR_DEFAULT_ENGINE"] = engine
@@ -1755,9 +1914,7 @@ class FilesystemTaskHandler:
             for service_id in PANDRATOR_SERVICE_STOP_ORDER:
                 if service_id in running:
                     execution.supervisor.stop(service_id)
-            selected_ids = {
-                specification.service_id for specification in specifications
-            }
+            selected_ids = {specification.service_id for specification in specifications}
             for service_id in PANDRATOR_SERVICE_STOP_ORDER:
                 if (
                     service_id not in selected_ids
@@ -1804,9 +1961,7 @@ class FilesystemTaskHandler:
             "started": True,
             "service_id": service.id,
             "health": (
-                service.health.model_dump(mode="json")
-                if service.health is not None
-                else None
+                service.health.model_dump(mode="json") if service.health is not None else None
             ),
             "mcp_error": mcp_error,
         }
@@ -1835,15 +1990,10 @@ class FilesystemTaskHandler:
                 "was_running": False,
                 "desired_running": False,
             }
-        snapshots = {
-            service.id: service
-            for service in execution.supervisor.snapshot()
-        }
+        snapshots = {service.id: service for service in execution.supervisor.snapshot()}
         previous = snapshots.get(definition.service_key)
         was_running = bool(previous is not None and previous.process is not None)
-        desired_running = bool(
-            previous is not None and previous.desired_running
-        )
+        desired_running = bool(previous is not None and previous.desired_running)
         if previous is not None:
             execution.supervisor.stop(definition.service_key)
         return {
@@ -1877,10 +2027,7 @@ class FilesystemTaskHandler:
             if record["owner_id"] == definition.id
             and record["owner_kind"] in {"component", "legacy_component"}
         ]
-        owned = [
-            Path(record["path"])
-            for record in ownership_records
-        ]
+        owned = [Path(record["path"]) for record in ownership_records]
         container = component_container(execution.context.layout, definition.id)
         if container.exists() and container not in owned:
             owned.append(container)
@@ -1896,9 +2043,7 @@ class FilesystemTaskHandler:
         ]
         embedded_data = [
             str(item.source)
-            for item in legacy_data_inventory(
-                execution.context.layout
-            ).items
+            for item in legacy_data_inventory(execution.context.layout).items
             if any(
                 item.source.resolve(strict=False) == root
                 or execution.context.layout.contains(root, item.source)
@@ -1927,16 +2072,11 @@ class FilesystemTaskHandler:
             candidate
             for index, candidate in enumerate(canonical_owned)
             if not any(
-                execution.context.layout.contains(parent, candidate)
-                and parent != candidate
+                execution.context.layout.contains(parent, candidate) and parent != candidate
                 for parent in canonical_owned[:index]
             )
         ]
-        backup_root = (
-            execution.context.layout.backups
-            / execution.operation.id
-            / definition.id
-        )
+        backup_root = execution.context.layout.backups / execution.operation.id / definition.id
         moved: list[dict[str, str]] = []
         for index, source in enumerate(owned):
             destination = backup_root / f"{index}-{source.name}"
@@ -1949,9 +2089,7 @@ class FilesystemTaskHandler:
                     raise RuntimeError(
                         f"Both the owned path and its operation backup exist: {source}"
                     )
-                moved.append(
-                    {"source": str(source), "backup": str(destination)}
-                )
+                moved.append({"source": str(source), "backup": str(destination)})
                 continue
             if not source.exists():
                 continue
@@ -1993,16 +2131,11 @@ class FilesystemTaskHandler:
                 candidate
                 for index, candidate in enumerate(canonical_owned)
                 if not any(
-                    execution.context.layout.contains(parent, candidate)
-                    and parent != candidate
+                    execution.context.layout.contains(parent, candidate) and parent != candidate
                     for parent in canonical_owned[:index]
                 )
             ]
-            backup_root = (
-                execution.context.layout.backups
-                / execution.operation.id
-                / definition.id
-            )
+            backup_root = execution.context.layout.backups / execution.operation.id / definition.id
             moved = [
                 {
                     "source": str(source),
@@ -2033,9 +2166,7 @@ class FilesystemTaskHandler:
         *,
         succeeded: bool,
     ) -> None:
-        operation_staging = (
-            execution.context.layout.staging / execution.operation.id
-        )
+        operation_staging = execution.context.layout.staging / execution.operation.id
         if operation_staging.exists():
             execution.context.layout.require_within(
                 operation_staging,

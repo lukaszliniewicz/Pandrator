@@ -2,6 +2,7 @@
   import { errorMessage } from './errors';
   import {
     CheckCircle2,
+    ChevronDown,
     CircleAlert,
     Download,
     LoaderCircle,
@@ -46,6 +47,15 @@
     service_key?: string | null;
     compute_variants: ComputeVariant[];
     install_options?: InstallOption[];
+    models?: Array<{
+      id: string;
+      label: string;
+      description?: string;
+      license_name?: string | null;
+      license_url?: string | null;
+      usage_note?: string;
+      estimated_download_bytes?: number | null;
+    }>;
     supported_actions: string[];
     default_port?: number | null;
   };
@@ -56,6 +66,7 @@
     resolved?: {
       compute?: string;
       quantization?: string | null;
+      platform?: string;
       options?: Record<string, unknown>;
     } | null;
     problems: string[];
@@ -126,6 +137,8 @@
   let services = $state<Service[]>([]);
   let compute = $state<Record<string, ComputeVariant>>({});
   let installOptionValues = $state<Record<string, Record<string, string>>>({});
+  let selectedModelIds = $state<Record<string, string[]>>({});
+  let compatibilityOpen = $state(false);
   let pendingPlan = $state<ManagerPlan | null>(null);
   const operation = $derived(managerOperationStore.operation);
   let error = $state('');
@@ -147,18 +160,40 @@
   let uninstallBusy = $state(false);
   let pollTimer: ReturnType<typeof setTimeout> | null = null;
   let pollStopped = false;
+  const compatibilityComponentIds = new Set([
+    'qwen_tts',
+    'fish_speech',
+    'voxcpm',
+    'chatterbox',
+    'magpie'
+  ]);
   const componentGroups = $derived([
     {
       label: 'Installed',
+      collapsed: false,
+      muted: false,
       items: components.filter((component) =>
         ['present', 'degraded'].includes(component.inspection.state)
       )
     },
     {
       label: 'Not installed',
+      collapsed: false,
+      muted: false,
       items: components.filter(
         (component) =>
-          !['present', 'degraded'].includes(component.inspection.state)
+          !['present', 'degraded'].includes(component.inspection.state) &&
+          !compatibilityComponentIds.has(component.definition.id)
+      )
+    },
+    {
+      label: 'Compatibility backends',
+      collapsed: true,
+      muted: true,
+      items: components.filter(
+        (component) =>
+          !['present', 'degraded'].includes(component.inspection.state) &&
+          compatibilityComponentIds.has(component.definition.id)
       )
     }
   ]);
@@ -231,6 +266,45 @@
     installOptionValues[component.definition.id]?.[option.key] ??
     configuredInstallOption(component, option);
 
+  const configuredModelIds = (component: Component) => {
+    if (component.definition.id !== 'audio_cpp') return [];
+    const supported = new Set(
+      (component.definition.models ?? []).map((model) => model.id)
+    );
+    const raw =
+      component.desired?.options?.models ??
+      component.inspection.resolved?.options?.models;
+    const configured = Array.isArray(raw)
+      ? raw.map(String).filter((modelId) => supported.has(modelId))
+      : [];
+    if (configured.length) return configured;
+    const preferred = 'qwen3_tts_1_7b_base_q8_0';
+    return supported.has(preferred)
+      ? [preferred]
+      : (component.definition.models ?? [])
+          .slice(0, 1)
+          .map((model) => model.id);
+  };
+
+  const selectedModels = (component: Component) =>
+    selectedModelIds[component.definition.id] ?? configuredModelIds(component);
+
+  function toggleModel(component: Component, modelId: string) {
+    const selected = new Set(selectedModels(component));
+    if (selected.has(modelId)) selected.delete(modelId);
+    else selected.add(modelId);
+    selectedModelIds = {
+      ...selectedModelIds,
+      [component.definition.id]: (component.definition.models ?? [])
+        .map((model) => model.id)
+        .filter((id) => selected.has(id))
+    };
+  }
+
+  const modelSelectionValid = (component: Component) =>
+    component.definition.id !== 'audio_cpp' ||
+    selectedModels(component).length > 0;
+
   const installChoiceAllowed = (
     component: Component,
     choice: InstallOptionChoice,
@@ -298,6 +372,9 @@
 
   const configurationChanged = (component: Component) =>
     selectedCompute(component) !== configuredCompute(component) ||
+    (component.definition.id === 'audio_cpp' &&
+      [...selectedModels(component)].sort().join('\n') !==
+        [...configuredModelIds(component)].sort().join('\n')) ||
     (component.definition.install_options ?? []).some(
       (option) =>
         selectedInstallOption(component, option) !==
@@ -392,6 +469,7 @@
         string,
         Record<string, string>
       > = {};
+      const nextSelectedModelIds: Record<string, string[]> = {};
       for (const component of components) {
         nextCompute[component.definition.id] = configuredCompute(component);
         nextInstallOptionValues[component.definition.id] = Object.fromEntries(
@@ -400,9 +478,13 @@
             configuredInstallOption(component, option)
           ])
         );
+        if (component.definition.id === 'audio_cpp')
+          nextSelectedModelIds[component.definition.id] =
+            configuredModelIds(component);
       }
       compute = nextCompute;
       installOptionValues = nextInstallOptionValues;
+      selectedModelIds = nextSelectedModelIds;
       error = '';
     } catch (caught) {
       report(caught);
@@ -468,6 +550,12 @@
         if (option.state_field === 'quantization')
           requestedQuantization = value;
         else requestedOptions[option.key] = value;
+      }
+      if (component.definition.id === 'audio_cpp') {
+        const models = selectedModels(component);
+        if (!models.length)
+          throw new Error('Select at least one audio.cpp model package.');
+        requestedOptions.models = models;
       }
       pendingPlan = await managerApi.plan<ManagerPlan>({
         kind,
@@ -843,198 +931,308 @@
       {#each componentGroups as group}
         {#if group.items.length}<section>
             <div class="mb-3 flex items-center gap-2">
-              <h3 class="text-sm font-semibold">{group.label}</h3>
+              {#if group.collapsed}
+                <button
+                  type="button"
+                  class="muted flex items-center gap-2 text-sm font-semibold"
+                  aria-expanded={compatibilityOpen}
+                  onclick={() => (compatibilityOpen = !compatibilityOpen)}
+                >
+                  <ChevronDown
+                    size={16}
+                    class={`transition-transform ${compatibilityOpen ? 'rotate-180' : ''}`}
+                  />
+                  <span>{group.label}</span>
+                </button>
+              {:else}
+                <h3 class="text-sm font-semibold">{group.label}</h3>
+              {/if}
               <span
                 class="muted rounded-full border border-[var(--line)] px-2 py-0.5 text-[.65rem] font-bold"
                 >{group.items.length}</span
               >
             </div>
-            <div class="grid gap-3 lg:grid-cols-2">
-              {#each group.items as component}
-                {@const service = serviceFor(component)}
-                {@const runtimeState = runtimeStateFor(component, service)}
-                {@const installed = component.inspection.state === 'present'}
-                {@const degraded = component.inspection.state === 'degraded'}
-                {@const installedVersion =
-                  component.inspection.installed_version?.trim() ?? ''}
-                {@const installedRevision =
-                  component.inspection.installed_revision?.trim() ?? ''}
-                {@const busy =
-                  planning === component.definition.id ||
-                  runtimeBusy === component.definition.id ||
-                  Boolean(
-                    operation && !MANAGER_TERMINAL_STATES.has(operation.state)
-                  )}
-                <article
-                  id={`component-${component.definition.id}`}
-                  class="scroll-mt-24 rounded-2xl border border-[var(--line)] p-4"
-                >
-                  <div class="flex items-start justify-between gap-3">
-                    <div>
-                      <div class="font-semibold">
-                        {component.definition.label}
-                      </div>
-                      <div class="muted mt-1 text-xs">
-                        {runtimeState.label}
-                        {component.definition.default_port
-                          ? ` · port ${component.definition.default_port}`
-                          : ''}
-                      </div>
-                      {#if installedVersion || installedRevision}
-                        <div class="muted mt-1 text-xs">
-                          {#if installedVersion}<span
-                              title={'Installed version ' + installedVersion}
-                              >v{installedVersion}</span
-                            >{/if}
-                          {#if installedVersion && installedRevision}
-                            <span class="mx-1">·</span>
-                          {/if}
-                          {#if installedRevision}<span
-                              title={'Installed revision ' + installedRevision}
-                              >rev {installedRevision.slice(0, 8)}</span
-                            >{/if}
+            {#if !group.collapsed || compatibilityOpen}
+              <div class="grid gap-3 lg:grid-cols-2">
+                {#each group.items as component}
+                  {@const service = serviceFor(component)}
+                  {@const runtimeState = runtimeStateFor(component, service)}
+                  {@const installed = component.inspection.state === 'present'}
+                  {@const degraded = component.inspection.state === 'degraded'}
+                  {@const installedVersion =
+                    component.inspection.installed_version?.trim() ?? ''}
+                  {@const installedRevision =
+                    component.inspection.installed_revision?.trim() ?? ''}
+                  {@const busy =
+                    planning === component.definition.id ||
+                    runtimeBusy === component.definition.id ||
+                    Boolean(
+                      operation && !MANAGER_TERMINAL_STATES.has(operation.state)
+                    )}
+                  <article
+                    id={`component-${component.definition.id}`}
+                    class="scroll-mt-24 rounded-2xl border border-[var(--line)] p-4"
+                    class:opacity-75={group.muted}
+                  >
+                    <div class="flex items-start justify-between gap-3">
+                      <div>
+                        <div class="font-semibold">
+                          {component.definition.label}
                         </div>
+                        <div class="muted mt-1 text-xs">
+                          {runtimeState.label}
+                          {component.definition.default_port
+                            ? ` · port ${component.definition.default_port}`
+                            : ''}
+                        </div>
+                        {#if installedVersion || installedRevision}
+                          <div class="muted mt-1 text-xs">
+                            {#if installedVersion}<span
+                                title={'Installed version ' + installedVersion}
+                                >v{installedVersion}</span
+                              >{/if}
+                            {#if installedVersion && installedRevision}
+                              <span class="mx-1">·</span>
+                            {/if}
+                            {#if installedRevision}<span
+                                title={'Installed revision ' +
+                                  installedRevision}
+                                >rev {installedRevision.slice(0, 8)}</span
+                              >{/if}
+                          </div>
+                        {/if}
+                      </div>
+                      <span
+                        class={`status-dot ${runtimeState.state}`}
+                        title={runtimeState.label}
+                      ></span>
+                    </div>
+
+                    {#if component.inspection.problems?.length}
+                      <p class="mt-3 text-xs text-amber-600">
+                        {component.inspection.problems.join(' ')}
+                      </p>
+                    {/if}
+
+                    {#if component.definition.description}
+                      <p class="muted mt-3 text-xs leading-relaxed">
+                        {component.definition.description}
+                      </p>
+                    {/if}
+
+                    {#if component.definition.compute_variants.length > 1}
+                      <label class="mt-4 block text-xs font-semibold">
+                        Compute backend
+                        <select
+                          class="field"
+                          value={selectedCompute(component)}
+                          disabled={busy}
+                          onchange={(event) =>
+                            (compute[component.definition.id] = event
+                              .currentTarget.value as ComputeVariant)}
+                        >
+                          <option value="auto">Automatic</option>
+                          {#each component.definition.compute_variants as variant}
+                            <option value={variant}
+                              >{variant.toUpperCase()}</option
+                            >
+                          {/each}
+                        </select>
+                      </label>
+                      {#if component.definition.id === 'audio_cpp' && component.inspection.resolved?.platform === 'Linux' && selectedCompute(component) === 'cuda'}
+                        <p
+                          class="mt-2 rounded-xl border border-amber-500/40 bg-amber-500/10 p-3 text-xs leading-relaxed text-amber-700 dark:text-amber-300"
+                        >
+                          Pandrator's Linux CUDA archive is a best-effort build
+                          and has not yet been validated on NVIDIA hardware. If
+                          it fails, please
+                          <a
+                            href="https://github.com/lukaszliniewicz/Pandrator/issues/new"
+                            target="_blank"
+                            rel="noreferrer"
+                            class="font-semibold underline decoration-dotted underline-offset-2"
+                            >open an issue</a
+                          >
+                          with Manager diagnostics and the audio.cpp service log.
+                        </p>
+                      {/if}
+                    {/if}
+
+                    {#if component.definition.install_options?.length}
+                      <div class="mt-4 grid gap-3 sm:grid-cols-2">
+                        {#each component.definition.install_options as option}
+                          <label class="block text-xs font-semibold">
+                            {option.label}
+                            <select
+                              class="field"
+                              value={selectedInstallOption(component, option)}
+                              disabled={busy}
+                              onchange={(event) =>
+                                selectInstallOption(
+                                  component,
+                                  option,
+                                  event.currentTarget.value
+                                )}
+                            >
+                              {#each option.choices as choice}
+                                <option
+                                  value={choice.value}
+                                  disabled={!installChoiceAllowed(
+                                    component,
+                                    choice
+                                  )}>{choice.label}</option
+                                >
+                              {/each}
+                            </select>
+                            {#if option.description}
+                              <span
+                                class="muted mt-1 block font-normal leading-relaxed"
+                              >
+                                {option.description}
+                              </span>
+                            {/if}
+                          </label>
+                        {/each}
+                      </div>
+                    {/if}
+
+                    {#if component.definition.id === 'audio_cpp' && component.definition.models?.length}
+                      <fieldset class="mt-4">
+                        <legend class="text-xs font-semibold">
+                          Model packages
+                        </legend>
+                        <p class="muted mt-1 text-xs leading-relaxed">
+                          Install only what you expect to use. You can add or
+                          remove packages later without changing the backend.
+                        </p>
+                        <div class="mt-3 grid gap-2">
+                          {#each component.definition.models as model}
+                            <label
+                              class="flex items-start gap-3 rounded-xl border border-[var(--line)] bg-[var(--paper)] p-3"
+                            >
+                              <input
+                                type="checkbox"
+                                class="mt-1"
+                                checked={selectedModels(component).includes(
+                                  model.id
+                                )}
+                                disabled={busy}
+                                onchange={() =>
+                                  toggleModel(component, model.id)}
+                              />
+                              <span class="min-w-0 flex-1">
+                                <span class="block text-xs font-semibold">
+                                  {model.label}
+                                  {#if model.estimated_download_bytes}
+                                    <span class="muted font-normal">
+                                      · {formatBytes(
+                                        model.estimated_download_bytes
+                                      )}
+                                    </span>
+                                  {/if}
+                                </span>
+                                {#if model.description}
+                                  <span
+                                    class="muted mt-1 block text-xs leading-relaxed"
+                                  >
+                                    {model.description}
+                                  </span>
+                                {/if}
+                                {#if model.license_name}
+                                  <span
+                                    class="muted mt-1 block text-[.68rem] leading-relaxed"
+                                  >
+                                    License:
+                                    {#if model.license_url}
+                                      <a
+                                        href={model.license_url}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        class="underline decoration-dotted underline-offset-2"
+                                        >{model.license_name}</a
+                                      >
+                                    {:else}
+                                      {model.license_name}
+                                    {/if}
+                                    {#if model.usage_note}
+                                      · {model.usage_note}{/if}
+                                  </span>
+                                {/if}
+                              </span>
+                            </label>
+                          {/each}
+                        </div>
+                        {#if !modelSelectionValid(component)}
+                          <p class="mt-2 text-xs font-semibold text-amber-600">
+                            Select at least one model package.
+                          </p>
+                        {/if}
+                      </fieldset>
+                    {/if}
+
+                    <div class="mt-4 flex flex-wrap gap-2">
+                      {#if !installed && !degraded && component.definition.supported_actions.includes('install')}
+                        <button
+                          class="btn btn-sm btn-primary"
+                          disabled={busy || !modelSelectionValid(component)}
+                          onclick={() => createPlan(component, 'install')}
+                        >
+                          <Download size={13} /> Install locally
+                        </button>
+                      {/if}
+                      {#if degraded && component.definition.supported_actions.includes('repair')}
+                        <button
+                          class="btn btn-sm btn-primary"
+                          disabled={busy || !modelSelectionValid(component)}
+                          onclick={() => createPlan(component, 'repair')}
+                        >
+                          <RotateCcw size={13} /> Repair
+                        </button>
+                      {/if}
+                      {#if installed && component.definition.supported_actions.includes('update')}
+                        <button
+                          class="btn btn-sm btn-secondary"
+                          disabled={busy || !modelSelectionValid(component)}
+                          onclick={() => createPlan(component, 'update')}
+                        >
+                          <RefreshCw size={13} />
+                          {configurationChanged(component)
+                            ? 'Apply configuration'
+                            : 'Check/update'}
+                        </button>
+                      {/if}
+                      {#if runtimeState.action === 'start'}
+                        <button
+                          class="btn btn-sm btn-secondary"
+                          disabled={busy}
+                          onclick={() => runtime(component, 'start')}
+                        >
+                          <Play size={13} /> Start
+                        </button>
+                      {/if}
+                      {#if runtimeState.action === 'stop'}
+                        <button
+                          class="btn btn-sm btn-secondary"
+                          disabled={busy}
+                          onclick={() => runtime(component, 'stop')}
+                        >
+                          <Square size={13} /> Stop
+                        </button>
+                      {/if}
+                      {#if (installed || degraded) && component.definition.supported_actions.includes('remove')}
+                        <button
+                          class="btn btn-sm btn-secondary text-red-500"
+                          disabled={busy}
+                          onclick={() => createPlan(component, 'remove')}
+                        >
+                          <Trash2 size={13} /> Uninstall
+                        </button>
                       {/if}
                     </div>
-                    <span
-                      class={`status-dot ${runtimeState.state}`}
-                      title={runtimeState.label}
-                    ></span>
-                  </div>
-
-                  {#if component.inspection.problems?.length}
-                    <p class="mt-3 text-xs text-amber-600">
-                      {component.inspection.problems.join(' ')}
-                    </p>
-                  {/if}
-
-                  {#if component.definition.description}
-                    <p class="muted mt-3 text-xs leading-relaxed">
-                      {component.definition.description}
-                    </p>
-                  {/if}
-
-                  {#if component.definition.compute_variants.length > 1}
-                    <label class="mt-4 block text-xs font-semibold">
-                      Compute backend
-                      <select
-                        class="field"
-                        value={selectedCompute(component)}
-                        disabled={busy}
-                        onchange={(event) =>
-                          (compute[component.definition.id] = event
-                            .currentTarget.value as ComputeVariant)}
-                      >
-                        <option value="auto">Automatic</option>
-                        {#each component.definition.compute_variants as variant}
-                          <option value={variant}
-                            >{variant.toUpperCase()}</option
-                          >
-                        {/each}
-                      </select>
-                    </label>
-                  {/if}
-
-                  {#if component.definition.install_options?.length}
-                    <div class="mt-4 grid gap-3 sm:grid-cols-2">
-                      {#each component.definition.install_options as option}
-                        <label class="block text-xs font-semibold">
-                          {option.label}
-                          <select
-                            class="field"
-                            value={selectedInstallOption(component, option)}
-                            disabled={busy}
-                            onchange={(event) =>
-                              selectInstallOption(
-                                component,
-                                option,
-                                event.currentTarget.value
-                              )}
-                          >
-                            {#each option.choices as choice}
-                              <option
-                                value={choice.value}
-                                disabled={!installChoiceAllowed(
-                                  component,
-                                  choice
-                                )}>{choice.label}</option
-                              >
-                            {/each}
-                          </select>
-                          {#if option.description}
-                            <span
-                              class="muted mt-1 block font-normal leading-relaxed"
-                            >
-                              {option.description}
-                            </span>
-                          {/if}
-                        </label>
-                      {/each}
-                    </div>
-                  {/if}
-
-                  <div class="mt-4 flex flex-wrap gap-2">
-                    {#if !installed && !degraded && component.definition.supported_actions.includes('install')}
-                      <button
-                        class="btn btn-sm btn-primary"
-                        disabled={busy}
-                        onclick={() => createPlan(component, 'install')}
-                      >
-                        <Download size={13} /> Install locally
-                      </button>
-                    {/if}
-                    {#if degraded && component.definition.supported_actions.includes('repair')}
-                      <button
-                        class="btn btn-sm btn-primary"
-                        disabled={busy}
-                        onclick={() => createPlan(component, 'repair')}
-                      >
-                        <RotateCcw size={13} /> Repair
-                      </button>
-                    {/if}
-                    {#if installed && component.definition.supported_actions.includes('update')}
-                      <button
-                        class="btn btn-sm btn-secondary"
-                        disabled={busy}
-                        onclick={() => createPlan(component, 'update')}
-                      >
-                        <RefreshCw size={13} />
-                        {configurationChanged(component)
-                          ? 'Apply configuration'
-                          : 'Check/update'}
-                      </button>
-                    {/if}
-                    {#if runtimeState.action === 'start'}
-                      <button
-                        class="btn btn-sm btn-secondary"
-                        disabled={busy}
-                        onclick={() => runtime(component, 'start')}
-                      >
-                        <Play size={13} /> Start
-                      </button>
-                    {/if}
-                    {#if runtimeState.action === 'stop'}
-                      <button
-                        class="btn btn-sm btn-secondary"
-                        disabled={busy}
-                        onclick={() => runtime(component, 'stop')}
-                      >
-                        <Square size={13} /> Stop
-                      </button>
-                    {/if}
-                    {#if (installed || degraded) && component.definition.supported_actions.includes('remove')}
-                      <button
-                        class="btn btn-sm btn-secondary text-red-500"
-                        disabled={busy}
-                        onclick={() => createPlan(component, 'remove')}
-                      >
-                        <Trash2 size={13} /> Uninstall
-                      </button>
-                    {/if}
-                  </div>
-                </article>
-              {/each}
-            </div>
+                  </article>
+                {/each}
+              </div>
+            {/if}
           </section>{/if}
       {/each}
     </div>

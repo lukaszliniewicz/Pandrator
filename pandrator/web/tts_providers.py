@@ -3,16 +3,21 @@
 from __future__ import annotations
 
 import socket
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from threading import Lock
 from typing import Any, Protocol, runtime_checkable
 from urllib.parse import urlparse
 
+import requests
 from sqlalchemy import select
 
 from pandrator.logic import tts_handler
-from pandrator.logic.tts_provider_profiles import list_tts_provider_profiles
+from pandrator.logic.tts_provider_profiles import (
+    AUDIO_CPP_MODEL_CATALOG,
+    list_tts_provider_profiles,
+)
 from pandrator.runtime import DataPaths
 
 from .credentials import (
@@ -45,11 +50,14 @@ def normalize_service_id(value: object) -> str:
         "qwen3": "kobold_qwen",
         "qwen": "kobold_qwen",
         "kobold_qwen3": "kobold_qwen",
+        "audio.cpp": "audio_cpp",
+        "audio-cpp": "audio_cpp",
+        "audiocpp": "audio_cpp",
         "openai_compatible": "openai_compatible",
     }.get(normalized, normalized)
 
 
-def _dedupe_catalogue_values(values: list[object]) -> list[str]:
+def _dedupe_catalogue_values(values: Iterable[object]) -> list[str]:
     seen: set[str] = set()
     result: list[str] = []
     for value in values:
@@ -57,6 +65,34 @@ def _dedupe_catalogue_values(values: list[object]) -> list[str]:
         if normalized and normalized not in seen:
             seen.add(normalized)
             result.append(normalized)
+    return result
+
+
+def _audio_cpp_static_model_catalog(service: dict[str, Any]) -> list[dict[str, Any]]:
+    """Merge current built-in metadata into configured audio.cpp model rows."""
+
+    builtins = {
+        str(item.get("id") or "").strip(): dict(item)
+        for item in AUDIO_CPP_MODEL_CATALOG
+        if str(item.get("id") or "").strip()
+    }
+    raw_catalog = service.get("model_catalog")
+    configured = (
+        [dict(item) for item in raw_catalog if isinstance(item, dict)]
+        if isinstance(raw_catalog, list)
+        else []
+    )
+    if not configured:
+        configured = [
+            {"id": model_id}
+            for model_id in _dedupe_catalogue_values(service.get("models") or [])
+        ]
+    result: list[dict[str, Any]] = []
+    for item in configured:
+        model_id = str(item.get("id") or "").strip()
+        if not model_id:
+            continue
+        result.append({**builtins.get(model_id, {}), **item, "id": model_id})
     return result
 
 
@@ -403,6 +439,271 @@ class XttsAdapter(LegacyTtsAdapter):
         return result
 
 
+class AudioCppAdapter(LegacyTtsAdapter):
+    """Adapter for a resident, externally managed audio.cpp server."""
+
+    def __init__(self, service_id: str):
+        super().__init__(service_id)
+        self._sessions_guard = Lock()
+        self._sessions: dict[str, requests.Session] = {}
+
+    def _session_for_base_url(self, base_url: str) -> requests.Session:
+        key = tts_handler._audio_cpp_endpoint_key(base_url)
+        with self._sessions_guard:
+            session = self._sessions.get(key)
+            if session is None:
+                session = requests.Session()
+                self._sessions[key] = session
+            return session
+
+    def _session_for(self, settings: dict[str, Any]) -> requests.Session:
+        endpoint, error = tts_handler.resolve_openai_audio_endpoint(settings)
+        if endpoint is None:
+            raise ValueError(error)
+        return self._session_for_base_url(str(endpoint.get("base_url") or ""))
+
+    def synthesize(
+        self,
+        text: str,
+        settings: dict[str, Any],
+        **options: Any,
+    ):
+        options.setdefault("request_session", self._session_for(settings))
+        return super().synthesize(text, settings, **options)
+
+    def capabilities(
+        self,
+        service: dict[str, Any],
+    ) -> TtsCapabilities:
+        del service
+        return TtsCapabilities(
+            dynamic_catalog=True,
+            batch_synthesis=True,
+            streaming_batch=True,
+            default_batch_size=10,
+            max_batch_size=32,
+        )
+
+    def health(self, service: dict[str, Any]) -> TtsHealth:
+        base_url = str(service.get("api_base") or "").strip().rstrip("/")
+        if not base_url:
+            return TtsHealth(False, False, "audio.cpp API base is not configured")
+        try:
+            session = self._session_for_base_url(base_url)
+            with tts_handler._audio_cpp_endpoint_lock_for(base_url):
+                response = session.get(f"{base_url}/health", timeout=2)
+                response.raise_for_status()
+                payload = response.json()
+        except (requests.exceptions.RequestException, ValueError) as error:
+            return TtsHealth(False, False, f"audio.cpp health check failed: {error}")
+        ready = isinstance(payload, dict) and payload.get("status") == "ok"
+        return TtsHealth(
+            ready,
+            ready,
+            "" if ready else "audio.cpp returned an invalid health response",
+        )
+
+    def enrich_catalog(
+        self,
+        service: dict[str, Any],
+        *,
+        api_key: str = "",
+    ) -> dict[str, Any]:
+        base_url = str(service.get("api_base") or "").strip()
+        auth_mode = str(service.get("auth_mode") or "none").strip().lower()
+        headers = (
+            {"Authorization": f"Bearer {api_key}"}
+            if api_key and auth_mode not in {"", "none"}
+            else {}
+        )
+        request_session = self._session_for_base_url(base_url)
+        live_model_catalog = tts_handler.get_audio_cpp_model_catalog(
+            base_url,
+            models_path=str(service.get("models_path") or "/v1/models"),
+            headers=headers,
+            request_session=request_session,
+        )
+        static_catalog = _audio_cpp_static_model_catalog(service)
+        static_by_id = {
+            str(item.get("id") or "").strip(): item
+            for item in static_catalog
+            if str(item.get("id") or "").strip()
+        }
+        catalog_by_id: dict[str, dict[str, Any]] = {}
+        live_model_ids = {
+            str(item.get("id") or "").strip()
+            for item in live_model_catalog
+            if str(item.get("id") or "").strip()
+        }
+        for item in live_model_catalog:
+            model_id = str(item.get("id") or "").strip()
+            if not model_id or not tts_handler._audio_cpp_model_is_supported(item):
+                continue
+            enriched = dict(static_by_id.get(model_id) or {})
+            enriched.update(item)
+            inferred = tts_handler._audio_cpp_model_metadata(model_id, service)
+            for key in ("family", "voice_mode", "experimental"):
+                if key not in enriched and key in inferred:
+                    enriched[key] = inferred[key]
+            catalog_by_id[model_id] = enriched
+        model_catalog = list(catalog_by_id.values())
+        models = list(catalog_by_id)
+        configured_voices = _dedupe_catalogue_values(list(service.get("voices") or []))
+        raw_catalogues = service.get("voice_catalogues")
+        configured_catalogues: dict[str, Any] = (
+            raw_catalogues if isinstance(raw_catalogues, dict) else {}
+        )
+        voice_catalogues: dict[str, list[str]] = {}
+        for model in models:
+            values = [
+                *list(configured_catalogues.get(model) or []),
+                *configured_voices,
+            ]
+            if model in live_model_ids:
+                values.extend(
+                    tts_handler.get_audio_cpp_voice_catalog(
+                        base_url,
+                        model,
+                        voices_path=str(
+                            service.get("voices_path") or "/v1/audio/voices"
+                        ),
+                        headers=headers,
+                        request_session=request_session,
+                    )
+                )
+            voice_catalogues[model] = _dedupe_catalogue_values(values)
+        configured_default = str(service.get("default_model") or "").strip()
+        default_model = (
+            configured_default
+            if configured_default in models
+            else (models[0] if models else "")
+        )
+        configured_voice = str(service.get("default_voice") or "").strip()
+        if default_model and configured_voice:
+            voice_catalogues[default_model] = _dedupe_catalogue_values(
+                [configured_voice, *voice_catalogues.get(default_model, [])]
+            )
+        voices = _dedupe_catalogue_values(
+            [voice for model in models for voice in voice_catalogues[model]]
+        )
+        model_voice_modes = {}
+        for model in models:
+            catalog_item = catalog_by_id.get(model) or {}
+            mode = (
+                str(catalog_item.get("voice_mode") or catalog_item.get("mode") or "")
+                .strip()
+                .lower()
+            )
+            if not mode:
+                mode = str(
+                    tts_handler._audio_cpp_model_metadata(model, service).get(
+                        "voice_mode"
+                    )
+                    or "cloning"
+                )
+            model_voice_modes[model] = mode
+        result: dict[str, Any] = {
+            "models": models,
+            "model_catalog": model_catalog,
+            "voices": voices,
+            "voice_catalogues": voice_catalogues,
+            "model_voice_modes": model_voice_modes,
+            "supports_dynamic_catalog": True,
+            "supports_batch_synthesis": True,
+            "batch_synthesis": {
+                "supported": True,
+                "streaming": True,
+                "protocol": "pandrator-ordered-serial-v1",
+                "default_batch_size": 10,
+                "max_batch_size": 32,
+                "parallelism": 1,
+            },
+        }
+        if default_model:
+            result["default_model"] = default_model
+        if configured_voice:
+            result["default_voice"] = configured_voice
+        return result
+
+    @staticmethod
+    def _batch_key(settings: dict[str, Any]) -> str:
+        endpoint, error = tts_handler.resolve_openai_audio_endpoint(settings)
+        if endpoint is None:
+            raise ValueError(error)
+        if (
+            tts_handler._normalize_custom_adapter(endpoint.get("adapter"))
+            != "audio_cpp"
+        ):
+            raise ValueError("The selected endpoint is not an audio.cpp service.")
+        return tts_handler._audio_cpp_endpoint_key(str(endpoint.get("base_url") or ""))
+
+    def synthesize_batch(
+        self,
+        items: list[TtsBatchItem],
+        *,
+        batch_size: int,
+        **options: Any,
+    ) -> Iterator[TtsBatchResult]:
+        if not items:
+            return
+        endpoint_override = str(options.get("audio_cpp_base_url") or "").strip()
+
+        def endpoint_settings(settings: dict[str, Any]) -> dict[str, Any]:
+            service = str(settings.get("service") or "").strip().lower()
+            if endpoint_override and service in {
+                "audio.cpp",
+                "audio_cpp",
+                "audio-cpp",
+                "audiocpp",
+            }:
+                return {**settings, "audio_cpp_base_url": endpoint_override}
+            return settings
+
+        batch_settings = endpoint_settings(items[0].settings)
+        batch_key = self._batch_key(batch_settings)
+        if any(
+            self._batch_key(endpoint_settings(item.settings)) != batch_key
+            for item in items[1:]
+        ):
+            raise ValueError("Every audio.cpp batch item must use the same endpoint.")
+
+        size = max(1, min(32, int(batch_size or 1)))
+        request_session = self._session_for(batch_settings)
+        with tts_handler.audio_cpp_endpoint_lock(batch_settings):
+            for start in range(0, len(items), size):
+                for item in items[start : start + size]:
+                    try:
+                        audio = self.synthesize(
+                            item.text,
+                            item.settings,
+                            request_session=request_session,
+                            **options,
+                        )
+                        if audio is None:
+                            raise TtsProviderError(
+                                self.service_id,
+                                "synthesize_batch",
+                                "audio.cpp synthesis ended without returning audio.",
+                                retryable=True,
+                            )
+                        yield TtsBatchResult(
+                            id=item.id,
+                            audio=audio,
+                        )
+                    except Exception as error:  # noqa: BLE001 - result boundary
+                        projected = (
+                            error
+                            if isinstance(error, TtsProviderError)
+                            else TtsProviderError(
+                                self.service_id,
+                                "synthesize_batch",
+                                str(error),
+                                retryable=not isinstance(error, ValueError),
+                            )
+                        )
+                        yield TtsBatchResult(id=item.id, error=projected)
+
+
 class KoboldQwenAdapter(LegacyTtsAdapter):
     def capabilities(
         self,
@@ -637,9 +938,7 @@ class ElevenLabsAdapter(LegacyTtsAdapter):
         *,
         api_key: str = "",
     ) -> dict[str, Any]:
-        base_url = str(
-            service.get("api_base") or tts_handler.ELEVENLABS_API_BASE_URL
-        )
+        base_url = str(service.get("api_base") or tts_handler.ELEVENLABS_API_BASE_URL)
         try:
             model_entries = tts_handler.get_elevenlabs_model_catalog(
                 base_url,
@@ -660,8 +959,7 @@ class ElevenLabsAdapter(LegacyTtsAdapter):
             ) from error
         configured_models = _dedupe_catalogue_values(service.get("models") or [])
         models = _dedupe_catalogue_values(
-            configured_models
-            + [str(item.get("id") or "") for item in model_entries]
+            configured_models + [str(item.get("id") or "") for item in model_entries]
         )
         if not models:
             models = [tts_handler.ELEVENLABS_TTS_DEFAULT_MODEL]
@@ -700,6 +998,7 @@ class TtsProviderRegistry:
     """Resolve all provider operations through one typed adapter contract."""
 
     BUILTIN_SERVICE_IDS = (
+        "audio_cpp",
         "xtts",
         "voxcpm",
         "fishs2",
@@ -724,6 +1023,7 @@ class TtsProviderRegistry:
         self.replace(SileroAdapter("silero"))
         self.replace(KoboldQwenAdapter("kobold_qwen"))
         self.replace(ElevenLabsAdapter(tts_handler.ELEVENLABS_PROVIDER))
+        self.replace(AudioCppAdapter(tts_handler.AUDIO_CPP_ADAPTER))
 
     def register(self, adapter: TtsProviderAdapter) -> None:
         service_id = normalize_service_id(adapter.service_id)
@@ -754,11 +1054,19 @@ class TtsProviderRegistry:
         explicit = normalize_service_id(
             settings.get("preview_service_id") or settings.get("service_id")
         )
-        if explicit:
+        if explicit in self._adapters:
             return explicit
         service_name = normalize_service_id(
             settings.get("service") or settings.get("tts_service")
         )
+        if service_name in {"custom", "openai_compatible"}:
+            adapter_id = normalize_service_id(
+                tts_handler.resolve_custom_tts_adapter_id(settings)
+            )
+            if adapter_id in self._adapters:
+                return adapter_id
+        if explicit:
+            return explicit
         return {
             "qwen3_tts": "kobold_qwen",
             "openai_compatible": "openai_compatible",
@@ -817,12 +1125,23 @@ class TtsProviderRegistry:
                 options.get("kobold_qwen_base_url")
                 or tts_handler.KOBOLD_QWEN_API_BASE_URL
             )
+        elif service_id == "audio_cpp":
+            api_base = str(
+                options.get("audio_cpp_base_url") or tts_handler.AUDIO_CPP_API_BASE_URL
+            )
         return self.get(service_id).capabilities(
             {
                 "id": service_id,
                 "api_base": api_base,
                 "supports_voice_cloning": service_id
-                in {"xtts", "voxcpm", "fishs2", "chatterbox", "kobold_qwen"},
+                in {
+                    "audio_cpp",
+                    "xtts",
+                    "voxcpm",
+                    "fishs2",
+                    "chatterbox",
+                    "kobold_qwen",
+                },
             }
         )
 
@@ -916,11 +1235,11 @@ class TtsProviderRegistry:
         self,
         service: dict[str, Any],
     ) -> TtsCapabilities:
-        service_id = normalize_service_id(service.get("id") or service.get("name"))
+        service_id = self._service_adapter_id(service)
         return self.get(service_id).capabilities(service)
 
     def health(self, service: dict[str, Any]) -> TtsHealth:
-        service_id = normalize_service_id(service.get("id") or service.get("name"))
+        service_id = self._service_adapter_id(service)
         try:
             return self.get(service_id).health(service)
         except Exception as error:
@@ -937,7 +1256,7 @@ class TtsProviderRegistry:
         *,
         api_key: str = "",
     ) -> dict[str, Any]:
-        service_id = normalize_service_id(service.get("id") or service.get("name"))
+        service_id = self._service_adapter_id(service)
         try:
             return self.get(service_id).enrich_catalog(
                 service,
@@ -958,6 +1277,12 @@ class TtsProviderRegistry:
                 str(error),
                 retryable=True,
             ) from error
+
+    def _service_adapter_id(self, service: dict[str, Any]) -> str:
+        adapter_id = normalize_service_id(service.get("adapter"))
+        if adapter_id in self._adapters:
+            return adapter_id
+        return normalize_service_id(service.get("id") or service.get("name"))
 
 
 class TtsCatalogueService:
@@ -1244,6 +1569,8 @@ class TtsCatalogueService:
             ),
         )
         for service in services:
+            if normalize_service_id(service.get("adapter")) == "audio_cpp":
+                service["model_catalog"] = _audio_cpp_static_model_catalog(service)
             self._decorate_credentials(service)
             if normalize_service_id(service.get("id") or service.get("name")) == "xtts":
                 capabilities = self.providers.capabilities(service)

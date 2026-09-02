@@ -34,7 +34,15 @@ type ManagerComponent = {
     compute_variants: string[];
     install_options: InstallOption[];
     capabilities: string[];
-    models: string[];
+    models: Array<{
+      id: string;
+      label: string;
+      description?: string;
+      license_name?: string | null;
+      license_url?: string | null;
+      usage_note?: string;
+      estimated_download_bytes?: number | null;
+    }>;
     languages: string[];
     estimated_download_bytes: number;
     estimated_installed_bytes: number;
@@ -484,6 +492,110 @@ test('Pandrator sends selected Qwen and Fish install options to the manager', as
       }
     },
     expected_revision: 7
+  });
+});
+
+test('Pandrator installs selected audio.cpp models and mutes absent compatibility engines', async ({
+  page
+}) => {
+  const audioCpp = component('audio_cpp', 'audio.cpp', 'tts.audio_cpp');
+  audioCpp.desired.present = false;
+  audioCpp.desired.compute = 'auto';
+  audioCpp.desired.options = {};
+  audioCpp.inspection.state = 'absent';
+  audioCpp.inspection.resolved.platform = 'Linux';
+  audioCpp.inspection.resolved.options = {};
+  audioCpp.definition.compute_variants = ['auto', 'cpu', 'vulkan', 'cuda'];
+  audioCpp.definition.models = [
+    {
+      id: 'qwen3_tts_1_7b_base_q8_0',
+      label: 'Qwen3-TTS 1.7B Base Q8_0',
+      description: 'Reference-audio cloning.',
+      license_name: 'Apache-2.0',
+      license_url: 'https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-Base'
+    },
+    {
+      id: 'fireredtts3_base_q8_0',
+      label: 'FireRedTTS3 Base Q8_0',
+      description: 'Experimental multilingual cloning.',
+      license_name: 'Apache-2.0'
+    }
+  ];
+  const legacyQwen = component('qwen_tts', 'Legacy Qwen backend', 'tts.qwen');
+  legacyQwen.desired.present = false;
+  legacyQwen.inspection.state = 'absent';
+
+  const planRequests: Array<Record<string, unknown>> = [];
+  await page.route('**/api/v1/manager/**', async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path === '/api/v1/manager/status') {
+      await fulfillJson(route, {
+        available: true,
+        configured: true,
+        status: { configuration_revision: 9, active_operation_id: null }
+      });
+    } else if (path === '/api/v1/manager/components') {
+      await fulfillJson(route, { items: [audioCpp, legacyQwen] });
+    } else if (path === '/api/v1/manager/services') {
+      await fulfillJson(route, { items: [] });
+    } else if (path === '/api/v1/manager/releases') {
+      await fulfillJson(route, { current: {}, items: [] });
+    } else if (path === '/api/v1/manager/plans') {
+      planRequests.push(request.postDataJSON() as Record<string, unknown>);
+      await fulfillJson(route, {
+        id: 'audio-cpp-plan',
+        digest: 'audio-cpp-digest',
+        kind: 'install',
+        tasks: [],
+        warnings: [],
+        confirmations: [],
+        estimated_download_bytes: 0,
+        estimated_disk_bytes: 0
+      });
+    } else {
+      await fulfillJson(route, {});
+    }
+  });
+
+  await signIn(page);
+  await page.goto('/providers?tab=local');
+
+  const audioCard = page.locator('#component-audio_cpp');
+  await expect(audioCard).toBeVisible();
+  await audioCard.getByLabel('Compute backend').selectOption('cuda');
+  await expect(
+    audioCard.getByText(/Linux CUDA archive is a best-effort build/)
+  ).toBeVisible();
+  await expect(
+    audioCard.getByRole('link', { name: 'open an issue' })
+  ).toHaveAttribute(
+    'href',
+    'https://github.com/lukaszliniewicz/Pandrator/issues/new'
+  );
+  await audioCard.getByLabel('Compute backend').selectOption('auto');
+  await expect(page.locator('#component-qwen_tts')).toHaveCount(0);
+  await page.getByRole('button', { name: /Compatibility backends/ }).click();
+  await expect(page.locator('#component-qwen_tts')).toBeVisible();
+
+  await audioCard
+    .getByRole('checkbox', { name: /FireRedTTS3 Base Q8_0/ })
+    .check();
+  await audioCard.getByRole('button', { name: 'Install locally' }).click();
+  await expect.poll(() => planRequests.length).toBe(1);
+  expect(planRequests[0]).toMatchObject({
+    kind: 'install',
+    desired: {
+      audio_cpp: {
+        present: true,
+        compute: 'auto',
+        options: {
+          models: ['qwen3_tts_1_7b_base_q8_0', 'fireredtts3_base_q8_0'],
+          start_after_install: true
+        }
+      }
+    },
+    expected_revision: 9
   });
 });
 

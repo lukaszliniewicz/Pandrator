@@ -6,6 +6,7 @@ import os
 import sys
 from pathlib import Path
 
+from .components.audiocpp import AUDIO_CPP_PORT
 from .components.runtime_bootstrap import (
     KOKORO_MANIFEST_NAME,
     KOKORO_RUNNER_NAME,
@@ -447,6 +448,26 @@ def component_runtime_spec(
             label="XTTS v2",
             port=8020,
             arguments=("--backend", compute),
+        )
+    if component_id == "audio_cpp":
+        executable = root / ("audiocpp_server.exe" if os.name == "nt" else "audiocpp_server")
+        return ManagedProcessSpec(
+            service_id="tts.audio_cpp",
+            component_id="audio_cpp",
+            label="audio.cpp",
+            executable=str(executable),
+            arguments=("--config", "server.json", "--no-ui"),
+            cwd=str(root),
+            environment=common_environment,
+            ports=(AUDIO_CPP_PORT,),
+            readiness=HealthProbeSpec(
+                kind="http",
+                url=f"http://127.0.0.1:{AUDIO_CPP_PORT}/health",
+                expected_json={"status": "ok"},
+                timeout_seconds=3,
+            ),
+            startup_timeout_seconds=30 * 60,
+            restart=RestartPolicy(maximum_restarts=3),
         )
     if component_id == "fish_speech":
         fish_quantization = str(quantization or "q6_k").strip().lower()

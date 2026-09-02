@@ -19,6 +19,13 @@ from ..models import (
     ResolvedComponentState,
     TaskSpec,
 )
+from .audiocpp import (
+    AUDIO_CPP_PORT,
+    AUDIO_CPP_VERSION,
+    SUPPORTED_MODEL_IDS,
+    resolve_assets,
+    source_markers_for,
+)
 from .catalog import presentation_for
 from .crispasr import resolve_asset
 from .host import resolve_auto_compute, vulkan_requires_quantized_models
@@ -29,6 +36,14 @@ from .slots import active_component_metadata, active_component_path
 class MarkerComponentDriver:
     driver_id = "marker"
 
+    @staticmethod
+    def inspection_source_markers(
+        context: ManagerContext,
+        definition: ComponentDefinition,
+    ) -> tuple[str, ...]:
+        del context
+        return definition.source_markers
+
     def inspect(
         self,
         context: ManagerContext,
@@ -36,9 +51,7 @@ class MarkerComponentDriver:
         desired: DesiredComponentState | None,
     ) -> ComponentInspection:
         supported_systems = {value.casefold() for value in definition.supported_systems}
-        supported_architectures = {
-            value.casefold() for value in definition.supported_architectures
-        }
+        supported_architectures = {value.casefold() for value in definition.supported_architectures}
         if (
             context.system.casefold() not in supported_systems
             or context.architecture.casefold() not in supported_architectures
@@ -55,35 +68,25 @@ class MarkerComponentDriver:
 
         active = active_component_path(context.layout, definition.id)
         active_metadata = active_component_metadata(context.layout, definition.id)
-        pointer_revision = (
-            active_metadata.get("revision")
-            if active_metadata is not None
-            else None
-        )
+        pointer_revision = active_metadata.get("revision") if active_metadata is not None else None
         pointer_version = (
             active_metadata.get("version")
             if active_metadata is not None and pointer_revision is not None
             else None
         )
         pointer_revision = pointer_revision or (
-            active_metadata.get("version")
-            if active_metadata is not None
-            else None
+            active_metadata.get("version") if active_metadata is not None else None
         )
+        source_markers = self.inspection_source_markers(context, definition)
         active_evidence = tuple(
             f"slot:{marker}"
-            for marker in definition.source_markers
+            for marker in source_markers
             if active is not None and (active / marker).exists()
         )
         legacy_evidence = tuple(
-            marker for marker in definition.markers
-            if (context.layout.root / marker).exists()
+            marker for marker in definition.markers if (context.layout.root / marker).exists()
         )
-        if (
-            active is not None
-            and definition.source_markers
-            and len(active_evidence) == len(definition.source_markers)
-        ):
+        if active is not None and source_markers and len(active_evidence) == len(source_markers):
             evidence = active_evidence
             state = ComponentState.PRESENT
             problems = ()
@@ -157,9 +160,7 @@ class MarkerComponentDriver:
         quantization = desired.quantization
         for option in definition.install_options:
             value = (
-                quantization
-                if option.state_field == "quantization"
-                else options.get(option.key)
+                quantization if option.state_field == "quantization" else options.get(option.key)
             )
             selected_value = str(value or option.default)
             if definition.id == "qwen_tts" and option.key == "initial_model":
@@ -181,8 +182,7 @@ class MarkerComponentDriver:
             )
             if selected is None:
                 raise ValueError(
-                    f"{definition.label} does not support {option.label} value "
-                    f"{value!r}."
+                    f"{definition.label} does not support {option.label} value {value!r}."
                 )
             for dependency, allowed in selected.requires.items():
                 if selected_values.get(dependency) not in allowed:
@@ -236,12 +236,12 @@ class MarkerComponentDriver:
             # tasks would multiply both the plan total and disk preflight.
             estimated_download_bytes=(
                 definition.estimated_download_bytes or 0
-                if kind in {"stage_component", "stage_crispasr"}
+                if kind in {"stage_component", "stage_crispasr", "stage_audio_cpp"}
                 else 0
             ),
             estimated_disk_bytes=(
                 definition.estimated_installed_bytes or 0
-                if kind in {"stage_component", "stage_crispasr"}
+                if kind in {"stage_component", "stage_crispasr", "stage_audio_cpp"}
                 else 0
             ),
             inputs=inputs or {},
@@ -348,9 +348,7 @@ class MarkerComponentDriver:
             f"Stop {definition.label}",
             kind="stop_service",
         )
-        first = install[0].model_copy(
-            update={"dependencies": (*install[0].dependencies, stop.id)}
-        )
+        first = install[0].model_copy(update={"dependencies": (*install[0].dependencies, stop.id)})
         return stop, first, *install[1:]
 
     def plan_remove(
@@ -474,6 +472,126 @@ class CrispASRComponentDriver(MarkerComponentDriver):
         return stage, verify, activate
 
 
+class AudioCppComponentDriver(MarkerComponentDriver):
+    """Install the pinned audio.cpp runtime and selected model packages."""
+
+    driver_id = "audio_cpp"
+
+    @staticmethod
+    def inspection_source_markers(
+        context: ManagerContext,
+        definition: ComponentDefinition,
+    ) -> tuple[str, ...]:
+        del definition
+        return source_markers_for(context.system)
+
+    def resolve(
+        self,
+        context: ManagerContext,
+        definition: ComponentDefinition,
+        desired: DesiredComponentState,
+    ) -> ResolvedComponentState:
+        resolved = super().resolve(context, definition, desired)
+        models = desired.options.get("models")
+        if models is None:
+            raise ValueError("audio.cpp option 'models' must be a nonempty list.")
+        elif not isinstance(models, list):
+            raise ValueError("audio.cpp option 'models' must be a nonempty list.")
+        else:
+            selected = list(models)
+        if not selected:
+            raise ValueError("audio.cpp option 'models' must be a nonempty list.")
+        unsupported = [
+            value
+            for value in selected
+            if not isinstance(value, str) or value not in SUPPORTED_MODEL_IDS
+        ]
+        if unsupported:
+            supported = ", ".join(SUPPORTED_MODEL_IDS)
+            raise ValueError(
+                "audio.cpp only supports these model package IDs: "
+                f"{supported}; unsupported selection: {unsupported!r}."
+            )
+        if len(selected) != len(set(selected)):
+            raise ValueError("audio.cpp model package IDs must be unique.")
+        resolved = resolved.model_copy(update={"options": {**resolved.options, "models": selected}})
+        # Resolve the artifact separately so unsupported platform/backend pairs
+        # fail during plan construction, before any task can be executed.
+        resolve_assets(context, desired.compute, definition)
+        return resolved
+
+    def plan_install(
+        self,
+        context: ManagerContext,
+        definition: ComponentDefinition,
+        desired: DesiredComponentState,
+        inspection: ComponentInspection,
+    ) -> tuple[TaskSpec, ...]:
+        del inspection
+        resolved = self.resolve(context, definition, desired)
+        assets, effective = resolve_assets(context, desired.compute, definition)
+        stage = self._task(
+            definition,
+            "stage",
+            f"Download, install, and stage {definition.label}",
+            kind="stage_audio_cpp",
+            inputs={
+                "assets": [
+                    {
+                        "url": asset.url,
+                        "filename": asset.name,
+                        "sha256": asset.sha256,
+                        "runtime_variant": asset.runtime_variant.value,
+                        "kind": asset.kind,
+                    }
+                    for asset in assets
+                ],
+                "version": AUDIO_CPP_VERSION,
+                "requested_compute": desired.compute.value,
+                "effective_compute": effective.value,
+                "models": list(resolved.options["models"]),
+                "offline": bool(desired.options.get("offline")),
+                "resolved": resolved.model_dump(mode="json"),
+            },
+            expected_outputs=definition.owned_paths,
+        )
+        model_sizes = {
+            model.id: int(model.estimated_download_bytes or 0) for model in definition.models
+        }
+        selected_model_bytes = sum(model_sizes[model_id] for model_id in resolved.options["models"])
+        runtime_allowance = 1024 * 1024 * 1024
+        stage = stage.model_copy(
+            update={
+                "estimated_download_bytes": selected_model_bytes + runtime_allowance,
+                "estimated_disk_bytes": int(selected_model_bytes * 1.25) + runtime_allowance,
+            }
+        )
+        verify = self._task(
+            definition,
+            "verify",
+            f"Verify {definition.label}",
+            kind="verify_component",
+            dependencies=(stage.id,),
+            expected_outputs=source_markers_for(context.system),
+        )
+        activate = self._task(
+            definition,
+            "activate",
+            f"Activate {definition.label}",
+            kind="activate_component",
+            dependencies=(verify.id,),
+            expected_outputs=definition.owned_paths,
+        )
+        validate = self._task(
+            definition,
+            "validate-service",
+            f"Validate {definition.label} service",
+            kind="validate_service",
+            dependencies=(activate.id,),
+        )
+        return stage, verify, activate, validate
+
+
 def _component(
     component_id: str,
     label: str,
@@ -489,6 +607,13 @@ def _component(
     dependencies: tuple[str, ...] = (),
     required_runtime_tools: tuple[str, ...] = (),
     driver: str = "marker",
+    supported_systems: tuple[str, ...] = ("Windows", "Linux"),
+    supported_architectures: tuple[str, ...] = (
+        "AMD64",
+        "x86_64",
+        "arm64",
+        "aarch64",
+    ),
     supported_actions: tuple[str, ...] = (
         "install",
         "update",
@@ -511,6 +636,8 @@ def _component(
         models=presentation.models,
         install_options=presentation.install_options,
         driver=driver,
+        supported_systems=supported_systems,
+        supported_architectures=supported_architectures,
         compute_variants=compute,
         dependencies=dependencies,
         resource_locks=(f"component:{component_id}",),
@@ -541,6 +668,18 @@ BUILTIN_COMPONENTS: tuple[ComponentDefinition, ...] = (
         compute=(ComputeVariant.CPU,),
         repo_url="https://github.com/lukaszliniewicz/Pandrator.git",
         required_runtime_tools=("pixi",),
+    ),
+    _component(
+        "audio_cpp",
+        "audio.cpp",
+        path="services/audio_cpp",
+        markers=(),
+        source_markers=("audiocpp_server", "tools/model_manager_v2.py", "server.json"),
+        compute=(ComputeVariant.CPU, ComputeVariant.VULKAN, ComputeVariant.CUDA),
+        port=AUDIO_CPP_PORT,
+        service_key="tts.audio_cpp",
+        driver="audio_cpp",
+        supported_architectures=("AMD64", "amd64", "x86_64"),
     ),
     _component(
         "xtts",
@@ -713,5 +852,5 @@ BUILTIN_COMPONENTS: tuple[ComponentDefinition, ...] = (
 def builtin_registry() -> ComponentRegistry:
     return ComponentRegistry(
         definitions=BUILTIN_COMPONENTS,
-        drivers=(MarkerComponentDriver(),),
+        drivers=(MarkerComponentDriver(), AudioCppComponentDriver()),
     )

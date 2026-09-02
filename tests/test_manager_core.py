@@ -27,6 +27,7 @@ from pandrator_manager.cli import main as manager_cli_main
 from pandrator_manager.components import ComponentRegistry, builtin_registry
 from pandrator_manager.components.builtin import (
     BUILTIN_COMPONENTS,
+    AudioCppComponentDriver,
     MarkerComponentDriver,
 )
 from pandrator_manager.components.host import resolve_auto_compute
@@ -101,9 +102,13 @@ class ManagerMcpConfigCliTests(unittest.TestCase):
     def test_mcp_config_requires_explicit_credential_acknowledgement(self):
         output = StringIO()
         error = StringIO()
-        with mock.patch(
-            "pandrator_manager.cli.ManagerClient.ensure_running"
-        ) as ensure_running, redirect_stdout(output), redirect_stderr(error):
+        with (
+            mock.patch(
+                "pandrator_manager.cli.ManagerClient.ensure_running"
+            ) as ensure_running,
+            redirect_stdout(output),
+            redirect_stderr(error),
+        ):
             result = manager_cli_main(["mcp-config", "codex"])
 
         self.assertEqual(2, result)
@@ -124,19 +129,25 @@ class ManagerMcpConfigCliTests(unittest.TestCase):
                 stderr="",
             )
             output = StringIO()
-            with mock.patch(
-                "pandrator_manager.cli.ManagerClient.ensure_running",
-                return_value=mock.Mock(layout=layout),
-            ), mock.patch(
-                "pandrator_manager.cli.runtime_python",
-                return_value=runtime,
-            ), mock.patch(
-                "pandrator_manager.cli.application_root",
-                return_value=Path(directory),
-            ), mock.patch(
-                "pandrator_manager.cli.subprocess.run",
-                return_value=completed,
-            ) as run, redirect_stdout(output):
+            with (
+                mock.patch(
+                    "pandrator_manager.cli.ManagerClient.ensure_running",
+                    return_value=mock.Mock(layout=layout),
+                ),
+                mock.patch(
+                    "pandrator_manager.cli.runtime_python",
+                    return_value=runtime,
+                ),
+                mock.patch(
+                    "pandrator_manager.cli.application_root",
+                    return_value=Path(directory),
+                ),
+                mock.patch(
+                    "pandrator_manager.cli.subprocess.run",
+                    return_value=completed,
+                ) as run,
+                redirect_stdout(output),
+            ):
                 result = manager_cli_main(
                     [
                         "--workspace",
@@ -161,13 +172,17 @@ class ManagerMcpConfigCliTests(unittest.TestCase):
             layout.mcp_configuration.parent.mkdir(parents=True)
             layout.mcp_configuration.write_text("{}", encoding="utf-8")
             source = Path(directory) / "Downloads"
-            with mock.patch(
-                "pandrator_manager.cli.ManagerClient.ensure_running",
-                return_value=mock.Mock(layout=layout),
-            ), mock.patch(
-                "pandrator_manager.cli._run_application_mcp",
-                return_value='{"saved": true}\n',
-            ) as run, redirect_stdout(StringIO()):
+            with (
+                mock.patch(
+                    "pandrator_manager.cli.ManagerClient.ensure_running",
+                    return_value=mock.Mock(layout=layout),
+                ),
+                mock.patch(
+                    "pandrator_manager.cli._run_application_mcp",
+                    return_value='{"saved": true}\n',
+                ) as run,
+                redirect_stdout(StringIO()),
+            ):
                 result = manager_cli_main(
                     [
                         "--workspace",
@@ -199,19 +214,23 @@ class ManagerMcpConfigCliTests(unittest.TestCase):
             layout.mcp_configuration.parent.mkdir(parents=True)
             layout.mcp_configuration.write_text("{}", encoding="utf-8")
             output = StringIO()
-            with mock.patch(
-                "pandrator_manager.cli.ManagerClient.ensure_running",
-                return_value=mock.Mock(layout=layout),
-            ), mock.patch(
-                "pandrator_manager.cli._run_application_mcp",
-                side_effect=(
-                    '{"source_roots": [{"name": "downloads", "path": "/input"}]}',
-                    (
-                        '{"targets": [{"name": "managed-local", '
-                        '"local_output_root_configured": true}]}'
+            with (
+                mock.patch(
+                    "pandrator_manager.cli.ManagerClient.ensure_running",
+                    return_value=mock.Mock(layout=layout),
+                ),
+                mock.patch(
+                    "pandrator_manager.cli._run_application_mcp",
+                    side_effect=(
+                        '{"source_roots": [{"name": "downloads", "path": "/input"}]}',
+                        (
+                            '{"targets": [{"name": "managed-local", '
+                            '"local_output_root_configured": true}]}'
+                        ),
                     ),
                 ),
-            ), redirect_stdout(output):
+                redirect_stdout(output),
+            ):
                 result = manager_cli_main(
                     [
                         "--workspace",
@@ -381,20 +400,24 @@ class RegistryAndPlanningTests(unittest.TestCase):
             architecture="AMD64",
             environment={"SystemRoot": r"C:\Windows"},
         )
-        with mock.patch(
-            "pandrator_manager.components.host._graphics_descriptions",
-            return_value=(
-                (
-                    "AMD Radeon(TM) Vega 8 Graphics "
-                    r"PCI\VEN_1002&DEV_15DD"
+        with (
+            mock.patch(
+                "pandrator_manager.components.host._graphics_descriptions",
+                return_value=(
+                    (
+                        "AMD Radeon(TM) Vega 8 Graphics "
+                        r"PCI\VEN_1002&DEV_15DD"
+                    ),
                 ),
             ),
-        ), mock.patch(
-            "pandrator_manager.components.host.shutil.which",
-            return_value=None,
-        ), mock.patch(
-            "pandrator_manager.components.host.Path.is_file",
-            return_value=True,
+            mock.patch(
+                "pandrator_manager.components.host.shutil.which",
+                return_value=None,
+            ),
+            mock.patch(
+                "pandrator_manager.components.host.Path.is_file",
+                return_value=True,
+            ),
         ):
             resolved = resolve_auto_compute(context, definition)
 
@@ -408,24 +431,28 @@ class RegistryAndPlanningTests(unittest.TestCase):
             architecture="x86_64",
             environment={},
         )
-        with mock.patch(
-            "pandrator_manager.components.host._graphics_descriptions",
-            return_value=(
-                (
-                    "03:00.0 VGA compatible controller: Advanced Micro Devices, Inc. "
-                    "[AMD/ATI] Ellesmere [Radeon RX 470/480/570/570X/580/580X/590]"
-                ),
-                (
-                    "03:00.1 Audio device: Advanced Micro Devices, Inc. [AMD/ATI] "
-                    "Ellesmere HDMI Audio"
+        with (
+            mock.patch(
+                "pandrator_manager.components.host._graphics_descriptions",
+                return_value=(
+                    (
+                        "03:00.0 VGA compatible controller: Advanced Micro Devices, Inc. "
+                        "[AMD/ATI] Ellesmere [Radeon RX 470/480/570/570X/580/580X/590]"
+                    ),
+                    (
+                        "03:00.1 Audio device: Advanced Micro Devices, Inc. [AMD/ATI] "
+                        "Ellesmere HDMI Audio"
+                    ),
                 ),
             ),
-        ), mock.patch(
-            "pandrator_manager.components.host.shutil.which",
-            return_value=None,
-        ), mock.patch(
-            "pandrator_manager.components.host.ctypes.util.find_library",
-            return_value="libvulkan.so.1",
+            mock.patch(
+                "pandrator_manager.components.host.shutil.which",
+                return_value=None,
+            ),
+            mock.patch(
+                "pandrator_manager.components.host.ctypes.util.find_library",
+                return_value="libvulkan.so.1",
+            ),
         ):
             resolved = resolve_auto_compute(context, definition)
 
@@ -451,15 +478,19 @@ class RegistryAndPlanningTests(unittest.TestCase):
                 "Ellesmere HDMI Audio"
             ),
         )
-        with mock.patch(
-            "pandrator_manager.components.host._graphics_descriptions",
-            return_value=descriptions,
-        ), mock.patch(
-            "pandrator_manager.components.host.shutil.which",
-            return_value=None,
-        ), mock.patch(
-            "pandrator_manager.components.host.ctypes.util.find_library",
-            return_value="libvulkan.so.1",
+        with (
+            mock.patch(
+                "pandrator_manager.components.host._graphics_descriptions",
+                return_value=descriptions,
+            ),
+            mock.patch(
+                "pandrator_manager.components.host.shutil.which",
+                return_value=None,
+            ),
+            mock.patch(
+                "pandrator_manager.components.host.ctypes.util.find_library",
+                return_value="libvulkan.so.1",
+            ),
         ):
             q8 = driver.resolve(
                 context,
@@ -485,8 +516,7 @@ class RegistryAndPlanningTests(unittest.TestCase):
         registry = builtin_registry()
         qwen = registry.definition("qwen_tts")
         qwen_initial = next(
-            option for option in qwen.install_options
-            if option.key == "initial_model"
+            option for option in qwen.install_options if option.key == "initial_model"
         )
         self.assertEqual(
             ["base", "customvoice"],
@@ -495,8 +525,7 @@ class RegistryAndPlanningTests(unittest.TestCase):
 
         fish = registry.definition("fish_speech")
         fish_quantization = next(
-            option for option in fish.install_options
-            if option.key == "quantization"
+            option for option in fish.install_options if option.key == "quantization"
         )
         self.assertIn(
             "q3_k",
@@ -557,12 +586,7 @@ class RegistryAndPlanningTests(unittest.TestCase):
             layout = WorkspaceLayout.from_value(directory)
             layout.ensure_base_directories()
             for component_id in ("qwen_tts", "fish_speech"):
-                slot = (
-                    layout.services
-                    / component_id
-                    / "versions"
-                    / "fixture"
-                )
+                slot = layout.services / component_id / "versions" / "fixture"
                 slot.mkdir(parents=True)
                 (slot / "pyproject.toml").write_text("", encoding="utf-8")
                 (layout.services / component_id / "current.json").write_text(
@@ -622,18 +646,22 @@ class RegistryAndPlanningTests(unittest.TestCase):
         def executable(name):
             return "/usr/bin/rocminfo" if name == "rocminfo" else None
 
-        with mock.patch(
-            "pandrator_manager.components.host.shutil.which",
-            side_effect=executable,
-        ), mock.patch(
-            "pandrator_manager.components.host.ctypes.util.find_library",
-            return_value=None,
-        ), mock.patch(
-            "pandrator_manager.components.host.subprocess.run",
-            return_value=subprocess.CompletedProcess(
-                ["/usr/bin/rocminfo"],
-                0,
-                stdout="  Name:                    gfx803\n",
+        with (
+            mock.patch(
+                "pandrator_manager.components.host.shutil.which",
+                side_effect=executable,
+            ),
+            mock.patch(
+                "pandrator_manager.components.host.ctypes.util.find_library",
+                return_value=None,
+            ),
+            mock.patch(
+                "pandrator_manager.components.host.subprocess.run",
+                return_value=subprocess.CompletedProcess(
+                    ["/usr/bin/rocminfo"],
+                    0,
+                    stdout="  Name:                    gfx803\n",
+                ),
             ),
         ):
             resolved = resolve_auto_compute(context, definition)
@@ -652,18 +680,22 @@ class RegistryAndPlanningTests(unittest.TestCase):
         def executable(name):
             return "/usr/bin/rocminfo" if name == "rocminfo" else None
 
-        with mock.patch(
-            "pandrator_manager.components.host.shutil.which",
-            side_effect=executable,
-        ), mock.patch(
-            "pandrator_manager.components.host.ctypes.util.find_library",
-            return_value=None,
-        ), mock.patch(
-            "pandrator_manager.components.host.subprocess.run",
-            return_value=subprocess.CompletedProcess(
-                ["/usr/bin/rocminfo"],
-                0,
-                stdout="  Name:                    gfx1100\n",
+        with (
+            mock.patch(
+                "pandrator_manager.components.host.shutil.which",
+                side_effect=executable,
+            ),
+            mock.patch(
+                "pandrator_manager.components.host.ctypes.util.find_library",
+                return_value=None,
+            ),
+            mock.patch(
+                "pandrator_manager.components.host.subprocess.run",
+                return_value=subprocess.CompletedProcess(
+                    ["/usr/bin/rocminfo"],
+                    0,
+                    stdout="  Name:                    gfx1100\n",
+                ),
             ),
         ):
             resolved = resolve_auto_compute(context, definition)
@@ -672,7 +704,8 @@ class RegistryAndPlanningTests(unittest.TestCase):
 
     def test_builtin_registry_has_stable_components_and_unique_runtime_ownership(self):
         definitions = builtin_registry().definitions()
-        self.assertEqual(len(definitions), 13)
+        self.assertEqual(len(definitions), 14)
+        self.assertIn("audio_cpp", {definition.id for definition in definitions})
         self.assertIn("fish_speech", {definition.id for definition in definitions})
         ports = [
             definition.default_port
@@ -786,13 +819,11 @@ class RegistryAndPlanningTests(unittest.TestCase):
                 directory,
                 registry=ComponentRegistry(
                     definitions,
-                    (MarkerComponentDriver(),),
+                    (MarkerComponentDriver(), AudioCppComponentDriver()),
                 ),
             )
             desired = {
-                "xtts_finetuning": DesiredComponentState(
-                    compute=ComputeVariant.CPU
-                )
+                "xtts_finetuning": DesiredComponentState(compute=ComputeVariant.CPU)
             }
             plan = application.plan(
                 kind=OperationKind.INSTALL,
@@ -841,12 +872,8 @@ class RegistryAndPlanningTests(unittest.TestCase):
     def test_private_network_candidates_prefer_active_private_ipv4_interfaces(self):
         addresses = {
             "lo": [mock.Mock(family=socket.AF_INET, address="127.0.0.1")],
-            "ethernet": [
-                mock.Mock(family=socket.AF_INET, address="192.168.20.14")
-            ],
-            "offline": [
-                mock.Mock(family=socket.AF_INET, address="10.10.10.10")
-            ],
+            "ethernet": [mock.Mock(family=socket.AF_INET, address="192.168.20.14")],
+            "offline": [mock.Mock(family=socket.AF_INET, address="10.10.10.10")],
         }
         stats = {
             "lo": mock.Mock(isup=True),
@@ -903,26 +930,25 @@ class RegistryAndPlanningTests(unittest.TestCase):
                 application.plan(
                     kind=OperationKind.INSTALL,
                     desired={
-                        "silero": DesiredComponentState(
-                            options={"offline": True}
-                        )
+                        "silero": DesiredComponentState(options={"offline": True})
                     },
                 )
             self.assertEqual(raised.exception.code, "preflight_failed")
             checks = (raised.exception.details or {}).get("checks", [])
-            self.assertTrue(
-                any(check["code"] == "offline.silero" for check in checks)
-            )
+            self.assertTrue(any(check["code"] == "offline.silero" for check in checks))
 
     def test_preflight_rejects_an_explicit_unavailable_compute_variant(self):
         with tempfile.TemporaryDirectory() as directory:
             application = create_application(directory)
-            with mock.patch(
-                "pandrator_manager.preflight.require_compute_available",
-                side_effect=ValueError(
-                    "Fish Speech cannot use CUDA: no NVIDIA runtime was detected."
+            with (
+                mock.patch(
+                    "pandrator_manager.preflight.require_compute_available",
+                    side_effect=ValueError(
+                        "Fish Speech cannot use CUDA: no NVIDIA runtime was detected."
+                    ),
                 ),
-            ), self.assertRaises(ManagerError) as raised:
+                self.assertRaises(ManagerError) as raised,
+            ):
                 application.plan(
                     kind=OperationKind.INSTALL,
                     desired={
@@ -935,9 +961,7 @@ class RegistryAndPlanningTests(unittest.TestCase):
         self.assertEqual("preflight_failed", raised.exception.code)
         checks = (raised.exception.details or {}).get("checks", [])
         compute = next(
-            check
-            for check in checks
-            if check["code"] == "compute.fish_speech"
+            check for check in checks if check["code"] == "compute.fish_speech"
         )
         self.assertEqual("error", compute["status"])
         self.assertEqual("cuda", compute["details"]["compute"])
@@ -997,9 +1021,7 @@ class RegistryAndPlanningTests(unittest.TestCase):
 
     def test_service_update_stops_before_replacement_and_validates_last(self):
         with tempfile.TemporaryDirectory() as directory:
-            context = ManagerContext(
-                layout=WorkspaceLayout.from_value(directory)
-            )
+            context = ManagerContext(layout=WorkspaceLayout.from_value(directory))
             definition = ComponentDefinition(
                 id="fixture",
                 label="Fixture",
@@ -1171,12 +1193,7 @@ class LegacyImporterTests(unittest.TestCase):
                 b"audio",
             )
             self.assertTrue((output / "chapter.wav").is_file())
-            conflict = (
-                layout.data
-                / "legacy-conflicts"
-                / "workspace"
-                / "config.json"
-            )
+            conflict = layout.data / "legacy-conflicts" / "workspace" / "config.json"
             self.assertEqual(conflict.read_text(encoding="utf-8"), '{"legacy": true}')
             self.assertEqual(len(result["conflicts"]), 1)
 
@@ -1212,7 +1229,9 @@ class LegacyImporterTests(unittest.TestCase):
                 second.as_dict(),
             )
 
-    def test_legacy_import_discovers_disabled_components_and_validated_shared_paths(self):
+    def test_legacy_import_discovers_disabled_components_and_validated_shared_paths(
+        self,
+    ):
         with tempfile.TemporaryDirectory() as directory:
             layout = WorkspaceLayout.from_value(directory)
             layout.root.mkdir()
@@ -1222,9 +1241,7 @@ class LegacyImporterTests(unittest.TestCase):
             (fish / "pyproject.toml").write_text("", encoding="utf-8")
             pixi = layout.root / ".pixi-home" / "bin"
             pixi.mkdir(parents=True)
-            (pixi / ("pixi.exe" if os.name == "nt" else "pixi")).write_bytes(
-                b"pixi"
-            )
+            (pixi / ("pixi.exe" if os.name == "nt" else "pixi")).write_bytes(b"pixi")
             (layout.root / ".pixi-cache").mkdir()
             (layout.root / "config.json").write_text(
                 json.dumps({"fishs2_support": False}),
@@ -1259,12 +1276,7 @@ class LegacyImporterTests(unittest.TestCase):
 
             self.assertIn("fish_speech", report.positively_identified)
             self.assertIn("fish_speech", report.desired)
-            self.assertTrue(
-                any(
-                    "disabled" in warning
-                    for warning in report.warnings
-                )
-            )
+            self.assertTrue(any("disabled" in warning for warning in report.warnings))
             owned = {Path(item.path).name for item in report.ownership}
             self.assertIn("fishs2-cpp-fastapi", owned)
             self.assertIn(".pixi-home", owned)
@@ -1286,8 +1298,7 @@ class LegacyImporterTests(unittest.TestCase):
             current = importer.inspect()
             importer.apply(current, confirmed=True)
             records = {
-                Path(record["path"]).name: record
-                for record in store.owned_paths()
+                Path(record["path"]).name: record for record in store.owned_paths()
             }
             self.assertEqual(
                 records["fishs2-cpp-fastapi"]["owner_id"],
@@ -1342,9 +1353,7 @@ class LegacyImporterTests(unittest.TestCase):
                 sqlite3.connect(layout.data / "pandrator.sqlite3")
             ) as database:
                 self.assertEqual(
-                    database.execute(
-                        "SELECT value FROM fixture"
-                    ).fetchone(),
+                    database.execute("SELECT value FROM fixture").fetchone(),
                     ("legacy",),
                 )
             self.assertIn(
@@ -1352,15 +1361,11 @@ class LegacyImporterTests(unittest.TestCase):
                 imported["data_reconciliation"]["created"],
             )
             self.assertEqual(
-                (layout.data / "migration-web-v1.json").read_text(
-                    encoding="utf-8"
-                ),
+                (layout.data / "migration-web-v1.json").read_text(encoding="utf-8"),
                 '{"version":1,"status":"complete"}',
             )
             self.assertEqual(
-                (layout.data / ".flask-secret").read_text(
-                    encoding="utf-8"
-                ),
+                (layout.data / ".flask-secret").read_text(encoding="utf-8"),
                 "existing-cookie-secret",
             )
             self.assertEqual(
@@ -1565,12 +1570,7 @@ class CoreAdapterTests(unittest.TestCase):
                 sha256=hashlib.sha256(payload).hexdigest(),
                 member="pixi.exe",
             )
-            cache = (
-                layout.cache
-                / "artifacts"
-                / f"pixi-{PIXI_VERSION}"
-                / asset.filename
-            )
+            cache = layout.cache / "artifacts" / f"pixi-{PIXI_VERSION}" / asset.filename
             cache.parent.mkdir(parents=True)
             cache.write_bytes(payload)
             runner = mock.Mock()
@@ -1625,12 +1625,7 @@ class CoreAdapterTests(unittest.TestCase):
                 sha256=hashlib.sha256(payload).hexdigest(),
                 member="pixi.exe",
             )
-            cache = (
-                layout.cache
-                / "artifacts"
-                / f"pixi-{PIXI_VERSION}"
-                / asset.filename
-            )
+            cache = layout.cache / "artifacts" / f"pixi-{PIXI_VERSION}" / asset.filename
             cache.parent.mkdir(parents=True)
             cache.write_bytes(payload)
             context = ManagerContext(

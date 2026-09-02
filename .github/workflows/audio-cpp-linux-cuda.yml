@@ -1,0 +1,367 @@
+name: audio.cpp Linux CUDA archive
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  UPSTREAM_REPOSITORY: https://github.com/0xShug0/audio.cpp.git
+  UPSTREAM_COMMIT: c4dde1c2608a97f430f63f486f2912f531cb5e02
+  CUDA_IMAGE: nvidia/cuda:12.4.1-devel-ubuntu22.04@sha256:da6791294b0b04d7e65d87b7451d6f2390b4d36225ab0701ee7dfec5769829f5
+  CUDA_ARCHITECTURES: "75;80;86;89;90"
+  CMAKE_ARCHIVE_URL: https://github.com/Kitware/CMake/releases/download/v3.31.6/cmake-3.31.6-linux-x86_64.tar.gz
+  CMAKE_ARCHIVE_SHA256: 5a1133ff103c71eb5120e2cc3de922733e7d8a26a98ae716397e8676adb367bf
+  PACKAGE_NAME: audio.cpp-v0.7.1-linux-x86_64-cuda12
+
+jobs:
+  build:
+    name: Build pinned audio.cpp v0.7.1 (CUDA 12.4)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout pinned upstream audio.cpp
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: 0xShug0/audio.cpp
+          ref: c4dde1c2608a97f430f63f486f2912f531cb5e02
+          path: audio.cpp
+          fetch-depth: 1
+
+      - name: Verify detached upstream commit
+        working-directory: audio.cpp
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse --verify HEAD)" = "$UPSTREAM_COMMIT"
+          test "$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)" = ""
+          test -z "$(git status --porcelain --untracked-files=no)"
+
+      - name: Prepare isolated build and output directories
+        shell: bash
+        run: |
+          set -euo pipefail
+          build_root="$RUNNER_TEMP/audio-cpp-v071-cuda-build"
+          output_root="$RUNNER_TEMP/audio-cpp-v071-cuda-output"
+          rm -rf -- "$build_root" "$output_root"
+          mkdir -p -- "$build_root" "$output_root"
+          # The CUDA image may run through a rootless Docker daemon; make the
+          # two explicit ephemeral mounts writable by its mapped build user.
+          chmod 777 -- "$build_root" "$output_root"
+          echo "BUILD_ROOT=$build_root" >> "$GITHUB_ENV"
+          echo "OUTPUT_ROOT=$output_root" >> "$GITHUB_ENV"
+
+      - name: Fetch hash-locked CMake toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake_archive="$RUNNER_TEMP/cmake-3.31.6-linux-x86_64.tar.gz"
+          cmake_root="$RUNNER_TEMP/cmake-3.31.6-linux-x86_64"
+          curl --fail --location --silent --show-error \
+            --output "$cmake_archive" "$CMAKE_ARCHIVE_URL"
+          echo "$CMAKE_ARCHIVE_SHA256  $cmake_archive" | sha256sum --check --strict
+          rm -rf -- "$cmake_root"
+          mkdir -p -- "$cmake_root"
+          tar --extract --gzip --file="$cmake_archive" \
+            --directory="$cmake_root" --strip-components=1
+          test -x "$cmake_root/bin/cmake"
+          echo "CMAKE_ROOT=$cmake_root" >> "$GITHUB_ENV"
+
+      - name: Configure and build in CUDA 12.4.1 Ubuntu 22.04 container
+        shell: bash
+        run: |
+          set -euo pipefail
+          # CUDA 12.4.1 + Ubuntu 22.04 preserves the glibc 2.35 release floor.
+          # Hosted runners have no GPU: these fixed arches compile a portable
+          # fatbin, but do not provide runtime inference validation.
+          docker run --rm --interactive \
+            --entrypoint /bin/bash \
+            --volume "$GITHUB_WORKSPACE/audio.cpp:/src:ro" \
+            --volume "$BUILD_ROOT:/work/build" \
+            --volume "$OUTPUT_ROOT:/work/output" \
+            --volume "$CMAKE_ROOT:/opt/cmake:ro" \
+            --env UPSTREAM_REPOSITORY \
+            --env UPSTREAM_COMMIT \
+            --env CUDA_IMAGE \
+            --env CUDA_ARCHITECTURES \
+            --env CMAKE_ARCHIVE_URL \
+            --env CMAKE_ARCHIVE_SHA256 \
+            --workdir /src \
+            "$CUDA_IMAGE" \
+            -se <<'CONTAINER_SCRIPT'
+          set -euo pipefail
+          umask 022
+
+          # All container inputs are immutable: the digest-pinned CUDA image,
+          # the verified source mount, and this hash-locked CMake archive.
+          cmake=/opt/cmake/bin/cmake
+          test -x "$cmake"
+
+          export CC=/usr/bin/gcc
+          export CXX=/usr/bin/g++
+          export CUDAHOSTCXX=/usr/bin/g++
+          export SOURCE_DATE_EPOCH=0
+          unset CUDAARCHS
+
+          # These are the upstream v0.7.1 Docker/CMake options. CPU-all-variants
+          # also forces GGML_NATIVE=OFF, BUILD_SHARED_LIBS=ON, and GGML_BACKEND_DL=ON.
+          "$cmake" -S /src -B /work/build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DAUDIOCPP_MODEL_SET=full \
+            -DENGINE_ENABLE_CPU_ALL_VARIANTS=ON \
+            -DENGINE_ENABLE_CUDA=ON \
+            -DENGINE_ENABLE_CUDA_GRAPHS=ON \
+            -DENGINE_ENABLE_VULKAN=OFF \
+            -DENGINE_ENABLE_METAL=OFF \
+            -DENGINE_ENABLE_OPENMP=ON \
+            -DENGINE_ENABLE_LLAMAFILE=ON \
+            -DENGINE_ENABLE_NATIVE_CPU=OFF \
+            -DAUDIOCPP_DEPLOYMENT_BUILD=ON \
+            -DAUDIOCPP_BUILD_NATIVE_MODEL_MANAGER=ON \
+            -DENGINE_BUILD_EXAMPLES=OFF \
+            -DENGINE_BUILD_TESTS=OFF \
+            -DENGINE_BUILD_MODEL_TESTS=OFF \
+            -DENGINE_BUILD_WARMBENCH=OFF \
+            -DCUDAToolkit_ROOT=/usr/local/cuda-12.4 \
+            -DCMAKE_CUDA_COMPILER=/usr/local/cuda-12.4/bin/nvcc \
+            "-DCMAKE_CUDA_ARCHITECTURES=$CUDA_ARCHITECTURES" \
+            '-DCMAKE_BUILD_RPATH=$ORIGIN' \
+            '-DCMAKE_INSTALL_RPATH=$ORIGIN' \
+            -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+            -DCMAKE_EXE_LINKER_FLAGS=-Wl,--allow-shlib-undefined
+
+          "$cmake" --build /work/build --parallel "$(nproc)" \
+            --target audiocpp_cli \
+            --target audiocpp_server \
+            --target audiocpp_gguf \
+            --target audiocpp_model_manager \
+            --target model_perf
+
+          {
+            echo "upstream_repository=$UPSTREAM_REPOSITORY"
+            echo "upstream_commit=$UPSTREAM_COMMIT"
+            echo "base_image=$CUDA_IMAGE"
+            echo "glibc_baseline=Ubuntu 22.04 (glibc 2.35)"
+            echo "cuda_architectures=$CUDA_ARCHITECTURES"
+            echo "source_date_epoch=0"
+            echo "tool_versions:"
+            gcc --version | head -1
+            g++ --version | head -1
+            nvcc --version | tail -1
+            "$cmake" --version | head -1
+            echo "cmake_archive_url=$CMAKE_ARCHIVE_URL"
+            echo "cmake_archive_sha256=$CMAKE_ARCHIVE_SHA256"
+            echo "cmake_cache_subset:"
+            grep -E '^(AUDIOCPP_|BUILD_SHARED_LIBS:|CMAKE_BUILD_TYPE:|CMAKE_CUDA_ARCHITECTURES:|CMAKE_CUDA_COMPILER:|CMAKE_CXX_COMPILER:|CMAKE_CXX_COMPILER_VERSION:|CUDAToolkit_VERSION:|ENGINE_|GGML_(BACKEND_DL|CPU_ALL_VARIANTS|NATIVE):)' \
+              /work/build/CMakeCache.txt | sort || true
+            echo "runtime_validation:"
+            echo "GPU runtime smoke test: REQUIRED and ABSENT; this GPU-less CI build performs no inference validation."
+            echo "Unmodified CUDA 12.4 runtime libraries are bundled beside the application under NVIDIA's CUDA Toolkit EULA."
+            echo "A compatible NVIDIA driver remains required; a separately installed CUDA Toolkit is not required."
+          } > /work/output/BUILD_PROVENANCE.txt
+
+          runtime_root=/work/output/cuda-runtime
+          runtime_source=/usr/local/cuda-12.4/targets/x86_64-linux/lib
+          mkdir -p -- "$runtime_root/licenses/nvidia"
+          for runtime_library in \
+            libcudart.so.12.4.127 \
+            libcublas.so.12.4.5.8 \
+            libcublasLt.so.12.4.5.8 \
+            libcufft.so.11.2.1.3; do
+            source="$runtime_source/$runtime_library"
+            test -f "$source"
+            soname=$(readelf -d -- "$source" | \
+              sed -n 's/.*(SONAME).*\[\([^]]*\)\].*/\1/p')
+            test -n "$soname"
+            # SafeExtractor rejects links by design. Store one regular file
+            # under the ELF SONAME the dynamic loader actually requests.
+            cp -L -- "$source" "$runtime_root/$soname"
+          done
+          nccl_source=/usr/lib/x86_64-linux-gnu/libnccl.so.2.21.5
+          test -f "$nccl_source"
+          nccl_soname=$(readelf -d -- "$nccl_source" | \
+            sed -n 's/.*(SONAME).*\[\([^]]*\)\].*/\1/p')
+          test "$nccl_soname" = "libnccl.so.2"
+          cp -L -- "$nccl_source" "$runtime_root/$nccl_soname"
+          cp -- /usr/share/doc/cuda-cudart-12-4/copyright \
+            "$runtime_root/licenses/nvidia/cuda-cudart-12-4-copyright"
+          cp -- /usr/share/doc/libcublas-12-4/copyright \
+            "$runtime_root/licenses/nvidia/libcublas-12-4-copyright"
+          cp -- /usr/share/doc/libcufft-12-4/copyright \
+            "$runtime_root/licenses/nvidia/libcufft-12-4-copyright"
+          cp -- /usr/share/doc/libnccl2/copyright \
+            "$runtime_root/licenses/nvidia/libnccl2-copyright"
+          CONTAINER_SCRIPT
+
+      - name: Stage deterministic archive contents and run binary checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 022
+          package_root="$OUTPUT_ROOT/$PACKAGE_NAME"
+          build_bin="$BUILD_ROOT/build/bin"
+          mkdir -p -- "$package_root"
+
+          for binary in audiocpp_cli audiocpp_server audiocpp_gguf audiocpp_model_manager; do
+            test -x "$build_bin/$binary"
+            cp -- "$build_bin/$binary" "$package_root/$binary"
+          done
+
+          # CMake places ggml and all dynamically loaded CPU/CUDA backends in
+          # build/bin for ENGINE_ENABLE_CPU_ALL_VARIANTS=ON. SafeExtractor
+          # refuses links, so store each regular library under its ELF SONAME.
+          mapfile -d '' shared_libraries < <(
+            find "$build_bin" -maxdepth 1 -type f \
+              \( -name '*.so' -o -name '*.so.*' \) -print0 | sort -z
+          )
+          test "${#shared_libraries[@]}" -gt 0
+          for library in "${shared_libraries[@]}"; do
+            soname=$(readelf -d -- "$library" | \
+              sed -n 's/.*(SONAME).*\[\([^]]*\)\].*/\1/p')
+            destination=${soname:-$(basename "$library")}
+            cp -L -- "$library" "$package_root/$destination"
+          done
+          for target in \
+            "$package_root/audiocpp_cli" \
+            "$package_root/audiocpp_server" \
+            "$package_root/audiocpp_gguf" \
+            "$package_root/audiocpp_model_manager" \
+            "${shared_libraries[@]}"; do
+            if ! readelf -d -- "$target" | awk '
+              /\(RPATH\)|\(RUNPATH\)/ && index($0, "[$ORIGIN]") { found = 1 }
+              END { exit(found ? 0 : 1) }
+            '; then
+              echo "Missing required \$ORIGIN RPATH/RUNPATH: $target" >&2
+              readelf -d -- "$target" >&2 || true
+              exit 1
+            fi
+          done
+          for required_library_glob in \
+            'libggml.so*' 'libggml-base.so*' 'libggml-cpu*.so*' 'libggml-cuda*.so*'; do
+            if ! compgen -G "$package_root/$required_library_glob" > /dev/null; then
+              echo "Missing required shared library: $required_library_glob" >&2
+              exit 1
+            fi
+          done
+          cp -a -- "$OUTPUT_ROOT/cuda-runtime/." "$package_root/"
+          for required_runtime_glob in \
+            'libcudart.so.12' 'libcublas.so.12' 'libcublasLt.so.12' \
+            'libcufft.so.11' 'libnccl.so.2'; do
+            if ! compgen -G "$package_root/$required_runtime_glob" > /dev/null; then
+              echo "Missing required CUDA runtime library: $required_runtime_glob" >&2
+              exit 1
+            fi
+          done
+
+          # This is deliberately GPU-free, but it proves that the packaged
+          # server resolves its colocated runtime without LD_LIBRARY_PATH.
+          env -u LD_LIBRARY_PATH timeout 30s \
+            "$package_root/audiocpp_server" --help >/dev/null
+
+          cp -- "$OUTPUT_ROOT/BUILD_PROVENANCE.txt" "$package_root/BUILD_PROVENANCE.txt"
+          cp -- "$GITHUB_WORKSPACE/audio.cpp/LICENSE" "$package_root/LICENSE"
+          cp -- "$GITHUB_WORKSPACE/audio.cpp/README.md" "$package_root/README.md"
+          cp -a -- "$GITHUB_WORKSPACE/audio.cpp/model_specs" "$package_root/model_specs"
+          mkdir -p -- "$package_root/tools"
+          cp -- "$GITHUB_WORKSPACE/audio.cpp/tools/model_manager_v2.py" \
+            "$package_root/tools/model_manager_v2.py"
+          cat > "$package_root/CUDA_RUNTIME_NOTICE.txt" <<'NOTICE'
+          This archive bundles unmodified CUDA 12.4 runtime libraries that NVIDIA
+          lists as redistributable with applications. The CUDA Toolkit EULA is at:
+          https://docs.nvidia.com/cuda/eula/index.html
+
+          Bundled families: CUDA Runtime, cuBLAS, cuBLASLt, cuFFT, and NCCL.
+          The archive includes the package copyright/license notices shipped in
+          the pinned NVIDIA CUDA container.
+          A compatible NVIDIA display driver is still required. Pandrator has not
+          yet validated this archive by running inference on NVIDIA hardware.
+          Please report failures at https://github.com/lukaszliniewicz/Pandrator/issues
+          with the Manager diagnostics and service log attached.
+          NOTICE
+
+          dependency_report="$OUTPUT_ROOT/dependency-report.txt"
+          : > "$dependency_report"
+          {
+            echo "audio.cpp native archive dependency and binary report"
+            echo "package=$PACKAGE_NAME"
+            echo "upstream_commit=$UPSTREAM_COMMIT"
+            echo "CUDA runtime smoke test: REQUIRED and ABSENT (GPU-less CI)."
+            echo
+            echo "archive files:"
+            find "$package_root" -maxdepth 1 -type f -printf '%f\n' | sort
+            echo
+            echo "binary checks (file/readelf/ldd and best-effort --help):"
+            for binary in audiocpp_cli audiocpp_server audiocpp_gguf audiocpp_model_manager; do
+              target="$package_root/$binary"
+              echo
+              echo "--- $binary ---"
+              file --brief -- "$target"
+              readelf -h -- "$target" | sed -n '1,28p'
+              readelf -d -- "$target" | sed -n '/NEEDED\|RPATH\|RUNPATH/p' || true
+              echo "ldd:"
+              env -u LD_LIBRARY_PATH ldd -- "$target" || true
+              echo "--help (best effort, no GPU inference):"
+              set +e
+              env -u LD_LIBRARY_PATH timeout 30s "$target" --help
+              help_status=$?
+              set -e
+              echo "help_exit_status=$help_status"
+            done
+            echo
+            echo "shared-library checks (file/readelf/ldd):"
+            shopt -s nullglob
+            for library in "$package_root"/*.so*; do
+              echo
+              echo "--- $(basename "$library") ---"
+              file --brief -- "$library"
+              readelf -d -- "$library" | sed -n '/NEEDED\|RPATH\|RUNPATH/p' || true
+              LD_LIBRARY_PATH="$package_root${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+                ldd -- "$library" || true
+            done
+          } >> "$dependency_report"
+
+          cp -- "$dependency_report" "$package_root/DEPENDENCY_REPORT.txt"
+
+          archive="$OUTPUT_ROOT/$PACKAGE_NAME.tar.gz"
+          tar --create --file=- \
+            --sort=name \
+            --mtime='UTC 1970-01-01' \
+            --owner=0 --group=0 --numeric-owner \
+            --pax-option=delete=atime,delete=ctime \
+            --directory="$package_root" . | gzip --no-name > "$archive"
+
+          archive_members=$(tar -tzf "$archive")
+          grep -Fxq './audiocpp_server' <<< "$archive_members"
+          grep -Fxq './tools/model_manager_v2.py' <<< "$archive_members"
+          if grep -Fq "./$PACKAGE_NAME/" <<< "$archive_members"; then
+            echo "Archive unexpectedly contains an enclosing package directory." >&2
+            exit 1
+          fi
+          if tar -tvzf "$archive" | awk '
+            substr($1, 1, 1) == "l" || substr($1, 1, 1) == "h" { found = 1 }
+            END { exit(found ? 0 : 1) }
+          '; then
+            echo "Archive unexpectedly contains a symbolic or hard link." >&2
+            exit 1
+          fi
+
+          (
+            cd "$OUTPUT_ROOT"
+            sha256sum -- "$(basename "$archive")" "$(basename "$dependency_report")"
+          ) > "$OUTPUT_ROOT/SHA256SUMS"
+
+          test -s "$archive"
+          test -s "$OUTPUT_ROOT/SHA256SUMS"
+          test -s "$dependency_report"
+
+      - name: Upload archive, checksum, and dependency report
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: audio.cpp-v0.7.1-linux-x86_64-cuda12
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/audio-cpp-v071-cuda-output/audio.cpp-v0.7.1-linux-x86_64-cuda12.tar.gz
+            ${{ runner.temp }}/audio-cpp-v071-cuda-output/SHA256SUMS
+            ${{ runner.temp }}/audio-cpp-v071-cuda-output/dependency-report.txt
