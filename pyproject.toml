@@ -68,6 +68,11 @@ include = [
   "pandrator/web/static/**",
 ]
 
+[tool.hatch.build.targets.sdist]
+exclude = [
+  "/tmp",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--strict-markers"

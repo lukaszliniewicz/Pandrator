@@ -7,6 +7,7 @@ repo_root = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(repo_root))
 sys.path.insert(0, str(repo_root / "scripts"))
 
+import audit_python_distributions
 import build_release_packages
 
 
@@ -78,6 +79,16 @@ class BuildReleasePackagesTests(unittest.TestCase):
         self.assertTrue(build_release_packages.should_exclude_file("pandrator_state.sqlite3-journal"))
         self.assertFalse(build_release_packages.should_exclude_file("pyproject.toml"))
         self.assertFalse(build_release_packages.should_exclude_file("config.json"))
+
+    def test_distribution_audit_rejects_local_tmp_tree(self):
+        with self.assertRaisesRegex(ValueError, "tmp/local-evaluation.json"):
+            audit_python_distributions.validate_members(
+                Path("pandrator-0.8.18.tar.gz"),
+                [
+                    "pandrator-0.8.18/PKG-INFO",
+                    "pandrator-0.8.18/tmp/local-evaluation.json",
+                ],
+            )
 
 
 if __name__ == "__main__":

@@ -78,6 +78,7 @@ def validate_members(path: Path, names: list[str]) -> None:
         unsafe = (
             member.is_absolute()
             or ".." in member.parts
+            or "tmp" in lowered_parts
             or "__pycache__" in lowered_parts
             or lowered_name.endswith((".pyc", ".pyo"))
         )
