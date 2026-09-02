@@ -2526,7 +2526,7 @@ export interface components {
             api_version?: string;
             /**
              * Application Version
-             * @default 0.8.17
+             * @default 0.8.18
              */
             application_version?: string;
             /** Canonical Origin */

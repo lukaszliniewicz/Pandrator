@@ -154,8 +154,13 @@ class AudioCppManagerTests(unittest.TestCase):
             )
             stage = next(task for task in plan.tasks if task.kind == "stage_audio_cpp")
             archive = root / "audio-cpp-runtime.zip"
+            server_name = (
+                "audiocpp_server.exe"
+                if application.context.system.casefold() == "windows"
+                else "audiocpp_server"
+            )
             with zipfile.ZipFile(archive, "w") as output:
-                output.writestr("audiocpp_server", "#!/bin/sh\n")
+                output.writestr(server_name, "#!/bin/sh\n")
                 output.writestr("tools/model_manager_v2.py", "#!/usr/bin/env python3\n")
                 output.writestr(
                     "model_specs/qwen3_tts.json",
