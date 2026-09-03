@@ -130,13 +130,20 @@ def _contains_url_credentials(value: Any) -> bool:
 
 
 def _reviewable_settings(value: Any) -> Any:
-    """Project resolved settings without secret-shaped fields or URL queries."""
+    """Project resolved settings without secrets or bulky runtime catalogues."""
 
     if isinstance(value, dict):
+        omitted_runtime_catalogues = {
+            "provider_configs",
+            "voice_catalogues",
+            "voice_metadata",
+            "model_catalog",
+        }
         return {
             str(key): _reviewable_settings(item)
             for key, item in value.items()
             if not is_sensitive_field(key)
+            and str(key) not in omitted_runtime_catalogues
         }
     if isinstance(value, list):
         return [_reviewable_settings(item) for item in value]
@@ -190,9 +197,7 @@ class WorkflowExecutionPlanService:
         selections = list(
             db_session.scalars(
                 select(SessionStageSelection)
-                .where(
-                    SessionStageSelection.session_id == session_id
-                )
+                .where(SessionStageSelection.session_id == session_id)
                 .order_by(SessionStageSelection.stage_key)
             ).all()
         )
@@ -211,9 +216,7 @@ class WorkflowExecutionPlanService:
             ).all()
         )
         selected_ids = {
-            str(item.artifact_id)
-            for item in selections
-            if item.artifact_id
+            str(item.artifact_id) for item in selections if item.artifact_id
         }
         attached_artifact_ids = {
             str(asset.artifact_id)
@@ -257,27 +260,20 @@ class WorkflowExecutionPlanService:
             ).all()
         )
         providers = list(
-            db_session.scalars(
-                select(Provider).order_by(Provider.id)
-            ).all()
+            db_session.scalars(select(Provider).order_by(Provider.id)).all()
         )
         provider_models = list(
-            db_session.scalars(
-                select(ProviderModel).order_by(ProviderModel.id)
-            ).all()
+            db_session.scalars(select(ProviderModel).order_by(ProviderModel.id)).all()
         )
         generation_plan = db_session.scalar(
-            select(GenerationPlan).where(
-                GenerationPlan.session_id == session_id
-            )
+            select(GenerationPlan).where(GenerationPlan.session_id == session_id)
         )
         generation_revision = (
             db_session.get(
                 GenerationPlanRevision,
                 generation_plan.active_revision_id,
             )
-            if generation_plan
-            and generation_plan.active_revision_id
+            if generation_plan and generation_plan.active_revision_id
             else None
         )
         return {
@@ -287,18 +283,14 @@ class WorkflowExecutionPlanService:
                 "source_language": record.source_language,
                 "target_language": record.target_language,
                 "workflow_preset": record.workflow_preset,
-                "included_stages": list(
-                    record.included_stages_json or []
-                ),
+                "included_stages": list(record.included_stages_json or []),
                 "status": record.status,
                 "revision": record.revision,
                 "trashed_at": _iso(record.trashed_at),
             },
             "outcome": {
                 "revision": outcome.revision if outcome else 0,
-                "value_digest": canonical_digest(
-                    outcome.value_json if outcome else {}
-                ),
+                "value_digest": canonical_digest(outcome.value_json if outcome else {}),
             },
             "selections": [
                 {
@@ -357,9 +349,7 @@ class WorkflowExecutionPlanService:
                     "enabled": item.enabled,
                     "base_url": item.base_url,
                     "secret_configured": bool(item.secret_ref),
-                    "options_digest": canonical_digest(
-                        item.options_json or {}
-                    ),
+                    "options_digest": canonical_digest(item.options_json or {}),
                     "revision": item.revision,
                 }
                 for item in providers
@@ -378,19 +368,13 @@ class WorkflowExecutionPlanService:
             "generation_plan": {
                 "id": generation_plan.id if generation_plan else None,
                 "updated_at": (
-                    _iso(generation_plan.updated_at)
-                    if generation_plan
-                    else None
+                    _iso(generation_plan.updated_at) if generation_plan else None
                 ),
                 "active_revision_id": (
-                    generation_plan.active_revision_id
-                    if generation_plan
-                    else None
+                    generation_plan.active_revision_id if generation_plan else None
                 ),
                 "active_revision_number": (
-                    generation_revision.revision_number
-                    if generation_revision
-                    else None
+                    generation_revision.revision_number if generation_revision else None
                 ),
                 "active_source_revision_id": (
                     generation_revision.source_revision_id
@@ -398,9 +382,7 @@ class WorkflowExecutionPlanService:
                     else None
                 ),
                 "active_content_hash": (
-                    generation_revision.content_hash
-                    if generation_revision
-                    else None
+                    generation_revision.content_hash if generation_revision else None
                 ),
                 "active_settings_digest": (
                     canonical_digest(generation_revision.settings_json)
@@ -416,22 +398,34 @@ class WorkflowExecutionPlanService:
         db_session,
         session_id: str,
     ) -> str:
-        return canonical_digest(
-            cls._state_snapshot(db_session, session_id)
-        )
+        return canonical_digest(cls._state_snapshot(db_session, session_id))
 
     @staticmethod
     def _provider_disclosures(
         resolved: ResolvedWorkflowStage,
     ) -> list[dict[str, Any]]:
-        snapshot = resolved.payload.get(
-            "resolved_settings_snapshot"
-        )
+        snapshot = resolved.payload.get("resolved_settings_snapshot")
         if not isinstance(snapshot, dict):
             return []
+        active_service_kinds = {
+            value.split(":", 2)[1]
+            for value in resolved.resource_keys
+            if value.startswith("service:") and len(value.split(":", 2)) >= 2
+        }
+        section_service_kind = {
+            "stt": "stt",
+            "tts": "tts",
+            "translation": "llm",
+            "correction": "llm",
+            "source_cleaning": "llm",
+            "text": "llm",
+        }
         disclosures: list[dict[str, Any]] = []
         for section, raw in sorted(snapshot.items()):
             if not isinstance(raw, dict):
+                continue
+            required_kind = section_service_kind.get(str(section))
+            if required_kind and required_kind not in active_service_kinds:
                 continue
             provider = str(
                 raw.get("provider")
@@ -442,10 +436,7 @@ class WorkflowExecutionPlanService:
                 or ""
             ).strip()
             model = str(
-                raw.get("model")
-                or raw.get("model_id")
-                or raw.get("llm_model")
-                or ""
+                raw.get("model") or raw.get("model_id") or raw.get("llm_model") or ""
             ).strip()
             base_url = str(
                 raw.get("base_url")
@@ -477,12 +468,8 @@ class WorkflowExecutionPlanService:
 
     @staticmethod
     def _is_external(disclosure: dict[str, Any]) -> bool:
-        provider = str(
-            disclosure.get("provider") or ""
-        ).strip().lower()
-        base_url = str(
-            disclosure.get("base_url") or ""
-        ).strip()
+        provider = str(disclosure.get("provider") or "").strip().lower()
+        base_url = str(disclosure.get("base_url") or "").strip()
         if base_url:
             try:
                 host = str(urlsplit(base_url).hostname or "")
@@ -576,9 +563,7 @@ class WorkflowExecutionPlanService:
         expires_in_minutes: int = 30,
     ) -> dict[str, Any]:
         supplied = dict(overrides or {})
-        if contains_inline_secret(supplied) or _contains_url_credentials(
-            supplied
-        ):
+        if contains_inline_secret(supplied) or _contains_url_credentials(supplied):
             raise WorkflowPlanError(
                 "validation_error",
                 "Credentials cannot be embedded in workflow overrides.",
@@ -601,24 +586,17 @@ class WorkflowExecutionPlanService:
                 "Resolved workflow settings contain an endpoint with embedded credentials.",
                 422,
             )
-        if (
-            resolved.source_artifact_id
-            and not resolved.source_content_hash
-        ):
+        if resolved.source_artifact_id and not resolved.source_content_hash:
             raise WorkflowPlanError(
                 "source_hash_unavailable",
                 "The selected source has no content hash and cannot be bound to an exact execution plan.",
                 409,
             )
         reuse_stages = {
-            str(value)
-            for value in supplied.get("reuse_stages", []) or []
-            if str(value)
+            str(value) for value in supplied.get("reuse_stages", []) or [] if str(value)
         }
         disclosures = self._provider_disclosures(resolved)
-        external = [
-            item for item in disclosures if self._is_external(item)
-        ]
+        external = [item for item in disclosures if self._is_external(item)]
         resource_services = [
             value.split(":", 1)[1]
             for value in resolved.resource_keys
@@ -630,21 +608,15 @@ class WorkflowExecutionPlanService:
         if any(value.startswith("stt") for value in resource_services):
             data_categories.append("source_audio_or_video")
         if any(value.startswith("tts") for value in resource_services):
-            data_categories.extend(
-                ["narration_text", "voice_reference_if_configured"]
-            )
+            data_categories.extend(["narration_text", "voice_reference_if_configured"])
         network_services = {
             value.split(":", 1)[0]
             for value in resource_services
             if value.split(":", 1)[0] in {"llm", "stt", "tts"}
         }
-        disclosed_sections = {
-            str(item.get("section") or "") for item in disclosures
-        }
+        disclosed_sections = {str(item.get("section") or "") for item in disclosures}
         for service in sorted(network_services):
-            if not any(
-                service in section for section in disclosed_sections
-            ):
+            if not any(service in section for section in disclosed_sections):
                 external.append(
                     {
                         "section": service,
@@ -657,15 +629,11 @@ class WorkflowExecutionPlanService:
         confirmations: list[str] = []
         if external:
             confirmations.append("external_provider")
-        if external or any(
-            value.startswith("llm") for value in resource_services
-        ):
+        if external or any(value.startswith("llm") for value in resource_services):
             confirmations.append("estimated_cost_unknown")
         plan_id = str(uuid.uuid4())
         now = utcnow()
-        expires_at = now + timedelta(
-            minutes=max(1, min(int(expires_in_minutes), 60))
-        )
+        expires_at = now + timedelta(minutes=max(1, min(int(expires_in_minutes), 60)))
         mismatches: list[dict[str, Any]] = []
         if self.handlers is not None:
             try:
@@ -693,7 +661,9 @@ class WorkflowExecutionPlanService:
             ):
                 mismatch_info = mismatched_stages[step["stage"]]
                 reasons = ", ".join(
-                    str(r) for r in mismatch_info.get("reasons") or ["settings or source mismatch"]
+                    str(r)
+                    for r in mismatch_info.get("reasons")
+                    or ["settings or source mismatch"]
                 )
                 warnings.append(
                     f"Prerequisite stage '{step['stage']}' will be re-run ({reasons}). "
@@ -704,12 +674,8 @@ class WorkflowExecutionPlanService:
             "plan_id": plan_id,
             "warnings": warnings,
             "target": {
-                "instance_id": str(
-                    target_identity.get("instance_id") or ""
-                ),
-                "canonical_origin": str(
-                    target_identity.get("canonical_origin") or ""
-                ),
+                "instance_id": str(target_identity.get("instance_id") or ""),
+                "canonical_origin": str(target_identity.get("canonical_origin") or ""),
                 "application_version": str(
                     target_identity.get("application_version") or ""
                 ),
@@ -726,14 +692,9 @@ class WorkflowExecutionPlanService:
             },
             "outcome_plan_revision": resolved.outcome_revision,
             "settings": {
-                "hash": str(
-                    resolved.payload.get("settings_hash") or ""
-                ),
+                "hash": str(resolved.payload.get("settings_hash") or ""),
                 "resolved_snapshot": _reviewable_settings(
-                    resolved.payload.get(
-                        "resolved_settings_snapshot"
-                    )
-                    or {}
+                    resolved.payload.get("resolved_settings_snapshot") or {}
                 ),
             },
             "ordered_steps": steps,
@@ -792,9 +753,7 @@ class WorkflowExecutionPlanService:
                     id=plan_id,
                     session_id=session_id,
                     principal_subject=principal.subject,
-                    target_instance_id=str(
-                        target_identity.get("instance_id") or ""
-                    ),
+                    target_instance_id=str(target_identity.get("instance_id") or ""),
                     plan_digest=digest,
                     plan_json=stored_plan,
                     state_fingerprint=after,
@@ -820,10 +779,7 @@ class WorkflowExecutionPlanService:
     ) -> dict[str, Any]:
         with self.database.session() as db_session:
             record = db_session.get(WorkflowExecutionPlan, plan_id)
-            if (
-                record is None
-                or record.principal_subject != principal.subject
-            ):
+            if record is None or record.principal_subject != principal.subject:
                 raise WorkflowPlanError(
                     "not_found",
                     "Workflow execution plan not found.",
@@ -850,9 +806,7 @@ class WorkflowExecutionPlanService:
         operation_payload = {
             "plan_id": plan_id,
             "plan_digest": supplied_digest,
-            "accepted_confirmations": sorted(
-                set(accepted_confirmations)
-            ),
+            "accepted_confirmations": sorted(set(accepted_confirmations)),
         }
         with self.database.immediate_session() as db_session:
             reservation = self.idempotency.begin(
@@ -868,18 +822,14 @@ class WorkflowExecutionPlanService:
                 payload, status_code = replay
                 return payload, status_code, True
             record = db_session.get(WorkflowExecutionPlan, plan_id)
-            if (
-                record is None
-                or record.principal_subject != principal.subject
-            ):
+            if record is None or record.principal_subject != principal.subject:
                 raise WorkflowPlanError(
                     "not_found",
                     "Workflow execution plan not found.",
                     404,
                 )
-            if (
-                record.target_instance_id
-                != str(target_identity.get("instance_id") or "")
+            if record.target_instance_id != str(
+                target_identity.get("instance_id") or ""
             ):
                 raise WorkflowPlanError(
                     "target_identity_mismatch",

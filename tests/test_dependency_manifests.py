@@ -13,13 +13,15 @@ from scripts.generate_requirements import (
 class DependencyManifestTests(unittest.TestCase):
     def test_default_pixi_runtime_installs_the_canonical_project(self):
         root = Path(__file__).resolve().parents[1]
-        manifest = tomllib.loads(
-            (root / "pixi.toml").read_text(encoding="utf-8")
-        )
+        manifest = tomllib.loads((root / "pixi.toml").read_text(encoding="utf-8"))
 
         self.assertEqual(
             manifest["pypi-dependencies"]["pandrator"],
-            {"path": ".", "editable": True, "extras": ["dev"]},
+            {
+                "path": ".",
+                "editable": True,
+                "extras": ["dev", "text-normalization"],
+            },
         )
         conda_dependencies = set(manifest["dependencies"])
         self.assertTrue(
@@ -39,9 +41,7 @@ class DependencyManifestTests(unittest.TestCase):
     def test_project_distributions_use_the_canonical_mit_license(self):
         root = Path(__file__).resolve().parents[1]
         canonical = (root / "LICENSE").read_text(encoding="utf-8")
-        manager = (root / "pandrator_manager" / "LICENSE").read_text(
-            encoding="utf-8"
-        )
+        manager = (root / "pandrator_manager" / "LICENSE").read_text(encoding="utf-8")
 
         self.assertTrue(canonical.startswith("MIT License\n"))
         self.assertEqual(canonical, manager)
@@ -55,9 +55,9 @@ class DependencyManifestTests(unittest.TestCase):
 
     def test_application_automation_extra_installs_the_managed_mcp_runtime(self):
         root = Path(__file__).resolve().parents[1]
-        metadata = tomllib.loads(
-            (root / "pyproject.toml").read_text(encoding="utf-8")
-        )["project"]
+        metadata = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))[
+            "project"
+        ]
 
         self.assertEqual(
             ["pandrator-mcp[manager]>=0.3,<1"],

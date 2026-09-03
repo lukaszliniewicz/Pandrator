@@ -63,9 +63,7 @@ def _session_projection(item: dict[str, Any]) -> dict[str, Any]:
         "target_language": item.get("target_language"),
         "workflow_preset": item.get("workflow_preset"),
         "included_stages": list(
-            item.get("included_stages")
-            or item.get("included_stages_json")
-            or ()
+            item.get("included_stages") or item.get("included_stages_json") or ()
         )[:20],
         "status": item.get("status"),
         "revision": item.get("revision"),
@@ -86,23 +84,20 @@ def _safe_setting_value(
         for raw_key, item in list(value.items())[:500]:
             key = str(raw_key)[:120]
             normalized = key.strip().lower().replace("-", "_")
-            if (
-                normalized in _PRIVATE_SETTING_KEYS
-                or normalized.endswith(
-                    (
-                        "_api_key",
-                        "_command",
-                        "_credential",
-                        "_endpoint",
-                        "_origin",
-                        "_password",
-                        "_path",
-                        "_private_key",
-                        "_proxy",
-                        "_secret",
-                        "_token",
-                        "_url",
-                    )
+            if normalized in _PRIVATE_SETTING_KEYS or normalized.endswith(
+                (
+                    "_api_key",
+                    "_command",
+                    "_credential",
+                    "_endpoint",
+                    "_origin",
+                    "_password",
+                    "_path",
+                    "_private_key",
+                    "_proxy",
+                    "_secret",
+                    "_token",
+                    "_url",
                 )
             ):
                 continue
@@ -112,10 +107,7 @@ def _safe_setting_value(
             )
         return result
     if isinstance(value, (list, tuple)):
-        return [
-            _safe_setting_value(item, depth=depth + 1)
-            for item in list(value)[:500]
-        ]
+        return [_safe_setting_value(item, depth=depth + 1) for item in list(value)[:500]]
     if isinstance(value, str):
         return value[:20_000]
     return value
@@ -145,11 +137,7 @@ def _artifact_projection(item: Any) -> dict[str, Any] | None:
 
 def _workflow_projection(payload: dict[str, Any]) -> dict[str, Any]:
     stages: list[dict[str, Any]] = []
-    source_stages = (
-        payload.get("stages")
-        if isinstance(payload.get("stages"), list)
-        else []
-    )
+    source_stages = payload.get("stages") if isinstance(payload.get("stages"), list) else []
     for source in source_stages[:50]:
         if not isinstance(source, dict):
             continue
@@ -180,27 +168,16 @@ def _workflow_projection(payload: dict[str, Any]) -> dict[str, Any]:
             )
             if key in source
         }
-        stage["artifact"] = _artifact_projection(
-            source.get("artifact")
-        )
-        history = (
-            source.get("artifacts")
-            if isinstance(source.get("artifacts"), list)
-            else []
-        )
+        stage["artifact"] = _artifact_projection(source.get("artifact"))
+        history = source.get("artifacts") if isinstance(source.get("artifacts"), list) else []
         stage["artifacts"] = [
             projected
             for item in history[:20]
-            if (projected := _artifact_projection(item))
-            is not None
+            if (projected := _artifact_projection(item)) is not None
         ]
         stages.append(stage)
     sources: list[dict[str, Any]] = []
-    source_items = (
-        payload.get("sources")
-        if isinstance(payload.get("sources"), list)
-        else []
-    )
+    source_items = payload.get("sources") if isinstance(payload.get("sources"), list) else []
     for item in source_items[:50]:
         if not isinstance(item, dict):
             continue
@@ -231,26 +208,15 @@ def list_sessions(
         limit=arguments.limit,
         query=arguments.query,
     )
-    items = (
-        payload.get("items")
-        if isinstance(payload.get("items"), list)
-        else []
-    )
+    items = payload.get("items") if isinstance(payload.get("items"), list) else []
     query_term = arguments.query.strip().casefold() if arguments.query else None
     filtered = []
     for item in items:
         if not isinstance(item, dict):
             continue
-        if (
-            arguments.workflow_kind
-            and item.get("workflow_kind")
-            != arguments.workflow_kind
-        ):
+        if arguments.workflow_kind and item.get("workflow_kind") != arguments.workflow_kind:
             continue
-        if (
-            arguments.state
-            and item.get("status") != arguments.state
-        ):
+        if arguments.state and item.get("status") != arguments.state:
             continue
         if query_term:
             match_fields = (
@@ -274,11 +240,7 @@ def get_session(
 ) -> dict[str, Any]:
     return {
         "schema_version": "1",
-        **_session_projection(
-            runtime.require_application().get_session(
-                arguments.session_id
-            )
-        ),
+        **_session_projection(runtime.require_application().get_session(arguments.session_id)),
     }
 
 
@@ -286,11 +248,7 @@ def get_workflow(
     runtime: McpRuntime,
     arguments: GetWorkflowInput,
 ) -> dict[str, Any]:
-    return _workflow_projection(
-        runtime.require_application().get_workflow(
-            arguments.session_id
-        )
-    )
+    return _workflow_projection(runtime.require_application().get_workflow(arguments.session_id))
 
 
 def get_session_settings(
@@ -332,16 +290,21 @@ def list_sources(
     payload = runtime.require_application().list_sources(
         include_trashed=arguments.state == "trashed"
     )
-    source = (
-        payload.get("items")
-        if isinstance(payload.get("items"), list)
-        else []
-    )
+    source = payload.get("items") if isinstance(payload.get("items"), list) else []
     items: list[dict[str, Any]] = []
+    query = str(arguments.query or "").casefold().strip()
+    requested_kind = str(arguments.kind or "").casefold().strip()
+    requested_mime = str(arguments.mime_type or "").casefold().strip()
     for item in source:
         if not isinstance(item, dict):
             continue
         if item.get("state") != arguments.state:
+            continue
+        if query and query not in str(item.get("display_name") or "").casefold():
+            continue
+        if requested_kind and str(item.get("kind") or "").casefold() != requested_kind:
+            continue
+        if requested_mime and str(item.get("mime_type") or "").casefold() != requested_mime:
             continue
         items.append(
             {
@@ -355,9 +318,7 @@ def list_sources(
                 "state": item.get("state"),
                 "revision": item.get("revision"),
                 "reference_count": item.get("reference_count"),
-                "current_reference_count": item.get(
-                    "current_reference_count"
-                ),
+                "current_reference_count": item.get("current_reference_count"),
                 "created_at": item.get("created_at"),
                 "updated_at": item.get("updated_at"),
             }
@@ -390,10 +351,7 @@ def create_session(
             NextAction(
                 tool="pandrator_list_sources",
                 arguments={"state": "current", "limit": 50},
-                reason=(
-                    "Inspect reusable sources before attaching one "
-                    "to the new session."
-                ),
+                reason=("Inspect reusable sources before attaching one to the new session."),
             )
         ],
     )
@@ -419,10 +377,7 @@ def update_session(
             NextAction(
                 tool="pandrator_get_workflow",
                 arguments={"session_id": arguments.session_id},
-                reason=(
-                    "Inspect how the revised session changes workflow "
-                    "prerequisites."
-                ),
+                reason=("Inspect how the revised session changes workflow prerequisites."),
             )
         ],
     )
@@ -436,9 +391,7 @@ def attach_existing_source(
         arguments.session_id,
         source_asset_id=arguments.source_asset_id,
         role=arguments.role,
-        expected_session_revision=(
-            arguments.expected_session_revision
-        ),
+        expected_session_revision=(arguments.expected_session_revision),
         idempotency_key=arguments.idempotency_key,
     )
     safe = {
@@ -457,10 +410,7 @@ def attach_existing_source(
             NextAction(
                 tool="pandrator_get_workflow",
                 arguments={"session_id": arguments.session_id},
-                reason=(
-                    "Inspect the workflow and prerequisites after the "
-                    "source attachment."
-                ),
+                reason=("Inspect the workflow and prerequisites after the source attachment."),
             )
         ],
     )
@@ -498,8 +448,7 @@ def update_session_settings(
                     "section": arguments.section,
                 },
                 reason=(
-                    "Review the effective settings and new revision "
-                    "before planning execution."
+                    "Review the effective settings and new revision before planning execution."
                 ),
             )
         ],
@@ -551,9 +500,7 @@ def preview_subtitles(
     else:
         doc_data = application.get_subtitles(session_id)
         stages = doc_data.get("stages") or {}
-        normalized_stage = (
-            STAGE_ALIASES.get(selected_stage) if selected_stage else None
-        )
+        normalized_stage = STAGE_ALIASES.get(selected_stage) if selected_stage else None
         if normalized_stage and normalized_stage in stages:
             target_info = stages[normalized_stage]
         elif selected_stage and selected_stage in stages:
@@ -608,7 +555,8 @@ def preview_subtitles(
         start_ord = arguments.start_ordinal or 1
         end_ord = arguments.end_ordinal or (total_cues + 1)
         sliced = [
-            c for i, c in enumerate(matched_cues)
+            c
+            for i, c in enumerate(matched_cues)
             if start_ord <= int(c.get("ordinal", i + 1)) <= end_ord
         ]
         offset = max(0, start_ord - 1)
@@ -710,21 +658,25 @@ def replace_subtitle_text(
             new_text = orig_text.replace(search_text, replacement)
 
         if count > 0 and new_text != orig_text:
-            changes.append({
-                "ordinal": ordinal,
+            changes.append(
+                {
+                    "ordinal": ordinal,
+                    "start_ms": start_ms,
+                    "end_ms": end_ms,
+                    "speaker": speaker,
+                    "before": orig_text,
+                    "after": new_text,
+                }
+            )
+
+        modified_segments.append(
+            {
                 "start_ms": start_ms,
                 "end_ms": end_ms,
+                "text": new_text,
                 "speaker": speaker,
-                "before": orig_text,
-                "after": new_text,
-            })
-
-        modified_segments.append({
-            "start_ms": start_ms,
-            "end_ms": end_ms,
-            "text": new_text,
-            "speaker": speaker,
-        })
+            }
+        )
 
     if not changes:
         return ToolOutcome(
@@ -872,25 +824,41 @@ def patch_subtitle_cues(
             new_start = patch.start_ms if patch.start_ms is not None else orig_start
             new_end = patch.end_ms if patch.end_ms is not None else orig_end
 
-            applied_changes.append({
-                "ordinal": idx,
-                "before": {"text": orig_text, "speaker": orig_speaker, "start_ms": orig_start, "end_ms": orig_end},
-                "after": {"text": new_text, "speaker": new_speaker, "start_ms": new_start, "end_ms": new_end},
-            })
+            applied_changes.append(
+                {
+                    "ordinal": idx,
+                    "before": {
+                        "text": orig_text,
+                        "speaker": orig_speaker,
+                        "start_ms": orig_start,
+                        "end_ms": orig_end,
+                    },
+                    "after": {
+                        "text": new_text,
+                        "speaker": new_speaker,
+                        "start_ms": new_start,
+                        "end_ms": new_end,
+                    },
+                }
+            )
 
-            modified_segments.append({
-                "start_ms": new_start,
-                "end_ms": new_end,
-                "text": new_text,
-                "speaker": new_speaker,
-            })
+            modified_segments.append(
+                {
+                    "start_ms": new_start,
+                    "end_ms": new_end,
+                    "text": new_text,
+                    "speaker": new_speaker,
+                }
+            )
         else:
-            modified_segments.append({
-                "start_ms": orig_start,
-                "end_ms": orig_end,
-                "text": orig_text,
-                "speaker": orig_speaker,
-            })
+            modified_segments.append(
+                {
+                    "start_ms": orig_start,
+                    "end_ms": orig_end,
+                    "text": orig_text,
+                    "speaker": orig_speaker,
+                }
+            )
 
     saved = application.save_subtitle_review(
         session_id,
@@ -937,7 +905,9 @@ def patch_subtitle_cues(
 
 
 def _parse_srt_text(content: str) -> list[dict[str, Any]]:
-    normalized = str(content or "").replace("\ufeff", "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    normalized = (
+        str(content or "").replace("\ufeff", "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    )
     if not normalized:
         return []
     blocks = re.split(r"\n\s*\n+", normalized)
@@ -974,12 +944,14 @@ def _parse_srt_text(content: str) -> list[dict[str, Any]]:
             speaker = sp_match.group("speaker").strip()
             raw_text = sp_match.group("text").strip()
 
-        segments.append({
-            "start_ms": start_ms,
-            "end_ms": end_ms,
-            "text": raw_text,
-            "speaker": speaker,
-        })
+        segments.append(
+            {
+                "start_ms": start_ms,
+                "end_ms": end_ms,
+                "text": raw_text,
+                "speaker": speaker,
+            }
+        )
     return segments
 
 

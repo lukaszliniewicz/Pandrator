@@ -47,6 +47,29 @@ class SubtitleReviewTests(unittest.TestCase):
         )
         return artifact
 
+    def test_first_import_can_create_a_subtitle_document_at_revision_zero(self):
+        result = self.service.save_review(
+            self.session.id,
+            "transcription",
+            0,
+            [
+                {
+                    "start_ms": 0,
+                    "end_ms": 1500,
+                    "text": "Imported directly into a fresh subtitle session.",
+                    "speaker": None,
+                }
+            ],
+        )
+
+        self.assertEqual(1, result["revision"])
+        payload = self.service.documents(self.session.id)
+        self.assertEqual(1, payload["stages"]["transcription"]["revision"])
+        self.assertEqual(
+            "Imported directly into a fresh subtitle session.",
+            payload["stages"]["transcription"]["segments"][0]["text"],
+        )
+
     def test_comparison_groups_splits_and_saving_creates_reviewed_revision(self):
         source = self._artifact(
             "source.srt",

@@ -20,6 +20,7 @@
         "pandrator_get_capabilities",
         "pandrator_browse_local_sources",
         "pandrator_import_local_source",
+        "pandrator_create_text_source",
         "pandrator_get_workflow",
         "pandrator_create_source_cleaning_dispatch_run",
         "pandrator_get_source_cleaning_dispatch_run",
@@ -31,7 +32,7 @@
         "pandrator_submit_speech_optimization_dispatch_batch"
       ],
       "minimum_application_version": "0.8.17",
-      "revision": 4,
+      "revision": 5,
       "file": "audiobooks.md"
     },
     {

@@ -1,6 +1,8 @@
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 from types import SimpleNamespace
 
 from pandrator_mcp.errors import PandratorMcpError
@@ -8,6 +10,7 @@ from pandrator_mcp.network_policy import TargetMode
 from pandrator_mcp.schemas import (
     BrowseLocalSourcesInput,
     ConfigureTtsInput,
+    CreateTextSourceInput,
     DownloadArtifactInput,
     ImportLocalSourceInput,
     ListGenerationRunsInput,
@@ -16,8 +19,10 @@ from pandrator_mcp.schemas import (
 )
 from pandrator_mcp.targets import LocalSourceRoot, TargetProfile
 from pandrator_mcp.tools.e2e import (
+    _open_contained_file,
     browse_local_sources,
     configure_tts,
+    create_text_source,
     download_artifact,
     import_local_source,
     list_generation_runs,
@@ -236,6 +241,42 @@ class McpEndToEndToolTests(unittest.TestCase):
                 )
             self.assertEqual("network_policy_denied", captured.exception.code)
 
+    def test_local_import_has_a_windows_safe_open_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "windows-test.txt"
+            source.write_text("hello", encoding="utf-8")
+
+            with mock.patch("pandrator_mcp.tools.e2e.os.name", "nt"):
+                descriptor = _open_contained_file(root, ("windows-test.txt",))
+            try:
+                self.assertEqual(b"hello", os.read(descriptor, 5))
+            finally:
+                os.close(descriptor)
+
+    def test_create_text_source_uploads_utf8_and_attaches_without_echoing_text(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime, application = _runtime(root)
+            text = "Hello from the MCP. Zażółć gęślą jaźń."
+
+            created = create_text_source(
+                runtime,
+                CreateTextSourceInput(
+                    session_id="session-1",
+                    text=text,
+                    filename="hello.txt",
+                    expected_session_revision=1,
+                    idempotency_key="text-source:hello:1",
+                ),
+            )
+
+            self.assertEqual(text.encode("utf-8"), application.uploaded)
+            self.assertEqual("source-1", created.result["source_asset_id"])
+            self.assertEqual("hello.txt", created.result["filename"])
+            self.assertNotIn(text, str(created.result))
+            self.assertEqual("attach", application.calls[-1][0])
+
     def test_catalog_configuration_export_and_delivery_are_typed_and_safe(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -246,6 +287,13 @@ class McpEndToEndToolTests(unittest.TestCase):
             self.assertEqual("service-a", catalog["services"][0]["id"])
             self.assertNotIn("base_url", catalog["services"][0])
             self.assertNotIn("credential", str(catalog))
+            self.assertEqual(1, catalog["services"][0]["voice_count"])
+            self.assertNotIn("voices", catalog["services"][0])
+            filtered = tts_catalog(
+                runtime,
+                TtsCatalogInput(model="MODEL-A", available_only=True, detail="full"),
+            )
+            self.assertEqual(["native-a"], filtered["services"][0]["voices"])
 
             configured = configure_tts(
                 runtime,

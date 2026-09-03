@@ -12,6 +12,7 @@ from .dispatch import (
 from .e2e import (
     browse_local_sources,
     configure_tts,
+    create_text_source,
     download_artifact,
     import_local_source,
     list_generation_runs,
@@ -84,6 +85,7 @@ __all__ = [
     "cancel_work",
     "control_runtime",
     "configure_tts",
+    "create_text_source",
     "create_session",
     "create_dispatch_run",
     "create_source_cleaning_dispatch_run",

@@ -109,7 +109,10 @@ class _FakeApplication:
 
     def review_subtitles(self, session_id, *, artifact_ids):
         self.calls.append(
-            ("review_subtitles", {"session_id": session_id, "artifact_ids": artifact_ids})
+            (
+                "review_subtitles",
+                {"session_id": session_id, "artifact_ids": artifact_ids},
+            )
         )
         return {
             "columns": [
@@ -161,7 +164,9 @@ class _FakeApplication:
             "revision": expected_revision + 1,
         }
 
-    def list_generation_segments(self, session_id, *, cursor=0, limit=50, generation_run_id=None):
+    def list_generation_segments(
+        self, session_id, *, cursor=0, limit=50, generation_run_id=None
+    ):
         self.calls.append(
             (
                 "list_generation_segments",
@@ -195,6 +200,7 @@ class _FakeApplication:
                             "take_number": 1,
                             "status": "completed",
                             "duration_ms": 1950,
+                            "artifact_id": "artifact-take-1",
                             "created_at": "2026-09-03T07:00:00Z",
                         }
                     ],
@@ -235,7 +241,9 @@ class _FakeApplication:
             "takes": [],
         }
 
-    def select_generation_take(self, segment_id, take_id, *, expected_revision, idempotency_key):
+    def select_generation_take(
+        self, segment_id, take_id, *, expected_revision, idempotency_key
+    ):
         self.calls.append(
             (
                 "select_generation_take",
@@ -256,7 +264,9 @@ class _FakeApplication:
             "takes": [],
         }
 
-    def start_generation_run(self, session_id, *, segment_ids=None, operation="generate", idempotency_key=""):
+    def start_generation_run(
+        self, session_id, *, segment_ids=None, operation="generate", idempotency_key=""
+    ):
         self.calls.append(
             (
                 "start_generation_run",
@@ -269,14 +279,17 @@ class _FakeApplication:
             )
         )
         return {
-            "id": "job-gen-1",
+            "id": "run-gen-1",
+            "job_id": "job-gen-1",
             "run_id": "run-gen-1",
             "session_id": session_id,
             "state": "queued",
             "progress": 0.0,
         }
 
-    def create_output_assembly(self, session_id, *, generation_run_id=None, idempotency_key=""):
+    def create_output_assembly(
+        self, session_id, *, generation_run_id=None, idempotency_key=""
+    ):
         self.calls.append(
             (
                 "create_output_assembly",
@@ -288,7 +301,8 @@ class _FakeApplication:
             )
         )
         return {
-            "id": "job-assembly-1",
+            "id": "assembly-1",
+            "job_id": "job-assembly-1",
             "session_id": session_id,
             "state": "queued",
             "progress": 0.0,
@@ -357,6 +371,7 @@ class PreviewAndGenerationTests(unittest.TestCase):
         self.assertEqual("segment-1", segment["id"])
         self.assertEqual("Optimized spoken text", segment["optimized_text"])
         self.assertEqual(1, len(segment["takes"]))
+        self.assertEqual("artifact-take-1", segment["takes"][0]["artifact_id"])
 
         updated = update_generation_segment(
             self.runtime,
@@ -395,6 +410,8 @@ class PreviewAndGenerationTests(unittest.TestCase):
         self.assertEqual(2, regen.result["segment_count"])
         self.assertEqual("queued", regen.result["status"])
         self.assertIsNotNone(regen.work)
+        self.assertEqual("job-gen-1", regen.work.id)
+        self.assertEqual("run-gen-1", regen.result["run_id"])
 
         assembled = assemble_generation_run(
             self.runtime,
@@ -404,7 +421,9 @@ class PreviewAndGenerationTests(unittest.TestCase):
             ),
         )
         self.assertEqual("queued", assembled.result["status"])
+        self.assertEqual("assembly-1", assembled.result["assembly_id"])
         self.assertIsNotNone(assembled.work)
+        self.assertEqual("job-assembly-1", assembled.work.id)
 
     def test_preview_subtitles_around_ordinal_and_context(self):
         outcome = preview_subtitles(
@@ -454,7 +473,9 @@ class PreviewAndGenerationTests(unittest.TestCase):
             "Dzisiaj omówimy filozofię Blaise'a Pascala.",
             dry_run_outcome.result["changes"][0]["after"],
         )
-        save_calls = [c for c in self.application.calls if c[0] == "save_subtitle_review"]
+        save_calls = [
+            c for c in self.application.calls if c[0] == "save_subtitle_review"
+        ]
         self.assertEqual(len(save_calls), 0)
 
         # 2. Actual commit
@@ -532,7 +553,24 @@ class PreviewAndGenerationTests(unittest.TestCase):
         change = outcome.result["changes"][0]
         self.assertEqual(2, change["ordinal"])
         self.assertEqual("Profesor", change["after"]["speaker"])
-        self.assertEqual("Zupełnie nowy tekst odcinka drugiego.", change["after"]["text"])
+        self.assertEqual(
+            "Zupełnie nowy tekst odcinka drugiego.", change["after"]["text"]
+        )
+
+    def test_import_subtitles_can_create_first_revision(self):
+        srt = "1\n00:00:00,000 --> 00:00:02,000\nFresh subtitle document.\n"
+        outcome = import_subtitles(
+            self.runtime,
+            ImportSubtitlesInput(
+                session_id="session-1",
+                stage="transcribe",
+                expected_revision=0,
+                srt_content=srt,
+                idempotency_key="import:fresh:1",
+            ),
+        )
+        self.assertEqual(1, outcome.result["revision"])
+        self.assertEqual(1, outcome.result["imported_cues"])
 
     def test_import_subtitles_from_srt_content(self):
         srt = (

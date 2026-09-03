@@ -60,8 +60,52 @@ class ImportLocalSourceInput(ToolInput):
     )
 
 
+class CreateTextSourceInput(ToolInput):
+    session_id: str = Field(min_length=1, max_length=80)
+    text: str = Field(
+        min_length=1,
+        max_length=1_000_000,
+        description="UTF-8 plain text to store as a managed source. The text is not echoed in the tool result.",
+    )
+    filename: str = Field(
+        default="inline.txt",
+        min_length=1,
+        max_length=255,
+        description="Plain filename for the managed text source.",
+    )
+    role: Literal["primary", "reference"] = "primary"
+    expected_session_revision: int = Field(
+        ge=1,
+        description="Current session revision used to prevent attaching to stale state.",
+    )
+    idempotency_key: str = Field(
+        min_length=8,
+        max_length=200,
+        pattern=_SAFE_KEY,
+        description="Stable retry identity for this exact source creation and attachment.",
+    )
+
+
 class TtsCatalogInput(ToolInput):
     service_id: str | None = Field(default=None, max_length=160)
+    model: str | None = Field(
+        default=None,
+        max_length=300,
+        description="Optional case-insensitive model filter for service discovery.",
+    )
+    query: str | None = Field(
+        default=None,
+        max_length=160,
+        description="Optional case-insensitive service/model search term.",
+    )
+    available_only: bool = Field(
+        default=False,
+        description="Return only services currently advertised as available.",
+    )
+    detail: Literal["summary", "full"] = Field(
+        default="summary",
+        description="Summary omits large voice catalogues and metadata; full returns exact voice choices.",
+    )
     refresh: bool = Field(
         default=False,
         description="Probe configured services for current availability and dynamic catalogs.",

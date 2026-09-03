@@ -60,6 +60,7 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                         "pandrator_create_session",
                         "pandrator_create_source_cleaning_dispatch_run",
                         "pandrator_create_speech_optimization_dispatch_run",
+                        "pandrator_create_text_source",
                         "pandrator_download_artifact",
                         "pandrator_execute_component_plan",
                         "pandrator_execute_workflow_plan",

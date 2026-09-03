@@ -1417,11 +1417,7 @@
           {#if playlistActive && !playlistPaused}<Pause size={14} />{:else}<Play
               size={14}
             />{/if}
-          {playlistActive
-            ? playlistPaused
-              ? 'Resume'
-              : 'Pause'
-            : 'Play'}
+          {playlistActive ? (playlistPaused ? 'Resume' : 'Pause') : 'Play'}
         </button>
         {#if playlistActive}
           <button
@@ -1590,7 +1586,10 @@
             <div class="flex items-center">
               <button
                 onclick={() =>
-                  start('regenerate', selectedSegmentIds.length ? selectedSegmentIds : marked)}
+                  start(
+                    'regenerate',
+                    selectedSegmentIds.length ? selectedSegmentIds : marked
+                  )}
                 disabled={!selectedSegmentIds.length && !marked.length}
                 class="action icon-action rounded-r-none border-r-0"
                 title={selectedSegmentIds.length
@@ -1624,18 +1623,25 @@
                   class="dropdown-item"
                   onclick={() => {
                     regenerateMenuOpen = false;
-                    void start('regenerate', selectedSegmentIds.length ? selectedSegmentIds : marked);
+                    void start(
+                      'regenerate',
+                      selectedSegmentIds.length ? selectedSegmentIds : marked
+                    );
                   }}
                 >
                   <RefreshCw size={13} />
-                  {selectedSegmentIds.length ? 'Regenerate selected takes' : 'Regenerate marked takes'}
+                  {selectedSegmentIds.length
+                    ? 'Regenerate selected takes'
+                    : 'Regenerate marked takes'}
                 </button>
                 <button
                   type="button"
                   class="dropdown-item"
                   onclick={() => {
                     regenerateMenuOpen = false;
-                    openAlternateRegeneration(selectedSegmentIds.length ? selectedSegmentIds : marked);
+                    openAlternateRegeneration(
+                      selectedSegmentIds.length ? selectedSegmentIds : marked
+                    );
                   }}
                 >
                   <WandSparkles size={13} />
@@ -1836,7 +1842,7 @@
               {selectedTtsModel}
               {inheritedVoice}
               {inheritedLanguage}
-              textMode={textMode}
+              {textMode}
               onselect={selectSegment}
               onpatch={patchSegment}
               onreview={openOptimizationReview}
@@ -1856,7 +1862,7 @@
             <GenerationReadingView
               blocks={readingBlocks}
               selectedRunLabel={selectedRun?.label ?? 'Active mix'}
-              textMode={textMode}
+              {textMode}
               loaded={payload.items.length}
               total={payload.total}
               {activePlayingId}

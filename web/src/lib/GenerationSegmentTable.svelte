@@ -119,10 +119,18 @@
             >
           {/if}
           {#if textMode === 'speech'}
-            <div class="mb-1 flex items-center gap-1.5 text-[.65rem] font-medium text-[var(--accent)]">
-              <span class="rounded bg-[var(--accent-soft)] px-1.5 py-0.5">Spoken text (TTS prompt)</span>
+            <div
+              class="mb-1 flex items-center gap-1.5 text-[.65rem] font-medium text-[var(--accent)]"
+            >
+              <span class="rounded bg-[var(--accent-soft)] px-1.5 py-0.5"
+                >Spoken text (TTS prompt)</span
+              >
               {#if item.text !== (item.optimized_text ?? item.text)}
-                <span class="muted max-w-md truncate" title={`Original script: ${item.text}`}>Script: {item.text}</span>
+                <span
+                  class="muted max-w-md truncate"
+                  title={`Original script: ${item.text}`}
+                  >Script: {item.text}</span
+                >
               {/if}
             </div>
             <textarea
@@ -150,8 +158,12 @@
               class="segment-text w-full rounded-lg border border-transparent bg-transparent p-2 focus:border-[var(--line)]"
             ></textarea>
             {#if item.optimized_text && item.optimized_text !== item.text}
-              <p class="muted mt-0.5 mb-1 truncate text-[.65rem]" title={`Spoken: ${item.optimized_text}`}>
-                <span class="font-medium text-[var(--accent)]">Spoken:</span> {item.optimized_text}
+              <p
+                class="muted mt-0.5 mb-1 truncate text-[.65rem]"
+                title={`Spoken: ${item.optimized_text}`}
+              >
+                <span class="font-medium text-[var(--accent)]">Spoken:</span>
+                {item.optimized_text}
               </p>
             {/if}
           {/if}

@@ -18,6 +18,7 @@ from ..results import ToolOutcome
 from ..schemas.e2e import (
     BrowseLocalSourcesInput,
     ConfigureTtsInput,
+    CreateTextSourceInput,
     DownloadArtifactInput,
     ImportLocalSourceInput,
     ListGenerationRunsInput,
@@ -26,8 +27,23 @@ from ..schemas.e2e import (
 )
 
 
-def _named_source_root(runtime: McpRuntime, name: str) -> tuple[str, Path]:
+def _current_profile(runtime: McpRuntime):
+    """Reload non-secret target path settings so UI/CLI changes apply immediately."""
+
     profile = runtime.profile
+    if profile is None:
+        return None
+    try:
+        from ..targets import TargetStore
+
+        profiles = TargetStore(runtime.settings.configuration_path).load(missing_ok=True)
+        return next((item for item in profiles if item.name == profile.name), profile)
+    except (AttributeError, OSError, ValueError):
+        return profile
+
+
+def _named_source_root(runtime: McpRuntime, name: str) -> tuple[str, Path]:
+    profile = _current_profile(runtime)
     if profile is None:
         raise PandratorMcpError(
             "application_unavailable",
@@ -98,9 +114,28 @@ def _contained(root: Path, parts: tuple[str, ...], *, file_required: bool) -> Pa
 
 
 def _open_contained_file(root: Path, parts: tuple[str, ...]) -> int:
-    """Open a regular file without following any relative-path symlink."""
+    """Open a regular file without escaping the approved source root."""
 
     base_flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    if os.name == "nt":
+        # Windows does not support the POSIX openat/dir_fd contract used below.
+        # Resolve the full path first so junctions/reparse points that leave the
+        # approved root are rejected by _contained, then open the resolved file.
+        candidate = _contained(root, parts, file_required=True)
+        try:
+            return os.open(candidate, base_flags)
+        except OSError as error:
+            if error.errno == errno.ENOENT:
+                raise PandratorMcpError(
+                    "not_found",
+                    "The selected local source was not found.",
+                ) from error
+            raise PandratorMcpError(
+                "source_unavailable",
+                "The selected local source could not be opened.",
+                retryable=True,
+            ) from error
+
     no_follow = getattr(os, "O_NOFOLLOW", 0)
     directory_flags = base_flags | getattr(os, "O_DIRECTORY", 0) | no_follow
     directory_fd: int | None = None
@@ -141,7 +176,7 @@ def browse_local_sources(
     runtime: McpRuntime,
     arguments: BrowseLocalSourcesInput,
 ) -> dict[str, Any]:
-    profile = runtime.profile
+    profile = _current_profile(runtime)
     if profile is None:
         raise PandratorMcpError(
             "application_unavailable",
@@ -348,52 +383,195 @@ def import_local_source(
     )
 
 
+def create_text_source(
+    runtime: McpRuntime,
+    arguments: CreateTextSourceInput,
+) -> ToolOutcome:
+    """Create one managed UTF-8 text source and attach it to the session."""
+
+    filename = str(arguments.filename).strip()
+    if (
+        not filename
+        or filename in {".", ".."}
+        or "/" in filename
+        or "\\" in filename
+        or "\x00" in filename
+    ):
+        raise PandratorMcpError(
+            "validation_error",
+            "The text source filename must be a plain filename without directory components.",
+        )
+    content = arguments.text.encode("utf-8")
+    if not arguments.text.strip():
+        raise PandratorMcpError(
+            "validation_error",
+            "The text source cannot be empty or whitespace only.",
+        )
+    content_hash = hashlib.sha256(content).hexdigest()
+    application = runtime.require_application()
+    current_sources = application.list_sources().get("items")
+    existing = next(
+        (
+            item
+            for item in (current_sources or [])
+            if isinstance(item, dict)
+            and item.get("state") == "current"
+            and item.get("content_hash") == content_hash
+            and int(item.get("size_bytes") or -1) == len(content)
+        ),
+        None,
+    )
+    reused = existing is not None
+    if existing is not None:
+        source_asset_id = str(existing["id"])
+        artifact_id = str(existing.get("artifact_id") or "")
+    else:
+        upload = application.initialize_upload(
+            filename=filename,
+            size_bytes=len(content),
+            mime_type="text/plain; charset=utf-8",
+            sha256=content_hash,
+            idempotency_key=(
+                "mcp-text:"
+                + hashlib.sha256(
+                    f"{arguments.idempotency_key}\0{content_hash}".encode("utf-8")
+                ).hexdigest()
+            ),
+        )
+        result = upload.get("result") if upload.get("state") == "completed" else None
+        if not isinstance(result, dict):
+            upload_id = str(upload.get("id") or "")
+            chunk_size = int(upload.get("chunk_size") or 0)
+            chunk_count = int(upload.get("chunk_count") or 0)
+            if not upload_id or chunk_size <= 0 or chunk_count <= 0:
+                raise PandratorMcpError(
+                    "downstream_unavailable",
+                    "Pandrator returned an invalid resumable-upload state.",
+                )
+            received = {int(value) for value in upload.get("received") or []}
+            for index in range(chunk_count):
+                if index in received:
+                    continue
+                start = index * chunk_size
+                body = content[start : start + chunk_size]
+                application.upload_chunk(
+                    upload_id,
+                    index,
+                    body,
+                    sha256=hashlib.sha256(body).hexdigest(),
+                )
+            result = application.complete_upload(upload_id)
+        source_asset_id = str(result.get("source_asset_id") or "")
+        artifact_id = str(result.get("artifact_id") or "")
+        if not source_asset_id:
+            raise PandratorMcpError(
+                "downstream_unavailable",
+                "The completed upload did not create a source asset.",
+            )
+    attachment = application.attach_existing_source(
+        arguments.session_id,
+        source_asset_id=source_asset_id,
+        role=arguments.role,
+        expected_session_revision=arguments.expected_session_revision,
+        idempotency_key=arguments.idempotency_key,
+    )
+    return ToolOutcome(
+        result={
+            "schema_version": "1",
+            "filename": filename,
+            "artifact_id": artifact_id,
+            "source_asset_id": source_asset_id,
+            "content_hash": content_hash,
+            "size_bytes": len(content),
+            "reused_existing_source": reused,
+            "attachment": attachment,
+        },
+        next_actions=[
+            NextAction(
+                tool="pandrator_get_workflow",
+                arguments={"session_id": arguments.session_id},
+                reason="Inspect the attached text source and workflow prerequisites.",
+            )
+        ],
+    )
+
+
 def _normalized_id(value: object) -> str:
     return str(value or "").strip().casefold().replace("-", "_").replace(" ", "_")
 
 
-def _safe_tts_service(service: dict[str, Any]) -> dict[str, Any]:
-    return {
-        key: service.get(key)
+def _safe_tts_service(
+    service: dict[str, Any],
+    *,
+    detail: str = "summary",
+) -> dict[str, Any]:
+    compact_keys = (
+        "id",
+        "name",
+        "kind",
+        "available",
+        "online",
+        "availability_reason",
+        "models",
+        "default_model",
+        "default_voice",
+        "languages",
+        "generation_prompt_models",
+        "supports_voice_cloning",
+        "supports_dynamic_catalog",
+        "supports_batch_synthesis",
+        "batch_synthesis",
+    )
+    result = {key: service.get(key) for key in compact_keys if key in service}
+    raw_voices = service.get("voices")
+    voices: list[Any] = raw_voices if isinstance(raw_voices, list) else []
+    result["voice_count"] = len(voices)
+    if detail == "full":
         for key in (
-            "id",
-            "name",
-            "kind",
-            "available",
-            "online",
-            "availability_reason",
-            "models",
-            "default_model",
             "voices",
-            "default_voice",
             "default_voices",
             "default_voices_by_language",
             "voice_catalogues",
             "voice_metadata",
-            "languages",
-            "generation_prompt_models",
-            "supports_voice_cloning",
-            "supports_dynamic_catalog",
-            "supports_batch_synthesis",
-            "batch_synthesis",
-        )
-        if key in service
-    }
+        ):
+            if key in service:
+                result[key] = service.get(key)
+    elif voices:
+        result["voices_preview"] = voices[:20]
+    return result
 
 
 def tts_catalog(runtime: McpRuntime, arguments: TtsCatalogInput) -> dict[str, Any]:
     application = runtime.require_application()
     payload = application.tts_catalog(refresh=arguments.refresh)
-    services = [
-        _safe_tts_service(item)
-        for item in payload.get("services") or []
-        if isinstance(item, dict)
-        and (
-            arguments.service_id is None
-            or _normalized_id(item.get("id") or item.get("name"))
-            == _normalized_id(arguments.service_id)
-        )
-    ]
+    requested_service = _normalized_id(arguments.service_id) if arguments.service_id else None
+    requested_model = str(arguments.model or "").casefold().strip()
+    query = str(arguments.query or "").casefold().strip()
+    services: list[dict[str, Any]] = []
+    for item in payload.get("services") or []:
+        if not isinstance(item, dict):
+            continue
+        if (
+            requested_service
+            and _normalized_id(item.get("id") or item.get("name")) != requested_service
+        ):
+            continue
+        if arguments.available_only and item.get("available") is not True:
+            continue
+        models = [str(value) for value in item.get("models") or []]
+        if requested_model and not any(value.casefold() == requested_model for value in models):
+            continue
+        if query:
+            haystack = " ".join(
+                [
+                    str(item.get("id") or ""),
+                    str(item.get("name") or ""),
+                    *models,
+                ]
+            ).casefold()
+            if query not in haystack:
+                continue
+        services.append(_safe_tts_service(item, detail=arguments.detail))
     voices = []
     raw_voices = application.list_voices().get("items")
     for item in raw_voices or []:
@@ -437,7 +615,10 @@ def _catalog_value(values: Any, requested: str) -> str | None:
 
 
 def configure_tts(runtime: McpRuntime, arguments: ConfigureTtsInput) -> ToolOutcome:
-    catalog = tts_catalog(runtime, TtsCatalogInput(service_id=arguments.service_id))
+    catalog = tts_catalog(
+        runtime,
+        TtsCatalogInput(service_id=arguments.service_id, detail="full"),
+    )
     if not catalog["services"]:
         raise PandratorMcpError("not_found", "The requested TTS service is not configured.")
     service = catalog["services"][0]
@@ -642,7 +823,7 @@ def download_artifact(
     runtime: McpRuntime,
     arguments: DownloadArtifactInput,
 ) -> dict[str, Any]:
-    profile = runtime.profile
+    profile = _current_profile(runtime)
     output_root = profile.local_output_root if profile else None
     if (
         not output_root

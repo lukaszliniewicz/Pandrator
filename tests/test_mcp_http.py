@@ -29,7 +29,9 @@ from pandrator_mcp.settings import McpSettings
 from pandrator_mcp.targets import TargetStore
 
 
-@unittest.skipIf(TestClient is None, "The standalone MCP HTTP dependencies are unavailable.")
+@unittest.skipIf(
+    TestClient is None, "The standalone MCP HTTP dependencies are unavailable."
+)
 class McpHttpTransportTests(unittest.IsolatedAsyncioTestCase):
     token = "t" * 43
 
@@ -126,6 +128,15 @@ class McpHttpTransportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(str(workspace.resolve()), profile.workspace)
         self.assertIsNone(profile.application_credential)
         self.assertIsNone(profile.manager_recovery_credential)
+        self.assertEqual("home", profile.local_source_roots[0].name)
+        self.assertEqual(
+            str(Path.home().resolve(strict=False)),
+            profile.local_source_roots[0].path,
+        )
+        self.assertEqual(
+            str((workspace / "exports").resolve(strict=False)),
+            profile.local_output_root,
+        )
 
 
 class ManagedHostConfigurationTests(unittest.TestCase):

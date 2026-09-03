@@ -9,7 +9,7 @@ python = "3.11.*"
 ffmpeg = "*"
 
 [pypi-dependencies]
-pandrator = { path = ".", editable = true, extras = ["dev"] }
+pandrator = { path = ".", editable = true, extras = ["dev", "text-normalization"] }
 
 [tasks]
 test-dubbing = "python -m unittest tests.test_dubbing_subtitle_logic tests.test_dubbing_speech_blocks_integration tests.test_dubbing_llm_correction tests.test_dubbing_llm_translation tests.test_dubbing_transcription tests.test_dubbing_audio_sync tests.test_dubbing_boundary_correction tests.test_dubbing_manual_timing tests.test_dubbing_run_usage tests.test_dubbing_artifacts tests.test_dubbing_credentials tests.test_dubbing_settings tests.test_llm_handler tests.test_state_db_handler"

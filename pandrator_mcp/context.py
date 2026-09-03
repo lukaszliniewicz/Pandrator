@@ -21,7 +21,7 @@ from .errors import PandratorMcpError
 from .guide_registry import GuideRegistry
 from .network_policy import TargetMode
 from .settings import McpSettings
-from .targets import TargetProfile, TargetRegistry
+from .targets import LocalSourceRoot, TargetProfile, TargetRegistry
 
 MANAGED_TARGET_NAME = "managed-local"
 
@@ -34,6 +34,22 @@ class McpRuntime:
     manager: ManagerGateway
     profile: TargetProfile | None = None
     startup_error: PandratorMcpError | None = None
+
+    def current_profile(self) -> TargetProfile | None:
+        """Reload the non-secret target profile so path changes apply immediately."""
+
+        if self.profile is None:
+            return None
+        try:
+            from .targets import TargetStore
+
+            profiles = TargetStore(self.settings.configuration_path).load(missing_ok=True)
+            return next(
+                (item for item in profiles if item.name == self.profile.name),
+                self.profile,
+            )
+        except (OSError, ValueError):
+            return self.profile
 
     def require_application(self) -> ApplicationClient:
         if self.startup_error is not None:
@@ -72,9 +88,7 @@ def build_runtime(
         elif profile.mode == TargetMode.EXTERNAL_APPLICATION:
             manager = ManagerUnavailableGateway()
         else:
-            primary_manager = ApplicationProxyManagerGateway(
-                application
-            )
+            primary_manager = ApplicationProxyManagerGateway(application)
             if profile.manager_recovery_origin:
                 manager = FallbackManagerGateway(
                     primary_manager,
@@ -82,9 +96,7 @@ def build_runtime(
                         selected_registry.bind(settings.target_name),
                         selected_credentials,
                         timeout_seconds=settings.request_timeout_seconds,
-                        maximum_response_bytes=(
-                            settings.maximum_response_bytes
-                        ),
+                        maximum_response_bytes=(settings.maximum_response_bytes),
                     ),
                 )
             else:
@@ -115,9 +127,10 @@ def build_managed_runtime(
 ) -> McpRuntime:
     """Build the Manager-owned local runtime used by the HTTP service.
 
-    The generated target contains no credentials.  It is persisted so owners
-    can add approved local source/output roots with the ordinary target CLI,
-    while application and Manager endpoints remain dynamically discovered.
+    The generated target contains no credentials. New managed targets expose the
+    current user's home directory under the opaque name ``home`` and materialize
+    downloads beneath the managed workspace by default. Owners can narrow or add
+    roots later through the UI/CLI while endpoints remain dynamically discovered.
     """
 
     selected_workspace = Path(workspace).expanduser().resolve(strict=False)
@@ -136,6 +149,12 @@ def build_managed_runtime(
                 name=MANAGED_TARGET_NAME,
                 mode=TargetMode.LOCAL_MANAGED,
                 workspace=str(selected_workspace),
+                local_source_roots=(
+                    LocalSourceRoot(
+                        name="home",
+                        path=str(Path.home().resolve(strict=False)),
+                    ),
+                ),
                 local_output_root=str((selected_workspace / "exports").resolve(strict=False)),
                 requested_application_scopes=(
                     "app.read",
@@ -150,9 +169,7 @@ def build_managed_runtime(
         )
         profiles = store.load(missing_ok=False)
     elif Path(str(existing.workspace)).resolve(strict=False) != selected_workspace:
-        raise ValueError(
-            "The managed MCP target belongs to a different Manager workspace."
-        )
+        raise ValueError("The managed MCP target belongs to a different Manager workspace.")
 
     registry = TargetRegistry(
         profiles,

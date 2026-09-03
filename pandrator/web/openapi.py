@@ -424,6 +424,19 @@ def build_openapi_document() -> dict:
                     "responses": {"201": {"description": "Registered"}},
                 },
             },
+            "/api/v1/automation/local-paths": {
+                "get": {
+                    "operationId": "getAutomationLocalPaths",
+                    "responses": {"200": {"description": "Approved local MCP paths"}},
+                },
+                "put": {
+                    "operationId": "replaceAutomationLocalPaths",
+                    "description": "Replace the interactive owner's approved local MCP source and output roots.",
+                    "responses": {
+                        "200": {"description": "Updated approved local MCP paths"}
+                    },
+                },
+            },
             "/api/v1/auth/automation-clients/{clientId}": {
                 "delete": {
                     "operationId": "revokeAutomationClient",
@@ -2367,6 +2380,8 @@ def build_openapi_document() -> dict:
             "app.write",
         ),
         ("/api/v1/sources", "get", "app.read"),
+        ("/api/v1/automation/local-paths", "get", "app.read"),
+        ("/api/v1/automation/local-paths", "put", "app.write"),
         ("/api/v1/uploads/init", "post", "app.write"),
         ("/api/v1/uploads/{uploadId}", "get", "app.read"),
         ("/api/v1/uploads/{uploadId}", "delete", "app.write"),

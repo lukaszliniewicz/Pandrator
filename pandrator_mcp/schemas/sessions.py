@@ -77,23 +77,20 @@ def _guard_settings(
     if isinstance(value, dict):
         for key, item in value.items():
             normalized = str(key).strip().lower().replace("-", "_")
-            if (
-                normalized in _FORBIDDEN_SETTING_KEYS
-                or normalized.endswith(
-                    (
-                        "_api_key",
-                        "_command",
-                        "_credential",
-                        "_endpoint",
-                        "_origin",
-                        "_password",
-                        "_path",
-                        "_private_key",
-                        "_proxy",
-                        "_secret",
-                        "_token",
-                        "_url",
-                    )
+            if normalized in _FORBIDDEN_SETTING_KEYS or normalized.endswith(
+                (
+                    "_api_key",
+                    "_command",
+                    "_credential",
+                    "_endpoint",
+                    "_origin",
+                    "_password",
+                    "_path",
+                    "_private_key",
+                    "_proxy",
+                    "_secret",
+                    "_token",
+                    "_url",
                 )
             ):
                 raise ValueError(
@@ -116,11 +113,14 @@ def _guard_settings(
 
 class ListSessionsInput(ToolInput):
     limit: int = Field(default=50, ge=1, le=100)
-    workflow_kind: Literal[
-        "audiobook",
-        "subtitles",
-        "voiceover",
-    ] | None = None
+    workflow_kind: (
+        Literal[
+            "audiobook",
+            "subtitles",
+            "voiceover",
+        ]
+        | None
+    ) = None
     state: str | None = Field(default=None, max_length=40)
     query: str | None = Field(
         default=None,
@@ -219,7 +219,9 @@ class CuePatchInput(ToolInput):
     ordinal: int = Field(ge=1, description="The 1-indexed cue number to patch.")
     text: str | None = Field(default=None, max_length=2000, description="New text for this cue.")
     speaker: str | None = Field(default=None, max_length=160, description="New speaker label.")
-    start_ms: int | None = Field(default=None, ge=0, description="Optional start time in milliseconds.")
+    start_ms: int | None = Field(
+        default=None, ge=0, description="Optional start time in milliseconds."
+    )
     end_ms: int | None = Field(default=None, ge=0, description="Optional end time in milliseconds.")
 
 
@@ -238,7 +240,10 @@ class PatchSubtitleCuesInput(ToolInput):
 class ImportSubtitlesInput(ToolInput):
     session_id: str = Field(min_length=1, max_length=80)
     stage: SubtitleStage
-    expected_revision: int = Field(ge=1)
+    expected_revision: int = Field(
+        ge=0,
+        description="Current subtitle revision; use 0 to create the first document for this stage.",
+    )
     srt_content: str | None = Field(
         default=None,
         description="Raw SRT format text content to import.",
@@ -258,6 +263,9 @@ class GetSessionSettingsInput(ToolInput):
 
 class ListSourcesInput(ToolInput):
     state: Literal["current", "trashed"] = "current"
+    query: str | None = Field(default=None, max_length=160)
+    kind: str | None = Field(default=None, max_length=80)
+    mime_type: str | None = Field(default=None, max_length=160)
     limit: int = Field(default=50, ge=1, le=100)
 
 
@@ -309,11 +317,14 @@ class UpdateSessionInput(ToolInput):
     session_id: str = Field(min_length=1, max_length=80)
     expected_revision: int = Field(ge=1)
     name: str | None = Field(default=None, min_length=1, max_length=200)
-    workflow_kind: Literal[
-        "audiobook",
-        "subtitles",
-        "voiceover",
-    ] | None = None
+    workflow_kind: (
+        Literal[
+            "audiobook",
+            "subtitles",
+            "voiceover",
+        ]
+        | None
+    ) = None
     source_language: str | None = Field(
         default=None,
         min_length=2,
@@ -348,13 +359,9 @@ class UpdateSessionInput(ToolInput):
             "idempotency_key",
         }
         if not changes:
-            raise ValueError(
-                "At least one session field must be changed."
-            )
-        if (
-            self.included_stages is not None
-            and len(self.included_stages)
-            != len(set(self.included_stages))
+            raise ValueError("At least one session field must be changed.")
+        if self.included_stages is not None and len(self.included_stages) != len(
+            set(self.included_stages)
         ):
             raise ValueError("Included workflow stages must be unique.")
         return self
@@ -409,11 +416,7 @@ class UpdateSessionSettingsInput(ToolInput):
                 allow_nan=False,
             ).encode("utf-8")
         except (TypeError, ValueError) as error:
-            raise ValueError(
-                "Session settings must be finite JSON values."
-            ) from error
+            raise ValueError("Session settings must be finite JSON values.") from error
         if len(encoded) > 128 * 1024:
-            raise ValueError(
-                "Session settings exceed the MCP size limit."
-            )
+            raise ValueError("Session settings exceed the MCP size limit.")
         return value

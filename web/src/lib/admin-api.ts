@@ -271,7 +271,17 @@ export const managerApi = {
         service_id: serviceId,
         bytes: String(bytes)
       })}`
-    )
+    ),
+  mcpPaths: <T>() => apiJson<T>('/api/v1/automation/local-paths'),
+  saveMcpPaths: <T>(body: {
+    source_roots: Array<{ name: string; path: string }>;
+    output_root: string | null;
+  }) =>
+    apiJson<T>('/api/v1/automation/local-paths', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    })
 };
 
 export const speechServiceApi = {

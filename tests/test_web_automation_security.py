@@ -1,7 +1,10 @@
+import os
 import re
 import tempfile
 import unittest
 import uuid
+from pathlib import Path
+from unittest import mock
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import timedelta
 from io import StringIO
@@ -10,6 +13,8 @@ from urllib.parse import parse_qs, urlsplit
 from authlib.common.security import generate_token
 from authlib.oauth2.rfc7636 import create_s256_code_challenge
 
+from pandrator_mcp.network_policy import TargetMode
+from pandrator_mcp.targets import TargetProfile, TargetStore
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.cli import main as cli_main
@@ -68,9 +73,7 @@ class AutomationSecurityTests(unittest.TestCase):
                 "redirect_uri": redirect_uri,
                 "scope": " ".join(scopes),
                 "state": state,
-                "code_challenge": create_s256_code_challenge(
-                    verifier
-                ),
+                "code_challenge": create_s256_code_challenge(verifier),
                 "code_challenge_method": "S256",
                 "expires_in_days": "7",
             },
@@ -170,22 +173,65 @@ class AutomationSecurityTests(unittest.TestCase):
         self.assertEqual(403, raw_job.status_code)
         self.assertEqual("scope_denied", write.get_json()["error"]["code"])
 
+    def test_owner_can_manage_local_mcp_paths_but_automation_clients_cannot(self):
+        workspace = Path(self.temporary.name) / "manager-workspace"
+        configuration = workspace / "Pandrator" / "state" / "mcp-targets.json"
+        configuration.parent.mkdir(parents=True)
+        TargetStore(configuration).put(
+            TargetProfile(
+                name="managed-local",
+                mode=TargetMode.LOCAL_MANAGED,
+                workspace=str(workspace),
+            )
+        )
+
+        automation_headers = self._automation_headers("app.read", "app.write")
+        with mock.patch.dict(os.environ, {"PANDRATOR_WORKSPACE": str(workspace)}):
+            denied = self.client.get(
+                "/api/v1/automation/local-paths",
+                headers=automation_headers,
+            )
+            self.assertEqual(403, denied.status_code)
+
+            owner = self.client.post(
+                "/api/v1/auth/bootstrap",
+                json={"token": self.owner_grant},
+            )
+            self.assertEqual(200, owner.status_code)
+            csrf = owner.get_json()["csrf_token"]
+            home = Path(self.temporary.name) / "home"
+            home.mkdir()
+            output = Path(self.temporary.name) / "outputs"
+            updated = self.client.put(
+                "/api/v1/automation/local-paths",
+                json={
+                    "source_roots": [{"name": "home", "path": str(home)}],
+                    "output_root": str(output),
+                },
+                headers={"X-CSRF-Token": csrf},
+            )
+            self.assertEqual(200, updated.status_code)
+            payload = updated.get_json()
+            self.assertEqual("home", payload["source_roots"][0]["name"])
+            self.assertEqual(str(home.resolve()), payload["source_roots"][0]["path"])
+            self.assertEqual(str(output.resolve()), payload["output_root"])
+
+            loaded = self.client.get("/api/v1/automation/local-paths")
+            self.assertEqual(200, loaded.status_code)
+            self.assertEqual(payload, loaded.get_json())
+
     def test_expired_and_origin_bound_tokens_are_rejected(self):
         identity = self.extension["identity"].snapshot(
             observed_origin="https://pandrator.example"
         )
-        _expired, expired_raw = self.extension[
-            "auth"
-        ].create_api_token(
+        _expired, expired_raw = self.extension["auth"].create_api_token(
             "expired",
             scopes=["app.read"],
             expires_at=utcnow() - timedelta(seconds=1),
             target_instance_id=identity.instance_id,
             canonical_origin=identity.canonical_origin,
         )
-        _wrong_origin, wrong_origin_raw = self.extension[
-            "auth"
-        ].create_api_token(
+        _wrong_origin, wrong_origin_raw = self.extension["auth"].create_api_token(
             "wrong origin",
             scopes=["app.read"],
             target_instance_id=identity.instance_id,
@@ -205,9 +251,7 @@ class AutomationSecurityTests(unittest.TestCase):
             client_id=client_id,
         )
         wrong_redirect = dict(first_authorization)
-        wrong_redirect["redirect_uri"] = (
-            "http://127.0.0.1:43124/callback"
-        )
+        wrong_redirect["redirect_uri"] = "http://127.0.0.1:43124/callback"
         self.assertEqual(
             400,
             self._exchange(wrong_redirect).status_code,
@@ -284,9 +328,7 @@ class AutomationSecurityTests(unittest.TestCase):
             "/api/v1/auth/automation/authorize",
             query_string={
                 **base,
-                "redirect_uri": (
-                    "http://127.0.0.1:43123/callback"
-                ),
+                "redirect_uri": ("http://127.0.0.1:43123/callback"),
                 "scope": "app.admin",
             },
         )
@@ -361,9 +403,7 @@ class AutomationSecurityTests(unittest.TestCase):
         self.assertNotIn(raw, serialized)
         self.assertNotIn(authorization["code"], serialized)
         self.assertTrue(events)
-        self.assertTrue(
-            all(token.token_hash != raw for token in tokens)
-        )
+        self.assertTrue(all(token.token_hash != raw for token in tokens))
 
     def test_application_writes_are_atomic_revision_safe_and_replayed(self):
         headers = self._automation_headers("app.read", "app.write")
@@ -523,8 +563,7 @@ class AutomationSecurityTests(unittest.TestCase):
         self.assertEqual(404, planned.status_code)
 
         execute_path = (
-            "/api/v1/workflow-plans/"
-            "00000000-0000-0000-0000-000000000000/execute"
+            "/api/v1/workflow-plans/00000000-0000-0000-0000-000000000000/execute"
         )
         execution_body = {
             "plan_digest": "a" * 64,
@@ -558,35 +597,21 @@ class AutomationSecurityTests(unittest.TestCase):
         paths = document["paths"]
         create = paths["/api/v1/sessions"]["post"]
         update = paths["/api/v1/sessions/{sessionId}"]["patch"]
-        settings = paths[
-            "/api/v1/sessions/{sessionId}/settings/{section}"
-        ]["put"]
-        attach = paths[
-            "/api/v1/sessions/{sessionId}/sources"
-        ]["post"]
+        settings = paths["/api/v1/sessions/{sessionId}/settings/{section}"]["put"]
+        attach = paths["/api/v1/sessions/{sessionId}/sources"]["post"]
         for operation in (create, update, settings, attach):
-            names = {
-                item["name"]
-                for item in operation.get("parameters", [])
-            }
+            names = {item["name"] for item in operation.get("parameters", [])}
             self.assertIn("Idempotency-Key", names)
         for operation in (update, settings, attach):
-            names = {
-                item["name"]
-                for item in operation.get("parameters", [])
-            }
+            names = {item["name"] for item in operation.get("parameters", [])}
             self.assertIn("If-Match", names)
         self.assertIn(
             {"nativeOAuth": ["app.read"]},
-            paths[
-                "/api/v1/sessions/{sessionId}/workflow-plans"
-            ]["post"]["security"],
+            paths["/api/v1/sessions/{sessionId}/workflow-plans"]["post"]["security"],
         )
         self.assertIn(
             {"nativeOAuth": ["app.run"]},
-            paths[
-                "/api/v1/workflow-plans/{planId}/execute"
-            ]["post"]["security"],
+            paths["/api/v1/workflow-plans/{planId}/execute"]["post"]["security"],
         )
 
 

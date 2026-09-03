@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import os
 import secrets
 from datetime import UTC
 from html import escape
+from pathlib import Path
 from urllib.parse import urlencode
 
 from flask import Response, g, jsonify, redirect, request, session
@@ -46,9 +48,9 @@ def register_automation_routes(
                 '<meta charset="utf-8">'
                 '<meta name="viewport" content="width=device-width">'
                 f"<title>{escape(title)}</title>"
-                "</head><body style=\"font-family:system-ui,sans-serif;"
+                '</head><body style="font-family:system-ui,sans-serif;'
                 "max-width:48rem;margin:3rem auto;padding:0 1rem;"
-                "line-height:1.5\">"
+                'line-height:1.5">'
                 f"<h1>{escape(title)}</h1>{body}</body></html>"
             ),
             status=status,
@@ -83,8 +85,8 @@ def register_automation_routes(
             (
                 "<p>Copy the complete one-use response below into the hidden "
                 "CLI prompt. It expires in five minutes.</p>"
-                "<textarea readonly rows=\"6\" style=\"width:100%;"
-                "font-family:monospace\">"
+                '<textarea readonly rows="6" style="width:100%;'
+                'font-family:monospace">'
                 f"{escape(response_uri)}</textarea>"
                 "<p>You may close this page after the CLI confirms that the "
                 "credential was stored.</p>"
@@ -112,15 +114,11 @@ def register_automation_routes(
                     status=400,
                 )
             try:
-                client_id = enrollment.validate_client_id(
-                    request.args.get("client_id")
-                )
+                client_id = enrollment.validate_client_id(request.args.get("client_id"))
                 redirect_uri = enrollment.validate_redirect_uri(
                     request.args.get("redirect_uri")
                 )
-                scopes = enrollment.validate_scopes(
-                    request.args.get("scope") or ""
-                )
+                scopes = enrollment.validate_scopes(request.args.get("scope") or "")
                 challenge = enrollment.validate_code_challenge(
                     request.args.get("code_challenge"),
                     request.args.get("code_challenge_method"),
@@ -128,10 +126,7 @@ def register_automation_routes(
                 expires_in_days = max(
                     1,
                     min(
-                        int(
-                            request.args.get("expires_in_days")
-                            or 30
-                        ),
+                        int(request.args.get("expires_in_days") or 30),
                         90,
                     ),
                 )
@@ -144,10 +139,9 @@ def register_automation_routes(
             pending = {
                 "nonce": secrets.token_urlsafe(32),
                 "client_id": client_id,
-                "client_name": str(
-                    request.args.get("client_name")
-                    or "Pandrator MCP"
-                )[:160],
+                "client_name": str(request.args.get("client_name") or "Pandrator MCP")[
+                    :160
+                ],
                 "redirect_uri": redirect_uri,
                 "scopes": sorted(scopes),
                 "code_challenge": challenge,
@@ -158,15 +152,9 @@ def register_automation_routes(
             session["automation_authorization"] = pending
         else:
             pending = session.get("automation_authorization")
-            if (
-                not isinstance(pending, dict)
-                or not secrets.compare_digest(
-                    str(
-                        request.form.get("authorization_nonce")
-                        or ""
-                    ),
-                    str(pending.get("nonce") or ""),
-                )
+            if not isinstance(pending, dict) or not secrets.compare_digest(
+                str(request.form.get("authorization_nonce") or ""),
+                str(pending.get("nonce") or ""),
             ):
                 return html_page(
                     "Enrollment request expired",
@@ -196,11 +184,7 @@ def register_automation_routes(
         if request.method == "POST" and not owner_approved:
             client_key = request.remote_addr or "unknown"
             remote_access = not _is_loopback(client_key)
-            retry_after = (
-                throttle.retry_after(client_key)
-                if remote_access
-                else 0
-            )
+            retry_after = throttle.retry_after(client_key) if remote_access else 0
             password = str(request.form.get("password") or "")
             if retry_after or not auth.verify_password(password):
                 if remote_access and not retry_after:
@@ -228,9 +212,7 @@ def register_automation_routes(
 
         if request.method == "POST" and owner_approved:
             session.pop("automation_authorization", None)
-            identity = services.identity.snapshot(
-                observed_origin=request.url_root
-            )
+            identity = services.identity.snapshot(observed_origin=request.url_root)
             try:
                 code = enrollment.issue_code(
                     client_id=pending["client_id"],
@@ -238,12 +220,8 @@ def register_automation_routes(
                     redirect_uri=pending["redirect_uri"],
                     scopes=pending["scopes"],
                     code_challenge=pending["code_challenge"],
-                    code_challenge_method=pending[
-                        "code_challenge_method"
-                    ],
-                    expires_in_days=int(
-                        pending["expires_in_days"]
-                    ),
+                    code_challenge_method=pending["code_challenge_method"],
+                    expires_in_days=int(pending["expires_in_days"]),
                     target_instance_id=identity.instance_id,
                     canonical_origin=identity.canonical_origin,
                     approved_by=principal,
@@ -266,12 +244,9 @@ def register_automation_routes(
                 response_uri,
             )
 
-        identity = services.identity.snapshot(
-            observed_origin=request.url_root
-        )
+        identity = services.identity.snapshot(observed_origin=request.url_root)
         scope_items = "".join(
-            f"<li><code>{escape(scope)}</code></li>"
-            for scope in pending["scopes"]
+            f"<li><code>{escape(scope)}</code></li>" for scope in pending["scopes"]
         )
         password_field = (
             ""
@@ -309,18 +284,13 @@ def register_automation_routes(
 
     @app.post("/api/v1/auth/automation/token")
     def auth_automation_token():
-        if (
-            str(request.form.get("grant_type") or "")
-            != "authorization_code"
-        ):
+        if str(request.form.get("grant_type") or "") != "authorization_code":
             return error_response(
                 "unsupported_grant_type",
                 "Only the authorization_code grant is supported.",
                 400,
             )
-        identity = services.identity.snapshot(
-            observed_origin=request.url_root
-        )
+        identity = services.identity.snapshot(observed_origin=request.url_root)
         try:
             issued = enrollment.exchange_code(
                 code=request.form.get("code"),
@@ -363,9 +333,7 @@ def register_automation_routes(
                     if expires_at is not None
                     else None
                 ),
-                "scope": " ".join(
-                    sorted(issued.record.scopes_json or [])
-                ),
+                "scope": " ".join(sorted(issued.record.scopes_json or [])),
                 "subject": issued.record.subject,
                 "client_id": issued.client.id,
                 "target_instance_id": identity.instance_id,
@@ -386,9 +354,7 @@ def register_automation_routes(
         )
         principal = context.guards.principal()
         assert principal is not None
-        identity = services.identity.snapshot(
-            observed_origin=request.url_root
-        )
+        identity = services.identity.snapshot(observed_origin=request.url_root)
         try:
             client = enrollment.register(
                 client_id=payload.client_id,
@@ -418,6 +384,82 @@ def register_automation_routes(
                 }
             ),
             201,
+        )
+
+    @app.route("/api/v1/automation/local-paths", methods=["GET", "PUT"])
+    @require_auth
+    def automation_local_paths():
+        """Inspect or replace the owner-approved local MCP path boundary."""
+
+        principal = context.guards.principal()
+        if principal is None or principal.kind != "owner_session":
+            return error_response(
+                "scope_denied",
+                "Only the interactive owner session may change local MCP filesystem access.",
+                403,
+            )
+        workspace = str(os.environ.get("PANDRATOR_WORKSPACE") or "").strip()
+        if not workspace:
+            return error_response(
+                "manager_unavailable",
+                "The managed workspace path is unavailable.",
+                503,
+            )
+        try:
+            from pandrator_mcp.targets import LocalSourceRoot, TargetStore
+        except ImportError:
+            return error_response(
+                "feature_unavailable",
+                "This Pandrator installation does not include MCP automation support.",
+                501,
+            )
+        configuration = (
+            Path(workspace).expanduser().resolve(strict=False)
+            / "Pandrator"
+            / "state"
+            / "mcp-targets.json"
+        )
+        store = TargetStore(configuration)
+        profiles = store.load(missing_ok=True)
+        profile = next(
+            (item for item in profiles if item.name == "managed-local"),
+            None,
+        )
+        if profile is None:
+            return error_response(
+                "not_found",
+                "The managed MCP target has not been initialized yet.",
+                404,
+            )
+        if request.method == "PUT":
+            payload = request.get_json(silent=True) or {}
+            try:
+                source_roots = tuple(
+                    LocalSourceRoot.model_validate(item)
+                    for item in payload.get("source_roots", [])
+                )
+                output_value = payload.get("output_root")
+                output_root = (
+                    str(Path(str(output_value)).expanduser().resolve(strict=False))
+                    if output_value
+                    else None
+                )
+                profile = store.configure_local_paths(
+                    profile.name,
+                    source_roots=source_roots,
+                    output_root=output_root,
+                )
+            except (TypeError, ValueError) as error:
+                return error_response("validation_error", str(error), 422)
+            g.audit_resource_kind = "mcp_local_paths"
+            g.audit_resource_id = profile.name
+        return jsonify(
+            {
+                "source_roots": [
+                    item.model_dump(mode="json") for item in profile.local_source_roots
+                ],
+                "output_root": profile.local_output_root,
+            }
         )
 
     @app.delete("/api/v1/auth/automation-clients/<client_id>")

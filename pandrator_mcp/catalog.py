@@ -218,6 +218,18 @@ ACTION_CATALOG = ActionCatalog(
             True,
         ),
         ActionSpec(
+            "pandrator_create_text_source",
+            "Create and attach a plain-text source",
+            "CreateTextSourceInput",
+            RiskClass.WRITE,
+            "app.write",
+            "initializeChunkUpload",
+            "POST",
+            "/api/v1/uploads/init",
+            True,
+            True,
+        ),
+        ActionSpec(
             "pandrator_import_local_source",
             "Import and attach a local source",
             "ImportLocalSourceInput",

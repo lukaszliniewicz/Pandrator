@@ -276,7 +276,13 @@ pandrator-mcp target output-root-set local /home/me/Pandrator-outputs
 pandrator-mcp target source-root-list local
 ```
 
-For managed HTTP, use target `managed-local` and pass the managed target file:
+For managed HTTP, new installations expose the current user's home directory
+under the opaque root name `home` and use `<workspace>/exports` for downloaded
+artifacts by default. The application Settings page can add, remove, or replace
+approved roots.
+
+For managed HTTP, use target `managed-local` and pass the managed target file
+when administering paths from the lower-level CLI:
 
 ```console
 pandrator-mcp target --config /path/to/parent/Pandrator/state/mcp-targets.json \
@@ -285,8 +291,8 @@ pandrator-mcp target --config /path/to/parent/Pandrator/state/mcp-targets.json \
   output-root-set managed-local /home/me/Pandrator-outputs
 ```
 
-Restart Pandrator after changing the managed roots so the persistent HTTP
-service reloads them.
+Managed MCP path changes are reloaded on the next local browse/import/download
+operation, so restarting Pandrator is not required.
 
 Use Windows absolute paths when the adapter runs on Windows. The MCP model sees
 root names and relative entries, never these absolute paths. Symlinks are not
@@ -299,6 +305,11 @@ identical managed source when possible, otherwise uploads it in resumable
 chunks, and then attaches it with the inspected session revision. Upload state
 and completion results are replayable, so an interrupted model turn can safely
 continue.
+
+For text already present in the conversation, `pandrator_create_text_source`
+creates and attaches a bounded UTF-8 source directly. This avoids manufacturing
+a temporary local file solely to feed short narration or audiobook text into a
+session.
 
 “Local” means local to the MCP process: the Manager-owned service for managed
 HTTP, or the agent-host process for stdio. Pandrator itself may be on the same

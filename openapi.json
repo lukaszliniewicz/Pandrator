@@ -30,7 +30,7 @@
             "type": "string"
           },
           "application_version": {
-            "default": "0.8.18",
+            "default": "0.8.19",
             "title": "Application Version",
             "type": "string"
           },
@@ -5917,6 +5917,51 @@
             "description": "Created"
           }
         }
+      }
+    },
+    "/api/v1/automation/local-paths": {
+      "get": {
+        "operationId": "getAutomationLocalPaths",
+        "responses": {
+          "200": {
+            "description": "Approved local MCP paths"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
+      },
+      "put": {
+        "description": "Replace the interactive owner's approved local MCP source and output roots.",
+        "operationId": "replaceAutomationLocalPaths",
+        "responses": {
+          "200": {
+            "description": "Updated approved local MCP paths"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
+            ]
+          }
+        ]
       }
     },
     "/api/v1/capabilities": {

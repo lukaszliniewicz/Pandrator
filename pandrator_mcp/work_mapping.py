@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal, cast
 
 from .schemas.common import WorkReference
 
+WorkState = Literal["queued", "running", "waiting", "succeeded", "failed", "cancelled"]
 _TERMINAL = frozenset({"succeeded", "failed", "cancelled"})
 
 
-def _state(value: object) -> str:
+def _state(value: object) -> WorkState:
     normalized = str(value or "queued").strip().lower()
     if normalized in {"canceled", "cancelled"}:
         return "cancelled"
@@ -35,16 +36,16 @@ def _state(value: object) -> str:
         "succeeded",
         "failed",
     }:
-        return normalized
+        return cast(WorkState, normalized)
     return "waiting"
 
 
 def application_work_reference(payload: dict[str, Any]) -> WorkReference:
-    state = _state(payload.get("state"))
+    state = _state(payload.get("state") or payload.get("status"))
     progress = payload.get("progress")
     return WorkReference(
         type="job",
-        id=str(payload.get("id") or ""),
+        id=str(payload.get("work_id") or payload.get("job_id") or payload.get("id") or ""),
         state=state,
         progress=(
             max(0.0, min(float(progress), 1.0)) if isinstance(progress, (int, float)) else None
@@ -103,7 +104,7 @@ def manager_work_projection(payload: dict[str, Any]) -> dict[str, Any]:
 
 def manager_work_reference(payload: dict[str, Any]) -> WorkReference:
     projected = manager_work_projection(payload)
-    state = str(projected["state"])
+    state = _state(projected["state"])
     return WorkReference(
         type="manager_operation",
         id=str(projected["id"]),
@@ -126,8 +127,10 @@ def manager_task_log(payload: dict[str, Any]) -> dict[str, Any]:
         for item in items[:200]:
             if not isinstance(item, dict):
                 continue
-            task = item.get("task") if isinstance(item.get("task"), dict) else {}
-            error = item.get("error") if isinstance(item.get("error"), dict) else {}
+            task_value = item.get("task")
+            error_value = item.get("error")
+            task: dict[str, Any] = task_value if isinstance(task_value, dict) else {}
+            error: dict[str, Any] = error_value if isinstance(error_value, dict) else {}
             safe_items.append(
                 {
                     "task_id": str(task.get("id") or "")[:160],

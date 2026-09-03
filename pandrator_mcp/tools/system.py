@@ -18,7 +18,7 @@ def target_status(
     runtime: McpRuntime,
     arguments: TargetStatusInput,
 ) -> dict[str, Any]:
-    profile = runtime.profile
+    profile = runtime.current_profile()
     local_access = {
         "source_roots": (
             [item.name for item in profile.local_source_roots] if profile is not None else []

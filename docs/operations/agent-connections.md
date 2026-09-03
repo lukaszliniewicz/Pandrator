@@ -48,9 +48,10 @@ configuration and keep that file owner-readable. Do not paste the fragment
 into chat or commit it.
 
 The managed service uses a non-secret target named `managed-local` in
-`<workspace>/Pandrator/state/mcp-targets.json`. Approve local input and output
-directories through that file, then restart Pandrator so the long-running MCP
-service reloads them:
+`<workspace>/Pandrator/state/mcp-targets.json`. New installations expose the
+current user's home directory as source root `home` and use
+`<workspace>/exports` as the output root. These paths can be changed from the
+application Settings page or through the Manager CLI:
 
 ```console
 pandrator-manager --workspace /path/to/parent mcp-paths source-add \
@@ -61,10 +62,10 @@ pandrator-manager --workspace /path/to/parent mcp-paths list
 ```
 
 On Windows, use absolute Windows paths and the corresponding workspace path.
-The model sees only the approved root names and relative entries. Start
-Pandrator once before configuring these paths so the managed target exists.
-The lower-level `pandrator-mcp target` commands remain available to development
-and custom installations.
+The model sees only the approved root names and relative entries. Managed path
+changes are reloaded on the next browse/import/download operation, so an
+application restart is unnecessary. The lower-level `pandrator-mcp target`
+commands remain available to development and custom installations.
 
 ## Stdio and remote targets
 

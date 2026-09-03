@@ -5,6 +5,7 @@
   import type { GpuDevice } from '$lib/api-models';
   import { appState } from '$lib/app-state.svelte';
   import GlobalSettingsPanel from '$lib/GlobalSettingsPanel.svelte';
+  import McpLocalPathsPanel from '$lib/McpLocalPathsPanel.svelte';
 
   let wizardVisible = $state(false);
   let retention = $state(30);
@@ -181,6 +182,7 @@
       </p>
     </section>
   </div>
+  <McpLocalPathsPanel />
   <section class="surface mt-6 rounded-2xl p-6">
     <div class="eyebrow">Defaults</div>
     <h2 class="mt-2 text-xl font-semibold">

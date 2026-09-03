@@ -31,6 +31,7 @@ from .schemas import (
     CreateSessionInput,
     CreateSourceCleaningDispatchRunInput,
     CreateSpeechOptimizationDispatchRunInput,
+    CreateTextSourceInput,
     CuePatchInput,
     DispatchStructuredResultInput,
     DownloadArtifactInput,
@@ -104,6 +105,7 @@ from .tools import (
     create_session,
     create_source_cleaning_dispatch_run,
     create_speech_optimization_dispatch_run,
+    create_text_source,
     download_artifact,
     execute_component_plan,
     execute_workflow_plan,
@@ -552,7 +554,7 @@ def build_server(runtime: McpRuntime):
     def import_subtitles_tool(
         session_id: str,
         stage: SubtitleStage,
-        expected_revision: Annotated[int, Field(ge=1)],
+        expected_revision: Annotated[int, Field(ge=0)],
         idempotency_key: Annotated[str, Field(min_length=1, max_length=120)],
         srt_content: str | None = None,
         filename: str | None = None,
@@ -610,6 +612,9 @@ def build_server(runtime: McpRuntime):
     )
     def sources_tool(
         state: Literal["current", "trashed"] = "current",
+        query: Annotated[str | None, Field(max_length=160)] = None,
+        kind: Annotated[str | None, Field(max_length=80)] = None,
+        mime_type: Annotated[str | None, Field(max_length=160)] = None,
         limit: Annotated[int, Field(ge=1, le=100)] = 50,
     ) -> dict[str, Any]:
         """List bounded source metadata without paths or source contents."""
@@ -617,7 +622,48 @@ def build_server(runtime: McpRuntime):
         return _call(
             list_sources,
             runtime,
-            ListSourcesInput(state=state, limit=limit),
+            ListSourcesInput(
+                state=state,
+                query=query,
+                kind=kind,
+                mime_type=mime_type,
+                limit=limit,
+            ),
+        )
+
+    @server.tool(
+        name="pandrator_create_text_source",
+        title="Create and attach a plain-text source",
+        annotations=write_action,
+    )
+    def text_source_create_tool(
+        session_id: str,
+        text: Annotated[str, Field(min_length=1, max_length=1_000_000)],
+        expected_session_revision: Annotated[int, Field(ge=1)],
+        idempotency_key: Annotated[
+            str,
+            Field(
+                min_length=8,
+                max_length=200,
+                pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$",
+            ),
+        ],
+        filename: Annotated[str, Field(min_length=1, max_length=255)] = "inline.txt",
+        role: Literal["primary", "reference"] = "primary",
+    ) -> dict[str, Any]:
+        """Store supplied UTF-8 text as a managed source and attach it once."""
+
+        return _call(
+            create_text_source,
+            runtime,
+            CreateTextSourceInput(
+                session_id=session_id,
+                text=text,
+                filename=filename,
+                role=role,
+                expected_session_revision=expected_session_revision,
+                idempotency_key=idempotency_key,
+            ),
         )
 
     @server.tool(
@@ -1705,6 +1751,10 @@ def build_server(runtime: McpRuntime):
     )
     def tts_catalog_tool(
         service_id: Annotated[str | None, Field(max_length=160)] = None,
+        model: Annotated[str | None, Field(max_length=300)] = None,
+        query: Annotated[str | None, Field(max_length=160)] = None,
+        available_only: bool = False,
+        detail: Literal["summary", "full"] = "summary",
         refresh: bool = False,
     ) -> dict[str, Any]:
         """Resolve current TTS choices without exposing credentials or endpoints."""
@@ -1712,7 +1762,14 @@ def build_server(runtime: McpRuntime):
         return _call(
             tts_catalog,
             runtime,
-            TtsCatalogInput(service_id=service_id, refresh=refresh),
+            TtsCatalogInput(
+                service_id=service_id,
+                model=model,
+                query=query,
+                available_only=available_only,
+                detail=detail,
+                refresh=refresh,
+            ),
         )
 
     @server.tool(
@@ -1898,7 +1955,7 @@ def build_server(runtime: McpRuntime):
 
     @server.tool(
         name="pandrator_assemble_generation_run",
-        title="Queue output mix assembly for a generation run",
+        title="Assemble the session using takes current at a generation run",
         annotations=execute_action,
     )
     def generation_assemble_tool(
@@ -1906,7 +1963,7 @@ def build_server(runtime: McpRuntime):
         idempotency_key: Annotated[str, Field(min_length=1, max_length=120)],
         generation_run_id: str | None = None,
     ) -> dict[str, Any]:
-        """Queue output mix assembly for the specified generation run."""
+        """Assemble the whole session, using the selected/current takes at that run. For a single review clip, download the generation take artifact exposed by pandrator_list_generation_segments instead."""
 
         return _call(
             assemble_generation_run,

@@ -6,7 +6,7 @@ import hashlib
 import json
 from itertools import pairwise
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping, Sequence, TypedDict
 
 from sqlalchemy import func, select
 
@@ -15,7 +15,14 @@ from pandrator.logic.dubbing.srt_utils import compose_srt, split_speaker_label
 
 from .artifacts import ArtifactService
 from .database import Database
-from .models import Artifact, Document, DocumentRevision, Segment, SegmentLineage
+from .models import (
+    Artifact,
+    Document,
+    DocumentRevision,
+    Segment,
+    SegmentLineage,
+    SessionRecord,
+)
 
 STAGE_ORDER = ("transcription", "correction", "translation", "tts_optimization")
 ARTIFACT_ROLE_TO_STAGE = {
@@ -27,12 +34,19 @@ ARTIFACT_ROLE_TO_STAGE = {
 MAX_REVIEW_ARTIFACTS = 4
 
 
+class ReviewedSubtitleSegment(TypedDict):
+    start_ms: int
+    end_ms: int
+    text: str
+    speaker: str | None
+
+
 def _speaker_and_text(segment: Segment) -> tuple[str, str]:
     legacy_speaker, plain_text = split_speaker_label(segment.text)
     return str(segment.speaker or legacy_speaker or "").strip(), plain_text
 
 
-def _segments_hash(segments: list[dict[str, Any]]) -> str:
+def _segments_hash(segments: Sequence[Mapping[str, Any]]) -> str:
     normalized = [
         {
             "start_ms": int(item["start_ms"]),
@@ -77,9 +91,12 @@ class SubtitleReviewService:
                 ).all()
             )
             by_stage: dict[str, Document] = {}
-            for document in documents:
-                if document.stage in STAGE_ORDER and document.stage not in by_stage:
-                    by_stage[document.stage] = document
+            for stored_document in documents:
+                if (
+                    stored_document.stage in STAGE_ORDER
+                    and stored_document.stage not in by_stage
+                ):
+                    by_stage[stored_document.stage] = stored_document
             stages: dict[str, Any] = {}
             revisions: dict[str, DocumentRevision] = {}
             segment_sets: dict[str, list[Segment]] = {}
@@ -397,6 +414,8 @@ class SubtitleReviewService:
             while left_index < len(left_records) and right_index < len(right_records):
                 left = left_records[left_index]
                 right = right_records[right_index]
+                assert left.start_ms is not None and left.end_ms is not None
+                assert right.start_ms is not None and right.end_ms is not None
                 if min(left.end_ms, right.end_ms) > max(left.start_ms, right.start_ms):
                     union((left_stage, left.id), (right_stage, right.id))
                 if left.end_ms <= right.end_ms:
@@ -441,7 +460,7 @@ class SubtitleReviewService:
     ) -> dict[str, Any]:
         if stage not in STAGE_ORDER:
             raise ValueError(f"Unsupported subtitle stage: {stage}")
-        normalized = []
+        normalized: list[ReviewedSubtitleSegment] = []
         for index, item in enumerate(values):
             start_ms = int(item.get("start_ms") or 0)
             end_ms = int(item.get("end_ms") or 0)
@@ -497,36 +516,61 @@ class SubtitleReviewService:
                     if document and document.active_revision_id
                     else None
                 )
-            if (
-                document is None
-                or document.session_id != session_id
-                or document.stage != stage
-                or previous is None
-            ):
-                raise KeyError(stage)
-            if (
-                previous.document_id != document.id
-                or previous.revision_number != expected_revision
-            ):
-                actual = previous.revision_number if previous else 0
-                raise RuntimeError(
-                    f"Subtitle revision changed from {expected_revision} to {actual}."
+            if document is None:
+                if source_artifact is not None:
+                    raise KeyError(stage)
+                if expected_revision != 0:
+                    raise RuntimeError(
+                        f"Subtitle revision changed from {expected_revision} to 0."
+                    )
+                record = session.get(SessionRecord, session_id)
+                if record is None:
+                    raise KeyError(session_id)
+                language = (
+                    record.target_language
+                    if stage in {"translation", "tts_optimization"}
+                    else record.source_language
                 )
-            previous_segments = list(
-                session.scalars(
-                    select(Segment)
-                    .where(Segment.revision_id == previous.id)
-                    .order_by(Segment.ordinal)
-                ).all()
-            )
-            for index, item in enumerate(normalized, start=1):
+                document = Document(
+                    session_id=session_id,
+                    stage=stage,
+                    language=(None if language == "auto" else language),
+                )
+                session.add(document)
+                session.flush()
+                previous = None
+                previous_segments: list[Segment] = []
+                next_revision_number = 1
+            else:
+                if (
+                    document.session_id != session_id
+                    or document.stage != stage
+                    or previous is None
+                ):
+                    raise KeyError(stage)
+                if (
+                    previous.document_id != document.id
+                    or previous.revision_number != expected_revision
+                ):
+                    actual = previous.revision_number if previous else 0
+                    raise RuntimeError(
+                        f"Subtitle revision changed from {expected_revision} to {actual}."
+                    )
+                previous_segments = list(
+                    session.scalars(
+                        select(Segment)
+                        .where(Segment.revision_id == previous.id)
+                        .order_by(Segment.ordinal)
+                    ).all()
+                )
+            for index, reviewed in enumerate(normalized, start=1):
                 overlapping_speakers: dict[str, str] = {}
                 for previous_segment in previous_segments:
                     if (
                         previous_segment.start_ms is None
                         or previous_segment.end_ms is None
-                        or min(item["end_ms"], previous_segment.end_ms)
-                        <= max(item["start_ms"], previous_segment.start_ms)
+                        or min(reviewed["end_ms"], previous_segment.end_ms)
+                        <= max(reviewed["start_ms"], previous_segment.start_ms)
                     ):
                         continue
                     speaker, _text = _speaker_and_text(previous_segment)
@@ -536,8 +580,8 @@ class SubtitleReviewService:
                     raise ValueError(
                         f"Segment {index} crosses a speaker boundary. Keep each speaker in a separate cue."
                     )
-                if not item["speaker"] and overlapping_speakers:
-                    item["speaker"] = next(iter(overlapping_speakers.values()))
+                if not reviewed["speaker"] and overlapping_speakers:
+                    reviewed["speaker"] = next(iter(overlapping_speakers.values()))
             next_revision_number = (
                 int(
                     session.scalar(
@@ -551,7 +595,7 @@ class SubtitleReviewService:
             )
             revision = DocumentRevision(
                 document_id=document.id,
-                parent_revision_id=previous.id,
+                parent_revision_id=previous.id if previous else None,
                 revision_number=next_revision_number,
                 content_hash=_segments_hash(normalized),
                 reviewed=True,
@@ -559,8 +603,8 @@ class SubtitleReviewService:
             session.add(revision)
             session.flush()
             children = []
-            for ordinal, item in enumerate(normalized):
-                child = Segment(revision_id=revision.id, ordinal=ordinal, **item)
+            for ordinal, reviewed in enumerate(normalized):
+                child = Segment(revision_id=revision.id, ordinal=ordinal, **reviewed)
                 session.add(child)
                 children.append(child)
             session.flush()

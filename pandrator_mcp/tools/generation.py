@@ -25,6 +25,7 @@ def _segment_projection(segment: dict[str, Any]) -> dict[str, Any]:
             "take_number": t.get("take_number"),
             "status": t.get("status"),
             "duration_ms": t.get("duration_ms"),
+            "artifact_id": t.get("artifact_id"),
             "created_at": t.get("created_at"),
         }
         for t in takes
@@ -63,11 +64,7 @@ def list_generation_segments(
     return {
         "schema_version": "1",
         "session_id": arguments.session_id,
-        "items": [
-            _segment_projection(item)
-            for item in items
-            if isinstance(item, dict)
-        ],
+        "items": [_segment_projection(item) for item in items if isinstance(item, dict)],
         "next_cursor": payload.get("next_cursor"),
         "total": payload.get("total"),
     }
@@ -142,7 +139,9 @@ def regenerate_segments(
         result={
             "schema_version": "1",
             "session_id": arguments.session_id,
-            "run_id": result.get("run_id") if isinstance(result, dict) else None,
+            "run_id": (
+                result.get("run_id") or result.get("id") if isinstance(result, dict) else None
+            ),
             "segment_count": len(arguments.segment_ids),
             "status": "queued",
         },

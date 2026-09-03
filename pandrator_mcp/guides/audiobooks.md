@@ -1,7 +1,9 @@
 # Audiobook workflow
 
-An audiobook session starts from an uploaded, downloaded, or deliberately
-reused document artifact. Its normal stages are:
+An audiobook session starts from an uploaded, downloaded, deliberately reused,
+or inline text source. For short text supplied directly by the user, use
+`pandrator_create_text_source` to create and attach a managed UTF-8 source
+without first writing a temporary host file. Its normal stages are:
 
 1. **Clean source** — deterministic extraction with optional agent-assisted
    cleanup, producing reviewable clean text.

@@ -341,6 +341,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/automation/local-paths": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getAutomationLocalPaths"];
+        /** @description Replace the interactive owner's approved local MCP source and output roots. */
+        put: operations["replaceAutomationLocalPaths"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/capabilities": {
         parameters: {
             query?: never;
@@ -2526,7 +2543,7 @@ export interface components {
             api_version?: string;
             /**
              * Application Version
-             * @default 0.8.18
+             * @default 0.8.19
              */
             application_version?: string;
             /** Canonical Origin */
@@ -5241,6 +5258,42 @@ export interface operations {
         responses: {
             /** @description Created */
             201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getAutomationLocalPaths: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Approved local MCP paths */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    replaceAutomationLocalPaths: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Updated approved local MCP paths */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
