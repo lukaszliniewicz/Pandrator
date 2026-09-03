@@ -9,6 +9,7 @@ from ..schemas import (
     ExecuteWorkflowPlanInput,
     PlanWorkflowInput,
 )
+from ..schemas.common import WarningMessage
 from ..work_mapping import application_work_reference
 
 
@@ -28,8 +29,14 @@ def plan_workflow(
         str(value)
         for value in plan.get("required_confirmations", []) or []
     )
+    warnings = [
+        WarningMessage(code="prerequisite_rerun", message=str(value))
+        for value in (plan.get("warnings") or [])
+        if str(value).strip()
+    ]
     return ToolOutcome(
         result=plan,
+        warnings=warnings,
         next_actions=[
             NextAction(
                 tool="pandrator_execute_workflow_plan",

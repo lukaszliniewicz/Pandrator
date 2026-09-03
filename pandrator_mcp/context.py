@@ -136,6 +136,7 @@ def build_managed_runtime(
                 name=MANAGED_TARGET_NAME,
                 mode=TargetMode.LOCAL_MANAGED,
                 workspace=str(selected_workspace),
+                local_output_root=str((selected_workspace / "exports").resolve(strict=False)),
                 requested_application_scopes=(
                     "app.read",
                     "app.write",

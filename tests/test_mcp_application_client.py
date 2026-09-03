@@ -25,6 +25,7 @@ from pandrator_mcp.clients.manager_recovery import (
 from pandrator_mcp.credentials import (
     CredentialReference,
     CredentialResolver,
+    EnvironmentCredentialBackend,
     SecretValue,
 )
 from pandrator_mcp.errors import PandratorMcpError
@@ -778,6 +779,47 @@ class ApplicationClientTests(unittest.TestCase):
                 self.assertEqual(code, caught.exception.code)
 
     def test_identity_canonical_origin_must_equal_configured_origin(self):
+        origin = "https://application.example"
+        session = FakeSession(
+            [
+                FakeResponse(
+                    200,
+                    {
+                        "schema_version": "1",
+                        "service": "pandrator",
+                        "instance_id": "application-id",
+                        "application_version": "0.6.0",
+                        "api_version": "v1",
+                        "protocol_version": "v1",
+                        "canonical_origin": "https://other.example",
+                    },
+                )
+            ]
+        )
+        profile = TargetProfile(
+            name="external",
+            mode=TargetMode.EXTERNAL_HTTPS,
+            application_origin=origin,
+            application_credential=CredentialReference(
+                backend="keyring",
+                reference="token",
+                audience="application",
+            ),
+        )
+        registry = TargetRegistry(
+            [profile],
+            network_policy=NetworkPolicy(lambda _host, _port: ("8.8.8.8",)),
+        )
+        client = ApplicationClient(
+            registry.bind("external"),
+            CredentialResolver((MemoryCredentialBackend({"token": "secret"}),)),
+            session=session,
+        )
+        with self.assertRaises(PandratorMcpError) as caught:
+            client.identity()
+        self.assertEqual("target_identity_mismatch", caught.exception.code)
+
+    def test_identity_local_managed_allows_different_canonical_origin(self):
         origin = "http://127.0.0.1:8097"
         session = FakeSession(
             [
@@ -790,7 +832,7 @@ class ApplicationClientTests(unittest.TestCase):
                         "application_version": "0.6.0",
                         "api_version": "v1",
                         "protocol_version": "v1",
-                        "canonical_origin": "http://localhost:8097",
+                        "canonical_origin": "http://192.168.1.164:8097",
                         "managed": True,
                         "manager_instance_id": "manager-id",
                     },
@@ -803,9 +845,44 @@ class ApplicationClientTests(unittest.TestCase):
             session=session,
             local_bootstrap=lambda _target, _session: None,
         )
-        with self.assertRaises(PandratorMcpError) as caught:
-            client.identity()
-        self.assertEqual("target_identity_mismatch", caught.exception.code)
+        payload = client.identity()
+        self.assertEqual("http://192.168.1.164:8097", payload["canonical_origin"])
+
+    def test_save_subtitle_review(self):
+        origin = "http://127.0.0.1:8097"
+        session = FakeSession(
+            [
+                FakeResponse(
+                    201,
+                    {
+                        "artifact_id": "art-1",
+                        "document_id": "doc-1",
+                        "revision_id": "rev-2",
+                        "revision": 2,
+                    },
+                ),
+            ]
+        )
+        client = ApplicationClient(
+            local_registry(origin).bind("local"),
+            CredentialResolver(()),
+            session=session,
+            local_bootstrap=lambda _target, _session: None,
+        )
+        saved = client.save_subtitle_review(
+            "session-1",
+            "transcribe",
+            expected_revision=1,
+            segments=[{"start_ms": 0, "end_ms": 2500, "text": "Hello world", "speaker": "A"}],
+            idempotency_key="sub-key-1",
+        )
+        self.assertEqual(2, saved["revision"])
+        self.assertEqual("art-1", saved["artifact_id"])
+        self.assertEqual(
+            "http://127.0.0.1:8097/api/v1/sessions/session-1/subtitles/transcribe/review",
+            session.calls[0]["url"],
+        )
+        self.assertEqual("sub-key-1", session.calls[0]["headers"]["Idempotency-Key"])
 
     def test_real_http_connection_keeps_host_header_while_using_pinned_ip(self):
         captured: dict[str, str] = {}

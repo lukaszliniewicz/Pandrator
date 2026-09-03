@@ -73,7 +73,7 @@ class McpHttpTransportTests(unittest.IsolatedAsyncioTestCase):
                 ClientSession(*streams) as session,
             ):
                 initialized = await session.initialize()
-                self.assertEqual("0.3.0", initialized.server_info.version)
+                self.assertEqual("0.3.1", initialized.server_info.version)
                 listed = await session.list_tools()
                 self.assertIn(
                     "pandrator_create_dispatch_run",

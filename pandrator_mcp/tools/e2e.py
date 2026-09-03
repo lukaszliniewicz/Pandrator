@@ -13,6 +13,7 @@ from typing import Any
 
 from ..context import McpRuntime
 from ..errors import NextAction, PandratorMcpError
+from ..network_policy import TargetMode
 from ..results import ToolOutcome
 from ..schemas.e2e import (
     BrowseLocalSourcesInput,
@@ -642,7 +643,15 @@ def download_artifact(
     arguments: DownloadArtifactInput,
 ) -> dict[str, Any]:
     profile = runtime.profile
-    if profile is None or not profile.local_output_root:
+    output_root = profile.local_output_root if profile else None
+    if (
+        not output_root
+        and profile
+        and profile.mode == TargetMode.LOCAL_MANAGED
+        and profile.workspace
+    ):
+        output_root = str(Path(profile.workspace) / "exports")
+    if not output_root:
         raise PandratorMcpError(
             "precondition_required",
             "Configure a local output root before materializing artifacts.",
@@ -658,7 +667,7 @@ def download_artifact(
             "source_unavailable",
             "The requested artifact has no materialized content to download.",
         )
-    root = Path(profile.local_output_root).resolve(strict=False)
+    root = Path(output_root).resolve(strict=False)
     root.mkdir(parents=True, exist_ok=True)
     source_name = str(
         arguments.filename

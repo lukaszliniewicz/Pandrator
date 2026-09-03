@@ -100,7 +100,7 @@ class McpArchitectureTests(unittest.TestCase):
         payload = tomllib.loads(
             (MCP_ROOT / "pyproject.toml").read_text(encoding="utf-8")
         )
-        self.assertEqual("0.3.0", __version__)
+        self.assertEqual("0.3.1", __version__)
         self.assertEqual(__version__, payload["project"]["version"])
         self.assertIn("mcp==2.1.1", payload["project"]["dependencies"])
         server_source = (MCP_ROOT / "server.py").read_text(encoding="utf-8")
@@ -321,8 +321,9 @@ class McpArchitectureTests(unittest.TestCase):
         self.assertGreaterEqual(len(mutating), 5)
         self.assertEqual(
             {
-                "pandrator_cancel_work",
+                "pandrator_assemble_generation_run",
                 "pandrator_attach_existing_source",
+                "pandrator_cancel_work",
                 "pandrator_claim_dispatch_batch",
                 "pandrator_claim_source_cleaning_dispatch_batch",
                 "pandrator_claim_speech_optimization_dispatch_batch",
@@ -336,16 +337,22 @@ class McpArchitectureTests(unittest.TestCase):
                 "pandrator_execute_workflow_plan",
                 "pandrator_download_artifact",
                 "pandrator_import_local_source",
+                "pandrator_import_subtitles",
                 "pandrator_inspect_source_cleaning_dispatch_extraction",
+                "pandrator_patch_subtitle_cues",
+                "pandrator_regenerate_segments",
                 "pandrator_release_dispatch_batch",
                 "pandrator_release_source_cleaning_dispatch_batch",
                 "pandrator_release_speech_optimization_dispatch_batch",
                 "pandrator_renew_dispatch_batch",
                 "pandrator_renew_source_cleaning_dispatch_batch",
                 "pandrator_renew_speech_optimization_dispatch_batch",
+                "pandrator_replace_subtitle_text",
+                "pandrator_select_take",
                 "pandrator_submit_dispatch_batch",
                 "pandrator_submit_source_cleaning_dispatch_batch",
                 "pandrator_submit_speech_optimization_dispatch_batch",
+                "pandrator_update_generation_segment",
                 "pandrator_update_session",
                 "pandrator_update_session_settings",
             },

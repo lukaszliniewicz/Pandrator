@@ -17,6 +17,7 @@ from .errors import PandratorMcpError, ToolFailure
 from .request_context import begin_request, end_request
 from .results import ToolOutcome
 from .schemas import (
+    AssembleGenerationRunInput,
     AttachExistingSourceInput,
     BrowseLocalSourcesInput,
     CancelWorkInput,
@@ -30,6 +31,7 @@ from .schemas import (
     CreateSessionInput,
     CreateSourceCleaningDispatchRunInput,
     CreateSpeechOptimizationDispatchRunInput,
+    CuePatchInput,
     DispatchStructuredResultInput,
     DownloadArtifactInput,
     ExecuteComponentPlanInput,
@@ -45,40 +47,50 @@ from .schemas import (
     GetWorkLogInput,
     GuideTopic,
     ImportLocalSourceInput,
+    ImportSubtitlesInput,
     InspectSourceCleaningDispatchExtractionInput,
     ListArtifactsInput,
     ListDispatchRunsInput,
     ListGenerationRunsInput,
+    ListGenerationSegmentsInput,
     ListSessionsInput,
     ListSourceCleaningDispatchRunsInput,
     ListSourcesInput,
     ListSpeechOptimizationDispatchRunsInput,
     ListWorkInput,
     ManagerDesiredComponentInput,
+    PatchSubtitleCuesInput,
     PlanComponentChangeInput,
     PlanExportVariantInput,
     PlanWorkflowInput,
+    PreviewSubtitlesInput,
     ProviderStatusInput,
     RecommendNextStepsInput,
+    RegenerateSegmentsInput,
     ReleaseDispatchBatchInput,
     ReleaseSourceCleaningDispatchBatchInput,
     ReleaseSpeechOptimizationDispatchBatchInput,
     RenewDispatchBatchInput,
     RenewSourceCleaningDispatchBatchInput,
     RenewSpeechOptimizationDispatchBatchInput,
+    ReplaceSubtitleTextInput,
+    SelectTakeInput,
     SourceCleaningDispatchResultInput,
     SpeechOptimizationDispatchResultInput,
     SubmitDispatchBatchInput,
     SubmitSourceCleaningDispatchBatchInput,
     SubmitSpeechOptimizationDispatchBatchInput,
+    SubtitleStage,
     SystemStatusInput,
     TargetStatusInput,
     TtsCatalogInput,
+    UpdateGenerationSegmentInput,
     UpdateSessionInput,
     UpdateSessionSettingsInput,
     VoiceCatalogInput,
 )
 from .tools import (
+    assemble_generation_run,
     attach_existing_source,
     browse_local_sources,
     cancel_work,
@@ -105,10 +117,12 @@ from .tools import (
     get_work_log,
     get_workflow,
     import_local_source,
+    import_subtitles,
     inspect_source_cleaning_dispatch_extraction,
     list_artifacts,
     list_dispatch_runs,
     list_generation_runs,
+    list_generation_segments,
     list_sessions,
     list_source_cleaning_dispatch_runs,
     list_sources,
@@ -116,23 +130,29 @@ from .tools import (
     list_work,
     manager_doctor,
     manager_status,
+    patch_subtitle_cues,
     plan_component_change,
     plan_export_variant,
     plan_workflow,
+    preview_subtitles,
     provider_status,
     recommend_next_steps,
+    regenerate_segments,
     release_dispatch_batch,
     release_source_cleaning_dispatch_batch,
     release_speech_optimization_dispatch_batch,
     renew_dispatch_batch,
     renew_source_cleaning_dispatch_batch,
     renew_speech_optimization_dispatch_batch,
+    replace_subtitle_text,
+    select_take,
     submit_dispatch_batch,
     submit_source_cleaning_dispatch_batch,
     submit_speech_optimization_dispatch_batch,
     system_status,
     target_status,
     tts_catalog,
+    update_generation_segment,
     update_session,
     update_session_settings,
     voice_catalog,
@@ -373,6 +393,7 @@ def build_server(runtime: McpRuntime):
         limit: Annotated[int, Field(ge=1, le=100)] = 50,
         workflow_kind: Literal["audiobook", "subtitles", "voiceover"] | None = None,
         state: str | None = None,
+        query: str | None = None,
     ) -> dict[str, Any]:
         """List bounded session summaries from the configured target."""
 
@@ -383,6 +404,7 @@ def build_server(runtime: McpRuntime):
                 limit=limit,
                 workflow_kind=workflow_kind,
                 state=state,
+                query=query,
             ),
         )
 
@@ -412,6 +434,142 @@ def build_server(runtime: McpRuntime):
             get_workflow,
             runtime,
             GetWorkflowInput(session_id=session_id),
+        )
+
+    @server.tool(
+        name="pandrator_preview_subtitles",
+        title="Preview subtitle cues, transcript segments, and translations",
+        annotations=read_only,
+    )
+    def preview_subtitles_tool(
+        session_id: str,
+        stage: SubtitleStage | None = None,
+        artifact_id: str | None = None,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=100)] = 20,
+        query: str | None = None,
+        around_ordinal: Annotated[int | None, Field(ge=1)] = None,
+        context: Annotated[int, Field(ge=0, le=20)] = 3,
+        start_ordinal: Annotated[int | None, Field(ge=1)] = None,
+        end_ordinal: Annotated[int | None, Field(ge=1)] = None,
+    ) -> dict[str, Any]:
+        """Preview paginated cues and transcript segments inline without downloading."""
+
+        return _call(
+            preview_subtitles,
+            runtime,
+            PreviewSubtitlesInput(
+                session_id=session_id,
+                stage=stage,
+                artifact_id=artifact_id,
+                offset=offset,
+                limit=limit,
+                query=query,
+                around_ordinal=around_ordinal,
+                context=context,
+                start_ordinal=start_ordinal,
+                end_ordinal=end_ordinal,
+            ),
+        )
+
+    @server.tool(
+        name="pandrator_replace_subtitle_text",
+        title="Find and replace text across subtitle cues with revision guard",
+        annotations=write_action,
+    )
+    def replace_subtitle_text_tool(
+        session_id: str,
+        stage: SubtitleStage,
+        expected_revision: Annotated[int, Field(ge=1)],
+        search_text: Annotated[str, Field(min_length=1, max_length=500)],
+        replacement_text: Annotated[str, Field(max_length=500)],
+        idempotency_key: Annotated[str, Field(min_length=1, max_length=120)],
+        match_case: bool = False,
+        whole_word: bool = True,
+        is_regex: bool = False,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        """Find and replace text across subtitle cues with revision guard."""
+
+        return _call(
+            replace_subtitle_text,
+            runtime,
+            ReplaceSubtitleTextInput(
+                session_id=session_id,
+                stage=stage,
+                expected_revision=expected_revision,
+                search_text=search_text,
+                replacement_text=replacement_text,
+                match_case=match_case,
+                whole_word=whole_word,
+                is_regex=is_regex,
+                dry_run=dry_run,
+                idempotency_key=idempotency_key,
+            ),
+        )
+
+    @server.tool(
+        name="pandrator_patch_subtitle_cues",
+        title="Patch specific subtitle cues by ordinal with revision guard",
+        annotations=write_action,
+    )
+    def patch_subtitle_cues_tool(
+        session_id: str,
+        stage: SubtitleStage,
+        expected_revision: Annotated[int, Field(ge=1)],
+        cues: list[dict[str, Any]],
+        idempotency_key: Annotated[str, Field(min_length=1, max_length=120)],
+    ) -> dict[str, Any]:
+        """Patch specific subtitle cues by ordinal while preserving all other cues."""
+
+        parsed_cues = [
+            CuePatchInput(
+                ordinal=int(item["ordinal"]),
+                text=item.get("text"),
+                speaker=item.get("speaker"),
+                start_ms=item.get("start_ms"),
+                end_ms=item.get("end_ms"),
+            )
+            for item in cues
+        ]
+        return _call(
+            patch_subtitle_cues,
+            runtime,
+            PatchSubtitleCuesInput(
+                session_id=session_id,
+                stage=stage,
+                expected_revision=expected_revision,
+                cues=parsed_cues,
+                idempotency_key=idempotency_key,
+            ),
+        )
+
+    @server.tool(
+        name="pandrator_import_subtitles",
+        title="Import reviewed subtitles from raw SRT text or file",
+        annotations=write_action,
+    )
+    def import_subtitles_tool(
+        session_id: str,
+        stage: SubtitleStage,
+        expected_revision: Annotated[int, Field(ge=1)],
+        idempotency_key: Annotated[str, Field(min_length=1, max_length=120)],
+        srt_content: str | None = None,
+        filename: str | None = None,
+    ) -> dict[str, Any]:
+        """Import reviewed subtitles from raw SRT text or file."""
+
+        return _call(
+            import_subtitles,
+            runtime,
+            ImportSubtitlesInput(
+                session_id=session_id,
+                stage=stage,
+                expected_revision=expected_revision,
+                srt_content=srt_content,
+                filename=filename,
+                idempotency_key=idempotency_key,
+            ),
         )
 
     @server.tool(
@@ -1634,6 +1792,130 @@ def build_server(runtime: McpRuntime):
             list_generation_runs,
             runtime,
             ListGenerationRunsInput(session_id=session_id, limit=limit),
+        )
+
+    @server.tool(
+        name="pandrator_list_generation_segments",
+        title="List generation segments and audio takes",
+        annotations=read_only,
+    )
+    def generation_segments_tool(
+        session_id: str,
+        cursor: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=100)] = 50,
+        generation_run_id: str | None = None,
+    ) -> dict[str, Any]:
+        """List generation segments, assigned voices, takes, and text."""
+
+        return _call(
+            list_generation_segments,
+            runtime,
+            ListGenerationSegmentsInput(
+                session_id=session_id,
+                cursor=cursor,
+                limit=limit,
+                generation_run_id=generation_run_id,
+            ),
+        )
+
+    @server.tool(
+        name="pandrator_update_generation_segment",
+        title="Update generation segment text or voice overrides",
+        annotations=write_action,
+    )
+    def generation_segment_update_tool(
+        session_id: str,
+        segment_id: str,
+        expected_revision: Annotated[int, Field(ge=0)],
+        idempotency_key: Annotated[str, Field(min_length=1, max_length=120)],
+        optimized_text: Annotated[str | None, Field(max_length=2000)] = None,
+        voice_id: Annotated[str | None, Field(max_length=100)] = None,
+        voice: Annotated[str | None, Field(max_length=100)] = None,
+        language: Annotated[str | None, Field(max_length=20)] = None,
+    ) -> dict[str, Any]:
+        """Update a generation segment's text or voice override with revision guard."""
+
+        return _call(
+            update_generation_segment,
+            runtime,
+            UpdateGenerationSegmentInput(
+                session_id=session_id,
+                segment_id=segment_id,
+                expected_revision=expected_revision,
+                idempotency_key=idempotency_key,
+                optimized_text=optimized_text,
+                voice_id=voice_id,
+                voice=voice,
+                language=language,
+            ),
+        )
+
+    @server.tool(
+        name="pandrator_select_take",
+        title="Select an alternative audio take for a generation segment",
+        annotations=write_action,
+    )
+    def generation_select_take_tool(
+        segment_id: str,
+        take_id: str,
+        expected_revision: Annotated[int, Field(ge=0)],
+        idempotency_key: Annotated[str, Field(min_length=1, max_length=120)],
+    ) -> dict[str, Any]:
+        """Select an alternative synthesized take for a segment."""
+
+        return _call(
+            select_take,
+            runtime,
+            SelectTakeInput(
+                segment_id=segment_id,
+                take_id=take_id,
+                expected_revision=expected_revision,
+                idempotency_key=idempotency_key,
+            ),
+        )
+
+    @server.tool(
+        name="pandrator_regenerate_segments",
+        title="Trigger targeted synthesis for specific generation segments",
+        annotations=execute_action,
+    )
+    def generation_regenerate_segments_tool(
+        session_id: str,
+        segment_ids: list[str],
+        idempotency_key: Annotated[str, Field(min_length=1, max_length=120)],
+    ) -> dict[str, Any]:
+        """Trigger targeted synthesis for a specific list of segment IDs."""
+
+        return _call(
+            regenerate_segments,
+            runtime,
+            RegenerateSegmentsInput(
+                session_id=session_id,
+                segment_ids=segment_ids,
+                idempotency_key=idempotency_key,
+            ),
+        )
+
+    @server.tool(
+        name="pandrator_assemble_generation_run",
+        title="Queue output mix assembly for a generation run",
+        annotations=execute_action,
+    )
+    def generation_assemble_tool(
+        session_id: str,
+        idempotency_key: Annotated[str, Field(min_length=1, max_length=120)],
+        generation_run_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Queue output mix assembly for the specified generation run."""
+
+        return _call(
+            assemble_generation_run,
+            runtime,
+            AssembleGenerationRunInput(
+                session_id=session_id,
+                generation_run_id=generation_run_id,
+                idempotency_key=idempotency_key,
+            ),
         )
 
     @server.tool(

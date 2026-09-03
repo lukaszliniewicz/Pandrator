@@ -301,6 +301,32 @@ class McpEndToEndToolTests(unittest.TestCase):
             self.assertEqual(output / "course-final.mp4", Path(downloaded["path"]))
             self.assertEqual(b"data", Path(downloaded["path"]).read_bytes())
 
+    def test_download_artifact_defaults_to_workspace_exports_for_local_managed(self):
+        with tempfile.TemporaryDirectory() as root_dir:
+            workspace = Path(root_dir) / "workspace"
+            workspace.mkdir()
+            application = _Application()
+            profile = TargetProfile(
+                name="managed-local",
+                mode=TargetMode.LOCAL_MANAGED,
+                workspace=str(workspace),
+                local_output_root=None,
+            )
+            runtime = SimpleNamespace(
+                profile=profile,
+                require_application=lambda: application,
+            )
+            downloaded = download_artifact(
+                runtime,
+                DownloadArtifactInput(
+                    artifact_id="artifact-1",
+                    filename="output.mp4",
+                ),
+            )
+            expected_path = workspace / "exports" / "output.mp4"
+            self.assertEqual(expected_path, Path(downloaded["path"]))
+            self.assertEqual(b"data", expected_path.read_bytes())
+
 
 if __name__ == "__main__":
     unittest.main()

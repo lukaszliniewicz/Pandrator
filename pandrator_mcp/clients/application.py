@@ -140,7 +140,7 @@ class ApplicationClient:
         *,
         method: str = "GET",
         authenticated: bool = True,
-        parameters: dict[str, Any] | None = None,
+        parameters: dict[str, Any] | list[tuple[str, Any]] | None = None,
         body: dict[str, Any] | None = None,
         idempotency_key: str | None = None,
         if_match_revision: int | None = None,
@@ -602,7 +602,13 @@ class ApplicationClient:
                 "target_identity_mismatch",
                 "The Pandrator canonical public origin is invalid.",
             ) from error
-        if actual_origin != target.application.origin:
+        if target.mode == TargetMode.LOCAL_MANAGED:
+            if not payload.get("managed") or not payload.get("manager_instance_id"):
+                raise PandratorMcpError(
+                    "target_identity_mismatch",
+                    "The local Pandrator process is not running under Manager control.",
+                )
+        elif actual_origin != target.application.origin:
             raise PandratorMcpError(
                 "target_identity_mismatch",
                 "The Pandrator canonical origin differs from the configured target.",
@@ -668,10 +674,18 @@ class ApplicationClient:
             "identity_pinned": bool(target.expected_identity.application_instance_id),
         }
 
-    def list_sessions(self, *, limit: int = 50) -> dict[str, Any]:
+    def list_sessions(
+        self,
+        *,
+        limit: int = 50,
+        query: str | None = None,
+    ) -> dict[str, Any]:
+        parameters: dict[str, Any] = {"limit": max(1, min(int(limit), 100))}
+        if query and query.strip():
+            parameters["q"] = query.strip()
         return self._request_json(
             "/api/v1/sessions",
-            parameters={"limit": max(1, min(int(limit), 100))},
+            parameters=parameters,
         )
 
     def create_dispatch_run(
@@ -1062,6 +1076,43 @@ class ApplicationClient:
     def get_workflow(self, session_id: str) -> dict[str, Any]:
         return self._request_json(f"/api/v1/sessions/{quote(session_id, safe='')}/workflow")
 
+    def get_subtitles(self, session_id: str) -> dict[str, Any]:
+        return self._request_json(f"/api/v1/sessions/{quote(session_id, safe='')}/subtitles")
+
+    def review_subtitles(
+        self,
+        session_id: str,
+        *,
+        artifact_ids: list[str] | tuple[str, ...],
+    ) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/sessions/{quote(session_id, safe='')}/subtitles/review",
+            parameters=[("artifact_id", item) for item in artifact_ids],
+        )
+
+    def save_subtitle_review(
+        self,
+        session_id: str,
+        stage: str,
+        *,
+        expected_revision: int,
+        segments: list[dict[str, Any]],
+        source_artifact_id: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "expected_revision": expected_revision,
+            "segments": segments,
+        }
+        if source_artifact_id:
+            payload["source_artifact_id"] = source_artifact_id
+        return self._request_json(
+            f"/api/v1/sessions/{quote(session_id, safe='')}/subtitles/{quote(stage, safe='')}/review",
+            method="POST",
+            body=payload,
+            idempotency_key=idempotency_key,
+        )
+
     def get_session_settings(
         self,
         session_id: str,
@@ -1230,6 +1281,91 @@ class ApplicationClient:
 
     def list_generation_runs(self, session_id: str) -> dict[str, Any]:
         return self._request_json(f"/api/v1/sessions/{quote(session_id, safe='')}/generation-runs")
+
+    def list_generation_segments(
+        self,
+        session_id: str,
+        *,
+        cursor: int = 0,
+        limit: int = 50,
+        generation_run_id: str | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "cursor": max(0, int(cursor)),
+            "limit": max(1, min(int(limit), 100)),
+        }
+        if generation_run_id:
+            params["generation_run_id"] = generation_run_id
+        return self._request_json(
+            f"/api/v1/sessions/{quote(session_id, safe='')}/generation-segments",
+            parameters=params,
+        )
+
+    def update_generation_segment(
+        self,
+        segment_id: str,
+        *,
+        changes: dict[str, Any],
+        expected_revision: int,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/generation-segments/{quote(segment_id, safe='')}",
+            method="PATCH",
+            body=changes,
+            if_match_revision=expected_revision,
+            idempotency_key=idempotency_key,
+        )
+
+    def select_generation_take(
+        self,
+        segment_id: str,
+        take_id: str,
+        *,
+        expected_revision: int,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/generation-segments/{quote(segment_id, safe='')}/takes/{quote(take_id, safe='')}/select",
+            method="POST",
+            if_match_revision=expected_revision,
+            idempotency_key=idempotency_key,
+        )
+
+    def start_generation_run(
+        self,
+        session_id: str,
+        *,
+        segment_ids: list[str] | tuple[str, ...] | None = None,
+        operation: str = "generate",
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {"operation": operation}
+        if segment_ids:
+            body["segment_ids"] = list(segment_ids)
+        return self._request_json(
+            f"/api/v1/sessions/{quote(session_id, safe='')}/generation-runs",
+            method="POST",
+            body=body,
+            idempotency_key=idempotency_key,
+        )
+
+    def create_output_assembly(
+        self,
+        session_id: str,
+        *,
+        generation_run_id: str | None = None,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {}
+        if generation_run_id:
+            body["generation_run_id"] = generation_run_id
+        return self._request_json(
+            f"/api/v1/sessions/{quote(session_id, safe='')}/output-assemblies",
+            method="POST",
+            body=body,
+            idempotency_key=idempotency_key,
+        )
 
     def download_artifact(
         self,

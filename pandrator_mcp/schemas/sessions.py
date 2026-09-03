@@ -122,6 +122,11 @@ class ListSessionsInput(ToolInput):
         "voiceover",
     ] | None = None
     state: str | None = Field(default=None, max_length=40)
+    query: str | None = Field(
+        default=None,
+        max_length=100,
+        description="Optional search term to filter sessions by name, language, or identifier.",
+    )
 
 
 class GetSessionInput(ToolInput):
@@ -130,6 +135,120 @@ class GetSessionInput(ToolInput):
 
 class GetWorkflowInput(ToolInput):
     session_id: str = Field(min_length=1, max_length=80)
+
+
+SubtitleStage = Literal[
+    "transcribe",
+    "transcription",
+    "correct",
+    "correction",
+    "translate",
+    "translation",
+    "tts_optimized",
+    "tts_optimization",
+]
+
+
+class PreviewSubtitlesInput(ToolInput):
+    session_id: str = Field(min_length=1, max_length=80)
+    stage: SubtitleStage | None = None
+    artifact_id: str | None = Field(default=None, max_length=80)
+    offset: int = Field(default=0, ge=0)
+    limit: int = Field(default=20, ge=1, le=100)
+    query: str | None = Field(
+        default=None,
+        max_length=100,
+        description="Optional search term to filter cues by text or speaker.",
+    )
+    around_ordinal: int | None = Field(
+        default=None,
+        ge=1,
+        description="Center the view on a specific cue ordinal with surrounding context.",
+    )
+    context: int = Field(
+        default=3,
+        ge=0,
+        le=20,
+        description="Number of context cues before and after around_ordinal.",
+    )
+    start_ordinal: int | None = Field(
+        default=None,
+        ge=1,
+        description="Optional 1-indexed starting cue ordinal to slice.",
+    )
+    end_ordinal: int | None = Field(
+        default=None,
+        ge=1,
+        description="Optional 1-indexed ending cue ordinal (inclusive) to slice.",
+    )
+
+
+class ReplaceSubtitleTextInput(ToolInput):
+    session_id: str = Field(min_length=1, max_length=80)
+    stage: SubtitleStage
+    expected_revision: int = Field(ge=1)
+    search_text: str = Field(
+        min_length=1,
+        max_length=500,
+        description="The substring, word, or pattern to find in subtitle cues.",
+    )
+    replacement_text: str = Field(
+        max_length=500,
+        description="The text to replace matching occurrences with.",
+    )
+    match_case: bool = Field(
+        default=False,
+        description="Whether case matching should be exact.",
+    )
+    whole_word: bool = Field(
+        default=True,
+        description="Whether to match whole words only (prevents accidental substring replacements).",
+    )
+    is_regex: bool = Field(
+        default=False,
+        description="Treat search_text as a regular expression.",
+    )
+    dry_run: bool = Field(
+        default=False,
+        description="If true, returns matches and proposed diff without mutating the database.",
+    )
+    idempotency_key: str = Field(min_length=1, max_length=120)
+
+
+class CuePatchInput(ToolInput):
+    ordinal: int = Field(ge=1, description="The 1-indexed cue number to patch.")
+    text: str | None = Field(default=None, max_length=2000, description="New text for this cue.")
+    speaker: str | None = Field(default=None, max_length=160, description="New speaker label.")
+    start_ms: int | None = Field(default=None, ge=0, description="Optional start time in milliseconds.")
+    end_ms: int | None = Field(default=None, ge=0, description="Optional end time in milliseconds.")
+
+
+class PatchSubtitleCuesInput(ToolInput):
+    session_id: str = Field(min_length=1, max_length=80)
+    stage: SubtitleStage
+    expected_revision: int = Field(ge=1)
+    cues: list[CuePatchInput] = Field(
+        min_length=1,
+        max_length=100,
+        description="List of cue patches to apply by ordinal.",
+    )
+    idempotency_key: str = Field(min_length=1, max_length=120)
+
+
+class ImportSubtitlesInput(ToolInput):
+    session_id: str = Field(min_length=1, max_length=80)
+    stage: SubtitleStage
+    expected_revision: int = Field(ge=1)
+    srt_content: str | None = Field(
+        default=None,
+        description="Raw SRT format text content to import.",
+    )
+    filename: str | None = Field(
+        default=None,
+        max_length=255,
+        description="Relative path of an SRT file inside the workspace exports or source root.",
+    )
+    idempotency_key: str = Field(min_length=1, max_length=120)
 
 
 class GetSessionSettingsInput(ToolInput):
