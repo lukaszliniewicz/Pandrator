@@ -7,6 +7,7 @@ from sqlalchemy import delete, event, select
 from pandrator.web.artifacts import ArtifactService
 from pandrator.web.database import Database
 from pandrator.web.models import Artifact, ArtifactEdge, SegmentLineage
+from pandrator.web.schemas import SubtitleReviewRequest
 from pandrator.web.sessions import SessionService
 from pandrator.web.subtitle_review import SubtitleReviewService
 from pandrator.web.workflow_handlers import WorkflowHandlers
@@ -31,6 +32,22 @@ class SubtitleReviewTests(unittest.TestCase):
     def tearDown(self):
         self.database.dispose()
         self.temporary.cleanup()
+
+    def test_initial_review_request_allows_revision_zero(self):
+        payload = SubtitleReviewRequest.model_validate(
+            {
+                "expected_revision": 0,
+                "segments": [
+                    {
+                        "start_ms": 0,
+                        "end_ms": 2000,
+                        "text": "Initial imported cue.",
+                        "speaker": None,
+                    }
+                ],
+            }
+        )
+        self.assertEqual(0, payload.expected_revision)
 
     def _artifact(self, name, role, content, parent=None):
         path = self.session_dir / name

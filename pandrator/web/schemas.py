@@ -252,7 +252,7 @@ class SubtitleSegmentInput(StrictModel):
 
 class SubtitleReviewRequest(StrictModel):
     source_artifact_id: str | None = None
-    expected_revision: int = Field(ge=1)
+    expected_revision: int = Field(ge=0)
     segments: list[SubtitleSegmentInput] = Field(min_length=1)
 
 
