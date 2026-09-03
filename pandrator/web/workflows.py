@@ -752,6 +752,7 @@ class WorkflowService:
                             and prerequisite.content_hash
                             and recorded_source_hash == prerequisite.content_hash
                         )
+                stale_reason = None
                 if active and active.status in {
                     "queued",
                     "running",
@@ -765,9 +766,14 @@ class WorkflowService:
                 ):
                     status = "failed"
                 elif artifact:
-                    status = "completed" if artifact_matches_prerequisite else "stale"
+                    if artifact_matches_prerequisite:
+                        status = "completed"
+                    else:
+                        status = "stale"
+                        stale_reason = "prerequisite_superseded"
                 elif history and history["items"] and prerequisite is not None:
                     status = "stale"
+                    stale_reason = "selection_required"
                 elif prerequisite_roles and prerequisite is None:
                     status = "unavailable"
                 else:
@@ -784,6 +790,7 @@ class WorkflowService:
                         != generation_plan.active_revision_id
                     ):
                         status = "stale"
+                        stale_reason = "generation_plan_superseded"
                     elif generation_run.status in {"queued", "running", "pausing"}:
                         status = "running"
                     elif generation_run.status == "completed":
@@ -793,13 +800,15 @@ class WorkflowService:
                             )
                             or ""
                         )
-                        status = (
-                            "stale"
-                            if prerequisite is not None
+                        if (
+                            prerequisite is not None
                             and run_source_id
                             and run_source_id != prerequisite.id
-                            else "completed"
-                        )
+                        ):
+                            status = "stale"
+                            stale_reason = "generation_source_mismatch"
+                        else:
+                            status = "completed"
                     elif generation_run.status == "failed":
                         status = "failed"
                     elif generation_run.status == "paused":
@@ -950,6 +959,7 @@ class WorkflowService:
                     "title": definition.title,
                     "explanation": definition.explanation,
                     "status": status,
+                    "stale_reason": stale_reason if status == "stale" else None,
                     "executable": bool(document_optimization_enabled)
                     if definition.key == "optimize_tts"
                     else definition.executable,

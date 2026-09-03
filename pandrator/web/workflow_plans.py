@@ -172,12 +172,14 @@ class WorkflowExecutionPlanService:
         jobs: JobQueue,
         work: WorkService,
         idempotency: IdempotencyService,
+        handlers: Any | None = None,
     ) -> None:
         self.database = database
         self.workflows = workflows
         self.jobs = jobs
         self.work = work
         self.idempotency = idempotency
+        self.handlers = handlers
 
     @staticmethod
     def _state_snapshot(db_session, session_id: str) -> dict[str, Any]:
@@ -498,6 +500,7 @@ class WorkflowExecutionPlanService:
         target_stage: str,
         resolved: ResolvedWorkflowStage,
         reuse_stages: set[str],
+        mismatched_stages: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         snapshot = self.workflows.snapshot(session_id)
         stages = list(snapshot.get("stages") or [])
@@ -527,7 +530,10 @@ class WorkflowExecutionPlanService:
             elif key in reuse_stages and selected_id:
                 decision = "reuse_explicit"
             elif status == "completed" and selected_id:
-                decision = "reuse_if_unchanged"
+                if mismatched_stages and key in mismatched_stages:
+                    decision = "run"
+                else:
+                    decision = "reuse_if_unchanged"
             elif item.get("included") or status in {
                 "ready",
                 "stale",
@@ -660,15 +666,43 @@ class WorkflowExecutionPlanService:
         expires_at = now + timedelta(
             minutes=max(1, min(int(expires_in_minutes), 60))
         )
+        mismatches: list[dict[str, Any]] = []
+        if self.handlers is not None:
+            try:
+                mismatches = self.handlers.settings_mismatches(session_id, target_stage)
+            except Exception:
+                mismatches = []
+        mismatched_stages = {
+            item["stage"]: item
+            for item in mismatches
+            if isinstance(item, dict) and "stage" in item
+        }
         steps = self._ordered_steps(
             session_id=session_id,
             target_stage=target_stage,
             resolved=resolved,
             reuse_stages=reuse_stages,
+            mismatched_stages=mismatched_stages,
         )
+        warnings: list[str] = []
+        for step in steps:
+            if (
+                step["stage"] in mismatched_stages
+                and step["decision"] == "run"
+                and step["stage"] != target_stage
+            ):
+                mismatch_info = mismatched_stages[step["stage"]]
+                reasons = ", ".join(
+                    str(r) for r in mismatch_info.get("reasons") or ["settings or source mismatch"]
+                )
+                warnings.append(
+                    f"Prerequisite stage '{step['stage']}' will be re-run ({reasons}). "
+                    f"To preserve the existing artifact instead, include '{step['stage']}' in reuse_stages."
+                )
         public_plan = {
             "schema_version": PLAN_SCHEMA_VERSION,
             "plan_id": plan_id,
+            "warnings": warnings,
             "target": {
                 "instance_id": str(
                     target_identity.get("instance_id") or ""

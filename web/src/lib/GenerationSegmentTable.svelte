@@ -30,7 +30,8 @@
     ontakelabel,
     onverificationtitle,
     onregenerate,
-    onregeneratewith
+    onregeneratewith,
+    textMode = 'display'
   }: {
     items: GenerationSegment[];
     selectedRows: string[];
@@ -57,7 +58,25 @@
     onverificationtitle: (take: GenerationSegment['takes'][number]) => string;
     onregenerate: (item: GenerationSegment) => unknown;
     onregeneratewith: (item: GenerationSegment) => unknown;
+    textMode?: 'display' | 'speech';
   } = $props();
+
+  function autoExpand(node: HTMLTextAreaElement) {
+    const adjust = () => {
+      node.style.height = 'auto';
+      node.style.height = `${Math.max(node.scrollHeight, 36)}px`;
+    };
+    requestAnimationFrame(adjust);
+    node.addEventListener('input', adjust);
+    return {
+      update() {
+        adjust();
+      },
+      destroy() {
+        node.removeEventListener('input', adjust);
+      }
+    };
+  }
 </script>
 
 <table class="w-full border-collapse text-sm">
@@ -99,16 +118,43 @@
               >{item.speaker}</span
             >
           {/if}
-          <textarea
-            value={item.text}
-            data-generation-search-index={itemIndex}
-            onblur={(event) => {
-              const text = event.currentTarget.value;
-              if (text !== item.text) onpatch(item, { text });
-            }}
-            rows="2"
-            class="scrollbar-on-demand w-full resize-y rounded-lg border border-transparent bg-transparent p-2 focus:border-[var(--line)]"
-          ></textarea>
+          {#if textMode === 'speech'}
+            <div class="mb-1 flex items-center gap-1.5 text-[.65rem] font-medium text-[var(--accent)]">
+              <span class="rounded bg-[var(--accent-soft)] px-1.5 py-0.5">Spoken text (TTS prompt)</span>
+              {#if item.text !== (item.optimized_text ?? item.text)}
+                <span class="muted max-w-md truncate" title={`Original script: ${item.text}`}>Script: {item.text}</span>
+              {/if}
+            </div>
+            <textarea
+              use:autoExpand
+              value={item.optimized_text ?? item.text}
+              data-generation-search-index={itemIndex}
+              onblur={(event) => {
+                const text = event.currentTarget.value.trim();
+                const current = (item.optimized_text ?? item.text).trim();
+                if (text !== current) onpatch(item, { optimized_text: text });
+              }}
+              rows="1"
+              class="segment-text w-full rounded-lg border border-[var(--accent-soft)] bg-transparent p-2 focus:border-[var(--accent)]"
+            ></textarea>
+          {:else}
+            <textarea
+              use:autoExpand
+              value={item.text}
+              data-generation-search-index={itemIndex}
+              onblur={(event) => {
+                const text = event.currentTarget.value.trim();
+                if (text !== item.text.trim()) onpatch(item, { text });
+              }}
+              rows="1"
+              class="segment-text w-full rounded-lg border border-transparent bg-transparent p-2 focus:border-[var(--line)]"
+            ></textarea>
+            {#if item.optimized_text && item.optimized_text !== item.text}
+              <p class="muted mt-0.5 mb-1 truncate text-[.65rem]" title={`Spoken: ${item.optimized_text}`}>
+                <span class="font-medium text-[var(--accent)]">Spoken:</span> {item.optimized_text}
+              </p>
+            {/if}
+          {/if}
           {#if item.optimized_text || selectedTake?.llm_optimized}
             <button
               onclick={(event) => {
@@ -328,5 +374,12 @@
   }
   .icon-action {
     padding: 0.42rem;
+  }
+  .segment-text {
+    field-sizing: content;
+    resize: none;
+    overflow-y: hidden;
+    min-height: 2.2rem;
+    line-height: 1.45;
   }
 </style>

@@ -135,13 +135,6 @@ class ApplicationServices:
         artifacts = ArtifactService(database, paths)
         session_forks = SessionForkService(database, paths, artifacts)
         workflows = WorkflowService(database, jobs)
-        workflow_plans = WorkflowExecutionPlanService(
-            database,
-            workflows,
-            jobs,
-            work,
-            idempotency,
-        )
         manager_bridge = LocalManagerProxy()
         tts_providers = TtsProviderRegistry()
         workflow_handlers = WorkflowHandlers(
@@ -149,6 +142,14 @@ class ApplicationServices:
             paths,
             tts_providers=tts_providers,
             manager_bridge=manager_bridge,
+        )
+        workflow_plans = WorkflowExecutionPlanService(
+            database,
+            workflows,
+            jobs,
+            work,
+            idempotency,
+            handlers=workflow_handlers,
         )
         tts_catalogue = TtsCatalogueService(
             database,

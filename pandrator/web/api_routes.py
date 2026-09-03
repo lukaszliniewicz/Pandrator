@@ -1459,12 +1459,14 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     @app.get("/api/v1/sessions")
     @require_auth
     def session_list():
+        query = request.args.get("q") or request.args.get("query")
         return jsonify(
             {
                 "items": [
                     _session_payload(item)
                     for item in sessions.list(
-                        include_trashed=request.args.get("include_trashed") == "true"
+                        include_trashed=request.args.get("include_trashed") == "true",
+                        query=query,
                     )
                 ]
             }

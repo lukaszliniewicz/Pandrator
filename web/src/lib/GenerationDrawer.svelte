@@ -11,6 +11,8 @@
     Pause,
     Play,
     RefreshCw,
+    Settings,
+    SlidersHorizontal,
     Sparkles,
     Square,
     Trash2,
@@ -75,7 +77,10 @@
   let selectedRows = $state<string[]>([]);
   let selectionAnchor = $state('');
   let viewMode = $state<'segments' | 'reading'>('segments');
-  let readingTextMode = $state<'display' | 'speech'>('display');
+  let textMode = $state<'display' | 'speech'>('display');
+  let displayMenuOpen = $state(false);
+  let settingsMenuOpen = $state(false);
+  let regenerateMenuOpen = $state(false);
   let rvcModels = $state<string[]>([]);
   let rvcModel = $state('');
   let rvcPitch = $state(0);
@@ -1069,9 +1074,7 @@
 
   function readingSegmentText(item: GenerationSegment) {
     const speech = activeTake(item)?.synthesized_text || item.optimized_text;
-    return String(
-      readingTextMode === 'speech' && speech ? speech : item.text || ''
-    )
+    return String(textMode === 'speech' && speech ? speech : item.text || '')
       .replace(/\s+/g, ' ')
       .trim();
   }
@@ -1197,29 +1200,64 @@
     activateReadingSegment(event, item);
   }
 
-  function keyboard(event: KeyboardEvent) {
+  function onGlobalDrawerKeydown(event: KeyboardEvent) {
+    if (mode === 'collapsed') return;
+    const target = event.target as HTMLElement | null;
+    if (
+      target &&
+      (target.tagName === 'INPUT' ||
+        target.tagName === 'TEXTAREA' ||
+        target.tagName === 'SELECT' ||
+        target.isContentEditable)
+    ) {
+      return;
+    }
+    if (event.key === 'Escape') {
+      displayMenuOpen = false;
+      settingsMenuOpen = false;
+      regenerateMenuOpen = false;
+      return;
+    }
     const index = payload.items.findIndex((item) => item.id === selectedRow);
     if (event.key === 'ArrowDown') {
-      const item =
-        payload.items[
-          Math.min(payload.items.length - 1, Math.max(0, index + 1))
-        ];
-      if (item) selectSegment(item, event);
+      const nextIndex = Math.min(
+        payload.items.length - 1,
+        Math.max(0, index + 1)
+      );
+      const item = payload.items[nextIndex];
+      if (item) {
+        selectSegment(item, event);
+        const rowEl = document.querySelector(`[data-segment-id="${item.id}"]`);
+        rowEl?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      }
       event.preventDefault();
     } else if (event.key === 'ArrowUp') {
-      const item = payload.items[Math.max(0, index < 0 ? 0 : index - 1)];
-      if (item) selectSegment(item, event);
+      const prevIndex = Math.max(0, index < 0 ? 0 : index - 1);
+      const item = payload.items[prevIndex];
+      if (item) {
+        selectSegment(item, event);
+        const rowEl = document.querySelector(`[data-segment-id="${item.id}"]`);
+        rowEl?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      }
       event.preventDefault();
     } else if (event.key === ' ' && index >= 0) {
-      patchSegment(payload.items[index], {
-        marked: !payload.items[index].marked
+      const item = payload.items[index];
+      patchSegment(item, {
+        marked: !item.marked
       });
       event.preventDefault();
     } else if (event.key === 'Delete' && index >= 0) {
-      patchSegment(payload.items[index], {
-        removed: !payload.items[index].removed
+      const item = payload.items[index];
+      patchSegment(item, {
+        removed: !item.removed
       });
       event.preventDefault();
+    } else if (event.key === 'Enter' && index >= 0) {
+      const item = payload.items[index];
+      if (activeTake(item) && !item.removed) {
+        void playOnly(item);
+        event.preventDefault();
+      }
     }
   }
 
@@ -1265,6 +1303,22 @@
     }
   });
 </script>
+
+<svelte:window onkeydown={onGlobalDrawerKeydown} />
+
+{#if displayMenuOpen || settingsMenuOpen || regenerateMenuOpen}
+  <button
+    type="button"
+    class="fixed inset-0 z-40 cursor-default bg-transparent"
+    onclick={() => {
+      displayMenuOpen = false;
+      settingsMenuOpen = false;
+      regenerateMenuOpen = false;
+    }}
+    tabindex="-1"
+    aria-label="Close menu"
+  ></button>
+{/if}
 
 {#if payload.total > 0 || run}
   <aside
@@ -1353,12 +1407,12 @@
             ? playlistPaused
               ? 'Resume playlist'
               : 'Pause playlist'
-            : 'Play from the selected segment'}
+            : 'Play playlist from the selected segment'}
           aria-label={playlistActive
             ? playlistPaused
               ? 'Resume playlist'
               : 'Pause playlist'
-            : 'Play as playlist'}
+            : 'Play playlist'}
         >
           {#if playlistActive && !playlistPaused}<Pause size={14} />{:else}<Play
               size={14}
@@ -1367,7 +1421,7 @@
             ? playlistPaused
               ? 'Resume'
               : 'Pause'
-            : 'Play as playlist'}
+            : 'Play'}
         </button>
         {#if playlistActive}
           <button
@@ -1379,38 +1433,75 @@
         {/if}
       </div>
       {#if mode !== 'collapsed'}
-        <div class="view-switch" aria-label="Generation review view">
+        <div class="dropdown-wrapper">
           <button
-            onclick={() => (viewMode = 'segments')}
-            class:active={viewMode === 'segments'}
-            title="Segment review"
-            ><ListMusic size={13} /><span class="view-label">Segments</span
-            ></button
+            onclick={() => {
+              displayMenuOpen = !displayMenuOpen;
+              settingsMenuOpen = false;
+              regenerateMenuOpen = false;
+            }}
+            class="action icon-action"
+            class:active={displayMenuOpen}
+            title="Display options (view and text mode)"
+            aria-label="Display options"
+            aria-expanded={displayMenuOpen}
           >
-          <button
-            onclick={() => (viewMode = 'reading')}
-            class:active={viewMode === 'reading'}
-            title="Reading view"
-            ><BookOpenText size={13} /><span class="view-label">Reading</span
-            ></button
-          >
+            <SlidersHorizontal size={14} />
+          </button>
+          {#if displayMenuOpen}
+            <div class="dropdown-menu left">
+              <span class="dropdown-section-title">View Mode</span>
+              <button
+                type="button"
+                class="dropdown-item"
+                class:active={viewMode === 'segments'}
+                onclick={() => {
+                  viewMode = 'segments';
+                  displayMenuOpen = false;
+                }}
+              >
+                <ListMusic size={13} /> Segments table
+              </button>
+              <button
+                type="button"
+                class="dropdown-item"
+                class:active={viewMode === 'reading'}
+                onclick={() => {
+                  viewMode = 'reading';
+                  displayMenuOpen = false;
+                }}
+              >
+                <BookOpenText size={13} /> Reading view
+              </button>
+              <div class="dropdown-divider"></div>
+              <span class="dropdown-section-title">Text to edit / view</span>
+              <button
+                type="button"
+                class="dropdown-item"
+                class:active={textMode === 'display'}
+                onclick={() => {
+                  textMode = 'display';
+                  displayMenuOpen = false;
+                }}
+              >
+                Display text (script)
+              </button>
+              <button
+                type="button"
+                class="dropdown-item"
+                class:active={textMode === 'speech'}
+                onclick={() => {
+                  textMode = 'speech';
+                  displayMenuOpen = false;
+                }}
+              >
+                Spoken text (TTS prompt)
+              </button>
+            </div>
+          {/if}
         </div>
       {/if}
       <div class="ml-auto flex flex-wrap gap-2">
-        {#if mode !== 'collapsed'}
-          <button
-            onclick={() =>
-              openAlternateRegeneration(
-                selectedSegmentIds.length ? selectedSegmentIds : marked
-              )}
-            disabled={!selectedSegmentIds.length && !marked.length}
-            class="action"
-            title="Create new takes with a temporary provider, voice, language, prompt, or RVC setting set"
-            >{selectedSegmentIds.length
-              ? 'Alternate selected take…'
-              : 'Alternate marked takes…'}</button
-          >
-        {/if}
         {#if !run || ['completed', 'partial', 'failed', 'canceled'].includes(run.status)}
           <button onclick={() => start()} class="action primary"
             ><Play size={14} /> Start</button
@@ -1422,13 +1513,17 @@
         {:else if ['queued', 'running'].includes(run.status)}
           <button
             onclick={() => action('pause')}
-            class="action"
-            title="Stop after the current segment"
+            class="action icon-action"
+            title="Stop safely after the current segment"
             aria-label="Stop safely after the current segment"
-            ><Pause size={14} /> Stop</button
+            ><Pause size={14} /></button
           >
-          <button onclick={() => action('cancel')} class="action text-red-500"
-            ><Square size={14} /> Cancel</button
+          <button
+            onclick={() => action('cancel')}
+            class="action icon-action text-red-500"
+            title="Cancel generation run immediately"
+            aria-label="Cancel generation run immediately"
+            ><Square size={14} /></button
           >
         {/if}
         {#if mode !== 'collapsed'}
@@ -1491,51 +1586,119 @@
               {/each}
             </select>
           </label>
-          <button
-            onkeydown={keyboard}
-            class="action"
-            title="Focus, then use arrows, Shift+arrows to select a range, Space to mark, and Delete to remove"
-            >Keyboard navigation</button
-          >
-          <button
-            onclick={() => start('regenerate', marked)}
-            disabled={!marked.length}
-            class="action"><RefreshCw size={14} /> Regenerate marked</button
-          >
-          <button
-            onclick={() =>
-              openAlternateRegeneration(
-                selectedSegmentIds.length ? selectedSegmentIds : marked
-              )}
-            disabled={!selectedSegmentIds.length && !marked.length}
-            class="action"
-            title="Create new takes with a temporary provider, voice, language, prompt, or RVC setting set"
-            >{selectedSegmentIds.length
-              ? 'Regenerate selected with…'
-              : 'Regenerate marked with…'}</button
-          >
+          <div class="dropdown-wrapper">
+            <div class="flex items-center">
+              <button
+                onclick={() =>
+                  start('regenerate', selectedSegmentIds.length ? selectedSegmentIds : marked)}
+                disabled={!selectedSegmentIds.length && !marked.length}
+                class="action icon-action rounded-r-none border-r-0"
+                title={selectedSegmentIds.length
+                  ? `Regenerate ${selectedSegmentIds.length} selected take(s)`
+                  : marked.length
+                    ? `Regenerate ${marked.length} marked take(s)`
+                    : 'Mark or select takes to regenerate'}
+                aria-label="Regenerate takes"
+              >
+                <RefreshCw size={14} />
+              </button>
+              <button
+                onclick={() => {
+                  regenerateMenuOpen = !regenerateMenuOpen;
+                  displayMenuOpen = false;
+                  settingsMenuOpen = false;
+                }}
+                disabled={!selectedSegmentIds.length && !marked.length}
+                class="action icon-action rounded-l-none px-1.5"
+                title="Regeneration options"
+                aria-label="Regeneration options"
+                aria-expanded={regenerateMenuOpen}
+              >
+                <ChevronDown size={12} />
+              </button>
+            </div>
+            {#if regenerateMenuOpen}
+              <div class="dropdown-menu">
+                <button
+                  type="button"
+                  class="dropdown-item"
+                  onclick={() => {
+                    regenerateMenuOpen = false;
+                    void start('regenerate', selectedSegmentIds.length ? selectedSegmentIds : marked);
+                  }}
+                >
+                  <RefreshCw size={13} />
+                  {selectedSegmentIds.length ? 'Regenerate selected takes' : 'Regenerate marked takes'}
+                </button>
+                <button
+                  type="button"
+                  class="dropdown-item"
+                  onclick={() => {
+                    regenerateMenuOpen = false;
+                    openAlternateRegeneration(selectedSegmentIds.length ? selectedSegmentIds : marked);
+                  }}
+                >
+                  <WandSparkles size={13} />
+                  Regenerate with different settings / provider…
+                </button>
+              </div>
+            {/if}
+          </div>
           <button
             onclick={assemble}
             disabled={loading ||
               selectedRun?.status !== 'completed' ||
               selectedAssembly?.status === 'queued' ||
               selectedAssembly?.status === 'running'}
-            class="action primary"
+            class="action icon-action"
             title={selectedRun?.status !== 'completed'
               ? 'Generate every remaining segment before assembly'
-              : 'Assemble this version'}
-          >
-            <Sparkles size={14} />
-            {selectedAssembly?.status === 'stale'
+              : selectedAssembly?.status === 'stale'
+                ? 'Reassemble output'
+                : 'Assemble output'}
+            aria-label={selectedAssembly?.status === 'stale'
               ? 'Reassemble output'
               : 'Assemble output'}
+          >
+            <Sparkles size={14} />
           </button>
-          <a href={`/sessions/${sessionId}/output`} class="action"
-            >Output settings</a
-          >
-          <button onclick={() => (ttsServicesOpen = true)} class="action"
-            >Speech services</button
-          >
+          <div class="dropdown-wrapper ml-auto">
+            <button
+              onclick={() => {
+                settingsMenuOpen = !settingsMenuOpen;
+                displayMenuOpen = false;
+                regenerateMenuOpen = false;
+              }}
+              class="action icon-action"
+              class:active={settingsMenuOpen}
+              title="Session generation settings & speech services"
+              aria-label="Settings and speech services"
+              aria-expanded={settingsMenuOpen}
+            >
+              <Settings size={14} />
+            </button>
+            {#if settingsMenuOpen}
+              <div class="dropdown-menu">
+                <a
+                  href={`/sessions/${sessionId}/output`}
+                  class="dropdown-item"
+                  onclick={() => (settingsMenuOpen = false)}
+                >
+                  Output settings
+                </a>
+                <button
+                  type="button"
+                  class="dropdown-item"
+                  onclick={() => {
+                    ttsServicesOpen = true;
+                    settingsMenuOpen = false;
+                  }}
+                >
+                  Speech services & catalogue
+                </button>
+              </div>
+            {/if}
+          </div>
         </div>
         <div class="border-b border-[var(--line)] px-3 py-2">
           <SearchReplaceBar
@@ -1673,6 +1836,7 @@
               {selectedTtsModel}
               {inheritedVoice}
               {inheritedLanguage}
+              textMode={textMode}
               onselect={selectSegment}
               onpatch={patchSegment}
               onreview={openOptimizationReview}
@@ -1692,13 +1856,13 @@
             <GenerationReadingView
               blocks={readingBlocks}
               selectedRunLabel={selectedRun?.label ?? 'Active mix'}
-              textMode={readingTextMode}
+              textMode={textMode}
               loaded={payload.items.length}
               total={payload.total}
               {activePlayingId}
               {selectedRows}
               {loading}
-              ontextmode={(value) => (readingTextMode = value)}
+              ontextmode={(value) => (textMode = value)}
               onactivate={activateReadingSegment}
               onactivatekeyboard={activateReadingSegmentFromKeyboard}
               ontext={readingSegmentText}
@@ -2120,26 +2284,65 @@
   .icon-action {
     padding: 0.42rem;
   }
-  .view-switch {
-    display: flex;
-    border: 1px solid var(--line);
-    border-radius: 0.6rem;
-    background: var(--paper);
-    padding: 0.15rem;
+  .dropdown-wrapper {
+    position: relative;
+    display: inline-flex;
   }
-  .view-switch button {
+  .dropdown-menu {
+    position: absolute;
+    top: calc(100% + 4px);
+    right: 0;
+    z-index: 50;
+    min-width: 12.5rem;
+    border: 1px solid var(--line);
+    border-radius: 0.65rem;
+    background: var(--paper-strong);
+    box-shadow: 0 8px 24px color-mix(in srgb, var(--ink) 14%, transparent);
+    padding: 0.35rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+  }
+  .dropdown-menu.left {
+    right: auto;
+    left: 0;
+  }
+  .dropdown-item {
     display: flex;
     align-items: center;
-    gap: 0.3rem;
+    gap: 0.5rem;
+    padding: 0.4rem 0.6rem;
     border-radius: 0.45rem;
-    padding: 0.3rem 0.5rem;
-    font-size: 0.68rem;
-    font-weight: 700;
-    color: var(--muted);
-  }
-  .view-switch button.active {
-    background: var(--accent-soft);
+    font-size: 0.72rem;
+    font-weight: 600;
     color: var(--ink);
+    text-align: left;
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    text-decoration: none;
+  }
+  .dropdown-item:hover,
+  .dropdown-item:focus {
+    background: var(--accent-soft);
+  }
+  .dropdown-item.active {
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-weight: 700;
+  }
+  .dropdown-section-title {
+    padding: 0.25rem 0.5rem 0.15rem;
+    font-size: 0.6rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    color: var(--muted);
+    letter-spacing: 0.04em;
+  }
+  .dropdown-divider {
+    height: 1px;
+    background: var(--line);
+    margin: 0.2rem 0;
   }
   .mini {
     border: 1px solid var(--line);
@@ -2151,11 +2354,6 @@
   @media (prefers-reduced-motion: reduce) {
     .generation-drawer {
       transition: none;
-    }
-  }
-  @media (max-width: 1200px) {
-    .view-label {
-      display: none;
     }
   }
 </style>

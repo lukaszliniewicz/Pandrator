@@ -2521,17 +2521,10 @@ class GenerationService:
                     )
                 )
             if source_run is not None:
-                if source_run.status in {
-                    "queued",
-                    "running",
-                    "pausing",
-                    "pause_requested",
-                    "cancel_requested",
-                    "paused",
-                }:
-                    raise ValueError(
-                        "The source generation run is still active; stop or resume it before regenerating segments."
-                    )
+                if source_run.status in {"queued", "running"}:
+                    source_run.pause_requested = True
+                    source_run.status = "pausing"
+                    source_run.updated_at = utcnow()
                 source_snapshot = dict(source_run.settings_snapshot_json or {})
                 # A previous alternate take is a useful source for ordinary
                 # settings, but its *selected-only* precedence must not leak

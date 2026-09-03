@@ -206,7 +206,7 @@
             ><X size={19} /></button
           >{/if}
       </div>
-      <nav class="min-h-0 flex-1 space-y-1 overflow-y-auto">
+      <nav class="sidebar-nav min-h-0 flex-1 space-y-1 overflow-y-auto">
         {#each navigation as item}{@const Icon = item.icon}<a
             href={item.href}
             onclick={() => (mobileOpen = false)}
@@ -318,6 +318,22 @@
   .nav-item.active {
     color: var(--ink);
     background: var(--accent-soft);
+  }
+  .sidebar-nav {
+    scrollbar-color: transparent transparent;
+  }
+  .sidebar-nav::-webkit-scrollbar-track,
+  .sidebar-nav::-webkit-scrollbar-thumb {
+    background: transparent;
+  }
+  .app-sidebar:hover .sidebar-nav,
+  .app-sidebar:focus-within .sidebar-nav {
+    scrollbar-color: color-mix(in srgb, var(--accent) 45%, var(--line))
+      transparent;
+  }
+  .app-sidebar:hover .sidebar-nav::-webkit-scrollbar-thumb,
+  .app-sidebar:focus-within .sidebar-nav::-webkit-scrollbar-thumb {
+    background: color-mix(in srgb, var(--accent) 45%, var(--line));
   }
   @media (min-width: 768px) {
     .app-sidebar {

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from .database import Database
@@ -17,11 +17,26 @@ class SessionService:
     def __init__(self, database: Database):
         self.database = database
 
-    def list(self, *, include_trashed: bool = False) -> list[SessionRecord]:
+    def list(
+        self,
+        *,
+        include_trashed: bool = False,
+        query: str | None = None,
+    ) -> list[SessionRecord]:
         with self.database.session() as session:
             statement = select(SessionRecord).order_by(SessionRecord.updated_at.desc())
             if not include_trashed:
                 statement = statement.where(SessionRecord.trashed_at.is_(None))
+            if query and query.strip():
+                term = f"%{query.strip()}%"
+                statement = statement.where(
+                    or_(
+                        SessionRecord.name.ilike(term),
+                        SessionRecord.id.ilike(term),
+                        SessionRecord.source_language.ilike(term),
+                        SessionRecord.target_language.ilike(term),
+                    )
+                )
             records = list(session.scalars(statement).all())
             for record in records:
                 session.expunge(record)
