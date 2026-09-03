@@ -302,7 +302,10 @@ def pandrator_runtime_specs(
                 cwd=str(root),
                 environment=worker_environment,
                 ports=(mcp_port,),
-                dependencies=(PANDRATOR_API_SERVICE,),
+                # The MCP server delegates work to the application worker, so
+                # an explicit MCP start must restore the complete usable stack.
+                # The worker already depends on the API.
+                dependencies=(PANDRATOR_WORKER_SERVICE,),
                 readiness=HealthProbeSpec(
                     kind="http",
                     url=f"http://127.0.0.1:{mcp_port}/health",

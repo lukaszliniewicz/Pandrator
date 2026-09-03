@@ -860,6 +860,23 @@ summary:focus-visible,
   border-bottom: 1px solid var(--line-soft);
 }
 
+.model-row.model-choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  cursor: pointer;
+}
+
+.model-row.model-choice input[type="checkbox"] {
+  margin-top: 0.15rem;
+  accent-color: var(--accent);
+}
+
+.model-row.model-choice .model-info {
+  flex: 1;
+  min-width: 0;
+}
+
 .model-row:last-child {
   padding-bottom: 0;
   border-bottom: 0;
@@ -875,6 +892,18 @@ summary:focus-visible,
   color: var(--muted);
   font-size: 0.68rem;
   line-height: 1.45;
+}
+
+.compatibility-badge {
+  background: var(--surface-muted);
+  color: var(--muted);
+  border: 1px solid var(--line);
+  font-size: 0.65rem;
+  padding: 0.1rem 0.4rem;
+  border-radius: 9999px;
+  text-transform: uppercase;
+  font-weight: 600;
+  letter-spacing: 0.03em;
 }
 
 .option-grid {

@@ -216,18 +216,22 @@ class DBusMenu(ServiceInterface):
         5: {"label": "Stop Pandrator"},
         6: {"type": "separator"},
         7: {
+            "label": "MCP server",
+            "children-display": "submenu",
+        },
+        8: {
             "label": "Speech engines",
             "children-display": "submenu",
         },
-        8: {"type": "separator"},
-        9: {"label": "Quit tray"},
+        9: {"type": "separator"},
+        10: {"label": "Quit tray"},
     }
     _BASE_ACTIONS = {
         1: "open_pandrator",
         2: "open_recovery",
         4: "start_pandrator",
         5: "stop_pandrator",
-        9: "quit",
+        10: "quit",
     }
 
     def __init__(
@@ -251,9 +255,20 @@ class DBusMenu(ServiceInterface):
         }
         self._actions = dict(self._BASE_ACTIONS)
         self._children = {
-            0: list(range(1, 10)),
+            0: list(range(1, 11)),
             7: [],
+            8: [],
         }
+
+        mcp = self._snapshot.mcp
+        self._items[7]["label"] = f"MCP server — {mcp.state_label}"
+        self._items[90] = {
+            "label": mcp.action_label,
+            "enabled": mcp.enabled,
+        }
+        self._children[7].append(90)
+        if mcp.action is not None:
+            self._actions[90] = (mcp.service_id, mcp.action)
 
         if not self._snapshot.available:
             self._items[100] = {
@@ -263,14 +278,14 @@ class DBusMenu(ServiceInterface):
                 ),
                 "enabled": False,
             }
-            self._children[7].append(100)
+            self._children[8].append(100)
             return
         if not self._snapshot.items:
             self._items[100] = {
                 "label": "No optional engines installed",
                 "enabled": False,
             }
-            self._children[7].append(100)
+            self._children[8].append(100)
             return
 
         next_id = 100
@@ -282,7 +297,7 @@ class DBusMenu(ServiceInterface):
                 "label": f"{engine.label} — {engine.state_label}",
                 "children-display": "submenu",
             }
-            self._children[7].append(parent_id)
+            self._children[8].append(parent_id)
             self._children[parent_id] = [action_id]
             self._items[action_id] = {
                 "label": engine.action_label,
@@ -341,7 +356,7 @@ class DBusMenu(ServiceInterface):
             signature = "b" if isinstance(value, bool) else "s"
             properties[key] = Variant(signature, value)
         if (
-            item_id not in {0, 3, 6, 8}
+            item_id not in {0, 3, 6, 9}
             and "enabled" not in raw
             and (not names or "enabled" in names)
         ):

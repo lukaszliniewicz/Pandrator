@@ -1,4 +1,5 @@
 import json
+import sys
 import tempfile
 import unittest
 import zipfile
@@ -266,6 +267,126 @@ class AudioCppManagerTests(unittest.TestCase):
             self.assertFalse(retried["reused"])
             self.assertEqual(2, run.call_count)
 
+    def test_staging_uses_runtime_python_when_running_under_frozen_bootstrap(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            application = create_application(root / "workspace")
+            plan = application.plan(
+                kind=OperationKind.INSTALL,
+                desired={
+                    "audio_cpp": DesiredComponentState(
+                        compute=ComputeVariant.CPU,
+                        options={"models": ["qwen3_tts_1_7b_base_q8_0"]},
+                    )
+                },
+                persist=False,
+            )
+            stage = next(task for task in plan.tasks if task.kind == "stage_audio_cpp")
+            archive = root / "audio-cpp-runtime.zip"
+            server_name = (
+                "audiocpp_server.exe"
+                if application.context.system.casefold() == "windows"
+                else "audiocpp_server"
+            )
+            with zipfile.ZipFile(archive, "w") as output:
+                output.writestr(server_name, "#!/bin/sh\n")
+                output.writestr("tools/model_manager_v2.py", "#!/usr/bin/env python3\n")
+                output.writestr(
+                    "model_specs/qwen3_tts.json",
+                    json.dumps(
+                        {
+                            "family": "qwen3_tts",
+                            "package_defaults": {
+                                "download": {
+                                    "kind": "huggingface_snapshot",
+                                    "repo": "audio-cpp/audio.cpp-gguf",
+                                    "revision": "main",
+                                }
+                            },
+                            "packages": [
+                                {
+                                    "id": "qwen3_tts_1_7b_base_q8_0",
+                                    "download": {},
+                                }
+                            ],
+                        }
+                    ),
+                )
+
+            execution = OperationTaskContext(
+                context=application.context,
+                store=application.store,
+                registry=application.registry,
+                supervisor=None,
+                operation=SimpleNamespace(id="audio-cpp-frozen-test"),
+                plan=plan,
+                prior_results={},
+                cancellation=CancellationToken(),
+            )
+
+            executed_commands: list[list[str]] = []
+
+            def record_command(spec):
+                executed_commands.append(list(spec.argv))
+                argv = list(spec.argv)
+                package = MODEL_PACKAGES[argv[3]]
+                models_root = Path(argv[argv.index("--models-root") + 1])
+                for path in package.required_paths(models_root):
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(b"model")
+                package.marker_path(models_root).write_text(
+                    json.dumps(
+                        {
+                            "schema_version": 1,
+                            "resolved_revision": "fixture-revision",
+                            "files": {package.files[0]: {"etag": "fixture"}},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+            fake_launcher = "/opt/pandrator/bin/pandrator-manager"
+            fake_runtime_python = root / "runtime" / "python"
+            fake_runtime_python.parent.mkdir(parents=True, exist_ok=True)
+            fake_runtime_python.write_text("#!/bin/sh\n")
+
+            handler = FilesystemTaskHandler()
+            with (
+                mock.patch(
+                    "pandrator_manager.operations.handlers.ArtifactDownloader.download",
+                    return_value=archive,
+                ),
+                mock.patch(
+                    "pandrator_manager.operations.handlers.CommandRunner.run",
+                    side_effect=record_command,
+                ),
+                mock.patch.object(
+                    FilesystemTaskHandler,
+                    "_sha256_file",
+                    return_value=MODEL_PACKAGES[
+                        "qwen3_tts_1_7b_base_q8_0"
+                    ].sha256[0],
+                ),
+                mock.patch("sys.executable", fake_launcher),
+                mock.patch.object(
+                    sys,
+                    "frozen",
+                    True,
+                    create=True,
+                ),
+                mock.patch(
+                    "pandrator_manager.operations.handlers.runtime_python",
+                    return_value=fake_runtime_python,
+                ),
+            ):
+                handler.execute(execution, stage)
+
+            self.assertEqual(1, len(executed_commands))
+            self.assertEqual(str(fake_runtime_python), executed_commands[0][0])
+            self.assertNotEqual(fake_launcher, executed_commands[0][0])
+
 
 if __name__ == "__main__":
     unittest.main()
+

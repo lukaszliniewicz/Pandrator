@@ -72,6 +72,7 @@ from ..runtime_specs import (
     PANDRATOR_SERVICE_STOP_ORDER,
     PANDRATOR_WORKER_SERVICE,
     pandrator_runtime_specs,
+    runtime_python,
 )
 from ..state import ManagerStore
 from ..supervisor import ProcessSupervisor
@@ -714,11 +715,22 @@ class FilesystemTaskHandler:
             staged_server.chmod(staged_server.stat().st_mode | 0o755)
 
         models_root = target / "models"
+        python_candidate = runtime_python(execution.context.layout)
+        if python_candidate.is_file():
+            python_executable = str(python_candidate)
+        elif not getattr(sys, "frozen", False):
+            python_executable = sys.executable
+        else:
+            python_executable = (
+                shutil.which("python3")
+                or shutil.which("python")
+                or sys.executable
+            )
         invocations: list[list[str]] = []
         for package in packages:
             execution.check_cancelled()
             invocation = [
-                sys.executable,
+                python_executable,
                 str(target / "tools" / "model_manager_v2.py"),
                 "install",
                 package.id,

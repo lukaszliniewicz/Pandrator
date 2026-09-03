@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping
 
 
@@ -22,6 +22,20 @@ class EngineMenuItem:
 
 
 @dataclass(frozen=True, slots=True)
+class McpMenuItem:
+    """MCP sidecar state and its recovery action."""
+
+    available: bool = False
+    service_id: str = "pandrator.mcp"
+    state: str = "unavailable"
+    state_label: str = "Not available"
+    action: str | None = None
+    action_label: str = "MCP unavailable"
+    enabled: bool = False
+    is_running: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class EngineMenuSnapshot:
     """Immutable tray menu state, safe to exchange between UI threads."""
 
@@ -29,6 +43,7 @@ class EngineMenuSnapshot:
     available: bool = True
     busy: bool = False
     message: str = ""
+    mcp: McpMenuItem = field(default_factory=McpMenuItem)
 
     @property
     def running_count(self) -> int:
@@ -88,6 +103,28 @@ def _runtime_state(
     if health_state == "failed":
         return "failed", "Failed", False
     return "stopped", "Stopped", False
+
+
+def _mcp_menu_item(
+    service: Mapping[str, Any] | None,
+    *,
+    busy: bool,
+) -> McpMenuItem:
+    if service is None:
+        return McpMenuItem()
+    state, state_label, is_running = _runtime_state("present", service)
+    wants_to_run = bool(service.get("process") or service.get("desired_running"))
+    action = "restart" if wants_to_run else "start"
+    return McpMenuItem(
+        available=True,
+        service_id=str(service.get("id") or "pandrator.mcp"),
+        state=state,
+        state_label=state_label,
+        action=action,
+        action_label="Restart MCP" if action == "restart" else "Start MCP",
+        enabled=not busy,
+        is_running=is_running,
+    )
 
 
 def build_engine_menu_snapshot(
@@ -164,4 +201,8 @@ def build_engine_menu_snapshot(
         )
 
     items.sort(key=lambda item: (item.label.casefold(), item.component_id))
-    return EngineMenuSnapshot(items=tuple(items), busy=busy)
+    return EngineMenuSnapshot(
+        items=tuple(items),
+        busy=busy,
+        mcp=_mcp_menu_item(by_id.get("pandrator.mcp"), busy=busy),
+    )

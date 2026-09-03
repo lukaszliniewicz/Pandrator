@@ -85,7 +85,7 @@ MODEL_PACKAGES: dict[str, AudioCppModelPackage] = {
         family="qwen3_tts",
         target_directory="Qwen3-TTS-12Hz-1.7B-Base-GGUF",
         files=("qwen3-tts-12hz-1.7b-base-q8_0_v2.gguf",),
-        sha256=("68b46ea7b92e6561e3f86a4114556e0ce757addadc23fc4fd2a4ead0f65c53e2",),
+        sha256=("b55e06c7890d43c208d15aed8b4ed3f18215f295e47d5960e061b15bff338ab0",),
         task="tts",
     ),
     "qwen3_tts_1_7b_customvoice_q8_0": AudioCppModelPackage(
@@ -93,7 +93,7 @@ MODEL_PACKAGES: dict[str, AudioCppModelPackage] = {
         family="qwen3_tts",
         target_directory="Qwen3-TTS-12Hz-1.7B-CustomVoice-GGUF",
         files=("qwen3-tts-12hz-1.7b-customvoice-q8_0.gguf",),
-        sha256=("9cde45c08517838234edd36104cfd65fba12aba5d46e54fee25d5ca7ab918eaf",),
+        sha256=("3cfaac8e9f13554f6daea3c5e0c53fede71ef5500cbaae7445e5fc3a5bb12e72",),
         task="tts",
     ),
     "fish_audio_s2_pro_q8_0": AudioCppModelPackage(
@@ -101,7 +101,7 @@ MODEL_PACKAGES: dict[str, AudioCppModelPackage] = {
         family="fish_audio",
         target_directory="Fish-Audio-S2-Pro-GGUF",
         files=("fish-audio-s2-pro-q8_0.gguf",),
-        sha256=("984e2fe3541e5a67c8e27483ad7a32bb26aee6786126cc98d1c323d213e81020",),
+        sha256=("4ffc169447b7a26df8bf49e8637adb4000bfa763a22c018b6c03968564259d0b",),
         task="tts",
     ),
     "voxcpm2_q8_0": AudioCppModelPackage(
@@ -109,7 +109,7 @@ MODEL_PACKAGES: dict[str, AudioCppModelPackage] = {
         family="voxcpm2",
         target_directory="VoxCPM2-GGUF",
         files=("voxcpm2-q8_0.gguf",),
-        sha256=("120de574831872556a8e75ab557cb4f7687ddf63c01e18605b3f45e10e3e1e35",),
+        sha256=("c8e01ab4416011e12a28f24ede298a1aa5ce64b43f8e8aaad53b1e2fe7c96432",),
         task="tts",
     ),
     "magpie_tts_q8_0": AudioCppModelPackage(
@@ -117,7 +117,7 @@ MODEL_PACKAGES: dict[str, AudioCppModelPackage] = {
         family="magpie_tts",
         target_directory="MagpieTTS-Multilingual-357M-GGUF",
         files=("magpie-tts-multilingual-357m-q8_0.gguf",),
-        sha256=("02f98d5aa0e4161ed0b606fe5f9079eda7a843a71ef02af87b04c90a4dadf420",),
+        sha256=("c762503a80f9af75db33379763b923c5c8a00ca79374e1e0d4051e6d68151377",),
         task="tts",
     ),
     "chatterbox_q8_0": AudioCppModelPackage(
@@ -125,7 +125,7 @@ MODEL_PACKAGES: dict[str, AudioCppModelPackage] = {
         family="chatterbox",
         target_directory="Chatterbox-GGUF",
         files=("chatterbox-q8_0.gguf",),
-        sha256=("eadd7eeb781ec3494fba2ed82ba965904d687002ad259a96479556b7828f3e9b",),
+        sha256=("d586dd1aa59613cab8046176fb7ca5ba191c02a9b10ffa5b0d892ed22b470656",),
         task="clon",
     ),
     "omnivoice_q8_0": AudioCppModelPackage(
@@ -133,7 +133,7 @@ MODEL_PACKAGES: dict[str, AudioCppModelPackage] = {
         family="omnivoice",
         target_directory="OmniVoice-GGUF",
         files=("omnivoice-q8_0.gguf",),
-        sha256=("49c2ddf64de089f2507a765b432e4036cbccd199b2bd7a8e93f5c225d0817ac8",),
+        sha256=("2f4be637278043c6842de5b85d681532030e9eb6ffe0f8b0e320f68238e3da8b",),
         task="tts",
     ),
     "pocket_tts_english_q8_0": AudioCppModelPackage(
@@ -142,8 +142,8 @@ MODEL_PACKAGES: dict[str, AudioCppModelPackage] = {
         target_directory="PocketTTS-GGUF/english",
         files=("pocket-tts-english-q8_0.gguf", "embeddings/alba.safetensors"),
         sha256=(
-            "cc41223af8972436f4f49a22650a6dbb01dcc3d232669f8623d533161f3c694d",
-            "f0b21d61d7ebe679c28b800ace4e80dbdc5e84268f0255fbc961b2ada880043c",
+            "0315406421d515d9ffbde49ed998832ff2962562ef8abde440c85fa0a27d8b2a",
+            "69c32db63ca56843d994f81f343f62e0bf2d73f7e4c9bc73e44bb1110b1d8845",
         ),
         task="tts",
         load_options={"language": "english"},
@@ -154,7 +154,7 @@ MODEL_PACKAGES: dict[str, AudioCppModelPackage] = {
         family="fireredtts3",
         target_directory="FireRedTTS3-Base-GGUF",
         files=("fireredtts3-base-q8_0.gguf",),
-        sha256=("678d8704c233893aa9fd46faf21024568a7b0b466f17096ec938cb8efe4d83c3",),
+        sha256=("68acd5bce0d87a53bb5b88255c65e19df4cbc6017b4bab0824e96f1e2351c3a7",),
         task="clon",
     ),
 }

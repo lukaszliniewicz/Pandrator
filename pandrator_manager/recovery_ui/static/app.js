@@ -46,6 +46,14 @@ const terminalStates = new Set([
   "recovery_required",
 ]);
 
+const compatibilityComponentIds = new Set([
+  "qwen_tts",
+  "fish_speech",
+  "voxcpm",
+  "chatterbox",
+  "magpie",
+]);
+
 const sectionPresentation = {
   text_to_speech: {
     title: "Text to speech",
@@ -58,6 +66,10 @@ const sectionPresentation = {
   speech_to_speech: {
     title: "Speech to speech",
     description: "Convert an existing recording into another trained voice.",
+  },
+  compatibility: {
+    title: "Compatibility backends",
+    description: "Legacy standalone Python speech engines superseded by audio.cpp.",
   },
   training: {
     title: "Training tools",
@@ -179,13 +191,35 @@ function chooseRememberedBrowser() {
   if (!privateHttpWorkstation()) return Promise.resolve(true);
   const dialog = byId("trust-browser-dialog");
   const remember = byId("remember-browser");
+  const closeBtn = byId("close-trust-browser");
   dialog.returnValue = "";
+
+  const onBackdropClick = (event) => {
+    if (event.target === dialog) {
+      dialog.close("cancel");
+    }
+  };
+  const onCloseClick = () => {
+    dialog.close("cancel");
+  };
+
+  dialog.addEventListener("click", onBackdropClick);
+  closeBtn?.addEventListener("click", onCloseClick);
+
   dialog.showModal();
   return new Promise((resolve) => {
     dialog.addEventListener(
       "close",
       () => {
-        resolve(dialog.returnValue === "continue" && remember.checked);
+        dialog.removeEventListener("click", onBackdropClick);
+        closeBtn?.removeEventListener("click", onCloseClick);
+        if (dialog.returnValue === "continue") {
+          resolve(Boolean(remember.checked));
+        } else if (dialog.returnValue === "session") {
+          resolve(false);
+        } else {
+          resolve(null);
+        }
       },
       { once: true },
     );
@@ -263,6 +297,11 @@ async function establishBrowserSession() {
   }
   history.replaceState(null, "", "/recovery");
   const remember = await chooseRememberedBrowser();
+  if (remember === null) {
+    throw new Error(
+      "Browser authorization was cancelled. Open the manager again to authorize this browser.",
+    );
+  }
   const response = await fetch("/v1/recovery/exchange", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -432,6 +471,35 @@ function componentRuntimeState(component) {
   };
 }
 
+function runtimeControlFor(service, component) {
+  if (!service) return null;
+  const inspectionState = component?.inspection.state || "present";
+  const supported = new Set(
+    component?.definition.supported_actions || ["start", "stop"],
+  );
+  const wantsToRun = Boolean(service.process || service.desired_running);
+  let action = null;
+  if (service.id === "pandrator.mcp") {
+    action = wantsToRun ? "restart" : "start";
+  } else if (wantsToRun && supported.has("stop")) {
+    action = "stop";
+  } else if (inspectionState === "present" && supported.has("start")) {
+    action = "start";
+  }
+  return {
+    action,
+    actionLabel:
+      action === "restart"
+        ? "Restart"
+        : action === "stop"
+          ? "Stop"
+          : action === "start"
+            ? "Start"
+            : "",
+    serviceId: service.id,
+  };
+}
+
 function selectable(component) {
   const state = component.inspection.state;
   const supported = new Set(component.definition.supported_actions || []);
@@ -456,6 +524,20 @@ function controlsFor(component) {
     } else if (!options[option.key]) {
       options[option.key] = option.default;
     }
+  }
+  if ((component.definition.models || []).length > 0) {
+    const supported = new Set(component.definition.models.map((m) => m.id));
+    const raw = options.models ?? component.inspection.resolved?.options?.models;
+    let configured = Array.isArray(raw)
+      ? raw.map(String).filter((item) => supported.has(item))
+      : [];
+    if (!configured.length) {
+      const preferred = "qwen3_tts_1_7b_base_q8_0";
+      configured = supported.has(preferred)
+        ? [preferred]
+        : [component.definition.models[0].id];
+    }
+    options.models = configured;
   }
   const choices = component.compute_choices || [];
   const preferredCompute =
@@ -599,16 +681,43 @@ function makeCapabilityLine(definition) {
   );
 }
 
-function makeModelList(definition) {
+function makeModelList(definition, component, state, nodes) {
   const root = document.createElement("div");
   root.className = "model-list";
+  const modelCheckboxes = new Map();
+  if (nodes) nodes.modelCheckboxes = modelCheckboxes;
+  const selectedModels = new Set(state?.options?.models || []);
+
   for (const item of definition.models || []) {
-    const row = document.createElement("div");
-    row.className = "model-row";
-    row.append(text("strong", item.label));
-    if (item.description) row.append(text("p", item.description));
+    const row = document.createElement("label");
+    row.className = "model-row model-choice";
+
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.value = item.id;
+    checkbox.checked = selectedModels.has(item.id);
+    checkbox.disabled = Boolean(activeOperation);
+    checkbox.addEventListener("change", () => {
+      const current = new Set(state.options?.models || []);
+      if (checkbox.checked) {
+        current.add(item.id);
+      } else {
+        current.delete(item.id);
+      }
+      state.options.models = (definition.models || [])
+        .map((m) => m.id)
+        .filter((id) => current.has(id));
+      updateComponentCard(component);
+      updateSelectionSummary();
+    });
+    modelCheckboxes.set(item.id, checkbox);
+
+    const content = document.createElement("div");
+    content.className = "model-info";
+    content.append(text("strong", item.label));
+    if (item.description) content.append(text("p", item.description));
     if (item.estimated_download_bytes) {
-      row.append(
+      content.append(
         text(
           "p",
           `Model download: about ${bytes(item.estimated_download_bytes)}`,
@@ -623,11 +732,14 @@ function makeModelList(definition) {
         link.href = item.license_url;
         link.target = "_blank";
         link.rel = "noreferrer";
+        link.addEventListener("click", (e) => e.stopPropagation());
         copy.append(link);
       }
-      row.append(copy);
+      content.append(copy);
     }
-    if (item.usage_note) row.append(text("p", item.usage_note));
+    if (item.usage_note) content.append(text("p", item.usage_note));
+
+    row.append(checkbox, content);
     root.append(row);
   }
   return root;
@@ -664,7 +776,7 @@ function buildComponentDetails(component, nodes) {
     modelSection.className = "engine-detail-section";
     modelSection.append(
       text("h4", "Models and licences"),
-      makeModelList(definition),
+      makeModelList(definition, component, state, nodes),
     );
     details.append(modelSection);
   }
@@ -809,7 +921,11 @@ function buildComponentCard(component) {
     componentStateLabel(component.inspection.state),
     `engine-state ${component.inspection.state}`,
   );
-  titleLine.append(text("span", definition.label, "engine-title"), status);
+  titleLine.append(text("span", definition.label, "engine-title"));
+  if (compatibilityComponentIds.has(definition.id)) {
+    titleLine.append(text("span", "Compatibility", "compatibility-badge"));
+  }
+  titleLine.append(status);
   summaryCopy.append(
     titleLine,
     text("p", definition.description || "", "engine-summary"),
@@ -893,7 +1009,12 @@ function renderCatalogue() {
   clear(root);
   const groups = new Map();
   for (const component of catalogueComponents) {
-    const section = component.definition.section || "core";
+    const isCompatibility =
+      compatibilityComponentIds.has(component.definition.id) &&
+      !["present", "degraded"].includes(component.inspection.state);
+    const section = isCompatibility
+      ? "compatibility"
+      : component.definition.section || "core";
     if (!groups.has(section)) groups.set(section, []);
     groups.get(section).push(component);
     controlsFor(component);
@@ -917,7 +1038,8 @@ function renderCatalogue() {
     const sectionNode = document.createElement("details");
     sectionNode.className = "component-section";
     sectionNode.dataset.section = section;
-    sectionNode.open = sectionState.get(section) === true;
+    sectionNode.open =
+      sectionState.get(section) ?? (section !== "compatibility");
     sectionNode.addEventListener("toggle", () => {
       sectionState.set(section, sectionNode.open);
     });
@@ -989,8 +1111,23 @@ function updateComponentCard(component) {
       : `${definition.label}: ${runtimeState.label}`,
   );
   if (!nodes.detailsBuilt) return;
-  nodes.problem.textContent = (inspection.problems || []).join(" ");
-  nodes.problem.classList.toggle("hidden", !(inspection.problems || []).length);
+  if (nodes.modelCheckboxes) {
+    const selected = new Set(state.options?.models || []);
+    for (const [modelId, cb] of nodes.modelCheckboxes.entries()) {
+      cb.checked = selected.has(modelId);
+      cb.disabled = Boolean(activeOperation);
+    }
+  }
+  const problems = [...(inspection.problems || [])];
+  if (
+    (definition.models || []).length > 0 &&
+    state.selected &&
+    !(state.options?.models || []).length
+  ) {
+    problems.push("Select at least one model package.");
+  }
+  nodes.problem.textContent = problems.join(" ");
+  nodes.problem.classList.toggle("hidden", !problems.length);
   nodes.unsupported.classList.toggle(
     "hidden",
     !(
@@ -1067,8 +1204,14 @@ function updateSelectionSummary() {
     } selected`;
   }
   byId("selection-count").textContent = summary;
+  const anyMissingModels = selected.some(
+    (component) =>
+      (component.definition.models || []).length > 0 &&
+      !(controlsFor(component).options?.models || []).length,
+  );
   const review = byId("review-selection");
-  review.disabled = !selected.length || Boolean(activeOperation);
+  review.disabled =
+    !selected.length || Boolean(activeOperation) || anyMissingModels;
   review.textContent = "Review installation";
 }
 
@@ -1148,12 +1291,53 @@ function setApplicationState(label, state = "") {
   node.className = `application-state${state ? ` ${state}` : ""}`;
 }
 
+function renderMcpAccess() {
+  const row = byId("mcp-summary-row");
+  const summary = byId("mcp-summary");
+  const endpoint = byId("mcp-endpoint");
+  const actionButton = byId("mcp-action");
+  const current = snapshot.application;
+  const service = snapshot.services.find(
+    (item) => item.id === "pandrator.mcp",
+  );
+
+  row.classList.toggle("hidden", !current?.installed);
+  endpoint.textContent = "";
+  actionButton.classList.add("hidden");
+  actionButton.disabled = true;
+  actionButton.classList.remove("busy");
+  delete actionButton.dataset.action;
+
+  if (!current?.installed) return;
+  if (!current.mcp_available || !service) {
+    summary.textContent = "MCP server is not available in this installation";
+    return;
+  }
+
+  const presentation = serviceRuntimeState(service);
+  const control = runtimeControlFor(service, null);
+  summary.textContent = `MCP server ${presentation.label.toLowerCase()}`;
+  endpoint.textContent = current.mcp_endpoint || service.endpoint || "";
+  actionButton.textContent =
+    control.action === "restart" ? "Restart MCP" : "Start MCP";
+  actionButton.dataset.action = control.action;
+  actionButton.classList.remove("hidden");
+  const busy = runtimeBusy.has(service.id);
+  actionButton.disabled =
+    !control.action ||
+    Boolean(activeOperation) ||
+    applicationBusy ||
+    busy;
+  actionButton.classList.toggle("busy", busy);
+}
+
 function renderApplication() {
   const current = snapshot.application;
   const primary = byId("application-primary");
   const more = byId("application-more");
   const problem = byId("application-problem");
   renderApplicationMaintenance();
+  renderMcpAccess();
   primary.classList.toggle("busy", applicationBusy);
   primary.disabled = applicationBusy || !current || Boolean(activeOperation);
   problem.classList.add("hidden");
@@ -1411,12 +1595,11 @@ function renderServices() {
       service,
       component?.inspection.state || "present",
     );
-    const componentStateValue = component
-      ? componentRuntimeState(component)
-      : null;
+    const runtimeControl = runtimeControlFor(service, component);
     const label =
       {
         "pandrator.api": "Pandrator web app",
+        "pandrator.mcp": "Pandrator MCP server",
         "pandrator.worker": "Pandrator background worker",
       }[service.id] ||
       component?.definition.label ||
@@ -1442,26 +1625,26 @@ function renderServices() {
     controls.append(
       text("span", service.endpoint || "No endpoint", "service-endpoint"),
     );
-    if (componentStateValue?.action) {
+    if (runtimeControl?.action) {
       const button = makeButton(
-        componentStateValue.actionLabel,
+        runtimeControl.actionLabel,
         () =>
           runtime(
-            componentStateValue.serviceId,
-            componentStateValue.action,
+            runtimeControl.serviceId,
+            runtimeControl.action,
           ),
         "button secondary service-runtime-action",
       );
       button.disabled =
         Boolean(activeOperation) ||
-        runtimeBusy.has(componentStateValue.serviceId);
+        runtimeBusy.has(runtimeControl.serviceId);
       button.classList.toggle(
         "busy",
-        runtimeBusy.has(componentStateValue.serviceId),
+        runtimeBusy.has(runtimeControl.serviceId),
       );
       button.setAttribute(
         "aria-label",
-        `${componentStateValue.actionLabel} ${label}`,
+        `${runtimeControl.actionLabel} ${label}`,
       );
       controls.append(button);
     }
@@ -1860,15 +2043,19 @@ async function poll() {
 
 function desiredFor(component, present = true) {
   const state = controlsFor(component);
+  const options = {
+    ...(component.desired?.options || {}),
+    ...state.options,
+    start_after_install: present,
+  };
+  if (Array.isArray(state.options?.models)) {
+    options.models = [...state.options.models];
+  }
   return {
     present,
     compute: state.compute || component.desired?.compute || "auto",
     quantization: state.quantization || null,
-    options: {
-      ...(component.desired?.options || {}),
-      ...state.options,
-      start_after_install: present,
-    },
+    options,
   };
 }
 
@@ -2261,6 +2448,7 @@ async function applicationAction(action) {
 async function runtime(serviceId, action) {
   if (runtimeBusy.has(serviceId)) return;
   runtimeBusy.add(serviceId);
+  renderMcpAccess();
   renderCatalogue();
   renderServices();
   try {
@@ -2276,7 +2464,14 @@ async function runtime(serviceId, action) {
           snapshot.services.find((service) => service.id === serviceId)
             ?.component_id,
     );
-    const label = component?.definition.label || serviceId;
+    const label =
+      {
+        "pandrator.api": "Pandrator web app",
+        "pandrator.mcp": "Pandrator MCP server",
+        "pandrator.worker": "Pandrator background worker",
+      }[serviceId] ||
+      component?.definition.label ||
+      serviceId;
     showMessage(
       action === "stop"
         ? `${label} stopped.`
@@ -2287,6 +2482,7 @@ async function runtime(serviceId, action) {
     await refresh();
   } finally {
     runtimeBusy.delete(serviceId);
+    renderMcpAccess();
     renderCatalogue();
     renderServices();
   }
@@ -2637,6 +2833,10 @@ document.addEventListener("DOMContentLoaded", async () => {
   byId("application-stop").addEventListener("click", () =>
     applicationAction("stop"),
   );
+  byId("mcp-action").addEventListener("click", (event) => {
+    const action = event.currentTarget.dataset.action;
+    if (action) runtime("pandrator.mcp", action);
+  });
   byId("network-mode").addEventListener("change", (event) => {
     const mode = event.target.value;
     const bind = byId("network-bind-host");

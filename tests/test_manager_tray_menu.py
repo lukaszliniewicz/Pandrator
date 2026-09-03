@@ -73,6 +73,24 @@ def service(
     }
 
 
+def mcp_service(
+    *,
+    process=None,
+    desired_running=False,
+    health="stopped",
+):
+    return {
+        "id": "pandrator.mcp",
+        "component_id": "pandrator",
+        "desired_running": desired_running,
+        "process": process,
+        "health": {
+            "state": health,
+            "service_id": "pandrator.mcp",
+        },
+    }
+
+
 class EngineMenuSnapshotTests(unittest.TestCase):
     def test_running_engine_is_counted_and_can_be_stopped(self):
         snapshot = build_engine_menu_snapshot(
@@ -173,6 +191,45 @@ class EngineMenuSnapshotTests(unittest.TestCase):
         self.assertIsNone(snapshot.items[0].action)
         self.assertFalse(snapshot.items[0].enabled)
 
+    def test_stopped_mcp_can_be_started(self):
+        snapshot = build_engine_menu_snapshot(
+            [component()],
+            [service(), mcp_service()],
+        )
+
+        self.assertTrue(snapshot.mcp.available)
+        self.assertEqual("Stopped", snapshot.mcp.state_label)
+        self.assertEqual("start", snapshot.mcp.action)
+        self.assertEqual("Start MCP", snapshot.mcp.action_label)
+        self.assertTrue(snapshot.mcp.enabled)
+
+    def test_running_mcp_can_be_restarted(self):
+        snapshot = build_engine_menu_snapshot(
+            [component()],
+            [
+                service(),
+                mcp_service(
+                    process={"pid": 8456},
+                    desired_running=True,
+                    health="healthy",
+                ),
+            ],
+        )
+
+        self.assertEqual("Running", snapshot.mcp.state_label)
+        self.assertEqual("restart", snapshot.mcp.action)
+        self.assertEqual("Restart MCP", snapshot.mcp.action_label)
+
+    def test_busy_manager_disables_mcp_action(self):
+        snapshot = build_engine_menu_snapshot(
+            [],
+            [mcp_service()],
+            busy=True,
+        )
+
+        self.assertEqual("start", snapshot.mcp.action)
+        self.assertFalse(snapshot.mcp.enabled)
+
 
 class TrayApplicationEngineTests(unittest.TestCase):
     def test_pystray_backend_uses_the_packaged_pandrator_mark(self):
@@ -231,6 +288,27 @@ class TrayApplicationEngineTests(unittest.TestCase):
         self.assertEqual("Speech engines — 0/1 running", engine_group.text)
         self.assertEqual("Kokoro — Stopped", engine.text)
         self.assertEqual("Start Kokoro", engine.submenu.items[0].text)
+
+    def test_pystray_menu_exposes_mcp_state_and_action(self):
+        client = mock.Mock()
+        client.status.return_value = {"active_operation_id": None}
+        client.components.return_value = [component()]
+        client.services.return_value = [service(), mcp_service()]
+        application = TrayApplication(client)
+        application.engine_snapshot()
+
+        fake_pystray = mock.Mock(Menu=FakeMenu, MenuItem=FakeMenuItem)
+        with mock.patch.dict("sys.modules", {"pystray": fake_pystray}):
+            top_level = application._pystray_menu_items()
+            mcp_group = next(
+                item
+                for item in top_level
+                if getattr(item, "text", "").startswith("MCP server")
+            )
+            self.assertEqual("MCP server — Stopped", mcp_group.text)
+            self.assertEqual("Start MCP", mcp_group.submenu.items[0].text)
+            mcp_group.submenu.items[0].action()
+        client.runtime.assert_called_once_with("start", ("pandrator.mcp",))
 
 
 if __name__ == "__main__":

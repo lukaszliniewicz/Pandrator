@@ -133,7 +133,7 @@ class NetworkConfigurationTests(unittest.TestCase):
         )
         self.assertEqual("pandrator.mcp", mcp.service_id)
         self.assertEqual("http://127.0.0.1:8099/health", mcp.readiness.url)
-        self.assertEqual(("pandrator.api",), mcp.dependencies)
+        self.assertEqual(("pandrator.worker",), mcp.dependencies)
         self.assertIn(str(layout.mcp_credential), mcp.arguments)
         self.assertIn(str(layout.mcp_configuration), mcp.arguments)
         self.assertEqual("moss", api.environment["CRISPASR_DEFAULT_ENGINE"])

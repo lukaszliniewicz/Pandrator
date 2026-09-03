@@ -14,6 +14,7 @@ from pandrator_manager.desktop import (
 from pandrator_manager.tray.menu import (
     EngineMenuItem,
     EngineMenuSnapshot,
+    McpMenuItem,
 )
 from pandrator_manager.tray.status_notifier import (
     DBusMenu,
@@ -125,6 +126,7 @@ class StatusNotifierContractTests(unittest.TestCase):
                 "Open setup / recovery",
                 "Start Pandrator",
                 "Stop Pandrator",
+                "MCP server — Not available",
                 "Speech engines",
                 "Quit tray",
             ],
@@ -149,7 +151,7 @@ class StatusNotifierContractTests(unittest.TestCase):
         )
         menu = DBusMenu(self.dispatcher, snapshot)
 
-        engine_layout = menu._layout(7, -1, [])
+        engine_layout = menu._layout(8, -1, [])
         parent = engine_layout[2][0].value
         action = parent[2][0].value
 
@@ -178,8 +180,31 @@ class StatusNotifierContractTests(unittest.TestCase):
         self.assertEqual(initial + 1, menu.revision)
         self.assertEqual(
             "Unavailable",
-            menu._layout(7, -1, [])[2][0].value[1]["label"].value,
+            menu._layout(8, -1, [])[2][0].value[1]["label"].value,
         )
+
+    def test_dbus_menu_exposes_mcp_state_and_runtime_action(self):
+        snapshot = EngineMenuSnapshot(
+            mcp=McpMenuItem(
+                available=True,
+                state="stopped",
+                state_label="Stopped",
+                action="start",
+                action_label="Start MCP",
+                enabled=True,
+                is_running=False,
+            )
+        )
+        menu = DBusMenu(self.dispatcher, snapshot)
+
+        mcp_layout = menu._layout(7, -1, [])
+        action = mcp_layout[2][0].value
+
+        self.assertEqual("MCP server — Stopped", mcp_layout[1]["label"].value)
+        self.assertEqual("Start MCP", action[1]["label"].value)
+        with mock.patch.object(self.dispatcher, "dispatch") as dispatch:
+            menu.Event(90, "clicked", Variant("s", ""), 0)
+        dispatch.assert_called_once_with(("pandrator.mcp", "start"))
 
     def test_status_notifier_tooltip_reports_engine_summary(self):
         notifier = StatusNotifierItem(self.dispatcher)

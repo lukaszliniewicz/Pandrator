@@ -377,6 +377,10 @@ class TrayApplication:
             f"{snapshot.running_count}/{len(snapshot.items)} running"
         )
 
+    def _mcp_group_label(self, _item=None) -> str:
+        mcp = self._engine_snapshot.mcp
+        return f"MCP server — {mcp.state_label}"
+
     def control_engine(
         self,
         service_id: str,
@@ -450,6 +454,27 @@ class TrayApplication:
             )
         return tuple(result)
 
+    def _pystray_mcp_items(self):
+        import pystray
+
+        mcp = self._engine_snapshot.mcp
+        callback = (
+            functools.partial(
+                self.control_engine,
+                mcp.service_id,
+                mcp.action,
+            )
+            if mcp.action is not None
+            else None
+        )
+        return (
+            pystray.MenuItem(
+                mcp.action_label,
+                callback,
+                enabled=mcp.enabled,
+            ),
+        )
+
     def _pystray_menu_items(self):
         import pystray
 
@@ -468,6 +493,10 @@ class TrayApplication:
             pystray.MenuItem("Start Pandrator", self.start_pandrator),
             pystray.MenuItem("Stop Pandrator", self.stop_pandrator),
             pystray.Menu.SEPARATOR,
+            pystray.MenuItem(
+                self._mcp_group_label,
+                pystray.Menu(self._pystray_mcp_items),
+            ),
             pystray.MenuItem(
                 self._engine_group_label,
                 pystray.Menu(self._pystray_engine_items),

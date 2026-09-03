@@ -45,10 +45,12 @@ def _glibc_version() -> tuple[int, int] | None:
     return major, minor
 
 
-def qualify_linux_build_host() -> None:
+def qualify_linux_build_host(*, allow_newer: bool = False) -> None:
     """Reject release builds whose glibc floor is newer than Ubuntu 22.04."""
 
     if not sys.platform.startswith("linux"):
+        return
+    if allow_newer or os.environ.get("PANDRATOR_ALLOW_NEWER_GLIBC") == "1":
         return
     detected = _glibc_version()
     if detected is None:
@@ -105,6 +107,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--no-smoke-test",
         action="store_true",
         help="Build without running the packaged frozen self-check.",
+    )
+    parser.add_argument(
+        "--allow-newer-glibc",
+        action="store_true",
+        help="Permit building on a host with glibc newer than 2.35.",
     )
     return parser.parse_args(argv)
 
@@ -322,8 +329,8 @@ def write_checksum(artifact: Path) -> tuple[Path, str]:
 def main(argv: list[str] | None = None) -> int:
     if not sys.platform.startswith("linux"):
         raise RuntimeError("The manager AppImage must be built on Linux.")
-    qualify_linux_build_host()
     args = parse_args(argv)
+    qualify_linux_build_host(allow_newer=args.allow_newer_glibc)
     if args.bootstrap is not None and (
         args.wheel is not None or args.wheel_dir is not None
     ):

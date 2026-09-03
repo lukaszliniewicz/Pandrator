@@ -295,6 +295,22 @@
           </button>
         </div>
 
+        <div id="mcp-summary-row" class="access-summary-row hidden">
+          <div>
+            <span class="access-label">Agent access</span>
+            <strong id="mcp-summary">MCP server status unavailable</strong>
+            <span id="mcp-endpoint" class="meta"></span>
+          </div>
+          <button
+            id="mcp-action"
+            class="text-button"
+            type="button"
+            disabled
+          >
+            Start MCP
+          </button>
+        </div>
+
         <section id="component-panel" class="panel component-panel">
           <div class="setup-heading">
             <p class="eyebrow">Optional speech engines</p>
@@ -660,8 +676,20 @@
 
     <dialog id="trust-browser-dialog">
       <form method="dialog" class="dialog-shell">
-        <p class="eyebrow">Trusted private network</p>
-        <h2>Authorize this browser?</h2>
+        <div class="row">
+          <div>
+            <p class="eyebrow">Trusted private network</p>
+            <h2>Authorize this browser?</h2>
+          </div>
+          <button
+            id="close-trust-browser"
+            class="button icon secondary"
+            type="button"
+            aria-label="Close"
+          >
+            ×
+          </button>
+        </div>
         <p class="muted">
           This manager address uses unencrypted HTTP. Continue only on a home
           network, private VPN, or another network you trust.
