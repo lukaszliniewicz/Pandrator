@@ -142,6 +142,7 @@ class ApplicationServices:
             paths,
             tts_providers=tts_providers,
             manager_bridge=manager_bridge,
+            jobs=jobs,
         )
         workflow_plans = WorkflowExecutionPlanService(
             database,

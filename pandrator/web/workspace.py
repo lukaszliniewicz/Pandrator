@@ -2598,11 +2598,14 @@ class GenerationService:
                     GenerationRun.created_at.desc(),
                 )
             )
+        auto_resume_source_id = None
         if source_run is not None:
             if source_run.status in {"queued", "running"}:
                 source_run.pause_requested = True
                 source_run.status = "pausing"
                 source_run.updated_at = utcnow()
+                if operation == "regenerate":
+                    auto_resume_source_id = source_run.id
             source_snapshot = dict(source_run.settings_snapshot_json or {})
             # A previous alternate take is a useful source for ordinary
             # settings, but its *selected-only* precedence must not leak
@@ -2637,19 +2640,23 @@ class GenerationService:
             sequence_number=sequence_number,
             operation=operation,
             status="queued",
+            resume_source_on_completion=bool(auto_resume_source_id),
             settings_snapshot_json=snapshot,
             settings_hash=settings_hash,
         )
         session.add(run)
         session.flush()
+        job_payload = {
+            "generation_run_id": run.id,
+            "segment_ids": requested_segment_ids,
+            "operation": operation,
+        }
+        if auto_resume_source_id:
+            job_payload["auto_resume_source_generation_run_id"] = auto_resume_source_id
         job = self.jobs.enqueue_in_session(
             session,
             "generation.run",
-            {
-                "generation_run_id": run.id,
-                "segment_ids": requested_segment_ids,
-                "operation": operation,
-            },
+            job_payload,
             session_id=session_id,
             resource_keys=self._resource_keys(session_id, snapshot),
         )
@@ -2676,11 +2683,34 @@ class GenerationService:
             run = session.get(GenerationRun, run_id)
             if run is None:
                 raise KeyError(run_id)
-            if run.status not in {"queued", "running", "pausing"}:
+            if run.status not in {"queued", "running", "pausing", "paused"}:
                 raise ValueError(f"Run cannot be paused from {run.status}.")
             run.pause_requested = True
-            run.status = "pausing"
+            if run.status != "paused":
+                run.status = "pausing"
             run.updated_at = utcnow()
+            # An explicit pause wins over a temporary pause requested by a
+            # targeted regeneration. Remove the child's durable resume marker
+            # so it cannot revive the source run behind the user's back.
+            child_runs = list(
+                session.scalars(
+                    select(GenerationRun).where(
+                        GenerationRun.source_generation_run_id == run.id,
+                        GenerationRun.resume_source_on_completion.is_(True),
+                    )
+                ).all()
+            )
+            for child_run in child_runs:
+                child_run.resume_source_on_completion = False
+                child_job = (
+                    session.get(Job, child_run.job_id) if child_run.job_id else None
+                )
+                if child_job is None or not isinstance(child_job.payload_json, dict):
+                    continue
+                child_payload = dict(child_job.payload_json)
+                if child_payload.get("auto_resume_source_generation_run_id") == run.id:
+                    child_payload.pop("auto_resume_source_generation_run_id", None)
+                    child_job.payload_json = child_payload
             return {"id": run.id, "job_id": run.job_id, "status": run.status}
 
     def resume(self, run_id: str) -> dict[str, Any]:

@@ -43,15 +43,25 @@ from .workflows import ResolvedWorkflowStage, WorkflowService
 PLAN_SCHEMA_VERSION = "1"
 LOCAL_PROVIDER_IDS = frozenset(
     {
+        "audio.cpp",
+        "audio_cpp",
+        "chatterbox",
         "crispasr",
         "faster-whisper",
+        "fishs2",
         "kokoro",
+        "kobold_qwen",
         "koboldcpp",
         "local",
         "lm-studio",
+        "magpie",
+        "moss",
         "ollama",
+        "parakeet",
         "silero",
         "stable-ts",
+        "voxcpm",
+        "voxtral",
         "whisper",
         "xtts",
     }
@@ -470,6 +480,8 @@ class WorkflowExecutionPlanService:
                 or raw.get("provider_id")
                 or raw.get("service")
                 or raw.get("tts_service")
+                or raw.get("stt_engine")
+                or raw.get("stt_backend")
                 or raw.get("backend")
                 or ""
             ).strip()

@@ -203,6 +203,15 @@ class SchemaUpgradeTests(unittest.TestCase):
                     ],
                 )
                 self.assertIn(
+                    "resume_source_on_completion",
+                    [
+                        row[1]
+                        for row in connection.execute(
+                            "PRAGMA table_info(generation_runs)"
+                        )
+                    ],
+                )
+                self.assertIn(
                     "node_kind",
                     [
                         row[1]

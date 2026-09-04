@@ -2243,6 +2243,55 @@ A single reviewed cue.
             )
         self.assertEqual(["An egzistenszial fret."], optimized)
 
+    def test_manual_spoken_override_is_used_without_llm_or_saved_plan_reuse(self):
+        _revision_id, segment_ids = self.handlers._store_generation_plan(
+            self.session.id,
+            [{"text": "Read IARF aloud.", "language": "en"}],
+            settings={},
+        )
+        PronunciationLibrary(self.database).create(
+            {
+                "source_form": "IARF",
+                "phonetic": "eye arf",
+                "language": "en",
+                "status": "reviewed",
+            }
+        )
+        generation = GenerationService(
+            self.database,
+            JobQueue(self.database),
+            WorkspaceSettingsService(self.database),
+        )
+        with self.database.session() as session:
+            segment = session.get(GenerationSegment, segment_ids[0])
+            generation._apply_segment_changes(
+                session,
+                segment,
+                {"optimized_text": "Read I A R F aloud."},
+            )
+
+        optimized, model = self.handlers._optimize_generation_texts(
+            self.session.id,
+            segment_ids,
+            ["Read IARF aloud."],
+            {
+                "llm_tts_optimization": False,
+                "apply_reviewed_pronunciations": True,
+                "use_existing_speech_plans": False,
+                "language": "en",
+                "service": "XTTS",
+            },
+            threading.Event(),
+            self.progress,
+        )
+
+        self.assertEqual(["Read I A R F aloud."], optimized)
+        self.assertEqual("", model)
+        with self.database.session() as session:
+            segment = session.get(GenerationSegment, segment_ids[0])
+            self.assertEqual("Read IARF aloud.", segment.text)
+            self.assertEqual("manual_override", segment.speech_plan_json["status"])
+
     def test_structured_speech_plan_is_persisted_and_pronunciation_stays_proposed(self):
         _revision_id, segment_ids = self.handlers._store_generation_plan(
             self.session.id,

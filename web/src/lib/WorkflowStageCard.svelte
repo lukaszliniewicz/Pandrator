@@ -13,6 +13,7 @@
   import type { WorkflowStage } from './api-models';
   import { modelDisplayName } from './model-display';
   import StageArtifactHistory from './StageArtifactHistory.svelte';
+  import type { StageArtifact } from './stage-artifacts';
 
   let {
     stage,
@@ -27,6 +28,7 @@
     onpreview,
     onclear,
     onfork,
+    ondelete,
     onloadmore
   }: {
     stage: WorkflowStage;
@@ -41,6 +43,7 @@
     onpreview: () => void;
     onclear: () => void;
     onfork?: () => void;
+    ondelete: (artifact: StageArtifact) => void;
     onloadmore: () => void;
   } = $props();
 
@@ -105,6 +108,7 @@
 
 <article
   class:stage-locked={stage.status === 'unavailable'}
+  class:stage-disabled={Boolean(stage.toggle && !stage.enabled)}
   class="surface rounded-[1.4rem] p-5 sm:p-6"
 >
   <div class="flex flex-col gap-5 lg:flex-row lg:items-center">
@@ -258,6 +262,7 @@
             {onpreview}
             {onclear}
             {onfork}
+            {ondelete}
             {onloadmore}
           />
         {:else if stage.artifact}
@@ -397,5 +402,11 @@
   }
   .stage-locked {
     opacity: 0.58;
+  }
+  .stage-disabled {
+    background: color-mix(in srgb, var(--paper-strong) 82%, var(--muted) 18%);
+    box-shadow: none;
+    filter: saturate(0.45);
+    opacity: 0.72;
   }
 </style>

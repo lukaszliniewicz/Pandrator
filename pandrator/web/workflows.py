@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import and_, func, or_, select
@@ -34,6 +35,28 @@ from .models import (
 from .source_resolution import resolve_primary_source
 
 WORKFLOW_HISTORY_PREVIEW_LIMIT = 10
+
+
+def _as_utc(value: datetime) -> datetime:
+    """Interpret SQLite's naive timestamps as the UTC values we persisted."""
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def _job_run_metrics(job: Job) -> dict[str, Any]:
+    """Return timezone-safe timing data for a workflow-stage job."""
+    started_at = _as_utc(job.started_at) if job.started_at else None
+    finished_at = _as_utc(job.finished_at) if job.finished_at else None
+    duration_seconds = None
+    if started_at is not None:
+        end = finished_at or _as_utc(utcnow())
+        duration_seconds = max(0.0, (end - started_at).total_seconds())
+    return {
+        "started_at": started_at.isoformat() if started_at else None,
+        "finished_at": finished_at.isoformat() if finished_at else None,
+        "duration_seconds": duration_seconds,
+    }
 
 
 def _attached_source_artifacts(
@@ -846,6 +869,7 @@ class WorkflowService:
                         )
                 elif (
                     definition.key == "optimize_tts"
+                    and optimization_enabled
                     and not document_optimization_enabled
                     and generation_run is not None
                 ):
@@ -875,31 +899,9 @@ class WorkflowService:
                     # artifact/job links were introduced.
                     usage_scope["usage_stage"] = "tts_optimization"
                 stage_usage_scopes[definition.key] = usage_scope
-                run_metrics = None
-                if metric_job is not None:
-                    duration_seconds = None
-                    if metric_job.started_at is not None:
-                        end = metric_job.finished_at or utcnow()
-                        try:
-                            duration_seconds = max(
-                                0.0,
-                                (end - metric_job.started_at).total_seconds(),
-                            )
-                        except TypeError:
-                            duration_seconds = None
-                    run_metrics = {
-                        "started_at": (
-                            metric_job.started_at.isoformat()
-                            if metric_job.started_at
-                            else None
-                        ),
-                        "finished_at": (
-                            metric_job.finished_at.isoformat()
-                            if metric_job.finished_at
-                            else None
-                        ),
-                        "duration_seconds": duration_seconds,
-                    }
+                run_metrics = (
+                    _job_run_metrics(metric_job) if metric_job is not None else None
+                )
                 resolved_generation_input = None
                 if definition.key == "generate_audio" and prerequisite is not None:
                     input_stage = {
@@ -1073,29 +1075,7 @@ class WorkflowService:
                     scope["job_id"] = linked_job_id
                     metric_job = session.get(Job, linked_job_id)
                     if metric_job is not None:
-                        duration_seconds = None
-                        if metric_job.started_at is not None:
-                            end = metric_job.finished_at or utcnow()
-                            try:
-                                duration_seconds = max(
-                                    0.0,
-                                    (end - metric_job.started_at).total_seconds(),
-                                )
-                            except TypeError:
-                                duration_seconds = None
-                        stage["run_metrics"] = {
-                            "started_at": (
-                                metric_job.started_at.isoformat()
-                                if metric_job.started_at
-                                else None
-                            ),
-                            "finished_at": (
-                                metric_job.finished_at.isoformat()
-                                if metric_job.finished_at
-                                else None
-                            ),
-                            "duration_seconds": duration_seconds,
-                        }
+                        stage["run_metrics"] = _job_run_metrics(metric_job)
             metric_job_ids = {
                 scope["job_id"]
                 for scope in stage_usage_scopes.values()

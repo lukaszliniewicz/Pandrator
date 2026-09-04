@@ -804,6 +804,39 @@ def build_openapi_document() -> dict:
                     },
                 }
             },
+            "/api/v1/sessions/{sessionId}/stages/{stageKey}/artifacts/{artifactId}": {
+                "delete": {
+                    "operationId": "trashStageArtifact",
+                    "parameters": [
+                        {
+                            "name": "sessionId",
+                            "in": "path",
+                            "required": True,
+                            "schema": {"type": "string", "format": "uuid"},
+                        },
+                        {
+                            "name": "stageKey",
+                            "in": "path",
+                            "required": True,
+                            "schema": {"type": "string"},
+                        },
+                        {
+                            "name": "artifactId",
+                            "in": "path",
+                            "required": True,
+                            "schema": {"type": "string", "format": "uuid"},
+                        },
+                    ],
+                    "responses": {
+                        "200": {
+                            "description": "Historical stage result moved to trash"
+                        },
+                        "409": {
+                            "description": "Artifact is selected or still has derived results"
+                        },
+                    },
+                }
+            },
             "/api/v1/sessions/{sessionId}/stages/{stageKey}/impact": {
                 "get": {
                     "operationId": "getStageRerunImpact",
@@ -2498,6 +2531,11 @@ def build_openapi_document() -> dict:
         ("/api/v1/artifacts", "get", "app.read"),
         ("/api/v1/artifacts/{artifactId}/context", "get", "app.read"),
         ("/api/v1/artifacts/{artifactId}/content", "get", "app.read"),
+        (
+            "/api/v1/sessions/{sessionId}/stages/{stageKey}/artifacts/{artifactId}",
+            "delete",
+            "app.write",
+        ),
         ("/api/v1/providers", "get", "app.read"),
         ("/api/v1/services/stt", "get", "app.read"),
         ("/api/v1/services/tts", "get", "app.read"),

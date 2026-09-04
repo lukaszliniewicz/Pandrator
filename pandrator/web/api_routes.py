@@ -38,6 +38,7 @@ from .artifact_selection import (
     clear_selection,
     rerun_impact,
     stage_history,
+    trash_stage_artifact,
 )
 from .artifacts import sha256_file
 from .auth import ALL_SCOPES, MCP_BOOTSTRAP_SCOPES, normalize_scopes
@@ -3717,6 +3718,30 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             return error_response("not_found", "Session not found.", 404)
         except ValueError as error:
             return error_response("stage_unavailable", str(error), 409)
+
+    @app.delete(
+        "/api/v1/sessions/<session_id>/stages/<stage_key>/artifacts/<artifact_id>"
+    )
+    @require_auth
+    def workflow_stage_artifact_delete(
+        session_id: str,
+        stage_key: str,
+        artifact_id: str,
+    ):
+        try:
+            with database.session() as db_session:
+                return jsonify(
+                    trash_stage_artifact(
+                        db_session,
+                        session_id,
+                        stage_key,
+                        artifact_id,
+                    )
+                )
+        except KeyError:
+            return error_response("not_found", "Session or artifact not found.", 404)
+        except ValueError as error:
+            return error_response("artifact_in_use", str(error), 409)
 
     @app.get("/api/v1/sessions/<session_id>/stages/<stage_key>/impact")
     @require_auth

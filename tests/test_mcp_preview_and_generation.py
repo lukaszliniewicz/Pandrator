@@ -412,6 +412,14 @@ class PreviewAndGenerationTests(unittest.TestCase):
         self.assertIsNotNone(regen.work)
         self.assertEqual("job-gen-1", regen.work.id)
         self.assertEqual("run-gen-1", regen.result["run_id"])
+        self.assertEqual(
+            "regenerate",
+            next(
+                payload["operation"]
+                for name, payload in self.application.calls
+                if name == "start_generation_run"
+            ),
+        )
 
         assembled = assemble_generation_run(
             self.runtime,

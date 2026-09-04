@@ -24,7 +24,11 @@ from pandrator.web.models import (
     WorkflowExecutionPlan,
     utcnow,
 )
-from pandrator.web.workflow_plans import canonical_digest
+from pandrator.web.workflow_plans import (
+    WorkflowExecutionPlanService,
+    canonical_digest,
+)
+from pandrator.web.workflows import ResolvedWorkflowStage
 from tests.web_test_support import prepare_web_test_data_root
 
 
@@ -314,6 +318,31 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
         self.assertIn(
             "estimated_cost_unknown",
             agentic["required_confirmations"],
+        )
+
+    def test_local_stt_and_tts_providers_do_not_require_external_confirmation(self):
+        resolved = ResolvedWorkflowStage(
+            job_kind="workflow.continue",
+            payload={
+                "resolved_settings_snapshot": {
+                    "stt": {"stt_engine": "parakeet"},
+                    "tts": {"tts_service": "audio_cpp"},
+                }
+            },
+            resource_keys=("service:stt", "service:tts:audio_cpp"),
+            session_revision=1,
+            workflow_kind="voiceover",
+            source_artifact_id="source",
+            source_content_hash="hash",
+            outcome_revision=1,
+        )
+        disclosures = WorkflowExecutionPlanService._provider_disclosures(resolved)
+        self.assertEqual(
+            {"stt": "parakeet", "tts": "audio_cpp"},
+            {item["section"]: item["provider"] for item in disclosures},
+        )
+        self.assertFalse(
+            any(WorkflowExecutionPlanService._is_external(item) for item in disclosures)
         )
 
     def test_every_workflow_kind_and_primary_source_type_can_be_planned(self):

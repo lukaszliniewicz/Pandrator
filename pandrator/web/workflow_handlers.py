@@ -43,6 +43,7 @@ from .credentials import (
 )
 from .database import Database
 from .export_contract import ExportContract, normalize_audio_mode
+from .jobs import JobQueue
 from .models import (
     AgentRun,
     AgentStep,
@@ -585,6 +586,7 @@ class WorkflowHandlers:
         *,
         tts_providers: TtsProviderRegistry | None = None,
         manager_bridge: LocalManagerProxy | None = None,
+        jobs: JobQueue | None = None,
     ):
         self.database = database
         self.paths = paths
@@ -595,11 +597,60 @@ class WorkflowHandlers:
             tts_providers = TtsProviderRegistry()
         self.tts_providers = tts_providers
         self.manager_bridge = manager_bridge
+        self.jobs = jobs or JobQueue(database)
         self._audio_cpp_voice_ref_cache: OrderedDict[str, str] = OrderedDict()
         self._audio_cpp_voice_ref_cache_lock = threading.Lock()
         from .job_handler_domains import build_workflow_handler_registry
 
         self.handler_registry = build_workflow_handler_registry(self)
+
+    def _resume_generation_after_regeneration(
+        self,
+        child_run_id: str,
+        source_run_id: str,
+    ) -> str | None:
+        """Queue a checkpoint-preserving resume after a temporary regen pause."""
+        with self.database.immediate_session() as session:
+            child_run = session.get(GenerationRun, child_run_id)
+            source_run = session.get(GenerationRun, source_run_id)
+            if (
+                child_run is None
+                or child_run.source_generation_run_id != source_run_id
+                or not child_run.resume_source_on_completion
+            ):
+                return None
+            child_run.resume_source_on_completion = False
+            if (
+                source_run is None
+                or source_run.status != "paused"
+                or not source_run.pause_requested
+                or source_run.cancel_requested
+            ):
+                return None
+            snapshot = dict(source_run.settings_snapshot_json or {})
+            source_run.pause_requested = False
+            source_run.cancel_requested = False
+            source_run.status = "queued"
+            source_run.updated_at = utcnow()
+            from .workspace import GenerationService
+
+            resource_keys = GenerationService._resource_keys(
+                source_run.session_id,
+                snapshot,
+            )
+            job = self.jobs.enqueue_in_session(
+                session,
+                "generation.run",
+                {
+                    "generation_run_id": source_run.id,
+                    "segment_ids": [],
+                    "operation": "resume",
+                },
+                session_id=source_run.session_id,
+                resource_keys=resource_keys,
+            )
+            source_run.job_id = job.id
+            return job.id
 
     @staticmethod
     def _verification_metadata(
@@ -5595,43 +5646,43 @@ class WorkflowHandlers:
                             language=language,
                             backend=pronunciation_backend,
                         )
-            if bool(settings.get("use_existing_speech_plans")):
-                output = list(texts)
-                model_name = ""
-                with self.database.session() as session:
-                    for position, (segment_id, text) in enumerate(
-                        zip(segment_ids, texts, strict=True)
+            output = list(texts)
+            manual_override_positions: set[int] = set()
+            model_name = ""
+            reuse_saved = bool(settings.get("use_existing_speech_plans"))
+            with self.database.session() as session:
+                for position, (segment_id, text) in enumerate(
+                    zip(segment_ids, texts, strict=True)
+                ):
+                    segment = session.get(GenerationSegment, segment_id)
+                    if (
+                        segment is None
+                        or not segment.optimized_text
+                        or segment.optimization_source_hash
+                        != self._optimization_text_hash(text)
+                        or segment.optimization_status not in {"optimized", "reviewed"}
                     ):
-                        segment = session.get(GenerationSegment, segment_id)
-                        if (
-                            segment is not None
-                            and segment.optimized_text
-                            and segment.optimization_source_hash
-                            == self._optimization_text_hash(text)
-                            and segment.optimization_status in {"optimized", "reviewed"}
-                        ):
-                            output[position] = segment.optimized_text
-                            model_name = model_name or str(
-                                segment.optimization_model or ""
-                            )
-                if apply_reviewed:
-                    output = [
-                        apply_reviewed_pronunciations(
-                            revised,
-                            entries_by_position.get(position, []),
-                        )
-                        for position, revised in enumerate(output)
-                    ]
-                return output, model_name
+                        continue
+                    speech_plan = dict(segment.speech_plan_json or {})
+                    is_manual_override = speech_plan.get("status") == "manual_override"
+                    if not is_manual_override and not reuse_saved:
+                        continue
+                    output[position] = segment.optimized_text
+                    if is_manual_override:
+                        manual_override_positions.add(position)
+                    else:
+                        model_name = model_name or str(segment.optimization_model or "")
             if apply_reviewed:
-                return [
-                    apply_reviewed_pronunciations(
-                        text,
+                output = [
+                    revised
+                    if position in manual_override_positions
+                    else apply_reviewed_pronunciations(
+                        revised,
                         entries_by_position.get(position, []),
                     )
-                    for position, text in enumerate(texts)
-                ], ""
-            return list(texts), ""
+                    for position, revised in enumerate(output)
+                ]
+            return output, model_name
 
         from copy import deepcopy
         from types import SimpleNamespace
@@ -7172,7 +7223,18 @@ class WorkflowHandlers:
             if final_status == "completed"
             else f"Generation saved; {incomplete} segment(s) remain",
         )
-        return {
+        auto_resume_source_id = str(
+            payload.get("auto_resume_source_generation_run_id") or ""
+        )
+        resumed_job_id = (
+            self._resume_generation_after_regeneration(
+                run_id,
+                auto_resume_source_id,
+            )
+            if auto_resume_source_id
+            else None
+        )
+        result = {
             "generation_run_id": run_id,
             "status": final_status,
             "generated": generated,
@@ -7180,6 +7242,9 @@ class WorkflowHandlers:
             "remaining": incomplete,
             "verification_warnings": verification_warning_count,
         }
+        if auto_resume_source_id:
+            result["resumed_source_job_id"] = resumed_job_id
+        return result
 
     def assemble_generation_output(self, payload, progress, cancel_event):
         """Assemble the current selected takes in plan order into an immutable artifact."""

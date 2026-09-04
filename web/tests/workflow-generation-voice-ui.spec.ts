@@ -56,6 +56,28 @@ test('generation and voice controls expose resolved selection semantics', () => 
   expect(voiceManager).toContain('Provider links and copies');
 });
 
+test('generation workspace exposes the compact review controls', () => {
+  const drawer = source('GenerationDrawer.svelte');
+  const segmentTable = source('GenerationSegmentTable.svelte');
+  const stageCard = source('WorkflowStageCard.svelte');
+  const workspace = source('SessionWorkspace.svelte');
+
+  expect(workspace).toContain('<div class="w-full">');
+  expect(stageCard).toContain('class:stage-disabled');
+  expect(drawer).toContain('<Eye size={14} />');
+  expect(drawer).toContain('aria-label="Regeneration options"');
+  expect(drawer).toContain('Regenerate selected ({selectedSegmentIds.length})');
+  expect(drawer).toContain('Regenerate marked ({marked.length})');
+  expect(drawer).toContain('Different settings / provider…');
+  expect(drawer).toContain('aria-labelledby="rvc-conversion-title"');
+  expect(drawer).not.toContain('RVC speech-to-speech {showRvc');
+  expect(drawer).toContain('Spoken override (TTS only)');
+  expect(segmentTable).toContain(
+    'Starts from the script; edits affect speech only.'
+  );
+  expect(segmentTable).toContain('onpatch(item, { optimized_text: null })');
+});
+
 test('standalone voice library lets users choose a cloning provider', async ({
   page
 }) => {

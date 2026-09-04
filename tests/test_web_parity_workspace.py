@@ -1412,6 +1412,116 @@ class WebParityWorkspaceTests(unittest.TestCase):
             ),
         )
 
+    def test_regeneration_temporarily_pauses_then_requeues_active_source(self):
+        record = self.create_session("audiobook")
+        self.client.post(
+            f"/api/v1/sessions/{record['id']}/generation-plan",
+            json={"segments": [{"text": "First."}, {"text": "Second."}]},
+            headers=self.headers,
+        )
+        segments = self.client.get(
+            f"/api/v1/sessions/{record['id']}/generation-segments"
+        ).get_json()["items"]
+        source = self.client.post(
+            f"/api/v1/sessions/{record['id']}/generation-runs",
+            json={},
+            headers=self.headers,
+        ).get_json()
+        child = self.client.post(
+            f"/api/v1/sessions/{record['id']}/generation-runs",
+            json={
+                "operation": "regenerate",
+                "segment_ids": [segments[0]["id"]],
+                "generation_run_id": source["id"],
+            },
+            headers=self.headers,
+        ).get_json()
+        database = self.app.extensions["pandrator"]["database"]
+        with database.session() as session:
+            source_run = session.get(GenerationRun, source["id"])
+            child_run = session.get(GenerationRun, child["id"])
+            child_job = session.get(Job, child["job_id"])
+            self.assertEqual("pausing", source_run.status)
+            self.assertTrue(source_run.pause_requested)
+            self.assertTrue(child_run.resume_source_on_completion)
+            self.assertEqual(
+                source["id"],
+                child_job.payload_json["auto_resume_source_generation_run_id"],
+            )
+            source_run.status = "paused"
+
+        handlers = self.app.extensions["pandrator"]["workflow_handlers"]
+        resume_job_id = handlers._resume_generation_after_regeneration(
+            child["id"],
+            source["id"],
+        )
+
+        self.assertIsNotNone(resume_job_id)
+        with database.session() as session:
+            source_run = session.get(GenerationRun, source["id"])
+            resume_job = session.get(Job, resume_job_id)
+            self.assertEqual("queued", source_run.status)
+            self.assertFalse(source_run.pause_requested)
+            self.assertEqual(resume_job_id, source_run.job_id)
+            self.assertEqual("resume", resume_job.payload_json["operation"])
+
+    def test_explicit_pause_clears_pending_regeneration_auto_resume(self):
+        record = self.create_session("audiobook")
+        self.client.post(
+            f"/api/v1/sessions/{record['id']}/generation-plan",
+            json={"segments": [{"text": "First."}]},
+            headers=self.headers,
+        )
+        segment = self.client.get(
+            f"/api/v1/sessions/{record['id']}/generation-segments"
+        ).get_json()["items"][0]
+        source = self.client.post(
+            f"/api/v1/sessions/{record['id']}/generation-runs",
+            json={},
+            headers=self.headers,
+        ).get_json()
+        child = self.client.post(
+            f"/api/v1/sessions/{record['id']}/generation-runs",
+            json={
+                "operation": "regenerate",
+                "segment_ids": [segment["id"]],
+                "generation_run_id": source["id"],
+            },
+            headers=self.headers,
+        ).get_json()
+
+        database = self.app.extensions["pandrator"]["database"]
+        with database.session() as session:
+            # Exercise the boundary race: the source has acknowledged its
+            # temporary pause while the one-segment child is itself pausing.
+            # An explicit source pause must still revoke the child's ownership.
+            session.get(GenerationRun, source["id"]).status = "paused"
+            session.get(GenerationRun, child["id"]).status = "pausing"
+
+        generation = self.app.extensions["pandrator"]["generation"]
+        generation.request_pause(source["id"])
+
+        with database.session() as session:
+            source_run = session.get(GenerationRun, source["id"])
+            child_run = session.get(GenerationRun, child["id"])
+            child_job = session.get(Job, child["job_id"])
+            self.assertEqual("paused", source_run.status)
+            self.assertFalse(child_run.resume_source_on_completion)
+            self.assertNotIn(
+                "auto_resume_source_generation_run_id",
+                child_job.payload_json,
+            )
+
+        handlers = self.app.extensions["pandrator"]["workflow_handlers"]
+        self.assertIsNone(
+            handlers._resume_generation_after_regeneration(
+                child["id"],
+                source["id"],
+            )
+        )
+        with database.session() as session:
+            self.assertEqual("paused", session.get(GenerationRun, source["id"]).status)
+
     def test_selected_alternate_settings_are_immutable_and_do_not_mutate_segments(
         self,
     ):

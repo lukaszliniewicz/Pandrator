@@ -8,8 +8,13 @@ from typing import Any
 from sqlalchemy import case, func, or_, select
 from sqlalchemy.orm import Session
 
-from .models import Artifact, ArtifactEdge, SessionRecord, SessionStageSelection, utcnow
-
+from .models import (
+    Artifact,
+    ArtifactEdge,
+    SessionRecord,
+    SessionStageSelection,
+    utcnow,
+)
 
 STAGE_OUTPUT_ROLES: dict[str, tuple[str, ...]] = {
     "transcribe": ("transcription",),
@@ -177,7 +182,7 @@ def stage_histories(
     selected: dict[str, Artifact] = {
         selection.stage_key: artifact
         for selection, artifact in selection_rows
-        if artifact is not None
+        if artifact is not None and artifact.state != "deleted"
     }
     selected_ids = {artifact.id for artifact in selected.values()}
 
@@ -197,13 +202,14 @@ def stage_histories(
                 order_by=(Artifact.created_at.asc(), Artifact.id.asc()),
             )
             .label("version"),
-            func.count()
+            func.sum(case((Artifact.state != "deleted", 1), else_=0))
             .over(partition_by=stage_expression)
             .label("total"),
-            func.row_number()
+            func.sum(case((Artifact.state != "deleted", 1), else_=0))
             .over(
                 partition_by=stage_expression,
                 order_by=(Artifact.created_at.desc(), Artifact.id.desc()),
+                rows=(None, 0),
             )
             .label("recent_rank"),
         )
@@ -222,6 +228,7 @@ def stage_histories(
             ranked.c.recent_rank,
         )
         .join(ranked, ranked.c.artifact_id == Artifact.id)
+        .where(Artifact.state != "deleted")
         .order_by(ranked.c.stage_key, ranked.c.version.desc())
     )
     if before_version is not None:
@@ -299,10 +306,14 @@ def stage_histories(
             for _artifact, version, _total, recent_rank in rows
             if before_version is not None or recent_rank <= page_limit
         ]
+        page_recent_ranks = [
+            recent_rank
+            for _artifact, _version, _total, recent_rank in rows
+            if before_version is not None or recent_rank <= page_limit
+        ]
+        has_more = bool(page_recent_ranks and max(page_recent_ranks) < total)
         next_before_version = (
-            min(page_versions)
-            if page_versions and min(page_versions) > 1
-            else None
+            min(page_versions) if page_versions and has_more else None
         )
         selection = selection_by_stage.get(stage_key)
         histories[stage_key] = {
@@ -315,7 +326,7 @@ def stage_histories(
             "total": total,
             "limit": page_limit,
             "before_version": before_version,
-            "has_more": next_before_version is not None,
+            "has_more": has_more,
             "next_before_version": next_before_version,
         }
     return histories, selected
@@ -332,7 +343,11 @@ def choose_artifact(
     if session.get(SessionRecord, session_id) is None:
         raise KeyError(session_id)
     artifact = session.get(Artifact, artifact_id)
-    if artifact is None or artifact.session_id != session_id:
+    if (
+        artifact is None
+        or artifact.state == "deleted"
+        or artifact.session_id != session_id
+    ):
         raise KeyError(artifact_id)
     if artifact.role not in STAGE_OUTPUT_ROLES.get(stage_key, ()):
         raise ValueError(f"Artifact role '{artifact.role}' is not produced by stage '{stage_key}'.")
@@ -386,6 +401,78 @@ def choose_artifact(
     }
 
 
+def trash_stage_artifact(
+    session: Session,
+    session_id: str,
+    stage_key: str,
+    artifact_id: str,
+) -> dict[str, Any]:
+    """Soft-delete an unselected leaf result while retaining its managed file."""
+
+    stage_key = canonical_stage_key(stage_key)
+    if session.get(SessionRecord, session_id) is None:
+        raise KeyError(session_id)
+    artifact = session.get(Artifact, artifact_id)
+    if (
+        artifact is None
+        or artifact.state == "deleted"
+        or artifact.session_id != session_id
+    ):
+        raise KeyError(artifact_id)
+    if artifact.role not in STAGE_OUTPUT_ROLES.get(stage_key, ()):
+        raise ValueError(
+            f"Artifact role '{artifact.role}' is not produced by stage '{stage_key}'."
+        )
+
+    parents, children = _edges(session)
+    selected = selected_artifacts(session, session_id)
+    selected_path_stages = sorted(
+        selected_stage
+        for selected_stage, selected_artifact in selected.items()
+        if selected_artifact.id == artifact.id
+        or artifact.id in _closure(selected_artifact.id, parents)
+    )
+    if selected_path_stages:
+        raise ValueError(
+            "Select a different result first; this version is on the active "
+            f"workflow path ({', '.join(selected_path_stages)})."
+        )
+
+    descendant_ids = _closure(artifact.id, children)
+    live_descendants = (
+        list(
+            session.scalars(
+                select(Artifact.id).where(
+                    Artifact.id.in_(descendant_ids),
+                    Artifact.state != "deleted",
+                )
+            ).all()
+        )
+        if descendant_ids
+        else []
+    )
+    if live_descendants:
+        raise ValueError(
+            "Delete results derived from this version first so their provenance "
+            "does not point to a trashed input."
+        )
+
+    removed_at = utcnow()
+    artifact.state = "deleted"
+    artifact.metadata_json = {
+        **dict(artifact.metadata_json or {}),
+        "deleted_at": removed_at.isoformat(),
+    }
+    artifact.updated_at = removed_at
+    session.flush()
+    return {
+        "stage_key": stage_key,
+        "artifact_id": artifact.id,
+        "state": artifact.state,
+        "file_retained": True,
+    }
+
+
 def activate_registered_artifact(session: Session, artifact: Artifact) -> None:
     stage_key = ROLE_TO_STAGE.get(artifact.role)
     if artifact.session_id and stage_key:
@@ -409,7 +496,11 @@ def select_source_path(session: Session, session_id: str, source_artifact_id: st
         artifact
         for artifact in session.scalars(
             select(Artifact)
-            .where(Artifact.session_id == session_id, Artifact.id.in_(descendant_ids))
+            .where(
+                Artifact.session_id == session_id,
+                Artifact.id.in_(descendant_ids),
+                Artifact.state != "deleted",
+            )
             .order_by(Artifact.created_at.desc())
         ).all()
         if artifact.role in ROLE_TO_STAGE

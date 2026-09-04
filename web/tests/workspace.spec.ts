@@ -296,6 +296,25 @@ test('workflow history and subtitle review load exact revisions on demand', asyn
       });
     }
   );
+  const trashedArtifactIds: string[] = [];
+  await page.route(
+    `**/api/v1/sessions/${session.id}/stages/transcribe/artifacts/*`,
+    async (route) => {
+      const artifactId = new URL(route.request().url()).pathname
+        .split('/')
+        .at(-1)!;
+      trashedArtifactIds.push(artifactId);
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          stage_key: 'transcribe',
+          artifact_id: artifactId,
+          state: 'deleted',
+          file_retained: true
+        })
+      });
+    }
+  );
   const reviewCatalog = [15, 14].map((version) => ({
     artifact_id: `artifact-${version}`,
     role: 'transcription',
@@ -386,6 +405,12 @@ test('workflow history and subtitle review load exact revisions on demand', asyn
   const versionSelect = page.getByLabel('Selected version');
   await expect(versionSelect.locator('option')).toHaveCount(10);
   await page.getByText('Version history', { exact: true }).click();
+  await expect(
+    page.getByRole('button', { name: 'Trash version 15' })
+  ).toBeDisabled();
+  page.once('dialog', (dialog) => dialog.accept());
+  await page.getByRole('button', { name: 'Trash version 14' }).click();
+  await expect.poll(() => trashedArtifactIds).toEqual(['artifact-14']);
   await page.getByRole('button', { name: 'Load earlier versions' }).click();
   await expect(versionSelect.locator('option')).toHaveCount(15);
   await expect(

@@ -4,7 +4,7 @@ import os
 import tempfile
 import threading
 import unittest
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from unittest import mock
 
 from sqlalchemy import select
@@ -35,7 +35,7 @@ from pandrator.web.models import (
 from pandrator.web.provider_settings import build_llm_settings
 from pandrator.web.sessions import SessionService
 from pandrator.web.workflow_handlers import WorkflowHandlers
-from pandrator.web.workflows import WorkflowService
+from pandrator.web.workflows import WorkflowService, _job_run_metrics
 from pandrator.web.workspace import OutcomePlanService
 from tests.web_test_support import prepare_web_test_data_root
 
@@ -520,6 +520,87 @@ class AgenticCleaningTests(unittest.TestCase):
 
 
 class SourceAwareWorkflowTests(unittest.TestCase):
+    def test_running_job_metrics_treat_naive_sqlite_timestamp_as_utc(self):
+        job = Job(
+            kind="workflow.continue",
+            status="running",
+            started_at=datetime(2026, 9, 4, 10, 0),  # noqa: DTZ001
+        )
+        with mock.patch(
+            "pandrator.web.workflows.utcnow",
+            return_value=datetime(2026, 9, 4, 10, 2, 30, tzinfo=UTC),
+        ):
+            metrics = _job_run_metrics(job)
+
+        self.assertEqual("2026-09-04T10:00:00+00:00", metrics["started_at"])
+        self.assertIsNone(metrics["finished_at"])
+        self.assertEqual(150.0, metrics["duration_seconds"])
+
+    def test_disabled_inline_optimization_does_not_borrow_generation_metrics(self):
+        with tempfile.TemporaryDirectory() as directory:
+            paths = prepare_web_test_data_root(directory)
+            database = Database(paths.database)
+            try:
+                record = SessionService(database).create(
+                    "No optimization metrics",
+                    workflow_kind="voiceover",
+                )
+                source_path = paths.uploads / "source.srt"
+                source_path.write_text(
+                    "1\n00:00:00,000 --> 00:00:01,000\nHello\n",
+                    encoding="utf-8",
+                )
+                ArtifactService(database, paths).register(
+                    source_path,
+                    kind="srt",
+                    role="upload",
+                    session_id=record.id,
+                    metadata={"original_filename": source_path.name},
+                )
+                with database.session() as session:
+                    job = Job(
+                        kind="generation.run",
+                        session_id=record.id,
+                        status="running",
+                        started_at=datetime(2026, 9, 4, 10, 0),  # noqa: DTZ001
+                    )
+                    plan = GenerationPlan(session_id=record.id)
+                    session.add_all([job, plan])
+                    session.flush()
+                    revision = GenerationPlanRevision(
+                        plan_id=plan.id,
+                        revision_number=1,
+                        settings_json={},
+                        content_hash="no-optimization-metrics",
+                    )
+                    session.add(revision)
+                    session.flush()
+                    plan.active_revision_id = revision.id
+                    session.add(
+                        GenerationRun(
+                            session_id=record.id,
+                            plan_revision_id=revision.id,
+                            job_id=job.id,
+                            sequence_number=1,
+                            status="running",
+                        )
+                    )
+
+                stages = WorkflowService(database, JobQueue(database)).snapshot(
+                    record.id
+                )["stages"]
+                optimization = next(
+                    item for item in stages if item["key"] == "optimize_tts"
+                )
+                generation = next(
+                    item for item in stages if item["key"] == "generate_audio"
+                )
+                self.assertFalse(optimization["enabled"])
+                self.assertIsNone(optimization["run_metrics"])
+                self.assertIsNotNone(generation["run_metrics"])
+            finally:
+                database.dispose()
+
     def test_srt_workflow_omits_transcription_and_renumbers_cards(self):
         with tempfile.TemporaryDirectory() as directory:
             paths = prepare_web_test_data_root(directory); database = Database(paths.database)

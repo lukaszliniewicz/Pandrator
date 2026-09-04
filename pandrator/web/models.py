@@ -665,6 +665,9 @@ class GenerationRun(Base):
     cancel_requested: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False
     )
+    resume_source_on_completion: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
     settings_snapshot_json: Mapped[dict[str, Any]] = mapped_column(
         JSON, nullable=False, default=dict
     )

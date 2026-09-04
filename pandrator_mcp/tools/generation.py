@@ -127,7 +127,7 @@ def regenerate_segments(
     result = application.start_generation_run(
         arguments.session_id,
         segment_ids=arguments.segment_ids,
-        operation="generate",
+        operation="regenerate",
         idempotency_key=arguments.idempotency_key,
     )
     work = (

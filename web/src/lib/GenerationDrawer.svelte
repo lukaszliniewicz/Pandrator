@@ -5,6 +5,7 @@
     ChevronUp,
     BookOpenText,
     Download,
+    Eye,
     ListMusic,
     Maximize2,
     Minimize2,
@@ -12,7 +13,6 @@
     Play,
     RefreshCw,
     Settings,
-    SlidersHorizontal,
     Sparkles,
     Square,
     Trash2,
@@ -806,6 +806,7 @@
         selectedSegmentOverride
       );
       generationStore.upsertRun(started);
+      if (operation === 'rvc') showRvc = false;
       // New generation should be visible in the live Active mix while it
       // runs; history remains an explicit comparison view.
       selectedRunId = '';
@@ -1442,7 +1443,7 @@
             aria-label="Display options"
             aria-expanded={displayMenuOpen}
           >
-            <SlidersHorizontal size={14} />
+            <Eye size={14} />
           </button>
           {#if displayMenuOpen}
             <div class="dropdown-menu left">
@@ -1470,7 +1471,7 @@
                 <BookOpenText size={13} /> Reading view
               </button>
               <div class="dropdown-divider"></div>
-              <span class="dropdown-section-title">Text to edit / view</span>
+              <span class="dropdown-section-title">Text layer</span>
               <button
                 type="button"
                 class="dropdown-item"
@@ -1480,7 +1481,7 @@
                   displayMenuOpen = false;
                 }}
               >
-                Display text (script)
+                Script / subtitle text
               </button>
               <button
                 type="button"
@@ -1491,7 +1492,7 @@
                   displayMenuOpen = false;
                 }}
               >
-                Spoken text (TTS prompt)
+                Spoken override (TTS only)
               </button>
             </div>
           {/if}
@@ -1539,7 +1540,7 @@
     {#if mode !== 'collapsed'}
       <div class="flex h-[calc(100%-3.8rem)] min-h-0 flex-col overflow-y-auto">
         <div
-          class="flex flex-wrap items-center gap-2 border-b border-[var(--line)] p-3"
+          class="flex flex-wrap items-center justify-end gap-2 border-b border-[var(--line)] p-3"
         >
           {#if runs.length}
             <label
@@ -1583,57 +1584,51 @@
             </select>
           </label>
           <div class="dropdown-wrapper">
-            <div class="flex items-center">
-              <button
-                onclick={() =>
-                  start(
-                    'regenerate',
-                    selectedSegmentIds.length ? selectedSegmentIds : marked
-                  )}
-                disabled={!selectedSegmentIds.length && !marked.length}
-                class="action icon-action rounded-r-none border-r-0"
-                title={selectedSegmentIds.length
-                  ? `Regenerate ${selectedSegmentIds.length} selected take(s)`
-                  : marked.length
-                    ? `Regenerate ${marked.length} marked take(s)`
-                    : 'Mark or select takes to regenerate'}
-                aria-label="Regenerate takes"
-              >
-                <RefreshCw size={14} />
-              </button>
-              <button
-                onclick={() => {
-                  regenerateMenuOpen = !regenerateMenuOpen;
-                  displayMenuOpen = false;
-                  settingsMenuOpen = false;
-                }}
-                disabled={!selectedSegmentIds.length && !marked.length}
-                class="action icon-action rounded-l-none px-1.5"
-                title="Regeneration options"
-                aria-label="Regeneration options"
-                aria-expanded={regenerateMenuOpen}
-              >
-                <ChevronDown size={12} />
-              </button>
-            </div>
+            <button
+              onclick={() => {
+                regenerateMenuOpen = !regenerateMenuOpen;
+                displayMenuOpen = false;
+                settingsMenuOpen = false;
+              }}
+              disabled={!selectedSegmentIds.length && !marked.length}
+              class="action icon-action"
+              class:active={regenerateMenuOpen}
+              title="Regenerate selected or marked takes"
+              aria-label="Regeneration options"
+              aria-expanded={regenerateMenuOpen}
+            >
+              <RefreshCw size={14} />
+            </button>
             {#if regenerateMenuOpen}
               <div class="dropdown-menu">
-                <button
-                  type="button"
-                  class="dropdown-item"
-                  onclick={() => {
-                    regenerateMenuOpen = false;
-                    void start(
-                      'regenerate',
-                      selectedSegmentIds.length ? selectedSegmentIds : marked
-                    );
-                  }}
-                >
-                  <RefreshCw size={13} />
-                  {selectedSegmentIds.length
-                    ? 'Regenerate selected takes'
-                    : 'Regenerate marked takes'}
-                </button>
+                <span class="dropdown-section-title">Standard settings</span>
+                {#if selectedSegmentIds.length}
+                  <button
+                    type="button"
+                    class="dropdown-item"
+                    onclick={() => {
+                      regenerateMenuOpen = false;
+                      void start('regenerate', selectedSegmentIds);
+                    }}
+                  >
+                    <RefreshCw size={13} />
+                    Regenerate selected ({selectedSegmentIds.length})
+                  </button>
+                {/if}
+                {#if marked.length}
+                  <button
+                    type="button"
+                    class="dropdown-item"
+                    onclick={() => {
+                      regenerateMenuOpen = false;
+                      void start('regenerate', marked);
+                    }}
+                  >
+                    <RefreshCw size={13} />
+                    Regenerate marked ({marked.length})
+                  </button>
+                {/if}
+                <div class="dropdown-divider"></div>
                 <button
                   type="button"
                   class="dropdown-item"
@@ -1645,7 +1640,7 @@
                   }}
                 >
                   <WandSparkles size={13} />
-                  Regenerate with different settings / provider…
+                  Different settings / provider…
                 </button>
               </div>
             {/if}
@@ -1668,7 +1663,7 @@
           >
             <Sparkles size={14} />
           </button>
-          <div class="dropdown-wrapper ml-auto">
+          <div class="dropdown-wrapper">
             <button
               onclick={() => {
                 settingsMenuOpen = !settingsMenuOpen;
@@ -1701,6 +1696,17 @@
                   }}
                 >
                   Speech services & catalogue
+                </button>
+                <button
+                  type="button"
+                  class="dropdown-item"
+                  onclick={() => {
+                    showRvc = true;
+                    settingsMenuOpen = false;
+                  }}
+                >
+                  <WandSparkles size={13} />
+                  RVC conversion…
                 </button>
               </div>
             {/if}
@@ -1761,74 +1767,6 @@
           </div>
         {/if}
 
-        <div class="border-b border-[var(--line)] px-3 py-2">
-          <button onclick={() => (showRvc = !showRvc)} class="action"
-            ><WandSparkles size={14} /> RVC speech-to-speech {showRvc
-              ? 'settings ▲'
-              : 'settings ▼'}</button
-          >
-          {#if showRvc}
-            <div
-              class="mt-2 flex flex-wrap items-end gap-2 rounded-xl bg-[var(--accent-soft)] p-3"
-            >
-              <label class="text-xs font-semibold"
-                >Model
-                <select bind:value={rvcModel} class="mini ml-2"
-                  ><option value="">Choose a model</option
-                  >{#each rvcModels as item}<option value={item}>{item}</option
-                    >{/each}</select
-                >
-              </label>
-              <label class="text-xs font-semibold"
-                >Pitch <input
-                  type="number"
-                  min="-24"
-                  max="24"
-                  bind:value={rvcPitch}
-                  class="mini ml-2 w-16"
-                /></label
-              >
-              <label class="text-xs font-semibold"
-                >Detector
-                <select bind:value={rvcF0} class="mini ml-2"
-                  ><option value="rmvpe">RMVPE</option><option value="harvest"
-                    >Harvest</option
-                  ><option value="crepe">CREPE</option><option value="pm"
-                    >PM</option
-                  ></select
-                >
-              </label>
-              <label class="text-xs font-semibold"
-                >Index rate <input
-                  type="number"
-                  min="0"
-                  max="1"
-                  step="0.05"
-                  bind:value={rvcIndexRate}
-                  class="mini ml-2 w-20"
-                /></label
-              >
-              <button
-                onclick={() => start('rvc', selectedSegmentIds)}
-                disabled={!selectedSegmentIds.length || !rvcModel}
-                class="action"
-                >RVC selected ({selectedSegmentIds.length})</button
-              >
-              <button
-                onclick={() => start('rvc', marked)}
-                disabled={!marked.length || !rvcModel}
-                class="action">RVC marked</button
-              >
-              <button
-                onclick={() => start('rvc', [])}
-                disabled={!rvcModel}
-                class="action">RVC all</button
-              >
-              <a href="/rvc" class="action">Manage models</a>
-            </div>
-          {/if}
-        </div>
-
         {#if error}<p class="p-3 text-sm text-red-500">{error}</p>{/if}
 
         <div class="min-h-[12rem] shrink-0 flex-1 overflow-auto">
@@ -1888,6 +1826,100 @@
       </div>
     {/if}
   </aside>
+{/if}
+{#if showRvc}
+  <div
+    class="fixed inset-0 z-[80] grid place-items-center bg-black/40 p-5"
+    role="presentation"
+    onclick={(event) => {
+      if (event.currentTarget === event.target) showRvc = false;
+    }}
+  >
+    <div
+      class="surface max-h-[92vh] w-full max-w-2xl overflow-y-auto rounded-3xl p-6"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="rvc-conversion-title"
+    >
+      <header class="flex items-start justify-between gap-4">
+        <div>
+          <div class="eyebrow">Speech-to-speech</div>
+          <h2 id="rvc-conversion-title" class="mt-1 text-xl font-semibold">
+            RVC conversion
+          </h2>
+          <p class="muted mt-1 text-sm">
+            Convert existing takes without changing their spoken text.
+          </p>
+        </div>
+        <button class="action" onclick={() => (showRvc = false)}>Close</button>
+      </header>
+      <div class="mt-5 grid gap-4 sm:grid-cols-2">
+        <label class="text-sm font-semibold"
+          >Model
+          <select bind:value={rvcModel} class="field mt-1 w-full"
+            ><option value="">Choose a model</option
+            >{#each rvcModels as item}<option value={item}>{item}</option
+              >{/each}</select
+          >
+        </label>
+        <label class="text-sm font-semibold"
+          >Pitch
+          <input
+            type="number"
+            min="-24"
+            max="24"
+            bind:value={rvcPitch}
+            class="field mt-1 w-full"
+          /></label
+        >
+        <label class="text-sm font-semibold"
+          >Pitch detector
+          <select bind:value={rvcF0} class="field mt-1 w-full"
+            ><option value="rmvpe">RMVPE</option><option value="harvest"
+              >Harvest</option
+            ><option value="crepe">CREPE</option><option value="pm">PM</option
+            ></select
+          >
+        </label>
+        <label class="text-sm font-semibold"
+          >Index rate
+          <input
+            type="number"
+            min="0"
+            max="1"
+            step="0.05"
+            bind:value={rvcIndexRate}
+            class="field mt-1 w-full"
+          /></label
+        >
+      </div>
+      {#if !rvcModels.length}
+        <p class="mt-4 text-sm text-red-500">
+          No RVC models are available. Add one in RVC management first.
+        </p>
+      {/if}
+      <footer class="mt-6 flex flex-wrap items-center justify-between gap-3">
+        <a href="/rvc" class="action">Manage models</a>
+        <div class="flex flex-wrap justify-end gap-2">
+          <button
+            onclick={() => start('rvc', selectedSegmentIds)}
+            disabled={!selectedSegmentIds.length || !rvcModel}
+            class="action">Selected ({selectedSegmentIds.length})</button
+          >
+          <button
+            onclick={() => start('rvc', marked)}
+            disabled={!marked.length || !rvcModel}
+            class="action">Marked ({marked.length})</button
+          >
+          <button
+            onclick={() => start('rvc', [])}
+            disabled={!rvcModel}
+            class="action primary">Convert all</button
+          >
+        </div>
+      </footer>
+    </div>
+  </div>
 {/if}
 {#if alternateOpen}
   <div
@@ -2235,7 +2267,7 @@
     height: 3.9rem;
     border: 1px solid var(--line);
     background: var(--paper-strong);
-    box-shadow: 0 18px 55px color-mix(in srgb, var(--ink) 18%, transparent);
+    box-shadow: var(--shadow);
     transition: height 0.18s ease;
   }
   .generation-drawer.half {
@@ -2303,7 +2335,7 @@
     border: 1px solid var(--line);
     border-radius: 0.65rem;
     background: var(--paper-strong);
-    box-shadow: 0 8px 24px color-mix(in srgb, var(--ink) 14%, transparent);
+    box-shadow: 0 8px 24px rgb(0 0 0 / 0.18);
     padding: 0.35rem;
     display: flex;
     flex-direction: column;

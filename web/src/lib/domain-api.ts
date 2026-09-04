@@ -318,6 +318,25 @@ export const sessionApi = {
       query
     });
   },
+  trashStageArtifact: (
+    sessionId: string,
+    stageKey: string,
+    artifactId: string
+  ) =>
+    typedApiJson<
+      '/api/v1/sessions/{sessionId}/stages/{stageKey}/artifacts/{artifactId}',
+      'delete',
+      {
+        stage_key: string;
+        artifact_id: string;
+        state: string;
+        file_retained: boolean;
+      }
+    >(
+      '/api/v1/sessions/{sessionId}/stages/{stageKey}/artifacts/{artifactId}',
+      'delete',
+      { path: { sessionId, stageKey, artifactId } }
+    ),
   cancelJob: (jobId: string) =>
     typedApiJson<'/api/v1/jobs/{jobId}/cancel', 'post', JobRecord>(
       '/api/v1/jobs/{jobId}/cancel',

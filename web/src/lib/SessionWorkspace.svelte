@@ -55,6 +55,7 @@
   import type VoiceLibraryModal from './VoiceLibraryModal.svelte';
   import { modalFocus } from './modal-focus';
   import ParameterLabel from './ParameterLabel.svelte';
+  import type { StageArtifact } from './stage-artifacts';
 
   type Stage = WorkflowStage;
 
@@ -515,6 +516,24 @@
         stage.selection_revision ?? 0,
         null
       );
+      await load({ initial: false });
+    } catch (caught) {
+      error = errorMessage(caught);
+    }
+  }
+
+  async function deleteStageArtifact(stage: Stage, artifact: StageArtifact) {
+    if (artifact.id === stage.selected_artifact_id) return;
+    if (
+      !confirm(
+        `Move ${stage.title.toLowerCase()} version ${artifact.version} to trash? ` +
+          'Its managed file will be retained. Results derived from it must be trashed first.'
+      )
+    )
+      return;
+    error = '';
+    try {
+      await sessionApi.trashStageArtifact(session.id, stage.key, artifact.id);
       await load({ initial: false });
     } catch (caught) {
       error = errorMessage(caught);
@@ -2256,7 +2275,7 @@
   });
 </script>
 
-<div class="mx-auto max-w-6xl">
+<div class="w-full">
   <button
     onclick={onback}
     class="muted mb-4 flex items-center gap-2 text-sm font-semibold"
@@ -2389,6 +2408,7 @@
           stage.selected_artifact_id
             ? () => forkStage(stage)
             : undefined}
+          ondelete={(artifact) => deleteStageArtifact(stage, artifact)}
           onloadmore={() => loadMoreStageArtifacts(stage)}
         />
       {/each}

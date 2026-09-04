@@ -123,22 +123,37 @@
               class="mb-1 flex items-center gap-1.5 text-[.65rem] font-medium text-[var(--accent)]"
             >
               <span class="rounded bg-[var(--accent-soft)] px-1.5 py-0.5"
-                >Spoken text (TTS prompt)</span
+                >Spoken override (TTS only)</span
               >
-              {#if item.text !== (item.optimized_text ?? item.text)}
-                <span
-                  class="muted max-w-md truncate"
-                  title={`Original script: ${item.text}`}
-                  >Script: {item.text}</span
+              <span class="muted max-w-md truncate">
+                {item.optimized_text
+                  ? 'Subtitles stay unchanged.'
+                  : 'Starts from the script; edits affect speech only.'}
+              </span>
+              {#if item.optimized_text}
+                <button
+                  type="button"
+                  class="muted ml-auto underline decoration-dotted underline-offset-2"
+                  onclick={(event) => {
+                    event.stopPropagation();
+                    onpatch(item, { optimized_text: null });
+                  }}>Reset to script</button
                 >
               {/if}
             </div>
             <textarea
               use:autoExpand
               value={item.optimized_text ?? item.text}
+              aria-label={`Spoken override for segment ${item.ordinal + 1}`}
               data-generation-search-index={itemIndex}
               onblur={(event) => {
                 const text = event.currentTarget.value.trim();
+                if (!text) {
+                  event.currentTarget.value = item.text;
+                  if (item.optimized_text)
+                    onpatch(item, { optimized_text: null });
+                  return;
+                }
                 const current = (item.optimized_text ?? item.text).trim();
                 if (text !== current) onpatch(item, { optimized_text: text });
               }}

@@ -8,7 +8,8 @@
     GitFork,
     History,
     LoaderCircle,
-    RotateCcw
+    RotateCcw,
+    Trash2
   } from '@lucide/svelte';
   import { formatBytes } from './artifact-display';
   import {
@@ -29,6 +30,7 @@
     onpreview,
     onclear,
     onfork,
+    ondelete,
     onloadmore
   }: {
     artifacts: StageArtifact[];
@@ -41,6 +43,7 @@
     onpreview: () => void;
     onclear: () => void;
     onfork?: () => void;
+    ondelete: (artifact: StageArtifact) => void;
     onloadmore: () => void;
   } = $props();
 
@@ -200,6 +203,17 @@
                       ><GitFork size={13} /> Fork here</button
                     >
                   {/if}
+                  <button
+                    onclick={() => ondelete(artifact)}
+                    disabled={selected}
+                    title={selected
+                      ? 'Select a different result before moving this version to trash.'
+                      : `Move version ${artifact.version} to trash`}
+                    aria-label={`Trash version ${artifact.version}`}
+                    class="history-action history-delete"
+                  >
+                    <Trash2 size={13} />
+                  </button>
                 </div>
               </div>
             </li>
@@ -287,6 +301,17 @@
     padding: 0.45rem 0.65rem;
     font-size: 0.7rem;
     font-weight: 700;
+  }
+  .history-delete {
+    color: var(--muted);
+  }
+  .history-delete:not(:disabled):hover {
+    border-color: color-mix(in srgb, #ef4444 45%, var(--line));
+    color: #ef4444;
+  }
+  .history-delete:disabled {
+    cursor: not-allowed;
+    opacity: 0.35;
   }
   .history-action:hover {
     border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
