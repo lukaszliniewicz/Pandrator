@@ -69,14 +69,14 @@ class _FakeApplication:
                     "revision": 1,
                     "segments": [
                         {
-                            "ordinal": 1,
+                            "ordinal": 0,
                             "start_ms": 0,
                             "end_ms": 2500,
                             "speaker": "SPEAKER_1",
                             "text": "Dzień dobry wszystkim.",
                         },
                         {
-                            "ordinal": 2,
+                            "ordinal": 1,
                             "start_ms": 2500,
                             "end_ms": 5000,
                             "speaker": "SPEAKER_1",
@@ -89,14 +89,14 @@ class _FakeApplication:
                     "revision": 1,
                     "segments": [
                         {
-                            "ordinal": 1,
+                            "ordinal": 0,
                             "start_ms": 0,
                             "end_ms": 2500,
                             "speaker": "SPEAKER_1",
                             "text": "Good morning everyone.",
                         },
                         {
-                            "ordinal": 2,
+                            "ordinal": 1,
                             "start_ms": 2500,
                             "end_ms": 5000,
                             "speaker": "SPEAKER_1",
@@ -123,7 +123,7 @@ class _FakeApplication:
                     "revision": 2,
                     "segments": [
                         {
-                            "ordinal": 1,
+                            "ordinal": 0,
                             "start_ms": 0,
                             "end_ms": 3000,
                             "speaker": "Narrator",
@@ -552,6 +552,7 @@ class PreviewAndGenerationTests(unittest.TestCase):
         self.assertEqual([2], outcome.result["patched_ordinals"])
         change = outcome.result["changes"][0]
         self.assertEqual(2, change["ordinal"])
+        self.assertEqual("Dzisiaj omówimy filozofię Pascala.", change["before"]["text"])
         self.assertEqual("Profesor", change["after"]["speaker"])
         self.assertEqual(
             "Zupełnie nowy tekst odcinka drugiego.", change["after"]["text"]

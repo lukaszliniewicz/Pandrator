@@ -473,6 +473,18 @@ STAGE_ORDER: tuple[str, ...] = (
 )
 
 
+def _public_subtitle_ordinal(cue: dict[str, Any], fallback_index: int) -> int:
+    """Convert the application's zero-based Segment.ordinal to the MCP's one-based cue number."""
+
+    raw = cue.get("ordinal")
+    if raw is None:
+        return fallback_index + 1
+    try:
+        return int(raw) + 1
+    except (TypeError, ValueError):
+        return fallback_index + 1
+
+
 def preview_subtitles(
     runtime: McpRuntime,
     arguments: PreviewSubtitlesInput,
@@ -542,7 +554,7 @@ def preview_subtitles(
     if arguments.around_ordinal is not None:
         target_ord = arguments.around_ordinal
         target_idx = next(
-            (i for i, c in enumerate(matched_cues) if int(c.get("ordinal", i + 1)) == target_ord),
+            (i for i, c in enumerate(matched_cues) if _public_subtitle_ordinal(c, i) == target_ord),
             max(0, min(len(matched_cues) - 1, target_ord - 1)) if matched_cues else 0,
         )
         ctx = arguments.context
@@ -557,7 +569,7 @@ def preview_subtitles(
         sliced = [
             c
             for i, c in enumerate(matched_cues)
-            if start_ord <= int(c.get("ordinal", i + 1)) <= end_ord
+            if start_ord <= _public_subtitle_ordinal(c, i) <= end_ord
         ]
         offset = max(0, start_ord - 1)
         limit = len(sliced)
@@ -566,7 +578,7 @@ def preview_subtitles(
 
     projected_cues = [
         {
-            "ordinal": int(cue.get("ordinal", idx + 1)),
+            "ordinal": _public_subtitle_ordinal(cue, offset + idx),
             "start_ms": int(cue.get("start_ms", 0)),
             "end_ms": int(cue.get("end_ms", 0)),
             "speaker": cue.get("speaker"),
@@ -649,7 +661,7 @@ def replace_subtitle_text(
         start_ms = int(seg.get("start_ms") or 0)
         end_ms = int(seg.get("end_ms") or 0)
         speaker = seg.get("speaker")
-        ordinal = int(seg.get("ordinal", idx + 1))
+        ordinal = _public_subtitle_ordinal(seg, idx)
 
         if pattern:
             new_text, count = pattern.subn(replacement, orig_text)
@@ -811,13 +823,14 @@ def patch_subtitle_cues(
     applied_changes: list[dict[str, Any]] = []
     modified_segments: list[dict[str, Any]] = []
 
-    for idx, seg in enumerate(raw_segments, start=1):
+    for idx, seg in enumerate(raw_segments):
+        public_ordinal = _public_subtitle_ordinal(seg, idx)
         orig_text = str(seg.get("text") or "")
         orig_speaker = seg.get("speaker")
         orig_start = int(seg.get("start_ms") or 0)
         orig_end = int(seg.get("end_ms") or 0)
 
-        patch = patches_by_ordinal.get(idx)
+        patch = patches_by_ordinal.get(public_ordinal)
         if patch:
             new_text = patch.text if patch.text is not None else orig_text
             new_speaker = patch.speaker if patch.speaker is not None else orig_speaker
@@ -826,7 +839,7 @@ def patch_subtitle_cues(
 
             applied_changes.append(
                 {
-                    "ordinal": idx,
+                    "ordinal": public_ordinal,
                     "before": {
                         "text": orig_text,
                         "speaker": orig_speaker,
