@@ -209,6 +209,7 @@ def create_api(
 
     automation_read_endpoints = {
         "status",
+        "inventory",
         "capabilities",
         "components",
         "component",
@@ -893,6 +894,24 @@ def create_api(
     @api.get("/v1/status")
     def status():
         return jsonify(application.status().model_dump(mode="json"))
+
+    @api.get("/v1/inventory")
+    def inventory():
+        return jsonify(
+            health={
+                "status": "ok",
+                "service": "pandrator-manager",
+                "protocol_version": API_VERSION,
+                "version": __version__,
+                "instance_id": application.instance_id,
+            },
+            status=application.status().model_dump(mode="json"),
+            components=application.list_components(),
+            services=[
+                service.model_dump(mode="json")
+                for service in supervisor.snapshot()
+            ],
+        )
 
     @api.get("/v1/capabilities")
     def capabilities():

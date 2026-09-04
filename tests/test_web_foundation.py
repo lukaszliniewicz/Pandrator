@@ -13,7 +13,7 @@ from unittest import mock
 
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import func, select
+from sqlalchemy import event, func, select
 
 from pandrator.runtime import DataPaths, PathBoundaryError
 from pandrator.web.api import create_app
@@ -28,6 +28,8 @@ from pandrator.web.legacy_migration import import_legacy_data
 from pandrator.web.models import (
     AgentRun,
     Artifact,
+    Document,
+    DocumentRevision,
     GenerationPlan,
     GenerationPlanRevision,
     GenerationRun,
@@ -1235,6 +1237,218 @@ class WebApiTests(unittest.TestCase):
         ).get_json()["items"]
         old = next(item for item in including_trash if item["id"] == original["id"])
         self.assertEqual("trashed", old["status"])
+
+    def test_session_documents_uses_one_revision_query_for_all_documents(self):
+        self.authenticate()
+        workspace = self.app.extensions["pandrator"]["sessions"].create(
+            "Document catalog"
+        )
+        database = self.app.extensions["pandrator"]["database"]
+        base = utcnow()
+        with database.session() as db_session:
+            older = Document(
+                session_id=workspace.id,
+                stage="source",
+                language="en",
+                created_at=base,
+            )
+            newer = Document(
+                session_id=workspace.id,
+                stage="translation",
+                language="pl",
+                created_at=base + timedelta(seconds=1),
+            )
+            db_session.add_all([older, newer])
+            db_session.flush()
+
+            older_r1 = DocumentRevision(
+                document_id=older.id,
+                revision_number=1,
+                content_hash="older-r1",
+                reviewed=False,
+                created_at=base + timedelta(seconds=2),
+            )
+            older_r2 = DocumentRevision(
+                document_id=older.id,
+                revision_number=2,
+                parent_revision_id=older_r1.id,
+                content_hash="older-r2",
+                reviewed=True,
+                created_at=base + timedelta(seconds=3),
+            )
+            newer_r1 = DocumentRevision(
+                document_id=newer.id,
+                revision_number=1,
+                content_hash="newer-r1",
+                reviewed=True,
+                created_at=base + timedelta(seconds=4),
+            )
+            newer_r2 = DocumentRevision(
+                document_id=newer.id,
+                revision_number=2,
+                parent_revision_id=newer_r1.id,
+                content_hash="newer-r2",
+                reviewed=False,
+                created_at=base + timedelta(seconds=5),
+            )
+            db_session.add_all([older_r1, older_r2, newer_r1, newer_r2])
+            db_session.flush()
+
+            db_session.add_all(
+                [
+                    Segment(
+                        revision_id=older_r1.id,
+                        ordinal=0,
+                        start_ms=0,
+                        end_ms=1200,
+                        text="Older first.",
+                    ),
+                    Segment(
+                        revision_id=older_r1.id,
+                        ordinal=1,
+                        start_ms=1200,
+                        end_ms=2400,
+                        text="Older second.",
+                    ),
+                    Segment(
+                        revision_id=older_r2.id,
+                        ordinal=0,
+                        start_ms=0,
+                        end_ms=3600,
+                        text="Older reviewed.",
+                    ),
+                    Segment(
+                        revision_id=newer_r2.id,
+                        ordinal=0,
+                        start_ms=0,
+                        end_ms=600,
+                        text="Newer first.",
+                    ),
+                    Segment(
+                        revision_id=newer_r2.id,
+                        ordinal=1,
+                        start_ms=600,
+                        end_ms=1800,
+                        text="Newer second.",
+                    ),
+                    Segment(
+                        revision_id=newer_r2.id,
+                        ordinal=2,
+                        start_ms=1800,
+                        end_ms=3300,
+                        text="Newer third.",
+                    ),
+                ]
+            )
+            artifacts = []
+            for index, revision in enumerate(
+                [older_r1, older_r2, newer_r1, newer_r2], start=1
+            ):
+                artifacts.append(
+                    Artifact(
+                        session_id=workspace.id,
+                        kind="subtitle",
+                        role=f"revision-{revision.revision_number}",
+                        relative_path=f"documents/revision-{index}.srt",
+                        mime_type="text/plain",
+                        size_bytes=index * 10,
+                        state="current",
+                        metadata_json={
+                            "revision_id": revision.id,
+                            "fixture_index": index,
+                        },
+                        created_at=base + timedelta(seconds=10 + index),
+                    )
+                )
+            db_session.add_all(artifacts)
+            db_session.flush()
+            artifact_by_revision = {
+                revision.id: artifact
+                for revision, artifact in zip(
+                    [older_r1, older_r2, newer_r1, newer_r2], artifacts
+                )
+            }
+
+        select_count = 0
+
+        def count_selects(
+            _connection, _cursor, statement, _parameters, _context, _executemany
+        ):
+            nonlocal select_count
+            if statement.lstrip().upper().startswith("SELECT"):
+                select_count += 1
+
+        event.listen(database.engine, "before_cursor_execute", count_selects)
+        try:
+            response = self.client.get(f"/api/v1/sessions/{workspace.id}/documents")
+        finally:
+            event.remove(database.engine, "before_cursor_execute", count_selects)
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(4, select_count)
+        documents = response.get_json()["items"]
+        self.assertEqual(
+            [older.id, newer.id], [document["id"] for document in documents]
+        )
+        self.assertEqual(
+            [[2, 1], [2, 1]],
+            [
+                [revision["revision_number"] for revision in document["revisions"]]
+                for document in documents
+            ],
+        )
+
+        expected = {
+            older.id: {
+                2: (older_r2, 1, 3600),
+                1: (older_r1, 2, 2400),
+            },
+            newer.id: {
+                2: (newer_r2, 3, 3300),
+                1: (newer_r1, 0, 0),
+            },
+        }
+        for document in documents:
+            for revision_item in document["revisions"]:
+                revision, segment_count, duration_ms = expected[document["id"]][
+                    revision_item["revision_number"]
+                ]
+                self.assertEqual(revision.id, revision_item["id"])
+                self.assertEqual(segment_count, revision_item["segment_count"])
+                self.assertEqual(duration_ms, revision_item["duration_ms"])
+                self.assertEqual(revision.reviewed, revision_item["reviewed"])
+                self.assertEqual(revision.content_hash, revision_item["content_hash"])
+                artifact = artifact_by_revision[revision.id]
+                self.assertEqual(artifact.id, revision_item["artifact"]["id"])
+                self.assertEqual(
+                    revision.id,
+                    revision_item["artifact"]["metadata_json"]["revision_id"],
+                )
+
+    def test_session_documents_skips_revision_query_when_session_has_no_documents(self):
+        self.authenticate()
+        workspace = self.app.extensions["pandrator"]["sessions"].create(
+            "Empty document catalog"
+        )
+        database = self.app.extensions["pandrator"]["database"]
+        select_count = 0
+
+        def count_selects(
+            _connection, _cursor, statement, _parameters, _context, _executemany
+        ):
+            nonlocal select_count
+            if statement.lstrip().upper().startswith("SELECT"):
+                select_count += 1
+
+        event.listen(database.engine, "before_cursor_execute", count_selects)
+        try:
+            response = self.client.get(f"/api/v1/sessions/{workspace.id}/documents")
+        finally:
+            event.remove(database.engine, "before_cursor_execute", count_selects)
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual({"items": []}, response.get_json())
+        self.assertEqual(3, select_count)
 
     def test_revision_conflicts_do_not_overwrite(self):
         csrf = self.authenticate()

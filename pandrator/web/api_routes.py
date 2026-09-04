@@ -2545,22 +2545,42 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 ).all()
                 if (item.metadata_json or {}).get("revision_id")
             }
+            revisions_by_document: dict[
+                str, list[tuple[DocumentRevision, int, int]]
+            ] = {}
+            if documents:
+                revision_rows = db_session.execute(
+                    select(
+                        DocumentRevision,
+                        func.count(Segment.id),
+                        func.max(Segment.end_ms),
+                    )
+                    .outerjoin(Segment, Segment.revision_id == DocumentRevision.id)
+                    .where(
+                        DocumentRevision.document_id.in_(
+                            document.id for document in documents
+                        )
+                    )
+                    .group_by(*DocumentRevision.__table__.columns)
+                    .order_by(
+                        DocumentRevision.document_id,
+                        DocumentRevision.revision_number.desc(),
+                    )
+                ).all()
+                for revision, segment_count, duration_ms in revision_rows:
+                    revisions_by_document.setdefault(revision.document_id, []).append(
+                        (
+                            revision,
+                            int(segment_count or 0),
+                            int(duration_ms or 0),
+                        )
+                    )
             items = []
             for document in documents:
-                revisions = list(
-                    db_session.scalars(
-                        select(DocumentRevision)
-                        .where(DocumentRevision.document_id == document.id)
-                        .order_by(DocumentRevision.revision_number.desc())
-                    ).all()
-                )
                 revision_items = []
-                for revision in revisions:
-                    segment_count, duration_ms = db_session.execute(
-                        select(func.count(Segment.id), func.max(Segment.end_ms)).where(
-                            Segment.revision_id == revision.id
-                        )
-                    ).one()
+                for revision, segment_count, duration_ms in revisions_by_document.get(
+                    document.id, []
+                ):
                     artifact = revision_artifacts.get(revision.id)
                     revision_items.append(
                         {

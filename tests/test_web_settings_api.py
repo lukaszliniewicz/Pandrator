@@ -1,17 +1,21 @@
 import json
 import os
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from sqlalchemy import func, select
+from sqlalchemy import event, func, select
 
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.credentials import (
+    database_reference,
     hydrate_tts_settings,
+    resolve_provider_credentials,
     shared_provider_credential_key,
+    tts_credential_key,
 )
 from pandrator.web.models import AppSetting, AppSettingHistory, StoredCredential
 from pandrator.web.tts_optimization import (
@@ -20,6 +24,7 @@ from pandrator.web.tts_optimization import (
     DEFAULT_SECOND_PROMPT,
     DEFAULT_THIRD_PROMPT,
 )
+from pandrator.web.tts_providers import TtsHealth, TtsProviderError
 from tests.web_test_support import prepare_web_test_data_root
 
 
@@ -96,6 +101,172 @@ class SettingsApiTests(unittest.TestCase):
         self.assertFalse(
             profiles["pandrator-xtts2-api"]["credential_required"]
         )
+
+    def test_batch_credential_resolution_preserves_precedence_and_fallbacks(self):
+        database = self.app.extensions["pandrator"]["database"]
+        paths = self.app.extensions["pandrator"]["paths"]
+        with database.session() as session:
+            session.add(
+                StoredCredential(
+                    key=tts_credential_key("elevenlabs"),
+                    label="ElevenLabs",
+                    secret_value="direct-secret",
+                )
+            )
+            session.add(
+                StoredCredential(
+                    key=shared_provider_credential_key("openai"),
+                    label="Shared OpenAI",
+                    secret_value="shared-secret",
+                )
+            )
+            session.add(
+                StoredCredential(
+                    key=tts_credential_key("openai"),
+                    label="Direct OpenAI",
+                    secret_value="direct-openai-secret",
+                )
+            )
+        inputs = [
+            (
+                "elevenlabs",
+                database_reference(tts_credential_key("elevenlabs")),
+                "",
+                False,
+            ),
+            (
+                "openai",
+                database_reference(tts_credential_key("openai")),
+                "",
+                True,
+            ),
+            ("voxcpm", "env:PANDRATOR_BATCH_TEST_KEY", "", False),
+            ("chatterbox", database_reference("tts:missing"), "", False),
+        ]
+        with mock.patch.dict(
+            os.environ,
+            {"PANDRATOR_BATCH_TEST_KEY": "environment-secret"},
+        ):
+            resolved = resolve_provider_credentials(database, paths, inputs)
+            resolved_values = [item.resolved_value() for item in resolved]
+            statuses = [
+                {
+                    "credential_configured": item.configured,
+                    "credential_source": item.source,
+                }
+                for item in resolved
+            ]
+
+        self.assertEqual(
+            ["direct-secret", "shared-secret", "environment-secret", ""],
+            resolved_values,
+        )
+        self.assertEqual(
+            [
+                {"credential_configured": True, "credential_source": "database"},
+                {"credential_configured": True, "credential_source": "database"},
+                {"credential_configured": True, "credential_source": "environment"},
+                {"credential_configured": False, "credential_source": "none"},
+            ],
+            statuses,
+        )
+
+    def test_tts_catalogue_credential_batch_matches_standalone_statuses(self):
+        catalogue_service = self.app.extensions["pandrator"]["tts_catalogue"]
+        payload, _revision = catalogue_service.snapshot()
+        for service in payload["services"]:
+            standalone = dict(service)
+            standalone.pop("credential_configured", None)
+            standalone.pop("credential_source", None)
+            catalogue_service._decorate_credentials(standalone)
+            self.assertEqual(
+                service["credential_configured"],
+                standalone["credential_configured"],
+            )
+            self.assertEqual(
+                service["credential_source"], standalone["credential_source"]
+            )
+
+    def test_tts_catalogue_batches_credential_selects(self):
+        catalogue_service = self.app.extensions["pandrator"]["tts_catalogue"]
+        bridge = self.app.extensions["pandrator"]["manager_bridge"]
+        database = self.app.extensions["pandrator"]["database"]
+        statements: list[str] = []
+
+        def count_selects(
+            _connection, _cursor, statement, _parameters, _context, _executemany
+        ):
+            if statement.lstrip().upper().startswith("SELECT"):
+                statements.append(statement)
+
+        event.listen(database.engine, "before_cursor_execute", count_selects)
+        try:
+            with mock.patch.object(bridge, "inventory", return_value={"status": {}}):
+                payload, _revision = catalogue_service.snapshot()
+        finally:
+            event.remove(database.engine, "before_cursor_execute", count_selects)
+
+        self.assertEqual(14, len(payload["services"]))
+        self.assertLessEqual(len(statements), 4)
+        self.assertEqual(
+            1, sum("stored_credentials" in statement for statement in statements)
+        )
+
+    def test_tts_refresh_enriches_online_services_concurrently_with_aligned_keys(self):
+        catalogue_service = self.app.extensions["pandrator"]["tts_catalogue"]
+        services = [{"id": "one"}, {"id": "two"}, {"id": "three"}]
+        barrier = threading.Barrier(len(services))
+        state_lock = threading.Lock()
+        active = 0
+        max_active = 0
+        seen_keys: dict[str, str] = {}
+
+        def enrich(service, *, api_key):
+            nonlocal active, max_active
+            with state_lock:
+                active += 1
+                max_active = max(max_active, active)
+                seen_keys[service["id"]] = api_key
+            try:
+                barrier.wait(timeout=5)
+                if service["id"] == "two":
+                    raise TtsProviderError(
+                        "two",
+                        "catalog",
+                        "catalog failed",
+                        retryable=False,
+                    )
+                return {"models": [api_key]}
+            finally:
+                with state_lock:
+                    active -= 1
+
+        with (
+            mock.patch.object(
+                catalogue_service.providers,
+                "health",
+                return_value=TtsHealth(True, True),
+            ),
+            mock.patch.object(
+                catalogue_service.providers,
+                "enrich_catalog",
+                side_effect=enrich,
+            ),
+        ):
+            catalogue_service._refresh(
+                services,
+                resolved_api_keys=["key-one", "key-two", "key-three"],
+            )
+
+        self.assertGreaterEqual(max_active, 2)
+        self.assertEqual(
+            {"one": "key-one", "two": "key-two", "three": "key-three"},
+            seen_keys,
+        )
+        self.assertEqual(["key-one"], services[0]["models"])
+        self.assertFalse(services[1]["available"])
+        self.assertEqual("catalog failed", services[1]["availability_reason"])
+        self.assertEqual(["key-three"], services[2]["models"])
 
     def test_tts_api_key_is_extracted_from_settings_and_never_returned(self):
         secret = "speech-secret-value"

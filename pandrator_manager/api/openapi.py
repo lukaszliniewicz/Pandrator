@@ -8,6 +8,7 @@ from .. import __version__
 def build_openapi() -> dict:
     resources = {
         "/v1/status": ("get", "getManagerStatus"),
+        "/v1/inventory": ("get", "getManagerInventory"),
         "/v1/capabilities": ("get", "getManagerCapabilities"),
         "/v1/components": ("get", "listManagerComponents"),
         "/v1/doctor": ("get", "getManagerDoctorReport"),
@@ -82,6 +83,7 @@ def build_openapi() -> dict:
     }
     automation_scopes = {
         ("get", "/v1/status"): "manager.read",
+        ("get", "/v1/inventory"): "manager.read",
         ("get", "/v1/capabilities"): "manager.read",
         ("get", "/v1/components"): "manager.read",
         ("get", "/v1/doctor"): "manager.read",

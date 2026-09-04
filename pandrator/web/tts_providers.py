@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import socket
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from threading import Lock
@@ -22,12 +22,15 @@ from pandrator.runtime import DataPaths
 
 from .credentials import (
     TTS_SERVICE_ENVS,
+    ProviderCredentialInput,
+    ResolvedCredential,
     credential_backend,
     credential_reference_input,
     database_reference,
     provider_credential_status,
     redact_inline_secrets,
     resolve_provider_credential,
+    resolve_provider_credentials,
     resolve_secret_reference,
     tts_credential_key,
     tts_service_credential_key,
@@ -1347,21 +1350,31 @@ class TtsCatalogueService:
     def _decorate_credentials(
         self,
         service: dict[str, Any],
+        *,
+        resolved_credential: ResolvedCredential | None = None,
     ) -> None:
         service_id, key_env, secret_reference = self._credential_details(service)
         service["credential_required"] = bool(
             service.get("credential_required")
             or str(service.get("kind") or "").casefold() == "commercial"
         )
-        service.update(
-            provider_credential_status(
-                self.database,
-                self.paths,
-                service_id,
-                secret_reference,
-                fallback_environment_variable=key_env,
+        if resolved_credential is None:
+            service.update(
+                provider_credential_status(
+                    self.database,
+                    self.paths,
+                    service_id,
+                    secret_reference,
+                    fallback_environment_variable=key_env,
+                )
             )
-        )
+        else:
+            service.update(
+                {
+                    "credential_configured": resolved_credential.configured,
+                    "credential_source": resolved_credential.source,
+                }
+            )
         service["credential_backend"] = credential_backend(secret_reference)
         service["credential_reference"] = credential_reference_input(secret_reference)
 
@@ -1375,7 +1388,12 @@ class TtsCatalogueService:
         )
         return credential.resolved_value()
 
-    def _refresh(self, services: list[dict[str, Any]]) -> None:
+    def _refresh(
+        self,
+        services: list[dict[str, Any]],
+        *,
+        resolved_api_keys: Sequence[str] | Mapping[str, str] | None = None,
+    ) -> None:
         def probe(service: dict[str, Any]) -> TtsHealth:
             if service.get("connection_mode") == "managed_local":
                 managed = service.get("manager_service")
@@ -1400,7 +1418,8 @@ class TtsCatalogueService:
 
         with ThreadPoolExecutor(max_workers=min(12, max(1, len(services)))) as executor:
             states = list(executor.map(probe, services))
-        for service, state in zip(services, states, strict=True):
+        online_services: list[tuple[int, dict[str, Any], str]] = []
+        for index, (service, state) in enumerate(zip(services, states, strict=True)):
             service.update(
                 {
                     "online": state.online,
@@ -1410,20 +1429,55 @@ class TtsCatalogueService:
             )
             if not state.online:
                 continue
+
+            if resolved_api_keys is None:
+                api_key = self._resolved_api_key(service)
+            elif isinstance(resolved_api_keys, Mapping):
+                service_id = normalize_service_id(
+                    service.get("id") or service.get("name")
+                )
+                api_key = str(resolved_api_keys.get(service_id, "") or "")
+            else:
+                api_key = (
+                    str(resolved_api_keys[index] or "")
+                    if index < len(resolved_api_keys)
+                    else ""
+                )
+            online_services.append((index, service, api_key))
+
+        def enrich(
+            item: tuple[int, dict[str, Any], str],
+        ) -> tuple[dict[str, Any] | None, TtsProviderError | None]:
+            _index, service, api_key = item
             try:
-                service.update(
+                return (
                     self.providers.enrich_catalog(
                         service,
-                        api_key=self._resolved_api_key(service),
-                    )
+                        api_key=api_key,
+                    ),
+                    None,
                 )
             except TtsProviderError as error:
+                return None, error
+
+        if not online_services:
+            return
+        with ThreadPoolExecutor(max_workers=min(12, len(online_services))) as executor:
+            enrichments = list(executor.map(enrich, online_services))
+        for (_index, service, _api_key), (catalogue, error) in zip(
+            online_services,
+            enrichments,
+            strict=True,
+        ):
+            if error is not None:
                 service.update(
                     {
                         "available": False,
                         "availability_reason": str(error),
                     }
                 )
+            elif catalogue is not None:
+                service.update(catalogue)
 
     def _project_manager(
         self,
@@ -1568,16 +1622,37 @@ class TtsCatalogueService:
                 connection_value,
             ),
         )
+        credential_inputs: list[ProviderCredentialInput] = []
         for service in services:
+            service_id, key_env, secret_reference = self._credential_details(service)
+            credential_inputs.append((service_id, secret_reference, key_env, True))
+        resolved_credentials = resolve_provider_credentials(
+            self.database,
+            self.paths,
+            credential_inputs,
+        )
+        for service, resolved_credential in zip(
+            services,
+            resolved_credentials,
+            strict=True,
+        ):
             if normalize_service_id(service.get("adapter")) == "audio_cpp":
                 service["model_catalog"] = _audio_cpp_static_model_catalog(service)
-            self._decorate_credentials(service)
+            self._decorate_credentials(
+                service,
+                resolved_credential=resolved_credential,
+            )
             if normalize_service_id(service.get("id") or service.get("name")) == "xtts":
                 capabilities = self.providers.capabilities(service)
                 service["supports_dynamic_catalog"] = capabilities.dynamic_catalog
                 service["supports_model_upload"] = capabilities.model_upload
         if refresh:
-            self._refresh(services)
+            self._refresh(
+                services,
+                resolved_api_keys=[
+                    resolved.resolved_value() for resolved in resolved_credentials
+                ],
+            )
         payload = {
             "value": redact_inline_secrets(connection_value),
             "revision": revision,

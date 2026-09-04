@@ -12,10 +12,11 @@ import ipaddress
 import json
 import os
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from threading import RLock
-from typing import Any, Callable
+from typing import Any
 from urllib.parse import urlsplit
 
 import psutil
@@ -288,15 +289,38 @@ class LocalManagerProxy:
     def inventory(self) -> dict[str, Any]:
         """Return one bounded manager projection for application services."""
 
-        health, _ = self.request_json("GET", "/v1/health", timeout=3)
-        status, _ = self.request_json("GET", "/v1/status", timeout=3)
-        components, _ = self.request_json("GET", "/v1/components", timeout=10)
-        services, _ = self.request_json("GET", "/v1/services", timeout=10)
+        try:
+            payload, _ = self.request_json(
+                "GET",
+                "/v1/inventory",
+                timeout=10,
+            )
+        except ManagerProxyError as error:
+            if error.status != 404:
+                raise
+            health, _ = self.request_json("GET", "/v1/health", timeout=3)
+            status, _ = self.request_json("GET", "/v1/status", timeout=3)
+            components, _ = self.request_json(
+                "GET",
+                "/v1/components",
+                timeout=10,
+            )
+            services, _ = self.request_json(
+                "GET",
+                "/v1/services",
+                timeout=10,
+            )
+            payload = {
+                "health": health,
+                "status": status,
+                "components": components.get("items"),
+                "services": services.get("items"),
+            }
         return {
-            "health": health,
-            "status": status,
-            "components": list(components.get("items") or []),
-            "services": list(services.get("items") or []),
+            "health": payload.get("health"),
+            "status": payload.get("status"),
+            "components": list(payload.get("components") or []),
+            "services": list(payload.get("services") or []),
         }
 
     def managed_service(self, service_id: str) -> dict[str, Any]:

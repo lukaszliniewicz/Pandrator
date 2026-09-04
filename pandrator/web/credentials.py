@@ -11,6 +11,7 @@ import secrets
 import stat
 import threading
 import time
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -379,6 +380,7 @@ def resolve_secret_reference(
     reference: object,
     *,
     fallback_environment_variable: str = "",
+    preloaded_database_credentials: Mapping[str, str] | None = None,
 ) -> ResolvedCredential:
     """Resolve a reference without exposing its value through an API response."""
 
@@ -391,12 +393,19 @@ def resolve_secret_reference(
     if value.startswith(DATABASE_REFERENCE_PREFIX):
         key = reference_key(value)
         if key:
-            with database.session() as session:
-                record = session.get(StoredCredential, key)
-                if record is not None:
+            if preloaded_database_credentials is not None:
+                if key in preloaded_database_credentials:
                     return ResolvedCredential(
-                        value=str(record.secret_value or ""), source="database"
+                        value=str(preloaded_database_credentials[key] or ""),
+                        source="database",
                     )
+            else:
+                with database.session() as session:
+                    record = session.get(StoredCredential, key)
+                    if record is not None:
+                        return ResolvedCredential(
+                            value=str(record.secret_value or ""), source="database"
+                        )
         return ResolvedCredential(
             environment_variable=fallback, source="environment" if fallback else "none"
         )
@@ -635,6 +644,7 @@ def resolve_provider_credential(
     *,
     fallback_environment_variable: str = "",
     shared: bool = True,
+    preloaded_database_credentials: Mapping[str, str] | None = None,
 ) -> ResolvedCredential:
     """Resolve a shared cloud credential before provider-specific fallbacks."""
 
@@ -644,6 +654,7 @@ def resolve_provider_credential(
             database,
             paths,
             database_reference(shared_provider_credential_key(normalized)),
+            preloaded_database_credentials=preloaded_database_credentials,
         )
         if resolved.configured:
             return resolved
@@ -652,7 +663,71 @@ def resolve_provider_credential(
         paths,
         reference,
         fallback_environment_variable=fallback_environment_variable,
+        preloaded_database_credentials=preloaded_database_credentials,
     )
+
+
+ProviderCredentialInput = tuple[object, object, str, bool]
+
+
+def _credential_database_keys(
+    provider_id: object,
+    reference: object,
+    shared: bool,
+) -> set[str]:
+    keys: set[str] = set()
+    direct_key = reference_key(reference)
+    if direct_key:
+        keys.add(direct_key)
+    if shared:
+        try:
+            normalized = normalize_credential_id(provider_id).replace("-", "_")
+        except ValueError:
+            return keys
+        if normalized in SHARED_PROVIDER_CREDENTIALS:
+            keys.add(shared_provider_credential_key(normalized))
+    return keys
+
+
+def _load_database_credentials(
+    database: Database,
+    keys: set[str],
+) -> dict[str, str]:
+    if not keys:
+        return {}
+    with database.session() as session:
+        rows = session.execute(
+            select(StoredCredential.key, StoredCredential.secret_value).where(
+                StoredCredential.key.in_(keys)
+            )
+        ).all()
+    return {str(key): str(secret_value or "") for key, secret_value in rows}
+
+
+def resolve_provider_credentials(
+    database: Database,
+    paths: DataPaths,
+    credentials: Iterable[ProviderCredentialInput],
+) -> list[ResolvedCredential]:
+    """Resolve provider credentials in input order with one database read."""
+
+    inputs = list(credentials)
+    keys: set[str] = set()
+    for provider_id, reference, _fallback_environment_variable, shared in inputs:
+        keys.update(_credential_database_keys(provider_id, reference, shared))
+    preloaded = _load_database_credentials(database, keys)
+    return [
+        resolve_provider_credential(
+            database,
+            paths,
+            provider_id,
+            reference,
+            fallback_environment_variable=fallback_environment_variable,
+            shared=shared,
+            preloaded_database_credentials=preloaded,
+        )
+        for provider_id, reference, fallback_environment_variable, shared in inputs
+    ]
 
 
 def provider_credential_status(
@@ -663,6 +738,7 @@ def provider_credential_status(
     *,
     fallback_environment_variable: str = "",
     shared: bool = True,
+    preloaded_database_credentials: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     try:
         resolved = resolve_provider_credential(
@@ -672,6 +748,7 @@ def provider_credential_status(
             reference,
             fallback_environment_variable=fallback_environment_variable,
             shared=shared,
+            preloaded_database_credentials=preloaded_database_credentials,
         )
         return {
             "credential_configured": resolved.configured,

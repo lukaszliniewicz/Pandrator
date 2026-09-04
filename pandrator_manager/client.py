@@ -403,6 +403,9 @@ class ManagerClient:
     def status(self) -> dict:
         return self.request("GET", "/v1/status").json()
 
+    def inventory(self) -> dict:
+        return self.request("GET", "/v1/inventory").json()
+
     def capabilities(self) -> dict:
         return self.request("GET", "/v1/capabilities").json()
 

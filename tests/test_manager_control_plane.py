@@ -20,6 +20,7 @@ from urllib.parse import parse_qs, urlsplit
 import psutil
 import requests
 
+from pandrator_manager import __version__
 from pandrator_manager.api import create_api
 from pandrator_manager.api.app import RECOVERY_COOKIE, _browser_handoff_url
 from pandrator_manager.application import create_application
@@ -28,6 +29,7 @@ from pandrator_manager.autostart import LinuxSystemdAutostart, WindowsAutostart
 from pandrator_manager.client import ManagerClient
 from pandrator_manager.daemon import ManagerAlreadyRunning, ManagerInstanceLock
 from pandrator_manager.models import (
+    API_VERSION,
     DesiredComponentState,
     HealthProbeSpec,
     ManagedProcessSpec,
@@ -678,6 +680,48 @@ class ApiContractTests(unittest.TestCase):
                 environ_base={"REMOTE_ADDR": "10.0.0.20"},
             ).status_code,
             403,
+        )
+
+    def test_authenticated_inventory_has_exact_contract_and_openapi_scope(self):
+        components = [{"definition": {"id": "fixture"}}]
+        with (
+            mock.patch.object(
+                self.application,
+                "list_components",
+                return_value=components,
+            ),
+            mock.patch.object(self.supervisor, "snapshot", return_value=[]),
+        ):
+            response = self.client.get("/v1/inventory", headers=self.auth)
+        self.assertEqual(200, response.status_code)
+        payload = response.get_json()
+        self.assertEqual(
+            {"health", "status", "components", "services"},
+            set(payload),
+        )
+        self.assertEqual(
+            {
+                "status": "ok",
+                "service": "pandrator-manager",
+                "protocol_version": API_VERSION,
+                "version": __version__,
+                "instance_id": "api-test",
+            },
+            payload["health"],
+        )
+        self.assertIsInstance(payload["status"], dict)
+        self.assertEqual(components, payload["components"])
+        self.assertEqual([], payload["services"])
+
+        document = self.client.get(
+            "/v1/openapi.json",
+            headers=self.auth,
+        ).get_json()
+        operation = document["paths"]["/v1/inventory"]["get"]
+        self.assertEqual("getManagerInventory", operation["operationId"])
+        self.assertIn(
+            {"managerAutomationBearer": ["manager.read"]},
+            operation["security"],
         )
 
     def test_plans_and_operations_are_exact_and_idempotent(self):

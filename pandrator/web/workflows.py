@@ -130,32 +130,42 @@ def _latest_jobs_by_kind(
     db_session,
     session_id: str,
     kinds: set[str],
+    *,
+    include_ids: set[str] | None = None,
 ) -> list[Job]:
-    if not kinds:
+    include_ids = include_ids or set()
+    if not kinds and not include_ids:
         return []
-    ranked = (
-        select(
-            Job.id.label("job_id"),
-            func.row_number()
-            .over(
-                partition_by=Job.kind,
-                order_by=(Job.created_at.desc(), Job.id.desc()),
+    ranked = None
+    if kinds:
+        ranked = (
+            select(
+                Job.id.label("job_id"),
+                func.row_number()
+                .over(
+                    partition_by=Job.kind,
+                    order_by=(Job.created_at.desc(), Job.id.desc()),
+                )
+                .label("kind_rank"),
             )
-            .label("kind_rank"),
+            .where(
+                Job.session_id == session_id,
+                Job.kind.in_(tuple(kinds)),
+            )
+            .subquery()
         )
-        .where(
-            Job.session_id == session_id,
-            Job.kind.in_(tuple(kinds)),
+    statement = select(Job).where(Job.session_id == session_id)
+    if ranked is not None:
+        statement = statement.outerjoin(ranked, ranked.c.job_id == Job.id)
+        latest_filter = ranked.c.kind_rank == 1
+        statement = statement.where(
+            or_(latest_filter, Job.id.in_(include_ids))
+            if include_ids
+            else latest_filter
         )
-        .subquery()
-    )
-    return list(
-        db_session.scalars(
-            select(Job)
-            .join(ranked, ranked.c.job_id == Job.id)
-            .where(ranked.c.kind_rank == 1)
-        ).all()
-    )
+    else:
+        statement = statement.where(Job.id.in_(include_ids))
+    return list(db_session.scalars(statement).all())
 
 
 @dataclass(frozen=True, slots=True)
@@ -458,7 +468,7 @@ class WorkflowService:
     def snapshot(self, session_id: str) -> dict[str, Any]:
         with self.database.session() as session:
             record_row = session.execute(
-                select(SessionRecord, SessionSetting)
+                select(SessionRecord, SessionSetting, OutcomePlan, GenerationPlan)
                 .outerjoin(
                     SessionSetting,
                     and_(
@@ -466,11 +476,16 @@ class WorkflowService:
                         SessionSetting.section == "translation",
                     ),
                 )
+                .outerjoin(OutcomePlan, OutcomePlan.session_id == SessionRecord.id)
+                .outerjoin(
+                    GenerationPlan,
+                    GenerationPlan.session_id == SessionRecord.id,
+                )
                 .where(SessionRecord.id == session_id)
             ).one_or_none()
             if record_row is None:
                 raise KeyError(session_id)
-            record, translation_setting = record_row
+            record, translation_setting, outcome, generation_plan = record_row
             configured_translation_source_id = str(
                 (
                     translation_setting.value_json
@@ -480,8 +495,16 @@ class WorkflowService:
                 ).get("source_artifact_id")
                 or ""
             )
-            attached_sources = _attached_source_artifacts(session, session_id)
-            attached_source_ids = _attached_source_artifact_ids(session, session_id)
+            primary_source = resolve_primary_source(session, session_id)
+            attached_sources = (
+                [primary_source.artifact] if primary_source.artifact else []
+            )
+            attached_source_ids = (
+                {primary_source.artifact.id}
+                if primary_source.resolution == "attached"
+                and primary_source.artifact is not None
+                else set()
+            )
             provisional_definitions = self.definitions(record, attached_sources)
             relevant_roles = {
                 role
@@ -506,6 +529,7 @@ class WorkflowService:
                     ]
                 }.values()
             )
+            known_artifacts = {artifact.id: artifact for artifact in artifacts}
             definitions = self.definitions(record, artifacts)
             history_stage_keys = tuple(
                 dict.fromkeys(
@@ -520,11 +544,28 @@ class WorkflowService:
                 history_stage_keys,
                 limit=WORKFLOW_HISTORY_PREVIEW_LIMIT,
             )
+            generation_run = session.scalar(
+                select(GenerationRun)
+                .where(GenerationRun.session_id == session_id)
+                .order_by(
+                    GenerationRun.sequence_number.desc(),
+                    GenerationRun.created_at.desc(),
+                )
+                .limit(1)
+            )
             job_kinds = {
                 definition.job_kind for definition in definitions if definition.job_kind
             }
             job_kinds.add("workflow.continue")
-            latest_jobs = _latest_jobs_by_kind(session, session_id, job_kinds)
+            latest_jobs = _latest_jobs_by_kind(
+                session,
+                session_id,
+                job_kinds,
+                include_ids={generation_run.job_id}
+                if generation_run is not None and generation_run.job_id
+                else set(),
+            )
+            job_by_id = {job.id: job for job in latest_jobs}
             agentic_job_kinds = {
                 definition.job_kind
                 for definition in definitions
@@ -566,21 +607,6 @@ class WorkflowService:
                 roles.setdefault("upload", artifact)
             for artifact in latest_current_artifacts:
                 roles.setdefault(artifact.role, artifact)
-            outcome = session.scalar(
-                select(OutcomePlan).where(OutcomePlan.session_id == session_id)
-            )
-            generation_plan = session.scalar(
-                select(GenerationPlan).where(GenerationPlan.session_id == session_id)
-            )
-            generation_run = session.scalar(
-                select(GenerationRun)
-                .where(GenerationRun.session_id == session_id)
-                .order_by(
-                    GenerationRun.sequence_number.desc(),
-                    GenerationRun.created_at.desc(),
-                )
-                .limit(1)
-            )
             completed_generation_run = (
                 generation_run
                 if generation_run is not None and generation_run.status == "completed"
@@ -620,7 +646,12 @@ class WorkflowService:
             }
             job_by_kind: dict[str, Job] = {}
             for job in latest_jobs:
-                job_by_kind.setdefault(job.kind, job)
+                current = job_by_kind.get(job.kind)
+                if current is None or (job.created_at, job.id) > (
+                    current.created_at,
+                    current.id,
+                ):
+                    job_by_kind[job.kind] = job
             if "workflow.continue" in job_by_kind:
                 job_by_kind["dubbing.generate_audio"] = job_by_kind["workflow.continue"]
                 job_by_kind["audiobook.generate_audio"] = job_by_kind[
@@ -720,10 +751,19 @@ class WorkflowService:
                         configured_translation_source_id or recorded_source_id
                     )
                     candidate = (
-                        session.get(Artifact, explicit_source_id)
+                        known_artifacts.get(explicit_source_id)
+                        or session.get(Artifact, explicit_source_id)
                         if explicit_source_id
                         else None
                     )
+                    if (
+                        candidate is not None
+                        and candidate.session_id != session_id
+                        and candidate.id not in attached_source_ids
+                    ):
+                        attached_source_ids.update(
+                            _attached_source_artifact_ids(session, session_id)
+                        )
                     if self._valid_translation_source(
                         effective_definition,
                         candidate,
@@ -864,9 +904,7 @@ class WorkflowService:
                 if definition.key == "generate_audio" and generation_run is not None:
                     usage_scope["generation_run_id"] = generation_run.id
                     if generation_run.job_id:
-                        metric_job = (
-                            session.get(Job, generation_run.job_id) or metric_job
-                        )
+                        metric_job = job_by_id.get(generation_run.job_id) or metric_job
                 elif (
                     definition.key == "optimize_tts"
                     and optimization_enabled
@@ -880,9 +918,7 @@ class WorkflowService:
                         }
                     )
                     if generation_run.job_id:
-                        metric_job = (
-                            session.get(Job, generation_run.job_id) or metric_job
-                        )
+                        metric_job = job_by_id.get(generation_run.job_id) or metric_job
                 elif artifact is not None:
                     usage_scope["artifact_id"] = artifact.id
                     if active is not None:
@@ -1066,6 +1102,16 @@ class WorkflowService:
                 ):
                     if artifact_id and job_id:
                         artifact_job_links.setdefault(artifact_id, job_id)
+            missing_job_ids = set(artifact_job_links.values()) - job_by_id.keys()
+            if missing_job_ids:
+                job_by_id.update(
+                    {
+                        job.id: job
+                        for job in session.scalars(
+                            select(Job).where(Job.id.in_(missing_job_ids))
+                        ).all()
+                    }
+                )
             for stage in stages:
                 scope = stage_usage_scopes.get(str(stage["key"]), {})
                 linked_job_id = artifact_job_links.get(
@@ -1073,7 +1119,7 @@ class WorkflowService:
                 )
                 if linked_job_id and not scope.get("job_id"):
                     scope["job_id"] = linked_job_id
-                    metric_job = session.get(Job, linked_job_id)
+                    metric_job = job_by_id.get(linked_job_id)
                     if metric_job is not None:
                         stage["run_metrics"] = _job_run_metrics(metric_job)
             metric_job_ids = {

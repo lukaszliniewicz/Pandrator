@@ -16,6 +16,98 @@ from pandrator.web.manager_proxy import (
 
 
 class LocalManagerProxyTests(unittest.TestCase):
+    def test_inventory_uses_aggregate_endpoint(self):
+        proxy = LocalManagerProxy()
+        payload = {
+            "health": {"status": "ok"},
+            "status": {"ready": True},
+            "components": ("component",),
+            "services": ("service",),
+        }
+        with mock.patch.object(
+            proxy,
+            "request_json",
+            return_value=(payload, 200),
+        ) as request_json:
+            result = proxy.inventory()
+
+        self.assertEqual(
+            {
+                "health": payload["health"],
+                "status": payload["status"],
+                "components": ["component"],
+                "services": ["service"],
+            },
+            result,
+        )
+        request_json.assert_called_once_with(
+            "GET",
+            "/v1/inventory",
+            timeout=10,
+        )
+
+    def test_inventory_falls_back_to_legacy_requests_on_not_found(self):
+        proxy = LocalManagerProxy()
+        with mock.patch.object(
+            proxy,
+            "request_json",
+            side_effect=[
+                ManagerProxyError(
+                    "manager_request_failed",
+                    "not found",
+                    status=404,
+                ),
+                ({"status": "ok"}, 200),
+                ({"ready": True}, 200),
+                ({"items": ["component"]}, 200),
+                ({"items": ["service"]}, 200),
+            ],
+        ) as request_json:
+            result = proxy.inventory()
+
+        self.assertEqual(
+            {
+                "health": {"status": "ok"},
+                "status": {"ready": True},
+                "components": ["component"],
+                "services": ["service"],
+            },
+            result,
+        )
+        self.assertEqual(
+            [
+                mock.call("GET", "/v1/inventory", timeout=10),
+                mock.call("GET", "/v1/health", timeout=3),
+                mock.call("GET", "/v1/status", timeout=3),
+                mock.call("GET", "/v1/components", timeout=10),
+                mock.call("GET", "/v1/services", timeout=10),
+            ],
+            request_json.call_args_list,
+        )
+
+    def test_inventory_does_not_fall_back_for_other_errors(self):
+        proxy = LocalManagerProxy()
+        error = ManagerProxyError(
+            "manager_unavailable",
+            "manager unavailable",
+            status=503,
+        )
+        with (
+            mock.patch.object(
+                proxy,
+                "request_json",
+                side_effect=error,
+            ) as request_json,
+            self.assertRaisesRegex(ManagerProxyError, "manager unavailable"),
+        ):
+            proxy.inventory()
+
+        request_json.assert_called_once_with(
+            "GET",
+            "/v1/inventory",
+            timeout=10,
+        )
+
     def test_discovery_rejects_non_loopback_descriptor(self):
         with tempfile.TemporaryDirectory() as directory:
             state = Path(directory)
