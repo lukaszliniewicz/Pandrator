@@ -1,7 +1,9 @@
 <script lang="ts">
   import { errorMessage } from './errors';
   import {
+    ChevronLeft,
     ChevronDown,
+    ChevronRight,
     Columns3,
     Filter,
     Merge,
@@ -28,6 +30,9 @@
   import SearchReplaceBar from './SearchReplaceBar.svelte';
   import type { TextReplacement, TextSearchMatch } from './search-replace';
   import { modalFocus } from './modal-focus';
+  import WorkspaceMaximizeButton from './WorkspaceMaximizeButton.svelte';
+
+  const PAGE_SIZE = 50;
 
   let {
     sessionId,
@@ -57,6 +62,9 @@
   let cuePreviewFrame: number | null = null;
   let cuePreviewEnd = 0;
   let tourOpen = $state(false);
+  let maximized = $state(false);
+  let pageIndex = $state(0);
+  let rowsViewport = $state<HTMLDivElement>();
   const tourSteps = [
     {
       section: 'Review',
@@ -99,6 +107,28 @@
   const editableTexts = $derived(
     editColumn?.segments.map((segment) => segment.text) ?? []
   );
+  const pageCount = $derived(
+    Math.max(1, Math.ceil(visibleRows.length / PAGE_SIZE))
+  );
+  const pageStart = $derived(pageIndex * PAGE_SIZE);
+  const pagedRows = $derived(
+    visibleRows.slice(pageStart, pageStart + PAGE_SIZE)
+  );
+
+  $effect(() => {
+    if (pageIndex >= pageCount) pageIndex = pageCount - 1;
+  });
+
+  async function changePage(nextPage: number) {
+    pageIndex = Math.max(0, Math.min(nextPage, pageCount - 1));
+    await tick();
+    rowsViewport?.scrollTo({ top: 0 });
+  }
+
+  function toggleChangedOnly() {
+    changedOnly = !changedOnly;
+    pageIndex = 0;
+  }
 
   function catalogRecord(artifactId: string) {
     return catalog?.items.find((item) => item.artifact_id === artifactId);
@@ -228,6 +258,7 @@
       ]);
       payload = nextPayload;
       catalog = nextCatalog;
+      pageIndex = 0;
       if (
         !nextPayload.columns.some(
           (column) => column.artifact_id === editArtifactId
@@ -328,6 +359,15 @@
   async function navigateSearchMatch(match: TextSearchMatch) {
     if (diffView) diffView = false;
     if (changedOnly) changedOnly = false;
+    const target = editColumn?.segments[match.itemIndex];
+    const targetRow = target
+      ? (payload?.rows ?? []).findIndex((row) =>
+          (row.cells[editArtifactId] ?? []).some((segment) =>
+            sameSegment(segment, target)
+          )
+        )
+      : -1;
+    if (targetRow >= 0) pageIndex = Math.floor(targetRow / PAGE_SIZE);
     await tick();
     const field = document.querySelector<HTMLTextAreaElement>(
       `[data-subtitle-search-index="${match.itemIndex}"]`
@@ -416,14 +456,10 @@
 </script>
 
 <div
-  class="fixed inset-0 z-50 bg-black/45 p-3 backdrop-blur-sm sm:p-6"
+  class:maximized
+  class="review-overlay fixed inset-0 z-50 bg-black/45 p-3 backdrop-blur-sm sm:p-6"
   role="presentation"
 >
-  <button
-    onclick={() => (tourOpen = true)}
-    class="surface fixed right-7 bottom-7 z-[70] rounded-full px-4 py-2 text-sm font-semibold"
-    >Review tour</button
-  >
   <div
     use:modalFocus={{ onclose }}
     class="surface mx-auto flex h-full max-w-[96rem] flex-col overflow-hidden rounded-[1.5rem]"
@@ -445,12 +481,21 @@
       </div>
       <div class="flex min-w-0 flex-wrap items-center justify-end gap-2">
         <button
+          onclick={() => (tourOpen = true)}
+          class="rounded-xl border border-[var(--line)] px-3 py-2 text-sm font-semibold"
+          >Review tour</button
+        >
+        <button
           onclick={save}
           disabled={saving || !editColumn}
           class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2 text-sm font-semibold text-white disabled:opacity-40"
           ><Save size={16} />
           {saving ? 'Saving…' : 'Save revision'}</button
         >
+        <WorkspaceMaximizeButton
+          {maximized}
+          ontoggle={() => (maximized = !maximized)}
+        />
         <button
           onclick={onclose}
           aria-label="Close subtitle review"
@@ -502,7 +547,7 @@
             >
           </label>
           <button
-            onclick={() => (changedOnly = !changedOnly)}
+            onclick={toggleChangedOnly}
             aria-pressed={changedOnly}
             class:active={changedOnly}
             class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3 py-2 text-sm font-semibold"
@@ -598,7 +643,7 @@
         Side-by-side diff is read-only. Turn off <strong>Diff view</strong> to edit
         cue text or timing.
       </div>{/if}
-    <div class="min-h-0 flex-1 overflow-auto">
+    <div bind:this={rowsViewport} class="min-h-0 flex-1 overflow-auto">
       {#if loading}<div class="grid h-full place-items-center">
           <div class="eyebrow animate-pulse">Aligning subtitle lineage…</div>
         </div>
@@ -623,7 +668,7 @@
             ></thead
           >
           <tbody
-            >{#each visibleRows as row}<tr
+            >{#each pagedRows as row}<tr
                 class:changed={row.changed}
                 class="align-top"
                 ><td
@@ -712,11 +757,48 @@
         </table>
       {/if}
     </div>
+    {#if !loading && visibleRows.length > PAGE_SIZE}<nav
+        class="flex flex-wrap items-center justify-between gap-3 border-t border-[var(--line)] px-5 py-3 text-xs sm:px-7"
+        aria-label="Subtitle review pages"
+      >
+        <span class="muted tabular-nums"
+          >Showing {pageStart + 1}–{Math.min(
+            pageStart + PAGE_SIZE,
+            visibleRows.length
+          )} of {visibleRows.length} rows</span
+        >
+        <div class="flex items-center gap-2">
+          <button
+            type="button"
+            onclick={() => changePage(pageIndex - 1)}
+            disabled={pageIndex === 0}
+            class="flex items-center gap-1 rounded-lg border border-[var(--line)] px-2.5 py-1.5 font-semibold disabled:opacity-35"
+            ><ChevronLeft size={14} /> Previous</button
+          >
+          <span class="min-w-20 text-center tabular-nums"
+            >Page {pageIndex + 1} of {pageCount}</span
+          >
+          <button
+            type="button"
+            onclick={() => changePage(pageIndex + 1)}
+            disabled={pageIndex >= pageCount - 1}
+            class="flex items-center gap-1 rounded-lg border border-[var(--line)] px-2.5 py-1.5 font-semibold disabled:opacity-35"
+            >Next <ChevronRight size={14} /></button
+          >
+        </div>
+      </nav>{/if}
   </div>
 </div>
 <GuidedTour tourId="subtitle-review" steps={tourSteps} bind:open={tourOpen} />
 
 <style>
+  .review-overlay.maximized {
+    padding: 0;
+  }
+  .review-overlay.maximized > :global([role='dialog']) {
+    max-width: none;
+    border-radius: 0;
+  }
   tr.changed > td {
     background: color-mix(in srgb, var(--accent-soft) 22%, transparent);
   }

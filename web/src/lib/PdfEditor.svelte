@@ -25,6 +25,8 @@
 
   pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
 
+  const MAX_STACK_PREVIEW_PAGES = 24;
+
   type Rect = { x0: number; y0: number; x1: number; y1: number };
   type PageInfo = {
     original_page: number;
@@ -104,6 +106,8 @@
   let undoStack = $state<Plan[]>([]);
   let redoStack = $state<Plan[]>([]);
   let resultMessage = $state('');
+  let fullStackPreview = $state(false);
+  let stackPreviewCounts = $state({ rendered: 0, targeted: 0 });
 
   const clone = (value: Plan): Plan => JSON.parse(JSON.stringify(value));
 
@@ -133,15 +137,15 @@
   async function load() {
     loading = true;
     try {
-      metadata = await pdfApi.inspect<Metadata>(
-        source.id,
-        plan.first_page_side
-      );
-      document = await pdfjs.getDocument({
-        url: `/api/v1/artifacts/${source.id}/content`,
-        withCredentials: true
-      }).promise;
-      await render();
+      const [nextMetadata, nextDocument] = await Promise.all([
+        pdfApi.inspect<Metadata>(source.id, plan.first_page_side),
+        pdfjs.getDocument({
+          url: `/api/v1/artifacts/${source.id}/content`,
+          withCredentials: true
+        }).promise
+      ]);
+      metadata = nextMetadata;
+      document = nextDocument;
     } catch (caught) {
       error = errorMessage(caught);
     } finally {
@@ -177,12 +181,39 @@
     return metadata.pages.map((page) => page.original_page);
   }
 
+  function previewPages(pages: number[]) {
+    if (fullStackPreview || pages.length <= MAX_STACK_PREVIEW_PAGES)
+      return pages;
+    return Array.from(
+      new Set(
+        Array.from(
+          { length: MAX_STACK_PREVIEW_PAGES },
+          (_, index) =>
+            pages[
+              Math.round(
+                (index * (pages.length - 1)) / (MAX_STACK_PREVIEW_PAGES - 1)
+              )
+            ]
+        )
+      )
+    );
+  }
+
+  const targetPageCount = $derived(
+    visiblePages().filter((page) => !plan.deleted_pages.includes(page)).length
+  );
+
   async function render() {
     if (!canvas || !document || !metadata) return;
     const epoch = ++renderEpoch;
-    const pages = visiblePages().filter(
+    const targetPages = visiblePages().filter(
       (page) => !plan.deleted_pages.includes(page)
     );
+    const pages = previewPages(targetPages);
+    stackPreviewCounts = {
+      rendered: pages.length,
+      targeted: targetPages.length
+    };
     if (!pages.length) return;
     const representative = pages.includes(selectedPage)
       ? selectedPage
@@ -389,7 +420,6 @@
     pushUndo();
     plan.first_page_side = plan.first_page_side === 'right' ? 'left' : 'right';
     metadata = await pdfApi.inspect<Metadata>(source.id, plan.first_page_side);
-    await render();
   }
 
   async function applyEdits() {
@@ -413,6 +443,7 @@
     void opacity;
     void mode;
     void selectedPage;
+    void fullStackPreview;
     if (document && metadata) void render();
   });
   onMount(load);
@@ -476,6 +507,15 @@
     <button onclick={changeSide} class="tool border border-[var(--line)]"
       >First page: {plan.first_page_side}</button
     >
+    {#if targetPageCount > MAX_STACK_PREVIEW_PAGES}<button
+        onclick={() => (fullStackPreview = !fullStackPreview)}
+        class:active={fullStackPreview}
+        class="tool border border-[var(--line)]"
+        title={fullStackPreview
+          ? 'Return to an evenly sampled stack preview'
+          : `Render all ${targetPageCount} target pages in the preview`}
+        >{fullStackPreview ? 'Fast stack' : 'Full stack'}</button
+      >{/if}
     <button onclick={undo} disabled={!undoStack.length} class="tool"
       ><Undo2 size={16} /></button
     ><button onclick={redo} disabled={!redoStack.length} class="tool"
@@ -597,6 +637,11 @@
           </div>{/if}
       </div>
       <p class="muted mx-auto mt-4 max-w-2xl text-center text-xs">
+        {#if stackPreviewCounts.targeted > stackPreviewCounts.rendered}<span
+            class="mb-1 block font-semibold text-[var(--ink)]"
+            >Fast preview uses {stackPreviewCounts.rendered} evenly spaced pages;
+            edits still apply to all {stackPreviewCounts.targeted} target pages.</span
+          >{/if}
         Draw on the stack to apply a synchronized {tool} to {mode === 'all'
           ? 'all pages'
           : mode === 'single'

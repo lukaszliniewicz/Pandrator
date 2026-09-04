@@ -36,21 +36,21 @@
     WorkflowStage
   } from './api-models';
   import { appState } from './app-state.svelte';
-  import SubtitleReview from './SubtitleReview.svelte';
   import GuidedTour from './GuidedTour.svelte';
-  import ArtifactPreview from './ArtifactPreview.svelte';
-  import TextOptimizationReview from './TextOptimizationReview.svelte';
-  import AddSourceDialog from './AddSourceDialog.svelte';
   import WorkflowStageCard from './WorkflowStageCard.svelte';
   import WorkflowRunDialogs from './WorkflowRunDialogs.svelte';
-  import SessionForkDialog from './SessionForkDialog.svelte';
   import type { PreviewableArtifact } from './artifact-display';
   import { LANGUAGE_OPTIONS } from './settings-fields';
   import { describeVoice, languagesForService } from './voice-catalog';
   import { onMount } from 'svelte';
   import { type WorkflowStore } from './workflow-store.svelte';
   import type PdfEditor from './PdfEditor.svelte';
+  import type AddSourceDialog from './AddSourceDialog.svelte';
+  import type ArtifactPreview from './ArtifactPreview.svelte';
+  import type SessionForkDialog from './SessionForkDialog.svelte';
   import type SettingsModal from './SettingsModal.svelte';
+  import type SubtitleReview from './SubtitleReview.svelte';
+  import type TextOptimizationReview from './TextOptimizationReview.svelte';
   import type TtsServicesModal from './TtsServicesModal.svelte';
   import type VoiceLibraryModal from './VoiceLibraryModal.svelte';
   import { modalFocus } from './modal-focus';
@@ -93,6 +93,7 @@
   >([]);
   let error = $state('');
   let sourceDialog = $state(false);
+  let AddSourceDialogComponent = $state<typeof AddSourceDialog | null>(null);
   let sourceMessage = $state('');
   let pendingRun = $state<{ stage: Stage; impact: StageRerunImpact } | null>(
     null
@@ -119,12 +120,19 @@
   let publishingLibraryVoiceId = $state('');
   let voicePublishStatus = $state('');
   let optimizationReviewArtifactId = $state('');
+  let TextOptimizationReviewComponent = $state<
+    typeof TextOptimizationReview | null
+  >(null);
   let workspaceMode = $state<'review' | 'automatic'>('review');
   let preview = $state<PreviewableArtifact | null>(null);
+  let ArtifactPreviewComponent = $state<typeof ArtifactPreview | null>(null);
   let forkCheckpoint = $state<{
     stage: 'correction' | 'translation';
     artifactId: string;
   } | null>(null);
+  let SessionForkDialogComponent = $state<typeof SessionForkDialog | null>(
+    null
+  );
   const sectionDisplay = (section: string) =>
     (({ stt: 'STT', tts: 'TTS', rvc: 'RVC' }) as Record<string, string>)[
       section
@@ -215,6 +223,7 @@
   let pdfSource = $state<{ id: string; filename: string } | null>(null);
   let PdfEditorComponent = $state<typeof PdfEditor | null>(null);
   let reviewArtifactId = $state('');
+  let SubtitleReviewComponent = $state<typeof SubtitleReview | null>(null);
   let subtitleCatalogItems = $state<SubtitleReviewCatalogItem[]>([]);
   let translationSourceArtifactId = $state('');
   let webResearchEnabled = $state(false);
@@ -416,7 +425,8 @@
     reuseStages: string[] = []
   ) {
     if (stage.key === 'preview') {
-      reviewArtifactId = defaultReviewArtifactId();
+      const artifactId = defaultReviewArtifactId();
+      if (artifactId) await openSubtitleReview(artifactId);
       return;
     }
     if (stage.key === 'export') {
@@ -484,6 +494,31 @@
     pdfSource = source;
   }
 
+  async function openSourceDialog() {
+    AddSourceDialogComponent ??= (await import('./AddSourceDialog.svelte'))
+      .default;
+    sourceDialog = true;
+  }
+
+  async function openSubtitleReview(artifactId: string) {
+    SubtitleReviewComponent ??= (await import('./SubtitleReview.svelte'))
+      .default;
+    reviewArtifactId = artifactId;
+  }
+
+  async function openOptimizationReview(artifactId: string) {
+    TextOptimizationReviewComponent ??= (
+      await import('./TextOptimizationReview.svelte')
+    ).default;
+    optimizationReviewArtifactId = artifactId;
+  }
+
+  async function openArtifactPreview(artifact: PreviewableArtifact) {
+    ArtifactPreviewComponent ??= (await import('./ArtifactPreview.svelte'))
+      .default;
+    preview = artifact;
+  }
+
   async function chooseStageArtifact(stage: Stage, artifactId: string) {
     if (!artifactId || artifactId === stage.selected_artifact_id) return;
     error = '';
@@ -540,7 +575,7 @@
     }
   }
 
-  function forkStage(stage: Stage) {
+  async function forkStage(stage: Stage) {
     const forkStage =
       stage.key === 'correct'
         ? 'correction'
@@ -548,6 +583,8 @@
           ? 'translation'
           : null;
     if (!forkStage || !stage.selected_artifact_id) return;
+    SessionForkDialogComponent ??= (await import('./SessionForkDialog.svelte'))
+      .default;
     forkCheckpoint = {
       stage: forkStage,
       artifactId: stage.selected_artifact_id
@@ -1801,11 +1838,11 @@
     }
   }
 
-  function previewArtifact(stage: Stage) {
+  async function previewArtifact(stage: Stage) {
     if (!stage.artifact) return;
     const role = stage.artifact.raw_role ?? stage.artifact.role;
     if (role === 'tts_optimized' && stage.artifact.kind === 'json') {
-      optimizationReviewArtifactId = stage.artifact.id;
+      await openOptimizationReview(stage.artifact.id);
       return;
     }
     if (
@@ -1813,14 +1850,14 @@
         role
       )
     ) {
-      reviewArtifactId = stage.artifact.id;
+      await openSubtitleReview(stage.artifact.id);
       return;
     }
-    preview = {
+    await openArtifactPreview({
       ...stage.artifact,
       role,
       relative_path: stage.artifact.relative_path ?? stage.artifact.path
-    };
+    });
   }
 
   function stageSectionUpdates(
@@ -2318,7 +2355,7 @@
           class="lift flex items-center gap-3 rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] px-4 py-3 text-sm font-semibold"
           ><Crop size={18} /> Edit PDF</button
         >{/if}<button
-        onclick={() => (sourceDialog = true)}
+        onclick={openSourceDialog}
         class="lift flex items-center gap-3 rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] px-4 py-3 text-sm font-semibold"
         ><Plus size={18} /> Add source</button
       >
@@ -2402,7 +2439,7 @@
           onresume={() => resume(stage)}
           oncancel={() => cancel(stage)}
           onselect={(artifactId) => chooseStageArtifact(stage, artifactId)}
-          onpreview={() => previewArtifact(stage)}
+          onpreview={() => void previewArtifact(stage)}
           onclear={() => clearStageArtifact(stage)}
           onfork={['correct', 'translate'].includes(stage.key) &&
           stage.selected_artifact_id
@@ -2416,7 +2453,7 @@
   {/if}
 </div>
 
-{#if sourceDialog}<AddSourceDialog
+{#if sourceDialog && AddSourceDialogComponent}<AddSourceDialogComponent
     sessionId={session.id}
     onclose={() => (sourceDialog = false)}
     onadded={sourceAdded}
@@ -4314,24 +4351,24 @@
     source={pdfSource}
     onclose={() => (pdfSource = null)}
   />{/if}
-{#if reviewArtifactId}<SubtitleReview
+{#if reviewArtifactId && SubtitleReviewComponent}<SubtitleReviewComponent
     sessionId={session.id}
     primaryArtifactId={reviewArtifactId}
     sourceAudioArtifactId={snapshot?.sources[0]?.id}
     onclose={() => (reviewArtifactId = '')}
     onsaved={load}
   />{/if}
-{#if preview}<ArtifactPreview
+{#if preview && ArtifactPreviewComponent}<ArtifactPreviewComponent
     artifact={preview}
     onclose={() => (preview = null)}
   />{/if}
-{#if forkCheckpoint}<SessionForkDialog
+{#if forkCheckpoint && SessionForkDialogComponent}<SessionForkDialogComponent
     {session}
     stage={forkCheckpoint.stage}
     artifactId={forkCheckpoint.artifactId}
     onclose={() => (forkCheckpoint = null)}
   />{/if}
-{#if optimizationReviewArtifactId}<TextOptimizationReview
+{#if optimizationReviewArtifactId && TextOptimizationReviewComponent}<TextOptimizationReviewComponent
     artifactId={optimizationReviewArtifactId}
     onclose={() => (optimizationReviewArtifactId = '')}
     onsaved={load}

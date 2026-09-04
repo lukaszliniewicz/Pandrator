@@ -94,6 +94,7 @@
   let comparisonDiff = $state(false);
   let searchLoading = $state(false);
   let speechOptionsLoading = $state(false);
+  let supportingOptionsLoaded = false;
   let ttsSettings = $state<Record<string, unknown>>({});
   let ttsCatalogue = $state<TtsCatalogue>({ services: [] });
   let libraryVoices = $state<VoiceRecord[]>([]);
@@ -918,6 +919,12 @@
     }
   }
 
+  async function loadSupportingOptions() {
+    if (supportingOptionsLoaded) return;
+    supportingOptionsLoaded = true;
+    await Promise.all([loadRvc(), loadSpeechOptions()]);
+  }
+
   async function action(name: 'pause' | 'resume' | 'cancel') {
     if (!run) return;
     generationStore.upsertRun(await generationApi.runAction(run.id, name));
@@ -1263,8 +1270,6 @@
   }
 
   onMount(() => {
-    loadRvc();
-    loadSpeechOptions();
     const disconnect = generationStore.connect(
       () => ({ filter, selectedRunId }),
       applyLoadResult
@@ -1275,6 +1280,9 @@
       startedRunReconciliation?.abort();
       stopPlayback();
     };
+  });
+  $effect(() => {
+    if (mode !== 'collapsed') void untrack(loadSupportingOptions);
   });
   $effect(() => {
     void filter;

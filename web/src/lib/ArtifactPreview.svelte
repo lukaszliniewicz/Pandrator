@@ -24,6 +24,7 @@
   import AudioPlayer from './AudioPlayer.svelte';
   import TextDiff from './TextDiff.svelte';
   import { modalFocus } from './modal-focus';
+  import WorkspaceMaximizeButton from './WorkspaceMaximizeButton.svelte';
 
   let {
     artifact,
@@ -32,6 +33,7 @@
   let text = $state('');
   let error = $state('');
   let loading = $state(false);
+  let maximized = $state(false);
   let comparisonText = $state('');
   let comparisonName = $state('');
   let comparisonId = $state('');
@@ -183,16 +185,21 @@
   onMount(async () => {
     loading = isText;
     try {
+      const textPromise = isText
+        ? apiResponse(url, {
+            headers: { Range: 'bytes=0-2097151' }
+          }).then((response) => response.text())
+        : Promise.resolve('');
+      const contextPromise = artifactApi.context(artifact.id).catch(() => null);
+
       if (isText) {
-        const response = await apiResponse(url, {
-          headers: { Range: 'bytes=0-2097151' }
-        });
-        text = await response.text();
+        text = await textPromise;
         if (text.length >= 2_097_000)
           text += '\n\n— Preview truncated at 2 MiB —';
+        loading = false;
       }
 
-      const context = await artifactApi.context(artifact.id).catch(() => null);
+      const context = await contextPromise;
       if (context) {
         usageSummary = context.usage ?? null;
         if (isVideo) {
@@ -235,7 +242,8 @@
 </script>
 
 <div
-  class="fixed inset-0 z-[80] grid place-items-center bg-black/55 p-3 backdrop-blur-sm"
+  class:maximized
+  class="preview-overlay fixed inset-0 z-[80] grid place-items-center bg-black/55 p-3 backdrop-blur-sm"
   role="presentation"
   onclick={(event) => event.target === event.currentTarget && onclose()}
 >
@@ -291,6 +299,10 @@
       <a href={url} download={filename} class="tool flex items-center gap-2"
         ><Download size={16} /> Download</a
       >
+      <WorkspaceMaximizeButton
+        {maximized}
+        ontoggle={() => (maximized = !maximized)}
+      />
       <button
         onclick={onclose}
         class="rounded-xl p-2"
@@ -482,6 +494,15 @@
     border: 1px solid var(--line);
     background: var(--paper-strong);
     box-shadow: 0 22px 70px rgba(0, 0, 0, 0.25);
+  }
+  .preview-overlay.maximized {
+    padding: 0;
+  }
+  .preview-overlay.maximized .preview-panel {
+    height: 100svh;
+    max-height: 100svh;
+    max-width: none;
+    border-radius: 0;
   }
   .tool {
     border: 1px solid var(--line);

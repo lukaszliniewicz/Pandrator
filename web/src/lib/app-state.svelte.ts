@@ -36,6 +36,7 @@ class AppState {
   authenticated = $state(false);
   initialized = $state(false);
   loading = $state(true);
+  snapshotLoading = $state(false);
   error = $state('');
   readonly sessionsResource = new ResourceState<SessionRecord[]>([]);
   readonly jobsResource = new ResourceState<JobRecord[]>([]);
@@ -51,6 +52,7 @@ class AppState {
   private unhealthyTimer?: number;
   private fallbackTimer?: number;
   private resyncing = false;
+  private authenticationRevision = 0;
   private invalidations = new InvalidationCoordinator((batch) =>
     this.flushInvalidations(batch)
   );
@@ -91,12 +93,12 @@ class AppState {
       }
       const status = await appApi.authStatus();
       this.authenticated = status.authenticated;
+      this.authenticationRevision += 1;
       this.remoteAccess = Boolean(status.remote_access);
       this.securityWarning = String(status.security_warning ?? '');
       setCsrfToken(status.csrf_token);
       if (this.authenticated) {
-        await this.loadEventSnapshot();
-        this.connectEvents(this.eventCursor);
+        void this.synchronizeAuthenticatedState(this.authenticationRevision);
       }
     } catch (caught) {
       this.error = errorMessage(caught);
@@ -109,15 +111,18 @@ class AppState {
   async login(password: string) {
     const result = await appApi.login(password);
     setCsrfToken(result.csrf_token);
+    this.error = '';
     this.authenticated = true;
-    await this.loadEventSnapshot();
-    this.connectEvents(this.eventCursor);
+    this.authenticationRevision += 1;
+    await this.synchronizeAuthenticatedState(this.authenticationRevision);
   }
 
   async logout() {
     await appApi.logout();
     this.disconnectEvents();
     this.authenticated = false;
+    this.authenticationRevision += 1;
+    this.snapshotLoading = false;
     this.sessionsResource.reset([]);
     this.jobsResource.reset([]);
     this.capabilitiesResource.reset({});
@@ -167,8 +172,14 @@ class AppState {
     this.setupReturnVisible = true;
   }
 
-  private async loadEventSnapshot() {
+  private async loadEventSnapshot(authenticationRevision?: number) {
     const snapshot = await appApi.eventSnapshot();
+    if (
+      authenticationRevision !== undefined &&
+      (!this.authenticated ||
+        authenticationRevision !== this.authenticationRevision)
+    )
+      return false;
     this.sessionsResource.replace(
       snapshot.sessions.items,
       snapshot.sessions.items.length === 0
@@ -179,6 +190,23 @@ class AppState {
     );
     this.capabilitiesResource.replace(snapshot.capabilities);
     this.eventCursor = Number(snapshot.cursor || 0);
+    return true;
+  }
+
+  private async synchronizeAuthenticatedState(authenticationRevision: number) {
+    this.snapshotLoading = true;
+    try {
+      if (await this.loadEventSnapshot(authenticationRevision))
+        this.connectEvents(this.eventCursor);
+    } catch (caught) {
+      if (authenticationRevision !== this.authenticationRevision) return;
+      this.error = errorMessage(caught);
+      this.eventsHealthy = false;
+      this.scheduleFallbackRefresh();
+    } finally {
+      if (authenticationRevision === this.authenticationRevision)
+        this.snapshotLoading = false;
+    }
   }
 
   private patchJob(event: PandratorServerEvent) {
@@ -264,8 +292,8 @@ class AppState {
     this.resyncing = true;
     source.close();
     try {
-      await this.loadEventSnapshot();
-      if (this.authenticated) this.connectEvents(this.eventCursor);
+      if (await this.loadEventSnapshot(this.authenticationRevision))
+        this.connectEvents(this.eventCursor);
     } catch {
       this.eventsHealthy = false;
       this.scheduleFallbackRefresh();

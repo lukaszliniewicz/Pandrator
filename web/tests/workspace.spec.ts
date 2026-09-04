@@ -96,7 +96,7 @@ test('correction and translation cards expose independent reasoning levels', asy
     revision: 1,
     reviewed: false,
     language: 'de',
-    segment_count: 1,
+    segment_count: 75,
     state: 'current',
     created_at: '2026-01-01T12:00:00Z'
   };
@@ -127,9 +127,9 @@ test('correction and translation cards expose independent reasoning levels', asy
   await dialog.getByRole('button', { name: 'All correction settings' }).click();
   dialog = page.getByRole('dialog');
   await expect(dialog.getByLabel('Reasoning level')).toHaveValue('high');
-  await expect(dialog.getByLabel('Instructions')).toHaveValue(
-    'Keep the acronym IARF unchanged.'
-  );
+  await expect(
+    dialog.getByRole('textbox', { name: 'Instructions' })
+  ).toHaveValue('Keep the acronym IARF unchanged.');
 
   const unsavedCorrectionSettings = await page.request.get(
     `/api/v1/sessions/${session.id}/settings/correction`
@@ -346,15 +346,17 @@ test('workflow history and subtitle review load exact revisions on demand', asyn
         'artifact_id'
       );
       reviewRequests.push(artifactIds);
-      const segment = (artifactId: string) => ({
-        id: `segment-${artifactId}`,
-        ordinal: 0,
-        start_ms: 0,
-        end_ms: 2000,
+      const segment = (artifactId: string, ordinal: number) => ({
+        id: `segment-${artifactId}-${ordinal}`,
+        ordinal,
+        start_ms: ordinal * 2500,
+        end_ms: ordinal * 2500 + 2000,
         text:
-          artifactId === 'artifact-15'
+          ordinal === 0 && artifactId === 'artifact-15'
             ? 'The newest transcription.'
-            : 'The alternate transcription.',
+            : ordinal === 0
+              ? 'The alternate transcription.'
+              : `${artifactId === 'artifact-15' ? 'Newest' : 'Alternate'} transcription ${ordinal + 1}.`,
         speaker: 'SPEAKER_0'
       });
       await route.fulfill({
@@ -375,22 +377,22 @@ test('workflow history and subtitle review load exact revisions on demand', asyn
               revision: item.revision,
               reviewed: false,
               language: 'de',
-              segments: [segment(artifactId)]
+              segments: Array.from({ length: 75 }, (_, ordinal) =>
+                segment(artifactId, ordinal)
+              )
             };
           }),
-          rows: [
-            {
-              start_ms: 0,
-              end_ms: 2000,
-              changed: artifactIds.length > 1,
-              cells: Object.fromEntries(
-                artifactIds.map((artifactId) => [
-                  artifactId,
-                  [segment(artifactId)]
-                ])
-              )
-            }
-          ]
+          rows: Array.from({ length: 75 }, (_, ordinal) => ({
+            start_ms: ordinal * 2500,
+            end_ms: ordinal * 2500 + 2000,
+            changed: artifactIds.length > 1,
+            cells: Object.fromEntries(
+              artifactIds.map((artifactId) => [
+                artifactId,
+                [segment(artifactId, ordinal)]
+              ])
+            )
+          }))
         })
       });
     }
@@ -420,6 +422,13 @@ test('workflow history and subtitle review load exact revisions on demand', asyn
   await page.getByRole('button', { name: 'Preview selected' }).click();
   const review = page.getByRole('dialog', { name: 'Compare and refine' });
   await expect(review).toBeVisible();
+  await expect(review.getByText('Showing 1–50 of 75 rows')).toBeVisible();
+  await expect(review.locator('tbody tr')).toHaveCount(50);
+  await review.getByRole('button', { name: 'Maximize workspace' }).click();
+  await expect(
+    review.getByRole('button', { name: 'Restore workspace size' })
+  ).toBeVisible();
+  await review.getByRole('button', { name: 'Restore workspace size' }).click();
   await expect(
     review.getByRole('button', { name: 'Changed only' })
   ).toBeHidden();
@@ -446,11 +455,21 @@ test('workflow history and subtitle review load exact revisions on demand', asyn
   ).toBeVisible();
   await expect(review.getByText('The alternate transcription.')).toBeVisible();
 
+  await review.getByRole('button', { name: 'Next', exact: true }).click();
+  await expect(review.getByText('Showing 51–75 of 75 rows')).toBeVisible();
+  await expect(review.locator('tbody tr')).toHaveCount(25);
+  await review.getByRole('button', { name: 'Previous', exact: true }).click();
+  await expect(review.getByText('Showing 1–50 of 75 rows')).toBeVisible();
+
   await review.getByText('Find, filter & compare', { exact: true }).click();
-  await review.getByRole('button', { name: 'Delete' }).focus();
+  await review.getByRole('button', { name: 'Delete' }).last().focus();
   await page.keyboard.press('Tab');
   await expect(
-    review.getByRole('button', { name: 'Save revision' })
+    review.getByRole('button', { name: 'Next', exact: true })
+  ).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(
+    review.getByRole('button', { name: 'Review tour' })
   ).toBeFocused();
 });
 
@@ -861,11 +880,16 @@ test('generation segments support Ctrl and Shift multi-selection in both review 
   await expect(rows.nth(2)).toHaveClass(/selected/);
   await expect(rows.nth(3)).toHaveClass(/selected/);
   await page
-    .getByRole('button', { name: /RVC speech-to-speech settings/ })
+    .getByRole('button', { name: 'Settings and speech services' })
     .click();
+  await page.getByRole('button', { name: 'RVC conversion…' }).click();
   await expect(
-    page.getByRole('button', { name: 'RVC selected (2)' })
+    page.getByRole('button', { name: 'Selected (2)' })
   ).toBeVisible();
+  await page
+    .getByRole('dialog', { name: 'RVC conversion' })
+    .getByRole('button', { name: 'Close' })
+    .click();
 
   await page.getByRole('button', { name: 'Display options' }).click();
   await page.getByRole('button', { name: 'Reading view', exact: true }).click();
@@ -890,8 +914,12 @@ test('generation segments support Ctrl and Shift multi-selection in both review 
   await expect(page.locator('.reading-segment.selected-sentence')).toHaveCount(
     2
   );
+  await page
+    .getByRole('button', { name: 'Settings and speech services' })
+    .click();
+  await page.getByRole('button', { name: 'RVC conversion…' }).click();
   await expect(
-    page.getByRole('button', { name: 'RVC selected (2)' })
+    page.getByRole('button', { name: 'Selected (2)' })
   ).toBeVisible();
 });
 
@@ -1606,7 +1634,7 @@ test('alternate regeneration sends one selected-only setting set and returns to 
   await page.getByRole('button', { name: 'Regeneration options' }).click();
   await page
     .getByRole('button', {
-      name: 'Regenerate with different settings / provider…'
+      name: 'Different settings / provider…'
     })
     .click();
   const dialog = page.getByRole('dialog');

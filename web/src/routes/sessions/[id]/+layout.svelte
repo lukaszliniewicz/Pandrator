@@ -18,10 +18,14 @@
   import { SESSION_CONTEXT, type SessionContext } from '$lib/session-context';
   import { SessionStore } from '$lib/session-store.svelte';
   import { WorkflowStore } from '$lib/workflow-store.svelte';
-  import WorkflowCustomizer from '$lib/WorkflowCustomizer.svelte';
-  import GenerationDrawer from '$lib/GenerationDrawer.svelte';
+  import type WorkflowCustomizer from '$lib/WorkflowCustomizer.svelte';
+  import type GenerationDrawer from '$lib/GenerationDrawer.svelte';
   let { children }: { children: Snippet } = $props();
   let customizeOpen = $state(false);
+  let WorkflowCustomizerComponent = $state<typeof WorkflowCustomizer | null>(
+    null
+  );
+  let GenerationDrawerComponent = $state<typeof GenerationDrawer | null>(null);
   let sourceProfile = $state('none');
   const sessionStore = new SessionStore(page.params.id ?? '', (session) =>
     appState.upsertSession(session)
@@ -47,7 +51,7 @@
     reload: async () => {
       await Promise.all([sessionStore.load(true), loadSourceProfile()]);
     },
-    customize: () => (customizeOpen = true)
+    customize: () => void openWorkflowCustomizer()
   };
   setContext(SESSION_CONTEXT, contextState);
   reload();
@@ -65,6 +69,12 @@
   function reload() {
     return contextState.reload();
   }
+  async function openWorkflowCustomizer() {
+    WorkflowCustomizerComponent ??= (
+      await import('$lib/WorkflowCustomizer.svelte')
+    ).default;
+    customizeOpen = true;
+  }
   onMount(() => {
     const disconnectSession = sessionStore.connect();
     const disconnectWorkflow = workflowStore.connect();
@@ -75,10 +85,24 @@
       )
         void loadSourceProfile();
     });
+    const loadGenerationDrawer = () => {
+      void import('$lib/GenerationDrawer.svelte').then(
+        ({ default: component }) => (GenerationDrawerComponent = component)
+      );
+    };
+    const idleCallback = window.requestIdleCallback?.(loadGenerationDrawer, {
+      timeout: 1000
+    });
+    const fallbackTimer =
+      idleCallback === undefined
+        ? window.setTimeout(loadGenerationDrawer, 200)
+        : undefined;
     return () => {
       disconnectSession();
       disconnectWorkflow();
       disconnectSourceProfile();
+      if (idleCallback !== undefined) window.cancelIdleCallback(idleCallback);
+      if (fallbackTimer !== undefined) window.clearTimeout(fallbackTimer);
     };
   });
   const tabs = $derived(
@@ -137,7 +161,7 @@
         </div>
       </div>
       <button
-        onclick={() => (customizeOpen = true)}
+        onclick={openWorkflowCustomizer}
         class="flex items-center gap-2 rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] px-4 py-2.5 text-sm font-semibold"
         ><Settings2 size={16} /> Customize workflow</button
       >
@@ -154,7 +178,7 @@
     </nav>
     <div class="py-7">{@render children()}</div>
   </div>
-  {#if customizeOpen}<WorkflowCustomizer
+  {#if customizeOpen && WorkflowCustomizerComponent}<WorkflowCustomizerComponent
       sessionId={contextState.session.id}
       onclose={() => (customizeOpen = false)}
       onsaved={contextState.reload}
@@ -162,7 +186,7 @@
 {:else}<p class="text-red-500">
     {contextState.error || 'Session not found.'}
   </p>{/if}
-{#if Boolean(contextState.session) && contextState.session?.workflow_kind !== 'subtitles'}<GenerationDrawer
+{#if Boolean(contextState.session) && GenerationDrawerComponent && contextState.session?.workflow_kind !== 'subtitles'}<GenerationDrawerComponent
     sessionId={page.params.id ?? ''}
   />{/if}
 

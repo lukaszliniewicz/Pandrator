@@ -94,28 +94,32 @@
         >
       </div>
       <div class="surface overflow-hidden rounded-2xl">
-        {#each appState.sessions.slice(0, 6) as session}<a
-            href={`/sessions/${session.id}`}
-            class="flex items-center gap-4 border-b border-[var(--line)] p-4 last:border-0 hover:bg-[var(--accent-soft)]"
-            ><div
-              class="grid size-10 place-items-center rounded-xl bg-[var(--accent-soft)] text-[var(--accent)]"
-            >
-              {#if session.workflow_kind === 'audiobook'}<BookOpenText
-                  size={18}
-                />{:else if session.workflow_kind === 'voiceover'}<AudioLines
-                  size={18}
-                />{:else}<Captions size={18} />{/if}
-            </div>
-            <div class="min-w-0 flex-1">
-              <div class="truncate font-semibold">{session.name}</div>
-              <div class="muted mt-1 text-xs capitalize">
-                {session.workflow_kind} · {session.status}
+        {#if appState.snapshotLoading && !appState.sessions.length}<div
+            class="grid min-h-28 place-items-center"
+          >
+            <span class="eyebrow animate-pulse">Loading recent sessions…</span>
+          </div>{:else}{#each appState.sessions.slice(0, 6) as session}<a
+              href={`/sessions/${session.id}`}
+              class="flex items-center gap-4 border-b border-[var(--line)] p-4 last:border-0 hover:bg-[var(--accent-soft)]"
+              ><div
+                class="grid size-10 place-items-center rounded-xl bg-[var(--accent-soft)] text-[var(--accent)]"
+              >
+                {#if session.workflow_kind === 'audiobook'}<BookOpenText
+                    size={18}
+                  />{:else if session.workflow_kind === 'voiceover'}<AudioLines
+                    size={18}
+                  />{:else}<Captions size={18} />{/if}
               </div>
-            </div>
-            <ChevronRight size={17} /></a
-          >{:else}<div class="muted p-9 text-center text-sm">
-            No sessions yet. Start with one of the outcome tiles above.
-          </div>{/each}
+              <div class="min-w-0 flex-1">
+                <div class="truncate font-semibold">{session.name}</div>
+                <div class="muted mt-1 text-xs capitalize">
+                  {session.workflow_kind} · {session.status}
+                </div>
+              </div>
+              <ChevronRight size={17} /></a
+            >{:else}<div class="muted p-9 text-center text-sm">
+              No sessions yet. Start with one of the outcome tiles above.
+            </div>{/each}{/if}
       </div>
     </section>
     <aside>

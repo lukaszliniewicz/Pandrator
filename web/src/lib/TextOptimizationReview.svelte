@@ -1,6 +1,13 @@
 <script lang="ts">
   import { errorMessage } from './errors';
-  import { Check, LoaderCircle, Save, X } from '@lucide/svelte';
+  import {
+    Check,
+    ChevronLeft,
+    ChevronRight,
+    LoaderCircle,
+    Save,
+    X
+  } from '@lucide/svelte';
   import { onMount, tick } from 'svelte';
   import { apiResponse } from './api';
   import { artifactApi } from './domain-api';
@@ -8,6 +15,9 @@
   import SearchReplaceBar from './SearchReplaceBar.svelte';
   import type { TextReplacement, TextSearchMatch } from './search-replace';
   import { modalFocus } from './modal-focus';
+  import WorkspaceMaximizeButton from './WorkspaceMaximizeButton.svelte';
+
+  const PAGE_SIZE = 50;
 
   let {
     artifactId,
@@ -21,12 +31,37 @@
   let loading = $state(true);
   let saving = $state(false);
   let error = $state('');
+  let maximized = $state(false);
+  let pageIndex = $state(0);
+  let rowsViewport = $state<HTMLDivElement>();
   const visibleRows = $derived(
     changedOnly
       ? rows.filter((row) => row.source.trim() !== row.optimized.trim())
       : rows
   );
   const editableTexts = $derived(rows.map((row) => row.optimized));
+  const pageCount = $derived(
+    Math.max(1, Math.ceil(visibleRows.length / PAGE_SIZE))
+  );
+  const pageStart = $derived(pageIndex * PAGE_SIZE);
+  const pagedRows = $derived(
+    visibleRows.slice(pageStart, pageStart + PAGE_SIZE)
+  );
+
+  $effect(() => {
+    if (pageIndex >= pageCount) pageIndex = pageCount - 1;
+  });
+
+  async function changePage(nextPage: number) {
+    pageIndex = Math.max(0, Math.min(nextPage, pageCount - 1));
+    await tick();
+    rowsViewport?.scrollTo({ top: 0 });
+  }
+
+  function toggleChangedOnly() {
+    changedOnly = !changedOnly;
+    pageIndex = 0;
+  }
 
   function applySearchReplacements(updates: TextReplacement[]) {
     for (const update of updates) {
@@ -36,6 +71,7 @@
 
   async function navigateSearchMatch(match: TextSearchMatch) {
     if (changedOnly) changedOnly = false;
+    pageIndex = Math.floor(match.itemIndex / PAGE_SIZE);
     await tick();
     const field = document.querySelector<HTMLTextAreaElement>(
       `[data-optimization-search-index="${match.itemIndex}"]`
@@ -69,6 +105,7 @@
           )
         };
       });
+      pageIndex = 0;
     } catch (caught) {
       error = errorMessage(caught);
     } finally {
@@ -95,7 +132,8 @@
 </script>
 
 <div
-  class="fixed inset-0 z-[90] grid place-items-center bg-black/55 p-3 backdrop-blur-sm"
+  class:maximized
+  class="optimization-overlay fixed inset-0 z-[90] grid place-items-center bg-black/55 p-3 backdrop-blur-sm"
   role="presentation"
   onclick={(event) => event.target === event.currentTarget && onclose()}
 >
@@ -123,7 +161,8 @@
         class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3 py-2 text-xs font-semibold"
         ><input
           type="checkbox"
-          bind:checked={changedOnly}
+          checked={changedOnly}
+          onchange={toggleChangedOnly}
           class="accent-[var(--accent)]"
         /> Changed only</label
       >
@@ -135,6 +174,10 @@
           class="accent-[var(--accent)]"
         /> Diff view</label
       >
+      <WorkspaceMaximizeButton
+        {maximized}
+        ontoggle={() => (maximized = !maximized)}
+      />
       <button onclick={onclose} class="rounded-xl p-2" aria-label="Close review"
         ><X size={20} /></button
       >
@@ -149,7 +192,10 @@
           label="optimized narration segments"
         />
       </div>{/if}
-    <div class="min-h-0 flex-1 overflow-auto p-4 sm:p-6">
+    <div
+      bind:this={rowsViewport}
+      class="min-h-0 flex-1 overflow-auto p-4 sm:p-6"
+    >
       {#if loading}<div class="grid min-h-72 place-items-center">
           <LoaderCircle class="animate-spin" size={26} />
         </div>
@@ -166,7 +212,7 @@
           >
         </div>
         <div class="space-y-3">
-          {#each visibleRows as row (row.index)}
+          {#each pagedRows as row (row.index)}
             <article
               class:changed={row.source.trim() !== row.optimized.trim()}
               class="grid gap-3 rounded-2xl border border-[var(--line)] p-3 md:grid-cols-[4rem_1fr_1fr]"
@@ -198,6 +244,36 @@
         </div>
       {/if}
     </div>
+    {#if !loading && visibleRows.length > PAGE_SIZE}<nav
+        class="flex flex-wrap items-center justify-between gap-3 border-t border-[var(--line)] px-5 py-3 text-xs sm:px-6"
+        aria-label="Optimization review pages"
+      >
+        <span class="muted tabular-nums"
+          >Showing {pageStart + 1}–{Math.min(
+            pageStart + PAGE_SIZE,
+            visibleRows.length
+          )} of {visibleRows.length} items</span
+        >
+        <div class="flex items-center gap-2">
+          <button
+            type="button"
+            onclick={() => changePage(pageIndex - 1)}
+            disabled={pageIndex === 0}
+            class="flex items-center gap-1 rounded-lg border border-[var(--line)] px-2.5 py-1.5 font-semibold disabled:opacity-35"
+            ><ChevronLeft size={14} /> Previous</button
+          >
+          <span class="min-w-20 text-center tabular-nums"
+            >Page {pageIndex + 1} of {pageCount}</span
+          >
+          <button
+            type="button"
+            onclick={() => changePage(pageIndex + 1)}
+            disabled={pageIndex >= pageCount - 1}
+            class="flex items-center gap-1 rounded-lg border border-[var(--line)] px-2.5 py-1.5 font-semibold disabled:opacity-35"
+            >Next <ChevronRight size={14} /></button
+          >
+        </div>
+      </nav>{/if}
     <footer
       class="flex flex-wrap items-center justify-end gap-3 border-t border-[var(--line)] px-5 py-4 sm:px-6"
     >
@@ -225,6 +301,15 @@
 </div>
 
 <style>
+  .optimization-overlay.maximized {
+    padding: 0;
+  }
+  .optimization-overlay.maximized > :global([role='dialog']) {
+    height: 100svh;
+    max-height: 100svh;
+    max-width: none;
+    border-radius: 0;
+  }
   article.changed {
     border-color: color-mix(in srgb, var(--accent) 38%, var(--line));
     background: color-mix(in srgb, var(--accent-soft) 35%, transparent);
