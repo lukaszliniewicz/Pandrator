@@ -1636,6 +1636,7 @@ class ApplicationClient:
         target_stage: str,
         overrides: dict[str, Any],
         expires_in_minutes: int,
+        continuation: bool = True,
     ) -> dict[str, Any]:
         return self._request_json(
             f"/api/v1/sessions/{quote(session_id, safe='')}/workflow-plans",
@@ -1643,6 +1644,7 @@ class ApplicationClient:
             body={
                 "target_stage": target_stage,
                 "overrides": overrides,
+                "continuation": bool(continuation),
                 "expires_in_minutes": max(
                     1,
                     min(int(expires_in_minutes), 60),

@@ -337,6 +337,7 @@ class McpEndToEndToolTests(unittest.TestCase):
                 ),
             )
             self.assertEqual("export", plan["target_stage"])
+            self.assertFalse(plan["continuation"])
             self.assertEqual("run-1", plan["overrides"]["output"]["generation_run_id"])
 
             downloaded = download_artifact(

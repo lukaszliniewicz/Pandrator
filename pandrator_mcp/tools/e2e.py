@@ -808,6 +808,7 @@ def plan_export_variant(
         target_stage="export",
         overrides={"output": output},
         expires_in_minutes=arguments.expires_in_minutes,
+        continuation=False,
     )
 
 

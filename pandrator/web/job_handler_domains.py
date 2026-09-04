@@ -188,6 +188,7 @@ def register_delivery_handlers(
             handlers,
             {
                 "export.create": "export",
+                "export.variant": "export_variant",
                 "output.mix_preview": "preview_output_mix",
                 "pdf.apply_edits": "apply_pdf_edits",
                 "session.bundle.export": "export_session_bundle",
@@ -197,6 +198,7 @@ def register_delivery_handlers(
         payload_contracts=_contracts(
             {
                 "export.create": ("session_id",),
+                "export.variant": ("session_id",),
                 "output.mix_preview": (
                     "session_id",
                     "source_artifact_id",

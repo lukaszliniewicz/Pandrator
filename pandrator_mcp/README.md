@@ -339,7 +339,8 @@ final variants,” the intended sequence is:
 7. plan and execute generation, poll it to terminal, and inspect generation
    runs;
 8. create and execute one `pandrator_plan_export_variant` per requested output;
-   then
+   export variants run directly from the selected completed generation run and
+   assemble that run first only when the requested audio mode requires it; then
 9. list the resulting artifacts and download each requested deliverable.
 
 Service, model, and voice names mentioned by a user are preferences or

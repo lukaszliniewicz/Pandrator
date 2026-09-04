@@ -67,6 +67,7 @@ def register_workflow_plan_routes(
                 session_id=session_id,
                 target_stage=payload.target_stage,
                 overrides=payload.overrides,
+                continuation=payload.continuation,
                 expires_in_minutes=payload.expires_in_minutes,
             )
         except KeyError:

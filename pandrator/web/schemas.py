@@ -115,6 +115,7 @@ class WorkflowPlanCreateRequest(StrictModel):
         pattern=r"^[a-z][a-z0-9_]{0,79}$",
     )
     overrides: dict[str, Any] = Field(default_factory=dict)
+    continuation: bool = True
     expires_in_minutes: int = Field(default=30, ge=1, le=60)
 
 

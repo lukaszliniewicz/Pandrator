@@ -9,6 +9,7 @@ import platform
 import shutil
 import subprocess
 import tempfile
+import threading
 import wave
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,6 +18,7 @@ from urllib.error import URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
+from ..cancellable_process import ProcessCancelled, run_cancellable
 from .languages import normalize_language_code
 
 CRISPASR_VERSION = "0.8.20"
@@ -149,6 +151,22 @@ MODEL_QUANTIZATION_ALIASES = {
     "q4": "q4_k",
     "q4_k_m": "q4_k",
 }
+
+
+def _run_tool(
+    command: list[str],
+    *,
+    run_func: Callable[..., Any],
+    cancel_event: threading.Event | None,
+) -> Any:
+    if cancel_event is not None and run_func is subprocess.run:
+        return run_cancellable(
+            command,
+            cancel_event=cancel_event,
+            check=True,
+            capture_output=True,
+        )
+    return run_func(command, check=True, capture_output=True)
 
 
 def normalize_model_quantization(value: str | None, engine: str | None = None) -> str:
@@ -620,6 +638,7 @@ def _align_moss_segments(
     *,
     executable: str,
     run_func: Callable[..., Any],
+    cancel_event: threading.Event | None = None,
     aligner_model_path: str | os.PathLike[str] | None = None,
 ) -> None:
     """Attach CTC words to each MOSS turn using a small acoustic margin."""
@@ -652,6 +671,8 @@ def _align_moss_segments(
     with tempfile.TemporaryDirectory(prefix="pandrator-moss-ctc-", dir=str(metadata_path.parent)) as temp_dir:
         temp_root = Path(temp_dir)
         for index, segment in enumerate(segments):
+            if cancel_event is not None and cancel_event.is_set():
+                raise ProcessCancelled("MOSS alignment was canceled.")
             if not isinstance(segment, dict):
                 raise CrispASRError(f"MOSS segment {index + 1} was malformed.")
             text = str(segment.get("text") or "").strip()
@@ -690,7 +711,11 @@ def _align_moss_segments(
                 aligner_model_path=aligner_model_path,
             )
             try:
-                run_func(command, check=True, capture_output=True)
+                _run_tool(
+                    command,
+                    run_func=run_func,
+                    cancel_event=cancel_event,
+                )
             except (FileNotFoundError, subprocess.CalledProcessError) as error:
                 stderr = getattr(error, "stderr", b"")
                 if isinstance(stderr, bytes):
@@ -751,6 +776,7 @@ def transcribe(
     settings: dict[str, Any],
     executable: str = "",
     run_func: Callable[..., Any] = subprocess.run,
+    cancel_event: threading.Event | None = None,
 ) -> CrispASRTranscriptionResult:
     session_path = Path(session_dir)
     session_path.mkdir(parents=True, exist_ok=True)
@@ -782,7 +808,11 @@ def transcribe(
         vad_model_path=prefetched_vad_model,
     )
     try:
-        completed = run_func(command, check=True, capture_output=True)
+        completed = _run_tool(
+            command,
+            run_func=run_func,
+            cancel_event=cancel_event,
+        )
     except (FileNotFoundError, subprocess.CalledProcessError) as error:
         stderr = getattr(error, "stderr", b"")
         if isinstance(stderr, bytes):
@@ -811,6 +841,7 @@ def transcribe(
             settings,
             executable=executable,
             run_func=run_func,
+            cancel_event=cancel_event,
             aligner_model_path=prefetched_aligner,
         )
     _validate_word_timestamps(

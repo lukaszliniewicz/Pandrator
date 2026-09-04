@@ -1,7 +1,10 @@
 import io
 import json
 import os
+import sys
 import tempfile
+import threading
+import time
 import unittest
 import wave
 from pathlib import Path
@@ -203,6 +206,35 @@ class CrispASRTranscriptionTests(unittest.TestCase):
             commands[0][commands[0].index("--vad-model") + 1],
             str(vad_model_path),
         )
+
+    def test_local_crispasr_honors_cancel_event(self):
+        cancel_event = threading.Event()
+        timer = threading.Timer(0.1, cancel_event.set)
+        started = time.monotonic()
+        with (
+            tempfile.TemporaryDirectory() as temp_dir,
+            patch.object(crispasr, "_prefetch_windows_model", return_value=None),
+            patch.object(crispasr, "_prefetch_windows_vad_model", return_value=None),
+            patch.object(crispasr, "_prefetch_windows_moss_aligner", return_value=None),
+            patch.object(
+                crispasr,
+                "build_command",
+                return_value=[sys.executable, "-c", "import time; time.sleep(5)"],
+            ),
+        ):
+            timer.start()
+            try:
+                with self.assertRaisesRegex(Exception, "canceled"):
+                    crispasr.transcribe(
+                        Path(temp_dir) / "audio.wav",
+                        session_dir=temp_dir,
+                        output_name="audio",
+                        settings={"stt_engine": "parakeet"},
+                        cancel_event=cancel_event,
+                    )
+            finally:
+                timer.cancel()
+        self.assertLess(time.monotonic() - started, 2.0)
 
     def test_legacy_backend_names_migrate_to_crispasr_engines(self):
         self.assertEqual(stt_backends.normalize_stt_backend("whisperx"), "whisper")

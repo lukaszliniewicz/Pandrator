@@ -16,6 +16,7 @@ from sqlalchemy import or_, select
 from .auth import Principal
 from .credentials import contains_inline_secret, is_sensitive_field
 from .database import Database
+from .export_contract import normalize_audio_mode
 from .idempotency import IdempotencyService
 from .jobs import JobQueue
 from .models import (
@@ -23,7 +24,9 @@ from .models import (
     Artifact,
     GenerationPlan,
     GenerationPlanRevision,
+    GenerationRun,
     OutcomePlan,
+    OutputAssembly,
     Provider,
     ProviderModel,
     SessionRecord,
@@ -276,6 +279,20 @@ class WorkflowExecutionPlanService:
             if generation_plan and generation_plan.active_revision_id
             else None
         )
+        generation_runs = list(
+            db_session.scalars(
+                select(GenerationRun)
+                .where(GenerationRun.session_id == session_id)
+                .order_by(GenerationRun.id)
+            ).all()
+        )
+        output_assemblies = list(
+            db_session.scalars(
+                select(OutputAssembly)
+                .where(OutputAssembly.session_id == session_id)
+                .order_by(OutputAssembly.id)
+            ).all()
+        )
         return {
             "session": {
                 "id": record.id,
@@ -390,6 +407,27 @@ class WorkflowExecutionPlanService:
                     else None
                 ),
             },
+            "generation_runs": [
+                {
+                    "id": item.id,
+                    "plan_revision_id": item.plan_revision_id,
+                    "sequence_number": item.sequence_number,
+                    "status": item.status,
+                    "updated_at": _iso(item.updated_at),
+                }
+                for item in generation_runs
+            ],
+            "output_assemblies": [
+                {
+                    "id": item.id,
+                    "generation_run_id": item.generation_run_id,
+                    "status": item.status,
+                    "artifact_id": item.artifact_id,
+                    "settings_hash": item.settings_hash,
+                    "updated_at": _iso(item.updated_at),
+                }
+                for item in output_assemblies
+            ],
         }
 
     @classmethod
@@ -552,6 +590,81 @@ class WorkflowExecutionPlanService:
             )
         return steps
 
+    def _direct_steps(
+        self,
+        *,
+        session_id: str,
+        target_stage: str,
+        resolved: ResolvedWorkflowStage,
+    ) -> tuple[list[dict[str, Any]], str]:
+        """Describe a direct target-stage plan without implying prerequisite reruns."""
+
+        steps: list[dict[str, Any]] = []
+        execution_job_kind = resolved.job_kind
+        settings = resolved.payload.get("settings")
+        settings = settings if isinstance(settings, dict) else {}
+        generation_run_id = str(settings.get("generation_run_id") or "").strip()
+        export_mode = str(settings.get("export_mode") or "media").lower()
+        audio_mode = normalize_audio_mode(settings.get("audio_mode"))
+        needs_assembly = bool(generation_run_id) and (
+            resolved.workflow_kind == "audiobook"
+            or (export_mode == "media" and audio_mode in {"mixed", "dubbing_only"})
+        )
+        if target_stage == "export" and needs_assembly:
+            snapshot = resolved.payload.get("resolved_settings_snapshot")
+            snapshot = snapshot if isinstance(snapshot, dict) else {}
+            from .workspace import output_assembly_settings_hash
+
+            assembly_settings_hash = output_assembly_settings_hash(snapshot)
+            with self.database.session() as db_session:
+                generation_run = db_session.get(GenerationRun, generation_run_id)
+                if generation_run is None or generation_run.session_id != session_id:
+                    raise WorkflowPlanError(
+                        "validation_error",
+                        "The selected generation run does not belong to this session.",
+                        422,
+                    )
+                if generation_run.status != "completed":
+                    raise WorkflowPlanError(
+                        "generation_run_not_ready",
+                        "Only a completed generation run can be exported.",
+                        409,
+                    )
+                assembly = db_session.scalar(
+                    select(OutputAssembly)
+                    .where(
+                        OutputAssembly.session_id == session_id,
+                        OutputAssembly.generation_run_id == generation_run_id,
+                        OutputAssembly.status == "completed",
+                        OutputAssembly.artifact_id.is_not(None),
+                        OutputAssembly.settings_hash == assembly_settings_hash,
+                    )
+                    .order_by(OutputAssembly.created_at.desc())
+                )
+            steps.append(
+                {
+                    "order": 1,
+                    "stage": "assemble_audio",
+                    "title": "Assemble audio",
+                    "decision": "reuse_if_unchanged" if assembly else "run",
+                    "current_status": "completed" if assembly else "ready",
+                    "artifact_id": assembly.artifact_id if assembly else None,
+                    "generation_run_id": generation_run_id,
+                }
+            )
+            execution_job_kind = "export.variant"
+        steps.append(
+            {
+                "order": len(steps) + 1,
+                "stage": target_stage,
+                "title": target_stage.replace("_", " ").title(),
+                "decision": "run",
+                "current_status": "ready",
+                "artifact_id": None,
+            }
+        )
+        return steps, execution_job_kind
+
     def create(
         self,
         *,
@@ -560,6 +673,7 @@ class WorkflowExecutionPlanService:
         session_id: str,
         target_stage: str,
         overrides: dict[str, Any] | None = None,
+        continuation: bool = True,
         expires_in_minutes: int = 30,
     ) -> dict[str, Any]:
         supplied = dict(overrides or {})
@@ -578,7 +692,7 @@ class WorkflowExecutionPlanService:
             session_id,
             target_stage,
             supplied,
-            continuation=True,
+            continuation=continuation,
         )
         if _contains_url_credentials(resolved.payload):
             raise WorkflowPlanError(
@@ -635,7 +749,7 @@ class WorkflowExecutionPlanService:
         now = utcnow()
         expires_at = now + timedelta(minutes=max(1, min(int(expires_in_minutes), 60)))
         mismatches: list[dict[str, Any]] = []
-        if self.handlers is not None:
+        if continuation and self.handlers is not None:
             try:
                 mismatches = self.handlers.settings_mismatches(session_id, target_stage)
             except Exception:
@@ -645,13 +759,21 @@ class WorkflowExecutionPlanService:
             for item in mismatches
             if isinstance(item, dict) and "stage" in item
         }
-        steps = self._ordered_steps(
-            session_id=session_id,
-            target_stage=target_stage,
-            resolved=resolved,
-            reuse_stages=reuse_stages,
-            mismatched_stages=mismatched_stages,
-        )
+        if continuation:
+            steps = self._ordered_steps(
+                session_id=session_id,
+                target_stage=target_stage,
+                resolved=resolved,
+                reuse_stages=reuse_stages,
+                mismatched_stages=mismatched_stages,
+            )
+            execution_job_kind = resolved.job_kind
+        else:
+            steps, execution_job_kind = self._direct_steps(
+                session_id=session_id,
+                target_stage=target_stage,
+                resolved=resolved,
+            )
         warnings: list[str] = []
         for step in steps:
             if (
@@ -686,6 +808,7 @@ class WorkflowExecutionPlanService:
                 "workflow_kind": resolved.workflow_kind,
             },
             "target_stage": target_stage,
+            "execution_mode": "continuation" if continuation else "direct",
             "source": {
                 "artifact_id": resolved.source_artifact_id,
                 "content_hash": resolved.source_content_hash,
@@ -728,11 +851,21 @@ class WorkflowExecutionPlanService:
             "created_at": _iso(now),
             "expires_at": _iso(expires_at),
         }
+        execution_payload = dict(resolved.payload)
+        if continuation:
+            planned_reuse_stages = {
+                str(item["stage"])
+                for item in steps
+                if str(item.get("decision") or "").startswith("reuse")
+                and item.get("artifact_id")
+            }
+            if planned_reuse_stages:
+                execution_payload["reuse_stages"] = sorted(planned_reuse_stages)
         stored_plan = {
             **public_plan,
             "_execution": {
-                "job_kind": resolved.job_kind,
-                "payload": resolved.payload,
+                "job_kind": execution_job_kind,
+                "payload": execution_payload,
                 "resource_keys": list(resolved.resource_keys),
             },
         }
@@ -902,9 +1035,9 @@ class WorkflowExecutionPlanService:
                     "plan_invalid",
                     "The stored workflow plan is incomplete.",
                 )
-            payload = execution.get("payload")
+            execution_payload = execution.get("payload")
             resource_keys = execution.get("resource_keys")
-            if not isinstance(payload, dict) or not isinstance(
+            if not isinstance(execution_payload, dict) or not isinstance(
                 resource_keys,
                 list,
             ):
@@ -915,7 +1048,7 @@ class WorkflowExecutionPlanService:
             job = self.jobs.enqueue_in_session(
                 db_session,
                 str(execution.get("job_kind") or "workflow.continue"),
-                payload,
+                execution_payload,
                 session_id=record.session_id,
                 resource_keys=[str(value) for value in resource_keys],
             )

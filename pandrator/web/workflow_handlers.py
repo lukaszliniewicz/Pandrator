@@ -2645,6 +2645,7 @@ class WorkflowHandlers:
             ffmpeg_executable=str(payload.get("ffmpeg_executable") or "ffmpeg"),
             crispasr_executable=str(payload.get("crispasr_executable") or ""),
             progress_callback=_scaled_progress_callback(progress, 0.05, 0.85),
+            cancel_event=cancel_event,
         )
         output_path = Path(transcription_result.srt_path)
         progress(0.9, "Registering transcription")
@@ -3902,6 +3903,7 @@ class WorkflowHandlers:
             ffmpeg_executable=str(payload.get("ffmpeg_executable") or "ffmpeg"),
             crispasr_executable=str(payload.get("crispasr_executable") or ""),
             progress_callback=_scaled_progress_callback(progress, 0.05, 0.85),
+            cancel_event=cancel_event,
         )
         output_path = Path(transcription_result.srt_path)
         if cancel_event.is_set():
@@ -8085,6 +8087,100 @@ class WorkflowHandlers:
             "automatic_start_method": automatic_start_method,
         }
 
+    def _ensure_export_generation_assembly(
+        self,
+        *,
+        session_id: str,
+        generation_run_id: str,
+        resolved_settings_snapshot: dict[str, Any],
+        progress,
+        cancel_event: threading.Event,
+    ) -> str | None:
+        """Reuse or synchronously build the exact assembly required by an export plan."""
+
+        from .workspace import (
+            output_assembly_settings_hash,
+            output_assembly_settings_snapshot,
+        )
+
+        assembly_snapshot = output_assembly_settings_snapshot(resolved_settings_snapshot)
+        settings_hash = output_assembly_settings_hash(resolved_settings_snapshot)
+        with self.database.session() as session:
+            run = session.get(GenerationRun, generation_run_id)
+            if run is None or run.session_id != session_id:
+                raise ValueError("The selected generation run does not belong to this session.")
+            if run.status != "completed":
+                raise ValueError("Only a completed generation run can be exported.")
+            existing = session.scalar(
+                select(OutputAssembly)
+                .join(Artifact, Artifact.id == OutputAssembly.artifact_id)
+                .where(
+                    OutputAssembly.session_id == session_id,
+                    OutputAssembly.generation_run_id == generation_run_id,
+                    OutputAssembly.status == "completed",
+                    OutputAssembly.settings_hash == settings_hash,
+                    Artifact.state == "current",
+                )
+                .order_by(OutputAssembly.created_at.desc())
+            )
+            if existing is not None and existing.artifact_id:
+                progress(0.68, "Using the selected generation run assembly")
+                return existing.artifact_id
+            assembly = OutputAssembly(
+                session_id=session_id,
+                generation_run_id=generation_run_id,
+                status="queued",
+                settings_json={
+                    "resolved": assembly_snapshot,
+                    "plan_revision_id": run.plan_revision_id,
+                },
+                settings_hash=settings_hash,
+            )
+            session.add(assembly)
+            session.flush()
+            assembly_id = assembly.id
+
+        result = self.assemble_generation_output(
+            {"output_assembly_id": assembly_id},
+            _scaled_progress_callback(progress, 0.0, 0.68),
+            cancel_event,
+        )
+        if cancel_event.is_set():
+            return None
+        artifact_id = str((result or {}).get("artifact_id") or "")
+        if not artifact_id:
+            raise ValueError("The selected generation run could not be assembled for export.")
+        return artifact_id
+
+    def export_variant(self, payload, progress, cancel_event):
+        """Assemble the selected completed generation run when needed, then export once."""
+
+        settings = dict(payload.get("settings") or {})
+        generation_run_id = str(settings.get("generation_run_id") or "").strip()
+        resolved_snapshot = payload.get("resolved_settings_snapshot")
+        resolved_snapshot = resolved_snapshot if isinstance(resolved_snapshot, dict) else {}
+        record = self._session_record(str(payload.get("session_id") or ""))
+        export_mode = str(settings.get("export_mode") or "media").lower()
+        audio_mode = normalize_audio_mode(settings.get("audio_mode"))
+        needs_assembly = bool(generation_run_id) and (
+            record.workflow_kind == "audiobook"
+            or (export_mode == "media" and audio_mode in {"mixed", "dubbing_only"})
+        )
+        if needs_assembly:
+            self._ensure_export_generation_assembly(
+                session_id=record.id,
+                generation_run_id=generation_run_id,
+                resolved_settings_snapshot=resolved_snapshot,
+                progress=progress,
+                cancel_event=cancel_event,
+            )
+            if cancel_event.is_set():
+                return {}
+            export_progress = _scaled_progress_callback(progress, 0.7, 1.0)
+        else:
+            export_progress = progress
+        return self.export(payload, export_progress, cancel_event)
+
     def export(self, payload, progress, cancel_event):
         """Create immutable, managed exports from the explicitly selected inputs."""
         from werkzeug.utils import secure_filename
@@ -8130,13 +8226,10 @@ class WorkflowHandlers:
         )
         expected_assembly_settings_hash = None
         if isinstance(resolved_settings_snapshot, dict):
-            from .workspace import stable_hash
+            from .workspace import output_assembly_settings_hash
 
-            expected_assembly_settings_hash = stable_hash(
-                {
-                    "audio": dict(resolved_settings_snapshot.get("audio") or {}),
-                    "output": dict(resolved_settings_snapshot.get("output") or {}),
-                }
+            expected_assembly_settings_hash = output_assembly_settings_hash(
+                resolved_settings_snapshot
             )
         record = self._session_record(session_id)
         with self.database.session() as session:

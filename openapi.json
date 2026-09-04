@@ -5351,6 +5351,11 @@
       "WorkflowPlanCreateRequest": {
         "additionalProperties": false,
         "properties": {
+          "continuation": {
+            "default": true,
+            "title": "Continuation",
+            "type": "boolean"
+          },
           "expires_in_minutes": {
             "default": 30,
             "maximum": 60,

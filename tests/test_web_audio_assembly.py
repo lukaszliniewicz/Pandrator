@@ -155,6 +155,59 @@ class DurableOutputAssemblyTests(unittest.TestCase):
                 )
         return segment_ids
 
+    def test_export_variant_assembles_completed_run_inline_before_export(self):
+        self._plan_with_takes()
+        with self.database.session() as session:
+            segment = session.scalar(select(GenerationSegment).order_by(GenerationSegment.ordinal))
+            run = GenerationRun(
+                session_id=self.record.id,
+                plan_revision_id=segment.plan_revision_id,
+                sequence_number=1,
+                status="completed",
+            )
+            session.add(run)
+            session.flush()
+            run_id = run.id
+            for take in session.scalars(select(AudioTake)).all():
+                take.generation_run_id = run_id
+
+        snapshot, _settings_hash = self.settings.resolve(
+            self.record.id,
+            sections=["audio", "output"],
+        )
+        output_settings = {
+            **dict(snapshot.get("output") or {}),
+            "generation_run_id": run_id,
+            "format": "wav",
+        }
+        resolved_snapshot = {
+            "audio": dict(snapshot.get("audio") or {}),
+            "output": output_settings,
+        }
+        result = WorkflowHandlers(self.database, self.paths).export_variant(
+            {
+                "session_id": self.record.id,
+                "settings": output_settings,
+                "resolved_settings_snapshot": resolved_snapshot,
+            },
+            lambda *_args: None,
+            threading.Event(),
+        )
+
+        self.assertEqual(1, len(result["artifact_ids"]))
+        with self.database.session() as session:
+            assembly = session.scalar(
+                select(OutputAssembly).where(
+                    OutputAssembly.session_id == self.record.id,
+                    OutputAssembly.generation_run_id == run_id,
+                )
+            )
+            self.assertIsNotNone(assembly)
+            self.assertEqual("completed", assembly.status)
+            self.assertIsNone(assembly.job_id)
+            exported = session.get(Artifact, result["artifact_ids"][0])
+            self.assertEqual("export", exported.role)
+
     def test_batch_segment_update_is_atomic_on_revision_conflict(self):
         plan = self.generation.create_plan(
             self.record.id,

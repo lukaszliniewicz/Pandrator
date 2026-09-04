@@ -5,10 +5,12 @@ from __future__ import annotations
 import logging
 import os
 import subprocess
+import threading
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from ..cancellable_process import ProcessCancelled, run_cancellable
 from ..source_media import is_audio_source
 from . import cloud_stt
 from .crispasr import CrispASRTranscriptionResult, transcribe
@@ -37,6 +39,7 @@ def extract_audio(
     *,
     ffmpeg_executable: str = "ffmpeg",
     run_func: Callable[..., Any] = subprocess.run,
+    cancel_event: threading.Event | None = None,
 ) -> str:
     audio_path = Path(session_dir) / f"{source_name}.wav"
     try:
@@ -61,7 +64,15 @@ def extract_audio(
         str(audio_path),
     ]
     try:
-        result = run_func(command, check=True, capture_output=True)
+        if cancel_event is not None and run_func is subprocess.run:
+            result = run_cancellable(
+                command,
+                cancel_event=cancel_event,
+                check=True,
+                capture_output=True,
+            )
+        else:
+            result = run_func(command, check=True, capture_output=True)
     except subprocess.CalledProcessError as error:
         raise ExternalToolError(
             f"FFmpeg failed to extract audio: {safe_decode(getattr(error, 'stderr', None))}"
@@ -82,6 +93,7 @@ def transcribe_source_file_with_metadata(
     crispasr_executable: str = "",
     run_func: Callable[..., Any] = subprocess.run,
     progress_callback: Callable[[float, str | None], None] | None = None,
+    cancel_event: threading.Event | None = None,
     cloud_request_func: Callable[..., Any] | None = None,
     cloud_session: Any | None = None,
     **_legacy_kwargs,
@@ -98,6 +110,7 @@ def transcribe_source_file_with_metadata(
         source_name,
         ffmpeg_executable=ffmpeg_executable,
         run_func=run_func,
+        cancel_event=cancel_event,
     )
     if progress_callback is not None:
         progress_callback(0.18, "Source audio normalized")
@@ -105,6 +118,8 @@ def transcribe_source_file_with_metadata(
         logger.info("Normalized audio source for CrispASR: %s", audio_path)
     if progress_callback is not None:
         progress_callback(0.22, "Running speech recognition")
+    if cancel_event is not None and cancel_event.is_set():
+        raise ProcessCancelled("Transcription was canceled.")
     configured_engine = str(
         settings.get("stt_engine") or settings.get("stt_backend") or ""
     ).strip()
@@ -129,7 +144,10 @@ def transcribe_source_file_with_metadata(
             settings=settings,
             executable=crispasr_executable,
             run_func=run_func,
+            cancel_event=cancel_event,
         )
+    if cancel_event is not None and cancel_event.is_set():
+        raise ProcessCancelled("Transcription was canceled.")
     if progress_callback is not None:
         progress_callback(0.82, "Speech recognition complete; composing subtitles")
     Path(result.srt_path).write_text(

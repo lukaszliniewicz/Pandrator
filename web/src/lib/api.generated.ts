@@ -4757,6 +4757,11 @@ export interface components {
         /** WorkflowPlanCreateRequest */
         WorkflowPlanCreateRequest: {
             /**
+             * Continuation
+             * @default true
+             */
+            continuation?: boolean;
+            /**
              * Expires In Minutes
              * @default 30
              */

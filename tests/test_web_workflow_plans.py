@@ -11,6 +11,9 @@ from pandrator.web.artifacts import ArtifactService
 from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.models import (
     Artifact,
+    GenerationPlan,
+    GenerationPlanRevision,
+    GenerationRun,
     Job,
     OutcomePlan,
     Provider,
@@ -109,13 +112,17 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
         *,
         target_stage="generate_audio",
         overrides=None,
+        continuation=None,
     ):
+        payload = {
+            "target_stage": target_stage,
+            "overrides": overrides or {},
+        }
+        if continuation is not None:
+            payload["continuation"] = continuation
         response = self.client.post(
             f"/api/v1/sessions/{session_id}/workflow-plans",
-            json={
-                "target_stage": target_stage,
-                "overrides": overrides or {},
-            },
+            json=payload,
             headers=self.headers,
         )
         self.assertEqual(201, response.status_code, response.get_json())
@@ -200,6 +207,82 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
             "payload",
             first.get_data(as_text=True).lower(),
         )
+
+    def test_direct_export_plan_does_not_wrap_in_workflow_continuation(self):
+        session_id, _artifact_id, _asset_id = self._ready_session(
+            workflow_kind="voiceover",
+            suffix="mp4",
+        )
+        plan = self._plan(
+            session_id,
+            target_stage="export",
+            overrides={
+                "output": {
+                    "export_mode": "media",
+                    "audio_mode": "preserve",
+                    "subtitle_mode": "none",
+                }
+            },
+            continuation=False,
+        )
+
+        self.assertEqual(["export"], [item["stage"] for item in plan["ordered_steps"]])
+        with self.extension["database"].session() as db_session:
+            stored = db_session.get(WorkflowExecutionPlan, plan["plan_id"])
+            self.assertEqual("export.create", stored.plan_json["_execution"]["job_kind"])
+
+    def test_direct_generation_export_plans_assembly_instead_of_regeneration(self):
+        session_id, _artifact_id, _asset_id = self._ready_session(
+            workflow_kind="voiceover",
+            suffix="mp4",
+        )
+        with self.extension["database"].session() as db_session:
+            generation_plan = GenerationPlan(session_id=session_id)
+            db_session.add(generation_plan)
+            db_session.flush()
+            revision = GenerationPlanRevision(
+                plan_id=generation_plan.id,
+                revision_number=1,
+                settings_json={},
+                content_hash="plan-content",
+            )
+            db_session.add(revision)
+            db_session.flush()
+            generation_plan.active_revision_id = revision.id
+            run = GenerationRun(
+                session_id=session_id,
+                plan_revision_id=revision.id,
+                sequence_number=1,
+                status="completed",
+            )
+            db_session.add(run)
+            db_session.flush()
+            run_id = run.id
+
+        plan = self._plan(
+            session_id,
+            target_stage="export",
+            overrides={
+                "output": {
+                    "generation_run_id": run_id,
+                    "export_mode": "media",
+                    "audio_mode": "mixed",
+                    "subtitle_mode": "soft",
+                    "subtitle_selection": "dual",
+                }
+            },
+            continuation=False,
+        )
+
+        self.assertEqual(
+            ["assemble_audio", "export"],
+            [item["stage"] for item in plan["ordered_steps"]],
+        )
+        self.assertNotIn("transcribe", [item["stage"] for item in plan["ordered_steps"]])
+        self.assertNotIn("generate_audio", [item["stage"] for item in plan["ordered_steps"]])
+        with self.extension["database"].session() as db_session:
+            stored = db_session.get(WorkflowExecutionPlan, plan["plan_id"])
+            self.assertEqual("export.variant", stored.plan_json["_execution"]["job_kind"])
 
     def test_deterministic_cleaning_does_not_claim_an_external_llm(self):
         session_id, _artifact_id, _asset_id = self._ready_session()

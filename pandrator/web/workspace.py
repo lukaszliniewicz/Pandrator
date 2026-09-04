@@ -502,6 +502,26 @@ def stable_hash(value: Any) -> str:
     ).hexdigest()
 
 
+def output_assembly_settings_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Return the settings that materially define assembled audio.
+
+    ``generation_run_id`` selects the take snapshot and is stored separately on
+    ``OutputAssembly``. It must not change the settings hash for otherwise
+    identical assembly parameters.
+    """
+
+    output = dict(snapshot.get("output") or {})
+    output.pop("generation_run_id", None)
+    return {
+        "audio": dict(snapshot.get("audio") or {}),
+        "output": output,
+    }
+
+
+def output_assembly_settings_hash(snapshot: dict[str, Any]) -> str:
+    return stable_hash(output_assembly_settings_snapshot(snapshot))
+
+
 def mark_output_assemblies_stale(
     session, session_id: str, *, generation_run_id: str | None = None
 ) -> None:
@@ -2892,11 +2912,13 @@ class GenerationService:
         generation_run_id: str | None = None,
         run_override: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        snapshot, settings_hash = self.settings.resolve(
+        snapshot, _settings_hash = self.settings.resolve(
             session_id,
             sections=["audio", "output"],
             run_override=run_override,
         )
+        snapshot = output_assembly_settings_snapshot(snapshot)
+        settings_hash = stable_hash(snapshot)
         output_format = str(
             (snapshot.get("output") or {}).get("format") or "wav"
         ).lower()
