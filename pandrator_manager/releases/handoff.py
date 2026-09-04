@@ -33,7 +33,7 @@ from pydantic import Field
 from .. import __version__
 from ..auth import protect_path, read_client_secret
 from ..context import WorkspaceLayout
-from ..errors import ConflictError, ManagerError
+from ..errors import ConflictError, ManagerError, UnsafePathError
 from ..launcher import (
     LauncherRuntime,
     current_runtime_executable,
@@ -84,6 +84,29 @@ class ManagerHandoffPayload(StrictModel):
 
 class ManagerHandoffEnvelope(StrictModel):
     payload: ManagerHandoffPayload
+    authentication: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class ManagerPreparationPayload(StrictModel):
+    schema_version: Literal[1] = 1
+    operation_id: str = Field(pattern=_OPERATION_ID_PATTERN)
+    workspace: str
+    expected_revision: int = Field(ge=0)
+    product: Literal["pandrator-manager"]
+    channel: Literal["stable", "beta", "nightly"]
+    version: str
+    sequence: int = Field(ge=1)
+    manifest_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    envelope: dict[str, Any]
+    artifact: dict[str, Any]
+    verified_key_ids: tuple[str, ...]
+    staged_path: str
+    destination_path: str
+    created_at: datetime
+
+
+class ManagerPreparationEnvelope(StrictModel):
+    payload: ManagerPreparationPayload
     authentication: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
@@ -169,6 +192,15 @@ def handoff_descriptor_path(
     return layout.require_within(path, roots=(layout.state,))
 
 
+def preparation_journal_path(
+    layout: WorkspaceLayout,
+    operation_id: str,
+) -> Path:
+    selected = _validated_operation_id(operation_id)
+    path = _safe_handoff_directory(layout) / f"{selected}.prepare"
+    return layout.require_within(path, roots=(layout.state,))
+
+
 def _authentication(payload: Mapping[str, Any], secret: str) -> str:
     return hmac.new(
         secret.encode("utf-8"),
@@ -180,6 +212,23 @@ def _authentication(payload: Mapping[str, Any], secret: str) -> str:
 def _write_envelope(
     path: Path,
     payload: ManagerHandoffPayload,
+    secret: str,
+) -> None:
+    raw_payload = payload.model_dump(mode="json")
+    _atomic_json(
+        path,
+        {
+            "payload": raw_payload,
+            "authentication": _authentication(raw_payload, secret),
+        },
+    )
+    protect_path(path.parent, directory=True)
+    protect_path(path)
+
+
+def _write_preparation_journal(
+    path: Path,
+    payload: ManagerPreparationPayload,
     secret: str,
 ) -> None:
     raw_payload = payload.model_dump(mode="json")
@@ -239,6 +288,198 @@ def read_handoff(
     return envelope, path
 
 
+def read_preparation_journal(
+    layout: WorkspaceLayout,
+    operation_id: str,
+) -> tuple[ManagerPreparationEnvelope, Path]:
+    path = preparation_journal_path(layout, operation_id)
+    _require_regular_control_file(
+        path,
+        label="manager handoff preparation journal",
+    )
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        envelope = ManagerPreparationEnvelope.model_validate(raw)
+    except Exception as error:
+        raise ManagerError(
+            "invalid_manager_handoff",
+            "The manager handoff preparation journal is invalid.",
+            {"operation_id": operation_id, "reason": str(error)},
+            500,
+        ) from error
+    if (
+        envelope.payload.operation_id != operation_id
+        or Path(envelope.payload.workspace).resolve(strict=False)
+        != layout.workspace
+    ):
+        raise ManagerError(
+            "invalid_manager_handoff",
+            "The manager handoff preparation journal belongs to another operation or workspace.",
+            {"operation_id": operation_id},
+            500,
+        )
+    try:
+        layout.require_within(
+            envelope.payload.staged_path,
+            roots=(layout.staging,),
+        )
+        layout.require_within(
+            envelope.payload.destination_path,
+            roots=(layout.manager_versions,),
+        )
+    except UnsafePathError as error:
+        raise ManagerError(
+            "invalid_manager_handoff",
+            "The manager handoff preparation journal has unsafe paths.",
+            {"operation_id": operation_id},
+            500,
+        ) from error
+    secret = read_client_secret(layout.credential)
+    expected = _authentication(
+        envelope.payload.model_dump(mode="json"),
+        secret,
+    )
+    if not hmac.compare_digest(expected, envelope.authentication):
+        raise ManagerError(
+            "invalid_manager_handoff",
+            "The manager handoff preparation journal failed authentication.",
+            {"operation_id": operation_id},
+            500,
+        )
+    return envelope, path
+
+
+def _validate_reviewed_manager_preparation(
+    *,
+    layout: WorkspaceLayout,
+    store: ManagerStore,
+    operation_id: str,
+    expected_revision: int,
+    release: VerifiedRelease,
+    staged: Path,
+    destination: Path,
+    preparation: ManagerPreparationPayload | None = None,
+) -> None:
+    if release.manifest.payload.product != "pandrator-manager":
+        raise ValueError("Manager handoff requires a manager release.")
+    operation = store.get_operation(operation_id)
+    plan = store.get_plan(operation.plan_id)
+    release_impact = plan.impacts.get("release")
+    artifact = release.artifact.model_dump(mode="json")
+    if (
+        operation.kind != OperationKind.UPDATE
+        or operation.state != OperationState.RUNNING
+        or plan.kind != OperationKind.UPDATE
+        or plan.workspace != str(layout.workspace)
+        or plan.expected_revision != expected_revision
+        or not isinstance(release_impact, dict)
+        or release_impact.get("product") != "pandrator-manager"
+        or release_impact.get("channel") != release.manifest.payload.channel
+        or release_impact.get("version") != release.manifest.payload.version
+        or release_impact.get("sequence") != release.manifest.payload.sequence
+        or release_impact.get("manifest_digest") != release.manifest.digest
+        or release_impact.get("artifact") != artifact
+    ):
+        raise ManagerError(
+            "invalid_manager_handoff",
+            "The pending handoff does not match its reviewed release plan.",
+            {"operation_id": operation_id},
+            500,
+        )
+    if preparation is not None and (
+        preparation.operation_id != operation_id
+        or Path(preparation.workspace).resolve(strict=False) != layout.workspace
+        or preparation.expected_revision != expected_revision
+        or preparation.product != "pandrator-manager"
+        or preparation.channel != release.manifest.payload.channel
+        or preparation.version != release.manifest.payload.version
+        or preparation.sequence != release.manifest.payload.sequence
+        or preparation.manifest_digest != release.manifest.digest
+        or preparation.envelope != release.envelope
+        or preparation.artifact != artifact
+        or preparation.verified_key_ids != release.manifest.verified_key_ids
+        or layout.require_within(
+            preparation.staged_path,
+            roots=(layout.staging,),
+        ).resolve(strict=False)
+        != staged.resolve(strict=False)
+        or layout.require_within(
+            preparation.destination_path,
+            roots=(layout.manager_versions,),
+        ).resolve(strict=False)
+        != destination.resolve(strict=False)
+    ):
+        raise ManagerError(
+            "invalid_manager_handoff",
+            "The manager handoff preparation journal does not match the reviewed release.",
+            {"operation_id": operation_id},
+            500,
+        )
+
+
+def _move_prepared_manager_release(staged: Path, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    os.replace(staged, destination)
+
+
+def _handoff_payload(
+    *,
+    layout: WorkspaceLayout,
+    operation_id: str,
+    expected_revision: int,
+    release: VerifiedRelease,
+    validated,
+) -> ManagerHandoffPayload:
+    pointer = layout.root / "manager" / "current.json"
+    try:
+        previous = json.loads(pointer.read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        previous = None
+    current = psutil.Process()
+    return ManagerHandoffPayload(
+        operation_id=operation_id,
+        workspace=str(layout.workspace),
+        expected_revision=expected_revision,
+        channel=release.manifest.payload.channel,
+        version=release.manifest.payload.version,
+        sequence=release.manifest.payload.sequence,
+        manifest_digest=release.manifest.digest,
+        envelope=release.envelope,
+        artifact=release.artifact.model_dump(mode="json"),
+        verified_key_ids=release.manifest.verified_key_ids,
+        slot_path=str(validated.root),
+        new_python=str(validated.python),
+        new_runtime_mode=validated.metadata.runtime_kind,
+        new_application_root=str(validated.application_root),
+        old_python=str(current_runtime_executable()),
+        old_runtime_mode=(
+            "native_launcher" if bool(getattr(sys, "frozen", False)) else "python"
+        ),
+        old_cwd=str(Path.cwd().resolve(strict=False)),
+        old_pid=current.pid,
+        old_create_time=current.create_time(),
+        previous_pointer=previous if isinstance(previous, dict) else None,
+        created_at=datetime.now(timezone.utc),
+    )
+
+
+def _remove_preparation_journal(path: Path) -> None:
+    _require_regular_control_file(path, label="manager handoff preparation journal")
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def _cleanup_preparation_journal(path: Path) -> None:
+    try:
+        _remove_preparation_journal(path)
+    except OSError:
+        # The final handoff descriptor is already durable and authenticated.
+        # Retain redundant cleanup state rather than rolling back that handoff.
+        pass
+
+
 def prepare_manager_handoff(
     *,
     layout: WorkspaceLayout,
@@ -252,10 +493,11 @@ def prepare_manager_handoff(
         raise ValueError("Manager handoff requires a manager release.")
     _safe_handoff_directory(layout, create=True)
     descriptor = handoff_descriptor_path(layout, operation_id)
-    versions = layout.manager_versions
+    journal = preparation_journal_path(layout, operation_id)
+    staged = layout.require_within(staged_directory, roots=(layout.staging,))
     destination = layout.require_within(
-        versions / release.manifest.payload.version,
-        roots=(versions,),
+        layout.manager_versions / release.manifest.payload.version,
+        roots=(layout.manager_versions,),
     )
     secret = read_client_secret(layout.credential)
     if descriptor.is_file():
@@ -272,65 +514,85 @@ def prepare_manager_handoff(
                 {"operation_id": operation_id},
                 500,
             )
+        if os.path.lexists(journal):
+            preparation, journal_path = read_preparation_journal(layout, operation_id)
+            _validate_reviewed_manager_preparation(
+                layout=layout, store=store, operation_id=operation_id,
+                expected_revision=expected_revision, release=release, staged=staged,
+                destination=destination, preparation=preparation.payload,
+            )
+            _cleanup_preparation_journal(journal_path)
     else:
-        staged = layout.require_within(
-            staged_directory,
-            roots=(layout.staging,),
-        )
-        if destination.exists():
-            raise ConflictError(
-                "The manager release version already has a slot.",
-                {"version": release.manifest.payload.version},
+        preparation: ManagerPreparationPayload
+        if os.path.lexists(journal):
+            preparation, _ = read_preparation_journal(layout, operation_id)
+            _validate_reviewed_manager_preparation(
+                layout=layout, store=store, operation_id=operation_id,
+                expected_revision=expected_revision, release=release, staged=staged,
+                destination=destination, preparation=preparation.payload,
             )
-        if not staged.is_dir():
-            raise ManagerError(
-                "invalid_release_bundle",
-                "The staged manager bundle is missing.",
-                http_status=409,
+            if staged.exists() and destination.exists():
+                raise ManagerError(
+                    "invalid_manager_handoff",
+                    "The manager handoff preparation has both staging and destination slots.",
+                    {"operation_id": operation_id}, 409,
+                )
+            if staged.exists():
+                if not staged.is_dir():
+                    raise ManagerError(
+                        "invalid_release_bundle",
+                        "The staged manager bundle is missing.",
+                        http_status=409,
+                    )
+                _move_prepared_manager_release(staged, destination)
+            elif not destination.exists():
+                raise ManagerError(
+                    "invalid_manager_handoff",
+                    "The manager handoff preparation has neither staging nor destination slot.",
+                    {"operation_id": operation_id}, 409,
+                )
+        else:
+            _validate_reviewed_manager_preparation(
+                layout=layout, store=store, operation_id=operation_id,
+                expected_revision=expected_revision, release=release, staged=staged,
+                destination=destination,
             )
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        os.replace(staged, destination)
+            if destination.exists():
+                raise ConflictError(
+                    "The manager release version already has a slot.",
+                    {"version": release.manifest.payload.version},
+                )
+            if not staged.is_dir():
+                raise ManagerError(
+                    "invalid_release_bundle",
+                    "The staged manager bundle is missing.",
+                    http_status=409,
+                )
+            preparation = ManagerPreparationPayload(
+                operation_id=operation_id, workspace=str(layout.workspace),
+                expected_revision=expected_revision, product="pandrator-manager",
+                channel=release.manifest.payload.channel,
+                version=release.manifest.payload.version,
+                sequence=release.manifest.payload.sequence,
+                manifest_digest=release.manifest.digest, envelope=release.envelope,
+                artifact=release.artifact.model_dump(mode="json"),
+                verified_key_ids=release.manifest.verified_key_ids,
+                staged_path=str(staged), destination_path=str(destination),
+                created_at=datetime.now(timezone.utc),
+            )
+            _write_preparation_journal(journal, preparation, secret)
+            _move_prepared_manager_release(staged, destination)
         validated = validate_release_bundle(
-            destination,
-            product="pandrator-manager",
+            destination, product="pandrator-manager",
             version=release.manifest.payload.version,
         )
-        pointer = layout.root / "manager" / "current.json"
-        try:
-            previous = json.loads(pointer.read_text(encoding="utf-8"))
-        except (OSError, TypeError, ValueError, json.JSONDecodeError):
-            previous = None
-        current = psutil.Process()
-        payload = ManagerHandoffPayload(
-            operation_id=operation_id,
-            workspace=str(layout.workspace),
-            expected_revision=expected_revision,
-            channel=release.manifest.payload.channel,
-            version=release.manifest.payload.version,
-            sequence=release.manifest.payload.sequence,
-            manifest_digest=release.manifest.digest,
-            envelope=release.envelope,
-            artifact=release.artifact.model_dump(mode="json"),
-            verified_key_ids=release.manifest.verified_key_ids,
-            slot_path=str(validated.root),
-            new_python=str(validated.python),
-            new_runtime_mode=validated.metadata.runtime_kind,
-            new_application_root=str(validated.application_root),
-            old_python=str(current_runtime_executable()),
-            old_runtime_mode=(
-                "native_launcher"
-                if bool(getattr(sys, "frozen", False))
-                else "python"
-            ),
-            old_cwd=str(Path.cwd().resolve(strict=False)),
-            old_pid=current.pid,
-            old_create_time=current.create_time(),
-            previous_pointer=(
-                previous if isinstance(previous, dict) else None
-            ),
-            created_at=datetime.now(timezone.utc),
+        payload = _handoff_payload(
+            layout=layout, operation_id=operation_id,
+            expected_revision=expected_revision, release=release,
+            validated=validated,
         )
         _write_envelope(descriptor, payload, secret)
+        _cleanup_preparation_journal(journal)
     # Revalidate all persisted paths on resume.
     slot = layout.require_within(
         payload.slot_path,
@@ -416,24 +678,58 @@ def rollback_prepared_manager_handoff(
     result: Mapping[str, Any] | None = None,
 ) -> None:
     descriptor = handoff_descriptor_path(layout, operation_id)
+    journal = preparation_journal_path(layout, operation_id)
+    slots: list[Path] = []
     slot_value = (result or {}).get("slot_path")
-    if slot_value is None and descriptor.is_file():
-        try:
-            envelope, _ = read_handoff(layout, operation_id)
-            slot_value = envelope.payload.slot_path
-        except Exception:
-            slot_value = None
     if isinstance(slot_value, str):
-        slot = layout.require_within(
-            slot_value,
-            roots=(layout.manager_versions,),
+        slots.append(
+            layout.require_within(
+                slot_value,
+                roots=(layout.manager_versions,),
+            )
         )
+    if os.path.lexists(descriptor):
+        envelope, _ = read_handoff(layout, operation_id)
+        slots.append(
+            layout.require_within(
+                envelope.payload.slot_path,
+                roots=(layout.manager_versions,),
+            )
+        )
+    journal_path: Path | None = None
+    if os.path.lexists(journal):
+        preparation, journal_path = read_preparation_journal(
+            layout,
+            operation_id,
+        )
+        slots.append(
+            layout.require_within(
+                preparation.payload.destination_path,
+                roots=(layout.manager_versions,),
+            )
+        )
+    if slots:
+        slot = slots[0]
+        if any(
+            candidate.resolve(strict=False) != slot.resolve(strict=False)
+            for candidate in slots[1:]
+        ):
+            raise ManagerError(
+                "invalid_manager_handoff",
+                "Manager handoff rollback state does not agree on the prepared slot.",
+                {"operation_id": operation_id},
+                500,
+            )
         if slot.exists():
             shutil.rmtree(slot)
-    try:
+    if os.path.lexists(descriptor):
+        _require_regular_control_file(
+            descriptor,
+            label="manager handoff descriptor",
+        )
         descriptor.unlink()
-    except FileNotFoundError:
-        pass
+    if journal_path is not None:
+        _remove_preparation_journal(journal_path)
 
 
 class ManagerHandoffCoordinator:
