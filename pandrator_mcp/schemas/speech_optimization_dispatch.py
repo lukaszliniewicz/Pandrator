@@ -7,11 +7,12 @@ from typing import Literal
 from pydantic import Field
 
 from .common import ToolInput
+from .delegation import DelegationContextDeltaInput, DelegationExecutionMixin
 
 _SAFE_KEY = r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$"
 
 
-class CreateSpeechOptimizationDispatchRunInput(ToolInput):
+class CreateSpeechOptimizationDispatchRunInput(DelegationExecutionMixin):
     session_id: str = Field(min_length=1, max_length=80)
     source_artifact_id: str | None = Field(default=None, min_length=1, max_length=80)
     language: str | None = Field(default=None, min_length=1, max_length=40)
@@ -95,6 +96,7 @@ class SubmitSpeechOptimizationDispatchBatchInput(ToolInput):
     batch_id: str = Field(min_length=1, max_length=120)
     lease_token: str = Field(min_length=1, max_length=160)
     result: SpeechOptimizationDispatchResultInput
+    context_delta: DelegationContextDeltaInput = Field(default_factory=DelegationContextDeltaInput)
     idempotency_key: str = Field(
         min_length=8,
         max_length=200,

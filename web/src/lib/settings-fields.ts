@@ -291,6 +291,435 @@ export const GLOBAL_TTS_KEYS = new Set([
   'max_attempts'
 ]);
 
+const SETTING_ORDER: Record<string, string[]> = {
+  text: [
+    'enable_sentence_splitting',
+    'max_sentence_length',
+    'enable_sentence_appending',
+    'disable_paragraph_detection',
+    'remove_diacritics',
+    'remove_quotation_marks',
+    'remove_footnotes',
+    'filter_citations',
+    'enable_nemo_normalization',
+    'normalize_all_caps',
+    'apply_reviewed_pronunciations',
+    'llm_tts_document_optimization',
+    'llm_tts_optimization',
+    'speech_optimization_mode',
+    'speech_plan_min_retention',
+    'speech_plan_save_proposals',
+    'tts_optimization_model',
+    'llm_concurrent_calls',
+    'llm_tts_document_batch_size',
+    'llm_tts_batch_size',
+    'llm_multi_stage',
+    'combined_prompt',
+    'first_prompt',
+    'second_prompt',
+    'third_prompt'
+  ],
+  stt: [
+    'stt_engine',
+    'stt_language',
+    'stt_transcribe_style',
+    'stt_model_quantization',
+    'stt_compute_backend',
+    'stt_compute_device',
+    'stt_threads',
+    'stt_chunk_seconds',
+    'stt_chunk_overlap_seconds',
+    'stt_beam_size',
+    'stt_lid_backend',
+    'stt_hotwords',
+    'whisper_prompt',
+    'parakeet_decoder',
+    'moss_max_chunk_seconds',
+    'moss_chunk_overlap_seconds',
+    'crispasr_vad_enabled',
+    'moss_vad_enabled',
+    'crispasr_vad_model',
+    'crispasr_vad_threshold',
+    'crispasr_vad_min_speech_ms',
+    'crispasr_vad_min_silence_ms',
+    'crispasr_vad_max_speech_seconds',
+    'crispasr_vad_speech_pad_ms',
+    'moss_ctc_alignment_enabled',
+    'moss_ctc_aligner_model',
+    'moss_ctc_padding_seconds',
+    'diarization_enabled'
+  ],
+  subtitles: [
+    'max_lines',
+    'max_chars_per_line',
+    'max_cps',
+    'min_duration_ms',
+    'max_duration_ms',
+    'min_gap_ms',
+    'phrase_gap_ms',
+    'hard_gap_ms',
+    'sentence_boundary_threshold',
+    'merge_threshold_ms'
+  ],
+  correction: [
+    'enabled',
+    'model_name',
+    'reasoning_effort',
+    'instructions',
+    'char_limit',
+    'max_segments_per_batch',
+    'llm_concurrent_calls',
+    'timing_context_mode',
+    'substantial_gap_ms',
+    'context_before',
+    'context_after',
+    'no_remove_subtitles',
+    'request_timeout_seconds',
+    'web_research_enabled',
+    'web_research_provider',
+    'web_research_model_name',
+    'web_research_mode',
+    'web_research_context_fraction',
+    'web_research_language',
+    'web_research_max_searches',
+    'web_research_max_extractions',
+    'web_research_preferred_domains',
+    'web_research_blocked_domains',
+    'web_research_max_iterations',
+    'web_research_timeout_seconds',
+    'web_research_source_chars',
+    'web_research_result_chars'
+  ],
+  translation: [
+    'enabled',
+    'backend',
+    'source_language',
+    'target_language',
+    'model_name',
+    'reasoning_effort',
+    'instructions',
+    'glossary_enabled',
+    'glossary',
+    'context',
+    'char_limit',
+    'max_segments_per_batch',
+    'llm_concurrent_calls',
+    'timing_context_mode',
+    'substantial_gap_ms',
+    'context_before',
+    'context_after',
+    'no_remove_subtitles',
+    'request_timeout_seconds',
+    'web_research_enabled',
+    'web_research_provider',
+    'web_research_model_name',
+    'web_research_mode',
+    'web_research_context_fraction',
+    'web_research_language',
+    'web_research_max_searches',
+    'web_research_max_extractions',
+    'web_research_preferred_domains',
+    'web_research_blocked_domains',
+    'web_research_max_iterations',
+    'web_research_timeout_seconds',
+    'web_research_source_chars',
+    'web_research_result_chars'
+  ],
+  tts: ['service', 'language', 'speed', 'max_attempts'],
+  audio: [
+    'audio_verification_mode',
+    'sentence_silence_ms',
+    'paragraph_silence_ms',
+    'fade_enabled',
+    'fade_in_ms',
+    'fade_out_ms',
+    'synchronization_delay_ms',
+    'synchronization_speed',
+    'synchronization_sentence_gap_ms'
+  ],
+  rvc: [
+    'enabled',
+    'model',
+    'pitch',
+    'f0_method',
+    'filter_radius',
+    'index_rate',
+    'volume_envelope',
+    'protect'
+  ],
+  source_cleaning: [
+    'agentic',
+    'max_iterations',
+    'phase_max_iterations',
+    'request_timeout_seconds',
+    'pdf_ocr_mode',
+    'pdf_ocr_language',
+    'pdf_ocr_dpi',
+    'pdf_remove_toc',
+    'pdf_remove_repeated_marginals',
+    'remove_footnotes',
+    'filter_citations'
+  ],
+  output: [
+    'export_mode',
+    'format',
+    'bitrate',
+    'audio_mode',
+    'mix_source_gain_db',
+    'mix_voice_gain_db',
+    'mix_voice_lufs',
+    'mix_ducking',
+    'mix_attack_ms',
+    'mix_release_ms',
+    'mix_audio_bitrate',
+    'subtitle_mode',
+    'subtitle_selection',
+    'subtitle_format',
+    'video_transcode',
+    'burn_video_encoder',
+    'burn_video_resolution',
+    'burn_video_quality',
+    'burn_video_speed',
+    'burn_audio_codec',
+    'burn_audio_bitrate',
+    'title',
+    'artist',
+    'album',
+    'genre',
+    'language'
+  ]
+};
+
+export function compareSettingOrder(
+  section: string,
+  left: string,
+  right: string
+): number {
+  const order = SETTING_ORDER[section] ?? [];
+  const leftIndex = order.indexOf(left);
+  const rightIndex = order.indexOf(right);
+  return (
+    (leftIndex < 0 ? Number.MAX_SAFE_INTEGER : leftIndex) -
+      (rightIndex < 0 ? Number.MAX_SAFE_INTEGER : rightIndex) ||
+    left.localeCompare(right)
+  );
+}
+
+const STT_LOCAL_ENGINES = new Set(['whisper', 'parakeet', 'moss']);
+const STT_LOCAL_KEYS = new Set([
+  'stt_model_quantization',
+  'stt_compute_backend',
+  'stt_threads',
+  'stt_chunk_seconds',
+  'stt_lid_backend'
+]);
+const STT_NON_MOSS_LOCAL_KEYS = new Set([
+  'stt_chunk_overlap_seconds',
+  'stt_beam_size',
+  'diarization_enabled'
+]);
+const STT_VAD_DETAIL_KEYS = new Set([
+  'crispasr_vad_model',
+  'crispasr_vad_threshold',
+  'crispasr_vad_min_speech_ms',
+  'crispasr_vad_min_silence_ms',
+  'crispasr_vad_max_speech_seconds',
+  'crispasr_vad_speech_pad_ms'
+]);
+const MOSS_CTC_DETAIL_KEYS = new Set([
+  'moss_ctc_aligner_model',
+  'moss_ctc_padding_seconds'
+]);
+const DISABLED_STAGE_KEYS = new Set(['correction', 'translation', 'rvc']);
+const DEEPL_HIDDEN_KEYS = new Set([
+  'model_name',
+  'reasoning_effort',
+  'llm_concurrent_calls',
+  'timing_context_mode',
+  'substantial_gap_ms',
+  'instructions',
+  'glossary',
+  'glossary_enabled',
+  'context',
+  'context_before',
+  'context_after',
+  'char_limit',
+  'max_segments_per_batch',
+  'no_remove_subtitles',
+  'request_timeout_seconds'
+]);
+const OUTPUT_VIDEO_KEYS = new Set([
+  'burn_video_encoder',
+  'burn_video_resolution',
+  'burn_video_quality',
+  'burn_video_speed',
+  'burn_audio_codec',
+  'burn_audio_bitrate'
+]);
+const OUTPUT_MIX_KEYS = new Set([
+  'mix_source_gain_db',
+  'mix_voice_gain_db',
+  'mix_voice_lufs',
+  'mix_ducking',
+  'mix_attack_ms',
+  'mix_release_ms',
+  'mix_audio_bitrate'
+]);
+
+/**
+ * Return whether a setting currently affects the selected pipeline branch.
+ * Values remain stored while hidden, so turning a feature back on restores its
+ * previously chosen defaults.
+ */
+export function settingApplies(
+  section: string,
+  key: string,
+  settings: Record<string, unknown>
+): boolean {
+  const enabled = (name: string, fallback = false) =>
+    Object.prototype.hasOwnProperty.call(settings, name)
+      ? Boolean(settings[name])
+      : fallback;
+  const selected = (name: string, fallback = '') =>
+    String(settings[name] ?? fallback)
+      .trim()
+      .toLowerCase();
+
+  if (
+    DISABLED_STAGE_KEYS.has(section) &&
+    key !== 'enabled' &&
+    !enabled('enabled')
+  )
+    return false;
+
+  if (section === 'correction' && key.startsWith('web_research_'))
+    return key === 'web_research_enabled' || enabled('web_research_enabled');
+
+  if (section === 'translation') {
+    const deepL = selected('backend', 'llm') === 'deepl';
+    if (
+      deepL &&
+      (DEEPL_HIDDEN_KEYS.has(key) || key.startsWith('web_research_'))
+    )
+      return false;
+    if (key.startsWith('web_research_'))
+      return key === 'web_research_enabled' || enabled('web_research_enabled');
+  }
+
+  if (section === 'rvc') return key === 'enabled' || enabled('enabled');
+
+  if (section === 'audio' && ['fade_in_ms', 'fade_out_ms'].includes(key))
+    return enabled('fade_enabled');
+
+  if (section === 'text') {
+    if (key === 'llm_processing_enabled') return false;
+    const immediate = enabled('llm_tts_optimization');
+    const document = enabled('llm_tts_document_optimization');
+    const planning = immediate || document;
+    if (key === 'llm_tts_batch_size') return immediate;
+    if (key === 'llm_tts_document_batch_size') return document;
+    if (
+      key.startsWith('speech_') ||
+      [
+        'tts_optimization_model',
+        'llm_concurrent_calls',
+        'llm_multi_stage',
+        'combined_prompt',
+        'first_prompt',
+        'second_prompt',
+        'third_prompt'
+      ].includes(key)
+    ) {
+      if (!planning) return false;
+      if (key === 'speech_plan_min_retention')
+        return selected('speech_optimization_mode', 'guarded') === 'flexible';
+      if (['first_prompt', 'second_prompt', 'third_prompt'].includes(key))
+        return enabled('llm_multi_stage');
+      if (key === 'combined_prompt') return !enabled('llm_multi_stage');
+    }
+  }
+
+  if (section === 'source_cleaning') {
+    if (
+      [
+        'max_iterations',
+        'phase_max_iterations',
+        'request_timeout_seconds'
+      ].includes(key)
+    )
+      return enabled('agentic');
+    if (['pdf_ocr_language', 'pdf_ocr_dpi'].includes(key))
+      return selected('pdf_ocr_mode', 'auto') !== 'off';
+  }
+
+  if (section === 'subtitles' && key === 'boundary_correction_enabled')
+    return false;
+
+  if (section === 'output') {
+    const exportMode = selected('export_mode', 'media');
+    if (exportMode === 'subtitles')
+      return [
+        'export_mode',
+        'subtitle_selection',
+        'subtitle_format',
+        'language'
+      ].includes(key);
+    if (exportMode === 'text')
+      return ['export_mode', 'subtitle_selection', 'language'].includes(key);
+    const subtitleMode = selected('subtitle_mode', 'none');
+    const transcodesVideo =
+      enabled('video_transcode') || subtitleMode === 'burned';
+    if (['subtitle_selection', 'subtitle_format'].includes(key))
+      return subtitleMode !== 'none';
+    if (OUTPUT_VIDEO_KEYS.has(key)) {
+      if (!transcodesVideo) return false;
+      if (key === 'burn_audio_bitrate')
+        return selected('burn_audio_codec', 'copy') === 'aac';
+      return true;
+    }
+    if (OUTPUT_MIX_KEYS.has(key))
+      return selected('audio_mode', 'mixed') === 'mixed';
+    if (key === 'bitrate')
+      return ['mp3', 'm4b', 'opus'].includes(selected('format', 'wav'));
+  }
+
+  if (section !== 'stt') return true;
+
+  const engine = selected('stt_engine', 'whisper');
+  const local = STT_LOCAL_ENGINES.has(engine);
+  const moss = engine === 'moss';
+  const nonMossLocal = engine === 'whisper' || engine === 'parakeet';
+
+  if (STT_LOCAL_KEYS.has(key)) return local;
+  if (STT_NON_MOSS_LOCAL_KEYS.has(key)) return nonMossLocal;
+  if (key === 'stt_compute_device')
+    return (
+      local &&
+      !['auto', 'cpu'].includes(selected('stt_compute_backend', 'auto'))
+    );
+  if (key === 'whisper_prompt') return engine === 'whisper';
+  if (key === 'stt_transcribe_style')
+    return engine === 'azure_mai_transcribe_1_5';
+  if (key === 'parakeet_decoder') return engine === 'parakeet';
+  if (key === 'moss_max_chunk_seconds')
+    return moss && Number(settings.stt_chunk_seconds ?? 0) <= 0;
+  if (key.startsWith('moss_')) {
+    if (!moss) return false;
+    if (MOSS_CTC_DETAIL_KEYS.has(key))
+      return enabled('moss_ctc_alignment_enabled', true);
+    return true;
+  }
+  if (key === 'crispasr_vad_enabled') return nonMossLocal;
+  if (STT_VAD_DETAIL_KEYS.has(key))
+    return (
+      local &&
+      (moss
+        ? enabled('moss_vad_enabled')
+        : enabled('crispasr_vad_enabled', true))
+    );
+  return true;
+}
+
 export function optionsFor(
   section: string,
   key: string
@@ -417,6 +846,11 @@ export function settingLabel(key: string): string {
     web_research_source_chars: 'Maximum source characters for research',
     web_research_result_chars: 'Maximum characters per tool result',
     llm_processing_enabled: 'Enable LLM text processing',
+    agentic: 'Use LLM-assisted source cleaning',
+    max_iterations: 'Maximum source-cleaning agent turns',
+    fade_enabled: 'Fade generated audio edges',
+    fade_in_ms: 'Fade-in duration (ms)',
+    fade_out_ms: 'Fade-out duration (ms)',
     llm_multi_stage: 'Use divided prompts',
     llm_concurrent_calls: 'Concurrent LLM requests',
     timing_context_mode: 'Cue timing context',
@@ -448,7 +882,15 @@ export function settingLabel(key: string): string {
     moss_chunk_overlap_seconds: 'MOSS chunk overlap (seconds)',
     moss_vad_enabled: 'Use VAD before MOSS diarization',
     moss_ctc_alignment_enabled: 'Align each MOSS turn to words with CTC',
+    moss_ctc_aligner_model: 'MOSS CTC aligner model',
     moss_ctc_padding_seconds: 'MOSS turn CTC padding (seconds)',
+    crispasr_vad_enabled: 'Use VAD for Whisper and Parakeet',
+    crispasr_vad_model: 'VAD model',
+    crispasr_vad_threshold: 'VAD speech threshold',
+    crispasr_vad_min_speech_ms: 'Minimum detected speech (ms)',
+    crispasr_vad_min_silence_ms: 'Silence required to end speech (ms)',
+    crispasr_vad_max_speech_seconds: 'Maximum detected speech (seconds)',
+    crispasr_vad_speech_pad_ms: 'Speech-edge padding (ms)',
     subtitle_hard_gap_ms: 'Hard subtitle boundary after silence (ms)',
     subtitle_sentence_boundary_threshold: 'Sentence boundary sensitivity',
     hard_gap_ms: 'Hard subtitle boundary after silence (ms)',

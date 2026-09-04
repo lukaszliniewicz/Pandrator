@@ -20,6 +20,60 @@ class ReleaseActivationError(RuntimeError):
     pass
 
 
+def _durable_replace_windows(source: Path, destination: Path) -> None:
+    """Replace a path with write-through semantics on Windows."""
+
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    move_file_ex = kernel32.MoveFileExW
+    move_file_ex.argtypes = (
+        wintypes.LPCWSTR,
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+    )
+    move_file_ex.restype = wintypes.BOOL
+    flags = 0x00000001 | 0x00000008  # REPLACE_EXISTING | WRITE_THROUGH
+    if not move_file_ex(str(source), str(destination), flags):
+        error = ctypes.get_last_error()
+        raise OSError(
+            error,
+            "MoveFileExW failed while replacing a release path.",
+            str(source),
+            str(destination),
+        )
+
+
+def _durable_replace_posix(source: Path, destination: Path) -> None:
+    """Replace a path and persist each affected parent directory on POSIX."""
+
+    os.replace(source, destination)
+    flags = os.O_RDONLY
+    for flag_name in ("O_DIRECTORY", "O_NOFOLLOW", "O_CLOEXEC"):
+        flags |= getattr(os, flag_name, 0)
+    seen: set[str] = set()
+    for parent in (source.parent, destination.parent):
+        real_parent = os.path.realpath(parent)
+        if real_parent in seen:
+            continue
+        seen.add(real_parent)
+        descriptor = os.open(real_parent, flags)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+
+def _durable_replace(source: Path, destination: Path) -> None:
+    """Replace a path and make the rename durable before returning."""
+
+    if os.name == "nt":
+        _durable_replace_windows(source, destination)
+    else:
+        _durable_replace_posix(source, destination)
+
+
 def _atomic_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, name = tempfile.mkstemp(
@@ -34,7 +88,7 @@ def _atomic_json(path: Path, payload: dict) -> None:
             json.dump(payload, handle, ensure_ascii=False, sort_keys=True, indent=2)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, path)
+        _durable_replace(temporary, path)
     finally:
         try:
             temporary.unlink()
@@ -46,9 +100,10 @@ def _snapshot_sqlite(source: Path, destination: Path) -> bool:
     if not source.is_file():
         return False
     destination.parent.mkdir(parents=True, exist_ok=True)
-    with closing(sqlite3.connect(source)) as incoming, closing(
-        sqlite3.connect(destination)
-    ) as backup:
+    with (
+        closing(sqlite3.connect(source)) as incoming,
+        closing(sqlite3.connect(destination)) as backup,
+    ):
         incoming.backup(backup)
     return True
 
@@ -86,12 +141,7 @@ class ReleaseSlotManager:
     ) -> Path:
         if product not in {"pandrator", "pandrator-manager"}:
             raise ValueError(f"Unsupported release product: {product}")
-        path = (
-            self.layout.staging
-            / operation_id
-            / "release"
-            / f"{product}-activation.json"
-        )
+        path = self.layout.staging / operation_id / "release" / f"{product}-activation.json"
         return self.layout.require_within(
             path,
             roots=(self.layout.staging,),
@@ -123,9 +173,7 @@ class ReleaseSlotManager:
             try:
                 journal = json.loads(journal_path.read_text(encoding="utf-8"))
             except (OSError, ValueError, TypeError, json.JSONDecodeError) as error:
-                raise ReleaseActivationError(
-                    "Release activation journal is invalid."
-                ) from error
+                raise ReleaseActivationError("Release activation journal is invalid.") from error
             expected = {
                 "product": manifest.payload.product,
                 "version": manifest.payload.version,
@@ -140,27 +188,16 @@ class ReleaseSlotManager:
                 )
         else:
             if not staged.is_dir():
-                raise ReleaseActivationError(
-                    "Staged release directory is missing."
-                )
+                raise ReleaseActivationError("Staged release directory is missing.")
             if destination.exists():
-                raise ReleaseActivationError(
-                    "The release version already has a staged slot."
-                )
+                raise ReleaseActivationError("The release version already has a staged slot.")
             try:
                 previous = json.loads(pointer.read_text(encoding="utf-8"))
             except (OSError, ValueError, TypeError, json.JSONDecodeError):
                 previous = None
-            backup = (
-                self.layout.backups
-                / operation_id
-                / "release"
-                / "database.sqlite3"
-            )
+            backup = self.layout.backups / operation_id / "release" / "database.sqlite3"
             database_snapshotted = (
-                _snapshot_sqlite(database, backup)
-                if database is not None
-                else False
+                _snapshot_sqlite(database, backup) if database is not None else False
             )
             journal = {
                 "product": manifest.payload.product,
@@ -169,9 +206,7 @@ class ReleaseSlotManager:
                 "manifest_digest": manifest.digest,
                 "destination": str(destination),
                 "pointer": str(pointer),
-                "previous_pointer": (
-                    previous if isinstance(previous, dict) else None
-                ),
+                "previous_pointer": (previous if isinstance(previous, dict) else None),
                 "database": str(database) if database is not None else None,
                 "database_backup": str(backup),
                 "database_snapshotted": database_snapshotted,
@@ -180,15 +215,13 @@ class ReleaseSlotManager:
             _atomic_json(journal_path, journal)
         if destination.is_dir():
             if staged.exists():
-                raise ReleaseActivationError(
-                    "Both release staging and its destination slot exist."
-                )
+                raise ReleaseActivationError("Both release staging and its destination slot exist.")
         else:
             if not staged.is_dir():
                 raise ReleaseActivationError(
                     "Neither release staging nor its destination slot exists."
                 )
-            os.replace(staged, destination)
+            _durable_replace(staged, destination)
         _atomic_json(
             pointer,
             {
@@ -221,14 +254,10 @@ class ReleaseSlotManager:
                     "Release activation rollback journal is invalid."
                 ) from error
             if not isinstance(loaded, dict):
-                raise ReleaseActivationError(
-                    "Release activation rollback journal is invalid."
-                )
+                raise ReleaseActivationError("Release activation rollback journal is invalid.")
             journal = loaded
         if journal.get("product") != product:
-            raise ReleaseActivationError(
-                "Release activation rollback journal has another product."
-            )
+            raise ReleaseActivationError("Release activation rollback journal has another product.")
         _, pointer = self._target(product)
         previous = journal.get("previous_pointer")
         if isinstance(previous, dict):
@@ -272,9 +301,7 @@ class ReleaseSlotManager:
         migrate: Callable[[Path], None] | None = None,
         database: Path | None = None,
     ) -> Path:
-        operation_id = (
-            f"direct-{manifest.payload.product}-{manifest.payload.sequence}"
-        )
+        operation_id = f"direct-{manifest.payload.product}-{manifest.payload.sequence}"
         journal = self.prepare_activation(
             manifest,
             staged_directory,
@@ -309,8 +336,7 @@ class ReleaseSlotManager:
                 healthy=False,
             )
             raise ReleaseActivationError(
-                "Release activation failed and the previous pointer/database "
-                "were restored."
+                "Release activation failed and the previous pointer/database were restored."
             ) from error
         self.store.activate_release_slot(
             product=manifest.payload.product,

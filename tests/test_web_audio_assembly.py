@@ -3,6 +3,7 @@ import subprocess
 import tempfile
 import threading
 import unittest
+from copy import deepcopy
 from pathlib import Path
 
 from mutagen.flac import FLAC
@@ -37,6 +38,8 @@ from pandrator.web.workspace import (
     GenerationService,
     RevisionConflict,
     WorkspaceSettingsService,
+    output_assembly_settings_hash,
+    stable_hash,
 )
 from tests.web_test_support import prepare_web_test_data_root
 
@@ -51,7 +54,9 @@ class AudioCompositionTests(unittest.TestCase):
 
     def test_composition_applies_bounded_fades(self):
         tone = Sine(440).to_audio_segment(duration=100)
-        result = compose_audio([(tone, 0)], {"fade_enabled": True, "fade_in_ms": 30, "fade_out_ms": 30})
+        result = compose_audio(
+            [(tone, 0)], {"fade_enabled": True, "fade_in_ms": 30, "fade_out_ms": 30}
+        )
         self.assertEqual(100, len(result))
         self.assertLess(result[:5].max, result[40:60].max)
         self.assertLess(result[-5:].max, result[40:60].max)
@@ -76,10 +81,19 @@ class AudioCompositionTests(unittest.TestCase):
                 "genre": "Audiobook",
                 "language": "en",
             }
-            for output_format, reader in (("m4b", MP4), ("opus", OggOpus), ("flac", FLAC)):
+            for output_format, reader in (
+                ("m4b", MP4),
+                ("opus", OggOpus),
+                ("flac", FLAC),
+            ):
                 with self.subTest(output_format=output_format):
                     destination = root / f"tagged.{output_format}"
-                    export_audio(Sine(440).to_audio_segment(duration=120), destination, output_format, "128k")
+                    export_audio(
+                        Sine(440).to_audio_segment(duration=120),
+                        destination,
+                        output_format,
+                        "128k",
+                    )
                     self.assertTrue(
                         _save_metadata_and_cover(
                             str(destination),
@@ -109,7 +123,9 @@ class DurableOutputAssemblyTests(unittest.TestCase):
         self.jobs = JobQueue(self.database)
         self.settings = WorkspaceSettingsService(self.database)
         self.generation = GenerationService(self.database, self.jobs, self.settings)
-        self.record = SessionService(self.database).create("Assembly", workflow_kind="audiobook")
+        self.record = SessionService(self.database).create(
+            "Assembly", workflow_kind="audiobook"
+        )
         self.session_dir = self.paths.sessions / self.record.storage_key
         self.session_dir.mkdir(parents=True)
 
@@ -122,7 +138,11 @@ class DurableOutputAssemblyTests(unittest.TestCase):
             self.record.id,
             source_revision_id=None,
             segments=[
-                {"text": "First", "node_kind": "chapter_marker", "silence_after_ms": 180},
+                {
+                    "text": "First",
+                    "node_kind": "chapter_marker",
+                    "silence_after_ms": 180,
+                },
                 {"text": "Second", "silence_after_ms": 900},
             ],
         )
@@ -131,15 +151,21 @@ class DurableOutputAssemblyTests(unittest.TestCase):
             segments = list(
                 session.scalars(
                     select(GenerationSegment)
-                    .where(GenerationSegment.plan_revision_id == plan["active_revision_id"])
+                    .where(
+                        GenerationSegment.plan_revision_id == plan["active_revision_id"]
+                    )
                     .order_by(GenerationSegment.ordinal)
                 ).all()
             )
             segment_ids = [segment.id for segment in segments]
         for index, (segment_id, duration) in enumerate(zip(segment_ids, (100, 140))):
             path = self.session_dir / f"take-{index}.wav"
-            Sine(440 + index * 110).to_audio_segment(duration=duration).export(path, format="wav").close()
-            artifact = artifacts.register(path, kind="audio", role="generation_take", session_id=self.record.id)
+            Sine(440 + index * 110).to_audio_segment(duration=duration).export(
+                path, format="wav"
+            ).close()
+            artifact = artifacts.register(
+                path, kind="audio", role="generation_take", session_id=self.record.id
+            )
             with self.database.session() as session:
                 segment = session.get(GenerationSegment, segment_id)
                 segment.status = "completed"
@@ -158,7 +184,9 @@ class DurableOutputAssemblyTests(unittest.TestCase):
     def test_export_variant_assembles_completed_run_inline_before_export(self):
         self._plan_with_takes()
         with self.database.session() as session:
-            segment = session.scalar(select(GenerationSegment).order_by(GenerationSegment.ordinal))
+            segment = session.scalar(
+                select(GenerationSegment).order_by(GenerationSegment.ordinal)
+            )
             run = GenerationRun(
                 session_id=self.record.id,
                 plan_revision_id=segment.plan_revision_id,
@@ -208,6 +236,117 @@ class DurableOutputAssemblyTests(unittest.TestCase):
             exported = session.get(Artifact, result["artifact_ids"][0])
             self.assertEqual("export", exported.role)
 
+    def _legacy_completed_run_assembly(self):
+        self._plan_with_takes()
+        with self.database.session() as session:
+            segment = session.scalar(
+                select(GenerationSegment).order_by(GenerationSegment.ordinal)
+            )
+            run = GenerationRun(
+                session_id=self.record.id,
+                plan_revision_id=segment.plan_revision_id,
+                sequence_number=1,
+                status="completed",
+            )
+            session.add(run)
+            session.flush()
+            run_id = run.id
+            for take in session.scalars(select(AudioTake)).all():
+                take.generation_run_id = run_id
+
+        legacy_snapshot, legacy_hash = self.settings.resolve(self.record.id)
+        with self.database.session() as session:
+            run = session.get(GenerationRun, run_id)
+            assembly = OutputAssembly(
+                session_id=self.record.id,
+                generation_run_id=run_id,
+                status="queued",
+                settings_json={
+                    "resolved": legacy_snapshot,
+                    "plan_revision_id": run.plan_revision_id,
+                },
+                settings_hash=legacy_hash,
+            )
+            session.add(assembly)
+            session.flush()
+            assembly_id = assembly.id
+        WorkflowHandlers(self.database, self.paths).assemble_generation_output(
+            {"output_assembly_id": assembly_id},
+            lambda *_args: None,
+            threading.Event(),
+        )
+        return run_id, legacy_snapshot, legacy_hash, assembly_id
+
+    def test_direct_export_reuses_legacy_full_snapshot_assembly(self):
+        run_id, legacy_snapshot, legacy_hash, assembly_id = (
+            self._legacy_completed_run_assembly()
+        )
+        with self.database.session() as session:
+            assembly = session.get(OutputAssembly, assembly_id)
+            self.assertEqual(legacy_hash, assembly.settings_hash)
+            self.assertEqual(stable_hash(legacy_snapshot), assembly.settings_hash)
+            self.assertNotEqual(
+                output_assembly_settings_hash(legacy_snapshot),
+                assembly.settings_hash,
+            )
+            assembly_artifact_id = assembly.artifact_id
+
+        result = WorkflowHandlers(self.database, self.paths).export(
+            {
+                "session_id": self.record.id,
+                "settings": {
+                    **dict(legacy_snapshot["output"]),
+                    "generation_run_id": run_id,
+                },
+                "resolved_settings_snapshot": legacy_snapshot,
+            },
+            lambda *_args: None,
+            threading.Event(),
+        )
+
+        with self.database.session() as session:
+            assemblies = list(
+                session.scalars(
+                    select(OutputAssembly).where(
+                        OutputAssembly.session_id == self.record.id,
+                        OutputAssembly.generation_run_id == run_id,
+                    )
+                ).all()
+            )
+            exported = session.get(Artifact, result["artifact_ids"][0])
+            edge = session.scalar(
+                select(ArtifactEdge).where(
+                    ArtifactEdge.child_artifact_id == exported.id,
+                    ArtifactEdge.parent_artifact_id == assembly_artifact_id,
+                )
+            )
+        self.assertEqual([assembly_id], [assembly.id for assembly in assemblies])
+        self.assertIsNotNone(edge)
+
+    def test_direct_export_rejects_legacy_assembly_after_output_settings_change(self):
+        run_id, legacy_snapshot, _legacy_hash, _assembly_id = (
+            self._legacy_completed_run_assembly()
+        )
+        changed_snapshot = deepcopy(legacy_snapshot)
+        changed_bitrate = (
+            "64k" if changed_snapshot["output"]["bitrate"] != "64k" else "128k"
+        )
+        changed_snapshot["output"]["bitrate"] = changed_bitrate
+
+        with self.assertRaisesRegex(ValueError, "settings changed.*Reassemble"):
+            WorkflowHandlers(self.database, self.paths).export(
+                {
+                    "session_id": self.record.id,
+                    "settings": {
+                        **dict(changed_snapshot["output"]),
+                        "generation_run_id": run_id,
+                    },
+                    "resolved_settings_snapshot": changed_snapshot,
+                },
+                lambda *_args: None,
+                threading.Event(),
+            )
+
     def test_batch_segment_update_is_atomic_on_revision_conflict(self):
         plan = self.generation.create_plan(
             self.record.id,
@@ -219,8 +358,7 @@ class DurableOutputAssemblyTests(unittest.TestCase):
                 session.scalars(
                     select(GenerationSegment)
                     .where(
-                        GenerationSegment.plan_revision_id
-                        == plan["active_revision_id"]
+                        GenerationSegment.plan_revision_id == plan["active_revision_id"]
                     )
                     .order_by(GenerationSegment.ordinal)
                 ).all()
@@ -265,8 +403,7 @@ class DurableOutputAssemblyTests(unittest.TestCase):
                 session.scalars(
                     select(GenerationSegment)
                     .where(
-                        GenerationSegment.plan_revision_id
-                        == plan["active_revision_id"]
+                        GenerationSegment.plan_revision_id == plan["active_revision_id"]
                     )
                     .order_by(GenerationSegment.ordinal)
                 ).all()
@@ -282,7 +419,9 @@ class DurableOutputAssemblyTests(unittest.TestCase):
 
         result = self.generation.update_segments(self.record.id, updates)
 
-        self.assertEqual(["Changed 1", "Changed 2"], [item["text"] for item in result["items"]])
+        self.assertEqual(
+            ["Changed 1", "Changed 2"], [item["text"] for item in result["items"]]
+        )
         self.assertEqual([2, 2], [item["revision"] for item in result["items"]])
 
     def test_m4b_assembly_preserves_generation_chapters(self):
@@ -300,10 +439,22 @@ class DurableOutputAssemblyTests(unittest.TestCase):
             lambda *_args: None,
             threading.Event(),
         )
-        artifact, output_path = ArtifactService(self.database, self.paths).resolve(result["artifact_id"])
-        self.assertEqual([{"start_ms": 0, "title": "First"}], artifact.metadata_json["chapters"])
+        artifact, output_path = ArtifactService(self.database, self.paths).resolve(
+            result["artifact_id"]
+        )
+        self.assertEqual(
+            [{"start_ms": 0, "title": "First"}], artifact.metadata_json["chapters"]
+        )
         probe = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_chapters", "-of", "json", str(output_path)],
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_chapters",
+                "-of",
+                "json",
+                str(output_path),
+            ],
             check=True,
             capture_output=True,
             text=True,
@@ -323,7 +474,9 @@ class DurableOutputAssemblyTests(unittest.TestCase):
         self.assertEqual(420, result["duration_ms"])
         latest = self.generation.latest_assembly(self.record.id)
         self.assertEqual("completed", latest["status"])
-        artifact, path = ArtifactService(self.database, self.paths).resolve(latest["artifact_id"])
+        artifact, path = ArtifactService(self.database, self.paths).resolve(
+            latest["artifact_id"]
+        )
         self.assertEqual(420, len(AudioSegment.from_file(path)))
         self.assertEqual("assembled_audio", artifact.role)
         snapshot = artifact.metadata_json["output_settings"]
@@ -338,8 +491,12 @@ class DurableOutputAssemblyTests(unittest.TestCase):
         with self.database.session() as session:
             segment = session.get(GenerationSegment, segment_ids[0])
             revision = segment.revision
-        self.generation.update_segment(segment_ids[0], revision, {"silence_after_ms": 250})
-        self.assertEqual("stale", self.generation.latest_assembly(self.record.id)["status"])
+        self.generation.update_segment(
+            segment_ids[0], revision, {"silence_after_ms": 250}
+        )
+        self.assertEqual(
+            "stale", self.generation.latest_assembly(self.record.id)["status"]
+        )
         with self.database.session() as session:
             self.assertEqual("stale", session.get(Artifact, artifact.id).state)
 
@@ -361,18 +518,36 @@ class DurableOutputAssemblyTests(unittest.TestCase):
         self.assertEqual(0.42, latest["progress"])
         self.assertEqual("Loaded 1 of 2 audio segments", latest["progress_detail"])
 
-    def test_subtitle_generation_assembly_uses_source_timestamps_without_added_pauses(self):
+    def test_subtitle_generation_assembly_uses_source_timestamps_without_added_pauses(
+        self,
+    ):
         with self.database.session() as session:
-            document = Document(session_id=self.record.id, stage="translation", language="pl")
+            document = Document(
+                session_id=self.record.id, stage="translation", language="pl"
+            )
             session.add(document)
             session.flush()
-            revision = DocumentRevision(document_id=document.id, revision_number=1, content_hash="timed")
+            revision = DocumentRevision(
+                document_id=document.id, revision_number=1, content_hash="timed"
+            )
             session.add(revision)
             session.flush()
             session.add_all(
                 [
-                    Segment(revision_id=revision.id, ordinal=0, start_ms=500, end_ms=1000, text="Pierwszy."),
-                    Segment(revision_id=revision.id, ordinal=1, start_ms=2000, end_ms=2500, text="Drugi."),
+                    Segment(
+                        revision_id=revision.id,
+                        ordinal=0,
+                        start_ms=500,
+                        end_ms=1000,
+                        text="Pierwszy.",
+                    ),
+                    Segment(
+                        revision_id=revision.id,
+                        ordinal=1,
+                        start_ms=2000,
+                        end_ms=2500,
+                        text="Drugi.",
+                    ),
                 ]
             )
             document.active_revision_id = revision.id
@@ -381,8 +556,18 @@ class DurableOutputAssemblyTests(unittest.TestCase):
             self.record.id,
             source_revision_id=revision_id,
             segments=[
-                {"text": "Pierwszy.", "node_kind": "subtitle_cue", "source_segment_ids": [1], "silence_after_ms": 0},
-                {"text": "Drugi.", "node_kind": "subtitle_cue", "source_segment_ids": [2], "silence_after_ms": 0},
+                {
+                    "text": "Pierwszy.",
+                    "node_kind": "subtitle_cue",
+                    "source_segment_ids": [1],
+                    "silence_after_ms": 0,
+                },
+                {
+                    "text": "Drugi.",
+                    "node_kind": "subtitle_cue",
+                    "source_segment_ids": [2],
+                    "silence_after_ms": 0,
+                },
             ],
         )
         artifacts = ArtifactService(self.database, self.paths)
@@ -390,19 +575,34 @@ class DurableOutputAssemblyTests(unittest.TestCase):
             segments = list(
                 session.scalars(
                     select(GenerationSegment)
-                    .where(GenerationSegment.plan_revision_id == plan["active_revision_id"])
+                    .where(
+                        GenerationSegment.plan_revision_id == plan["active_revision_id"]
+                    )
                     .order_by(GenerationSegment.ordinal)
                 ).all()
             )
             segment_ids = [segment.id for segment in segments]
         for index, (segment_id, duration) in enumerate(zip(segment_ids, (100, 150))):
             path = self.session_dir / f"subtitle-take-{index}.wav"
-            Sine(440 + index * 110).to_audio_segment(duration=duration).export(path, format="wav").close()
-            artifact = artifacts.register(path, kind="audio", role="generation_take", session_id=self.record.id)
+            Sine(440 + index * 110).to_audio_segment(duration=duration).export(
+                path, format="wav"
+            ).close()
+            artifact = artifacts.register(
+                path, kind="audio", role="generation_take", session_id=self.record.id
+            )
             with self.database.session() as session:
                 segment = session.get(GenerationSegment, segment_id)
                 segment.status = "completed"
-                session.add(AudioTake(generation_segment_id=segment_id, artifact_id=artifact.id, kind="tts", status="completed", duration_ms=duration, is_active=True))
+                session.add(
+                    AudioTake(
+                        generation_segment_id=segment_id,
+                        artifact_id=artifact.id,
+                        kind="tts",
+                        status="completed",
+                        duration_ms=duration,
+                        is_active=True,
+                    )
+                )
 
         queued = self.generation.create_assembly(self.record.id)
         result = WorkflowHandlers(self.database, self.paths).assemble_generation_output(
@@ -412,12 +612,24 @@ class DurableOutputAssemblyTests(unittest.TestCase):
         self.assertEqual(2500, result["duration_ms"])
         artifact, output_path = artifacts.resolve(result["artifact_id"])
         self.assertEqual(2500, len(AudioSegment.from_file(output_path)))
-        self.assertEqual([500, 2000], [item["target_start_ms"] for item in artifact.metadata_json["takes"]])
-        self.assertTrue(all(item["silence_after_ms"] == 0 for item in artifact.metadata_json["takes"]))
+        self.assertEqual(
+            [500, 2000],
+            [item["target_start_ms"] for item in artifact.metadata_json["takes"]],
+        )
+        self.assertTrue(
+            all(
+                item["silence_after_ms"] == 0
+                for item in artifact.metadata_json["takes"]
+            )
+        )
 
-    def test_subtitle_generation_assembly_joins_explicit_alignment_group_before_timing(self):
+    def test_subtitle_generation_assembly_joins_explicit_alignment_group_before_timing(
+        self,
+    ):
         with self.database.session() as session:
-            document = Document(session_id=self.record.id, stage="translation", language="pl")
+            document = Document(
+                session_id=self.record.id, stage="translation", language="pl"
+            )
             session.add(document)
             session.flush()
             revision = DocumentRevision(
@@ -474,8 +686,7 @@ class DurableOutputAssemblyTests(unittest.TestCase):
                 session.scalars(
                     select(GenerationSegment)
                     .where(
-                        GenerationSegment.plan_revision_id
-                        == plan["active_revision_id"]
+                        GenerationSegment.plan_revision_id == plan["active_revision_id"]
                     )
                     .order_by(GenerationSegment.ordinal)
                 ).all()
@@ -523,24 +734,56 @@ class DurableOutputAssemblyTests(unittest.TestCase):
 
     def test_second_generation_run_still_applies_configured_drift_speedup(self):
         with self.database.session() as session:
-            document = Document(session_id=self.record.id, stage="translation", language="pl")
+            document = Document(
+                session_id=self.record.id, stage="translation", language="pl"
+            )
             session.add(document)
             session.flush()
-            revision = DocumentRevision(document_id=document.id, revision_number=1, content_hash="drift")
+            revision = DocumentRevision(
+                document_id=document.id, revision_number=1, content_hash="drift"
+            )
             session.add(revision)
             session.flush()
-            session.add(Segment(revision_id=revision.id, ordinal=0, start_ms=0, end_ms=400, text="Długi tekst."))
+            session.add(
+                Segment(
+                    revision_id=revision.id,
+                    ordinal=0,
+                    start_ms=0,
+                    end_ms=400,
+                    text="Długi tekst.",
+                )
+            )
             document.active_revision_id = revision.id
             revision_id = revision.id
         plan = self.generation.create_plan(
             self.record.id,
             source_revision_id=revision_id,
-            segments=[{"text": "Długi tekst.", "node_kind": "subtitle_cue", "source_segment_ids": [1]}],
+            segments=[
+                {
+                    "text": "Długi tekst.",
+                    "node_kind": "subtitle_cue",
+                    "source_segment_ids": [1],
+                }
+            ],
         )
         with self.database.session() as session:
-            segment = session.scalar(select(GenerationSegment).where(GenerationSegment.plan_revision_id == plan["active_revision_id"]))
-            first_run = GenerationRun(session_id=self.record.id, plan_revision_id=plan["active_revision_id"], sequence_number=1, status="completed")
-            second_run = GenerationRun(session_id=self.record.id, plan_revision_id=plan["active_revision_id"], sequence_number=2, status="completed")
+            segment = session.scalar(
+                select(GenerationSegment).where(
+                    GenerationSegment.plan_revision_id == plan["active_revision_id"]
+                )
+            )
+            first_run = GenerationRun(
+                session_id=self.record.id,
+                plan_revision_id=plan["active_revision_id"],
+                sequence_number=1,
+                status="completed",
+            )
+            second_run = GenerationRun(
+                session_id=self.record.id,
+                plan_revision_id=plan["active_revision_id"],
+                sequence_number=2,
+                status="completed",
+            )
             session.add_all([first_run, second_run])
             session.flush()
             second_run_id = second_run.id
@@ -548,18 +791,36 @@ class DurableOutputAssemblyTests(unittest.TestCase):
             segment.status = "completed"
         take_path = self.session_dir / "second-run-drifting-take.wav"
         Sine(440).to_audio_segment(duration=900).export(take_path, format="wav").close()
-        take_artifact = ArtifactService(self.database, self.paths).register(take_path, kind="audio", role="generation_take", session_id=self.record.id)
+        take_artifact = ArtifactService(self.database, self.paths).register(
+            take_path, kind="audio", role="generation_take", session_id=self.record.id
+        )
         with self.database.session() as session:
-            session.add(AudioTake(generation_segment_id=segment_id, generation_run_id=second_run_id, artifact_id=take_artifact.id, kind="tts", status="completed", duration_ms=900, is_active=True))
+            session.add(
+                AudioTake(
+                    generation_segment_id=segment_id,
+                    generation_run_id=second_run_id,
+                    artifact_id=take_artifact.id,
+                    kind="tts",
+                    status="completed",
+                    duration_ms=900,
+                    is_active=True,
+                )
+            )
         audio_profile = self.settings.get(self.record.id, "audio")
         self.settings.update(
             self.record.id,
             "audio",
             audio_profile["revision"],
-            {**audio_profile["override"], "synchronization_speed": 3.0, "synchronization_delay_ms": 0},
+            {
+                **audio_profile["override"],
+                "synchronization_speed": 3.0,
+                "synchronization_delay_ms": 0,
+            },
         )
 
-        queued = self.generation.create_assembly(self.record.id, generation_run_id=second_run_id)
+        queued = self.generation.create_assembly(
+            self.record.id, generation_run_id=second_run_id
+        )
         result = WorkflowHandlers(self.database, self.paths).assemble_generation_output(
             {"output_assembly_id": queued["id"]}, lambda *_args: None, threading.Event()
         )
@@ -571,7 +832,11 @@ class DurableOutputAssemblyTests(unittest.TestCase):
     def test_selected_run_assembles_its_cumulative_take_snapshot(self):
         segment_ids = self._plan_with_takes()
         with self.database.session() as session:
-            segments = list(session.scalars(select(GenerationSegment).order_by(GenerationSegment.ordinal)).all())
+            segments = list(
+                session.scalars(
+                    select(GenerationSegment).order_by(GenerationSegment.ordinal)
+                ).all()
+            )
             first_run = GenerationRun(
                 session_id=self.record.id,
                 plan_revision_id=segments[0].plan_revision_id,
@@ -588,13 +853,17 @@ class DurableOutputAssemblyTests(unittest.TestCase):
             )
             session.add_all([first_run, second_run])
             session.flush()
-            for take in session.scalars(select(AudioTake).order_by(AudioTake.created_at)).all():
+            for take in session.scalars(
+                select(AudioTake).order_by(AudioTake.created_at)
+            ).all():
                 take.generation_run_id = first_run.id
             first_run_id = first_run.id
             second_run_id = second_run.id
 
         replacement_path = self.session_dir / "take-replacement.wav"
-        Sine(880).to_audio_segment(duration=200).export(replacement_path, format="wav").close()
+        Sine(880).to_audio_segment(duration=200).export(
+            replacement_path, format="wav"
+        ).close()
         replacement_artifact = ArtifactService(self.database, self.paths).register(
             replacement_path,
             kind="audio",
@@ -602,7 +871,11 @@ class DurableOutputAssemblyTests(unittest.TestCase):
             session_id=self.record.id,
         )
         with self.database.session() as session:
-            for take in session.scalars(select(AudioTake).where(AudioTake.generation_segment_id == segment_ids[0])).all():
+            for take in session.scalars(
+                select(AudioTake).where(
+                    AudioTake.generation_segment_id == segment_ids[0]
+                )
+            ).all():
                 take.is_active = False
             session.add(
                 AudioTake(
@@ -616,13 +889,25 @@ class DurableOutputAssemblyTests(unittest.TestCase):
                 )
             )
 
-        first_assembly = self.generation.create_assembly(self.record.id, generation_run_id=first_run_id)
-        first_result = WorkflowHandlers(self.database, self.paths).assemble_generation_output(
-            {"output_assembly_id": first_assembly["id"]}, lambda *_args: None, threading.Event()
+        first_assembly = self.generation.create_assembly(
+            self.record.id, generation_run_id=first_run_id
         )
-        second_assembly = self.generation.create_assembly(self.record.id, generation_run_id=second_run_id)
-        second_result = WorkflowHandlers(self.database, self.paths).assemble_generation_output(
-            {"output_assembly_id": second_assembly["id"]}, lambda *_args: None, threading.Event()
+        first_result = WorkflowHandlers(
+            self.database, self.paths
+        ).assemble_generation_output(
+            {"output_assembly_id": first_assembly["id"]},
+            lambda *_args: None,
+            threading.Event(),
+        )
+        second_assembly = self.generation.create_assembly(
+            self.record.id, generation_run_id=second_run_id
+        )
+        second_result = WorkflowHandlers(
+            self.database, self.paths
+        ).assemble_generation_output(
+            {"output_assembly_id": second_assembly["id"]},
+            lambda *_args: None,
+            threading.Event(),
         )
 
         self.assertEqual(420, first_result["duration_ms"])
@@ -639,20 +924,30 @@ class DurableOutputAssemblyTests(unittest.TestCase):
         with self.database.session() as session:
             segment = session.get(GenerationSegment, segment_ids[1])
             revision = segment.revision
-            take = session.scalar(select(AudioTake).where(AudioTake.generation_segment_id == segment.id))
+            take = session.scalar(
+                select(AudioTake).where(AudioTake.generation_segment_id == segment.id)
+            )
             take_id = take.id
 
-        updated = self.generation.update_segment(segment_ids[1], revision, {"node_kind": "chapter_marker"})
+        updated = self.generation.update_segment(
+            segment_ids[1], revision, {"node_kind": "chapter_marker"}
+        )
 
         self.assertEqual("completed", updated["status"])
-        self.assertEqual("stale", self.generation.latest_assembly(self.record.id)["status"])
+        self.assertEqual(
+            "stale", self.generation.latest_assembly(self.record.id)["status"]
+        )
         with self.database.session() as session:
             self.assertEqual("completed", session.get(AudioTake, take_id).status)
 
     def test_stale_selected_take_is_rejected_and_failure_is_persisted(self):
         segment_ids = self._plan_with_takes()
         with self.database.session() as session:
-            take = session.scalar(select(AudioTake).where(AudioTake.generation_segment_id == segment_ids[0]))
+            take = session.scalar(
+                select(AudioTake).where(
+                    AudioTake.generation_segment_id == segment_ids[0]
+                )
+            )
             take.status = "stale"
         queued = self.generation.create_assembly(self.record.id)
         with self.assertRaisesRegex(ValueError, "no current completed audio take"):
@@ -698,7 +993,9 @@ class DurableOutputAssemblyTests(unittest.TestCase):
             lambda *_args: None,
             threading.Event(),
         )
-        artifact, output_path = ArtifactService(self.database, self.paths).resolve(result["artifact_id"])
+        artifact, output_path = ArtifactService(self.database, self.paths).resolve(
+            result["artifact_id"]
+        )
         tags = ID3(output_path)
         self.assertEqual("Assembly title", str(tags["TIT2"]))
         self.assertEqual("Narrator", str(tags["TPE1"]))
@@ -740,7 +1037,9 @@ class DurableOutputAssemblyTests(unittest.TestCase):
             lambda *_args: None,
             threading.Event(),
         )
-        artifact, output_path = ArtifactService(self.database, self.paths).resolve(result["artifact_id"])
+        artifact, output_path = ArtifactService(self.database, self.paths).resolve(
+            result["artifact_id"]
+        )
 
         self.assertEqual({}, artifact.metadata_json["metadata"])
         self.assertIsNone(artifact.metadata_json["cover_artifact_id"])
@@ -760,7 +1059,9 @@ class DurableOutputAssemblyTests(unittest.TestCase):
         )
         self.assertEqual({}, result)
         with self.database.session() as session:
-            self.assertEqual("canceled", session.get(OutputAssembly, queued["id"]).status)
+            self.assertEqual(
+                "canceled", session.get(OutputAssembly, queued["id"]).status
+            )
 
 
 if __name__ == "__main__":

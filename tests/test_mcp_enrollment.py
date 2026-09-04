@@ -8,7 +8,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 import requests
-from test_mcp_application_client import create_test_ca
 from werkzeug.serving import make_server
 
 from pandrator.web.api import create_app
@@ -24,6 +23,7 @@ from pandrator_mcp.targets import (
     TargetRegistry,
     TargetStore,
 )
+from tests.test_mcp_application_client import create_test_ca
 from tests.web_test_support import prepare_web_test_data_root
 
 
@@ -74,9 +74,7 @@ class McpEnrollmentTests(unittest.TestCase):
                 ssl_context=tls,
             )
             origin = f"https://127.0.0.1:{server.server_port}"
-            app.extensions["pandrator"][
-                "identity"
-            ].public_origin = origin
+            app.extensions["pandrator"]["identity"].public_origin = origin
             thread = threading.Thread(
                 target=server.serve_forever,
                 daemon=True,
@@ -119,9 +117,7 @@ class McpEnrollmentTests(unittest.TestCase):
                         data={
                             "authorization_nonce": nonce,
                             "decision": "approve",
-                            "password": (
-                                "correct horse battery staple"
-                            ),
+                            "password": ("correct horse battery staple"),
                         },
                         verify=str(ca_path),
                         allow_redirects=False,
@@ -164,12 +160,8 @@ class McpEnrollmentTests(unittest.TestCase):
                 self.assertNotIn(raw, serialized)
                 self.assertNotIn(raw, repr(summary))
 
-                rotated_profile = store.load(
-                    missing_ok=False
-                )[0]
-                rotated_registry = TargetRegistry(
-                    (rotated_profile,)
-                )
+                rotated_profile = store.load(missing_ok=False)[0]
+                rotated_registry = TargetRegistry((rotated_profile,))
                 with patch(
                     "pandrator_mcp.enrollment.webbrowser.open",
                     side_effect=approve,
@@ -193,9 +185,7 @@ class McpEnrollmentTests(unittest.TestCase):
                 )
                 new_response = requests.get(
                     f"{origin}/api/v1/system/identity",
-                    headers={
-                        "Authorization": f"Bearer {new_raw}"
-                    },
+                    headers={"Authorization": f"Bearer {new_raw}"},
                     verify=str(ca_path),
                     timeout=10,
                 )

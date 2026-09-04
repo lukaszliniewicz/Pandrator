@@ -31,6 +31,8 @@ _RUN_METADATA_KEYS = (
     "source_content_hash",
     "source_language",
     "target_language",
+    "execution_mode",
+    "max_parallel_batches",
     "char_limit",
     "max_segments_per_batch",
     "no_remove_subtitles",
@@ -86,6 +88,7 @@ _CLAIM_KEYS = (
     "lease_expires_at",
     "task",
     "batch",
+    "delegation",
 )
 _TASK_KEYS = (
     "kind",
@@ -99,6 +102,20 @@ _TASK_KEYS = (
     "glossary",
     "timing_context_mode",
     "substantial_gap_ms",
+)
+_DELEGATION_KEYS = (
+    "execution_mode",
+    "max_parallel_batches",
+    "wave_number",
+    "wave_batch_count",
+)
+_CONTEXT_CAPSULE_KEYS = (
+    "overview",
+    "terminology",
+    "entities",
+    "style_rules",
+    "decisions",
+    "notes",
 )
 _CLAIMED_BATCH_KEYS = (
     "id_namespace",
@@ -197,7 +214,7 @@ def _claim(payload: dict[str, Any]) -> dict[str, Any]:
 
     result: dict[str, Any] = {"schema_version": "1"}
     for key in _CLAIM_KEYS:
-        if key not in payload or key in {"task", "batch"}:
+        if key not in payload or key in {"task", "batch", "delegation"}:
             continue
         result[key] = payload[key]
     task = payload.get("task")
@@ -221,7 +238,11 @@ def _claim(payload: dict[str, Any]) -> dict[str, Any]:
         context = batch.get("context")
         if isinstance(context, dict):
             projected_context: dict[str, list[dict[str, Any]]] = {}
-            for context_key in ("previous_output", "following_source"):
+            for context_key in (
+                "previous_output",
+                "previous_source",
+                "following_source",
+            ):
                 values = context.get(context_key)
                 projected_context[context_key] = (
                     [
@@ -234,6 +255,16 @@ def _claim(payload: dict[str, Any]) -> dict[str, Any]:
                 )
             projected_batch["context"] = projected_context
         result["batch"] = projected_batch
+    delegation = payload.get("delegation")
+    if isinstance(delegation, dict):
+        projected_delegation = _project_fields(delegation, _DELEGATION_KEYS)
+        capsule = delegation.get("context_capsule")
+        if isinstance(capsule, dict):
+            projected_delegation["context_capsule"] = _project_fields(
+                capsule,
+                _CONTEXT_CAPSULE_KEYS,
+            )
+        result["delegation"] = projected_delegation
     return result
 
 
@@ -334,6 +365,9 @@ def create_dispatch_run(
         timing_context_mode=arguments.timing_context_mode,
         substantial_gap_ms=arguments.substantial_gap_ms,
         glossary=arguments.glossary,
+        execution_mode=arguments.execution_mode,
+        max_parallel_batches=arguments.max_parallel_batches,
+        context_capsule=arguments.context_capsule.model_dump(mode="json"),
         idempotency_key=arguments.idempotency_key,
     )
     run_id = _run_id(result)
@@ -420,12 +454,9 @@ def submit_dispatch_batch(
     result = runtime.require_application().submit_dispatch_batch(
         arguments.batch_id,
         lease_token=arguments.lease_token,
-        result=(
-            arguments.result.model_dump(mode="json")
-            if arguments.result is not None
-            else None
-        ),
+        result=(arguments.result.model_dump(mode="json") if arguments.result is not None else None),
         response_text=arguments.response_text,
+        context_delta=arguments.context_delta.model_dump(mode="json"),
         idempotency_key=arguments.idempotency_key,
     )
     projected = _submission(result)

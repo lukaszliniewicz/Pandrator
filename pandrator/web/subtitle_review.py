@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import tempfile
+from collections.abc import Mapping, Sequence
 from itertools import pairwise
 from pathlib import Path
-from typing import Any, Mapping, Sequence, TypedDict
+from typing import Any, TypedDict
 
 from sqlalchemy import func, select
 
@@ -457,6 +460,8 @@ class SubtitleReviewService:
         values: list[dict[str, Any]],
         *,
         source_artifact_id: str | None = None,
+        db_session=None,
+        published_paths: list[Path] | None = None,
     ) -> dict[str, Any]:
         if stage not in STAGE_ORDER:
             raise ValueError(f"Unsupported subtitle stage: {stage}")
@@ -483,7 +488,11 @@ class SubtitleReviewService:
         if not normalized:
             raise ValueError("A reviewed subtitle document cannot be empty.")
 
-        with self.database.session() as session:
+        with (
+            self.database.session()
+            if db_session is None
+            else _SessionContext(db_session)
+        ) as session:
             source_artifact = (
                 session.get(Artifact, source_artifact_id)
                 if source_artifact_id
@@ -652,8 +661,14 @@ class SubtitleReviewService:
             self.session_dir_resolver(session_id)
             / f"reviewed_{stage}_r{revision_number}.srt"
         )
-        destination.write_text(content, encoding="utf-8", newline="\n")
-        with self.database.session() as session:
+        newly_published = self._publish_reviewed_file(destination, content)
+        if newly_published and published_paths is not None:
+            published_paths.append(destination)
+        with (
+            self.database.session()
+            if db_session is None
+            else _SessionContext(db_session)
+        ) as session:
             parent_artifact = source_artifact or session.scalar(
                 select(Artifact)
                 .where(
@@ -665,26 +680,103 @@ class SubtitleReviewService:
                 .order_by(Artifact.created_at.desc())
             )
             parent_id = parent_artifact.id if parent_artifact else None
-        artifact = self.artifacts.register(
-            destination,
-            kind="srt",
-            role="tts_optimized" if stage == "tts_optimization" else stage,
-            session_id=session_id,
-            parent_ids=[parent_id] if parent_id else [],
-            settings={"reviewed": True, "revision": revision_number},
-            metadata={
-                "document_id": document_id,
-                "revision_id": revision_id,
-                "stage": stage,
-                "language": language,
-                "reviewed": True,
-                "has_speaker_metadata": bool(speakers),
-                "speaker_count": len(speakers),
-            },
-        )
+            try:
+                artifact = self.artifacts.register_in_session(
+                    session,
+                    destination,
+                    kind="srt",
+                    role="tts_optimized" if stage == "tts_optimization" else stage,
+                    session_id=session_id,
+                    parent_ids=[parent_id] if parent_id else [],
+                    settings={"reviewed": True, "revision": revision_number},
+                    metadata={
+                        "document_id": document_id,
+                        "revision_id": revision_id,
+                        "stage": stage,
+                        "language": language,
+                        "reviewed": True,
+                        "has_speaker_metadata": bool(speakers),
+                        "speaker_count": len(speakers),
+                    },
+                )
+            except Exception:
+                if newly_published:
+                    destination.unlink(missing_ok=True)
+                    if published_paths is not None:
+                        published_paths.remove(destination)
+                raise
         return {
             "artifact_id": artifact.id,
             "document_id": document_id,
             "revision_id": revision_id,
             "revision": revision_number,
         }
+
+    def save_review_in_session(
+        self,
+        session,
+        session_id: str,
+        stage: str,
+        expected_revision: int,
+        values: list[dict[str, Any]],
+        *,
+        source_artifact_id: str | None = None,
+        published_paths: list[Path] | None = None,
+    ) -> dict[str, Any]:
+        """Persist a review without committing the caller-owned transaction."""
+        return self.save_review(
+            session_id,
+            stage,
+            expected_revision,
+            values,
+            source_artifact_id=source_artifact_id,
+            db_session=session,
+            published_paths=published_paths,
+        )
+
+    @staticmethod
+    def _publish_reviewed_file(destination: Path, content: str) -> bool:
+        """Durably replace a deterministic reviewed subtitle file.
+
+        SQLite cannot roll back the filesystem.  Callers receive whether this
+        attempt created the destination so a surrounding DB rollback can remove
+        only a file it safely owns; retries overwrite the same revision path.
+        """
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        newly_published = not destination.exists()
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent
+        )
+        temporary = Path(temporary_name)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, destination)
+            try:
+                directory_fd = os.open(destination.parent, os.O_RDONLY)
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
+            except OSError:
+                # The replacement itself is durable on common local filesystems;
+                # directory fsync is a best-effort portability enhancement.
+                pass
+            return newly_published
+        finally:
+            temporary.unlink(missing_ok=True)
+
+
+class _SessionContext:
+    """Adapt an existing SQLAlchemy session to a no-commit context manager."""
+
+    def __init__(self, session):
+        self.session = session
+
+    def __enter__(self):
+        return self.session
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False

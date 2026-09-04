@@ -4,7 +4,11 @@
   import { sessionApi } from './domain-api';
   import type { GlobalDefaultsPayload } from './api-models';
   import SettingField from './SettingField.svelte';
-  import { GLOBAL_TTS_KEYS } from './settings-fields';
+  import {
+    compareSettingOrder,
+    GLOBAL_TTS_KEYS,
+    settingApplies
+  } from './settings-fields';
 
   let { section }: { section: string } = $props();
   let payload = $state<GlobalDefaultsPayload | null>(null);
@@ -23,11 +27,13 @@
     Object.entries(payload?.effective ?? {})
       .filter(([key]) => {
         if (section === 'output' && key === 'cover_artifact_id') return false;
+        if (!settingApplies(section, key, { ...payload?.effective, ...value }))
+          return false;
         if (section !== 'tts') return true;
         if (providerSetting(key)) return false;
         return GLOBAL_TTS_KEYS.has(key);
       })
-      .sort(([a], [b]) => a.localeCompare(b))
+      .sort(([left], [right]) => compareSettingOrder(section, left, right))
   );
 
   const current = (key: string, fallback: unknown) =>

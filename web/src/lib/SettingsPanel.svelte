@@ -12,6 +12,7 @@
   import { sessionApi } from './domain-api';
   import type { SettingsPayload } from './api-models';
   import SettingField from './SettingField.svelte';
+  import { settingApplies } from './settings-fields';
 
   let {
     sessionId,
@@ -244,6 +245,8 @@
     ] ?? value.replaceAll('_', ' ');
   const applicable = $derived(
     entries.filter(([key]) => {
+      if (!settingApplies(section, key, { ...payload?.effective, ...override }))
+        return false;
       if (
         section === 'translation' &&
         ['professional_cleanup', 'max_line_length'].includes(key)
@@ -300,7 +303,6 @@
     String(value('backend', payload?.effective?.backend ?? 'llm')).toLowerCase()
   );
   const translationLlmOnlyKeys = new Set([
-    'source_language',
     'model_name',
     'reasoning_effort',
     'llm_concurrent_calls',

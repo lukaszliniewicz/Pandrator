@@ -25,7 +25,6 @@ from pandrator_mcp.clients.manager_recovery import (
 from pandrator_mcp.credentials import (
     CredentialReference,
     CredentialResolver,
-    EnvironmentCredentialBackend,
     SecretValue,
 )
 from pandrator_mcp.errors import PandratorMcpError
@@ -464,6 +463,9 @@ class ApplicationClientTests(unittest.TestCase):
                 "timing_context_mode": "full",
                 "substantial_gap_ms": 2000,
                 "glossary": {"Pandrator": "Pandrator"},
+                "execution_mode": "serial",
+                "max_parallel_batches": 1,
+                "context_capsule": {},
             },
             json.loads(create["data"]),
         )
@@ -499,6 +501,7 @@ class ApplicationClientTests(unittest.TestCase):
                     "kind": "translation",
                     "translations": [{"cue_id": 1, "text": "Cześć"}],
                 },
+                "context_delta": {},
             },
             json.loads(submit["data"]),
         )
@@ -580,6 +583,9 @@ class ApplicationClientTests(unittest.TestCase):
                 "language": "en",
                 "voice_language": "en-US",
                 "tts_service": "xtts",
+                "execution_mode": "serial",
+                "max_parallel_batches": 1,
+                "context_capsule": {},
             },
             json.loads(create["data"]),
         )
@@ -607,6 +613,7 @@ class ApplicationClientTests(unittest.TestCase):
                     "kind": "speech_optimization",
                     "items": [{"unit_id": 1, "text": "Doctor Jones"}],
                 },
+                "context_delta": {},
             },
             json.loads(submit["data"]),
         )
@@ -873,7 +880,9 @@ class ApplicationClientTests(unittest.TestCase):
             "session-1",
             "transcribe",
             expected_revision=1,
-            segments=[{"start_ms": 0, "end_ms": 2500, "text": "Hello world", "speaker": "A"}],
+            segments=[
+                {"start_ms": 0, "end_ms": 2500, "text": "Hello world", "speaker": "A"}
+            ],
             idempotency_key="sub-key-1",
         )
         self.assertEqual(2, saved["revision"])

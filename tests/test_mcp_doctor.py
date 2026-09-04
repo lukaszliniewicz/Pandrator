@@ -7,8 +7,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-from test_mcp_application_client import create_test_ca
-
 from pandrator_mcp.compatibility import (
     REQUIRED_DISPATCH_OPERATION_IDS,
     REQUIRED_MANAGER_OPERATION_IDS,
@@ -27,6 +25,7 @@ from pandrator_mcp.targets import (
     TargetProfile,
     TargetStore,
 )
+from tests.test_mcp_application_client import create_test_ca
 
 
 class DoctorTests(unittest.TestCase):

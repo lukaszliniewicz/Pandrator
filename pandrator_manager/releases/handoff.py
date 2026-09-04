@@ -50,7 +50,12 @@ from ..models import (
 from ..state import ManagerStore
 from .authority import VerifiedRelease
 from .bundles import validate_release_bundle
-from .slots import _atomic_json, _restore_sqlite, _snapshot_sqlite
+from .slots import (
+    _atomic_json,
+    _durable_replace,
+    _restore_sqlite,
+    _snapshot_sqlite,
+)
 from .trust import canonical_json
 
 _OPERATION_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"
@@ -116,9 +121,7 @@ def handoff_directory(layout: WorkspaceLayout) -> Path:
 
 def _is_link_or_junction(path: Path) -> bool:
     junction = getattr(path, "is_junction", None)
-    return path.is_symlink() or bool(
-        junction is not None and junction()
-    )
+    return path.is_symlink() or bool(junction is not None and junction())
 
 
 def _safe_handoff_directory(
@@ -160,9 +163,7 @@ def _safe_handoff_directory(
 
 
 def _require_regular_control_file(path: Path, *, label: str) -> None:
-    if os.path.lexists(path) and (
-        _is_link_or_junction(path) or not path.is_file()
-    ):
+    if os.path.lexists(path) and (_is_link_or_junction(path) or not path.is_file()):
         raise ManagerError(
             "unsafe_manager_handoff",
             f"The {label} is not a regular file.",
@@ -264,8 +265,7 @@ def read_handoff(
         ) from error
     if (
         envelope.payload.operation_id != operation_id
-        or Path(envelope.payload.workspace).resolve(strict=False)
-        != layout.workspace
+        or Path(envelope.payload.workspace).resolve(strict=False) != layout.workspace
     ):
         raise ManagerError(
             "invalid_manager_handoff",
@@ -309,8 +309,7 @@ def read_preparation_journal(
         ) from error
     if (
         envelope.payload.operation_id != operation_id
-        or Path(envelope.payload.workspace).resolve(strict=False)
-        != layout.workspace
+        or Path(envelope.payload.workspace).resolve(strict=False) != layout.workspace
     ):
         raise ManagerError(
             "invalid_manager_handoff",
@@ -419,7 +418,7 @@ def _validate_reviewed_manager_preparation(
 
 def _move_prepared_manager_release(staged: Path, destination: Path) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
-    os.replace(staged, destination)
+    _durable_replace(staged, destination)
 
 
 def _handoff_payload(
@@ -452,9 +451,7 @@ def _handoff_payload(
         new_runtime_mode=validated.metadata.runtime_kind,
         new_application_root=str(validated.application_root),
         old_python=str(current_runtime_executable()),
-        old_runtime_mode=(
-            "native_launcher" if bool(getattr(sys, "frozen", False)) else "python"
-        ),
+        old_runtime_mode=("native_launcher" if bool(getattr(sys, "frozen", False)) else "python"),
         old_cwd=str(Path.cwd().resolve(strict=False)),
         old_pid=current.pid,
         old_create_time=current.create_time(),
@@ -517,9 +514,14 @@ def prepare_manager_handoff(
         if os.path.lexists(journal):
             preparation, journal_path = read_preparation_journal(layout, operation_id)
             _validate_reviewed_manager_preparation(
-                layout=layout, store=store, operation_id=operation_id,
-                expected_revision=expected_revision, release=release, staged=staged,
-                destination=destination, preparation=preparation.payload,
+                layout=layout,
+                store=store,
+                operation_id=operation_id,
+                expected_revision=expected_revision,
+                release=release,
+                staged=staged,
+                destination=destination,
+                preparation=preparation.payload,
             )
             _cleanup_preparation_journal(journal_path)
     else:
@@ -527,15 +529,21 @@ def prepare_manager_handoff(
         if os.path.lexists(journal):
             preparation, _ = read_preparation_journal(layout, operation_id)
             _validate_reviewed_manager_preparation(
-                layout=layout, store=store, operation_id=operation_id,
-                expected_revision=expected_revision, release=release, staged=staged,
-                destination=destination, preparation=preparation.payload,
+                layout=layout,
+                store=store,
+                operation_id=operation_id,
+                expected_revision=expected_revision,
+                release=release,
+                staged=staged,
+                destination=destination,
+                preparation=preparation.payload,
             )
             if staged.exists() and destination.exists():
                 raise ManagerError(
                     "invalid_manager_handoff",
                     "The manager handoff preparation has both staging and destination slots.",
-                    {"operation_id": operation_id}, 409,
+                    {"operation_id": operation_id},
+                    409,
                 )
             if staged.exists():
                 if not staged.is_dir():
@@ -549,12 +557,17 @@ def prepare_manager_handoff(
                 raise ManagerError(
                     "invalid_manager_handoff",
                     "The manager handoff preparation has neither staging nor destination slot.",
-                    {"operation_id": operation_id}, 409,
+                    {"operation_id": operation_id},
+                    409,
                 )
         else:
             _validate_reviewed_manager_preparation(
-                layout=layout, store=store, operation_id=operation_id,
-                expected_revision=expected_revision, release=release, staged=staged,
+                layout=layout,
+                store=store,
+                operation_id=operation_id,
+                expected_revision=expected_revision,
+                release=release,
+                staged=staged,
                 destination=destination,
             )
             if destination.exists():
@@ -569,26 +582,33 @@ def prepare_manager_handoff(
                     http_status=409,
                 )
             preparation = ManagerPreparationPayload(
-                operation_id=operation_id, workspace=str(layout.workspace),
-                expected_revision=expected_revision, product="pandrator-manager",
+                operation_id=operation_id,
+                workspace=str(layout.workspace),
+                expected_revision=expected_revision,
+                product="pandrator-manager",
                 channel=release.manifest.payload.channel,
                 version=release.manifest.payload.version,
                 sequence=release.manifest.payload.sequence,
-                manifest_digest=release.manifest.digest, envelope=release.envelope,
+                manifest_digest=release.manifest.digest,
+                envelope=release.envelope,
                 artifact=release.artifact.model_dump(mode="json"),
                 verified_key_ids=release.manifest.verified_key_ids,
-                staged_path=str(staged), destination_path=str(destination),
+                staged_path=str(staged),
+                destination_path=str(destination),
                 created_at=datetime.now(timezone.utc),
             )
             _write_preparation_journal(journal, preparation, secret)
             _move_prepared_manager_release(staged, destination)
         validated = validate_release_bundle(
-            destination, product="pandrator-manager",
+            destination,
+            product="pandrator-manager",
             version=release.manifest.payload.version,
         )
         payload = _handoff_payload(
-            layout=layout, operation_id=operation_id,
-            expected_revision=expected_revision, release=release,
+            layout=layout,
+            operation_id=operation_id,
+            expected_revision=expected_revision,
+            release=release,
             validated=validated,
         )
         _write_envelope(descriptor, payload, secret)
@@ -604,8 +624,7 @@ def prepare_manager_handoff(
         version=payload.version,
     )
     if (
-        validated.python.resolve(strict=False)
-        != Path(payload.new_python).resolve(strict=False)
+        validated.python.resolve(strict=False) != Path(payload.new_python).resolve(strict=False)
         or validated.metadata.runtime_kind != payload.new_runtime_mode
         or validated.application_root.resolve(strict=False)
         != Path(payload.new_application_root).resolve(strict=False)
@@ -711,8 +730,7 @@ def rollback_prepared_manager_handoff(
     if slots:
         slot = slots[0]
         if any(
-            candidate.resolve(strict=False) != slot.resolve(strict=False)
-            for candidate in slots[1:]
+            candidate.resolve(strict=False) != slot.resolve(strict=False) for candidate in slots[1:]
         ):
             raise ManagerError(
                 "invalid_manager_handoff",
@@ -745,9 +763,7 @@ class ManagerHandoffCoordinator:
         self.shutdown_callback = shutdown_callback
 
     def __call__(self, _execution, result: dict) -> None:
-        operation_id = str(
-            Path(str(result["handoff_descriptor"])).stem
-        )
+        operation_id = str(Path(str(result["handoff_descriptor"])).stem)
         # Authentication and containment are checked before a helper process is
         # permitted to outlive the retiring daemon.
         read_handoff(self.layout, operation_id)
@@ -755,23 +771,14 @@ class ManagerHandoffCoordinator:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log = log_path.open("ab", buffering=0)
         options = (
-            {
-                "creationflags": (
-                    subprocess.CREATE_NEW_PROCESS_GROUP
-                    | subprocess.CREATE_NO_WINDOW
-                )
-            }
+            {"creationflags": (subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW)}
             if os.name == "nt"
             else {"start_new_session": True}
         )
         try:
             stable = installed_launcher(self.layout)
             fallback = LauncherRuntime(
-                mode=(
-                    "native_launcher"
-                    if bool(getattr(sys, "frozen", False))
-                    else "python"
-                ),
+                mode=("native_launcher" if bool(getattr(sys, "frozen", False)) else "python"),
                 executable=current_runtime_executable(),
             )
             process = subprocess.Popen(
@@ -800,11 +807,9 @@ def _wait_for_old_manager(payload: ManagerHandoffPayload, timeout: float) -> Non
     while time.monotonic() < deadline:
         try:
             process = psutil.Process(payload.old_pid)
-            matches = (
-                abs(process.create_time() - payload.old_create_time) <= 0.01
-                and Path(process.exe()).resolve(strict=False)
-                == Path(payload.old_python).resolve(strict=False)
-            )
+            matches = abs(process.create_time() - payload.old_create_time) <= 0.01 and Path(
+                process.exe()
+            ).resolve(strict=False) == Path(payload.old_python).resolve(strict=False)
         except psutil.NoSuchProcess:
             return
         except (psutil.AccessDenied, OSError) as error:
@@ -820,10 +825,7 @@ def _wait_for_old_manager(payload: ManagerHandoffPayload, timeout: float) -> Non
 def _process_options() -> dict[str, Any]:
     if os.name == "nt":
         return {
-            "creationflags": (
-                subprocess.CREATE_NEW_PROCESS_GROUP
-                | subprocess.CREATE_NO_WINDOW
-            )
+            "creationflags": (subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW)
         }
     return {"start_new_session": True}
 
@@ -870,11 +872,7 @@ def _probe_new_runtime(
         text=True,
         shell=False,
         timeout=180,
-        **(
-            {"creationflags": subprocess.CREATE_NO_WINDOW}
-            if os.name == "nt"
-            else {}
-        ),
+        **({"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}),
     )
     if result.returncode != 0:
         raise RuntimeError(
@@ -897,18 +895,11 @@ def _commit_handoff(
     operation = store.get_operation(payload.operation_id)
     if operation.state == OperationState.SUCCEEDED:
         accepted = store.accepted_release("pandrator-manager")
-        if (
-            accepted is None
-            or accepted["manifest_digest"] != payload.manifest_digest
-        ):
-            raise RuntimeError(
-                "Succeeded handoff does not match accepted release state."
-            )
+        if accepted is None or accepted["manifest_digest"] != payload.manifest_digest:
+            raise RuntimeError("Succeeded handoff does not match accepted release state.")
         return
     if operation.state != OperationState.HANDOFF_PENDING:
-        raise RuntimeError(
-            f"Manager handoff operation has unexpected state {operation.state}."
-        )
+        raise RuntimeError(f"Manager handoff operation has unexpected state {operation.state}.")
     operation.state = OperationState.SUCCEEDED
     operation.progress = 1.0
     operation.current_task_id = None
@@ -969,10 +960,7 @@ def _wait_for_new_manager(
             and parsed.path in {"", "/"}
             and not parsed.query
             and not parsed.fragment
-            and (
-                address.is_loopback
-                or (mapped is not None and mapped.is_loopback)
-            )
+            and (address.is_loopback or (mapped is not None and mapped.is_loopback))
         )
 
     try:
@@ -992,10 +980,7 @@ def _wait_for_new_manager(
             for _depth in range(32):
                 parent_pid = current.ppid()
                 if parent_pid == process.pid:
-                    return (
-                        candidate.create_time()
-                        >= launch_create_time - 1.0
-                    )
+                    return candidate.create_time() >= launch_create_time - 1.0
                 if parent_pid <= 0 or parent_pid == current.pid:
                     return False
                 try:
@@ -1017,22 +1002,14 @@ def _wait_for_new_manager(
             )
             if descriptor.manager_version != payload.version:
                 raise ValueError("descriptor reports another version")
-            if (
-                Path(descriptor.workspace).resolve(strict=False)
-                != layout.workspace
-            ):
+            if Path(descriptor.workspace).resolve(strict=False) != layout.workspace:
                 raise ValueError("descriptor reports another workspace")
             if not loopback_base_url(descriptor.base_url):
                 raise ValueError("descriptor endpoint is not safe loopback HTTP")
             daemon_process = psutil.Process(descriptor.pid)
             if (
                 not belongs_to_launch(daemon_process)
-                or
-                abs(
-                    daemon_process.create_time()
-                    - descriptor.process_create_time
-                )
-                > 0.01
+                or abs(daemon_process.create_time() - descriptor.process_create_time) > 0.01
                 or Path(daemon_process.exe()).resolve(strict=False)
                 != Path(descriptor.executable).resolve(strict=False)
                 or Path(descriptor.executable).resolve(strict=False)
@@ -1054,12 +1031,7 @@ def _wait_for_new_manager(
                     descriptor.instance_id,
                 )
                 and hmac.compare_digest(
-                    str(
-                        response.headers.get(
-                            "X-Pandrator-Manager-Instance"
-                        )
-                        or ""
-                    ),
+                    str(response.headers.get("X-Pandrator-Manager-Instance") or ""),
                     descriptor.instance_id,
                 )
             ):
@@ -1076,9 +1048,7 @@ def _wait_for_new_manager(
             except OSError:
                 descriptor_available = False
             if not descriptor_available:
-                raise RuntimeError(
-                    f"New manager exited with code {process.returncode}."
-                )
+                raise RuntimeError(f"New manager exited with code {process.returncode}.")
         time.sleep(0.2)
     raise TimeoutError(f"New manager health timed out: {last_error}")
 
@@ -1169,11 +1139,7 @@ def _terminate_launched(
                 descriptor.manager_version == payload.version
                 and Path(descriptor.executable).resolve(strict=False)
                 == Path(payload.new_python).resolve(strict=False)
-                and abs(
-                    candidate.create_time()
-                    - descriptor.process_create_time
-                )
-                <= 0.01
+                and abs(candidate.create_time() - descriptor.process_create_time) <= 0.01
                 and Path(candidate.exe()).resolve(strict=False)
                 == Path(payload.new_python).resolve(strict=False)
             ):
@@ -1513,8 +1479,7 @@ def run_handoff(
                 except Exception:
                     pass
                 raise RuntimeError(
-                    "Manager handoff and rollback both failed: "
-                    f"{error}; rollback: {rollback_error}"
+                    f"Manager handoff and rollback both failed: {error}; rollback: {rollback_error}"
                 ) from rollback_error
             return 2
         raise
@@ -1604,14 +1569,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--expected-version")
     args = parser.parse_args(argv)
     if args.probe:
-        if (
-            args.probe_database is None
-            or not args.expected_version
-            or not args.operation_id
-        ):
+        if args.probe_database is None or not args.expected_version or not args.operation_id:
             parser.error(
-                "--probe requires --probe-database, --expected-version, "
-                "and --operation-id"
+                "--probe requires --probe-database, --expected-version, and --operation-id"
             )
         return probe_runtime(
             args.workspace,

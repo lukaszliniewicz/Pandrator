@@ -1,4 +1,5 @@
 import base64
+import ctypes
 import hashlib
 import json
 import os
@@ -7,7 +8,7 @@ import tempfile
 import unittest
 import zipfile
 from contextlib import closing
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -16,12 +17,18 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 import pandrator_manager.releases.handoff as handoff_module
+import pandrator_manager.releases.slots as slots_module
 import pandrator_manager.releases.trust as trust_module
 from pandrator_manager.api import create_api
 from pandrator_manager.application import create_application
 from pandrator_manager.auth import ensure_client_secret
 from pandrator_manager.errors import ConflictError, ManagerError
-from pandrator_manager.models import HealthResult, HealthState, OperationState, TaskState
+from pandrator_manager.models import (
+    HealthResult,
+    HealthState,
+    OperationState,
+    TaskState,
+)
 from pandrator_manager.operations import OperationEngine
 from pandrator_manager.releases import (
     ReleaseActivationError,
@@ -61,7 +68,7 @@ def _signed(
         "channel": "stable",
         "version": version,
         "sequence": sequence,
-        "published_at": datetime.now(timezone.utc).isoformat(),
+        "published_at": datetime.now(UTC).isoformat(),
         "minimum_manager_version": "0.1",
         "artifacts": [
             artifact
@@ -98,7 +105,7 @@ def _release_bundle(
 ) -> tuple[str, int]:
     python_name = "runtime/python.exe" if os.name == "nt" else "runtime/bin/python"
     executable = zipfile.ZipInfo(python_name)
-    executable.external_attr = (0o100755 << 16)
+    executable.external_attr = 0o100755 << 16
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.writestr(
             "pandrator-release.json",
@@ -154,14 +161,9 @@ class _ReleaseSupervisor:
     def start(self, service_id):
         spec = self.specs[service_id]
         expected = spec.readiness.expected_json.get("version")
-        if (
-            service_id == "pandrator.api"
-            and expected
-            and self.fail_new_health
-        ):
-            with closing(sqlite3.connect(self.database)) as connection:
-                with connection:
-                    connection.execute("UPDATE state SET value='migrated'")
+        if service_id == "pandrator.api" and expected and self.fail_new_health:
+            with closing(sqlite3.connect(self.database)) as connection, connection:
+                connection.execute("UPDATE state SET value='migrated'")
             raise RuntimeError("new application health failed")
         self.running.add(service_id)
         self.desired.add(service_id)
@@ -265,9 +267,7 @@ class ReleaseTrustTests(unittest.TestCase):
                 }
             ],
         }
-        authorization = self.trust.verify(
-            _signed(self.private, rotation=rotation)
-        )
+        authorization = self.trust.verify(_signed(self.private, rotation=rotation))
         rotated = self.trust.rotated(authorization)
         with self.assertRaisesRegex(ValueError, "not active"):
             rotated.verify(
@@ -289,13 +289,16 @@ class ReleaseTrustTests(unittest.TestCase):
         self.assertEqual(verified.verified_key_ids, ("next",))
 
     def test_unprovisioned_embedded_trust_fails_closed(self):
-        with mock.patch.object(
-            trust_module,
-            "EMBEDDED_RELEASE_KEYS",
-            {},
-        ), self.assertRaisesRegex(
-            ReleaseTrustNotProvisioned,
-            "trust is not provisioned",
+        with (
+            mock.patch.object(
+                trust_module,
+                "EMBEDDED_RELEASE_KEYS",
+                {},
+            ),
+            self.assertRaisesRegex(
+                ReleaseTrustNotProvisioned,
+                "trust is not provisioned",
+            ),
         ):
             TrustStore.embedded()
 
@@ -305,12 +308,8 @@ class ReleaseTrustTests(unittest.TestCase):
         self.assertEqual(
             embedded.encoded_keys,
             {
-                "pandrator-2026-01": (
-                    "yWL/8kp9Ojz0axmk3M9umjQKXbBlOEvZ6ctbGBszPSs="
-                ),
-                "pandrator-2026-02": (
-                    "JYscD3JCYhfzJmrod0rC3x9BxNlK3Hr+4lOZmcJJhgU="
-                ),
+                "pandrator-2026-01": ("yWL/8kp9Ojz0axmk3M9umjQKXbBlOEvZ6ctbGBszPSs="),
+                "pandrator-2026-02": ("JYscD3JCYhfzJmrod0rC3x9BxNlK3Hr+4lOZmcJJhgU="),
             },
         )
 
@@ -322,9 +321,7 @@ class ManagerUpdateDiscoveryTests(unittest.TestCase):
         self.private = Ed25519PrivateKey.generate()
         self.application = create_application(
             self.temporary.name,
-            release_trust_root=TrustStore(
-                {"test": _public(self.private)}
-            ),
+            release_trust_root=TrustStore({"test": _public(self.private)}),
         )
 
     def _manifest(self, version="99.0.0"):
@@ -334,10 +331,7 @@ class ManagerUpdateDiscoveryTests(unittest.TestCase):
             product="pandrator-manager",
             artifact={
                 "filename": "pandrator-manager-host.zip",
-                "url": (
-                    "https://releases.example.invalid/"
-                    "pandrator-manager-host.zip"
-                ),
+                "url": ("https://releases.example.invalid/pandrator-manager-host.zip"),
                 "sha256": "a" * 64,
                 "size_bytes": 123,
                 "kind": "zip",
@@ -361,10 +355,13 @@ class ManagerUpdateDiscoveryTests(unittest.TestCase):
 
         tampered = json.loads(json.dumps(manifest))
         tampered["signed"]["version"] = "100.0.0"
-        with mock.patch(
-            "pandrator_manager.application.fetch_manager_manifest",
-            return_value=tampered,
-        ), self.assertRaises(ManagerError) as raised:
+        with (
+            mock.patch(
+                "pandrator_manager.application.fetch_manager_manifest",
+                return_value=tampered,
+            ),
+            self.assertRaises(ManagerError) as raised,
+        ):
             self.application.manager_update()
         self.assertEqual("release_verification_failed", raised.exception.code)
 
@@ -399,16 +396,135 @@ class ReleaseSlotTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.application = create_application(self.temporary.name)
         private = Ed25519PrivateKey.generate()
-        self.manifest = TrustStore({"test": _public(private)}).verify(
-            _signed(private)
+        self.manifest = TrustStore({"test": _public(private)}).verify(_signed(private))
+
+    def test_atomic_json_publishes_through_durable_replace(self):
+        path = Path(self.temporary.name) / "nested" / "journal.json"
+        with mock.patch.object(
+            slots_module,
+            "_durable_replace",
+            side_effect=os.replace,
+        ) as publication:
+            slots_module._atomic_json(path, {"durable": True})
+
+        publication.assert_called_once()
+        source, destination = publication.call_args.args
+        self.assertEqual(destination, path)
+        self.assertFalse(source.exists())
+        self.assertEqual(
+            json.loads(path.read_text(encoding="utf-8")),
+            {"durable": True},
         )
+
+    @unittest.skipUnless(os.name != "nt", "POSIX directory fsync semantics")
+    def test_durable_replace_posix_syncs_distinct_parents_in_order(self):
+        source_parent = Path(self.temporary.name) / "staging"
+        destination_parent = Path(self.temporary.name) / "versions"
+        source_parent.mkdir()
+        destination_parent.mkdir()
+        source = source_parent / "release"
+        destination = destination_parent / "release"
+        source.write_text("release", encoding="utf-8")
+        open_descriptors = {}
+        synced_parents = []
+        real_open = os.open
+        real_fsync = os.fsync
+
+        def tracked_open(path, flags):
+            descriptor = real_open(path, flags)
+            open_descriptors[descriptor] = Path(path)
+            return descriptor
+
+        def tracked_fsync(descriptor):
+            synced_parents.append(open_descriptors[descriptor])
+            return real_fsync(descriptor)
+
+        with (
+            mock.patch.object(slots_module.os, "open", side_effect=tracked_open),
+            mock.patch.object(slots_module.os, "fsync", side_effect=tracked_fsync),
+        ):
+            slots_module._durable_replace_posix(source, destination)
+
+        self.assertEqual(
+            synced_parents,
+            [source_parent.resolve(), destination_parent.resolve()],
+        )
+
+    @unittest.skipUnless(os.name != "nt", "POSIX directory fsync semantics")
+    def test_durable_replace_posix_deduplicates_a_shared_parent(self):
+        parent = Path(self.temporary.name) / "releases"
+        parent.mkdir()
+        source = parent / "staged"
+        destination = parent / "installed"
+        source.write_text("release", encoding="utf-8")
+        open_descriptors = {}
+        synced_parents = []
+        real_open = os.open
+        real_fsync = os.fsync
+
+        def tracked_open(path, flags):
+            descriptor = real_open(path, flags)
+            open_descriptors[descriptor] = Path(path)
+            return descriptor
+
+        def tracked_fsync(descriptor):
+            synced_parents.append(open_descriptors[descriptor])
+            return real_fsync(descriptor)
+
+        with (
+            mock.patch.object(slots_module.os, "open", side_effect=tracked_open),
+            mock.patch.object(slots_module.os, "fsync", side_effect=tracked_fsync),
+        ):
+            slots_module._durable_replace_posix(source, destination)
+
+        self.assertEqual(synced_parents, [parent.resolve()])
+
+    def test_durable_replace_windows_uses_write_through_replace(self):
+        move_file_ex = mock.Mock(return_value=1)
+        kernel32 = SimpleNamespace(MoveFileExW=move_file_ex)
+        with mock.patch.object(
+            ctypes,
+            "WinDLL",
+            return_value=kernel32,
+            create=True,
+        ):
+            slots_module._durable_replace_windows(
+                Path("staged"),
+                Path("destination"),
+            )
+
+        move_file_ex.assert_called_once_with("staged", "destination", 0x9)
+
+    def test_durable_replace_windows_surfaces_move_failure_as_os_error(self):
+        move_file_ex = mock.Mock(return_value=0)
+        kernel32 = SimpleNamespace(MoveFileExW=move_file_ex)
+        with (
+            mock.patch.object(
+                ctypes,
+                "WinDLL",
+                return_value=kernel32,
+                create=True,
+            ),
+            mock.patch.object(
+                ctypes,
+                "get_last_error",
+                return_value=5,
+                create=True,
+            ),
+            self.assertRaises(OSError) as raised,
+        ):
+            slots_module._durable_replace_windows(
+                Path("staged"),
+                Path("destination"),
+            )
+
+        self.assertEqual(raised.exception.errno, 5)
 
     def _database(self) -> Path:
         path = self.application.context.layout.data / "app.sqlite3"
-        with closing(sqlite3.connect(path)) as connection:
-            with connection:
-                connection.execute("CREATE TABLE state(value TEXT)")
-                connection.execute("INSERT INTO state(value) VALUES ('old')")
+        with closing(sqlite3.connect(path)) as connection, connection:
+            connection.execute("CREATE TABLE state(value TEXT)")
+            connection.execute("INSERT INTO state(value) VALUES ('old')")
         return path
 
     @staticmethod
@@ -431,9 +547,8 @@ class ReleaseSlotTests(unittest.TestCase):
         database = self._database()
 
         def migrate(_slot):
-            with closing(sqlite3.connect(database)) as connection:
-                with connection:
-                    connection.execute("UPDATE state SET value='new'")
+            with closing(sqlite3.connect(database)) as connection, connection:
+                connection.execute("UPDATE state SET value='new'")
 
         with self.assertRaises(ReleaseActivationError):
             ReleaseSlotManager(layout, self.application.store).activate(
@@ -464,9 +579,7 @@ class ReleaseSlotTests(unittest.TestCase):
         ).activate(
             self.manifest,
             staged,
-            health_check=lambda slot: self.assertTrue(
-                (slot / "marker").is_file()
-            ),
+            health_check=lambda slot: self.assertTrue((slot / "marker").is_file()),
         )
 
         self.assertTrue(selected.is_dir())
@@ -478,9 +591,7 @@ class ReleaseSlotTests(unittest.TestCase):
         self.assertEqual(len(active), 1)
         self.assertTrue(active[0]["healthy"])
         self.assertEqual(
-            hashlib.sha256(
-                canonical_json(self.manifest.raw_signed)
-            ).hexdigest(),
+            hashlib.sha256(canonical_json(self.manifest.raw_signed)).hexdigest(),
             self.manifest.digest,
         )
 
@@ -511,10 +622,9 @@ class DurableApplicationReleaseTests(unittest.TestCase):
             encoding="utf-8",
         )
         self.database = self.layout.data / "pandrator.sqlite3"
-        with closing(sqlite3.connect(self.database)) as connection:
-            with connection:
-                connection.execute("CREATE TABLE state(value TEXT)")
-                connection.execute("INSERT INTO state(value) VALUES ('old')")
+        with closing(sqlite3.connect(self.database)) as connection, connection:
+            connection.execute("CREATE TABLE state(value TEXT)")
+            connection.execute("INSERT INTO state(value) VALUES ('old')")
 
     def _plan(self):
         manifest = self._prepare_manifest()
@@ -611,14 +721,10 @@ class DurableApplicationReleaseTests(unittest.TestCase):
     @staticmethod
     def _database_value(path: Path) -> str:
         with closing(sqlite3.connect(path)) as connection:
-            return connection.execute(
-                "SELECT value FROM state"
-            ).fetchone()[0]
+            return connection.execute("SELECT value FROM state").fetchone()[0]
 
     def test_success_atomically_accepts_release_slot_and_ownership(self):
-        plan, operation, supervisor = self._execute(
-            fail_new_health=False
-        )
+        plan, operation, supervisor = self._execute(fail_new_health=False)
         self.assertEqual(operation.state, OperationState.SUCCEEDED)
         release = self.application.store.accepted_release("pandrator")
         self.assertIsNotNone(release)
@@ -640,31 +746,21 @@ class DurableApplicationReleaseTests(unittest.TestCase):
         ownership = self.application.store.owned_paths()
         self.assertTrue(
             any(
-                item["owner_kind"] == "release"
-                and item["owner_id"] == "pandrator"
+                item["owner_kind"] == "release" and item["owner_id"] == "pandrator"
                 for item in ownership
             )
         )
         self.assertEqual(
-            supervisor.specs[
-                "pandrator.api"
-            ].readiness.expected_json["version"],
+            supervisor.specs["pandrator.api"].readiness.expected_json["version"],
             "1.0.0",
         )
 
     def test_application_release_reconciles_legacy_data_after_stopping_services(self):
-        legacy_output = (
-            self.layout.root
-            / "Pandrator"
-            / "Outputs"
-            / "Legacy Book"
-        )
+        legacy_output = self.layout.root / "Pandrator" / "Outputs" / "Legacy Book"
         legacy_output.mkdir(parents=True)
         (legacy_output / "chapter.wav").write_bytes(b"legacy audio")
 
-        plan, operation, _supervisor = self._execute(
-            fail_new_health=False
-        )
+        plan, operation, _supervisor = self._execute(fail_new_health=False)
 
         self.assertEqual(operation.state, OperationState.SUCCEEDED)
         task_ids = [task.id for task in plan.tasks]
@@ -677,32 +773,21 @@ class DurableApplicationReleaseTests(unittest.TestCase):
             task_ids.index("release:activate"),
         )
         self.assertEqual(
-            (
-                self.layout.data
-                / "Outputs"
-                / "Legacy Book"
-                / "chapter.wav"
-            ).read_bytes(),
+            (self.layout.data / "Outputs" / "Legacy Book" / "chapter.wav").read_bytes(),
             b"legacy audio",
         )
         self.assertTrue((legacy_output / "chapter.wav").is_file())
 
     def test_failed_new_health_restores_pointer_database_specs_and_services(self):
-        _plan, operation, supervisor = self._execute(
-            fail_new_health=True
-        )
+        _plan, operation, supervisor = self._execute(fail_new_health=True)
         self.assertEqual(operation.state, OperationState.FAILED)
         pointer = json.loads(self.pointer.read_text(encoding="utf-8"))
         self.assertEqual(pointer["version"], "0.9.0")
         self.assertEqual(self._database_value(self.database), "old")
         self.assertFalse((self.layout.app_versions / "1.0.0").exists())
-        self.assertIsNone(
-            self.application.store.accepted_release("pandrator")
-        )
+        self.assertIsNone(self.application.store.accepted_release("pandrator"))
         self.assertEqual(
-            supervisor.specs[
-                "pandrator.api"
-            ].readiness.expected_json,
+            supervisor.specs["pandrator.api"].readiness.expected_json,
             {},
         )
         self.assertEqual(
@@ -711,13 +796,9 @@ class DurableApplicationReleaseTests(unittest.TestCase):
         )
 
     def test_exact_signed_replay_is_a_no_mutation_plan(self):
-        plan, operation, _supervisor = self._execute(
-            fail_new_health=False
-        )
+        plan, operation, _supervisor = self._execute(fail_new_health=False)
         self.assertEqual(operation.state, OperationState.SUCCEEDED)
-        envelope = self.application.store.accepted_release(
-            "pandrator"
-        )["envelope"]
+        envelope = self.application.store.accepted_release("pandrator")["envelope"]
         replay = self.application.release_plan(
             envelope,
             expected_revision=self.application.store.configuration_revision(),
@@ -923,6 +1004,49 @@ class DurableApplicationReleaseTests(unittest.TestCase):
         )
         return plan, operation
 
+    def test_preparation_journal_is_durably_published_before_slot_move(self):
+        plan = self._prepare_native_manager_plan()
+        operation = self._submit_manager_plan(plan)
+        journal = handoff_module.preparation_journal_path(
+            self.layout,
+            operation.id,
+        )
+        destination = self.layout.manager_versions / "1.0.0"
+        completed = []
+        real_durable_replace = slots_module._durable_replace
+
+        def tracked_replace(source, target):
+            if target == destination:
+                self.assertIn(journal, completed)
+            result = real_durable_replace(source, target)
+            completed.append(target)
+            return result
+
+        engine = OperationEngine(
+            self.application.context,
+            self.application.store,
+            self.application.registry,
+            release_authority=self.application.release_authority,
+            manager_handoff_callback=lambda _execution, _result: None,
+        )
+        with (
+            mock.patch.object(
+                slots_module,
+                "_durable_replace",
+                side_effect=tracked_replace,
+            ),
+            mock.patch.object(
+                handoff_module,
+                "_durable_replace",
+                side_effect=tracked_replace,
+            ),
+        ):
+            engine._execute(operation.id)
+
+        self.assertIn(journal, completed)
+        self.assertIn(destination, completed)
+        self.assertLess(completed.index(journal), completed.index(destination))
+
     def test_native_manager_update_pauses_for_authenticated_external_handoff(self):
         plan = self._prepare_native_manager_plan()
         operation = self._submit_manager_plan(plan)
@@ -952,17 +1076,9 @@ class DurableApplicationReleaseTests(unittest.TestCase):
             envelope.payload.manifest_digest,
             plan.impacts["release"]["manifest_digest"],
         )
-        self.assertTrue(
-            (self.layout.manager_versions / "1.0.0").is_dir()
-        )
-        self.assertFalse(
-            (self.layout.root / "manager" / "current.json").exists()
-        )
-        self.assertIsNone(
-            self.application.store.accepted_release(
-                "pandrator-manager"
-            )
-        )
+        self.assertTrue((self.layout.manager_versions / "1.0.0").is_dir())
+        self.assertFalse((self.layout.root / "manager" / "current.json").exists())
+        self.assertIsNone(self.application.store.accepted_release("pandrator-manager"))
         self.assertEqual(
             self.application.store.configuration_revision(),
             0,
@@ -986,13 +1102,15 @@ class DurableApplicationReleaseTests(unittest.TestCase):
             manager_handoff_callback=lambda _execution, _result: None,
         )
 
-        with mock.patch.object(
-            handoff_module,
-            "_write_envelope",
-            side_effect=SystemExit,
+        with (
+            mock.patch.object(
+                handoff_module,
+                "_write_envelope",
+                side_effect=SystemExit,
+            ),
+            self.assertRaises(SystemExit),
         ):
-            with self.assertRaises(SystemExit):
-                engine._execute(operation.id)
+            engine._execute(operation.id)
 
         self.assertTrue((self.layout.manager_versions / "1.0.0").is_dir())
         self.assertFalse(
@@ -1036,13 +1154,15 @@ class DurableApplicationReleaseTests(unittest.TestCase):
             manager_handoff_callback=lambda _execution, _result: None,
         )
 
-        with mock.patch.object(
-            handoff_module,
-            "_move_prepared_manager_release",
-            side_effect=SystemExit,
+        with (
+            mock.patch.object(
+                handoff_module,
+                "_move_prepared_manager_release",
+                side_effect=SystemExit,
+            ),
+            self.assertRaises(SystemExit),
         ):
-            with self.assertRaises(SystemExit):
-                engine._execute(operation.id)
+            engine._execute(operation.id)
 
         self.assertTrue(
             handoff_module.preparation_journal_path(
@@ -1078,13 +1198,15 @@ class DurableApplicationReleaseTests(unittest.TestCase):
             manager_handoff_callback=lambda _execution, _result: None,
         )
 
-        with mock.patch.object(
-            handoff_module,
-            "_remove_preparation_journal",
-            side_effect=SystemExit,
+        with (
+            mock.patch.object(
+                handoff_module,
+                "_remove_preparation_journal",
+                side_effect=SystemExit,
+            ),
+            self.assertRaises(SystemExit),
         ):
-            with self.assertRaises(SystemExit):
-                engine._execute(operation.id)
+            engine._execute(operation.id)
 
         journal = handoff_module.preparation_journal_path(
             self.layout,
@@ -1161,13 +1283,15 @@ class DurableApplicationReleaseTests(unittest.TestCase):
             manager_handoff_callback=lambda _execution, _result: None,
         )
 
-        with mock.patch.object(
-            handoff_module,
-            "_write_envelope",
-            side_effect=SystemExit,
+        with (
+            mock.patch.object(
+                handoff_module,
+                "_write_envelope",
+                side_effect=SystemExit,
+            ),
+            self.assertRaises(SystemExit),
         ):
-            with self.assertRaises(SystemExit):
-                engine._execute(operation.id)
+            engine._execute(operation.id)
 
         outside_temporary = tempfile.TemporaryDirectory()
         self.addCleanup(outside_temporary.cleanup)
@@ -1209,13 +1333,15 @@ class DurableApplicationReleaseTests(unittest.TestCase):
             manager_handoff_callback=lambda _execution, _result: None,
         )
 
-        with mock.patch.object(
-            handoff_module,
-            "_remove_preparation_journal",
-            side_effect=SystemExit,
+        with (
+            mock.patch.object(
+                handoff_module,
+                "_remove_preparation_journal",
+                side_effect=SystemExit,
+            ),
+            self.assertRaises(SystemExit),
         ):
-            with self.assertRaises(SystemExit):
-                engine._execute(operation.id)
+            engine._execute(operation.id)
 
         other_slot = self.layout.manager_versions / "9.9.9"
         other_slot.mkdir(parents=True)
@@ -1311,13 +1437,15 @@ class DurableApplicationReleaseTests(unittest.TestCase):
             manager_handoff_callback=lambda _execution, _result: None,
         )
 
-        with mock.patch.object(
-            handoff_module,
-            "_write_envelope",
-            side_effect=SystemExit,
+        with (
+            mock.patch.object(
+                handoff_module,
+                "_write_envelope",
+                side_effect=SystemExit,
+            ),
+            self.assertRaises(SystemExit),
         ):
-            with self.assertRaises(SystemExit):
-                engine._execute(operation.id)
+            engine._execute(operation.id)
 
         journal = handoff_module.preparation_journal_path(
             self.layout,
@@ -1362,9 +1490,7 @@ class DurableApplicationReleaseTests(unittest.TestCase):
         engine._execute(operation.id)
         failed = self.application.store.get_operation(operation.id)
         self.assertEqual(failed.state, OperationState.FAILED)
-        self.assertFalse(
-            (self.layout.manager_versions / "1.0.0").exists()
-        )
+        self.assertFalse((self.layout.manager_versions / "1.0.0").exists())
         self.assertEqual(pending_handoffs(self.layout), ())
 
     def test_external_handoff_success_commits_only_after_new_health(self):
@@ -1398,18 +1524,14 @@ class DurableApplicationReleaseTests(unittest.TestCase):
         health.assert_called_once()
         completed = self.application.store.get_operation(operation.id)
         self.assertEqual(completed.state, OperationState.SUCCEEDED)
-        accepted = self.application.store.accepted_release(
-            "pandrator-manager"
-        )
+        accepted = self.application.store.accepted_release("pandrator-manager")
         self.assertEqual(accepted["version"], "1.0.0")
         self.assertEqual(
             accepted["manifest_digest"],
             plan.impacts["release"]["manifest_digest"],
         )
         pointer = json.loads(
-            (
-                self.layout.root / "manager" / "current.json"
-            ).read_text(encoding="utf-8")
+            (self.layout.root / "manager" / "current.json").read_text(encoding="utf-8")
         )
         self.assertEqual(pointer["version"], "1.0.0")
         self.assertEqual(pending_handoffs(self.layout), ())
@@ -1458,21 +1580,13 @@ class DurableApplicationReleaseTests(unittest.TestCase):
         failed = self.application.store.get_operation(operation.id)
         self.assertEqual(failed.state, OperationState.FAILED)
         self.assertEqual(failed.error_code, "manager_handoff_failed")
-        self.assertIsNone(
-            self.application.store.accepted_release(
-                "pandrator-manager"
-            )
-        )
+        self.assertIsNone(self.application.store.accepted_release("pandrator-manager"))
         self.assertEqual(
             self.application.store.configuration_revision(),
             0,
         )
-        self.assertFalse(
-            (self.layout.root / "manager" / "current.json").exists()
-        )
-        self.assertFalse(
-            (self.layout.manager_versions / "1.0.0").exists()
-        )
+        self.assertFalse((self.layout.root / "manager" / "current.json").exists())
+        self.assertFalse((self.layout.manager_versions / "1.0.0").exists())
         self.assertEqual(pending_handoffs(self.layout), ())
 
 

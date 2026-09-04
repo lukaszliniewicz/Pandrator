@@ -1,13 +1,20 @@
 import json
 import tempfile
 import unittest
+from datetime import timedelta
 
 from sqlalchemy import select
 
 from pandrator.logic.dubbing.srt_utils import parse_srt
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
-from pandrator.web.models import ArtifactEdge, Document, Segment
+from pandrator.web.models import (
+    ArtifactEdge,
+    Document,
+    Segment,
+    SpeechOptimizationDispatchBatch,
+    utcnow,
+)
 from pandrator.web.schemas import (
     SpeechOptimizationDispatchBatchClaimResponse,
     SpeechOptimizationDispatchBatchSubmitResponse,
@@ -89,19 +96,235 @@ class SpeechOptimizationDispatchWebTests(unittest.TestCase):
         SpeechOptimizationDispatchBatchClaimResponse.model_validate(claimed)
         return claimed
 
-    def _submit(self, claimed, items, ordinal: int):
+    def _submit(self, claimed, items, ordinal: int, context_delta=None):
+        body = {
+            "lease_token": claimed["lease_token"],
+            "result": {"kind": "speech_optimization", "items": items},
+        }
+        if context_delta is not None:
+            body["context_delta"] = context_delta
         response = self.client.post(
             f"/api/v1/speech-optimization-dispatch-batches/{claimed['batch_id']}/submit",
-            json={
-                "lease_token": claimed["lease_token"],
-                "result": {"kind": "speech_optimization", "items": items},
-            },
+            json=body,
             headers=self._headers(f"speech-submit-{ordinal}"),
         )
         self.assertIn(response.status_code, {200, 202}, response.get_json())
         payload = response.get_json()
         SpeechOptimizationDispatchBatchSubmitResponse.model_validate(payload)
         return payload
+
+    def test_parallel_claims_are_wave_bounded_and_merge_deltas_by_ordinal(self):
+        rows = [
+            {"processed_sentence": f"Source {index}.", "language": "en"}
+            for index in range(1, 5)
+        ]
+        record, _source, _path = self._create_source(
+            workflow_kind="audiobook",
+            role="prepared_text",
+            filename="prepared.json",
+            content=json.dumps(rows),
+        )
+        run = self._create_run(
+            record.id,
+            max_units_per_batch=1,
+            execution_mode="parallel",
+            max_parallel_batches=3,
+            context_capsule={"overview": "Shared context."},
+        )
+        self.assertEqual("parallel", run["execution_mode"])
+        self.assertEqual(3, run["max_parallel_batches"])
+
+        claims = [self._claim(run["id"], ordinal) for ordinal in range(1, 4)]
+        self.assertEqual([1, 2, 3], [item["batch_ordinal"] for item in claims])
+        for item in claims:
+            self.assertEqual(
+                {
+                    "execution_mode": "parallel",
+                    "max_parallel_batches": 3,
+                    "wave_number": 1,
+                    "wave_batch_count": 3,
+                    "context_capsule": {
+                        "overview": "Shared context.",
+                        "terminology": {},
+                        "entities": {},
+                        "style_rules": [],
+                        "decisions": [],
+                        "notes": [],
+                    },
+                },
+                item["delegation"],
+            )
+        self.assertEqual([], claims[0]["batch"]["context"]["previous_source"])
+        self.assertEqual(
+            "Source 1.",
+            claims[1]["batch"]["context"]["previous_source"][0]["text"],
+        )
+        self.assertEqual([], claims[1]["batch"]["context"]["previous_output"])
+
+        busy = self.client.post(
+            f"/api/v1/speech-optimization-dispatch-runs/{run['id']}/claim",
+            json={"lease_seconds": 900},
+            headers=self._headers("speech-claim-4"),
+        )
+        self.assertEqual(409, busy.status_code, busy.get_json())
+        self.assertEqual("run_busy", busy.get_json()["error"]["code"])
+        self.assertGreaterEqual(
+            busy.get_json()["error"]["details"]["retry_after_seconds"], 1
+        )
+
+        self._submit(
+            claims[1],
+            [{"unit_id": 2, "text": "Output 2."}],
+            2,
+            {"entities": {"shared": "ordinal-2", "second": "accepted"}},
+        )
+        blocked = self.client.post(
+            f"/api/v1/speech-optimization-dispatch-runs/{run['id']}/claim",
+            json={"lease_seconds": 900},
+            headers=self._headers("speech-claim-4"),
+        )
+        self.assertEqual(409, blocked.status_code, blocked.get_json())
+        self.assertEqual("run_busy", blocked.get_json()["error"]["code"])
+        self._submit(
+            claims[0],
+            [{"unit_id": 1, "text": "Output 1."}],
+            1,
+            {"entities": {"shared": "ordinal-1", "first": "accepted"}},
+        )
+        self._submit(
+            claims[2],
+            [{"unit_id": 3, "text": "Output 3."}],
+            3,
+            {"entities": {"shared": "ordinal-3", "third": "accepted"}},
+        )
+        fourth = self._claim(run["id"], 4)
+        self.assertEqual(4, fourth["batch_ordinal"])
+        self.assertEqual(2, fourth["delegation"]["wave_number"])
+        self.assertEqual(1, fourth["delegation"]["wave_batch_count"])
+        self.assertEqual(
+            {
+                "shared": "ordinal-3",
+                "first": "accepted",
+                "second": "accepted",
+                "third": "accepted",
+            },
+            fourth["delegation"]["context_capsule"]["entities"],
+        )
+        self.assertEqual(
+            "Output 3.",
+            fourth["batch"]["context"]["previous_output"][0]["text"],
+        )
+
+    def test_expired_lease_reclaim_does_not_reset_a_live_sibling(self):
+        rows = [
+            {"processed_sentence": f"Source {index}.", "language": "en"}
+            for index in range(1, 4)
+        ]
+        record, _source, _path = self._create_source(
+            workflow_kind="audiobook",
+            role="prepared_text",
+            filename="prepared.json",
+            content=json.dumps(rows),
+        )
+        run = self._create_run(
+            record.id,
+            max_units_per_batch=1,
+            execution_mode="parallel",
+            max_parallel_batches=3,
+        )
+        first, sibling = [self._claim(run["id"], index) for index in (1, 2)]
+        with self.extension["database"].immediate_session() as db_session:
+            expired = db_session.get(
+                SpeechOptimizationDispatchBatch,
+                first["batch_id"],
+            )
+            assert expired is not None
+            expired.lease_expires_at = utcnow() - timedelta(seconds=1)
+
+        reclaimed = self._claim(run["id"], 3)
+        self.assertEqual(first["batch_id"], reclaimed["batch_id"])
+        self.assertNotEqual(first["lease_token"], reclaimed["lease_token"])
+        with self.extension["database"].session() as db_session:
+            live = db_session.get(
+                SpeechOptimizationDispatchBatch,
+                sibling["batch_id"],
+            )
+            self.assertIsNotNone(live)
+            self.assertEqual("leased", live.status)
+            self.assertEqual(sibling["lease_token"], live.lease_token)
+
+    def test_serial_context_delta_is_visible_only_to_the_next_claim(self):
+        rows = [
+            {"processed_sentence": "Source one.", "language": "en"},
+            {"processed_sentence": "Source two.", "language": "en"},
+        ]
+        record, _source, _path = self._create_source(
+            workflow_kind="audiobook",
+            role="prepared_text",
+            filename="prepared.json",
+            content=json.dumps(rows),
+        )
+        run = self._create_run(record.id, max_units_per_batch=1)
+        first = self._claim(run["id"], 1)
+        self._submit(
+            first,
+            [{"unit_id": 1, "text": "Output one."}],
+            1,
+            {"terminology": {"one": "uno"}},
+        )
+        second = self._claim(run["id"], 2)
+        self.assertEqual("serial", second["delegation"]["execution_mode"])
+        self.assertEqual(1, second["delegation"]["max_parallel_batches"])
+        self.assertEqual(
+            {"one": "uno"},
+            second["delegation"]["context_capsule"]["terminology"],
+        )
+        self.assertEqual([], second["batch"]["context"]["previous_source"])
+        self.assertEqual(
+            "Output one.",
+            second["batch"]["context"]["previous_output"][0]["text"],
+        )
+
+    def test_same_key_retry_requires_the_same_context_delta(self):
+        rows = [
+            {"processed_sentence": "Source one.", "language": "en"},
+            {"processed_sentence": "Source two.", "language": "en"},
+        ]
+        record, _source, _path = self._create_source(
+            workflow_kind="audiobook",
+            role="prepared_text",
+            filename="prepared.json",
+            content=json.dumps(rows),
+        )
+        run = self._create_run(record.id, max_units_per_batch=1)
+        first = self._claim(run["id"], 1)
+        body = {
+            "lease_token": first["lease_token"],
+            "result": {
+                "kind": "speech_optimization",
+                "items": [{"unit_id": 1, "text": "Output one."}],
+            },
+            "context_delta": {"notes": ["Keep the first sentence concise."]},
+        }
+        response = self.client.post(
+            f"/api/v1/speech-optimization-dispatch-batches/{first['batch_id']}/submit",
+            json=body,
+            headers=self._headers("speech-submit-retry"),
+        )
+        self.assertEqual(200, response.status_code, response.get_json())
+        replay = self.client.post(
+            f"/api/v1/speech-optimization-dispatch-batches/{first['batch_id']}/submit",
+            json=body,
+            headers=self._headers("speech-submit-retry"),
+        )
+        self.assertEqual(202, replay.status_code, replay.get_json())
+        changed = {**body, "context_delta": {"notes": ["Changed."]}}
+        conflict = self.client.post(
+            f"/api/v1/speech-optimization-dispatch-batches/{first['batch_id']}/submit",
+            json=changed,
+            headers=self._headers("speech-submit-retry"),
+        )
+        self.assertEqual(409, conflict.status_code, conflict.get_json())
 
     def test_json_batches_are_sequential_and_materialize_normal_artifact(self):
         rows = [

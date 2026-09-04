@@ -33,6 +33,7 @@ from .schemas import (
     CreateSpeechOptimizationDispatchRunInput,
     CreateTextSourceInput,
     CuePatchInput,
+    DescribeParametersInput,
     DispatchStructuredResultInput,
     DownloadArtifactInput,
     ExecuteComponentPlanInput,
@@ -63,6 +64,7 @@ from .schemas import (
     PatchSubtitleCuesInput,
     PlanComponentChangeInput,
     PlanExportVariantInput,
+    PlanOrchestratedWorkflowInput,
     PlanWorkflowInput,
     PreviewSubtitlesInput,
     ProviderStatusInput,
@@ -90,6 +92,7 @@ from .schemas import (
     UpdateSessionSettingsInput,
     VoiceCatalogInput,
 )
+from .schemas.delegation import execution_policy_json_schema
 from .tools import (
     assemble_generation_run,
     attach_existing_source,
@@ -106,6 +109,7 @@ from .tools import (
     create_source_cleaning_dispatch_run,
     create_speech_optimization_dispatch_run,
     create_text_source,
+    describe_parameters,
     download_artifact,
     execute_component_plan,
     execute_workflow_plan,
@@ -135,6 +139,7 @@ from .tools import (
     patch_subtitle_cues,
     plan_component_change,
     plan_export_variant,
+    plan_orchestrated_workflow,
     plan_workflow,
     preview_subtitles,
     provider_status,
@@ -245,11 +250,17 @@ def build_server(runtime: McpRuntime):
             "configured target and approved local path roots; never request "
             "connection URLs or credentials in tool arguments. Resolve TTS "
             "service, model, and voice names from the live catalog instead of "
-            "assuming examples exist. Passive workflows are sequential: claim "
-            "one batch, return every required ID exactly once, submit, and "
-            "follow next_actions until complete. Consequential execution must "
+            "assuming examples exist. Passive workflows use the run's selected "
+            "serial or bounded-parallel policy: keep every lease scoped to its "
+            "batch, return every required ID exactly once, submit or release all "
+            "batches in the current wave, and follow next_actions until complete. "
+            "Consequential execution must "
             "use an exact unexpired plan and every reviewed confirmation. Poll "
-            "durable work until terminal before using its outputs."
+            "durable work until terminal before using its outputs. For a known "
+            "session outcome, prefer pandrator_plan_orchestrated_workflow as the "
+            "single-turn procedure layer; it defers the immutable native plan "
+            "until passive artifacts are complete. Use filtered "
+            "pandrator_describe_parameters when exact setting definitions are needed."
         ),
     )
     read_only = ToolAnnotations(read_only_hint=True, open_world_hint=False)
@@ -606,6 +617,46 @@ def build_server(runtime: McpRuntime):
         )
 
     @server.tool(
+        name="pandrator_describe_parameters",
+        title="Discover filtered Pandrator parameter definitions",
+        annotations=read_only,
+    )
+    def describe_parameters_tool(
+        sections: tuple[
+            Literal[
+                "text",
+                "stt",
+                "subtitles",
+                "correction",
+                "translation",
+                "tts",
+                "audio",
+                "rvc",
+                "source_cleaning",
+                "output",
+            ],
+            ...,
+        ] = (),
+        names: tuple[Annotated[str, Field(min_length=1, max_length=50)], ...] = (),
+        workflow_kind: Literal["audiobook", "subtitles", "voiceover"] | None = None,
+        query: Annotated[str | None, Field(max_length=100)] = None,
+        limit: Annotated[int, Field(ge=1, le=300)] = 100,
+    ) -> dict[str, Any]:
+        """Discover only definitions matching at least one supplied filter."""
+
+        return _call(
+            describe_parameters,
+            runtime,
+            DescribeParametersInput(
+                sections=sections,
+                names=names,
+                workflow_kind=workflow_kind,
+                query=query,
+                limit=limit,
+            ),
+        )
+
+    @server.tool(
         name="pandrator_list_sources",
         title="List reusable Pandrator source assets",
         annotations=read_only,
@@ -744,8 +795,11 @@ def build_server(runtime: McpRuntime):
             Field(ge=0, le=60_000),
         ] = 2_000,
         glossary: dict[str, str] | None = None,
+        execution_mode: Literal["serial", "parallel"] = "serial",
+        max_parallel_batches: Annotated[int, Field(ge=1, le=8)] = 1,
+        context_capsule: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Create a run; then claim batches sequentially for correction or translation."""
+        """Create a serial or bounded-parallel correction/translation run."""
 
         return _call(
             create_dispatch_run,
@@ -765,6 +819,9 @@ def build_server(runtime: McpRuntime):
                 timing_context_mode=timing_context_mode,
                 substantial_gap_ms=substantial_gap_ms,
                 glossary=glossary or {},
+                execution_mode=execution_mode,
+                max_parallel_batches=max_parallel_batches,
+                context_capsule=context_capsule or {},
                 idempotency_key=idempotency_key,
             ),
         )
@@ -1219,8 +1276,11 @@ def build_server(runtime: McpRuntime):
         context_before: Annotated[int, Field(ge=0, le=20)] = 4,
         context_after: Annotated[int, Field(ge=0, le=20)] = 2,
         include_timing: bool = True,
+        execution_mode: Literal["serial", "parallel"] = "serial",
+        max_parallel_batches: Annotated[int, Field(ge=1, le=8)] = 1,
+        context_capsule: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Queue speech-text batches for this MCP model; no provider is called."""
+        """Queue serial or bounded-parallel speech-text batches for this MCP model."""
 
         return _call(
             create_speech_optimization_dispatch_run,
@@ -1237,6 +1297,9 @@ def build_server(runtime: McpRuntime):
                 context_before=context_before,
                 context_after=context_after,
                 include_timing=include_timing,
+                execution_mode=execution_mode,
+                max_parallel_batches=max_parallel_batches,
+                context_capsule=context_capsule or {},
                 idempotency_key=idempotency_key,
             ),
         )
@@ -1629,6 +1692,64 @@ def build_server(runtime: McpRuntime):
         )
 
     @server.tool(
+        name="pandrator_plan_orchestrated_workflow",
+        title="Plan a model-orchestrated Pandrator workflow",
+        annotations=read_only,
+    )
+    def orchestrated_workflow_plan_tool(
+        session_id: Annotated[str, Field(min_length=1, max_length=80)],
+        goal: Annotated[str, Field(min_length=1, max_length=1_000)],
+        passive_stages: tuple[
+            Literal["correction", "translation", "speech_optimization"], ...
+        ] = (),
+        final_stage: Literal["generate_audio", "export"] = "export",
+        overrides: dict[str, Any] | None = None,
+        export_mode: Literal["media", "subtitles", "text"] = "media",
+        audio_mode: Literal["preserve", "mixed", "dubbing_only"] = "mixed",
+        subtitle_mode: Literal["none", "soft", "burned"] = "none",
+        subtitle_selection: Literal["source", "translation", "dual"] = "translation",
+        subtitle_format: Literal["srt", "vtt"] = "srt",
+        execution_mode: Literal["serial", "parallel"] = "serial",
+        max_parallel_batches: Annotated[int, Field(ge=1, le=8)] = 1,
+        context_capsule: dict[str, Any] | None = None,
+        materialize: bool = False,
+        filename: Annotated[str | None, Field(max_length=255)] = None,
+        wait_seconds: Annotated[int, Field(ge=0, le=3_600)] = 0,
+        expires_in_minutes: Annotated[int, Field(ge=1, le=60)] = 30,
+    ) -> dict[str, Any]:
+        """Describe live-inherited passive loops and the deferred native plan.
+
+        Passive settings are inherited from the live session and safe overrides;
+        generated keys identify retries for that resolved procedure. Typed export
+        settings affect the native plan, while materialization and filename are
+        delivery controls handled after the export artifact exists.
+        """
+
+        return _call(
+            plan_orchestrated_workflow,
+            runtime,
+            PlanOrchestratedWorkflowInput(
+                session_id=session_id,
+                goal=goal,
+                passive_stages=passive_stages,
+                final_stage=final_stage,
+                overrides=overrides or {},
+                export_mode=export_mode,
+                audio_mode=audio_mode,
+                subtitle_mode=subtitle_mode,
+                subtitle_selection=subtitle_selection,
+                subtitle_format=subtitle_format,
+                execution_mode=execution_mode,
+                max_parallel_batches=max_parallel_batches,
+                context_capsule=context_capsule or {},
+                materialize=materialize,
+                filename=filename,
+                wait_seconds=wait_seconds,
+                expires_in_minutes=expires_in_minutes,
+            ),
+        )
+
+    @server.tool(
         name="pandrator_plan_export_variant",
         title="Preview a typed export variant",
         annotations=read_only,
@@ -2009,8 +2130,9 @@ def build_server(runtime: McpRuntime):
         work_type: Literal["job", "manager_operation"] = "job",
         include_events: bool = False,
         event_limit: Annotated[int, Field(ge=1, le=200)] = 50,
+        wait_seconds: Annotated[int, Field(ge=0, le=3_600)] = 0,
     ) -> dict[str, Any]:
-        """Inspect one payload-free work item and an optional redacted event tail."""
+        """Inspect work, optionally polling until terminal or the wait deadline."""
 
         return _call(
             get_work,
@@ -2020,6 +2142,7 @@ def build_server(runtime: McpRuntime):
                 work_id=work_id,
                 include_events=include_events,
                 event_limit=event_limit,
+                wait_seconds=wait_seconds,
             ),
         )
 
@@ -2261,7 +2384,10 @@ def build_server(runtime: McpRuntime):
 
         return (
             f"Complete this Pandrator outcome end to end: {goal}\n"
-            "Begin with pandrator_recommend_next_steps, target status, and the "
+            "When the session already exists, begin with "
+            "pandrator_plan_orchestrated_workflow to describe requested passive "
+            "stages and the deferred native plan. Otherwise begin with "
+            "pandrator_recommend_next_steps, target status, and the "
             "voiceover guide. Use pandrator_browse_local_sources only on approved "
             "named roots; create or inspect the session, then call "
             "pandrator_import_local_source for the selected relative file. Plan and execute "
@@ -2322,5 +2448,19 @@ def build_server(runtime: McpRuntime):
             "Manager doctor first. Create a component plan and obtain explicit "
             "confirmation before any repair or runtime action."
         )
+
+    # MCP 2.1.1 derives a tool's schema from its flat Python signature and has
+    # no public hook for a cross-field constraint. Keep the runtime validator
+    # in the strict input models and augment the three exposed flat schemas so
+    # clients cannot mistake serial/2 or parallel/1 for documented-valid input.
+    for tool_name in (
+        "pandrator_create_dispatch_run",
+        "pandrator_create_speech_optimization_dispatch_run",
+        "pandrator_plan_orchestrated_workflow",
+    ):
+        registered_tool = server._tool_manager.get_tool(tool_name)
+        if registered_tool is None:  # pragma: no cover - registration invariant
+            raise RuntimeError(f"Missing registered MCP tool: {tool_name}")
+        registered_tool.parameters.update(execution_policy_json_schema())
 
     return server

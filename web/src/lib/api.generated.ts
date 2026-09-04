@@ -998,6 +998,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/parameter-definitions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getParameterDefinitions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/parity": {
         parameters: {
             query?: never;
@@ -2679,6 +2695,7 @@ export interface components {
             batch_ordinal: number;
             /** Batch Status */
             batch_status: string;
+            delegation: components["schemas"]["DispatchDelegationContext"];
             /** Lease Expires At */
             lease_expires_at: string | null;
             /** Lease Token */
@@ -2714,6 +2731,7 @@ export interface components {
         };
         /** DispatchBatchSubmitRequest */
         DispatchBatchSubmitRequest: {
+            context_delta?: components["schemas"]["DispatchContextDelta"];
             /** Lease Token */
             lease_token: string;
             /**
@@ -2790,6 +2808,8 @@ export interface components {
             following_source: components["schemas"]["DispatchBoundaryCue"][];
             /** Previous Output */
             previous_output: components["schemas"]["DispatchBoundaryCue"][];
+            /** Previous Source */
+            previous_source: components["schemas"]["DispatchBoundaryCue"][];
         };
         /** DispatchBoundaryCue */
         DispatchBoundaryCue: {
@@ -2817,6 +2837,51 @@ export interface components {
             source_revision_id: string;
             /** Valid Cue Ids */
             valid_cue_ids: number[];
+        };
+        /**
+         * DispatchContextCapsule
+         * @description Shared, parent-supplied or accumulated context for delegated batches.
+         */
+        DispatchContextCapsule: {
+            /** Decisions */
+            decisions?: string[];
+            /** Entities */
+            entities?: {
+                [key: string]: string;
+            };
+            /** Notes */
+            notes?: string[];
+            /**
+             * Overview
+             * @default
+             */
+            overview?: string;
+            /** Style Rules */
+            style_rules?: string[];
+            /** Terminology */
+            terminology?: {
+                [key: string]: string;
+            };
+        };
+        /**
+         * DispatchContextDelta
+         * @description Bounded knowledge learned while processing one delegated batch.
+         */
+        DispatchContextDelta: {
+            /** Decisions */
+            decisions?: string[];
+            /** Entities */
+            entities?: {
+                [key: string]: string;
+            };
+            /** Notes */
+            notes?: string[];
+            /** Style Rules */
+            style_rules?: string[];
+            /** Terminology */
+            terminology?: {
+                [key: string]: string;
+            };
         };
         /** DispatchCorrectionOperation */
         DispatchCorrectionOperation: {
@@ -2879,6 +2944,21 @@ export interface components {
              */
             start_ms?: number | null;
         };
+        /** DispatchDelegationContext */
+        DispatchDelegationContext: {
+            context_capsule: components["schemas"]["DispatchContextCapsule"];
+            /**
+             * Execution Mode
+             * @enum {string}
+             */
+            execution_mode: "serial" | "parallel";
+            /** Max Parallel Batches */
+            max_parallel_batches: number;
+            /** Wave Batch Count */
+            wave_batch_count: number;
+            /** Wave Number */
+            wave_number: number;
+        };
         /** DispatchRunCreateRequest */
         DispatchRunCreateRequest: {
             /**
@@ -2896,6 +2976,13 @@ export interface components {
              * @default 8
              */
             context_before?: number;
+            context_capsule?: components["schemas"]["DispatchContextCapsule"];
+            /**
+             * Execution Mode
+             * @default serial
+             * @enum {string}
+             */
+            execution_mode?: "serial" | "parallel";
             /** Glossary */
             glossary?: {
                 [key: string]: string;
@@ -2917,6 +3004,11 @@ export interface components {
              * @enum {string}
              */
             kind: "correction" | "translation";
+            /**
+             * Max Parallel Batches
+             * @default 1
+             */
+            max_parallel_batches?: number;
             /**
              * Max Segments Per Batch
              * @default 40
@@ -2953,7 +3045,16 @@ export interface components {
              * @enum {string}
              */
             timing_context_mode?: "full" | "overlap_only" | "none";
-        };
+        } & ({
+            /** @constant */
+            execution_mode?: "serial";
+            /** @constant */
+            max_parallel_batches?: 1;
+        } | {
+            /** @constant */
+            execution_mode: "parallel";
+            max_parallel_batches: unknown;
+        });
         /** DispatchTaskContract */
         DispatchTaskContract: {
             /** Glossary */
@@ -3531,6 +3632,33 @@ export interface components {
              * @default null
              */
             start_seconds?: number | null;
+        };
+        ParameterDefinition: {
+            applicability?: string;
+            caveat?: string;
+            choices?: unknown[];
+            default: unknown;
+            description: string;
+            label: string;
+            maximum?: number;
+            minimum?: number;
+            name: string;
+            section: string;
+            unit?: string;
+            /** @enum {string} */
+            value_type: "boolean" | "integer" | "number" | "string" | "object" | "array";
+        };
+        ParameterDefinitionsResponse: {
+            available_sections: string[];
+            items: components["schemas"]["ParameterDefinition"][];
+            matched_count: number;
+            returned_count: number;
+            /**
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            truncated: boolean;
         };
         /** PdfCropInput */
         PdfCropInput: {
@@ -4227,6 +4355,7 @@ export interface components {
             batch_ordinal: number;
             /** Batch Status */
             batch_status: string;
+            delegation: components["schemas"]["DispatchDelegationContext"];
             /** Lease Expires At */
             lease_expires_at: string | null;
             /** Lease Token */
@@ -4247,6 +4376,7 @@ export interface components {
         };
         /** SpeechOptimizationDispatchBatchSubmitRequest */
         SpeechOptimizationDispatchBatchSubmitRequest: {
+            context_delta?: components["schemas"]["DispatchContextDelta"];
             /** Lease Token */
             lease_token: string;
             result: components["schemas"]["SpeechOptimizationDispatchResult"];
@@ -4341,6 +4471,8 @@ export interface components {
             following_source: components["schemas"]["SpeechOptimizationDispatchBoundaryUnit"][];
             /** Previous Output */
             previous_output: components["schemas"]["SpeechOptimizationDispatchBoundaryUnit"][];
+            /** Previous Source */
+            previous_source: components["schemas"]["SpeechOptimizationDispatchBoundaryUnit"][];
         };
         /** SpeechOptimizationDispatchItem */
         SpeechOptimizationDispatchItem: {
@@ -4377,6 +4509,13 @@ export interface components {
              * @default 4
              */
             context_before?: number;
+            context_capsule?: components["schemas"]["DispatchContextCapsule"];
+            /**
+             * Execution Mode
+             * @default serial
+             * @enum {string}
+             */
+            execution_mode?: "serial" | "parallel";
             /**
              * Include Timing
              * @default true
@@ -4392,6 +4531,11 @@ export interface components {
              * @default null
              */
             language?: string | null;
+            /**
+             * Max Parallel Batches
+             * @default 1
+             */
+            max_parallel_batches?: number;
             /**
              * Max Units Per Batch
              * @default 100
@@ -4412,7 +4556,16 @@ export interface components {
              * @default null
              */
             voice_language?: string | null;
-        };
+        } & ({
+            /** @constant */
+            execution_mode?: "serial";
+            /** @constant */
+            max_parallel_batches?: 1;
+        } | {
+            /** @constant */
+            execution_mode: "parallel";
+            max_parallel_batches: unknown;
+        });
         /** SpeechOptimizationDispatchTaskContract */
         SpeechOptimizationDispatchTaskContract: {
             /** Instructions */
@@ -5408,7 +5561,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Required for automation principals and strongly recommended for every retryable write. */
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
                 "Idempotency-Key"?: string;
             };
             path: {
@@ -5435,7 +5588,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Required for automation principals and strongly recommended for every retryable write. */
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
                 "Idempotency-Key"?: string;
             };
             path: {
@@ -5462,7 +5615,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description Required for automation principals and strongly recommended for every retryable write. */
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
                 "Idempotency-Key": string;
             };
             path: {
@@ -5520,7 +5673,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description Required for automation principals and strongly recommended for every retryable write. */
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
                 "Idempotency-Key": string;
             };
             path: {
@@ -5684,7 +5837,10 @@ export interface operations {
     updateGenerationSegment: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
+                "Idempotency-Key"?: string;
+            };
             path: {
                 segmentId: string;
             };
@@ -5708,7 +5864,10 @@ export interface operations {
     selectGenerationTake: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
+                "Idempotency-Key"?: string;
+            };
             path: {
                 segmentId: string;
                 takeId: string;
@@ -6175,6 +6334,39 @@ export interface operations {
         responses: {
             /** @description Immutable whole-product uninstall plan */
             201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getParameterDefinitions: {
+        parameters: {
+            query?: {
+                section?: string[];
+                name?: string[];
+                workflow_kind?: "audiobook" | "subtitles" | "voiceover";
+                query?: string;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Filtered parameter definitions */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ParameterDefinitionsResponse"];
+                };
+            };
+            /** @description Invalid parameter filters */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7025,7 +7217,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Required for automation principals and strongly recommended for every retryable write. */
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
                 "Idempotency-Key"?: string;
             };
             path: {
@@ -7148,7 +7340,10 @@ export interface operations {
     startGenerationRun: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
+                "Idempotency-Key"?: string;
+            };
             path: {
                 sessionId: string;
             };
@@ -7283,7 +7478,10 @@ export interface operations {
     createOutputAssembly: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
+                "Idempotency-Key"?: string;
+            };
             path: {
                 sessionId: string;
             };
@@ -7533,7 +7731,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Required for automation principals and strongly recommended for every retryable write. */
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
                 "Idempotency-Key"?: string;
             };
             path: {
@@ -7696,7 +7894,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Required for automation principals and strongly recommended for every retryable write. */
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
                 "Idempotency-Key"?: string;
             };
             path: {
@@ -7917,7 +8115,10 @@ export interface operations {
     saveSubtitleReview: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
+                "Idempotency-Key"?: string;
+            };
             path: {
                 sessionId: string;
                 stage: string;
@@ -8045,7 +8246,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description Required for automation principals and strongly recommended for every retryable write. */
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
                 "Idempotency-Key": string;
             };
             path: {
@@ -8074,7 +8275,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Required for automation principals and strongly recommended for every retryable write. */
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
                 "Idempotency-Key"?: string;
             };
             path: {
@@ -8101,7 +8302,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Required for automation principals and strongly recommended for every retryable write. */
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
                 "Idempotency-Key"?: string;
             };
             path: {
@@ -8128,7 +8329,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description Required for automation principals and strongly recommended for every retryable write. */
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
                 "Idempotency-Key": string;
             };
             path: {
@@ -8186,7 +8387,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description Required for automation principals and strongly recommended for every retryable write. */
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
                 "Idempotency-Key": string;
             };
             path: {
@@ -8297,7 +8498,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Required for automation principals and strongly recommended for every retryable write. */
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
                 "Idempotency-Key"?: string;
             };
             path: {
@@ -8324,7 +8525,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Required for automation principals and strongly recommended for every retryable write. */
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
                 "Idempotency-Key"?: string;
             };
             path: {
@@ -8351,7 +8552,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description Required for automation principals and strongly recommended for every retryable write. */
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
                 "Idempotency-Key": string;
             };
             path: {
@@ -8409,7 +8610,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description Required for automation principals and strongly recommended for every retryable write. */
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
                 "Idempotency-Key": string;
             };
             path: {

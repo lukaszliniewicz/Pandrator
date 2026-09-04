@@ -54,6 +54,7 @@
   import type TtsServicesModal from './TtsServicesModal.svelte';
   import type VoiceLibraryModal from './VoiceLibraryModal.svelte';
   import { modalFocus } from './modal-focus';
+  import ParameterLabel from './ParameterLabel.svelte';
 
   type Stage = WorkflowStage;
 
@@ -2692,7 +2693,11 @@
         {/if}
         {#if settingsStage.key === 'transcribe'}
           <label class="text-sm font-semibold"
-            >Recognition model<select
+            ><ParameterLabel
+              section="stt"
+              name="stt_engine"
+              label="Recognition model"
+            /><select
               bind:value={sttEngine}
               onchange={() =>
                 (sttQuantization = String(
@@ -2753,7 +2758,11 @@
             </div>
             <div class="grid gap-3 sm:grid-cols-2">
               <label class="text-sm font-semibold"
-                >Source language<select
+                ><ParameterLabel
+                  section="stt"
+                  name="stt_language"
+                  label="Source language"
+                /><select
                   bind:value={originalLanguage}
                   class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
                   >{#each LANGUAGE_OPTIONS as item}<option value={item.value}
@@ -2761,7 +2770,11 @@
                     >{/each}</select
                 ></label
               ><label class="text-sm font-semibold"
-                >Transcript style<select
+                ><ParameterLabel
+                  section="stt"
+                  name="stt_transcribe_style"
+                  label="Transcript style"
+                /><select
                   bind:value={sttTranscribeStyle}
                   class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
                   ><option value="readability">Readable transcript</option
@@ -2771,7 +2784,11 @@
               >
             </div>
             <label class="text-sm font-semibold"
-              >Phrase hints<textarea
+              ><ParameterLabel
+                section="stt"
+                name="stt_hotwords"
+                label="Phrase hints"
+              /><textarea
                 rows="2"
                 bind:value={sttHotwords}
                 placeholder="Names and terminology, comma-separated"
@@ -2783,7 +2800,11 @@
             >
           {:else}
             <label class="text-sm font-semibold"
-              >Model precision<select
+              ><ParameterLabel
+                section="stt"
+                name="stt_model_quantization"
+                label="Model precision"
+              /><select
                 bind:value={sttQuantization}
                 class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
                 ><option value="f16">Full F16</option
@@ -2802,7 +2823,11 @@
             >
             <div class="grid gap-3 sm:grid-cols-[1fr_7rem]">
               <label class="text-sm font-semibold"
-                >Compute backend<select
+                ><ParameterLabel
+                  section="stt"
+                  name="stt_compute_backend"
+                  label="Compute backend"
+                /><select
                   bind:value={sttComputeBackend}
                   class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
                   ><option value="auto">Automatic</option><option
@@ -2821,7 +2846,11 @@
                   can be forced.</span
                 ></label
               ><label class="text-sm font-semibold"
-                >Device<input
+                ><ParameterLabel
+                  section="stt"
+                  name="stt_compute_device"
+                  label="Device"
+                /><input
                   type="number"
                   min="0"
                   disabled={['auto', 'cpu'].includes(sttComputeBackend)}
@@ -2848,9 +2877,20 @@
                       type="checkbox"
                       bind:checked={mossCtcAlignmentEnabled}
                       class="size-4 accent-[var(--accent)]"
-                    /> Word-level CTC alignment</label
+                    />
+                    <ParameterLabel
+                      section="stt"
+                      name="moss_ctc_alignment_enabled"
+                      label="Word-level CTC alignment"
+                      compact
+                    /></label
                   ><label class="text-xs font-semibold"
-                    >CTC padding (s)<input
+                    ><ParameterLabel
+                      section="stt"
+                      name="moss_ctc_padding_seconds"
+                      label="CTC padding (s)"
+                      compact
+                    /><input
                       type="number"
                       min="0"
                       max="2"
@@ -2873,7 +2913,11 @@
                       >{/each}</select
                   ></label
                 ><label class="text-sm font-semibold"
-                  >Language detector<select
+                  ><ParameterLabel
+                    section="stt"
+                    name="stt_lid_backend"
+                    label="Language detector"
+                  /><select
                     bind:value={sttLidBackend}
                     class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
                     ><option value="whisper">Whisper tiny</option><option
@@ -2893,8 +2937,11 @@
                   class="mt-0.5 size-4 accent-[var(--accent)]"
                 />
                 <span
-                  >Voice activity detection<span
-                    class="muted mt-1 block text-xs font-normal"
+                  ><ParameterLabel
+                    section="stt"
+                    name="moss_vad_enabled"
+                    label="Voice activity detection"
+                  /><span class="muted mt-1 block text-xs font-normal"
                     >Off by default so native speaker tracking keeps the longest
                     context. The normal chunker still seeks low-energy cut
                     points.</span
@@ -2906,13 +2953,23 @@
                   type="checkbox"
                   bind:checked={vadEnabled}
                   class="size-4 accent-[var(--accent)]"
-                /> Voice activity detection</label
+                />
+                <ParameterLabel
+                  section="stt"
+                  name="crispasr_vad_enabled"
+                  label="Voice activity detection"
+                /></label
               >{/if}
             {#if sttEngine === 'moss' ? mossVadEnabled : vadEnabled}<div
                 class="grid grid-cols-2 gap-3"
               >
                 <label class="text-xs font-semibold"
-                  >VAD model<select
+                  ><ParameterLabel
+                    section="stt"
+                    name="crispasr_vad_model"
+                    label="VAD model"
+                    compact
+                  /><select
                     bind:value={vadModel}
                     class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
                     ><option value="silero">Silero · general purpose</option
@@ -2923,7 +2980,12 @@
                     ></select
                   ></label
                 ><label class="text-xs font-semibold"
-                  >VAD threshold<span
+                  ><ParameterLabel
+                    section="stt"
+                    name="crispasr_vad_threshold"
+                    label="VAD threshold"
+                    compact
+                  /><span
                     class="mt-1 grid min-h-10 grid-cols-[1fr_2.5rem] items-center gap-2 rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3"
                     ><input
                       type="range"
@@ -2937,28 +2999,48 @@
                     ></span
                   ></label
                 ><label class="text-xs font-semibold"
-                  >Minimum speech (ms)<input
+                  ><ParameterLabel
+                    section="stt"
+                    name="crispasr_vad_min_speech_ms"
+                    label="Minimum speech (ms)"
+                    compact
+                  /><input
                     type="number"
                     min="0"
                     bind:value={vadMinSpeech}
                     class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
                   /></label
                 ><label class="text-xs font-semibold"
-                  >Minimum silence (ms)<input
+                  ><ParameterLabel
+                    section="stt"
+                    name="crispasr_vad_min_silence_ms"
+                    label="Minimum silence (ms)"
+                    compact
+                  /><input
                     type="number"
                     min="0"
                     bind:value={vadMinSilence}
                     class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
                   /></label
                 ><label class="text-xs font-semibold"
-                  >Maximum speech (s)<input
+                  ><ParameterLabel
+                    section="stt"
+                    name="crispasr_vad_max_speech_seconds"
+                    label="Maximum speech (s)"
+                    compact
+                  /><input
                     type="number"
                     min="1"
                     bind:value={vadMaxSpeech}
                     class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
                   /></label
                 ><label class="text-xs font-semibold"
-                  >Speech padding (ms)<input
+                  ><ParameterLabel
+                    section="stt"
+                    name="crispasr_vad_speech_pad_ms"
+                    label="Speech padding (ms)"
+                    compact
+                  /><input
                     type="number"
                     min="0"
                     bind:value={vadSpeechPad}
@@ -2972,14 +3054,24 @@
               >
               <div class="mt-4 grid grid-cols-2 gap-3">
                 <label class="text-xs font-semibold"
-                  >Threads (0 = automatic)<input
+                  ><ParameterLabel
+                    section="stt"
+                    name="stt_threads"
+                    label="Threads (0 = automatic)"
+                    compact
+                  /><input
                     type="number"
                     min="0"
                     bind:value={sttThreads}
                     class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
                   /></label
                 ><label class="text-xs font-semibold"
-                  >Beam size<input
+                  ><ParameterLabel
+                    section="stt"
+                    name="stt_beam_size"
+                    label="Beam size"
+                    compact
+                  /><input
                     type="number"
                     min="1"
                     max="16"
@@ -2988,7 +3080,12 @@
                   /></label
                 >{#if sttEngine === 'parakeet'}<label
                     class="text-xs font-semibold"
-                    >Parakeet decoder<select
+                    ><ParameterLabel
+                      section="stt"
+                      name="parakeet_decoder"
+                      label="Parakeet decoder"
+                      compact
+                    /><select
                       bind:value={parakeetDecoder}
                       class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
                       ><option value="tdt">TDT greedy / beam</option><option
@@ -2997,7 +3094,12 @@
                     ></label
                   >{/if}{#if sttEngine === 'moss'}<label
                     class="text-xs font-semibold"
-                    >Maximum MOSS context (s)<input
+                    ><ParameterLabel
+                      section="stt"
+                      name="moss_max_chunk_seconds"
+                      label="Maximum MOSS context (s)"
+                      compact
+                    /><input
                       type="number"
                       min="30"
                       max="120"
@@ -3006,7 +3108,12 @@
                       class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
                     /></label
                   >{:else}<label class="text-xs font-semibold"
-                    >Forced chunk size (s, 0 = default)<input
+                    ><ParameterLabel
+                      section="stt"
+                      name="stt_chunk_seconds"
+                      label="Forced chunk size (s, 0 = default)"
+                      compact
+                    /><input
                       type="number"
                       min="0"
                       step="1"
@@ -3015,7 +3122,12 @@
                     /></label
                   >{/if}{#if sttEngine === 'moss'}<label
                     class="text-xs font-semibold"
-                    >MOSS chunk overlap (s)<input
+                    ><ParameterLabel
+                      section="stt"
+                      name="moss_chunk_overlap_seconds"
+                      label="MOSS chunk overlap (s)"
+                      compact
+                    /><input
                       type="number"
                       min="0"
                       step="0.5"
@@ -3026,7 +3138,12 @@
                       at chunk seams.</span
                     ></label
                   >{:else}<label class="text-xs font-semibold"
-                    >Chunk overlap (s)<input
+                    ><ParameterLabel
+                      section="stt"
+                      name="stt_chunk_overlap_seconds"
+                      label="Chunk overlap (s)"
+                      compact
+                    /><input
                       type="number"
                       min="0"
                       step="0.5"
@@ -3035,7 +3152,12 @@
                     /></label
                   >{/if}
                 ><label class="col-span-2 text-xs font-semibold"
-                  >Hotwords<textarea
+                  ><ParameterLabel
+                    section="stt"
+                    name="stt_hotwords"
+                    label="Hotwords"
+                    compact
+                  /><textarea
                     rows="2"
                     bind:value={sttHotwords}
                     placeholder="Names and terminology, comma-separated"
@@ -3066,7 +3188,12 @@
             </p>
             <div class="mt-3 grid grid-cols-2 gap-3">
               <label class="text-xs font-semibold"
-                >Characters / line<input
+                ><ParameterLabel
+                  section="subtitles"
+                  name="max_chars_per_line"
+                  label="Characters / line"
+                  compact
+                /><input
                   type="number"
                   min="20"
                   max="100"
@@ -3074,7 +3201,12 @@
                   class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
                 /></label
               ><label class="text-xs font-semibold"
-                >Lines<input
+                ><ParameterLabel
+                  section="subtitles"
+                  name="max_lines"
+                  label="Lines"
+                  compact
+                /><input
                   type="number"
                   min="1"
                   max="3"
@@ -3082,21 +3214,36 @@
                   class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
                 /></label
               ><label class="text-xs font-semibold"
-                >Minimum duration (ms)<input
+                ><ParameterLabel
+                  section="subtitles"
+                  name="min_duration_ms"
+                  label="Minimum duration (ms)"
+                  compact
+                /><input
                   type="number"
                   min="250"
                   bind:value={subtitleMinDuration}
                   class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
                 /></label
               ><label class="text-xs font-semibold"
-                >Maximum duration (ms)<input
+                ><ParameterLabel
+                  section="subtitles"
+                  name="max_duration_ms"
+                  label="Maximum duration (ms)"
+                  compact
+                /><input
                   type="number"
                   min="1000"
                   bind:value={subtitleMaxDuration}
                   class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
                 /></label
               ><label class="text-xs font-semibold"
-                >Characters / second<input
+                ><ParameterLabel
+                  section="subtitles"
+                  name="max_cps"
+                  label="Characters / second"
+                  compact
+                /><input
                   type="number"
                   min="5"
                   max="40"
@@ -3105,7 +3252,12 @@
                   class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
                 /></label
               ><label class="text-xs font-semibold"
-                >Minimum cue gap (ms)<input
+                ><ParameterLabel
+                  section="subtitles"
+                  name="min_gap_ms"
+                  label="Minimum cue gap (ms)"
+                  compact
+                /><input
                   type="number"
                   min="0"
                   max="500"
@@ -3113,7 +3265,12 @@
                   class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
                 /></label
               ><label class="text-xs font-semibold"
-                >Phrase-break silence (ms)<input
+                ><ParameterLabel
+                  section="subtitles"
+                  name="phrase_gap_ms"
+                  label="Phrase-break silence (ms)"
+                  compact
+                /><input
                   type="number"
                   min="100"
                   max="3000"
@@ -3121,7 +3278,12 @@
                   class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
                 /></label
               ><label class="text-xs font-semibold"
-                >Hard silence boundary (ms)<input
+                ><ParameterLabel
+                  section="subtitles"
+                  name="hard_gap_ms"
+                  label="Hard silence boundary (ms)"
+                  compact
+                /><input
                   type="number"
                   min="250"
                   max="5000"
@@ -3129,7 +3291,12 @@
                   class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
                 /></label
               ><label class="text-xs font-semibold"
-                >Sentence boundary threshold<input
+                ><ParameterLabel
+                  section="subtitles"
+                  name="sentence_boundary_threshold"
+                  label="Sentence boundary threshold"
+                  compact
+                /><input
                   type="number"
                   min="0.01"
                   max="0.99"
@@ -3754,7 +3921,11 @@
           {/if}
           {#if supportsGenerationPrompt}
             <label class="text-sm font-semibold"
-              >Speech direction<textarea
+              ><ParameterLabel
+                section="tts"
+                name="generation_prompt"
+                label="Speech direction"
+              /><textarea
                 bind:value={generationPrompt}
                 rows="4"
                 placeholder="For example: Warm, intimate narration with measured pacing and subtle excitement."
@@ -3780,7 +3951,12 @@
                 segments become playable one by one. Use 1 to disable batching.
               </p>
               <label class="mt-3 block text-xs font-semibold"
-                >Segments per batch<input
+                ><ParameterLabel
+                  section="tts"
+                  name="tts_batch_size"
+                  label="Segments per batch"
+                  compact
+                /><input
                   type="number"
                   min="1"
                   max={maximumTtsBatchSize}
@@ -3802,35 +3978,60 @@
               </p>
               <div class="mt-3 grid grid-cols-2 gap-3">
                 <label class="text-xs font-semibold"
-                  >Preferred minimum split size<input
+                  ><ParameterLabel
+                    section="tts"
+                    name="speech_block_min_chars"
+                    label="Preferred minimum split size"
+                    compact
+                  /><input
                     type="number"
                     min="1"
                     bind:value={speechBlockMinChars}
                     class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
                   /></label
                 ><label class="text-xs font-semibold"
-                  >Maximum characters<input
+                  ><ParameterLabel
+                    section="tts"
+                    name="speech_block_max_chars"
+                    label="Maximum characters"
+                    compact
+                  /><input
                     type="number"
                     min="1"
                     bind:value={speechBlockMaxChars}
                     class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
                   /></label
                 ><label class="text-xs font-semibold"
-                  >Merge gap (ms)<input
+                  ><ParameterLabel
+                    section="tts"
+                    name="speech_block_merge_threshold"
+                    label="Merge gap (ms)"
+                    compact
+                  /><input
                     type="number"
                     min="0"
                     bind:value={speechBlockMergeThreshold}
                     class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
                   /></label
                 ><label class="text-xs font-semibold"
-                  >Unfinished-sentence pause (ms)<input
+                  ><ParameterLabel
+                    section="tts"
+                    name="speech_block_continuation_threshold_ms"
+                    label="Unfinished-sentence pause (ms)"
+                    compact
+                  /><input
                     type="number"
                     min="0"
                     bind:value={speechBlockContinuationThreshold}
                     class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
                   /></label
                 ><label class="text-xs font-semibold"
-                  >Maximum silence inside a TTS chunk (ms)<input
+                  ><ParameterLabel
+                    section="tts"
+                    name="speech_block_max_internal_gap_ms"
+                    label="Maximum silence inside a TTS chunk (ms)"
+                    compact
+                  /><input
                     type="number"
                     min="0"
                     bind:value={speechBlockMaxInternalGap}
@@ -3842,7 +4043,11 @@
         {/if}
         {#if settingsStage.key === 'export'}
           <label class="text-sm font-semibold"
-            >Export target<select
+            ><ParameterLabel
+              section="output"
+              name="export_mode"
+              label="Export target"
+            /><select
               bind:value={exportMode}
               class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
               >{#if session.workflow_kind !== 'subtitles'}<option value="media"
@@ -3854,7 +4059,11 @@
           >
           {#if exportMode === 'media'}
             <label class="text-sm font-semibold"
-              >Audio<select
+              ><ParameterLabel
+                section="output"
+                name="audio_mode"
+                label="Audio"
+              /><select
                 bind:value={audioMode}
                 class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
                 ><option value="mixed"
@@ -3864,7 +4073,11 @@
                 ></select
               ></label
             ><label class="text-sm font-semibold"
-              >Subtitles<select
+              ><ParameterLabel
+                section="output"
+                name="subtitle_mode"
+                label="Subtitles"
+              /><select
                 bind:value={subtitleMode}
                 class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
                 ><option value="none">None</option><option value="soft"
@@ -3874,7 +4087,11 @@
             >
           {:else if exportMode === 'subtitles'}
             <label class="text-sm font-semibold"
-              >Subtitle format<select
+              ><ParameterLabel
+                section="output"
+                name="subtitle_format"
+                label="Subtitle format"
+              /><select
                 bind:value={subtitleFormat}
                 class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
                 ><option value="srt">SubRip (.srt)</option><option value="vtt"
@@ -3890,7 +4107,11 @@
             </p>{/if}
           {#if exportMode !== 'media' || subtitleMode !== 'none'}<label
               class="text-sm font-semibold"
-              >Subtitle tracks<select
+              ><ParameterLabel
+                section="output"
+                name="subtitle_selection"
+                label="Subtitle tracks"
+              /><select
                 bind:value={subtitleSelection}
                 class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
                 ><option value="source">Source / corrected</option><option
@@ -3906,7 +4127,12 @@
             </p>
             <div class="mt-3 grid grid-cols-2 gap-3">
               <label class="text-xs font-semibold"
-                >Characters / line<input
+                ><ParameterLabel
+                  section="subtitles"
+                  name="max_chars_per_line"
+                  label="Characters / line"
+                  compact
+                /><input
                   type="number"
                   min="20"
                   max="100"
@@ -3914,7 +4140,12 @@
                   class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
                 /></label
               ><label class="text-xs font-semibold"
-                >Lines<input
+                ><ParameterLabel
+                  section="subtitles"
+                  name="max_lines"
+                  label="Lines"
+                  compact
+                /><input
                   type="number"
                   min="1"
                   max="3"
@@ -3922,21 +4153,36 @@
                   class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
                 /></label
               ><label class="text-xs font-semibold"
-                >Minimum duration (ms)<input
+                ><ParameterLabel
+                  section="subtitles"
+                  name="min_duration_ms"
+                  label="Minimum duration (ms)"
+                  compact
+                /><input
                   type="number"
                   min="250"
                   bind:value={subtitleMinDuration}
                   class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
                 /></label
               ><label class="text-xs font-semibold"
-                >Maximum duration (ms)<input
+                ><ParameterLabel
+                  section="subtitles"
+                  name="max_duration_ms"
+                  label="Maximum duration (ms)"
+                  compact
+                /><input
                   type="number"
                   min="1000"
                   bind:value={subtitleMaxDuration}
                   class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
                 /></label
               ><label class="text-xs font-semibold"
-                >Characters / second<input
+                ><ParameterLabel
+                  section="subtitles"
+                  name="max_cps"
+                  label="Characters / second"
+                  compact
+                /><input
                   type="number"
                   min="5"
                   max="40"
@@ -3945,7 +4191,12 @@
                   class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
                 /></label
               ><label class="text-xs font-semibold"
-                >Minimum cue gap (ms)<input
+                ><ParameterLabel
+                  section="subtitles"
+                  name="min_gap_ms"
+                  label="Minimum cue gap (ms)"
+                  compact
+                /><input
                   type="number"
                   min="0"
                   max="500"
@@ -3953,7 +4204,12 @@
                   class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
                 /></label
               ><label class="text-xs font-semibold"
-                >Phrase-break silence (ms)<input
+                ><ParameterLabel
+                  section="subtitles"
+                  name="phrase_gap_ms"
+                  label="Phrase-break silence (ms)"
+                  compact
+                /><input
                   type="number"
                   min="100"
                   max="3000"
@@ -3961,7 +4217,12 @@
                   class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
                 /></label
               ><label class="text-xs font-semibold"
-                >Hard silence boundary (ms)<input
+                ><ParameterLabel
+                  section="subtitles"
+                  name="hard_gap_ms"
+                  label="Hard silence boundary (ms)"
+                  compact
+                /><input
                   type="number"
                   min="250"
                   max="5000"
@@ -3969,7 +4230,12 @@
                   class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
                 /></label
               ><label class="text-xs font-semibold"
-                >Sentence boundary threshold<input
+                ><ParameterLabel
+                  section="subtitles"
+                  name="sentence_boundary_threshold"
+                  label="Sentence boundary threshold"
+                  compact
+                /><input
                   type="number"
                   min="0.01"
                   max="0.99"

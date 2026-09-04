@@ -21,6 +21,12 @@ class GetWorkInput(ToolInput):
     work_id: str = Field(min_length=1, max_length=120)
     include_events: bool = False
     event_limit: int = Field(default=50, ge=1, le=200)
+    wait_seconds: int = Field(
+        default=0,
+        ge=0,
+        le=3_600,
+        description="Optionally wait and poll this work item until terminal or timeout.",
+    )
 
 
 class GetWorkLogInput(ToolInput):

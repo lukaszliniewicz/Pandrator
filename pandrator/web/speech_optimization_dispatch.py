@@ -20,6 +20,14 @@ from .artifact_selection import ROLE_TO_STAGE
 from .artifacts import ArtifactService, sha256_file
 from .database import Database
 from .dispatch import DispatchError
+from .dispatch_context import (
+    context_capsule_for_wave,
+    execution_policy,
+    normalize_context_capsule,
+    normalize_context_delta,
+    store_context_delta,
+    wave_bounds,
+)
 from .models import (
     Artifact,
     Document,
@@ -137,6 +145,7 @@ class SpeechOptimizationDispatchRunService:
     @staticmethod
     def _run_payload(run: SpeechOptimizationDispatchRun) -> dict[str, Any]:
         settings = dict(run.settings_json or {})
+        execution_mode, max_parallel_batches = execution_policy(settings)
         return {
             "id": run.id,
             "session_id": run.session_id,
@@ -155,6 +164,8 @@ class SpeechOptimizationDispatchRunService:
             "context_before": int(settings.get("context_before") or 4),
             "context_after": int(settings.get("context_after") or 2),
             "include_timing": bool(settings.get("include_timing", True)),
+            "execution_mode": execution_mode,
+            "max_parallel_batches": max_parallel_batches,
             "status": run.status,
             "batch_count": run.batch_count,
             "total_batches": run.batch_count,
@@ -494,6 +505,9 @@ class SpeechOptimizationDispatchRunService:
         context_before: int,
         context_after: int,
         include_timing: bool,
+        execution_mode: str = "serial",
+        max_parallel_batches: int = 1,
+        context_capsule: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         record = session.get(SessionRecord, session_id)
         if record is None or record.trashed_at is not None:
@@ -539,6 +553,12 @@ class SpeechOptimizationDispatchRunService:
             char_limit=int(char_limit),
             max_units=int(max_units_per_batch),
         )
+        execution_settings = {
+            "execution_mode": str(execution_mode or "serial").strip().lower(),
+            "max_parallel_batches": int(max_parallel_batches),
+        }
+        execution_mode, max_parallel_batches = execution_policy(execution_settings)
+        normalized_capsule = normalize_context_capsule(context_capsule)
         settings = {
             "instructions": str(instructions or ""),
             "char_limit": int(char_limit),
@@ -546,6 +566,10 @@ class SpeechOptimizationDispatchRunService:
             "context_before": int(context_before),
             "context_after": int(context_after),
             "include_timing": bool(include_timing),
+            "execution_mode": execution_mode,
+            "max_parallel_batches": max_parallel_batches,
+            "context_capsule": normalized_capsule,
+            "context_deltas": {},
         }
         stage_keys = {"optimize_tts"}
         source_stage = ROLE_TO_STAGE.get(source.role)
@@ -622,13 +646,38 @@ class SpeechOptimizationDispatchRunService:
         batches: list[SpeechOptimizationDispatchBatch],
     ) -> dict[str, Any]:
         settings = dict(run.settings_json or {})
+        execution_mode, max_parallel_batches = execution_policy(settings)
+        wave_index, wave_start, wave_end = wave_bounds(batch.ordinal, settings)
+        wave_batch_count = max(
+            0,
+            min(
+                max_parallel_batches,
+                sum(1 for item in batches if wave_start <= item.ordinal < wave_end),
+            ),
+        )
         units = [dict(item) for item in (batch.input_json or {}).get("units") or []]
         context_before = max(0, min(20, int(settings.get("context_before") or 4)))
         context_after = max(0, min(20, int(settings.get("context_after") or 2)))
         previous_output: list[dict[str, Any]] = []
+        previous_source: list[dict[str, Any]] = []
         if context_before and batch.ordinal > 0:
             previous = batches[batch.ordinal - 1]
-            if previous.status == "completed":
+            _previous_wave, previous_wave_start, previous_wave_end = wave_bounds(
+                previous.ordinal,
+                settings,
+            )
+            same_parallel_wave = (
+                execution_mode == "parallel"
+                and wave_start == previous_wave_start
+                and previous.ordinal < previous_wave_end
+            )
+            if same_parallel_wave:
+                previous_units = (previous.input_json or {}).get("units") or []
+                previous_source = [
+                    self._boundary_unit(dict(item))
+                    for item in list(previous_units)[-context_before:]
+                ]
+            elif previous.status == "completed":
                 previous_output = [
                     {
                         "text": str(item.get("text") or ""),
@@ -656,7 +705,9 @@ class SpeechOptimizationDispatchRunService:
             "translate, summarize, censor, merge, split, omit, reorder, or invent "
             "content. Return every supplied unit_id exactly once, with unchanged text "
             "when no improvement is warranted. Context entries are read-only and must "
-            "not appear in the result."
+            "not appear in the result. Use delegation.context_capsule as read-only "
+            "shared context. Return newly learned supported metadata only in the "
+            "outer context_delta object, never inside result items."
         )
         if run.tts_service:
             instructions += f"\n\nTarget TTS service: {run.tts_service}."
@@ -689,6 +740,13 @@ class SpeechOptimizationDispatchRunService:
                         "required_count": len(units),
                         "required_order": [int(item["unit_id"]) for item in units],
                     },
+                    "context_delta": {
+                        "placement": "outer",
+                        "description": (
+                            "Optional newly learned supported metadata; do not put "
+                            "context fields in result items."
+                        ),
+                    },
                 },
             },
             "batch": {
@@ -711,8 +769,19 @@ class SpeechOptimizationDispatchRunService:
                 ],
                 "context": {
                     "previous_output": previous_output,
+                    "previous_source": previous_source,
                     "following_source": following_source,
                 },
+            },
+            "delegation": {
+                "execution_mode": execution_mode,
+                "max_parallel_batches": max_parallel_batches,
+                "wave_number": wave_index + 1,
+                "wave_batch_count": wave_batch_count,
+                "context_capsule": context_capsule_for_wave(
+                    settings,
+                    wave_start=wave_start,
+                ),
             },
             "lease_token": batch.lease_token,
             "lease_expires_at": _iso(batch.lease_expires_at),
@@ -772,42 +841,53 @@ class SpeechOptimizationDispatchRunService:
                 candidate.claim_key = None
                 candidate.lease_expires_at = None
                 candidate.updated_at = now
-        active = next(
-            (
-                item
-                for item in batches
-                if item.status == "leased" and _active_lease(item.lease_expires_at, now)
-            ),
-            None,
+        first_incomplete = next(
+            (item for item in batches if item.status != "completed"), None
         )
-        if active is not None:
-            if active.claim_key == claim_key:
-                return self._claim_response(run, active, batches)
-            expires_at = _aware(active.lease_expires_at) or now
-            raise DispatchError(
-                "run_busy",
-                "Another worker holds the active speech-optimisation batch.",
-                409,
-                retryable=True,
-                details={
-                    "batch_id": active.id,
-                    "retry_after_seconds": max(
-                        1, int((expires_at - now).total_seconds())
-                    ),
-                },
-            )
-        batch = next((item for item in batches if item.status == "ready"), None)
-        if batch is None:
+        if first_incomplete is None:
             raise DispatchError(
                 "run_finalizing",
                 "All batches are accepted and the artifact is finalizing.",
                 409,
                 retryable=True,
             )
-        if any(item.status != "completed" for item in batches[: batch.ordinal]):
+        _wave_index, wave_start, wave_end = wave_bounds(
+            first_incomplete.ordinal,
+            dict(run.settings_json or {}),
+        )
+        current_wave = batches[wave_start:wave_end]
+        active = [
+            item
+            for item in current_wave
+            if item.status == "leased" and _active_lease(item.lease_expires_at, now)
+        ]
+        ready = [item for item in current_wave if item.status == "ready"]
+        if not ready and active:
+            nearest = min(
+                active,
+                key=lambda item: (
+                    _aware(item.lease_expires_at) or now,
+                    item.ordinal,
+                ),
+            )
+            expires_at = _aware(nearest.lease_expires_at) or now
+            raise DispatchError(
+                "run_busy",
+                "Another worker holds the active speech-optimisation batch.",
+                409,
+                retryable=True,
+                details={
+                    "batch_id": nearest.id,
+                    "retry_after_seconds": max(
+                        1, int((expires_at - now).total_seconds())
+                    ),
+                },
+            )
+        batch = ready[0] if ready else None
+        if batch is None:
             raise DispatchError(
                 "batch_not_ready",
-                "Speech-optimisation batches must be completed in order.",
+                "The current speech-optimisation wave is not ready.",
                 409,
                 retryable=True,
             )
@@ -991,6 +1071,7 @@ class SpeechOptimizationDispatchRunService:
         lease_token: str,
         submission_key: str,
         result: dict[str, Any],
+        context_delta: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], int]:
         batch = session.get(SpeechOptimizationDispatchBatch, batch_id)
         if batch is None:
@@ -998,7 +1079,22 @@ class SpeechOptimizationDispatchRunService:
         run = session.get(SpeechOptimizationDispatchRun, batch.dispatch_run_id)
         if run is None:
             raise DispatchError("not_found", "Dispatch run not found.", 404)
-        raw_hash = _response_hash(result)
+        try:
+            normalized_delta = normalize_context_delta(context_delta)
+        except (TypeError, ValueError) as error:
+            raise DispatchError(
+                "invalid_context_delta",
+                str(error),
+                422,
+            ) from error
+        has_context_delta = any(
+            bool(normalized_delta[field]) for field in normalized_delta
+        )
+        raw_hash = _response_hash(
+            {"result": result, "context_delta": normalized_delta}
+            if has_context_delta
+            else result
+        )
         if batch.status == "completed":
             if batch.submission_key == submission_key and batch.output_hash == raw_hash:
                 if run.status == "finalizing":
@@ -1033,6 +1129,19 @@ class SpeechOptimizationDispatchRunService:
                 413,
             )
         normalized = self._normalize_result(batch, result)
+        try:
+            settings = store_context_delta(
+                dict(run.settings_json or {}),
+                ordinal=batch.ordinal,
+                delta=normalized_delta,
+            )
+            context_capsule_for_wave(settings, wave_start=run.batch_count)
+        except ValueError as error:
+            raise DispatchError(
+                "invalid_context_delta",
+                str(error),
+                422,
+            ) from error
         batch.status = "completed"
         batch.normalized_output_json = normalized
         batch.output_hash = raw_hash
@@ -1040,6 +1149,7 @@ class SpeechOptimizationDispatchRunService:
         batch.accepted_at = now
         batch.lease_expires_at = None
         batch.updated_at = now
+        run.settings_json = settings
         run.completed_batch_count = int(
             session.scalar(
                 select(func.count(SpeechOptimizationDispatchBatch.id)).where(

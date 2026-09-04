@@ -562,9 +562,7 @@ def _managed_provider_voice_id(voice: Voice) -> str:
 
 
 def _normalized_provider_registration_id(value: object) -> str:
-    return re.sub(r"[^a-z0-9]+", "_", str(value or "").strip().casefold()).strip(
-        "_"
-    )
+    return re.sub(r"[^a-z0-9]+", "_", str(value or "").strip().casefold()).strip("_")
 
 
 def _secret_free_tts_settings(settings: dict[str, Any]) -> dict[str, Any]:
@@ -8103,12 +8101,16 @@ class WorkflowHandlers:
             output_assembly_settings_snapshot,
         )
 
-        assembly_snapshot = output_assembly_settings_snapshot(resolved_settings_snapshot)
+        assembly_snapshot = output_assembly_settings_snapshot(
+            resolved_settings_snapshot
+        )
         settings_hash = output_assembly_settings_hash(resolved_settings_snapshot)
         with self.database.session() as session:
             run = session.get(GenerationRun, generation_run_id)
             if run is None or run.session_id != session_id:
-                raise ValueError("The selected generation run does not belong to this session.")
+                raise ValueError(
+                    "The selected generation run does not belong to this session."
+                )
             if run.status != "completed":
                 raise ValueError("Only a completed generation run can be exported.")
             existing_candidates = list(
@@ -8162,7 +8164,9 @@ class WorkflowHandlers:
             return None
         artifact_id = str((result or {}).get("artifact_id") or "")
         if not artifact_id:
-            raise ValueError("The selected generation run could not be assembled for export.")
+            raise ValueError(
+                "The selected generation run could not be assembled for export."
+            )
         return artifact_id
 
     def export_variant(self, payload, progress, cancel_event):
@@ -8171,7 +8175,9 @@ class WorkflowHandlers:
         settings = dict(payload.get("settings") or {})
         generation_run_id = str(settings.get("generation_run_id") or "").strip()
         resolved_snapshot = payload.get("resolved_settings_snapshot")
-        resolved_snapshot = resolved_snapshot if isinstance(resolved_snapshot, dict) else {}
+        resolved_snapshot = (
+            resolved_snapshot if isinstance(resolved_snapshot, dict) else {}
+        )
         record = self._session_record(str(payload.get("session_id") or ""))
         export_mode = str(settings.get("export_mode") or "media").lower()
         audio_mode = normalize_audio_mode(settings.get("audio_mode"))
@@ -8296,19 +8302,40 @@ class WorkflowHandlers:
             selected_audio = None
             selected_run_id = str(settings.get("generation_run_id") or "").strip()
             if selected_run_id:
-                assembly_query = select(OutputAssembly).where(
-                    OutputAssembly.session_id == session_id,
-                    OutputAssembly.generation_run_id == selected_run_id,
-                    OutputAssembly.status == "completed",
-                    OutputAssembly.artifact_id.is_not(None),
+                assembly_candidates = list(
+                    session.scalars(
+                        select(OutputAssembly)
+                        .join(Artifact, Artifact.id == OutputAssembly.artifact_id)
+                        .where(
+                            OutputAssembly.session_id == session_id,
+                            OutputAssembly.generation_run_id == selected_run_id,
+                            OutputAssembly.status == "completed",
+                            Artifact.state == "current",
+                        )
+                        .order_by(OutputAssembly.created_at.desc())
+                    ).all()
                 )
                 if expected_assembly_settings_hash:
-                    assembly_query = assembly_query.where(
-                        OutputAssembly.settings_hash == expected_assembly_settings_hash
+                    selected_assembly = next(
+                        (
+                            candidate
+                            for candidate in assembly_candidates
+                            if candidate.settings_hash
+                            == expected_assembly_settings_hash
+                            or output_assembly_settings_hash(
+                                dict(
+                                    (candidate.settings_json or {}).get("resolved")
+                                    or {}
+                                )
+                            )
+                            == expected_assembly_settings_hash
+                        ),
+                        None,
                     )
-                selected_assembly = session.scalar(
-                    assembly_query.order_by(OutputAssembly.created_at.desc())
-                )
+                else:
+                    selected_assembly = (
+                        assembly_candidates[0] if assembly_candidates else None
+                    )
                 if selected_assembly is None:
                     if expected_assembly_settings_hash:
                         stale_assembly = session.scalar(

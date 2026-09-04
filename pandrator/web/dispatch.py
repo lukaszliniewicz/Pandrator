@@ -37,6 +37,14 @@ from pandrator.logic.dubbing.srt_utils import (
 from .artifact_selection import ROLE_TO_STAGE
 from .artifacts import ArtifactService, sha256_file
 from .database import Database
+from .dispatch_context import (
+    context_capsule_for_wave,
+    execution_policy,
+    normalize_context_capsule,
+    normalize_context_delta,
+    store_context_delta,
+    wave_bounds,
+)
 from .models import (
     Artifact,
     DispatchBatch,
@@ -147,6 +155,7 @@ class DispatchRunService:
     @staticmethod
     def _run_payload(run: DispatchRun) -> dict[str, Any]:
         settings = dict(run.settings_json or {})
+        execution_mode, max_parallel_batches = execution_policy(settings)
         timing_context_mode = normalize_timing_context_mode(
             settings.get("timing_context_mode"),
             legacy_enabled=settings.get("include_timing_context"),
@@ -162,10 +171,10 @@ class DispatchRunService:
             "source_content_hash": run.source_content_hash,
             "source_language": run.source_language,
             "target_language": run.target_language,
+            "execution_mode": execution_mode,
+            "max_parallel_batches": max_parallel_batches,
             "char_limit": int(settings.get("char_limit") or 6000),
-            "max_segments_per_batch": int(
-                settings.get("max_segments_per_batch") or 40
-            ),
+            "max_segments_per_batch": int(settings.get("max_segments_per_batch") or 40),
             "no_remove_subtitles": bool(settings.get("no_remove_subtitles")),
             "context_before": DispatchRunService._context_count(
                 settings, "context_before", 8
@@ -430,6 +439,9 @@ class DispatchRunService:
         timing_context_mode: str,
         substantial_gap_ms: int,
         glossary: dict[str, str],
+        execution_mode: str = "serial",
+        max_parallel_batches: int = 1,
+        context_capsule: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         kind = self._validate_kind(kind)
         record = session.get(SessionRecord, session_id)
@@ -510,6 +522,15 @@ class DispatchRunService:
                 422,
             )
         normalized_glossary = merge_glossaries(glossary)
+        execution_settings = {
+            "execution_mode": str(execution_mode or "serial").strip().lower(),
+            "max_parallel_batches": int(max_parallel_batches),
+        }
+        # The route and MCP schema validate this packet before it reaches the
+        # service; normalize again at the persistence boundary so settings
+        # remain safe for older/direct callers too.
+        execution_mode, max_parallel_batches = execution_policy(execution_settings)
+        normalized_capsule = normalize_context_capsule(context_capsule)
         settings = {
             "instructions": str(instructions or ""),
             "char_limit": int(char_limit),
@@ -523,6 +544,11 @@ class DispatchRunService:
             "substantial_gap_ms": int(substantial_gap_ms),
             "glossary": normalized_glossary,
             "known_speakers": sorted(set(speakers.values()), key=str.casefold),
+            "execution_mode": execution_mode,
+            "max_parallel_batches": max_parallel_batches,
+            "context_capsule": normalized_capsule,
+            "context_deltas": {},
+            "glossary_deltas": {},
         }
         selection_snapshot = self._selection_snapshot(
             session,
@@ -610,6 +636,54 @@ class DispatchRunService:
             }
         return snapshot
 
+    @staticmethod
+    def _glossary_for_wave(
+        run: DispatchRun,
+        settings: dict[str, Any],
+        *,
+        wave_start: int,
+    ) -> dict[str, str]:
+        """Return the glossary snapshot shared by one deterministic wave."""
+
+        # Runs created before deterministic glossary deltas were introduced
+        # only have the already-merged run column. Preserve their behavior.
+        raw_deltas = settings.get("glossary_deltas")
+        if not isinstance(raw_deltas, dict):
+            return dict(run.glossary_json or {})
+        deltas: list[tuple[int, Any]] = []
+        for raw_ordinal, value in raw_deltas.items():
+            try:
+                ordinal = int(raw_ordinal)
+            except (TypeError, ValueError):
+                continue
+            if ordinal < wave_start:
+                deltas.append((ordinal, value))
+        return merge_glossaries(
+            settings.get("glossary"),
+            *(value for _ordinal, value in sorted(deltas, key=lambda item: item[0])),
+            settings.get("glossary"),
+        )
+
+    @classmethod
+    def _rebuild_glossary(cls, settings: dict[str, Any]) -> dict[str, str]:
+        """Merge accepted glossary updates in ordinal order, never completion order."""
+
+        raw_deltas = settings.get("glossary_deltas")
+        if not isinstance(raw_deltas, dict):
+            return merge_glossaries(settings.get("glossary"))
+        deltas: list[tuple[int, Any]] = []
+        for raw_ordinal, value in raw_deltas.items():
+            try:
+                ordinal = int(raw_ordinal)
+            except (TypeError, ValueError):
+                continue
+            deltas.append((ordinal, value))
+        return merge_glossaries(
+            settings.get("glossary"),
+            *(value for _ordinal, value in sorted(deltas, key=lambda item: item[0])),
+            settings.get("glossary"),
+        )
+
     def _claim_response(
         self,
         run: DispatchRun,
@@ -617,6 +691,15 @@ class DispatchRunService:
         batches: list[DispatchBatch],
     ) -> dict[str, Any]:
         settings = dict(run.settings_json or {})
+        execution_mode, max_parallel_batches = execution_policy(settings)
+        wave_index, wave_start, wave_end = wave_bounds(batch.ordinal, settings)
+        wave_batch_count = max(
+            0,
+            min(
+                max_parallel_batches,
+                sum(1 for item in batches if wave_start <= item.ordinal < wave_end),
+            ),
+        )
         known = self._known_speakers(run)
         timing_context_mode = normalize_timing_context_mode(
             settings.get("timing_context_mode"),
@@ -628,6 +711,11 @@ class DispatchRunService:
         )
         context_before = self._context_count(settings, "context_before", 8)
         context_after = self._context_count(settings, "context_after", 2)
+        glossary_snapshot = self._glossary_for_wave(
+            run,
+            settings,
+            wave_start=wave_start,
+        )
         block = list(batch.input_json or [])
         if run.kind == "correction":
             instructions = build_correction_task_instructions(
@@ -647,6 +735,13 @@ class DispatchRunService:
                     + ([] if settings.get("no_remove_subtitles") else ["delete"]),
                     "identity_field": "cue_ids",
                 },
+                "context_delta": {
+                    "placement": "outer",
+                    "description": (
+                        "Optional newly learned supported metadata; do not put "
+                        "context fields in result items."
+                    ),
+                },
             }
         else:
             instructions = build_translation_task_instructions(
@@ -654,7 +749,7 @@ class DispatchRunService:
                 source_language=run.source_language,
                 target_language=str(run.target_language or ""),
                 translation_instructions=str(settings.get("instructions") or ""),
-                glossary=dict(run.glossary_json or {}),
+                glossary=glossary_snapshot,
                 no_remove_subtitles=bool(settings.get("no_remove_subtitles")),
                 timing_context_mode=timing_context_mode,
                 substantial_gap_ms=substantial_gap_ms,
@@ -669,13 +764,27 @@ class DispatchRunService:
                     "required_count": len(block),
                 },
                 "glossary_updates_field": "glossary_updates",
+                "context_delta": {
+                    "placement": "outer",
+                    "description": (
+                        "Optional newly learned supported metadata; do not put "
+                        "context fields in result items."
+                    ),
+                },
             }
         instructions += (
             "\n\nBoundary context policy:\n"
             "- `batch.context.previous_output` and "
-            "`batch.context.following_source` are continuity evidence only. "
+            "`batch.context.previous_source` and "
+            "`batch.context.following_source` are read-only continuity evidence "
+            "only. "
             "Never return operations or translations for those entries; submit "
             "results only for `batch.cues`."
+            "\n\nDelegation context policy:\n"
+            "- Use the immutable `delegation.context_capsule` snapshot for "
+            "consistency across this wave.\n"
+            "- Submit only newly learned supported metadata in the outer "
+            "`context_delta`; do not include secrets or arbitrary fields."
         )
         cues = [
             subtitle_task_cue(
@@ -685,12 +794,28 @@ class DispatchRunService:
             for item in block
         ]
         previous_output: list[dict[str, Any]] = []
+        previous_source: list[dict[str, Any]] = []
         if context_before and batch.ordinal > 0:
             previous_batch = batches[batch.ordinal - 1]
-            if previous_batch.status == "completed":
-                previous_items = list(
-                    previous_batch.normalized_output_json or []
-                )[-context_before:]
+            _previous_wave, previous_wave_start, previous_wave_end = wave_bounds(
+                previous_batch.ordinal,
+                settings,
+            )
+            same_parallel_wave = (
+                execution_mode == "parallel"
+                and wave_start == previous_wave_start
+                and previous_batch.ordinal < previous_wave_end
+            )
+            if same_parallel_wave:
+                previous_source = [
+                    cue
+                    for item in list(previous_batch.input_json or [])[-context_before:]
+                    if (cue := subtitle_boundary_cue(item)) is not None
+                ]
+            elif previous_batch.status == "completed":
+                previous_items = list(previous_batch.normalized_output_json or [])[
+                    -context_before:
+                ]
                 previous_output = [
                     cue
                     for item in previous_items
@@ -722,15 +847,9 @@ class DispatchRunService:
                 "target_language": run.target_language,
                 "instructions": instructions,
                 "result_contract": result_contract,
-                "no_remove_subtitles": bool(
-                    settings.get("no_remove_subtitles")
-                ),
+                "no_remove_subtitles": bool(settings.get("no_remove_subtitles")),
                 "known_speakers": sorted(known, key=str.casefold),
-                "glossary": (
-                    dict(run.glossary_json or {})
-                    if run.kind == "translation"
-                    else {}
-                ),
+                "glossary": (glossary_snapshot if run.kind == "translation" else {}),
                 "timing_context_mode": timing_context_mode,
                 "substantial_gap_ms": (
                     substantial_gap_ms if timing_context_mode == "full" else None
@@ -744,8 +863,19 @@ class DispatchRunService:
                 "cues": cues,
                 "context": {
                     "previous_output": previous_output,
+                    "previous_source": previous_source,
                     "following_source": following_source,
                 },
+            },
+            "delegation": {
+                "execution_mode": execution_mode,
+                "max_parallel_batches": max_parallel_batches,
+                "wave_number": wave_index + 1,
+                "wave_batch_count": wave_batch_count,
+                "context_capsule": context_capsule_for_wave(
+                    settings,
+                    wave_start=wave_start,
+                ),
             },
             "lease_token": batch.lease_token,
             "lease_expires_at": _iso(batch.lease_expires_at),
@@ -787,57 +917,60 @@ class DispatchRunService:
                 "run_not_claimable", "Dispatch run is no longer claimable.", 409
             )
         for item in batches:
-            if (
-                item.status == "leased"
-                and _lease_is_expired(item.lease_expires_at, now)
+            if item.status == "leased" and _lease_is_expired(
+                item.lease_expires_at, now
             ):
                 item.status = "ready"
                 item.lease_token = None
                 item.claim_key = None
                 item.lease_expires_at = None
                 item.updated_at = now
-        active = next(
-            (
-                item
-                for item in batches
-                if item.status == "leased"
-                and _lease_is_active(item.lease_expires_at, now)
-            ),
+        incomplete = next(
+            (item for item in batches if item.status != "completed"),
             None,
         )
-        if active is not None:
-            if active.claim_key == claim_key:
-                return self._claim_response(run, active, batches)
-            active_expires_at = _aware(active.lease_expires_at)
-            raise DispatchError(
-                "dispatch_busy",
-                "Another dispatch batch is currently leased.",
-                409,
-                retryable=True,
-                details={
-                    "batch_id": active.id,
-                    "retry_after_seconds": max(
-                        1,
-                        int(
-                            (
-                                (active_expires_at or now) - now
-                            ).total_seconds()
-                        ),
-                    ),
-                },
-            )
-        next_batch = next((item for item in batches if item.status == "ready"), None)
-        if next_batch is None:
+        if incomplete is None:
             raise DispatchError(
                 "run_not_claimable", "No ready dispatch batch remains.", 409
             )
-        if any(item.status != "completed" for item in batches[: next_batch.ordinal]):
+        _wave_index, wave_start, wave_end = wave_bounds(
+            incomplete.ordinal,
+            run.settings_json or {},
+        )
+        current_wave = batches[wave_start:wave_end]
+        ready = [item for item in current_wave if item.status == "ready"]
+        active = [
+            item
+            for item in current_wave
+            if item.status == "leased" and _lease_is_active(item.lease_expires_at, now)
+        ]
+        if not ready:
+            if active:
+                nearest = min(
+                    active,
+                    key=lambda item: _aware(item.lease_expires_at) or now,
+                )
+                nearest_expires_at = _aware(nearest.lease_expires_at)
+                raise DispatchError(
+                    "dispatch_busy",
+                    "Dispatch batches in the current wave are currently leased.",
+                    409,
+                    retryable=True,
+                    details={
+                        "batch_id": nearest.id,
+                        "retry_after_seconds": max(
+                            1,
+                            int(((nearest_expires_at or now) - now).total_seconds()),
+                        ),
+                    },
+                )
             raise DispatchError(
-                "dispatch_sequential",
-                "Dispatch batches must be completed in order.",
+                "run_not_claimable",
+                "No ready dispatch batch remains in the current wave.",
                 409,
                 retryable=True,
             )
+        next_batch = ready[0]
         next_batch.status = "leased"
         next_batch.claim_key = claim_key
         next_batch.lease_token = secrets.token_urlsafe(32)
@@ -1119,6 +1252,7 @@ class DispatchRunService:
         submission_key: str,
         result: dict[str, Any] | None,
         response_text: str | None,
+        context_delta: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], int]:
         batch = session.get(DispatchBatch, batch_id)
         if batch is None:
@@ -1127,7 +1261,25 @@ class DispatchRunService:
         if run is None:
             raise DispatchError("not_found", "Dispatch run not found.", 404)
         submission: Any = result if result is not None else str(response_text or "")
+        try:
+            normalized_context_delta = normalize_context_delta(context_delta)
+        except (TypeError, ValueError) as error:
+            raise DispatchError(
+                "invalid_context_delta",
+                str(error),
+                422,
+            ) from error
+        has_context_delta = any(
+            bool(value) for value in normalized_context_delta.values()
+        )
         raw_hash = _response_hash(submission)
+        if has_context_delta:
+            raw_hash = _canonical_hash(
+                {
+                    "result": submission,
+                    "context_delta": normalized_context_delta,
+                }
+            )
         if batch.status == "completed":
             if batch.submission_key == submission_key and batch.output_hash == raw_hash:
                 if run.status == "finalizing":
@@ -1188,6 +1340,19 @@ class DispatchRunService:
                 "A dispatch run cannot remove every subtitle.",
                 422,
             )
+        try:
+            settings = store_context_delta(
+                dict(run.settings_json or {}),
+                ordinal=batch.ordinal,
+                delta=normalized_context_delta,
+            )
+            context_capsule_for_wave(settings, wave_start=run.batch_count)
+        except ValueError as error:
+            raise DispatchError(
+                "invalid_context_delta",
+                str(error),
+                422,
+            ) from error
         batch.status = "completed"
         batch.normalized_output_json = normalized
         batch.output_hash = raw_hash
@@ -1195,6 +1360,19 @@ class DispatchRunService:
         batch.accepted_at = now
         batch.lease_expires_at = None
         batch.updated_at = now
+        if run.kind == "translation":
+            glossary_deltas = settings.get("glossary_deltas")
+            legacy_glossary_state = "glossary_deltas" not in settings
+            normalized_glossary_deltas = (
+                dict(glossary_deltas) if isinstance(glossary_deltas, dict) else {}
+            )
+            if legacy_glossary_state and run.glossary_json:
+                # Preserve accepted model additions from a pre-wave run; no
+                # migration is needed, and the synthetic ordinal sorts first.
+                normalized_glossary_deltas["-1"] = dict(run.glossary_json)
+            normalized_glossary_deltas[str(batch.ordinal)] = glossary
+            settings["glossary_deltas"] = normalized_glossary_deltas
+        run.settings_json = settings
         run.completed_batch_count = int(
             session.scalar(
                 select(func.count(DispatchBatch.id)).where(
@@ -1204,14 +1382,11 @@ class DispatchRunService:
             )
             or 0
         )
-        if run.kind == "translation" and glossary:
+        if run.kind == "translation":
             # User-supplied mappings are authoritative. Model additions may
             # extend the working glossary, but cannot silently replace them.
-            run.glossary_json = merge_glossaries(
-                run.glossary_json,
-                glossary,
-                dict(run.settings_json or {}).get("glossary"),
-            )
+            # Rebuild from ordinal deltas so completion order is irrelevant.
+            run.glossary_json = self._rebuild_glossary(settings)
         if run.completed_batch_count >= run.batch_count:
             run.status = "finalizing"
             run.error_code = None

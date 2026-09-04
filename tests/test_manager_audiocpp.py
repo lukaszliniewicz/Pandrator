@@ -62,16 +62,12 @@ class AudioCppManagerTests(unittest.TestCase):
                 environment={"CUDA_HOME": directory},
             )
             definition = builtin_registry().definition("audio_cpp")
-            assets, effective = resolve_assets(
-                context, ComputeVariant.CUDA, definition
-            )
+            assets, effective = resolve_assets(context, ComputeVariant.CUDA, definition)
 
         self.assertEqual(ComputeVariant.CUDA, effective)
         self.assertEqual(1, len(assets))
         self.assertEqual("cuda_binary", assets[0].kind)
-        self.assertEqual(
-            "audio.cpp-v0.7.1-linux-x86_64-cuda12.tar.gz", assets[0].name
-        )
+        self.assertEqual("audio.cpp-v0.7.1-linux-x86_64-cuda12.tar.gz", assets[0].name)
         self.assertEqual(
             "f55d39c048a2fffc96f245111fc47cdfff903550d9d352fa0a7f9e4da2356ab7",
             assets[0].sha256,
@@ -228,9 +224,7 @@ class AudioCppManagerTests(unittest.TestCase):
                 mock.patch.object(
                     FilesystemTaskHandler,
                     "_sha256_file",
-                    return_value=MODEL_PACKAGES[
-                        "qwen3_tts_1_7b_base_q8_0"
-                    ].sha256[0],
+                    return_value=MODEL_PACKAGES["qwen3_tts_1_7b_base_q8_0"].sha256[0],
                 ),
             ):
                 result = handler.execute(execution, stage)
@@ -246,7 +240,9 @@ class AudioCppManagerTests(unittest.TestCase):
                 ]
                 self.assertEqual("qwen3_tts_1_7b_base_q8_0", config["models"][0]["id"])
                 self.assertTrue(provenance["digest_verified"])
-                self.assertEqual(AUDIO_CPP_MODEL_REVISION, provenance["requested_revision"])
+                self.assertEqual(
+                    AUDIO_CPP_MODEL_REVISION, provenance["requested_revision"]
+                )
                 staged_spec = json.loads(
                     (target / "model_specs" / "qwen3_tts.json").read_text(
                         encoding="utf-8"
@@ -364,9 +360,7 @@ class AudioCppManagerTests(unittest.TestCase):
                 mock.patch.object(
                     FilesystemTaskHandler,
                     "_sha256_file",
-                    return_value=MODEL_PACKAGES[
-                        "qwen3_tts_1_7b_base_q8_0"
-                    ].sha256[0],
+                    return_value=MODEL_PACKAGES["qwen3_tts_1_7b_base_q8_0"].sha256[0],
                 ),
                 mock.patch("sys.executable", fake_launcher),
                 mock.patch.object(
@@ -389,4 +383,3 @@ class AudioCppManagerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

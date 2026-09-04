@@ -37,6 +37,8 @@ _RUN_KEYS = (
     "context_before",
     "context_after",
     "include_timing",
+    "execution_mode",
+    "max_parallel_batches",
     "status",
     "batch_count",
     "total_batches",
@@ -79,6 +81,37 @@ _SUBMIT_KEYS = (
     "error_code",
     "error_message",
 )
+_TASK_KEYS = (
+    "kind",
+    "output_role",
+    "language",
+    "voice_language",
+    "tts_service",
+    "instructions",
+    "result_contract",
+)
+_CLAIMED_BATCH_KEYS = (
+    "id_namespace",
+    "unit_count",
+    "valid_unit_ids",
+)
+_UNIT_KEYS = ("unit_id", "text", "language", "speaker")
+_TIMING_KEYS = ("start_ms", "end_ms", "duration_ms")
+_BOUNDARY_KEYS = ("text", "language", "speaker")
+_DELEGATION_KEYS = (
+    "execution_mode",
+    "max_parallel_batches",
+    "wave_number",
+    "wave_batch_count",
+)
+_CONTEXT_CAPSULE_KEYS = (
+    "overview",
+    "terminology",
+    "entities",
+    "style_rules",
+    "decisions",
+    "notes",
+)
 
 
 def _fields(payload: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
@@ -93,6 +126,76 @@ def _metadata(payload: dict[str, Any]) -> dict[str, Any]:
         result["batches"] = [
             _fields(item, _BATCH_KEYS) for item in batches[:500] if isinstance(item, dict)
         ]
+    return result
+
+
+def _claim(payload: dict[str, Any]) -> dict[str, Any]:
+    """Project the canonical claim packet without unrelated provider data."""
+
+    result: dict[str, Any] = {"schema_version": "1"}
+    result.update(
+        _fields(
+            payload,
+            (
+                "run_id",
+                "batch_id",
+                "batch_ordinal",
+                "status",
+                "run_status",
+                "batch_status",
+                "lease_token",
+                "lease_expires_at",
+            ),
+        )
+    )
+    task = payload.get("task")
+    if isinstance(task, dict):
+        result["task"] = _fields(task, _TASK_KEYS)
+    batch = payload.get("batch")
+    if isinstance(batch, dict):
+        projected_batch = _fields(batch, _CLAIMED_BATCH_KEYS)
+        units = batch.get("units")
+        if isinstance(units, list):
+            projected_units: list[dict[str, Any]] = []
+            for item in units[:500]:
+                if not isinstance(item, dict):
+                    continue
+                projected_unit = _fields(item, _UNIT_KEYS)
+                timing = item.get("timing")
+                if isinstance(timing, dict):
+                    projected_unit["timing"] = _fields(timing, _TIMING_KEYS)
+                projected_units.append(projected_unit)
+            projected_batch["units"] = projected_units
+        context = batch.get("context")
+        if isinstance(context, dict):
+            projected_context: dict[str, list[dict[str, Any]]] = {}
+            for context_key in (
+                "previous_output",
+                "previous_source",
+                "following_source",
+            ):
+                values = context.get(context_key)
+                projected_context[context_key] = (
+                    [
+                        _fields(item, _BOUNDARY_KEYS)
+                        for item in values[:20]
+                        if isinstance(item, dict)
+                    ]
+                    if isinstance(values, list)
+                    else []
+                )
+            projected_batch["context"] = projected_context
+        result["batch"] = projected_batch
+    delegation = payload.get("delegation")
+    if isinstance(delegation, dict):
+        projected_delegation = _fields(delegation, _DELEGATION_KEYS)
+        capsule = delegation.get("context_capsule")
+        if isinstance(capsule, dict):
+            projected_delegation["context_capsule"] = _fields(
+                capsule,
+                _CONTEXT_CAPSULE_KEYS,
+            )
+        result["delegation"] = projected_delegation
     return result
 
 
@@ -126,7 +229,7 @@ def _claim_action(run_id: str, sequence: str) -> NextAction:
             "idempotency_key": _action_key(f"claim:{sequence}", run_id),
         },
         reason=(
-            "Claim the next sequential speech-text batch, optimize every actionable "
+            "Claim the next available speech-text batch, optimize every actionable "
             "unit, and retain the lease token only for that batch."
         ),
     )
@@ -156,6 +259,9 @@ def create_speech_optimization_dispatch_run(
         context_before=arguments.context_before,
         context_after=arguments.context_after,
         include_timing=arguments.include_timing,
+        execution_mode=arguments.execution_mode,
+        max_parallel_batches=arguments.max_parallel_batches,
+        context_capsule=arguments.context_capsule.model_dump(mode="json"),
         idempotency_key=arguments.idempotency_key,
     )
     run_id = _run_id(result)
@@ -212,24 +318,7 @@ def claim_speech_optimization_dispatch_batch(
         lease_seconds=arguments.lease_seconds,
         idempotency_key=arguments.idempotency_key,
     )
-    return {
-        "schema_version": "1",
-        **_fields(
-            payload,
-            (
-                "run_id",
-                "batch_id",
-                "batch_ordinal",
-                "status",
-                "run_status",
-                "batch_status",
-                "lease_token",
-                "lease_expires_at",
-            ),
-        ),
-        "task": dict(payload.get("task") or {}),
-        "batch": dict(payload.get("batch") or {}),
-    }
+    return _claim(payload)
 
 
 def renew_speech_optimization_dispatch_batch(
@@ -265,6 +354,7 @@ def submit_speech_optimization_dispatch_batch(
         arguments.batch_id,
         lease_token=arguments.lease_token,
         result=arguments.result.model_dump(mode="json"),
+        context_delta=arguments.context_delta.model_dump(mode="json"),
         idempotency_key=arguments.idempotency_key,
     )
     projected = {"schema_version": "1", **_fields(result, _SUBMIT_KEYS)}

@@ -270,7 +270,14 @@ test('manager shows and controls a running optional engine', async ({
   const fixture = await installManagerFixture(page);
   await page.goto('/recovery');
 
-  await page.getByText('Text to speech', { exact: true }).click();
+  const textToSpeech = page.locator(
+    'details.component-section[data-section="text_to_speech"]'
+  );
+  if (
+    !(await textToSpeech.evaluate((section) => section.hasAttribute('open')))
+  ) {
+    await textToSpeech.locator('summary').click();
+  }
   const card = page.locator('[data-component-id="kokoro"]');
   await expect(card.getByText('Running', { exact: true })).toBeVisible();
   await card.getByRole('button', { name: 'Stop Kokoro' }).click();

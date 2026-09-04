@@ -31,6 +31,10 @@ The current tool surface supports:
 - session creation and revision-safe session, source, and settings changes;
 - catalog-backed TTS service, model, and voice selection plus typed export
   variants and generation-run selection;
+- one-turn model-orchestrated workflow procedures that sequence passive stages
+  before creating the immutable native workflow plan;
+- filtered parameter-definition discovery for exact setting names, sections, and
+  workflow kinds;
 - immutable workflow planning followed by explicit execution;
 - passive subtitle correction/translation, PDF/EPUB source-cleaning, and
   speech-text optimization runs with sequential pull, short-lived batch
@@ -46,6 +50,51 @@ plan, presents its effects and confirmation requirements, and then executes
 that exact plan. Every write uses an idempotency key. Concurrent changes
 produce an explicit revision or stale-plan error instead of a silent
 overwrite.
+
+### Model-orchestrated workflow procedures
+
+`pandrator_plan_orchestrated_workflow` is the single-turn intent/procedure layer
+above the existing immutable native plan. It reads the live session and
+workflow, returns canonical correction → translation → speech-optimization
+passive phases, and names each create/claim/submit loop. The first
+`next_action` starts the requested passive stage; after those artifacts are
+complete, the procedure points to `pandrator_plan_workflow`, whose exact plan
+must still be reviewed and executed. The procedural result is not an immutable
+execution snapshot because passive artifacts change the native workflow state
+fingerprint.
+
+The procedure can carry typed export options and an optional local materialize
+step. A supplied `filename` strictly requires `materialize=true`; filenames
+must be plain names without path separators, NUL, `.` or `..`. Materialization
+lists current export artifacts before downloading the selected artifact. These
+delivery controls stay outside the native `output` overrides; only the typed
+export settings are merged into that final plan. Passive create arguments
+inherit each section's live effective settings and then apply the matching
+safe procedure override. Each generated passive idempotency key is the
+deterministic procedure retry identity for that live revision, goal, and
+resolved packet; changed inputs or revisions produce a new key.
+
+Passive stages default to serial delegation. Set `execution_mode=parallel`
+with `max_parallel_batches` from 2 through 8 to expose one bounded wave to
+separate workers at a time. Every worker in a wave receives the same typed
+context capsule; workers return bounded context deltas, which are merged in
+batch order before the next wave. A parent model can populate the initial
+capsule itself or delegate that extraction first. Serial mode additionally
+hands accepted boundary output to the next worker.
+
+`pandrator_get_work` accepts an optional bounded `wait_seconds` (up to one
+hour). It polls according to the application's `poll_after_ms` hint, clamped
+to a safe 250 ms–10 s interval, and returns wait telemetry. A host's own MCP
+request or gateway timeout can still end the call before this application-side
+wait expires, so clients should preserve the returned work handle and follow
+the generated `next_action` when necessary.
+
+`pandrator_describe_parameters` is the filtered parameter-discovery surface.
+Provide at least one section, name, workflow kind, or query filter; the sidecar
+does not permit an indiscriminate definitions dump. Definitions are passed
+through from the application's safe `{section, name, label, description,
+default, value_type, unit, minimum, maximum, choices, applicability, caveat}`
+contract.
 
 For document workflows, the public
 [document-ingestion reference](https://github.com/lukaszliniewicz/Pandrator/blob/main/docs/reference/document-ingestion.md) explains
@@ -183,7 +232,7 @@ by both modern and maintained legacy hosts.
 
 ## Install
 
-The current release is 0.3.1 and can target Pandrator 0.8.16 or newer. The
+The current release is 0.3.2 and can target Pandrator 0.8.16 or newer. The
 source-cleaning, speech-optimization, and end-to-end workflow tools require
 Pandrator 0.8.17. With Python 3.11 or 3.12, install it as an isolated
 command-line tool:

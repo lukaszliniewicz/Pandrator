@@ -6,6 +6,13 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from .dispatch_context import (
+    MAX_CONTEXT_CAPSULE_BYTES,
+    MAX_CONTEXT_DELTA_BYTES,
+    MAX_PARALLEL_BATCHES,
+    validate_context_size,
+)
+
 CredentialBackend = Literal["database", "environment", "keyring", "file"]
 ApiScope = Literal[
     "app.read",
@@ -518,7 +525,100 @@ class AgentRunCreateRequest(StrictModel):
     settings: dict[str, Any] = Field(default_factory=dict)
 
 
-class DispatchRunCreateRequest(StrictModel):
+_ContextKey = Annotated[str, Field(min_length=1, max_length=200)]
+_ContextValue = Annotated[str, Field(min_length=1, max_length=2_000)]
+_ContextNote = Annotated[str, Field(min_length=1, max_length=2_000)]
+
+
+class _DispatchContextFields(StrictModel):
+    terminology: dict[_ContextKey, _ContextValue] = Field(
+        default_factory=dict,
+        max_length=500,
+    )
+    entities: dict[_ContextKey, _ContextValue] = Field(
+        default_factory=dict,
+        max_length=500,
+    )
+    style_rules: list[_ContextNote] = Field(default_factory=list, max_length=200)
+    decisions: list[_ContextNote] = Field(default_factory=list, max_length=200)
+    notes: list[_ContextNote] = Field(default_factory=list, max_length=200)
+
+
+class DispatchContextDelta(_DispatchContextFields):
+    """Bounded knowledge learned while processing one delegated batch."""
+
+    @model_validator(mode="after")
+    def validate_encoded_size(self):
+        validate_context_size(
+            self.model_dump(mode="json"),
+            maximum_bytes=MAX_CONTEXT_DELTA_BYTES,
+            label="Context delta",
+        )
+        return self
+
+
+class DispatchContextCapsule(_DispatchContextFields):
+    """Shared, parent-supplied or accumulated context for delegated batches."""
+
+    overview: str = Field(default="", max_length=16_000)
+
+    @model_validator(mode="after")
+    def validate_capsule_encoded_size(self):
+        validate_context_size(
+            self.model_dump(mode="json"),
+            maximum_bytes=MAX_CONTEXT_CAPSULE_BYTES,
+            label="Context capsule",
+        )
+        return self
+
+
+class DispatchDelegationContext(StrictModel):
+    execution_mode: Literal["serial", "parallel"]
+    max_parallel_batches: int = Field(ge=1, le=MAX_PARALLEL_BATCHES)
+    wave_number: int = Field(ge=1)
+    wave_batch_count: int = Field(ge=1, le=MAX_PARALLEL_BATCHES)
+    context_capsule: DispatchContextCapsule
+
+
+class DispatchExecutionMixin(StrictModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={
+            "oneOf": [
+                {
+                    "properties": {
+                        "execution_mode": {"const": "serial"},
+                        "max_parallel_batches": {"const": 1},
+                    }
+                },
+                {
+                    "required": ["execution_mode", "max_parallel_batches"],
+                    "properties": {
+                        "execution_mode": {"const": "parallel"},
+                        "max_parallel_batches": {"minimum": 2, "maximum": 8},
+                    },
+                },
+            ]
+        },
+    )
+    execution_mode: Literal["serial", "parallel"] = "serial"
+    max_parallel_batches: int = Field(default=1, ge=1, le=MAX_PARALLEL_BATCHES)
+    context_capsule: DispatchContextCapsule = Field(
+        default_factory=DispatchContextCapsule
+    )
+
+    @model_validator(mode="after")
+    def validate_execution_width(self):
+        if self.execution_mode == "serial" and self.max_parallel_batches != 1:
+            raise ValueError("Serial execution requires max_parallel_batches=1.")
+        if self.execution_mode == "parallel" and self.max_parallel_batches < 2:
+            raise ValueError(
+                "Parallel execution requires max_parallel_batches from 2 to 8."
+            )
+        return self
+
+
+class DispatchRunCreateRequest(DispatchExecutionMixin):
     kind: Literal["correction", "translation"]
     source_artifact_id: str | None = Field(default=None, min_length=1, max_length=80)
     source_language: str | None = Field(default=None, max_length=40)
@@ -666,6 +766,7 @@ class DispatchBatchSubmitRequest(StrictModel):
     lease_token: str = Field(min_length=1, max_length=160)
     result: DispatchStructuredResult | None = None
     response_text: str | None = Field(default=None, max_length=512 * 1024)
+    context_delta: DispatchContextDelta = Field(default_factory=DispatchContextDelta)
 
     @model_validator(mode="after")
     def validate_exactly_one_result(self):
@@ -702,6 +803,7 @@ class DispatchBoundaryCue(StrictModel):
 
 class DispatchBoundaryContext(StrictModel):
     previous_output: list[DispatchBoundaryCue]
+    previous_source: list[DispatchBoundaryCue]
     following_source: list[DispatchBoundaryCue]
 
 
@@ -738,6 +840,7 @@ class DispatchBatchClaimResponse(StrictModel):
     batch_status: str
     task: DispatchTaskContract
     batch: DispatchClaimedBatch
+    delegation: DispatchDelegationContext
     lease_token: str
     lease_expires_at: str | None
 
@@ -763,7 +866,7 @@ class DispatchBatchSubmitResponse(StrictModel):
     error_message: str | None = None
 
 
-class SpeechOptimizationDispatchRunCreateRequest(StrictModel):
+class SpeechOptimizationDispatchRunCreateRequest(DispatchExecutionMixin):
     source_artifact_id: str | None = Field(default=None, min_length=1, max_length=80)
     language: str | None = Field(default=None, min_length=1, max_length=40)
     voice_language: str | None = Field(default=None, min_length=1, max_length=40)
@@ -801,6 +904,7 @@ class SpeechOptimizationDispatchResult(StrictModel):
 class SpeechOptimizationDispatchBatchSubmitRequest(StrictModel):
     lease_token: str = Field(min_length=1, max_length=160)
     result: SpeechOptimizationDispatchResult
+    context_delta: DispatchContextDelta = Field(default_factory=DispatchContextDelta)
 
 
 class SpeechOptimizationDispatchUnitTiming(StrictModel):
@@ -825,6 +929,7 @@ class SpeechOptimizationDispatchBoundaryUnit(StrictModel):
 
 class SpeechOptimizationDispatchContext(StrictModel):
     previous_output: list[SpeechOptimizationDispatchBoundaryUnit]
+    previous_source: list[SpeechOptimizationDispatchBoundaryUnit]
     following_source: list[SpeechOptimizationDispatchBoundaryUnit]
 
 
@@ -856,6 +961,7 @@ class SpeechOptimizationDispatchBatchClaimResponse(StrictModel):
     batch_status: str
     task: SpeechOptimizationDispatchTaskContract
     batch: SpeechOptimizationDispatchClaimedBatch
+    delegation: DispatchDelegationContext
     lease_token: str
     lease_expires_at: str | None
 

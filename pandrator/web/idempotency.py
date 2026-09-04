@@ -166,22 +166,46 @@ class IdempotencyService:
         safe_response = self.redactor.redact_value(response)
         if not isinstance(safe_response, dict):
             safe_response = {}
-        reservation.record.state = (
-            "completed" if status_code < 400 else "failed"
-        )
+        reservation.record.state = "completed" if status_code < 400 else "failed"
         reservation.record.status_code = int(status_code)
         reservation.record.response_json = safe_response
         reservation.record.resource_kind = resource_kind
         reservation.record.resource_id = resource_id
         session.flush()
 
+    def load_in_progress(
+        self,
+        session: Session,
+        reservation_id: str,
+        *,
+        principal: Principal,
+    ) -> IdempotencyReservation:
+        """Reattach the exact committed reservation for a later transaction."""
+        record = session.get(ApiIdempotency, reservation_id)
+        if record is None or record.principal_subject != principal.subject:
+            raise KeyError(reservation_id)
+        if record.state != "in_progress":
+            raise IdempotencyInProgress(
+                "The original request is no longer available for completion."
+            )
+        return IdempotencyReservation(record, replayed=False)
+
+    def abandon_in_progress(
+        self,
+        session: Session,
+        reservation: IdempotencyReservation,
+    ) -> None:
+        """Remove only this fresh unfinished reservation after a local failure."""
+        if reservation.replayed or reservation.record.state != "in_progress":
+            return
+        session.delete(reservation.record)
+        session.flush()
+
     def cleanup(self) -> int:
         with self.database.session() as session:
             return int(
                 session.execute(
-                    delete(ApiIdempotency).where(
-                        ApiIdempotency.expires_at < utcnow()
-                    )
+                    delete(ApiIdempotency).where(ApiIdempotency.expires_at < utcnow())
                 ).rowcount
                 or 0
             )

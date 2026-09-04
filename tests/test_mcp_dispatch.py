@@ -85,12 +85,24 @@ class _Application:
                     "previous_output": [
                         {"text": "Earlier", "unrelated": "must not leak"}
                     ],
-                    "following_source": [
-                        {"text": "Later", "speaker": "S1"}
+                    "previous_source": [
+                        {"text": "Earlier source", "unrelated": "must not leak"}
                     ],
+                    "following_source": [{"text": "Later", "speaker": "S1"}],
                     "unrelated": "must not leak",
                 },
                 "unrelated": "must not leak",
+            },
+            "delegation": {
+                "execution_mode": "parallel",
+                "max_parallel_batches": 3,
+                "wave_number": 1,
+                "wave_batch_count": 3,
+                "context_capsule": {
+                    "overview": "Shared",
+                    "notes": ["Keep this"],
+                    "secret": "must not leak",
+                },
             },
             "unrelated": "must not leak",
         }
@@ -135,9 +147,7 @@ class DispatchHandlerTests(unittest.TestCase):
                 lease_token="lease",
                 result={
                     "kind": "correction",
-                    "operations": [
-                        {"action": "edit", "cue_ids": [1], "texts": []}
-                    ],
+                    "operations": [{"action": "edit", "cue_ids": [1], "texts": []}],
                 },
                 idempotency_key="submit:shape",
             )
@@ -179,6 +189,20 @@ class DispatchHandlerTests(unittest.TestCase):
             ),
         )
         self.assertEqual("run-1", created.result["run_id"])
+        create_call = self.application.calls[0][1]
+        self.assertEqual("serial", create_call["execution_mode"])
+        self.assertEqual(1, create_call["max_parallel_batches"])
+        self.assertEqual(
+            {
+                "overview": "",
+                "terminology": {},
+                "entities": {},
+                "style_rules": [],
+                "decisions": [],
+                "notes": [],
+            },
+            create_call["context_capsule"],
+        )
         self.assertEqual(
             "pandrator_claim_dispatch_batch",
             created.next_actions[0].tool,
@@ -196,6 +220,17 @@ class DispatchHandlerTests(unittest.TestCase):
             ),
         )
         self.assertEqual("accepted", submitted.result["status"])
+        submit_call = self.application.calls[-1][1]
+        self.assertEqual(
+            {
+                "terminology": {},
+                "entities": {},
+                "style_rules": [],
+                "decisions": [],
+                "notes": [],
+            },
+            submit_call["context_delta"],
+        )
         self.assertEqual(
             "pandrator_claim_dispatch_batch",
             submitted.next_actions[0].tool,
@@ -233,6 +268,20 @@ class DispatchHandlerTests(unittest.TestCase):
             claimed.result["batch"]["context"]["previous_output"][0],
         )
         self.assertNotIn("unrelated", claimed.result["task"])
+        self.assertEqual(
+            [{"text": "Earlier source"}],
+            claimed.result["batch"]["context"]["previous_source"],
+        )
+        self.assertEqual(
+            {
+                "execution_mode": "parallel",
+                "max_parallel_batches": 3,
+                "wave_number": 1,
+                "wave_batch_count": 3,
+                "context_capsule": {"overview": "Shared", "notes": ["Keep this"]},
+            },
+            claimed.result["delegation"],
+        )
         self.assertNotIn("source_batch", claimed.result)
         self.assertNotIn("prompt", claimed.result)
 

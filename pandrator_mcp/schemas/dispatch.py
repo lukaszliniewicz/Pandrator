@@ -7,6 +7,10 @@ from typing import Annotated, Literal
 from pydantic import Field, field_validator, model_validator
 
 from .common import ToolInput
+from .delegation import (
+    DelegationContextDeltaInput,
+    DelegationExecutionMixin,
+)
 
 _SAFE_KEY = r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$"
 _SESSION_ID = Field(min_length=1, max_length=80)
@@ -14,7 +18,7 @@ _RUN_ID = Field(min_length=1, max_length=120)
 _BATCH_ID = Field(min_length=1, max_length=120)
 
 
-class CreateDispatchRunInput(ToolInput):
+class CreateDispatchRunInput(DelegationExecutionMixin):
     """Create one server-side correction or translation dispatch run."""
 
     session_id: str = _SESSION_ID
@@ -169,9 +173,7 @@ class DispatchTranslationResultInput(ToolInput):
             if not term.strip() or len(term) > 500:
                 raise ValueError("Glossary terms must be 1-500 characters.")
             if not replacement.strip() or len(replacement) > 2_000:
-                raise ValueError(
-                    "Glossary replacements must be 1-2,000 characters."
-                )
+                raise ValueError("Glossary replacements must be 1-2,000 characters.")
         return value
 
 
@@ -188,6 +190,7 @@ class SubmitDispatchBatchInput(ToolInput):
     lease_token: str = Field(min_length=1, max_length=160)
     result: DispatchStructuredResultInput | None = None
     response_text: str | None = Field(default=None, max_length=524_288)
+    context_delta: DelegationContextDeltaInput = Field(default_factory=DelegationContextDeltaInput)
     idempotency_key: str = Field(
         min_length=8,
         max_length=200,

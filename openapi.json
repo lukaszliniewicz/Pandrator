@@ -351,6 +351,9 @@
             "title": "Batch Status",
             "type": "string"
           },
+          "delegation": {
+            "$ref": "#/components/schemas/DispatchDelegationContext"
+          },
           "lease_expires_at": {
             "anyOf": [
               {
@@ -397,6 +400,7 @@
           "batch_status",
           "task",
           "batch",
+          "delegation",
           "lease_token",
           "lease_expires_at"
         ],
@@ -445,6 +449,9 @@
       "DispatchBatchSubmitRequest": {
         "additionalProperties": false,
         "properties": {
+          "context_delta": {
+            "$ref": "#/components/schemas/DispatchContextDelta"
+          },
           "lease_token": {
             "maxLength": 160,
             "minLength": 1,
@@ -656,10 +663,18 @@
             },
             "title": "Previous Output",
             "type": "array"
+          },
+          "previous_source": {
+            "items": {
+              "$ref": "#/components/schemas/DispatchBoundaryCue"
+            },
+            "title": "Previous Source",
+            "type": "array"
           }
         },
         "required": [
           "previous_output",
+          "previous_source",
           "following_source"
         ],
         "title": "DispatchBoundaryContext",
@@ -736,6 +751,144 @@
           "context"
         ],
         "title": "DispatchClaimedBatch",
+        "type": "object"
+      },
+      "DispatchContextCapsule": {
+        "additionalProperties": false,
+        "description": "Shared, parent-supplied or accumulated context for delegated batches.",
+        "properties": {
+          "decisions": {
+            "items": {
+              "maxLength": 2000,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 200,
+            "title": "Decisions",
+            "type": "array"
+          },
+          "entities": {
+            "additionalProperties": {
+              "maxLength": 2000,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxProperties": 500,
+            "propertyNames": {
+              "maxLength": 200,
+              "minLength": 1
+            },
+            "title": "Entities",
+            "type": "object"
+          },
+          "notes": {
+            "items": {
+              "maxLength": 2000,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 200,
+            "title": "Notes",
+            "type": "array"
+          },
+          "overview": {
+            "default": "",
+            "maxLength": 16000,
+            "title": "Overview",
+            "type": "string"
+          },
+          "style_rules": {
+            "items": {
+              "maxLength": 2000,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 200,
+            "title": "Style Rules",
+            "type": "array"
+          },
+          "terminology": {
+            "additionalProperties": {
+              "maxLength": 2000,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxProperties": 500,
+            "propertyNames": {
+              "maxLength": 200,
+              "minLength": 1
+            },
+            "title": "Terminology",
+            "type": "object"
+          }
+        },
+        "title": "DispatchContextCapsule",
+        "type": "object"
+      },
+      "DispatchContextDelta": {
+        "additionalProperties": false,
+        "description": "Bounded knowledge learned while processing one delegated batch.",
+        "properties": {
+          "decisions": {
+            "items": {
+              "maxLength": 2000,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 200,
+            "title": "Decisions",
+            "type": "array"
+          },
+          "entities": {
+            "additionalProperties": {
+              "maxLength": 2000,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxProperties": 500,
+            "propertyNames": {
+              "maxLength": 200,
+              "minLength": 1
+            },
+            "title": "Entities",
+            "type": "object"
+          },
+          "notes": {
+            "items": {
+              "maxLength": 2000,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 200,
+            "title": "Notes",
+            "type": "array"
+          },
+          "style_rules": {
+            "items": {
+              "maxLength": 2000,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 200,
+            "title": "Style Rules",
+            "type": "array"
+          },
+          "terminology": {
+            "additionalProperties": {
+              "maxLength": 2000,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxProperties": 500,
+            "propertyNames": {
+              "maxLength": 200,
+              "minLength": 1
+            },
+            "title": "Terminology",
+            "type": "object"
+          }
+        },
+        "title": "DispatchContextDelta",
         "type": "object"
       },
       "DispatchCorrectionOperation": {
@@ -914,8 +1067,77 @@
         "title": "DispatchCueTiming",
         "type": "object"
       },
+      "DispatchDelegationContext": {
+        "additionalProperties": false,
+        "properties": {
+          "context_capsule": {
+            "$ref": "#/components/schemas/DispatchContextCapsule"
+          },
+          "execution_mode": {
+            "enum": [
+              "serial",
+              "parallel"
+            ],
+            "title": "Execution Mode",
+            "type": "string"
+          },
+          "max_parallel_batches": {
+            "maximum": 8,
+            "minimum": 1,
+            "title": "Max Parallel Batches",
+            "type": "integer"
+          },
+          "wave_batch_count": {
+            "maximum": 8,
+            "minimum": 1,
+            "title": "Wave Batch Count",
+            "type": "integer"
+          },
+          "wave_number": {
+            "minimum": 1,
+            "title": "Wave Number",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "execution_mode",
+          "max_parallel_batches",
+          "wave_number",
+          "wave_batch_count",
+          "context_capsule"
+        ],
+        "title": "DispatchDelegationContext",
+        "type": "object"
+      },
       "DispatchRunCreateRequest": {
         "additionalProperties": false,
+        "oneOf": [
+          {
+            "properties": {
+              "execution_mode": {
+                "const": "serial"
+              },
+              "max_parallel_batches": {
+                "const": 1
+              }
+            }
+          },
+          {
+            "properties": {
+              "execution_mode": {
+                "const": "parallel"
+              },
+              "max_parallel_batches": {
+                "maximum": 8,
+                "minimum": 2
+              }
+            },
+            "required": [
+              "execution_mode",
+              "max_parallel_batches"
+            ]
+          }
+        ],
         "properties": {
           "char_limit": {
             "default": 6000,
@@ -937,6 +1159,18 @@
             "minimum": 0,
             "title": "Context Before",
             "type": "integer"
+          },
+          "context_capsule": {
+            "$ref": "#/components/schemas/DispatchContextCapsule"
+          },
+          "execution_mode": {
+            "default": "serial",
+            "enum": [
+              "serial",
+              "parallel"
+            ],
+            "title": "Execution Mode",
+            "type": "string"
           },
           "glossary": {
             "additionalProperties": {
@@ -973,6 +1207,13 @@
             ],
             "title": "Kind",
             "type": "string"
+          },
+          "max_parallel_batches": {
+            "default": 1,
+            "maximum": 8,
+            "minimum": 1,
+            "title": "Max Parallel Batches",
+            "type": "integer"
           },
           "max_segments_per_batch": {
             "default": 40,
@@ -2375,6 +2616,103 @@
           "generation_run_id"
         ],
         "title": "OutputMixPreviewRequest",
+        "type": "object"
+      },
+      "ParameterDefinition": {
+        "properties": {
+          "applicability": {
+            "type": "string"
+          },
+          "caveat": {
+            "type": "string"
+          },
+          "choices": {
+            "items": {},
+            "type": "array"
+          },
+          "default": {},
+          "description": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "maximum": {
+            "type": "number"
+          },
+          "minimum": {
+            "type": "number"
+          },
+          "name": {
+            "type": "string"
+          },
+          "section": {
+            "type": "string"
+          },
+          "unit": {
+            "type": "string"
+          },
+          "value_type": {
+            "enum": [
+              "boolean",
+              "integer",
+              "number",
+              "string",
+              "object",
+              "array"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "section",
+          "name",
+          "label",
+          "description",
+          "default",
+          "value_type"
+        ],
+        "type": "object"
+      },
+      "ParameterDefinitionsResponse": {
+        "properties": {
+          "available_sections": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ParameterDefinition"
+            },
+            "type": "array"
+          },
+          "matched_count": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "returned_count": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "type": "integer"
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "schema_version",
+          "items",
+          "matched_count",
+          "returned_count",
+          "truncated",
+          "available_sections"
+        ],
         "type": "object"
       },
       "PdfCropInput": {
@@ -4063,6 +4401,9 @@
             "title": "Batch Status",
             "type": "string"
           },
+          "delegation": {
+            "$ref": "#/components/schemas/DispatchDelegationContext"
+          },
           "lease_expires_at": {
             "anyOf": [
               {
@@ -4109,6 +4450,7 @@
           "batch_status",
           "task",
           "batch",
+          "delegation",
           "lease_token",
           "lease_expires_at"
         ],
@@ -4118,6 +4460,9 @@
       "SpeechOptimizationDispatchBatchSubmitRequest": {
         "additionalProperties": false,
         "properties": {
+          "context_delta": {
+            "$ref": "#/components/schemas/DispatchContextDelta"
+          },
           "lease_token": {
             "maxLength": 160,
             "minLength": 1,
@@ -4364,10 +4709,18 @@
             },
             "title": "Previous Output",
             "type": "array"
+          },
+          "previous_source": {
+            "items": {
+              "$ref": "#/components/schemas/SpeechOptimizationDispatchBoundaryUnit"
+            },
+            "title": "Previous Source",
+            "type": "array"
           }
         },
         "required": [
           "previous_output",
+          "previous_source",
           "following_source"
         ],
         "title": "SpeechOptimizationDispatchContext",
@@ -4422,6 +4775,33 @@
       },
       "SpeechOptimizationDispatchRunCreateRequest": {
         "additionalProperties": false,
+        "oneOf": [
+          {
+            "properties": {
+              "execution_mode": {
+                "const": "serial"
+              },
+              "max_parallel_batches": {
+                "const": 1
+              }
+            }
+          },
+          {
+            "properties": {
+              "execution_mode": {
+                "const": "parallel"
+              },
+              "max_parallel_batches": {
+                "maximum": 8,
+                "minimum": 2
+              }
+            },
+            "required": [
+              "execution_mode",
+              "max_parallel_batches"
+            ]
+          }
+        ],
         "properties": {
           "char_limit": {
             "default": 20000,
@@ -4444,6 +4824,18 @@
             "minimum": 0,
             "title": "Context Before",
             "type": "integer"
+          },
+          "context_capsule": {
+            "$ref": "#/components/schemas/DispatchContextCapsule"
+          },
+          "execution_mode": {
+            "default": "serial",
+            "enum": [
+              "serial",
+              "parallel"
+            ],
+            "title": "Execution Mode",
+            "type": "string"
           },
           "include_timing": {
             "default": true,
@@ -4469,6 +4861,13 @@
             ],
             "default": null,
             "title": "Language"
+          },
+          "max_parallel_batches": {
+            "default": 1,
+            "maximum": 8,
+            "minimum": 1,
+            "title": "Max Parallel Batches",
+            "type": "integer"
           },
           "max_units_per_batch": {
             "default": 100,
@@ -6067,7 +6466,7 @@
         "operationId": "releaseDispatchBatch",
         "parameters": [
           {
-            "description": "Required for automation principals and strongly recommended for every retryable write.",
+            "description": "Automation principals require it; browser writes may omit it. Use it for safe retries.",
             "in": "header",
             "name": "Idempotency-Key",
             "required": false,
@@ -6121,7 +6520,7 @@
         "operationId": "renewDispatchBatch",
         "parameters": [
           {
-            "description": "Required for automation principals and strongly recommended for every retryable write.",
+            "description": "Automation principals require it; browser writes may omit it. Use it for safe retries.",
             "in": "header",
             "name": "Idempotency-Key",
             "required": false,
@@ -6175,7 +6574,7 @@
         "operationId": "submitDispatchBatch",
         "parameters": [
           {
-            "description": "Required for automation principals and strongly recommended for every retryable write.",
+            "description": "Automation principals require it; browser writes may omit it. Use it for safe retries.",
             "in": "header",
             "name": "Idempotency-Key",
             "required": true,
@@ -6279,7 +6678,7 @@
         "operationId": "claimDispatchBatch",
         "parameters": [
           {
-            "description": "Required for automation principals and strongly recommended for every retryable write.",
+            "description": "Automation principals require it; browser writes may omit it. Use it for safe retries.",
             "in": "header",
             "name": "Idempotency-Key",
             "required": true,
@@ -6460,6 +6859,17 @@
         "operationId": "updateGenerationSegment",
         "parameters": [
           {
+            "description": "Automation principals require it; browser writes may omit it. Use it for safe retries.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
             "in": "path",
             "name": "segmentId",
             "required": true,
@@ -6489,6 +6899,17 @@
       "post": {
         "operationId": "selectGenerationTake",
         "parameters": [
+          {
+            "description": "Automation principals require it; browser writes may omit it. Use it for safe retries.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
           {
             "in": "path",
             "name": "segmentId",
@@ -7020,6 +7441,99 @@
             "description": "Immutable whole-product uninstall plan"
           }
         }
+      }
+    },
+    "/api/v1/parameter-definitions": {
+      "get": {
+        "operationId": "getParameterDefinitions",
+        "parameters": [
+          {
+            "explode": true,
+            "in": "query",
+            "name": "section",
+            "required": false,
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "style": "form"
+          },
+          {
+            "explode": true,
+            "in": "query",
+            "name": "name",
+            "required": false,
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "style": "form"
+          },
+          {
+            "in": "query",
+            "name": "workflow_kind",
+            "required": false,
+            "schema": {
+              "enum": [
+                "audiobook",
+                "subtitles",
+                "voiceover"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 300,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ParameterDefinitionsResponse"
+                }
+              }
+            },
+            "description": "Filtered parameter definitions"
+          },
+          "422": {
+            "description": "Invalid parameter filters"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
       }
     },
     "/api/v1/parity": {
@@ -8023,7 +8537,7 @@
         "operationId": "createDispatchRun",
         "parameters": [
           {
-            "description": "Required for automation principals and strongly recommended for every retryable write.",
+            "description": "Automation principals require it; browser writes may omit it. Use it for safe retries.",
             "in": "header",
             "name": "Idempotency-Key",
             "required": false,
@@ -8215,6 +8729,17 @@
         "operationId": "startGenerationRun",
         "parameters": [
           {
+            "description": "Automation principals require it; browser writes may omit it. Use it for safe retries.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
             "in": "path",
             "name": "sessionId",
             "required": true,
@@ -8370,6 +8895,17 @@
       "post": {
         "operationId": "createOutputAssembly",
         "parameters": [
+          {
+            "description": "Automation principals require it; browser writes may omit it. Use it for safe retries.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
           {
             "in": "path",
             "name": "sessionId",
@@ -8712,7 +9248,7 @@
         "operationId": "createSourceCleaningDispatchRun",
         "parameters": [
           {
-            "description": "Required for automation principals and strongly recommended for every retryable write.",
+            "description": "Automation principals require it; browser writes may omit it. Use it for safe retries.",
             "in": "header",
             "name": "Idempotency-Key",
             "required": false,
@@ -8965,7 +9501,7 @@
         "operationId": "createSpeechOptimizationDispatchRun",
         "parameters": [
           {
-            "description": "Required for automation principals and strongly recommended for every retryable write.",
+            "description": "Automation principals require it; browser writes may omit it. Use it for safe retries.",
             "in": "header",
             "name": "Idempotency-Key",
             "required": false,
@@ -9283,6 +9819,17 @@
         "operationId": "saveSubtitleReview",
         "parameters": [
           {
+            "description": "Automation principals require it; browser writes may omit it. Use it for safe retries.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
             "in": "path",
             "name": "sessionId",
             "required": true,
@@ -9451,7 +9998,7 @@
         "operationId": "inspectSourceCleaningDispatchExtraction",
         "parameters": [
           {
-            "description": "Required for automation principals and strongly recommended for every retryable write.",
+            "description": "Automation principals require it; browser writes may omit it. Use it for safe retries.",
             "in": "header",
             "name": "Idempotency-Key",
             "required": true,
@@ -9512,7 +10059,7 @@
         "operationId": "releaseSourceCleaningDispatchBatch",
         "parameters": [
           {
-            "description": "Required for automation principals and strongly recommended for every retryable write.",
+            "description": "Automation principals require it; browser writes may omit it. Use it for safe retries.",
             "in": "header",
             "name": "Idempotency-Key",
             "required": false,
@@ -9566,7 +10113,7 @@
         "operationId": "renewSourceCleaningDispatchBatch",
         "parameters": [
           {
-            "description": "Required for automation principals and strongly recommended for every retryable write.",
+            "description": "Automation principals require it; browser writes may omit it. Use it for safe retries.",
             "in": "header",
             "name": "Idempotency-Key",
             "required": false,
@@ -9620,7 +10167,7 @@
         "operationId": "submitSourceCleaningDispatchBatch",
         "parameters": [
           {
-            "description": "Required for automation principals and strongly recommended for every retryable write.",
+            "description": "Automation principals require it; browser writes may omit it. Use it for safe retries.",
             "in": "header",
             "name": "Idempotency-Key",
             "required": true,
@@ -9724,7 +10271,7 @@
         "operationId": "claimSourceCleaningDispatchBatch",
         "parameters": [
           {
-            "description": "Required for automation principals and strongly recommended for every retryable write.",
+            "description": "Automation principals require it; browser writes may omit it. Use it for safe retries.",
             "in": "header",
             "name": "Idempotency-Key",
             "required": true,
@@ -9876,7 +10423,7 @@
         "operationId": "releaseSpeechOptimizationDispatchBatch",
         "parameters": [
           {
-            "description": "Required for automation principals and strongly recommended for every retryable write.",
+            "description": "Automation principals require it; browser writes may omit it. Use it for safe retries.",
             "in": "header",
             "name": "Idempotency-Key",
             "required": false,
@@ -9930,7 +10477,7 @@
         "operationId": "renewSpeechOptimizationDispatchBatch",
         "parameters": [
           {
-            "description": "Required for automation principals and strongly recommended for every retryable write.",
+            "description": "Automation principals require it; browser writes may omit it. Use it for safe retries.",
             "in": "header",
             "name": "Idempotency-Key",
             "required": false,
@@ -9984,7 +10531,7 @@
         "operationId": "submitSpeechOptimizationDispatchBatch",
         "parameters": [
           {
-            "description": "Required for automation principals and strongly recommended for every retryable write.",
+            "description": "Automation principals require it; browser writes may omit it. Use it for safe retries.",
             "in": "header",
             "name": "Idempotency-Key",
             "required": true,
@@ -10088,7 +10635,7 @@
         "operationId": "claimSpeechOptimizationDispatchBatch",
         "parameters": [
           {
-            "description": "Required for automation principals and strongly recommended for every retryable write.",
+            "description": "Automation principals require it; browser writes may omit it. Use it for safe retries.",
             "in": "header",
             "name": "Idempotency-Key",
             "required": true,

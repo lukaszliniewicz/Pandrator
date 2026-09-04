@@ -776,8 +776,13 @@ class WebParityWorkspaceTests(unittest.TestCase):
                 "preview_text": "Persist me.",
             },
         )
-        with patch.dict(
-            "os.environ", {"OPENAI_API_KEY": "", "GEMINI_API_KEY": ""}, clear=False
+        with (
+            patch.dict(
+                "os.environ",
+                {"OPENAI_API_KEY": "", "GEMINI_API_KEY": ""},
+                clear=False,
+            ),
+            patch("socket.create_connection", side_effect=OSError("offline")),
         ):
             response = self.client.get("/api/v1/services/tts?refresh=true")
         self.assertEqual(200, response.status_code, response.get_json())

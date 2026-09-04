@@ -86,6 +86,7 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_mcp_e2e.py",
         "tests/test_mcp_host_config.py",
         "tests/test_mcp_http.py",
+        "tests/test_mcp_orchestration.py",
         "tests/test_mcp_preview_and_generation.py",
         "tests/test_mcp_server.py",
         "tests/test_mcp_speech_optimization_dispatch.py",
@@ -99,6 +100,7 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
     ),
     "web-01-serial": (
         "tests/test_web_dispatch.py",
+        "tests/test_web_dispatch_context.py",
         "tests/test_web_source_cleaning_dispatch.py",
         "tests/test_web_parity_workspace.py",
     ),
@@ -117,6 +119,8 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
     ),
     "web-04-serial": (
         "tests/test_web_settings_api.py",
+        "tests/test_web_parameter_definitions.py",
+        "tests/test_web_parameter_definitions_api.py",
         "tests/test_web_provider_api.py",
         "tests/test_web_automation_security.py",
         "tests/test_web_database_efficiency.py",

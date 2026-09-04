@@ -35,6 +35,8 @@ class _Application:
             "status": "ready",
             "batch_count": 2,
             "completed_batch_count": 0,
+            "execution_mode": "parallel",
+            "max_parallel_batches": 3,
             "settings_json": {"private": True},
         }
 
@@ -79,7 +81,24 @@ class _Application:
                     {"unit_id": 1, "text": "Dr. Jones", "language": "en"},
                     {"unit_id": 2, "text": "Room 101", "language": "en"},
                 ],
-                "context": {"previous_output": [], "following_source": []},
+                "context": {
+                    "previous_output": [],
+                    "previous_source": [
+                        {"text": "Before", "language": "en", "private": True}
+                    ],
+                    "following_source": [],
+                },
+            },
+            "delegation": {
+                "execution_mode": "parallel",
+                "max_parallel_batches": 3,
+                "wave_number": 1,
+                "wave_batch_count": 2,
+                "context_capsule": {
+                    "overview": "Shared",
+                    "entities": {"Alice": "narrator"},
+                    "private": True,
+                },
             },
             "unrelated": "must not leak",
         }
@@ -121,13 +140,25 @@ class SpeechOptimizationDispatchHandlerTests(unittest.TestCase):
                 max_units_per_batch=501,
                 idempotency_key="speech:create-1",
             )
+        with self.assertRaises(ValidationError):
+            CreateSpeechOptimizationDispatchRunInput(
+                session_id="session-1",
+                execution_mode="serial",
+                max_parallel_batches=2,
+                idempotency_key="speech:create-width",
+            )
         configured = CreateSpeechOptimizationDispatchRunInput(
             session_id="session-1",
             char_limit=1_000_000,
             max_units_per_batch=500,
+            execution_mode="parallel",
+            max_parallel_batches=3,
+            context_capsule={"overview": "Shared"},
             idempotency_key="speech:create-2",
         )
         self.assertEqual(1_000_000, configured.char_limit)
+        self.assertEqual("parallel", configured.execution_mode)
+        self.assertEqual(3, configured.max_parallel_batches)
         self.assertNotIn(
             "max_tokens", CreateSpeechOptimizationDispatchRunInput.model_fields
         )
@@ -141,11 +172,21 @@ class SpeechOptimizationDispatchHandlerTests(unittest.TestCase):
             CreateSpeechOptimizationDispatchRunInput(
                 session_id="session-1",
                 tts_service="xtts",
+                execution_mode="parallel",
+                max_parallel_batches=3,
+                context_capsule={"overview": "Shared"},
                 idempotency_key="speech:create-3",
             ),
         )
         self.assertEqual("run-1", created.result["id"])
         self.assertNotIn("settings_json", created.result)
+        create_call = self.application.calls[0]
+        self.assertEqual("parallel", create_call[1]["execution_mode"])
+        self.assertEqual(3, create_call[1]["max_parallel_batches"])
+        self.assertEqual(
+            "Shared",
+            create_call[1]["context_capsule"]["overview"],
+        )
         self.assertEqual(
             "pandrator_claim_speech_optimization_dispatch_batch",
             created.next_actions[0].tool,
@@ -171,6 +212,11 @@ class SpeechOptimizationDispatchHandlerTests(unittest.TestCase):
         )
         self.assertEqual("lease-capability", claimed["lease_token"])
         self.assertEqual([1, 2], claimed["batch"]["valid_unit_ids"])
+        self.assertEqual("parallel", claimed["delegation"]["execution_mode"])
+        self.assertEqual(
+            [{"text": "Before", "language": "en"}],
+            claimed["batch"]["context"]["previous_source"],
+        )
         self.assertNotIn("unrelated", claimed)
 
     def test_submit_preserves_typed_units_and_points_to_next_claim(self):
@@ -186,6 +232,7 @@ class SpeechOptimizationDispatchHandlerTests(unittest.TestCase):
                         {"unit_id": 2, "text": "Room one oh one"},
                     ],
                 },
+                context_delta={"entities": {"Alice": "narrator"}},
                 idempotency_key="speech:submit-1",
             ),
         )
@@ -196,6 +243,10 @@ class SpeechOptimizationDispatchHandlerTests(unittest.TestCase):
         )
         call = self.application.calls[-1]
         self.assertEqual(2, call[1]["result"]["items"][1]["unit_id"])
+        self.assertEqual(
+            {"Alice": "narrator"},
+            call[1]["context_delta"]["entities"],
+        )
 
         self.application.submit_status = "finalizing"
         finalizing = submit_speech_optimization_dispatch_batch(

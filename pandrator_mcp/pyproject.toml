@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pandrator-mcp"
-version = "0.3.1"
+version = "0.3.2"
 description = "Secure local MCP sidecar for Pandrator guidance and automation"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"

@@ -695,7 +695,8 @@ test('reading mode flows segments together and separates only saved paragraphs',
 
   await page.goto(`/sessions/${sessionId}`);
   await page.getByRole('button', { name: 'Generation', exact: true }).click();
-  await page.getByRole('button', { name: 'Reading', exact: true }).click();
+  await page.getByRole('button', { name: 'Display options' }).click();
+  await page.getByRole('button', { name: 'Reading view', exact: true }).click();
 
   const paragraphs = page.locator('.reading-paragraph');
   await expect(paragraphs).toHaveCount(2);
@@ -789,7 +790,7 @@ test('running generation controls stay on one drawer header row', async ({
     page.getByRole('button', {
       name: 'Stop safely after the current segment'
     })
-  ).toHaveText(/Stop$/);
+  ).toBeVisible();
   await expect(page.getByText('Stop safely', { exact: true })).toHaveCount(0);
 
   const rowCenters = await page
@@ -841,7 +842,8 @@ test('generation segments support Ctrl and Shift multi-selection in both review 
     page.getByRole('button', { name: 'RVC selected (2)' })
   ).toBeVisible();
 
-  await page.getByRole('button', { name: 'Reading', exact: true }).click();
+  await page.getByRole('button', { name: 'Display options' }).click();
+  await page.getByRole('button', { name: 'Reading view', exact: true }).click();
   const sentences = page.locator('.reading-sentence');
   const heading = page.locator('.reading-heading button');
   await heading.click();
@@ -1576,9 +1578,11 @@ test('alternate regeneration sends one selected-only setting set and returns to 
   const picker = page.locator('label.run-picker select');
   await page.getByRole('checkbox', { name: 'Mark segment 1' }).check();
   await page.getByRole('checkbox', { name: 'Mark segment 2' }).check();
+  await page.getByRole('button', { name: 'Regeneration options' }).click();
   await page
-    .locator('[data-generation-layout] header')
-    .getByRole('button', { name: 'Alternate marked takes…' })
+    .getByRole('button', {
+      name: 'Regenerate with different settings / provider…'
+    })
     .click();
   const dialog = page.getByRole('dialog');
   await expect(

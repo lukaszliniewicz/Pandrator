@@ -3,31 +3,37 @@ import re
 import tempfile
 import unittest
 import uuid
-from pathlib import Path
-from unittest import mock
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import timedelta
 from io import StringIO
+from pathlib import Path
+from unittest import mock
 from urllib.parse import parse_qs, urlsplit
 
 from authlib.common.security import generate_token
 from authlib.oauth2.rfc7636 import create_s256_code_challenge
 
-from pandrator_mcp.network_policy import TargetMode
-from pandrator_mcp.targets import TargetProfile, TargetStore
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.cli import main as cli_main
 from pandrator.web.models import (
     ApiIdempotency,
     ApiToken,
+    AudioTake,
     AuditEvent,
+    Document,
+    DocumentRevision,
+    GenerationRun,
+    Job,
+    OutputAssembly,
     SessionRecord,
     SessionSetting,
     SessionSource,
     SourceAsset,
     utcnow,
 )
+from pandrator_mcp.network_policy import TargetMode
+from pandrator_mcp.targets import TargetProfile, TargetStore
 from tests.web_test_support import prepare_web_test_data_root
 
 
@@ -553,6 +559,384 @@ class AutomationSecurityTests(unittest.TestCase):
         self.assertEqual(1, len(attachments))
         self.assertEqual(4, len(reservations))
 
+    def test_generation_and_subtitle_writes_require_and_replay_idempotency(self):
+        headers = self._automation_headers("app.read", "app.write", "app.run")
+        created = self.client.post(
+            "/api/v1/sessions",
+            json={"name": "Retryable generation", "workflow_kind": "audiobook"},
+            headers={**headers, "Idempotency-Key": "retry-generation-session"},
+        )
+        self.assertEqual(201, created.status_code, created.get_json())
+        session_id = created.get_json()["id"]
+        self.extension["generation"].create_plan(
+            session_id,
+            source_revision_id=None,
+            segments=[{"text": "A retryable segment."}],
+        )
+        segment = self.client.get(
+            f"/api/v1/sessions/{session_id}/generation-segments",
+            headers=headers,
+        ).get_json()["items"][0]
+
+        missing_calls = (
+            (
+                "patch",
+                f"/api/v1/generation-segments/{segment['id']}",
+                {"text": "Changed."},
+                {"If-Match": f'"{segment["revision"]}"'},
+            ),
+            (
+                "post",
+                f"/api/v1/sessions/{session_id}/generation-runs",
+                {},
+                {},
+            ),
+            (
+                "post",
+                f"/api/v1/sessions/{session_id}/output-assemblies",
+                {},
+                {},
+            ),
+            (
+                "post",
+                f"/api/v1/sessions/{session_id}/subtitles/transcription/review",
+                {
+                    "expected_revision": 0,
+                    "segments": [{"start_ms": 0, "end_ms": 1000, "text": "Hello"}],
+                },
+                {},
+            ),
+        )
+        for method, path, body, extra_headers in missing_calls:
+            response = getattr(self.client, method)(
+                path, json=body, headers={**headers, **extra_headers}
+            )
+            self.assertEqual(400, response.status_code, response.get_json())
+            self.assertEqual(
+                "idempotency_key_required", response.get_json()["error"]["code"]
+            )
+
+        update_headers = {
+            **headers,
+            "Idempotency-Key": "retry-generation-segment",
+            "If-Match": f'"{segment["revision"]}"',
+        }
+        updated = self.client.patch(
+            f"/api/v1/generation-segments/{segment['id']}",
+            json={"text": "Changed."},
+            headers=update_headers,
+        )
+        replayed_update = self.client.patch(
+            f"/api/v1/generation-segments/{segment['id']}",
+            json={"text": "Changed."},
+            headers=update_headers,
+        )
+        self.assertEqual(200, updated.status_code, updated.get_json())
+        self.assertEqual(updated.get_json(), replayed_update.get_json())
+        self.assertEqual("true", replayed_update.headers["Idempotency-Replayed"])
+        self.assertEqual(updated.headers["ETag"], replayed_update.headers["ETag"])
+        conflict = self.client.patch(
+            f"/api/v1/generation-segments/{segment['id']}",
+            json={"text": "Different."},
+            headers=update_headers,
+        )
+        self.assertEqual(409, conflict.status_code)
+        self.assertEqual("idempotency_conflict", conflict.get_json()["error"]["code"])
+
+        run_headers = {**headers, "Idempotency-Key": "retry-generation-run"}
+        started = self.client.post(
+            f"/api/v1/sessions/{session_id}/generation-runs",
+            json={},
+            headers=run_headers,
+        )
+        replayed_run = self.client.post(
+            f"/api/v1/sessions/{session_id}/generation-runs",
+            json={},
+            headers=run_headers,
+        )
+        self.assertEqual(202, started.status_code, started.get_json())
+        self.assertEqual(started.get_json(), replayed_run.get_json())
+        self.assertEqual("true", replayed_run.headers["Idempotency-Replayed"])
+
+        assembly_headers = {**headers, "Idempotency-Key": "retry-output-assembly"}
+        assembly = self.client.post(
+            f"/api/v1/sessions/{session_id}/output-assemblies",
+            json={},
+            headers=assembly_headers,
+        )
+        replayed_assembly = self.client.post(
+            f"/api/v1/sessions/{session_id}/output-assemblies",
+            json={},
+            headers=assembly_headers,
+        )
+        self.assertEqual(202, assembly.status_code, assembly.get_json())
+        self.assertEqual(assembly.get_json(), replayed_assembly.get_json())
+        self.assertEqual("true", replayed_assembly.headers["Idempotency-Replayed"])
+
+        subtitle_headers = {**headers, "Idempotency-Key": "retry-subtitle-review"}
+        subtitle_body = {
+            "expected_revision": 0,
+            "segments": [{"start_ms": 0, "end_ms": 1000, "text": "Hello"}],
+        }
+        reviewed = self.client.post(
+            f"/api/v1/sessions/{session_id}/subtitles/transcription/review",
+            json=subtitle_body,
+            headers=subtitle_headers,
+        )
+        replayed_review = self.client.post(
+            f"/api/v1/sessions/{session_id}/subtitles/transcription/review",
+            json=subtitle_body,
+            headers=subtitle_headers,
+        )
+        self.assertEqual(201, reviewed.status_code, reviewed.get_json())
+        self.assertEqual(reviewed.get_json(), replayed_review.get_json())
+        self.assertEqual("true", replayed_review.headers["Idempotency-Replayed"])
+
+        with self.extension["database"].session() as db_session:
+            record = db_session.get(SessionRecord, session_id)
+        take_path = (
+            self.extension["paths"].sessions / record.storage_key / "retry-take.wav"
+        )
+        take_path.write_bytes(b"RIFFretry")
+        artifact = self.extension["artifacts"].register(
+            take_path, kind="audio", role="generation_take", session_id=session_id
+        )
+        with self.extension["database"].session() as db_session:
+            take = AudioTake(
+                generation_segment_id=segment["id"],
+                artifact_id=artifact.id,
+                kind="tts",
+                status="completed",
+            )
+            db_session.add(take)
+            db_session.flush()
+            take_id = take.id
+
+        # The fifth target route also rejects a valid selection without a key.
+        missing_select = self.client.post(
+            f"/api/v1/generation-segments/{segment['id']}/takes/{take_id}/select",
+            headers={**headers, "If-Match": f'"{updated.get_json()["revision"]}"'},
+        )
+        self.assertEqual(400, missing_select.status_code, missing_select.get_json())
+        self.assertEqual(
+            "idempotency_key_required", missing_select.get_json()["error"]["code"]
+        )
+        select_headers = {
+            **headers,
+            "Idempotency-Key": "retry-generation-take",
+            "If-Match": f'"{updated.get_json()["revision"]}"',
+        }
+        selected = self.client.post(
+            f"/api/v1/generation-segments/{segment['id']}/takes/{take_id}/select",
+            headers=select_headers,
+        )
+        replayed_selection = self.client.post(
+            f"/api/v1/generation-segments/{segment['id']}/takes/{take_id}/select",
+            headers=select_headers,
+        )
+        self.assertEqual(200, selected.status_code, selected.get_json())
+        self.assertEqual(selected.get_json(), replayed_selection.get_json())
+        self.assertEqual("true", replayed_selection.headers["Idempotency-Replayed"])
+
+        with self.extension["database"].session() as db_session:
+            self.assertEqual(
+                1,
+                db_session.query(GenerationRun)
+                .filter(GenerationRun.session_id == session_id)
+                .count(),
+            )
+            self.assertEqual(
+                1,
+                db_session.query(OutputAssembly)
+                .filter(OutputAssembly.session_id == session_id)
+                .count(),
+            )
+            self.assertEqual(
+                2, db_session.query(Job).filter(Job.session_id == session_id).count()
+            )
+            self.assertEqual(
+                1,
+                db_session.query(DocumentRevision)
+                .join(Document, Document.id == DocumentRevision.document_id)
+                .filter(Document.session_id == session_id)
+                .count(),
+            )
+
+    def test_idempotency_completion_rollback_cleans_generation_and_subtitle(self):
+        headers = self._automation_headers("app.read", "app.write", "app.run")
+        created = self.client.post(
+            "/api/v1/sessions",
+            json={"name": "Rollback retry", "workflow_kind": "audiobook"},
+            headers={**headers, "Idempotency-Key": "rollback-retry-session"},
+        )
+        self.assertEqual(201, created.status_code, created.get_json())
+        session_id = created.get_json()["id"]
+        self.extension["generation"].create_plan(
+            session_id, source_revision_id=None, segments=[{"text": "Retry me."}]
+        )
+
+        with (
+            mock.patch.object(
+                self.extension["idempotency"],
+                "complete",
+                side_effect=RuntimeError("complete failed"),
+            ),
+            self.assertRaisesRegex(RuntimeError, "complete failed"),
+        ):
+            self.client.post(
+                f"/api/v1/sessions/{session_id}/generation-runs",
+                json={},
+                headers={
+                    **headers,
+                    "Idempotency-Key": "rollback-generation-run",
+                },
+            )
+        with self.extension["database"].session() as db_session:
+            self.assertEqual(
+                0,
+                db_session.query(GenerationRun)
+                .filter(GenerationRun.session_id == session_id)
+                .count(),
+            )
+            self.assertEqual(
+                0,
+                db_session.query(Job).filter(Job.session_id == session_id).count(),
+            )
+        retried_run = self.client.post(
+            f"/api/v1/sessions/{session_id}/generation-runs",
+            json={},
+            headers={**headers, "Idempotency-Key": "rollback-generation-run"},
+        )
+        self.assertEqual(202, retried_run.status_code, retried_run.get_json())
+
+        with self.extension["database"].session() as db_session:
+            record = db_session.get(SessionRecord, session_id)
+        subtitle_path = (
+            self.extension["paths"].sessions
+            / record.storage_key
+            / "reviewed_transcription_r1.srt"
+        )
+        subtitle_body = {
+            "expected_revision": 0,
+            "segments": [{"start_ms": 0, "end_ms": 1000, "text": "Retry subtitle"}],
+        }
+        with mock.patch.object(
+            self.extension["idempotency"],
+            "complete",
+            side_effect=RuntimeError("complete failed"),
+        ):
+            failed_subtitle = self.client.post(
+                f"/api/v1/sessions/{session_id}/subtitles/transcription/review",
+                json=subtitle_body,
+                headers={
+                    **headers,
+                    "Idempotency-Key": "rollback-subtitle-review",
+                },
+            )
+        self.assertEqual(409, failed_subtitle.status_code, failed_subtitle.get_json())
+        self.assertFalse(subtitle_path.exists())
+        retried_subtitle = self.client.post(
+            f"/api/v1/sessions/{session_id}/subtitles/transcription/review",
+            json=subtitle_body,
+            headers={**headers, "Idempotency-Key": "rollback-subtitle-review"},
+        )
+        self.assertEqual(201, retried_subtitle.status_code, retried_subtitle.get_json())
+        self.assertTrue(subtitle_path.exists())
+
+    def test_generation_replay_reserves_before_preparation_and_abandons_failures(self):
+        headers = self._automation_headers("app.read", "app.write", "app.run")
+        created = self.client.post(
+            "/api/v1/sessions",
+            json={"name": "Preparation ordering", "workflow_kind": "audiobook"},
+            headers={**headers, "Idempotency-Key": "prepare-ordering-session"},
+        )
+        self.assertEqual(201, created.status_code, created.get_json())
+        session_id = created.get_json()["id"]
+        self.extension["generation"].create_plan(
+            session_id, source_revision_id=None, segments=[{"text": "Generate once."}]
+        )
+        generation = self.extension["generation"]
+
+        with (
+            mock.patch.object(
+                generation, "prepare_start", wraps=generation.prepare_start
+            ) as prepare_start,
+            mock.patch.object(
+                generation,
+                "plan_refresher",
+                wraps=generation.plan_refresher,
+            ) as plan_refresher,
+        ):
+            first = self.client.post(
+                f"/api/v1/sessions/{session_id}/generation-runs",
+                json={},
+                headers={**headers, "Idempotency-Key": "prepare-ordering-run"},
+            )
+            replay = self.client.post(
+                f"/api/v1/sessions/{session_id}/generation-runs",
+                json={},
+                headers={**headers, "Idempotency-Key": "prepare-ordering-run"},
+            )
+        self.assertEqual(202, first.status_code, first.get_json())
+        self.assertEqual(first.get_json(), replay.get_json())
+        self.assertEqual("true", replay.headers["Idempotency-Replayed"])
+        self.assertEqual(1, prepare_start.call_count)
+        self.assertEqual(1, plan_refresher.call_count)
+        with self.extension["database"].session() as db_session:
+            self.assertEqual(
+                1,
+                db_session.query(GenerationRun)
+                .filter(GenerationRun.session_id == session_id)
+                .count(),
+            )
+            self.assertEqual(
+                1,
+                db_session.query(Job).filter(Job.session_id == session_id).count(),
+            )
+
+        with mock.patch.object(
+            generation,
+            "prepare_start",
+            side_effect=AssertionError("conflicting replay must not prepare"),
+        ):
+            conflict = self.client.post(
+                f"/api/v1/sessions/{session_id}/generation-runs",
+                json={"operation": "rvc"},
+                headers={**headers, "Idempotency-Key": "prepare-ordering-run"},
+            )
+        self.assertEqual(409, conflict.status_code, conflict.get_json())
+        self.assertEqual("idempotency_conflict", conflict.get_json()["error"]["code"])
+
+        failed = self.client.post(
+            "/api/v1/sessions",
+            json={"name": "Preparation retry", "workflow_kind": "audiobook"},
+            headers={**headers, "Idempotency-Key": "prepare-failure-session"},
+        )
+        self.assertEqual(201, failed.status_code, failed.get_json())
+        failed_session_id = failed.get_json()["id"]
+        generation.create_plan(
+            failed_session_id,
+            source_revision_id=None,
+            segments=[{"text": "Prepare again."}],
+        )
+        with mock.patch.object(
+            generation,
+            "prepare_start",
+            side_effect=ValueError("settings unavailable"),
+        ):
+            preparation_error = self.client.post(
+                f"/api/v1/sessions/{failed_session_id}/generation-runs",
+                json={},
+                headers={**headers, "Idempotency-Key": "prepare-failure-run"},
+            )
+        self.assertEqual(409, preparation_error.status_code)
+        retried = self.client.post(
+            f"/api/v1/sessions/{failed_session_id}/generation-runs",
+            json={},
+            headers={**headers, "Idempotency-Key": "prepare-failure-run"},
+        )
+        self.assertEqual(202, retried.status_code, retried.get_json())
+
     def test_workflow_plan_and_execute_scopes_match_the_mcp_contract(self):
         read_headers = self._automation_headers("app.read")
         planned = self.client.post(
@@ -605,6 +989,23 @@ class AutomationSecurityTests(unittest.TestCase):
         for operation in (update, settings, attach):
             names = {item["name"] for item in operation.get("parameters", [])}
             self.assertIn("If-Match", names)
+        optional_retry_operations = (
+            paths["/api/v1/sessions/{sessionId}/subtitles/{stage}/review"]["post"],
+            paths["/api/v1/generation-segments/{segmentId}"]["patch"],
+            paths["/api/v1/generation-segments/{segmentId}/takes/{takeId}/select"][
+                "post"
+            ],
+            paths["/api/v1/sessions/{sessionId}/generation-runs"]["post"],
+            paths["/api/v1/sessions/{sessionId}/output-assemblies"]["post"],
+        )
+        for operation in optional_retry_operations:
+            header = next(
+                item
+                for item in operation.get("parameters", [])
+                if item["name"] == "Idempotency-Key"
+            )
+            self.assertFalse(header["required"])
+            self.assertIn("Automation principals require it", header["description"])
         self.assertIn(
             {"nativeOAuth": ["app.read"]},
             paths["/api/v1/sessions/{sessionId}/workflow-plans"]["post"]["security"],

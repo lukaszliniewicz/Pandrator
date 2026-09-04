@@ -144,6 +144,29 @@ class DispatchWebTests(unittest.TestCase):
         self.assertEqual(200, response.status_code, response.get_json())
         return response.get_json()
 
+    def _submit_correction(self, claim, key, *, suffix="!", context_delta=None):
+        cue = claim["batch"]["cues"][0]
+        body = {
+            "lease_token": claim["lease_token"],
+            "result": {
+                "kind": "correction",
+                "operations": [
+                    {
+                        "action": "edit",
+                        "cue_ids": [cue["cue_id"]],
+                        "texts": [cue["text"] + suffix],
+                    }
+                ],
+            },
+        }
+        if context_delta is not None:
+            body["context_delta"] = context_delta
+        return self.client.post(
+            f"/api/v1/dispatch-batches/{claim['batch_id']}/submit",
+            json=body,
+            headers=self._headers(key),
+        )
+
     def test_correction_end_to_end_and_redacted_metadata(self):
         session_id, source_id = self._source()
         run = self._create(session_id, source_artifact_id=source_id)
@@ -252,7 +275,9 @@ class DispatchWebTests(unittest.TestCase):
                 session.get(ArtifactEdge, (translation_id, result_artifact.id))
             )
             self.assertEqual("translation", result_artifact.metadata_json["stage"])
-            self.assertEqual("correction", result_artifact.metadata_json["dispatch_kind"])
+            self.assertEqual(
+                "correction", result_artifact.metadata_json["dispatch_kind"]
+            )
             self.assertEqual("de", result_artifact.metadata_json["language"])
 
             result_revision = session.get(
@@ -260,7 +285,9 @@ class DispatchWebTests(unittest.TestCase):
             )
             self.assertEqual(source_document_id, result_revision.document_id)
             self.assertEqual(source_revision_id, result_revision.parent_revision_id)
-            self.assertEqual(source_revision_number + 1, result_revision.revision_number)
+            self.assertEqual(
+                source_revision_number + 1, result_revision.revision_number
+            )
             document = session.get(Document, result_revision.document_id)
             self.assertEqual("translation", document.stage)
             self.assertEqual("de", document.language)
@@ -270,7 +297,9 @@ class DispatchWebTests(unittest.TestCase):
                 select(Segment).where(Segment.revision_id == result_revision.id)
             )
             self.assertEqual("Das ist wichtig.", result_segment.text)
-            self.assertEqual((0, 1000), (result_segment.start_ms, result_segment.end_ms))
+            self.assertEqual(
+                (0, 1000), (result_segment.start_ms, result_segment.end_ms)
+            )
             self.assertIsNotNone(
                 session.scalar(
                     select(SegmentLineage).where(
@@ -457,19 +486,199 @@ class DispatchWebTests(unittest.TestCase):
         )
         self.assertEqual(
             ["PIERWSZY_UNIQUE"],
-            [
-                cue["text"]
-                for cue in second["batch"]["context"]["previous_output"]
-            ],
+            [cue["text"] for cue in second["batch"]["context"]["previous_output"]],
         )
         self.assertEqual(
             ["GAMMA_UNIQUE"],
-            [
-                cue["text"]
-                for cue in second["batch"]["context"]["following_source"]
-            ],
+            [cue["text"] for cue in second["batch"]["context"]["following_source"]],
         )
         self.assertNotIn("timing", json.dumps(second["batch"]["context"]))
+
+    def test_parallel_waves_share_capsule_and_gate_next_wave(self):
+        session_id, source_id = self._source(
+            texts=("A", "B", "C", "D", "E"),
+        )
+        run = self._create(
+            session_id,
+            source_artifact_id=source_id,
+            char_limit=1,
+            execution_mode="parallel",
+            max_parallel_batches=3,
+            context_capsule={"overview": "shared"},
+        )
+        claims = [
+            self._claim(run["id"], f"parallel-claim-{ordinal:02d}")
+            for ordinal in range(3)
+        ]
+        self.assertEqual([1, 2, 3], [claim["batch_ordinal"] for claim in claims])
+        self.assertEqual(
+            [
+                {
+                    "execution_mode": "parallel",
+                    "max_parallel_batches": 3,
+                    "wave_number": 1,
+                    "wave_batch_count": 3,
+                    "context_capsule": {
+                        "overview": "shared",
+                        "terminology": {},
+                        "entities": {},
+                        "style_rules": [],
+                        "decisions": [],
+                        "notes": [],
+                    },
+                }
+            ]
+            * 3,
+            [claim["delegation"] for claim in claims],
+        )
+        self.assertEqual([], claims[0]["batch"]["context"]["previous_source"])
+        self.assertEqual(
+            ["A"],
+            [cue["text"] for cue in claims[1]["batch"]["context"]["previous_source"]],
+        )
+        busy = self.client.post(
+            f"/api/v1/dispatch-runs/{run['id']}/claim",
+            json={},
+            headers=self._headers("parallel-claim-03"),
+        )
+        self.assertEqual(409, busy.status_code)
+        self.assertEqual("dispatch_busy", busy.get_json()["error"]["code"])
+        self.assertTrue(busy.get_json()["error"]["details"]["retryable"])
+
+        self.assertEqual(
+            200,
+            self._submit_correction(claims[2], "parallel-submit-02").status_code,
+        )
+        self.assertEqual(
+            200,
+            self._submit_correction(claims[0], "parallel-submit-00").status_code,
+        )
+        still_busy = self.client.post(
+            f"/api/v1/dispatch-runs/{run['id']}/claim",
+            json={},
+            headers=self._headers("parallel-claim-04"),
+        )
+        self.assertEqual(409, still_busy.status_code)
+        self.assertEqual("dispatch_busy", still_busy.get_json()["error"]["code"])
+        self.assertEqual(
+            200,
+            self._submit_correction(claims[1], "parallel-submit-01").status_code,
+        )
+        next_claim = self._claim(run["id"], "parallel-claim-05")
+        self.assertEqual(4, next_claim["batch_ordinal"])
+        self.assertEqual(2, next_claim["delegation"]["wave_number"])
+        self.assertEqual(
+            ["C!"],
+            [cue["text"] for cue in next_claim["batch"]["context"]["previous_output"]],
+        )
+
+    def test_parallel_reclaim_does_not_disturb_active_sibling(self):
+        session_id, source_id = self._source(
+            texts=("A", "B", "C"),
+        )
+        run = self._create(
+            session_id,
+            source_artifact_id=source_id,
+            char_limit=1,
+            execution_mode="parallel",
+            max_parallel_batches=3,
+        )
+        first = self._claim(run["id"], "reclaim-claim-00")
+        sibling = self._claim(run["id"], "reclaim-claim-01")
+        with self.extension["database"].session() as session:
+            expired = session.get(DispatchBatch, first["batch_id"])
+            active = session.get(DispatchBatch, sibling["batch_id"])
+            expired.lease_expires_at = utcnow() - timedelta(seconds=1)
+            active_token = active.lease_token
+            active_expiry = active.lease_expires_at
+        reclaimed = self._claim(run["id"], "reclaim-claim-02")
+        self.assertEqual(first["batch_id"], reclaimed["batch_id"])
+        self.assertNotEqual(first["lease_token"], reclaimed["lease_token"])
+        with self.extension["database"].session() as session:
+            active = session.get(DispatchBatch, sibling["batch_id"])
+            self.assertEqual("leased", active.status)
+            self.assertEqual(active_token, active.lease_token)
+            self.assertEqual(active_expiry, active.lease_expires_at)
+
+    def test_parallel_context_and_glossary_merge_by_ordinal(self):
+        session_id, source_id = self._source(
+            target_language="pl",
+            texts=("A", "B", "C", "D"),
+        )
+        run = self._create(
+            session_id,
+            kind="translation",
+            source_artifact_id=source_id,
+            char_limit=1,
+            execution_mode="parallel",
+            max_parallel_batches=2,
+            context_capsule={"overview": "base"},
+        )
+        first, second = (
+            self._claim(run["id"], "ordinal-claim-00"),
+            self._claim(run["id"], "ordinal-claim-01"),
+        )
+
+        def submit(claim, key, text, note, glossary):
+            cue = claim["batch"]["cues"][0]
+            return self.client.post(
+                f"/api/v1/dispatch-batches/{claim['batch_id']}/submit",
+                json={
+                    "lease_token": claim["lease_token"],
+                    "result": {
+                        "kind": "translation",
+                        "translations": [{"cue_id": cue["cue_id"], "text": text}],
+                        "glossary_updates": glossary,
+                    },
+                    "context_delta": {"notes": [note]},
+                },
+                headers=self._headers(key),
+            )
+
+        self.assertEqual(
+            200,
+            submit(
+                second, "ordinal-submit-01", "C!", "late", {"Term": "later"}
+            ).status_code,
+        )
+        self.assertEqual(
+            200,
+            submit(
+                first, "ordinal-submit-00", "A!", "early", {"Term": "earlier"}
+            ).status_code,
+        )
+        next_claim = self._claim(run["id"], "ordinal-claim-02")
+        self.assertEqual(
+            ["early", "late"], next_claim["delegation"]["context_capsule"]["notes"]
+        )
+        self.assertEqual({"Term": "later"}, next_claim["task"]["glossary"])
+
+    def test_context_delta_retry_hash_requires_same_delta(self):
+        session_id, source_id = self._source(
+            texts=("A", "B"),
+        )
+        run = self._create(session_id, source_artifact_id=source_id, char_limit=1)
+        claim = self._claim(run["id"], "delta-hash-claim")
+        first = self._submit_correction(
+            claim,
+            "delta-hash-submit",
+            context_delta={"notes": ["learned"]},
+        )
+        replay = self._submit_correction(
+            claim,
+            "delta-hash-submit",
+            context_delta={"notes": ["learned"]},
+        )
+        self.assertIn(first.status_code, {200, 202})
+        self.assertIn(replay.status_code, {200, 202})
+        self.assertEqual("true", replay.headers["Idempotency-Replayed"])
+        conflict = self._submit_correction(
+            claim,
+            "delta-hash-submit",
+            context_delta={"notes": ["changed"]},
+        )
+        self.assertEqual(409, conflict.status_code)
+        self.assertEqual("idempotency_conflict", conflict.get_json()["error"]["code"])
 
     def test_claim_timing_is_included_once_or_fully_excluded(self):
         session_id, source_id = self._source()
@@ -488,7 +697,9 @@ class DispatchWebTests(unittest.TestCase):
         )
         for cue in full_claim["batch"]["cues"]:
             self.assertNotIn("batch_ordinal", cue)
-            self.assertEqual({"start_ms", "end_ms"}, set(cue["timing"]) & {"start_ms", "end_ms"})
+            self.assertEqual(
+                {"start_ms", "end_ms"}, set(cue["timing"]) & {"start_ms", "end_ms"}
+            )
 
         none_run = self._create(
             session_id,

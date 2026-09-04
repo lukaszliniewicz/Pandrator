@@ -58,6 +58,66 @@ def build_openapi_document() -> dict:
             "lifecycle_supported": {"type": "boolean"},
         },
     }
+    schemas["ParameterDefinition"] = {
+        "type": "object",
+        "required": [
+            "section",
+            "name",
+            "label",
+            "description",
+            "default",
+            "value_type",
+        ],
+        "properties": {
+            "section": {"type": "string"},
+            "name": {"type": "string"},
+            "label": {"type": "string"},
+            "description": {"type": "string"},
+            "default": {},
+            "value_type": {
+                "type": "string",
+                "enum": [
+                    "boolean",
+                    "integer",
+                    "number",
+                    "string",
+                    "object",
+                    "array",
+                ],
+            },
+            "unit": {"type": "string"},
+            "minimum": {"type": "number"},
+            "maximum": {"type": "number"},
+            "choices": {"type": "array", "items": {}},
+            "applicability": {"type": "string"},
+            "caveat": {"type": "string"},
+        },
+    }
+    schemas["ParameterDefinitionsResponse"] = {
+        "type": "object",
+        "required": [
+            "schema_version",
+            "items",
+            "matched_count",
+            "returned_count",
+            "truncated",
+            "available_sections",
+        ],
+        "properties": {
+            "schema_version": {"type": "integer", "const": 1, "default": 1},
+            "items": {
+                "type": "array",
+                "items": {"$ref": "#/components/schemas/ParameterDefinition"},
+            },
+            "matched_count": {"type": "integer", "minimum": 0},
+            "returned_count": {"type": "integer", "minimum": 0},
+            "truncated": {"type": "boolean"},
+            "available_sections": {
+                "type": "array",
+                "items": {"type": "string"},
+            },
+        },
+    }
     document = {
         "openapi": "3.1.0",
         "info": {"title": "Pandrator API", "version": "1.0.0"},
@@ -83,6 +143,74 @@ def build_openapi_document() -> dict:
                                 }
                             },
                         }
+                    },
+                }
+            },
+            "/api/v1/parameter-definitions": {
+                "get": {
+                    "operationId": "getParameterDefinitions",
+                    "parameters": [
+                        {
+                            "name": "section",
+                            "in": "query",
+                            "required": False,
+                            "style": "form",
+                            "explode": True,
+                            "schema": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            },
+                        },
+                        {
+                            "name": "name",
+                            "in": "query",
+                            "required": False,
+                            "style": "form",
+                            "explode": True,
+                            "schema": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            },
+                        },
+                        {
+                            "name": "workflow_kind",
+                            "in": "query",
+                            "required": False,
+                            "schema": {
+                                "type": "string",
+                                "enum": ["audiobook", "subtitles", "voiceover"],
+                            },
+                        },
+                        {
+                            "name": "query",
+                            "in": "query",
+                            "required": False,
+                            "schema": {"type": "string"},
+                        },
+                        {
+                            "name": "limit",
+                            "in": "query",
+                            "required": False,
+                            "schema": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 300,
+                                "default": 100,
+                            },
+                        },
+                    ],
+                    "responses": {
+                        "200": {
+                            "description": "Filtered parameter definitions",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "$ref": "#/components/schemas/ParameterDefinitionsResponse"
+                                    }
+                                }
+                            },
+                        },
+                        "422": {"description": "Invalid parameter filters"},
                     },
                 }
             },
@@ -1250,8 +1378,8 @@ def build_openapi_document() -> dict:
             "in": "header",
             "required": required,
             "description": (
-                "Required for automation principals and strongly recommended "
-                "for every retryable write."
+                "Automation principals require it; browser writes may omit it. "
+                "Use it for safe retries."
             ),
             "schema": {"type": "string", "minLength": 8, "maxLength": 200},
         }
@@ -2235,6 +2363,19 @@ def build_openapi_document() -> dict:
         parameters = paths[path][method].setdefault("parameters", [])
         if not any(item.get("name") == "Idempotency-Key" for item in parameters):
             parameters.append(dict(idempotency_parameter))
+
+    # Browser writes remain compatible without a key, but automation clients
+    # need one and every client benefits from safe retry semantics.
+    for path, method in (
+        ("/api/v1/sessions/{sessionId}/subtitles/{stage}/review", "post"),
+        ("/api/v1/generation-segments/{segmentId}", "patch"),
+        ("/api/v1/generation-segments/{segmentId}/takes/{takeId}/select", "post"),
+        ("/api/v1/sessions/{sessionId}/generation-runs", "post"),
+        ("/api/v1/sessions/{sessionId}/output-assemblies", "post"),
+    ):
+        parameters = paths[path][method].setdefault("parameters", [])
+        if not any(item.get("name") == "Idempotency-Key" for item in parameters):
+            parameters.append(idempotency_header(required=False))
     for path, method in (
         (
             "/api/v1/sessions/{sessionId}/settings/{section}",
@@ -2249,6 +2390,7 @@ def build_openapi_document() -> dict:
 
     mcp_scoped_operations = (
         ("/api/v1/system/identity", "get", "app.read"),
+        ("/api/v1/parameter-definitions", "get", "app.read"),
         ("/api/v1/capabilities", "get", "app.read"),
         ("/api/v1/sessions", "get", "app.read"),
         ("/api/v1/sessions", "post", "app.write"),

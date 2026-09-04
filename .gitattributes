@@ -1,0 +1,3 @@
+# Vite emits content-addressed, minified assets. Treat them as generated blobs so
+# embedded whitespace tables do not create false-positive patch whitespace errors.
+pandrator/web/static/_app/immutable/** -diff -whitespace

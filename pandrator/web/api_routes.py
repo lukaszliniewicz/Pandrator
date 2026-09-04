@@ -100,6 +100,7 @@ from .models import (
     utcnow,
 )
 from .openapi import build_openapi_document
+from .parameter_definitions import describe_parameters
 from .parity_registry import build_registry
 from .route_context import RouteContext
 from .schemas import (
@@ -744,6 +745,33 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     def system_identity():
         identity = services.identity.snapshot(observed_origin=request.url_root)
         return jsonify(identity.model_dump(mode="json"))
+
+    @app.get("/api/v1/parameter-definitions")
+    @require_auth
+    def parameter_definitions():
+        raw_limit = request.args.get("limit")
+        if raw_limit is None:
+            limit = 100
+        else:
+            try:
+                limit = int(raw_limit)
+            except (TypeError, ValueError):
+                return error_response(
+                    "validation_error",
+                    "limit must be an integer from 1 through 300",
+                    422,
+                )
+        try:
+            payload = describe_parameters(
+                sections=request.args.getlist("section"),
+                names=request.args.getlist("name"),
+                workflow_kind=request.args.get("workflow_kind"),
+                query=request.args.get("query"),
+                limit=limit,
+            )
+        except ValueError as error:
+            return error_response("validation_error", str(error), 422)
+        return jsonify(payload)
 
     @app.get("/api/v1/openapi.json")
     def openapi():
@@ -2736,6 +2764,9 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 f"{', '.join(null_fields)} cannot be null.",
                 422,
             )
+        idempotency_key, idempotency_error = mutation_idempotency_key()
+        if idempotency_error is not None:
+            return idempotency_error
         raw_etag = request.headers.get("If-Match", "").strip('W/" ')
         try:
             expected = int(raw_etag)
@@ -2745,6 +2776,47 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 "If-Match must contain the current segment revision.",
                 428,
             )
+        if idempotency_key is not None:
+            try:
+                with database.immediate_session() as db_session:
+                    reservation = services.idempotency.begin(
+                        db_session,
+                        principal=context.guards.principal(),
+                        operation_id="updateGenerationSegment",
+                        idempotency_key=idempotency_key,
+                        payload={
+                            "segment_id": segment_id,
+                            "expected_revision": expected,
+                            "changes": changes,
+                        },
+                    )
+                    if reservation.response is not None:
+                        result, status_code = reservation.response
+                        response = jsonify(result)
+                        response.status_code = status_code
+                        response.headers["Idempotency-Replayed"] = "true"
+                        response.headers["ETag"] = f'"{result["revision"]}"'
+                        return response
+                    result = generation.update_segment_in_session(
+                        db_session, segment_id, expected, changes
+                    )
+                    services.idempotency.complete(
+                        db_session,
+                        reservation,
+                        response=result,
+                        status_code=200,
+                        resource_kind="generation_segment",
+                        resource_id=segment_id,
+                    )
+            except (IdempotencyConflict, IdempotencyInProgress, ValueError) as error:
+                if isinstance(error, WorkspaceRevisionConflict):
+                    return error_response("revision_conflict", str(error), 409)
+                return idempotency_failure(error)
+            except KeyError:
+                return error_response("not_found", "Generation segment not found.", 404)
+            response = jsonify(result)
+            response.headers["ETag"] = f'"{result["revision"]}"'
+            return response
         try:
             # Explicit null clears a segment override back to the inherited
             # session value; omitted fields remain unchanged.
@@ -2762,6 +2834,9 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     @app.post("/api/v1/generation-segments/<segment_id>/takes/<take_id>/select")
     @require_auth
     def generation_take_select(segment_id: str, take_id: str):
+        idempotency_key, idempotency_error = mutation_idempotency_key()
+        if idempotency_error is not None:
+            return idempotency_error
         raw_etag = request.headers.get("If-Match", "").strip('W/" ')
         try:
             expected = int(raw_etag)
@@ -2771,6 +2846,51 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 "If-Match must contain the current segment revision.",
                 428,
             )
+        if idempotency_key is not None:
+            try:
+                with database.immediate_session() as db_session:
+                    reservation = services.idempotency.begin(
+                        db_session,
+                        principal=context.guards.principal(),
+                        operation_id="selectGenerationTake",
+                        idempotency_key=idempotency_key,
+                        payload={
+                            "segment_id": segment_id,
+                            "take_id": take_id,
+                            "expected_revision": expected,
+                        },
+                    )
+                    if reservation.response is not None:
+                        result, status_code = reservation.response
+                        response = jsonify(result)
+                        response.status_code = status_code
+                        response.headers["Idempotency-Replayed"] = "true"
+                        response.headers["ETag"] = f'"{result["revision"]}"'
+                        return response
+                    result = generation.select_take_in_session(
+                        db_session, segment_id, take_id, expected
+                    )
+                    services.idempotency.complete(
+                        db_session,
+                        reservation,
+                        response=result,
+                        status_code=200,
+                        resource_kind="generation_segment",
+                        resource_id=segment_id,
+                    )
+            except (IdempotencyConflict, IdempotencyInProgress, ValueError) as error:
+                if isinstance(error, WorkspaceRevisionConflict):
+                    return error_response("revision_conflict", str(error), 409)
+                if isinstance(error, ValueError):
+                    return error_response("invalid_take", str(error), 409)
+                return idempotency_failure(error)
+            except KeyError:
+                return error_response(
+                    "not_found", "Generation segment or audio take not found.", 404
+                )
+            response = jsonify(result)
+            response.headers["ETag"] = f'"{result["revision"]}"'
+            return response
         try:
             result = generation.select_take(segment_id, take_id, expected)
         except KeyError:
@@ -2813,6 +2933,94 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             return rejected
         if rejected := inline_credential_error(payload.selected_segment_override):
             return rejected
+        idempotency_key, idempotency_error = mutation_idempotency_key()
+        if idempotency_error is not None:
+            return idempotency_error
+        if idempotency_key is not None:
+            principal = context.guards.principal()
+            request_payload = {
+                "session_id": session_id,
+                **payload.model_dump(mode="json"),
+            }
+            try:
+                with database.immediate_session() as db_session:
+                    reservation = services.idempotency.begin(
+                        db_session,
+                        principal=principal,
+                        operation_id="startGenerationRun",
+                        idempotency_key=idempotency_key,
+                        payload=request_payload,
+                    )
+                    if reservation.response is not None:
+                        result, status_code = reservation.response
+                        response = jsonify(result)
+                        response.status_code = status_code
+                        response.headers["Idempotency-Replayed"] = "true"
+                        return response
+            except (IdempotencyConflict, IdempotencyInProgress) as error:
+                return idempotency_failure(error)
+            except ValueError as error:
+                return error_response("generation_unavailable", str(error), 409)
+
+            reservation_id = reservation.record.id
+
+            def abandon_generation_reservation() -> None:
+                try:
+                    with database.immediate_session() as db_session:
+                        fresh = services.idempotency.load_in_progress(
+                            db_session, reservation_id, principal=principal
+                        )
+                        services.idempotency.abandon_in_progress(db_session, fresh)
+                except (IdempotencyInProgress, KeyError):
+                    # A completed reservation must never be deleted.  A process
+                    # crash can also intentionally leave its marker for stale
+                    # recovery rather than turning it into a second execution.
+                    pass
+
+            try:
+                prepared = generation.prepare_start(
+                    session_id,
+                    run_override=payload.run_override,
+                    selected_segment_override=payload.selected_segment_override,
+                    segment_ids=payload.segment_ids,
+                    generation_run_id=payload.generation_run_id,
+                    operation=payload.operation,
+                )
+            except KeyError:
+                abandon_generation_reservation()
+                return error_response("not_found", "Session not found.", 404)
+            except ValueError as error:
+                abandon_generation_reservation()
+                return error_response("generation_unavailable", str(error), 409)
+
+            try:
+                with database.immediate_session() as db_session:
+                    reservation = services.idempotency.load_in_progress(
+                        db_session, reservation_id, principal=principal
+                    )
+                    result = generation.start_in_session(
+                        db_session, session_id, prepared=prepared
+                    )
+                    services.idempotency.complete(
+                        db_session,
+                        reservation,
+                        response=result,
+                        status_code=202,
+                        resource_kind="generation_run",
+                        resource_id=str(result["id"]),
+                    )
+            except (IdempotencyConflict, IdempotencyInProgress) as error:
+                return idempotency_failure(error)
+            except KeyError:
+                abandon_generation_reservation()
+                return error_response("not_found", "Session not found.", 404)
+            except ValueError as error:
+                abandon_generation_reservation()
+                return error_response("generation_unavailable", str(error), 409)
+            except Exception:
+                abandon_generation_reservation()
+                raise
+            return jsonify(result), 202
         try:
             result = generation.start(
                 session_id,
@@ -2884,6 +3092,54 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         )
         if rejected := inline_credential_error(payload.run_override):
             return rejected
+        idempotency_key, idempotency_error = mutation_idempotency_key()
+        if idempotency_error is not None:
+            return idempotency_error
+        if idempotency_key is not None:
+            try:
+                prepared = generation.prepare_assembly(
+                    session_id, run_override=payload.run_override
+                )
+                with database.immediate_session() as db_session:
+                    reservation = services.idempotency.begin(
+                        db_session,
+                        principal=context.guards.principal(),
+                        operation_id="createOutputAssembly",
+                        idempotency_key=idempotency_key,
+                        payload={
+                            "session_id": session_id,
+                            **payload.model_dump(mode="json"),
+                        },
+                    )
+                    if reservation.response is not None:
+                        result, status_code = reservation.response
+                        response = jsonify(result)
+                        response.status_code = status_code
+                        response.headers["Idempotency-Replayed"] = "true"
+                        return response
+                    result = generation.create_assembly_in_session(
+                        db_session,
+                        session_id,
+                        generation_run_id=payload.generation_run_id,
+                        prepared=prepared,
+                    )
+                    services.idempotency.complete(
+                        db_session,
+                        reservation,
+                        response=result,
+                        status_code=202,
+                        resource_kind="output_assembly",
+                        resource_id=str(result["id"]),
+                    )
+            except (IdempotencyConflict, IdempotencyInProgress) as error:
+                return idempotency_failure(error)
+            except KeyError:
+                return error_response(
+                    "not_found", "Session or generation run not found.", 404
+                )
+            except ValueError as error:
+                return error_response("assembly_unavailable", str(error), 409)
+            return jsonify(result), 202
         try:
             result = generation.create_assembly(
                 session_id,
@@ -3579,6 +3835,70 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         payload = SubtitleReviewRequest.model_validate(
             request.get_json(silent=True) or {}
         )
+        idempotency_key, idempotency_error = mutation_idempotency_key()
+        if idempotency_error is not None:
+            return idempotency_error
+        if idempotency_key is not None:
+            published_paths: list[Path] = []
+
+            def cleanup_published() -> None:
+                for published_path in published_paths:
+                    try:
+                        published_path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+
+            try:
+                with database.immediate_session() as db_session:
+                    reservation = services.idempotency.begin(
+                        db_session,
+                        principal=context.guards.principal(),
+                        operation_id="saveSubtitleReview",
+                        idempotency_key=idempotency_key,
+                        payload={
+                            "session_id": session_id,
+                            "stage": stage,
+                            **payload.model_dump(mode="json"),
+                        },
+                    )
+                    if reservation.response is not None:
+                        result, status_code = reservation.response
+                        response = jsonify(result)
+                        response.status_code = status_code
+                        response.headers["Idempotency-Replayed"] = "true"
+                        return response
+                    result = subtitle_review.save_review_in_session(
+                        db_session,
+                        session_id,
+                        stage,
+                        payload.expected_revision,
+                        [item.model_dump() for item in payload.segments],
+                        source_artifact_id=payload.source_artifact_id,
+                        published_paths=published_paths,
+                    )
+                    services.idempotency.complete(
+                        db_session,
+                        reservation,
+                        response=result,
+                        status_code=201,
+                        resource_kind="subtitle_document",
+                        resource_id=str(result["document_id"]),
+                    )
+            except (IdempotencyConflict, IdempotencyInProgress) as error:
+                return idempotency_failure(error)
+            except KeyError:
+                cleanup_published()
+                return error_response("not_found", "Subtitle document not found.", 404)
+            except RuntimeError as error:
+                cleanup_published()
+                return error_response("revision_conflict", str(error), 409)
+            except ValueError as error:
+                cleanup_published()
+                return error_response("validation_error", str(error), 422)
+            except Exception:
+                cleanup_published()
+                raise
+            return jsonify(result), 201
         try:
             result = subtitle_review.save_review(
                 session_id,
@@ -5599,10 +5919,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         if service is None:
             return error_response("not_found", "TTS service not found.", 404)
         service_adapter = (
-            str(service.get("adapter") or "")
-            .strip()
-            .lower()
-            .replace("-", "_")
+            str(service.get("adapter") or "").strip().lower().replace("-", "_")
         )
         linked_reference = registration.get("resource_kind") == "linked_reference"
         if not bool(service.get("supports_voice_deletion")) and not (

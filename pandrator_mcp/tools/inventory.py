@@ -6,10 +6,26 @@ from typing import Any
 
 from ..context import McpRuntime
 from ..schemas import (
+    DescribeParametersInput,
     ListArtifactsInput,
     ProviderStatusInput,
     VoiceCatalogInput,
 )
+
+
+def describe_parameters(
+    runtime: McpRuntime,
+    arguments: DescribeParametersInput,
+) -> dict[str, Any]:
+    """Return the application's filtered, safe parameter-definition catalogue."""
+
+    return runtime.require_application().describe_parameters(
+        sections=arguments.sections,
+        names=arguments.names,
+        workflow_kind=arguments.workflow_kind,
+        query=arguments.query,
+        limit=arguments.limit,
+    )
 
 
 def list_artifacts(

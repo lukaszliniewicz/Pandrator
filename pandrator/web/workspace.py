@@ -2257,14 +2257,24 @@ class GenerationService:
         self, segment_id: str, expected_revision: int, changes: dict[str, Any]
     ) -> dict[str, Any]:
         with self.database.session() as session:
-            segment = session.get(GenerationSegment, segment_id)
-            if segment is None:
-                raise KeyError(segment_id)
-            if segment.revision != expected_revision:
-                raise RevisionConflict(
-                    "The generation segment changed in another client."
-                )
-            return self._apply_segment_changes(session, segment, changes)
+            return self.update_segment_in_session(
+                session, segment_id, expected_revision, changes
+            )
+
+    def update_segment_in_session(
+        self,
+        session: Session,
+        segment_id: str,
+        expected_revision: int,
+        changes: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Update one segment without committing a caller-owned transaction."""
+        segment = session.get(GenerationSegment, segment_id)
+        if segment is None:
+            raise KeyError(segment_id)
+        if segment.revision != expected_revision:
+            raise RevisionConflict("The generation segment changed in another client.")
+        return self._apply_segment_changes(session, segment, changes)
 
     def update_segments(
         self, session_id: str, updates: list[dict[str, Any]]
@@ -2379,65 +2389,65 @@ class GenerationService:
         self, segment_id: str, take_id: str, expected_revision: int
     ) -> dict[str, Any]:
         with self.database.session() as session:
-            segment = session.get(GenerationSegment, segment_id)
-            take = session.get(AudioTake, take_id)
-            if (
-                segment is None
-                or take is None
-                or take.generation_segment_id != segment_id
-            ):
-                raise KeyError(take_id)
-            if segment.revision != expected_revision:
-                raise RevisionConflict(
-                    "The generation segment changed in another client."
-                )
-            if take.status not in {"completed", "stale"} or not take.artifact_id:
-                raise ValueError("Only an available audio take can be selected.")
-            session.add(
-                GenerationSegmentRevision(
-                    generation_segment_id=segment.id,
-                    revision=segment.revision,
-                    alignment_group=segment.alignment_group,
-                    node_kind=segment.node_kind,
-                    paragraph_break_after=segment.paragraph_break_after,
-                    speaker=segment.speaker,
-                    text=segment.text,
-                    optimized_text=segment.optimized_text,
-                    speech_plan_json=dict(segment.speech_plan_json or {}),
-                    optimization_status=segment.optimization_status,
-                    optimization_reviewed=segment.optimization_reviewed,
-                    marked=segment.marked,
-                    removed=segment.removed,
-                    voice_id=segment.voice_id,
-                    voice=segment.voice,
-                    language=segment.language,
-                    silence_after_ms=segment.silence_after_ms,
-                )
+            return self.select_take_in_session(
+                session, segment_id, take_id, expected_revision
             )
-            for item in session.scalars(
-                select(AudioTake).where(AudioTake.generation_segment_id == segment_id)
-            ).all():
-                item.is_active = item.id == take_id
-                item.revision += 1
-            segment.revision += 1
-            segment.updated_at = utcnow()
-            plan_revision = session.get(
-                GenerationPlanRevision, segment.plan_revision_id
-            )
-            plan = (
-                session.get(GenerationPlan, plan_revision.plan_id)
-                if plan_revision
-                else None
-            )
-            if plan is not None:
-                mark_output_assemblies_stale(session, plan.session_id)
-            return {
-                "id": segment.id,
-                "active_take_id": take.id,
-                "revision": segment.revision,
-            }
 
-    def start(
+    def select_take_in_session(
+        self, session: Session, segment_id: str, take_id: str, expected_revision: int
+    ) -> dict[str, Any]:
+        """Select a take without committing a caller-owned transaction."""
+        segment = session.get(GenerationSegment, segment_id)
+        take = session.get(AudioTake, take_id)
+        if segment is None or take is None or take.generation_segment_id != segment_id:
+            raise KeyError(take_id)
+        if segment.revision != expected_revision:
+            raise RevisionConflict("The generation segment changed in another client.")
+        if take.status not in {"completed", "stale"} or not take.artifact_id:
+            raise ValueError("Only an available audio take can be selected.")
+        session.add(
+            GenerationSegmentRevision(
+                generation_segment_id=segment.id,
+                revision=segment.revision,
+                alignment_group=segment.alignment_group,
+                node_kind=segment.node_kind,
+                paragraph_break_after=segment.paragraph_break_after,
+                speaker=segment.speaker,
+                text=segment.text,
+                optimized_text=segment.optimized_text,
+                speech_plan_json=dict(segment.speech_plan_json or {}),
+                optimization_status=segment.optimization_status,
+                optimization_reviewed=segment.optimization_reviewed,
+                marked=segment.marked,
+                removed=segment.removed,
+                voice_id=segment.voice_id,
+                voice=segment.voice,
+                language=segment.language,
+                silence_after_ms=segment.silence_after_ms,
+            )
+        )
+        for item in session.scalars(
+            select(AudioTake).where(AudioTake.generation_segment_id == segment_id)
+        ).all():
+            item.is_active = item.id == take_id
+            item.revision += 1
+        segment.revision += 1
+        segment.updated_at = utcnow()
+        plan_revision = session.get(GenerationPlanRevision, segment.plan_revision_id)
+        plan = (
+            session.get(GenerationPlan, plan_revision.plan_id)
+            if plan_revision
+            else None
+        )
+        if plan is not None:
+            mark_output_assemblies_stale(session, plan.session_id)
+        return {
+            "id": segment.id,
+            "active_take_id": take.id,
+            "revision": segment.revision,
+        }
+
+    def prepare_start(
         self,
         session_id: str,
         *,
@@ -2447,6 +2457,7 @@ class GenerationService:
         generation_run_id: str | None = None,
         operation: str = "generate",
     ) -> dict[str, Any]:
+        """Resolve settings and refresh a full plan before a short write transaction."""
         requested_segment_ids = [
             str(value) for value in (segment_ids or []) if str(value)
         ]
@@ -2472,159 +2483,183 @@ class GenerationService:
                 )
                 if binding is not None:
                     selected_tts["provider_configs"] = [binding]
-        resolved_for_new: tuple[dict[str, Any], str] | None = None
-        if operation == "generate" and not requested_segment_ids:
-            resolved_for_new = self.settings.resolve(
-                session_id,
-                run_override=run_override,
+        # Resolve before the caller opens an immediate transaction: resolving
+        # selected settings can itself persist normalization state, and full-run
+        # plan refresh owns a separate write transaction.
+        resolved_for_new = self.settings.resolve(session_id, run_override=run_override)
+        if (
+            operation == "generate"
+            and not requested_segment_ids
+            and self.plan_refresher is not None
+        ):
+            self.plan_refresher(session_id, resolved_for_new[0])
+            resolved_for_new = (
+                resolved_for_new[0],
+                stable_hash(resolved_for_new[0]),
             )
-            if self.plan_refresher is not None:
-                self.plan_refresher(session_id, resolved_for_new[0])
-                resolved_for_new = (
-                    resolved_for_new[0],
-                    stable_hash(resolved_for_new[0]),
-                )
 
+        return {
+            "requested_segment_ids": requested_segment_ids,
+            "run_override": run_override,
+            "selected_segment_override": selected_segment_override,
+            "generation_run_id": generation_run_id,
+            "operation": operation,
+            "resolved_for_new": resolved_for_new,
+        }
+
+    def start(
+        self,
+        session_id: str,
+        *,
+        run_override: dict[str, Any] | None = None,
+        selected_segment_override: dict[str, Any] | None = None,
+        segment_ids: list[str] | None = None,
+        generation_run_id: str | None = None,
+        operation: str = "generate",
+    ) -> dict[str, Any]:
+        prepared = self.prepare_start(
+            session_id,
+            run_override=run_override,
+            selected_segment_override=selected_segment_override,
+            segment_ids=segment_ids,
+            generation_run_id=generation_run_id,
+            operation=operation,
+        )
         with self.database.session() as session:
-            plan = session.scalar(
-                select(GenerationPlan).where(GenerationPlan.session_id == session_id)
+            return self.start_in_session(session, session_id, prepared=prepared)
+
+    def start_in_session(
+        self, session: Session, session_id: str, *, prepared: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Create the durable run and its queued job in one caller transaction."""
+        requested_segment_ids = list(prepared["requested_segment_ids"])
+        run_override = dict(prepared["run_override"])
+        selected_segment_override = deepcopy(prepared["selected_segment_override"])
+        generation_run_id = prepared["generation_run_id"]
+        operation = prepared["operation"]
+        resolved_for_new = prepared["resolved_for_new"]
+        plan = session.scalar(
+            select(GenerationPlan).where(GenerationPlan.session_id == session_id)
+        )
+        if plan is None or not plan.active_revision_id:
+            raise ValueError(
+                "Create generation segments before starting audio generation."
             )
-            if plan is None or not plan.active_revision_id:
+        plan_revision_id = plan.active_revision_id
+        if requested_segment_ids:
+            unique_requested_ids = set(requested_segment_ids)
+            requested_rows = list(
+                session.execute(
+                    select(
+                        GenerationSegment.id,
+                        GenerationSegment.plan_revision_id,
+                    ).where(GenerationSegment.id.in_(requested_segment_ids))
+                ).all()
+            )
+            requested_revisions = {value for _id, value in requested_rows}
+            if (
+                len(requested_rows) != len(unique_requested_ids)
+                or len(requested_revisions) != 1
+            ):
                 raise ValueError(
-                    "Create generation segments before starting audio generation."
+                    "Selected generation segments must belong to one available plan revision."
                 )
-            plan_revision_id = plan.active_revision_id
-            if requested_segment_ids:
-                unique_requested_ids = set(requested_segment_ids)
-                requested_rows = list(
-                    session.execute(
-                        select(
-                            GenerationSegment.id,
-                            GenerationSegment.plan_revision_id,
-                        ).where(GenerationSegment.id.in_(requested_segment_ids))
-                    ).all()
+            requested_revision_id = next(iter(requested_revisions))
+            requested_revision = session.get(
+                GenerationPlanRevision, requested_revision_id
+            )
+            if requested_revision is None or requested_revision.plan_id != plan.id:
+                raise ValueError(
+                    "Selected generation segments do not belong to this session."
                 )
-                requested_revisions = {
-                    revision_value for _segment_id, revision_value in requested_rows
-                }
-                if (
-                    len(requested_rows) != len(unique_requested_ids)
-                    or len(requested_revisions) != 1
-                ):
-                    raise ValueError(
-                        "Selected generation segments must belong to one available plan revision."
-                    )
-                requested_revision_id = next(iter(requested_revisions))
-                requested_revision = session.get(
-                    GenerationPlanRevision,
-                    requested_revision_id,
+            plan_revision_id = requested_revision_id
+        source_run = None
+        if requested_segment_ids and generation_run_id:
+            source_run = session.get(GenerationRun, generation_run_id)
+            if (
+                source_run is None
+                or source_run.session_id != session_id
+                or source_run.plan_revision_id != plan_revision_id
+                or source_run.operation == "rvc"
+            ):
+                raise ValueError(
+                    "The selected source generation run does not match these segments."
                 )
-                if requested_revision is None or requested_revision.plan_id != plan.id:
-                    raise ValueError(
-                        "Selected generation segments do not belong to this session."
-                    )
-                plan_revision_id = requested_revision_id
-            source_run = None
-            if requested_segment_ids and generation_run_id:
-                source_run = session.get(GenerationRun, generation_run_id)
-                if (
-                    source_run is None
-                    or source_run.session_id != session_id
-                    or source_run.plan_revision_id != plan_revision_id
-                    or source_run.operation == "rvc"
-                ):
-                    raise ValueError(
-                        "The selected source generation run does not match these segments."
-                    )
-            elif requested_segment_ids and operation != "rvc":
-                source_run = session.scalar(
-                    select(GenerationRun)
-                    .where(
-                        GenerationRun.session_id == session_id,
-                        GenerationRun.plan_revision_id == plan_revision_id,
-                        GenerationRun.operation != "rvc",
-                    )
-                    .order_by(
-                        GenerationRun.sequence_number.desc(),
-                        GenerationRun.created_at.desc(),
-                    )
+        elif requested_segment_ids and operation != "rvc":
+            source_run = session.scalar(
+                select(GenerationRun)
+                .where(
+                    GenerationRun.session_id == session_id,
+                    GenerationRun.plan_revision_id == plan_revision_id,
+                    GenerationRun.operation != "rvc",
                 )
-            if source_run is not None:
-                if source_run.status in {"queued", "running"}:
-                    source_run.pause_requested = True
-                    source_run.status = "pausing"
-                    source_run.updated_at = utcnow()
-                source_snapshot = dict(source_run.settings_snapshot_json or {})
-                # A previous alternate take is a useful source for ordinary
-                # settings, but its *selected-only* precedence must not leak
-                # into a later regeneration unless it is requested again.
-                source_snapshot.pop("selected_segment_override", None)
-                snapshot = _merge(
-                    source_snapshot,
-                    run_override,
-                    selected_segment_override,
+                .order_by(
+                    GenerationRun.sequence_number.desc(),
+                    GenerationRun.created_at.desc(),
                 )
-                settings_hash = stable_hash(snapshot)
-            else:
-                if resolved_for_new is None:
-                    resolved_for_new = self.settings.resolve(
-                        session_id,
-                        run_override=run_override,
-                    )
-                snapshot, settings_hash = resolved_for_new
-                if selected_segment_override:
-                    snapshot = _merge(snapshot, selected_segment_override)
-                    settings_hash = stable_hash(snapshot)
+            )
+        if source_run is not None:
+            if source_run.status in {"queued", "running"}:
+                source_run.pause_requested = True
+                source_run.status = "pausing"
+                source_run.updated_at = utcnow()
+            source_snapshot = dict(source_run.settings_snapshot_json or {})
+            # A previous alternate take is a useful source for ordinary
+            # settings, but its *selected-only* precedence must not leak
+            # into a later regeneration unless it is requested again.
+            source_snapshot.pop("selected_segment_override", None)
+            snapshot = _merge(source_snapshot, run_override, selected_segment_override)
+            settings_hash = stable_hash(snapshot)
+        else:
+            snapshot, settings_hash = resolved_for_new
+            snapshot = deepcopy(snapshot)
             if selected_segment_override:
-                snapshot["selected_segment_override"] = deepcopy(
-                    selected_segment_override
-                )
+                snapshot = _merge(snapshot, selected_segment_override)
                 settings_hash = stable_hash(snapshot)
-            sequence_number = (
-                int(
-                    session.scalar(
-                        select(func.max(GenerationRun.sequence_number)).where(
-                            GenerationRun.session_id == session_id
-                        )
+        if selected_segment_override:
+            snapshot["selected_segment_override"] = deepcopy(selected_segment_override)
+            settings_hash = stable_hash(snapshot)
+        sequence_number = (
+            int(
+                session.scalar(
+                    select(func.max(GenerationRun.sequence_number)).where(
+                        GenerationRun.session_id == session_id
                     )
-                    or 0
                 )
-                + 1
+                or 0
             )
-            run = GenerationRun(
-                session_id=session_id,
-                plan_revision_id=plan_revision_id,
-                source_generation_run_id=source_run.id if source_run else None,
-                sequence_number=sequence_number,
-                operation=operation,
-                status="queued",
-                settings_snapshot_json=snapshot,
-                settings_hash=settings_hash,
-            )
-            session.add(run)
-            session.flush()
-            run_id = run.id
-        resource_keys = self._resource_keys(session_id, snapshot)
-        job = self.jobs.enqueue(
+            + 1
+        )
+        run = GenerationRun(
+            session_id=session_id,
+            plan_revision_id=plan_revision_id,
+            source_generation_run_id=source_run.id if source_run else None,
+            sequence_number=sequence_number,
+            operation=operation,
+            status="queued",
+            settings_snapshot_json=snapshot,
+            settings_hash=settings_hash,
+        )
+        session.add(run)
+        session.flush()
+        job = self.jobs.enqueue_in_session(
+            session,
             "generation.run",
             {
-                "generation_run_id": run_id,
+                "generation_run_id": run.id,
                 "segment_ids": requested_segment_ids,
                 "operation": operation,
             },
             session_id=session_id,
-            resource_keys=resource_keys,
+            resource_keys=self._resource_keys(session_id, snapshot),
         )
-        with self.database.session() as session:
-            run = session.get(GenerationRun, run_id)
-            run.job_id = job.id
-            run.updated_at = utcnow()
-        with self.database.session() as session:
-            result = self._run_payload(session, session.get(GenerationRun, run_id))
-            # Kept for compatibility with clients that used the old response
-            # flag. Targeted generation now always creates a new immutable run.
-            result["reused_run"] = False
-            return result
+        run.job_id = job.id
+        run.updated_at = utcnow()
+        session.flush()
+        result = self._run_payload(session, run)
+        # Kept for compatibility with clients that used the old response flag.
+        result["reused_run"] = False
+        return result
 
     @staticmethod
     def _resource_keys(session_id: str, snapshot: dict[str, Any]) -> list[str]:
@@ -2914,7 +2949,7 @@ class GenerationService:
             "updated_at": record.updated_at.isoformat(),
         }
 
-    def create_assembly(
+    def prepare_assembly(
         self,
         session_id: str,
         *,
@@ -2935,55 +2970,72 @@ class GenerationService:
 
         if output_format not in OUTPUT_FORMATS:
             raise ValueError(f"Unsupported audio output format: {output_format}")
+        return {"snapshot": snapshot, "settings_hash": settings_hash}
+
+    def create_assembly(
+        self,
+        session_id: str,
+        *,
+        generation_run_id: str | None = None,
+        run_override: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        prepared = self.prepare_assembly(session_id, run_override=run_override)
         with self.database.session() as session:
-            if session.get(SessionRecord, session_id) is None:
-                raise KeyError(session_id)
-            run = (
-                session.get(GenerationRun, generation_run_id)
-                if generation_run_id
-                else None
+            return self.create_assembly_in_session(
+                session,
+                session_id,
+                generation_run_id=generation_run_id,
+                prepared=prepared,
             )
-            if generation_run_id and (run is None or run.session_id != session_id):
-                raise KeyError(generation_run_id)
-            if run is not None and run.status != "completed":
-                raise ValueError("Only a completed generation run can be assembled.")
-            plan = session.scalar(
-                select(GenerationPlan).where(GenerationPlan.session_id == session_id)
-            )
-            plan_revision_id = (
-                run.plan_revision_id
-                if run
-                else plan.active_revision_id
-                if plan
-                else None
-            )
-            if not plan_revision_id:
-                raise ValueError("Create generation segments before assembling audio.")
-            record = OutputAssembly(
-                session_id=session_id,
-                generation_run_id=run.id if run else None,
-                status="queued",
-                settings_json={
-                    "resolved": snapshot,
-                    "plan_revision_id": plan_revision_id,
-                },
-                settings_hash=settings_hash,
-            )
-            session.add(record)
-            session.flush()
-            assembly_id = record.id
-        job = self.jobs.enqueue(
+
+    def create_assembly_in_session(
+        self,
+        session: Session,
+        session_id: str,
+        *,
+        generation_run_id: str | None = None,
+        prepared: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Create the durable output assembly and queued job atomically."""
+        snapshot = deepcopy(prepared["snapshot"])
+        settings_hash = str(prepared["settings_hash"])
+        if session.get(SessionRecord, session_id) is None:
+            raise KeyError(session_id)
+        run = (
+            session.get(GenerationRun, generation_run_id) if generation_run_id else None
+        )
+        if generation_run_id and (run is None or run.session_id != session_id):
+            raise KeyError(generation_run_id)
+        if run is not None and run.status != "completed":
+            raise ValueError("Only a completed generation run can be assembled.")
+        plan = session.scalar(
+            select(GenerationPlan).where(GenerationPlan.session_id == session_id)
+        )
+        plan_revision_id = (
+            run.plan_revision_id if run else plan.active_revision_id if plan else None
+        )
+        if not plan_revision_id:
+            raise ValueError("Create generation segments before assembling audio.")
+        record = OutputAssembly(
+            session_id=session_id,
+            generation_run_id=run.id if run else None,
+            status="queued",
+            settings_json={"resolved": snapshot, "plan_revision_id": plan_revision_id},
+            settings_hash=settings_hash,
+        )
+        session.add(record)
+        session.flush()
+        job = self.jobs.enqueue_in_session(
+            session,
             "generation.assemble",
-            {"output_assembly_id": assembly_id},
+            {"output_assembly_id": record.id},
             session_id=session_id,
             resource_keys=[f"session:{session_id}"],
         )
-        with self.database.session() as session:
-            record = session.get(OutputAssembly, assembly_id)
-            record.job_id = job.id
-            record.updated_at = utcnow()
-            payload = self._assembly_payload(record, job)
-        return payload
+        record.job_id = job.id
+        record.updated_at = utcnow()
+        session.flush()
+        return self._assembly_payload(record, job)
 
     def latest_assembly(self, session_id: str) -> dict[str, Any] | None:
         with self.database.session() as session:

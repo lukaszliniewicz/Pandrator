@@ -4,6 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from jsonschema import Draft202012Validator
+
 try:
     from mcp import Client, ClientSession, StdioServerParameters, stdio_client
 except ImportError:
@@ -61,6 +63,7 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                         "pandrator_create_source_cleaning_dispatch_run",
                         "pandrator_create_speech_optimization_dispatch_run",
                         "pandrator_create_text_source",
+                        "pandrator_describe_parameters",
                         "pandrator_download_artifact",
                         "pandrator_execute_component_plan",
                         "pandrator_execute_workflow_plan",
@@ -96,6 +99,7 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                         "pandrator_patch_subtitle_cues",
                         "pandrator_plan_component_change",
                         "pandrator_plan_export_variant",
+                        "pandrator_plan_orchestrated_workflow",
                         "pandrator_plan_workflow",
                         "pandrator_preview_subtitles",
                         "pandrator_recommend_next_steps",
@@ -139,6 +143,60 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(
                         spec.risk == RiskClass.READ,
                         tool.annotations.read_only_hint,
+                    )
+                tools_by_name = {tool.name: tool for tool in listed.tools}
+                execution_contracts = {
+                    "pandrator_create_dispatch_run": {
+                        "session_id": "session-1",
+                        "kind": "correction",
+                        "idempotency_key": "dispatch-key",
+                    },
+                    "pandrator_create_speech_optimization_dispatch_run": {
+                        "session_id": "session-1",
+                        "idempotency_key": "speech-key",
+                    },
+                    "pandrator_plan_orchestrated_workflow": {
+                        "session_id": "session-1",
+                        "goal": "Create the final export",
+                    },
+                }
+                for name, base in execution_contracts.items():
+                    schema = tools_by_name[name].input_schema
+                    validator = Draft202012Validator(schema)
+                    self.assertIn("context_capsule", schema["properties"])
+                    self.assertFalse(list(validator.iter_errors(base)))
+                    self.assertFalse(
+                        list(
+                            validator.iter_errors(
+                                {
+                                    **base,
+                                    "execution_mode": "parallel",
+                                    "max_parallel_batches": 3,
+                                }
+                            )
+                        )
+                    )
+                    self.assertTrue(
+                        list(
+                            validator.iter_errors(
+                                {
+                                    **base,
+                                    "execution_mode": "serial",
+                                    "max_parallel_batches": 2,
+                                }
+                            )
+                        )
+                    )
+                    self.assertTrue(
+                        list(
+                            validator.iter_errors(
+                                {
+                                    **base,
+                                    "execution_mode": "parallel",
+                                    "max_parallel_batches": 1,
+                                }
+                            )
+                        )
                     )
                 dispatch_tools = {
                     tool.name: tool for tool in listed.tools if "dispatch" in tool.name

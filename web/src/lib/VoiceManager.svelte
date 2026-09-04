@@ -64,9 +64,10 @@
     onvoicepublished?: (providerVoiceId: string) => void;
   } = $props();
   let activeView = $state<'references' | 'prebuilt'>('references');
-  const requestedService = $derived(
+  const explicitService = $derived(
     initialService || page.url.searchParams.get('service') || ''
   );
+  let selectedProviderService = $state('');
   let voices = $state<Voice[]>([]);
   let selected = $state<Voice | null>(null);
   let samples = $state<Sample[]>([]);
@@ -143,6 +144,22 @@
       capabilities?.recording?.browser_media_recorder !== false
     )
   );
+  const cloningProviders = $derived(
+    ttsServices.filter((service) => service.supports_voice_cloning === true)
+  );
+  const requestedService = $derived(
+    explicitService ||
+      selectedProviderService ||
+      (cloningProviders.length === 1 ? cloningProviders[0].id : '')
+  );
+  $effect(() => {
+    if (
+      !explicitService &&
+      cloningProviders.length === 1 &&
+      !selectedProviderService
+    )
+      selectedProviderService = cloningProviders[0].id;
+  });
   // Pre-built-only commercial services (Vertex, Gemini, OpenAI) must never
   // offer the reference-upload flow: those APIs do not clone voices.
   const providerTarget = $derived(
@@ -774,7 +791,7 @@
     try {
       const [capabilityPayload, servicesPayload] = await Promise.all([
         diagnosticsApi.capabilities(),
-        speechServiceApi.catalogue(Boolean(requestedService)),
+        speechServiceApi.catalogue(Boolean(explicitService)),
         loadVoices()
       ]);
       capabilities = capabilityPayload;
@@ -863,6 +880,24 @@
       >
         {notice}
       </div>{/if}
+
+    {#if !explicitService && cloningProviders.length}
+      <div class="mb-5 flex justify-end">
+        <label class="text-xs font-semibold"
+          >Voice cloning provider<select
+            bind:value={selectedProviderService}
+            disabled={publishing}
+            class="ml-2 rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-sm font-normal disabled:opacity-40"
+            ><option value="">Choose a provider</option
+            >{#each cloningProviders as service}<option value={service.id}
+                >{service.name}{service.available === false
+                  ? ' · unavailable'
+                  : ''}</option
+              >{/each}</select
+          ></label
+        >
+      </div>
+    {/if}
 
     <div class="grid items-start gap-5 lg:grid-cols-[20rem_1fr]">
       <aside class="surface flex flex-col rounded-3xl p-4">

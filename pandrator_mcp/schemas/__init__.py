@@ -90,7 +90,9 @@ from .work import (
     ListWorkInput,
 )
 from .workflow import (
+    DescribeParametersInput,
     ExecuteWorkflowPlanInput,
+    PlanOrchestratedWorkflowInput,
     PlanWorkflowInput,
     RunWorkflowInput,
 )
@@ -133,7 +135,9 @@ TOOL_INPUT_MODELS = (
     UpdateSessionInput,
     AttachExistingSourceInput,
     UpdateSessionSettingsInput,
+    DescribeParametersInput,
     PlanWorkflowInput,
+    PlanOrchestratedWorkflowInput,
     ExecuteWorkflowPlanInput,
     CancelWorkInput,
     ManagerDesiredComponentInput,
@@ -186,6 +190,7 @@ __all__ = [
     "DispatchTranslationItemInput",
     "DispatchTranslationResultInput",
     "DownloadArtifactInput",
+    "DescribeParametersInput",
     "ExplainSystemInput",
     "GUIDE_TOPICS",
     "GuideTopic",
@@ -219,6 +224,7 @@ __all__ = [
     "PreviewSubtitlesInput",
     "ProviderStatusInput",
     "PlanWorkflowInput",
+    "PlanOrchestratedWorkflowInput",
     "PlanExportVariantInput",
     "RecommendNextStepsInput",
     "RegenerateSegmentsInput",

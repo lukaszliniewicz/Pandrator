@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from ..context import McpRuntime
@@ -20,6 +21,17 @@ from ..work_mapping import (
     manager_work_reference,
 )
 
+_TERMINAL_WORK_STATES = frozenset({"succeeded", "failed", "cancelled"})
+
+
+def _work_is_terminal(work: Any) -> bool:
+    return bool(work is not None and work.state in _TERMINAL_WORK_STATES)
+
+
+def _poll_delay_seconds(work: Any) -> float:
+    poll_after_ms = getattr(work, "poll_after_ms", 0)
+    return max(0.25, min(float(poll_after_ms) / 1_000.0, 10.0))
+
 
 def list_work(
     runtime: McpRuntime,
@@ -37,25 +49,88 @@ def get_work(
     runtime: McpRuntime,
     arguments: GetWorkInput,
 ) -> ToolOutcome:
+    requested_seconds = arguments.wait_seconds
+    started = time.monotonic() if requested_seconds else 0.0
+    deadline = started + requested_seconds
+    application = runtime.require_application() if arguments.work_type == "job" else None
+
     if arguments.work_type == "manager_operation":
         result = manager_work_projection(runtime.manager.operation(arguments.work_id))
-        if arguments.include_events:
-            result["events"] = manager_task_log(runtime.manager.operation_tasks(arguments.work_id))
-        return ToolOutcome(
-            result=result,
-            work=manager_work_reference(result),
-        )
-    application = runtime.require_application()
-    result = application.get_work(arguments.work_id)
+        work = manager_work_reference(result)
+
+        def inspect() -> dict[str, Any]:
+            return manager_work_projection(runtime.manager.operation(arguments.work_id))
+
+    else:
+        assert application is not None
+        result = application.get_work(arguments.work_id)
+        work = application_work_reference(result)
+
+        def inspect() -> dict[str, Any]:
+            return application.get_work(arguments.work_id)
+
+    poll_count = 0
+    timed_out = False
+    no_clock_progress = False
+    while requested_seconds and not _work_is_terminal(work):
+        now = time.monotonic()
+        remaining = deadline - now
+        if remaining <= 0:
+            timed_out = True
+            break
+        sleep_seconds = min(_poll_delay_seconds(work), remaining)
+        before_sleep = now
+        time.sleep(sleep_seconds)
+        after_sleep = time.monotonic()
+        no_clock_progress = after_sleep <= before_sleep
+        result = inspect()
+        poll_count += 1
+        if arguments.work_type == "manager_operation":
+            work = manager_work_reference(result)
+        else:
+            work = application_work_reference(result)
+        if _work_is_terminal(work):
+            break
+        if no_clock_progress:
+            timed_out = True
+            break
+
+    if requested_seconds:
+        elapsed_seconds = max(0.0, time.monotonic() - started)
+        if timed_out:
+            elapsed_seconds = min(float(requested_seconds), elapsed_seconds)
+        elapsed_seconds = round(elapsed_seconds, 3)
+    else:
+        elapsed_seconds = 0.0
+    result = dict(result)
+    result["wait"] = {
+        "requested_seconds": requested_seconds,
+        "elapsed_seconds": elapsed_seconds,
+        "poll_count": poll_count,
+        "timed_out": timed_out,
+    }
     if arguments.include_events:
-        result = dict(result)
-        result["events"] = application.get_work_events(
-            arguments.work_id,
-            limit=arguments.event_limit,
+        if arguments.work_type == "manager_operation":
+            result["events"] = manager_task_log(runtime.manager.operation_tasks(arguments.work_id))
+        else:
+            assert application is not None
+            result["events"] = application.get_work_events(
+                arguments.work_id,
+                limit=arguments.event_limit,
+            )
+    next_actions: list[NextAction] = []
+    if not _work_is_terminal(work):
+        next_actions.append(
+            NextAction(
+                tool="pandrator_get_work",
+                arguments=arguments.model_dump(mode="json"),
+                reason="Continue monitoring this durable work item until terminal.",
+            )
         )
     return ToolOutcome(
         result=result,
-        work=application_work_reference(result),
+        work=work,
+        next_actions=next_actions,
     )
 
 
@@ -94,8 +169,7 @@ def cancel_work(
                 "type": "manager_operation",
                 "id": arguments.work_id,
                 "cancellation_requested": (
-                    result.get("status")
-                    == "cancellation_requested"
+                    result.get("status") == "cancellation_requested"
                     or bool(result.get("cancellation_requested"))
                 ),
             },
@@ -108,10 +182,7 @@ def cancel_work(
                         "work_id": work.id,
                         "include_events": True,
                     },
-                    reason=(
-                        "Confirm the durable Manager cancellation "
-                        "state and task boundary."
-                    ),
+                    reason=("Confirm the durable Manager cancellation state and task boundary."),
                 )
             ],
         )

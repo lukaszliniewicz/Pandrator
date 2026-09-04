@@ -56,6 +56,90 @@ test('generation and voice controls expose resolved selection semantics', () => 
   expect(voiceManager).toContain('Provider links and copies');
 });
 
+test('standalone voice library lets users choose a cloning provider', async ({
+  page
+}) => {
+  await signIn(page);
+  const services = {
+    default_service: 'prebuilt-only',
+    services: [
+      {
+        id: 'kobold_qwen',
+        name: 'Qwen3 TTS',
+        available: true,
+        supports_voice_cloning: true
+      },
+      {
+        id: 'second-cloner',
+        name: 'Second cloner',
+        available: false,
+        supports_voice_cloning: true
+      },
+      {
+        id: 'prebuilt-only',
+        name: 'Prebuilt only',
+        available: true,
+        supports_voice_cloning: false
+      }
+    ]
+  };
+  const managedVoice = {
+    id: 'managed-voice',
+    name: 'Managed voice',
+    language: 'en',
+    revision: 1,
+    metadata_json: { providers: {} }
+  };
+  await page.route('**/api/v1/capabilities', (route) =>
+    route.fulfill({ contentType: 'application/json', json: {} })
+  );
+  await page.route('**/api/v1/services/tts**', (route) =>
+    route.fulfill({ contentType: 'application/json', json: services })
+  );
+  await page.route('**/api/v1/voices', (route) =>
+    route.fulfill({
+      contentType: 'application/json',
+      json: { items: [managedVoice] }
+    })
+  );
+  await page.route('**/api/v1/voices/managed-voice/samples', (route) =>
+    route.fulfill({
+      contentType: 'application/json',
+      json: {
+        items: [
+          {
+            id: 'sample-1',
+            artifact_id: 'sample-artifact',
+            transcript_reviewed: true,
+            available: true
+          }
+        ]
+      }
+    })
+  );
+
+  await page.goto('/voices');
+  const providerSelect = page.getByLabel('Voice cloning provider');
+  await expect(providerSelect).toBeVisible();
+  await expect(providerSelect.locator('option')).toHaveText([
+    'Choose a provider',
+    'Qwen3 TTS',
+    'Second cloner · unavailable'
+  ]);
+  await providerSelect.selectOption('kobold_qwen');
+  await page.getByRole('button', { name: 'Managed voice' }).click();
+  await expect(
+    page.getByRole('button', { name: 'Upload to Qwen3 TTS' })
+  ).toBeVisible();
+
+  await page.goto('/voices?service=kobold_qwen');
+  await expect(page.getByLabel('Voice cloning provider')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Managed voice' }).click();
+  await expect(
+    page.getByRole('button', { name: 'Upload to Qwen3 TTS' })
+  ).toBeVisible();
+});
+
 test('generation settings make source, availability, voice language, and reuse choices visible', async ({
   page
 }) => {

@@ -6,6 +6,7 @@
     optionsFor,
     settingLabel
   } from './settings-fields';
+  import ParameterLabel from './ParameterLabel.svelte';
 
   type SettingValue = unknown;
 
@@ -23,6 +24,8 @@
     compact?: boolean;
   } = $props();
   let newKey = $state('');
+  const componentId = $props.id();
+  const controlId = `setting-${componentId}`;
   let rangeValue = $derived(Number(value ?? 0));
   const choices = $derived(optionsFor(section, keyName));
   const numberMeta = $derived(numberPresentation(keyName));
@@ -64,11 +67,18 @@
   }
 </script>
 
-<label class:text-xs={compact} class="block text-sm font-semibold"
-  >{settingLabel(keyName)}
+<div class:text-xs={compact} class="block text-sm font-semibold">
+  <ParameterLabel
+    {section}
+    name={keyName}
+    label={settingLabel(keyName)}
+    controlId={value && typeof value === 'object' ? undefined : controlId}
+    {compact}
+  />
   {#if typeof value === 'boolean'}
-    <span class="field flex min-h-11 items-center gap-2"
+    <span class="field boolean-field flex items-center gap-2"
       ><input
+        id={controlId}
         type="checkbox"
         checked={value}
         onchange={(event) => onchange(event.currentTarget.checked)}
@@ -77,6 +87,7 @@
     >
   {:else if choices}
     <select
+      id={controlId}
       class="field"
       value={value ?? ''}
       onchange={(event) => onchange(cast(event.currentTarget.value))}
@@ -90,6 +101,7 @@
   {:else if typeof value === 'number' && numberMeta.range}
     <span class="field range-field"
       ><input
+        id={controlId}
         type="range"
         bind:value={rangeValue}
         min={numberMeta.min}
@@ -100,6 +112,7 @@
     >
   {:else if typeof value === 'number'}
     <input
+      id={controlId}
       class="field"
       type="number"
       {value}
@@ -112,8 +125,15 @@
     <span class="field block space-y-2">
       {#each objectEntries as [key, item]}
         <span class="object-row"
-          ><span class="min-w-0 text-xs font-semibold">{settingLabel(key)}</span
+          ><span class="min-w-0 text-xs font-semibold"
+            ><ParameterLabel
+              {section}
+              name={key}
+              label={settingLabel(key)}
+              compact
+            /></span
           ><input
+            aria-label={settingLabel(key)}
             value={String(item ?? '')}
             oninput={(event) => setObject(key, event.currentTarget.value)}
             class="subfield"
@@ -140,17 +160,19 @@
     </span>
   {:else if isMultiline(keyName)}
     <textarea
+      id={controlId}
       class="field min-h-24 resize-y"
       value={String(value ?? '')}
       oninput={(event) => onchange(event.currentTarget.value)}></textarea>
   {:else}
     <input
+      id={controlId}
       class="field"
       value={String(value ?? '')}
       oninput={(event) => onchange(event.currentTarget.value)}
     />
   {/if}
-</label>
+</div>
 
 <style>
   .field {
@@ -172,6 +194,13 @@
     font-size: 0.75rem;
     font-weight: 400;
     color: var(--ink);
+  }
+  input.field,
+  select.field,
+  .boolean-field,
+  .range-field {
+    box-sizing: border-box;
+    height: 2.75rem;
   }
   .range-field {
     display: grid;

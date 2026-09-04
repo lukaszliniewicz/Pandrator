@@ -706,6 +706,9 @@ class ApplicationClient:
         include_timing_context: bool | None = None,
         substantial_gap_ms: int,
         glossary: dict[str, str],
+        execution_mode: str = "serial",
+        max_parallel_batches: int = 1,
+        context_capsule: dict[str, Any] | None = None,
         idempotency_key: str,
     ) -> dict[str, Any]:
         resolved_timing_context_mode = timing_context_mode
@@ -728,6 +731,9 @@ class ApplicationClient:
                 "timing_context_mode": resolved_timing_context_mode,
                 "substantial_gap_ms": int(substantial_gap_ms),
                 "glossary": glossary,
+                "execution_mode": execution_mode,
+                "max_parallel_batches": int(max_parallel_batches),
+                "context_capsule": dict(context_capsule or {}),
             },
             idempotency_key=idempotency_key,
         )
@@ -799,6 +805,7 @@ class ApplicationClient:
         lease_token: str,
         result: dict[str, Any] | None = None,
         response_text: str | None = None,
+        context_delta: dict[str, Any] | None = None,
         idempotency_key: str,
     ) -> dict[str, Any]:
         body: dict[str, Any] = {"lease_token": lease_token}
@@ -806,6 +813,7 @@ class ApplicationClient:
             body["result"] = result
         if response_text is not None:
             body["response_text"] = response_text
+        body["context_delta"] = dict(context_delta or {})
         return self._request_json(
             f"/api/v1/dispatch-batches/{quote(batch_id, safe='')}/submit",
             method="POST",
@@ -968,6 +976,9 @@ class ApplicationClient:
         context_before: int,
         context_after: int,
         include_timing: bool,
+        execution_mode: str = "serial",
+        max_parallel_batches: int = 1,
+        context_capsule: dict[str, Any] | None = None,
         idempotency_key: str,
     ) -> dict[str, Any]:
         body: dict[str, Any] = {
@@ -977,6 +988,9 @@ class ApplicationClient:
             "context_before": int(context_before),
             "context_after": int(context_after),
             "include_timing": bool(include_timing),
+            "execution_mode": execution_mode,
+            "max_parallel_batches": int(max_parallel_batches),
+            "context_capsule": dict(context_capsule or {}),
         }
         optional = {
             "source_artifact_id": source_artifact_id,
@@ -1060,12 +1074,17 @@ class ApplicationClient:
         *,
         lease_token: str,
         result: dict[str, Any],
+        context_delta: dict[str, Any] | None = None,
         idempotency_key: str,
     ) -> dict[str, Any]:
         return self._request_json(
             f"/api/v1/speech-optimization-dispatch-batches/{quote(batch_id, safe='')}/submit",
             method="POST",
-            body={"lease_token": lease_token, "result": result},
+            body={
+                "lease_token": lease_token,
+                "result": result,
+                "context_delta": dict(context_delta or {}),
+            },
             idempotency_key=idempotency_key,
             maximum_body_bytes=4 * 1024 * 1024,
         )
@@ -1120,6 +1139,31 @@ class ApplicationClient:
     ) -> dict[str, Any]:
         return self._request_json(
             f"/api/v1/sessions/{quote(session_id, safe='')}/settings/{quote(section, safe='')}"
+        )
+
+    def describe_parameters(
+        self,
+        *,
+        sections: tuple[str, ...] = (),
+        names: tuple[str, ...] = (),
+        workflow_kind: str | None = None,
+        query: str | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        """Return filtered parameter definitions from the application."""
+
+        parameters: list[tuple[str, Any]] = [
+            *(("section", section) for section in sections),
+            *(("name", name) for name in names),
+        ]
+        if workflow_kind:
+            parameters.append(("workflow_kind", workflow_kind))
+        if query:
+            parameters.append(("query", query))
+        parameters.append(("limit", max(1, min(int(limit), 300))))
+        return self._request_json(
+            "/api/v1/parameter-definitions",
+            parameters=parameters,
         )
 
     def create_session(

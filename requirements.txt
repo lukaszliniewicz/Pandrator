@@ -30,5 +30,5 @@ sqlalchemy>=2.0,<3
 waitress>=3.0,<4
 onnxruntime>=1.20,<2
 paddleocr==3.7.0
-nemo-text-processing==1.2.0
+nemo-text-processing==1.2.0; sys_platform != 'win32'
 keyring>=25,<26
