@@ -511,10 +511,19 @@ def output_assembly_settings_snapshot(snapshot: dict[str, Any]) -> dict[str, Any
     """
 
     output = dict(snapshot.get("output") or {})
-    output.pop("generation_run_id", None)
+    assembly_output_keys = (
+        "format",
+        "bitrate",
+        "title",
+        "artist",
+        "album",
+        "genre",
+        "language",
+        "cover_artifact_id",
+    )
     return {
         "audio": dict(snapshot.get("audio") or {}),
-        "output": output,
+        "output": {key: output.get(key) for key in assembly_output_keys},
     }
 
 

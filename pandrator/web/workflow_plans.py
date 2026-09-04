@@ -630,16 +630,29 @@ class WorkflowExecutionPlanService:
                         "Only a completed generation run can be exported.",
                         409,
                     )
-                assembly = db_session.scalar(
-                    select(OutputAssembly)
-                    .where(
-                        OutputAssembly.session_id == session_id,
-                        OutputAssembly.generation_run_id == generation_run_id,
-                        OutputAssembly.status == "completed",
-                        OutputAssembly.artifact_id.is_not(None),
-                        OutputAssembly.settings_hash == assembly_settings_hash,
-                    )
-                    .order_by(OutputAssembly.created_at.desc())
+                assembly_candidates = list(
+                    db_session.scalars(
+                        select(OutputAssembly)
+                        .where(
+                            OutputAssembly.session_id == session_id,
+                            OutputAssembly.generation_run_id == generation_run_id,
+                            OutputAssembly.status == "completed",
+                            OutputAssembly.artifact_id.is_not(None),
+                        )
+                        .order_by(OutputAssembly.created_at.desc())
+                    ).all()
+                )
+                assembly = next(
+                    (
+                        candidate
+                        for candidate in assembly_candidates
+                        if candidate.settings_hash == assembly_settings_hash
+                        or output_assembly_settings_hash(
+                            dict((candidate.settings_json or {}).get("resolved") or {})
+                        )
+                        == assembly_settings_hash
+                    ),
+                    None,
                 )
             steps.append(
                 {

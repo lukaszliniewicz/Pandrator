@@ -8111,17 +8111,30 @@ class WorkflowHandlers:
                 raise ValueError("The selected generation run does not belong to this session.")
             if run.status != "completed":
                 raise ValueError("Only a completed generation run can be exported.")
-            existing = session.scalar(
-                select(OutputAssembly)
-                .join(Artifact, Artifact.id == OutputAssembly.artifact_id)
-                .where(
-                    OutputAssembly.session_id == session_id,
-                    OutputAssembly.generation_run_id == generation_run_id,
-                    OutputAssembly.status == "completed",
-                    OutputAssembly.settings_hash == settings_hash,
-                    Artifact.state == "current",
-                )
-                .order_by(OutputAssembly.created_at.desc())
+            existing_candidates = list(
+                session.scalars(
+                    select(OutputAssembly)
+                    .join(Artifact, Artifact.id == OutputAssembly.artifact_id)
+                    .where(
+                        OutputAssembly.session_id == session_id,
+                        OutputAssembly.generation_run_id == generation_run_id,
+                        OutputAssembly.status == "completed",
+                        Artifact.state == "current",
+                    )
+                    .order_by(OutputAssembly.created_at.desc())
+                ).all()
+            )
+            existing = next(
+                (
+                    candidate
+                    for candidate in existing_candidates
+                    if candidate.settings_hash == settings_hash
+                    or output_assembly_settings_hash(
+                        dict((candidate.settings_json or {}).get("resolved") or {})
+                    )
+                    == settings_hash
+                ),
+                None,
             )
             if existing is not None and existing.artifact_id:
                 progress(0.68, "Using the selected generation run assembly")
