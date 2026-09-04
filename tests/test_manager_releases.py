@@ -21,7 +21,7 @@ from pandrator_manager.api import create_api
 from pandrator_manager.application import create_application
 from pandrator_manager.auth import ensure_client_secret
 from pandrator_manager.errors import ConflictError, ManagerError
-from pandrator_manager.models import HealthResult, HealthState, OperationState
+from pandrator_manager.models import HealthResult, HealthState, OperationState, TaskState
 from pandrator_manager.operations import OperationEngine
 from pandrator_manager.releases import (
     ReleaseActivationError,
@@ -974,6 +974,369 @@ class DurableApplicationReleaseTests(unittest.TestCase):
         )
         with self.assertRaises(ConflictError):
             self.application.store.request_cancellation(operation.id)
+
+    def test_manager_handoff_preparation_resumes_after_crash_before_descriptor(self):
+        plan = self._prepare_native_manager_plan()
+        operation = self._submit_manager_plan(plan)
+        engine = OperationEngine(
+            self.application.context,
+            self.application.store,
+            self.application.registry,
+            release_authority=self.application.release_authority,
+            manager_handoff_callback=lambda _execution, _result: None,
+        )
+
+        with mock.patch.object(
+            handoff_module,
+            "_write_envelope",
+            side_effect=SystemExit,
+        ):
+            with self.assertRaises(SystemExit):
+                engine._execute(operation.id)
+
+        self.assertTrue((self.layout.manager_versions / "1.0.0").is_dir())
+        self.assertFalse(
+            handoff_module.handoff_descriptor_path(
+                self.layout,
+                operation.id,
+            ).exists()
+        )
+        self.assertEqual(pending_handoffs(self.layout), ())
+        interrupted = self.application.store.get_operation(operation.id)
+        self.assertEqual(interrupted.state, OperationState.RUNNING)
+        handoff_task = next(
+            task
+            for task in self.application.store.operation_tasks(operation.id)
+            if task.task.kind == "prepare_manager_handoff"
+        )
+        self.assertEqual(handoff_task.state, TaskState.RUNNING)
+
+        engine._recover_interrupted()
+        engine._execute(operation.id)
+
+        resumed = self.application.store.get_operation(operation.id)
+        self.assertEqual(resumed.state, OperationState.HANDOFF_PENDING)
+        self.assertTrue((self.layout.manager_versions / "1.0.0").is_dir())
+        self.assertEqual(pending_handoffs(self.layout), (operation.id,))
+        envelope, _path = read_handoff(self.layout, operation.id)
+        self.assertEqual(envelope.payload.version, "1.0.0")
+        self.assertEqual(
+            envelope.payload.manifest_digest,
+            plan.impacts["release"]["manifest_digest"],
+        )
+
+    def test_manager_handoff_preparation_resumes_after_crash_before_move(self):
+        plan = self._prepare_native_manager_plan()
+        operation = self._submit_manager_plan(plan)
+        engine = OperationEngine(
+            self.application.context,
+            self.application.store,
+            self.application.registry,
+            release_authority=self.application.release_authority,
+            manager_handoff_callback=lambda _execution, _result: None,
+        )
+
+        with mock.patch.object(
+            handoff_module,
+            "_move_prepared_manager_release",
+            side_effect=SystemExit,
+        ):
+            with self.assertRaises(SystemExit):
+                engine._execute(operation.id)
+
+        self.assertTrue(
+            handoff_module.preparation_journal_path(
+                self.layout,
+                operation.id,
+            ).is_file()
+        )
+        self.assertFalse((self.layout.manager_versions / "1.0.0").exists())
+
+        engine._recover_interrupted()
+        engine._execute(operation.id)
+
+        self.assertEqual(
+            self.application.store.get_operation(operation.id).state,
+            OperationState.HANDOFF_PENDING,
+        )
+        self.assertTrue((self.layout.manager_versions / "1.0.0").is_dir())
+        self.assertFalse(
+            handoff_module.preparation_journal_path(
+                self.layout,
+                operation.id,
+            ).exists()
+        )
+
+    def test_manager_handoff_removes_stale_journal_after_descriptor_crash(self):
+        plan = self._prepare_native_manager_plan()
+        operation = self._submit_manager_plan(plan)
+        engine = OperationEngine(
+            self.application.context,
+            self.application.store,
+            self.application.registry,
+            release_authority=self.application.release_authority,
+            manager_handoff_callback=lambda _execution, _result: None,
+        )
+
+        with mock.patch.object(
+            handoff_module,
+            "_remove_preparation_journal",
+            side_effect=SystemExit,
+        ):
+            with self.assertRaises(SystemExit):
+                engine._execute(operation.id)
+
+        journal = handoff_module.preparation_journal_path(
+            self.layout,
+            operation.id,
+        )
+        self.assertTrue(journal.is_file())
+        envelope, _path = read_handoff(self.layout, operation.id)
+        self.assertEqual(envelope.payload.version, "1.0.0")
+        self.assertTrue((self.layout.manager_versions / "1.0.0").is_dir())
+
+        engine._recover_interrupted()
+        engine._execute(operation.id)
+
+        self.assertEqual(
+            self.application.store.get_operation(operation.id).state,
+            OperationState.HANDOFF_PENDING,
+        )
+        self.assertFalse(journal.exists())
+        self.assertTrue((self.layout.manager_versions / "1.0.0").is_dir())
+        self.assertEqual(pending_handoffs(self.layout), (operation.id,))
+        self.assertEqual(
+            read_handoff(self.layout, operation.id)[0].payload.manifest_digest,
+            plan.impacts["release"]["manifest_digest"],
+        )
+
+    def test_manager_handoff_keeps_descriptor_when_journal_cleanup_fails(self):
+        plan = self._prepare_native_manager_plan()
+        operation = self._submit_manager_plan(plan)
+        engine = OperationEngine(
+            self.application.context,
+            self.application.store,
+            self.application.registry,
+            release_authority=self.application.release_authority,
+            manager_handoff_callback=lambda _execution, _result: None,
+        )
+
+        with mock.patch.object(
+            handoff_module,
+            "_remove_preparation_journal",
+            side_effect=PermissionError("journal is temporarily locked"),
+        ):
+            engine._execute(operation.id)
+
+        self.assertEqual(
+            self.application.store.get_operation(operation.id).state,
+            OperationState.HANDOFF_PENDING,
+        )
+        self.assertTrue(
+            handoff_module.handoff_descriptor_path(
+                self.layout,
+                operation.id,
+            ).is_file()
+        )
+        self.assertTrue(
+            handoff_module.preparation_journal_path(
+                self.layout,
+                operation.id,
+            ).is_file()
+        )
+        self.assertEqual(pending_handoffs(self.layout), (operation.id,))
+        self.assertEqual(
+            read_handoff(self.layout, operation.id)[0].payload.manifest_digest,
+            plan.impacts["release"]["manifest_digest"],
+        )
+
+    def test_manager_handoff_rejects_authenticated_journal_with_unsafe_path(self):
+        plan = self._prepare_native_manager_plan()
+        operation = self._submit_manager_plan(plan)
+        engine = OperationEngine(
+            self.application.context,
+            self.application.store,
+            self.application.registry,
+            release_authority=self.application.release_authority,
+            manager_handoff_callback=lambda _execution, _result: None,
+        )
+
+        with mock.patch.object(
+            handoff_module,
+            "_write_envelope",
+            side_effect=SystemExit,
+        ):
+            with self.assertRaises(SystemExit):
+                engine._execute(operation.id)
+
+        outside_temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(outside_temporary.cleanup)
+        outside = Path(outside_temporary.name)
+        marker = outside / "must-not-be-deleted"
+        marker.write_text("outside", encoding="utf-8")
+        journal = handoff_module.preparation_journal_path(
+            self.layout,
+            operation.id,
+        )
+        document = json.loads(journal.read_text(encoding="utf-8"))
+        document["payload"]["staged_path"] = str(outside)
+        document["authentication"] = handoff_module._authentication(
+            document["payload"],
+            handoff_module.read_client_secret(self.layout.credential),
+        )
+        journal.write_text(json.dumps(document), encoding="utf-8")
+
+        engine._recover_interrupted()
+        engine._execute(operation.id)
+
+        self.assertEqual(
+            self.application.store.get_operation(operation.id).state,
+            OperationState.RECOVERY_REQUIRED,
+        )
+        self.assertTrue(marker.is_file())
+        self.assertTrue((self.layout.manager_versions / "1.0.0").is_dir())
+        self.assertTrue(journal.is_file())
+        self.assertEqual(pending_handoffs(self.layout), ())
+
+    def test_manager_handoff_rollback_rejects_disagreeing_slot_evidence(self):
+        _plan = self._prepare_native_manager_plan()
+        operation = self._submit_manager_plan(_plan)
+        engine = OperationEngine(
+            self.application.context,
+            self.application.store,
+            self.application.registry,
+            release_authority=self.application.release_authority,
+            manager_handoff_callback=lambda _execution, _result: None,
+        )
+
+        with mock.patch.object(
+            handoff_module,
+            "_remove_preparation_journal",
+            side_effect=SystemExit,
+        ):
+            with self.assertRaises(SystemExit):
+                engine._execute(operation.id)
+
+        other_slot = self.layout.manager_versions / "9.9.9"
+        other_slot.mkdir(parents=True)
+        marker = other_slot / "must-not-be-deleted"
+        marker.write_text("other slot", encoding="utf-8")
+        descriptor = handoff_module.handoff_descriptor_path(
+            self.layout,
+            operation.id,
+        )
+        journal = handoff_module.preparation_journal_path(
+            self.layout,
+            operation.id,
+        )
+
+        with self.assertRaises(ManagerError) as raised:
+            handoff_module.rollback_prepared_manager_handoff(
+                layout=self.layout,
+                operation_id=operation.id,
+                result={"slot_path": str(other_slot)},
+            )
+
+        self.assertEqual(raised.exception.code, "invalid_manager_handoff")
+        self.assertTrue((self.layout.manager_versions / "1.0.0").is_dir())
+        self.assertTrue(marker.is_file())
+        self.assertTrue(descriptor.is_file())
+        self.assertTrue(journal.is_file())
+
+    def test_manager_handoff_rejects_unexplained_existing_slot(self):
+        plan = self._prepare_native_manager_plan()
+        operation = self._submit_manager_plan(plan)
+        destination = self.layout.manager_versions / "1.0.0"
+        destination.mkdir(parents=True)
+        engine = OperationEngine(
+            self.application.context,
+            self.application.store,
+            self.application.registry,
+            release_authority=self.application.release_authority,
+            manager_handoff_callback=lambda _execution, _result: None,
+        )
+
+        engine._execute(operation.id)
+
+        self.assertEqual(
+            self.application.store.get_operation(operation.id).state,
+            OperationState.FAILED,
+        )
+        self.assertTrue(destination.is_dir())
+        self.assertFalse(
+            handoff_module.preparation_journal_path(
+                self.layout,
+                operation.id,
+            ).exists()
+        )
+
+    def test_manager_handoff_rollback_cleans_authenticated_preparation_journal(self):
+        plan = self._prepare_native_manager_plan()
+        operation = self._submit_manager_plan(plan)
+        engine = OperationEngine(
+            self.application.context,
+            self.application.store,
+            self.application.registry,
+            release_authority=self.application.release_authority,
+            manager_handoff_callback=lambda _execution, _result: None,
+        )
+
+        with mock.patch.object(
+            handoff_module,
+            "_write_envelope",
+            side_effect=RuntimeError("descriptor write failed"),
+        ):
+            engine._execute(operation.id)
+
+        self.assertEqual(
+            self.application.store.get_operation(operation.id).state,
+            OperationState.FAILED,
+        )
+        self.assertFalse((self.layout.manager_versions / "1.0.0").exists())
+        self.assertFalse(
+            handoff_module.preparation_journal_path(
+                self.layout,
+                operation.id,
+            ).exists()
+        )
+
+    def test_manager_handoff_rejects_tampered_preparation_journal(self):
+        plan = self._prepare_native_manager_plan()
+        operation = self._submit_manager_plan(plan)
+        engine = OperationEngine(
+            self.application.context,
+            self.application.store,
+            self.application.registry,
+            release_authority=self.application.release_authority,
+            manager_handoff_callback=lambda _execution, _result: None,
+        )
+
+        with mock.patch.object(
+            handoff_module,
+            "_write_envelope",
+            side_effect=SystemExit,
+        ):
+            with self.assertRaises(SystemExit):
+                engine._execute(operation.id)
+
+        journal = handoff_module.preparation_journal_path(
+            self.layout,
+            operation.id,
+        )
+        document = json.loads(journal.read_text(encoding="utf-8"))
+        document["authentication"] = "0" * 64
+        journal.write_text(json.dumps(document), encoding="utf-8")
+
+        engine._recover_interrupted()
+        engine._execute(operation.id)
+
+        self.assertEqual(
+            self.application.store.get_operation(operation.id).state,
+            OperationState.RECOVERY_REQUIRED,
+        )
+        self.assertTrue((self.layout.manager_versions / "1.0.0").is_dir())
+        self.assertTrue(journal.is_file())
+        self.assertEqual(pending_handoffs(self.layout), ())
 
     def test_handoff_directory_rejects_non_directory_redirection(self):
         directory = handoff_module.handoff_directory(self.layout)
