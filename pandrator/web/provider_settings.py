@@ -234,6 +234,10 @@ def build_llm_settings(
                 "output_cost_per_million": row.output_cost_per_million,
                 "context_window_tokens": row.context_window_tokens,
                 "max_output_tokens": row.max_output_tokens,
+                "input_modalities": list(row.input_modalities_json or ["text"]),
+                "output_modalities": list(row.output_modalities_json or ["text"]),
+                "supports_audio_input": "audio"
+                in (row.input_modalities_json or ["text"]),
             }
             for row in rows
         ]

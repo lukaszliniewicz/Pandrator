@@ -117,6 +117,12 @@ class ProviderModel(Base):
         Integer, nullable=False, default=262_144
     )
     max_output_tokens: Mapped[int | None] = mapped_column(Integer)
+    input_modalities_json: Mapped[list[str]] = mapped_column(
+        JSON, nullable=False, default=lambda: ["text"]
+    )
+    output_modalities_json: Mapped[list[str]] = mapped_column(
+        JSON, nullable=False, default=lambda: ["text"]
+    )
     options_json: Mapped[dict[str, Any]] = mapped_column(
         JSON, nullable=False, default=dict
     )
@@ -457,6 +463,61 @@ class ArtifactEdge(Base):
     )
     relation: Mapped[str] = mapped_column(
         String(80), nullable=False, default="derived_from"
+    )
+
+
+class SubtitleEvidence(Base):
+    """A durable, bounded re-transcription request for one subtitle cue."""
+
+    __tablename__ = "subtitle_evidence"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    source_artifact_id: Mapped[str] = mapped_column(
+        ForeignKey("artifacts.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    source_media_artifact_id: Mapped[str | None] = mapped_column(
+        ForeignKey("artifacts.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    source_revision_id: Mapped[str] = mapped_column(
+        ForeignKey("document_revisions.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    source_segment_id: Mapped[str | None] = mapped_column(
+        ForeignKey("segments.id", ondelete="SET NULL"), index=True
+    )
+    cue_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    start_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    end_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    clip_start_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    clip_end_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    routes_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    audio_model_ids_json: Mapped[list[str]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+    status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="queued", index=True
+    )
+    job_id: Mapped[str | None] = mapped_column(
+        ForeignKey("jobs.id", ondelete="SET NULL"), unique=True, index=True
+    )
+    clip_artifact_id: Mapped[str | None] = mapped_column(
+        ForeignKey("artifacts.id", ondelete="SET NULL"), index=True
+    )
+    candidates_json: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+    resolution_json: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
+    error_message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
     )
 
 

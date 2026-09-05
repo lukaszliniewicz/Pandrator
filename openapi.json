@@ -957,12 +957,50 @@
             "maxItems": 500,
             "title": "Operations",
             "type": "array"
+          },
+          "uncertainties": {
+            "items": {
+              "$ref": "#/components/schemas/DispatchCorrectionUncertainty"
+            },
+            "maxItems": 500,
+            "title": "Uncertainties",
+            "type": "array"
           }
         },
         "required": [
           "kind"
         ],
         "title": "DispatchCorrectionResult",
+        "type": "object"
+      },
+      "DispatchCorrectionUncertainty": {
+        "additionalProperties": false,
+        "properties": {
+          "cue_id": {
+            "minimum": 1,
+            "title": "Cue Id",
+            "type": "integer"
+          },
+          "evidence_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Evidence Ids",
+            "type": "array"
+          },
+          "reason": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "cue_id",
+          "reason"
+        ],
+        "title": "DispatchCorrectionUncertainty",
         "type": "object"
       },
       "DispatchCue": {
@@ -1332,10 +1370,31 @@
             "title": "Output Role",
             "type": "string"
           },
+          "quality_policy": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Quality Policy"
+          },
           "result_contract": {
             "additionalProperties": true,
             "title": "Result Contract",
             "type": "object"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "source_artifact_id": {
+            "title": "Source Artifact Id",
+            "type": "string"
           },
           "source_language": {
             "title": "Source Language",
@@ -1378,8 +1437,10 @@
           }
         },
         "required": [
+          "session_id",
           "kind",
           "output_role",
+          "source_artifact_id",
           "source_language",
           "instructions",
           "result_contract",
@@ -2259,6 +2320,22 @@
             "default": null,
             "title": "Input Cost Per Million"
           },
+          "input_modalities": {
+            "items": {
+              "enum": [
+                "text",
+                "image",
+                "audio",
+                "video",
+                "pdf"
+              ],
+              "type": "string"
+            },
+            "maxItems": 5,
+            "minItems": 1,
+            "title": "Input Modalities",
+            "type": "array"
+          },
           "is_active": {
             "default": false,
             "title": "Is Active",
@@ -2303,6 +2380,20 @@
             ],
             "default": null,
             "title": "Output Cost Per Million"
+          },
+          "output_modalities": {
+            "items": {
+              "enum": [
+                "text",
+                "image",
+                "audio"
+              ],
+              "type": "string"
+            },
+            "maxItems": 5,
+            "minItems": 1,
+            "title": "Output Modalities",
+            "type": "array"
           }
         },
         "required": [
@@ -2376,6 +2467,30 @@
             ],
             "default": null,
             "title": "Input Cost Per Million"
+          },
+          "input_modalities": {
+            "anyOf": [
+              {
+                "items": {
+                  "enum": [
+                    "text",
+                    "image",
+                    "audio",
+                    "video",
+                    "pdf"
+                  ],
+                  "type": "string"
+                },
+                "maxItems": 5,
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Input Modalities"
           },
           "is_active": {
             "anyOf": [
@@ -2451,6 +2566,28 @@
             ],
             "default": null,
             "title": "Output Cost Per Million"
+          },
+          "output_modalities": {
+            "anyOf": [
+              {
+                "items": {
+                  "enum": [
+                    "text",
+                    "image",
+                    "audio"
+                  ],
+                  "type": "string"
+                },
+                "maxItems": 5,
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Output Modalities"
           }
         },
         "title": "ModelUpdate",
@@ -5077,6 +5214,126 @@
         "title": "StageSelectionUpdate",
         "type": "object"
       },
+      "SubtitleEvidenceCreateRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "audio_model_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 3,
+            "title": "Audio Model Ids",
+            "type": "array"
+          },
+          "cue_id": {
+            "minimum": 1,
+            "title": "Cue Id",
+            "type": "integer"
+          },
+          "padding_after_ms": {
+            "default": 2000,
+            "maximum": 15000,
+            "minimum": 0,
+            "title": "Padding After Ms",
+            "type": "integer"
+          },
+          "padding_before_ms": {
+            "default": 2000,
+            "maximum": 15000,
+            "minimum": 0,
+            "title": "Padding Before Ms",
+            "type": "integer"
+          },
+          "reason": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "routes": {
+            "items": {
+              "enum": [
+                "whisper",
+                "moss",
+                "azure_mai_transcribe_2",
+                "audio_llm"
+              ],
+              "type": "string"
+            },
+            "maxItems": 4,
+            "minItems": 1,
+            "title": "Routes",
+            "type": "array"
+          },
+          "source_artifact_id": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Source Artifact Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_artifact_id",
+          "cue_id",
+          "reason",
+          "routes"
+        ],
+        "title": "SubtitleEvidenceCreateRequest",
+        "type": "object"
+      },
+      "SubtitleEvidenceResolveRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "enum": [
+              "accepted",
+              "edited",
+              "deleted",
+              "uncertain",
+              "dismissed"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "candidate_id": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Candidate Id"
+          },
+          "note": {
+            "default": "",
+            "maxLength": 4000,
+            "title": "Note",
+            "type": "string"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "maxLength": 16000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Text"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "title": "SubtitleEvidenceResolveRequest",
+        "type": "object"
+      },
       "SubtitleReviewRequest": {
         "additionalProperties": false,
         "properties": {
@@ -5120,6 +5377,30 @@
             "exclusiveMinimum": 0,
             "title": "End Ms",
             "type": "integer"
+          },
+          "evidence_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 20,
+            "minItems": 0,
+            "title": "Evidence Ids",
+            "type": "array"
+          },
+          "review_note": {
+            "default": "",
+            "maxLength": 4000,
+            "title": "Review Note",
+            "type": "string"
+          },
+          "review_state": {
+            "default": "clear",
+            "enum": [
+              "clear",
+              "uncertain"
+            ],
+            "title": "Review State",
+            "type": "string"
           },
           "speaker": {
             "anyOf": [
@@ -9790,6 +10071,167 @@
         }
       }
     },
+    "/api/v1/sessions/{sessionId}/subtitle-evidence": {
+      "get": {
+        "operationId": "listSubtitleEvidence",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "source_artifact_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Bounded subtitle evidence requests"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
+      },
+      "post": {
+        "operationId": "requestSubtitleEvidence",
+        "parameters": [
+          {
+            "description": "Automation principals require it; browser writes may omit it. Use it for safe retries.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubtitleEvidenceCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Subtitle evidence request queued"
+          },
+          "422": {
+            "description": "Invalid cue, route, or audio model"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.run"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/sessions/{sessionId}/subtitle-evidence/{evidenceId}/resolve": {
+      "post": {
+        "operationId": "resolveSubtitleEvidence",
+        "parameters": [
+          {
+            "description": "Automation principals require it; browser writes may omit it. Use it for safe retries.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "evidenceId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubtitleEvidenceResolveRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Subtitle evidence resolution stored"
+          },
+          "409": {
+            "description": "Evidence state conflict"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.run"
+            ]
+          }
+        ]
+      }
+    },
     "/api/v1/sessions/{sessionId}/subtitles": {
       "get": {
         "operationId": "getSubtitleComparison",
@@ -10740,6 +11182,42 @@
           {
             "nativeOAuth": [
               "app.run"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/subtitle-evidence/{evidenceId}": {
+      "get": {
+        "operationId": "getSubtitleEvidence",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "evidenceId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Subtitle evidence candidates and provenance"
+          },
+          "404": {
+            "description": "Evidence request not found"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
             ]
           }
         ]

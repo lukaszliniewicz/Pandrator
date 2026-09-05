@@ -61,6 +61,7 @@ def register_text_handlers(
                 "text.optimize_tts": "optimize_tts",
                 "source.clean": "clean_source",
                 "text.prepare": "prepare_text",
+                "subtitle.evidence": "run_subtitle_evidence",
             },
         ),
         payload_contracts=_contracts(
@@ -71,6 +72,7 @@ def register_text_handlers(
                 "text.optimize_tts": ("session_id", "source_artifact_id"),
                 "source.clean": ("session_id", "source_artifact_id"),
                 "text.prepare": ("session_id", "source_artifact_id"),
+                "subtitle.evidence": ("evidence_id", "session_id"),
             }
         ),
     )

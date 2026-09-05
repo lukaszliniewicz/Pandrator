@@ -25,6 +25,7 @@ from .models import (
     Segment,
     SegmentLineage,
     SessionRecord,
+    SubtitleEvidence,
 )
 
 STAGE_ORDER = ("transcription", "correction", "translation", "tts_optimization")
@@ -42,6 +43,9 @@ class ReviewedSubtitleSegment(TypedDict):
     end_ms: int
     text: str
     speaker: str | None
+    review_state: str
+    review_note: str
+    evidence_ids: list[str]
 
 
 def _speaker_and_text(segment: Segment) -> tuple[str, str]:
@@ -56,6 +60,9 @@ def _segments_hash(segments: Sequence[Mapping[str, Any]]) -> str:
             "end_ms": int(item["end_ms"]),
             "text": str(item["text"]),
             "speaker": item.get("speaker"),
+            "review_state": item.get("review_state") or "clear",
+            "review_note": item.get("review_note") or "",
+            "evidence_ids": list(item.get("evidence_ids") or []),
         }
         for item in segments
     ]
@@ -75,6 +82,7 @@ class SubtitleReviewService:
     @staticmethod
     def _payload(segment: Segment) -> dict[str, Any]:
         speaker, text = _speaker_and_text(segment)
+        metadata = dict(segment.metadata_json or {})
         return {
             "id": segment.id,
             "ordinal": segment.ordinal,
@@ -82,6 +90,13 @@ class SubtitleReviewService:
             "end_ms": segment.end_ms,
             "text": text,
             "speaker": speaker or None,
+            "review_state": str(metadata.get("review_state") or "clear"),
+            "review_note": str(metadata.get("review_note") or ""),
+            "evidence_ids": [
+                str(value)
+                for value in metadata.get("evidence_ids") or []
+                if str(value).strip()
+            ][:20],
         }
 
     def documents(self, session_id: str) -> dict[str, Any]:
@@ -483,6 +498,22 @@ class SubtitleReviewService:
                     "text": text,
                     "speaker": str(item.get("speaker") or legacy_speaker or "").strip()
                     or None,
+                    "review_state": (
+                        "uncertain"
+                        if str(item.get("review_state") or "").strip().lower()
+                        == "uncertain"
+                        else "clear"
+                    ),
+                    "review_note": " ".join(
+                        str(item.get("review_note") or "").split()
+                    ).strip()[:4_000],
+                    "evidence_ids": list(
+                        dict.fromkeys(
+                            str(value).strip()
+                            for value in item.get("evidence_ids") or []
+                            if str(value).strip()
+                        )
+                    )[:20],
                 }
             )
         if not normalized:
@@ -493,6 +524,36 @@ class SubtitleReviewService:
             if db_session is None
             else _SessionContext(db_session)
         ) as session:
+            evidence_ids = {
+                evidence_id
+                for item in normalized
+                for evidence_id in item["evidence_ids"]
+            }
+            evidence_by_id = {
+                item.id: item
+                for item in session.scalars(
+                    select(SubtitleEvidence).where(
+                        SubtitleEvidence.id.in_(evidence_ids)
+                    )
+                ).all()
+            }
+            for item in normalized:
+                for evidence_id in item["evidence_ids"]:
+                    evidence = evidence_by_id.get(evidence_id)
+                    if evidence is None or evidence.session_id != session_id:
+                        raise ValueError(
+                            "Subtitle evidence must belong to this session."
+                        )
+                    if evidence.status in {"queued", "running"}:
+                        raise ValueError(
+                            "Subtitle evidence cannot be attached while it is running."
+                        )
+                    if min(item["end_ms"], evidence.end_ms) <= max(
+                        item["start_ms"], evidence.start_ms
+                    ):
+                        raise ValueError(
+                            "Subtitle evidence must overlap the reviewed cue timing."
+                        )
             source_artifact = (
                 session.get(Artifact, source_artifact_id)
                 if source_artifact_id
@@ -613,7 +674,19 @@ class SubtitleReviewService:
             session.flush()
             children = []
             for ordinal, reviewed in enumerate(normalized):
-                child = Segment(revision_id=revision.id, ordinal=ordinal, **reviewed)
+                child = Segment(
+                    revision_id=revision.id,
+                    ordinal=ordinal,
+                    start_ms=reviewed["start_ms"],
+                    end_ms=reviewed["end_ms"],
+                    text=reviewed["text"],
+                    speaker=reviewed["speaker"],
+                    metadata_json={
+                        "review_state": reviewed["review_state"],
+                        "review_note": reviewed["review_note"],
+                        "evidence_ids": reviewed["evidence_ids"],
+                    },
+                )
                 session.add(child)
                 children.append(child)
             session.flush()
@@ -697,6 +770,11 @@ class SubtitleReviewService:
                         "reviewed": True,
                         "has_speaker_metadata": bool(speakers),
                         "speaker_count": len(speakers),
+                        "uncertain_segment_count": sum(
+                            1
+                            for item in normalized
+                            if item["review_state"] == "uncertain"
+                        ),
                     },
                 )
             except Exception:

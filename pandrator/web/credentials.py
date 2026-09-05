@@ -60,6 +60,7 @@ TTS_SERVICE_ENVS: dict[str, str] = {
     "elevenlabs": "ELEVENLABS_API_KEY",
 }
 STT_SERVICE_ENVS: dict[str, str] = {
+    "azure_mai_transcribe_2": "AZURE_SPEECH_KEY",
     "azure_mai_transcribe_1_5": "AZURE_SPEECH_KEY",
 }
 SHARED_PROVIDER_CREDENTIALS = {"openai", "gemini", "vertex_ai"}
@@ -171,6 +172,8 @@ def tts_service_credential_key(service_id: object) -> str:
 
 def stt_service_credential_key(service_id: object) -> str:
     normalized = normalize_credential_id(service_id).replace("-", "_")
+    if normalized == "azure_mai_transcribe_2":
+        normalized = "azure_mai_transcribe_1_5"
     return stt_credential_key(normalized)
 
 
@@ -953,6 +956,28 @@ def prepare_tts_settings_for_storage(
     return prepared
 
 
+def _stt_credential_key_in_use(
+    key: str, service_ids: Iterable[str], *, excluding: str = ""
+) -> bool:
+    """Return whether another configured STT profile resolves to *key*."""
+
+    return any(
+        service_id != excluding and stt_service_credential_key(service_id) == key
+        for service_id in service_ids
+    )
+
+
+def _database_credential_exists(session: Session, key: str) -> bool:
+    """Check a managed credential locator without loading its secret value."""
+
+    return (
+        session.execute(
+            select(StoredCredential.key).where(StoredCredential.key == key)
+        ).scalar_one_or_none()
+        is not None
+    )
+
+
 def prepare_stt_settings_for_storage(
     session: Session,
     database: Database,
@@ -978,7 +1003,25 @@ def prepare_stt_settings_for_storage(
     records = prepared.get("provider_configs")
     if not isinstance(records, list):
         return prepared
-    current_ids: set[str] = set()
+    # Collect all current profiles before changing any one credential.  The
+    # two Azure MAI profiles intentionally share one canonical credential key,
+    # so a sibling later in the list must protect it during this pass too.
+    current_ids: set[str] = {
+        str(item.get("id") or "").strip().lower().replace("-", "_")
+        for item in records
+        if isinstance(item, dict) and str(item.get("id") or "").strip()
+    }
+    credential_consumer_ids: set[str] = {
+        str(item.get("id") or "").strip().lower().replace("-", "_")
+        for item in records
+        if isinstance(item, dict)
+        and str(item.get("id") or "").strip()
+        and not (
+            bool(item.get("clear_api_key", False))
+            and item.get("credential_backend") is None
+            and not str(item.get("api_key") or "").strip()
+        )
+    }
     for record in records:
         if not isinstance(record, dict):
             continue
@@ -1021,8 +1064,24 @@ def prepare_stt_settings_for_storage(
         existing_reference = str(
             record.get("secret_ref") or previous_record.get("secret_ref") or ""
         ).strip()
+        if (
+            normalized_id == "azure_mai_transcribe_2"
+            and not existing_reference
+            and str(requested_backend or "database").strip().lower() == "database"
+            and _database_credential_exists(session, stt_service_credential_key(normalized_id))
+        ):
+            # A newly selected MAI-2 profile may arrive without the
+            # write-only reference that was materialized for legacy 1.5.
+            # Reuse the canonical locator when its row already exists; never
+            # read or copy the stored secret.
+            existing_reference = database_reference(
+                stt_service_credential_key(normalized_id)
+            )
         if requested_backend is not None or submitted_key:
             key = stt_service_credential_key(normalized_id)
+            shared_by_sibling = _stt_credential_key_in_use(
+                key, credential_consumer_ids, excluding=normalized_id
+            )
             configured = configure_credential_reference(
                 session,
                 database,
@@ -1035,7 +1094,7 @@ def prepare_stt_settings_for_storage(
                 backend=requested_backend or "database",
                 locator=requested_locator,
                 secret_value=submitted_key,
-                delete_previous=delete_previous,
+                delete_previous=delete_previous and not shared_by_sibling,
             )
             if configured.reference:
                 record["secret_ref"] = configured.reference
@@ -1045,22 +1104,30 @@ def prepare_stt_settings_for_storage(
             current_reference = existing_reference or database_reference(
                 stt_service_credential_key(normalized_id)
             )
-            delete_managed_reference(
-                session,
-                current_reference,
-                preserve_shared=False,
-            )
+            if not _stt_credential_key_in_use(
+                stt_service_credential_key(normalized_id),
+                credential_consumer_ids,
+                excluding=normalized_id,
+            ):
+                delete_managed_reference(
+                    session,
+                    current_reference,
+                    preserve_shared=False,
+                )
             record.pop("secret_ref", None)
         elif existing_reference:
             record["secret_ref"] = existing_reference
     for normalized_id, previous_record in previous_records.items():
         if normalized_id in current_ids:
             continue
+        key = stt_service_credential_key(normalized_id)
+        if _stt_credential_key_in_use(key, credential_consumer_ids):
+            continue
         previous_reference = str(previous_record.get("secret_ref") or "").strip()
         delete_managed_reference(
             session,
             previous_reference
-            or database_reference(stt_service_credential_key(normalized_id)),
+            or database_reference(key),
             preserve_shared=False,
         )
     if contains_inline_secret(prepared):
@@ -1098,11 +1165,16 @@ def hydrate_stt_settings(
     if record is None:
         return hydrated
     fallback_env = STT_SERVICE_ENVS.get(service_id, "")
+    reference = record.get("secret_ref")
+    if not reference and service_id == "azure_mai_transcribe_2":
+        # MAI-2 reuses the legacy 1.5 locator.  Resolve that canonical
+        # reference only at runtime so no secret is copied into settings.
+        reference = database_reference(stt_service_credential_key(service_id))
     resolved = resolve_provider_credential(
         database,
         paths,
         service_id,
-        record.get("secret_ref"),
+        reference,
         fallback_environment_variable=fallback_env,
         shared=False,
     )

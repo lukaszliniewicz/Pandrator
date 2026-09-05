@@ -91,8 +91,10 @@ _CLAIM_KEYS = (
     "delegation",
 )
 _TASK_KEYS = (
+    "session_id",
     "kind",
     "output_role",
+    "source_artifact_id",
     "source_language",
     "target_language",
     "instructions",
@@ -102,6 +104,7 @@ _TASK_KEYS = (
     "glossary",
     "timing_context_mode",
     "substantial_gap_ms",
+    "quality_policy",
 )
 _DELEGATION_KEYS = (
     "execution_mode",

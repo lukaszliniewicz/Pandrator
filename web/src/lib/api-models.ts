@@ -272,6 +272,100 @@ export type SubtitleSegment = {
   end_ms: number;
   text: string;
   speaker?: string | null;
+  review_state?: 'clear' | 'uncertain';
+  review_note?: string;
+  evidence_ids?: string[];
+};
+
+export type SubtitleEvidenceRoute =
+  'whisper' | 'moss' | 'azure_mai_transcribe_2' | 'audio_llm';
+
+type SubtitleEvidenceWord = {
+  text: string;
+  start_ms: number;
+  end_ms: number;
+  speaker?: string | null;
+  confidence?: number | null;
+};
+
+type SubtitleEvidenceSegment = {
+  text: string;
+  start_ms: number;
+  end_ms: number;
+  speaker?: string | null;
+  words?: SubtitleEvidenceWord[];
+};
+
+export type SubtitleEvidenceCandidate = {
+  id: string;
+  route: SubtitleEvidenceRoute;
+  status: 'success' | 'failed';
+  text?: string;
+  context_text?: string;
+  selection_method?: 'word_overlap' | 'segment_overlap' | 'bounded_clip';
+  language?: string;
+  timing_kind?: string;
+  provider?: string;
+  model?: string;
+  engine?: string;
+  compute_backend?: string;
+  segments?: SubtitleEvidenceSegment[];
+  words?: SubtitleEvidenceWord[];
+  transcript_artifact_id?: string | null;
+  transport?: {
+    input_contract?: string;
+    provider_wire_mapping?: string;
+    audio_consumption?: 'confirmed' | 'unreported';
+    [key: string]: unknown;
+  };
+  usage?: Record<string, unknown>;
+  cost?: {
+    kind?: 'actual' | 'estimate' | 'not_applicable' | 'unknown';
+    amount?: number | null;
+    currency?: string;
+    unit?: string;
+    usd?: number | null;
+    source?: string;
+    [key: string]: unknown;
+  };
+  error?: string;
+};
+
+export type SubtitleEvidenceRecord = {
+  id: string;
+  evidence_id?: string;
+  session_id: string;
+  source_artifact_id: string;
+  source_media_artifact_id?: string | null;
+  source_revision_id: string;
+  source_segment_id?: string | null;
+  cue_id: number;
+  start_ms: number;
+  end_ms: number;
+  clip_start_ms: number;
+  clip_end_ms: number;
+  reason: string;
+  routes?: SubtitleEvidenceRoute[];
+  routes_json?: SubtitleEvidenceRoute[];
+  audio_model_ids?: string[];
+  status:
+    | 'queued'
+    | 'running'
+    | 'completed'
+    | 'failed'
+    | 'resolved'
+    | 'uncertain'
+    | 'dismissed';
+  job_id?: string | null;
+  job_status?: string | null;
+  clip_artifact_id?: string | null;
+  candidates?: SubtitleEvidenceCandidate[];
+  candidates_json?: SubtitleEvidenceCandidate[];
+  resolution?: Record<string, unknown>;
+  resolution_json?: Record<string, unknown>;
+  error_message?: string | null;
+  created_at: string;
+  updated_at: string;
 };
 
 export type SubtitleReviewColumn = {
@@ -667,6 +761,9 @@ export type ProviderModelRecord = {
   model_id: string;
   is_active?: boolean;
   is_default?: boolean;
+  input_modalities?: Array<'text' | 'image' | 'audio' | 'video' | 'pdf'>;
+  output_modalities?: Array<'text' | 'image' | 'audio'>;
+  supports_audio_input?: boolean;
   [key: string]: unknown;
 };
 

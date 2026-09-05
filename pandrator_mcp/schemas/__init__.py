@@ -6,6 +6,7 @@ from .dispatch import (
     CreateDispatchRunInput,
     DispatchCorrectionOperationInput,
     DispatchCorrectionResultInput,
+    DispatchCorrectionUncertaintyInput,
     DispatchStructuredResultInput,
     DispatchTranslationItemInput,
     DispatchTranslationResultInput,
@@ -82,6 +83,11 @@ from .speech_optimization_dispatch import (
     SpeechOptimizationDispatchResultInput,
     SubmitSpeechOptimizationDispatchBatchInput,
 )
+from .subtitle_evidence import (
+    GetSubtitleEvidenceInput,
+    RequestSubtitleEvidenceInput,
+    ResolveSubtitleEvidenceInput,
+)
 from .system import CapabilitiesInput, SystemStatusInput, TargetStatusInput
 from .work import (
     CancelWorkInput,
@@ -106,6 +112,7 @@ TOOL_INPUT_MODELS = (
     BrowseLocalSourcesInput,
     ListSessionsInput,
     GetSessionInput,
+    GetSubtitleEvidenceInput,
     GetDispatchRunInput,
     GetSourceCleaningDispatchRunInput,
     GetSpeechOptimizationDispatchRunInput,
@@ -122,6 +129,7 @@ TOOL_INPUT_MODELS = (
     GetWorkInput,
     GetWorkLogInput,
     CreateSessionInput,
+    RequestSubtitleEvidenceInput,
     CreateDispatchRunInput,
     CreateSourceCleaningDispatchRunInput,
     CreateSpeechOptimizationDispatchRunInput,
@@ -148,6 +156,7 @@ TOOL_INPUT_MODELS = (
     ReleaseDispatchBatchInput,
     RenewDispatchBatchInput,
     SubmitDispatchBatchInput,
+    ResolveSubtitleEvidenceInput,
     ClaimSourceCleaningDispatchBatchInput,
     InspectSourceCleaningDispatchExtractionInput,
     ReleaseSourceCleaningDispatchBatchInput,
@@ -186,6 +195,7 @@ __all__ = [
     "CreateTextSourceInput",
     "DispatchCorrectionOperationInput",
     "DispatchCorrectionResultInput",
+    "DispatchCorrectionUncertaintyInput",
     "DispatchStructuredResultInput",
     "DispatchTranslationItemInput",
     "DispatchTranslationResultInput",
@@ -196,6 +206,7 @@ __all__ = [
     "GuideTopic",
     "ExecuteWorkflowPlanInput",
     "GetSessionInput",
+    "GetSubtitleEvidenceInput",
     "GetDispatchRunInput",
     "GetSourceCleaningDispatchRunInput",
     "GetSpeechOptimizationDispatchRunInput",
@@ -227,6 +238,8 @@ __all__ = [
     "PlanOrchestratedWorkflowInput",
     "PlanExportVariantInput",
     "RecommendNextStepsInput",
+    "RequestSubtitleEvidenceInput",
+    "ResolveSubtitleEvidenceInput",
     "RegenerateSegmentsInput",
     "ReleaseDispatchBatchInput",
     "ReleaseSourceCleaningDispatchBatchInput",

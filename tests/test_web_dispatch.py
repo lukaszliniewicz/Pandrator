@@ -18,6 +18,7 @@ from pandrator.web.models import (
     Segment,
     SegmentLineage,
     SessionStageSelection,
+    SubtitleEvidence,
     utcnow,
 )
 from pandrator.web.schemas import (
@@ -209,6 +210,142 @@ class DispatchWebTests(unittest.TestCase):
         self.assertNotIn("input_json", serialized)
         self.assertNotIn("normalized_output_json", serialized)
         self.assertNotIn("lease_token", serialized)
+
+    def test_correction_can_escalate_and_materialize_a_reviewable_uncertainty(self):
+        session_id, source_id = self._source(
+            texts=("Culture. Yes.", "We elected two co-chairs."),
+        )
+        provider = self.client.post(
+            "/api/v1/providers",
+            json={"provider_key": "gemini", "label": "Configured Gemini"},
+            headers=self._headers(),
+        ).get_json()
+        audio_model = self.client.post(
+            f"/api/v1/providers/{provider['id']}/models",
+            json={
+                "model_id": "gemini-audio-checker",
+                "is_active": True,
+                "input_modalities": ["text", "audio"],
+            },
+            headers=self._headers(),
+        ).get_json()
+        with self.extension["database"].session() as session:
+            source = session.get(Artifact, source_id)
+            revision_id = str(source.metadata_json["revision_id"])
+            segment = session.scalar(
+                select(Segment).where(
+                    Segment.revision_id == revision_id,
+                    Segment.ordinal == 0,
+                )
+            )
+            session.add(
+                SubtitleEvidence(
+                    id="evidence-request-1",
+                    session_id=session_id,
+                    source_artifact_id=source_id,
+                    source_revision_id=revision_id,
+                    source_segment_id=segment.id,
+                    cue_id=1,
+                    start_ms=int(segment.start_ms),
+                    end_ms=int(segment.end_ms),
+                    clip_start_ms=0,
+                    clip_end_ms=int(segment.end_ms) + 2_000,
+                    reason="Confirm the title.",
+                    routes_json=["whisper", "moss"],
+                    audio_model_ids_json=[],
+                    status="completed",
+                    candidates_json=[],
+                    resolution_json={},
+                )
+            )
+        run = self._create(session_id, source_artifact_id=source_id)
+        claim = self._claim(run["id"], "quality-claim-key")
+        self.assertEqual(session_id, claim["task"]["session_id"])
+        self.assertEqual(source_id, claim["task"]["source_artifact_id"])
+        self.assertTrue(claim["task"]["quality_policy"]["deletion_allowed"])
+        self.assertEqual(
+            "pandrator_request_subtitle_evidence",
+            claim["task"]["quality_policy"]["evidence_tool"],
+        )
+        self.assertIn(
+            "audio_llm", claim["task"]["quality_policy"]["available_routes"]
+        )
+        self.assertEqual(
+            [
+                {
+                    "id": audio_model["id"],
+                    "model_id": "gemini-audio-checker",
+                    "provider": "Configured Gemini",
+                    "input_modality_status": "declared",
+                    "timing_kind": "bounded_clip",
+                }
+            ],
+            claim["task"]["quality_policy"]["audio_witness_models"],
+        )
+        self.assertIn(
+            "do not use it as a timing authority",
+            claim["task"]["quality_policy"]["audio_witness_policy"],
+        )
+        self.assertIn("Deletion is an ordinary editorial action", claim["task"]["instructions"])
+
+        response = self.client.post(
+            f"/api/v1/dispatch-batches/{claim['batch_id']}/submit",
+            json={
+                "lease_token": claim["lease_token"],
+                "result": {
+                    "kind": "correction",
+                    "operations": [],
+                    "uncertainties": [
+                        {
+                            "cue_id": 1,
+                            "reason": "Whisper and MOSS disagree on the title.",
+                            "evidence_ids": ["evidence-request-1"],
+                        }
+                    ],
+                },
+            },
+            headers=self._headers("quality-submit-key"),
+        )
+        self.assertEqual(200, response.status_code, response.get_json())
+        result_artifact_id = response.get_json()["result_artifact_id"]
+        with self.extension["database"].session() as session:
+            artifact = session.get(Artifact, result_artifact_id)
+            revision = session.get(
+                DocumentRevision, artifact.metadata_json["revision_id"]
+            )
+            segments = list(
+                session.scalars(
+                    select(Segment)
+                    .where(Segment.revision_id == revision.id)
+                    .order_by(Segment.ordinal)
+                ).all()
+            )
+        self.assertEqual(1, artifact.metadata_json["uncertain_segment_count"])
+        self.assertEqual("uncertain", segments[0].metadata_json["review_state"])
+        self.assertEqual(
+            ["evidence-request-1"], segments[0].metadata_json["evidence_ids"]
+        )
+        self.assertEqual("clear", segments[1].metadata_json["review_state"])
+
+        second_run = self._create(session_id, source_artifact_id=source_id)
+        second_claim = self._claim(second_run["id"], "delete-uncertain-claim")
+        invalid = self.client.post(
+            f"/api/v1/dispatch-batches/{second_claim['batch_id']}/submit",
+            json={
+                "lease_token": second_claim["lease_token"],
+                "result": {
+                    "kind": "correction",
+                    "operations": [
+                        {"action": "delete", "cue_ids": [1], "texts": []}
+                    ],
+                    "uncertainties": [
+                        {"cue_id": 1, "reason": "Cannot be both states."}
+                    ],
+                },
+            },
+            headers=self._headers("delete-uncertain-submit"),
+        )
+        self.assertEqual(422, invalid.status_code, invalid.get_json())
 
     def test_correction_of_translation_appends_a_translation_revision(self):
         session_id, transcription_id = self._source(target_language="de")

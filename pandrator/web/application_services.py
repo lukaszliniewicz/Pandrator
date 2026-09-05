@@ -30,6 +30,7 @@ from .sessions import SessionService
 from .source_cleaning_dispatch import SourceCleaningDispatchRunService
 from .speech_optimization_dispatch import SpeechOptimizationDispatchRunService
 from .startup import StartupMaintenance
+from .subtitle_evidence import SubtitleEvidenceService
 from .subtitle_review import SubtitleReviewService
 from .tts_providers import TtsCatalogueService, TtsProviderRegistry
 from .uploads import ChunkUploadService
@@ -79,6 +80,7 @@ class ApplicationServices:
     chunk_uploads: ChunkUploadService
     startup_maintenance: StartupMaintenance
     subtitle_review: SubtitleReviewService
+    subtitle_evidence: SubtitleEvidenceService
     dispatch: DispatchRunService
     source_cleaning_dispatch: SourceCleaningDispatchRunService
     speech_optimization_dispatch: SpeechOptimizationDispatchRunService
@@ -135,6 +137,25 @@ class ApplicationServices:
         artifacts = ArtifactService(database, paths)
         session_forks = SessionForkService(database, paths, artifacts)
         workflows = WorkflowService(database, jobs)
+        workspace_settings = WorkspaceSettingsService(database)
+
+        def session_directory(session_id: str) -> Path:
+            with database.session() as db_session:
+                record = db_session.get(SessionRecord, session_id)
+                if record is None:
+                    raise KeyError(session_id)
+                destination = paths.sessions / record.storage_key
+            destination.mkdir(parents=True, exist_ok=True)
+            return destination
+
+        subtitle_evidence = SubtitleEvidenceService(
+            database,
+            artifacts,
+            jobs,
+            workspace_settings,
+            session_directory,
+            paths,
+        )
         manager_bridge = LocalManagerProxy()
         tts_providers = TtsProviderRegistry()
         workflow_handlers = WorkflowHandlers(
@@ -143,6 +164,7 @@ class ApplicationServices:
             tts_providers=tts_providers,
             manager_bridge=manager_bridge,
             jobs=jobs,
+            subtitle_evidence=subtitle_evidence,
         )
         workflow_plans = WorkflowExecutionPlanService(
             database,
@@ -158,7 +180,6 @@ class ApplicationServices:
             tts_providers,
             manager_bridge=manager_bridge,
         )
-        workspace_settings = WorkspaceSettingsService(database)
         outcome_plans = OutcomePlanService(database)
         source_library = SourceLibraryService(database)
         generation = GenerationService(
@@ -180,15 +201,6 @@ class ApplicationServices:
             paths,
             chunk_uploads,
         )
-
-        def session_directory(session_id: str) -> Path:
-            with database.session() as db_session:
-                record = db_session.get(SessionRecord, session_id)
-                if record is None:
-                    raise KeyError(session_id)
-                destination = paths.sessions / record.storage_key
-            destination.mkdir(parents=True, exist_ok=True)
-            return destination
 
         subtitle_review = SubtitleReviewService(
             database,
@@ -243,6 +255,7 @@ class ApplicationServices:
             chunk_uploads=chunk_uploads,
             startup_maintenance=startup_maintenance,
             subtitle_review=subtitle_review,
+            subtitle_evidence=subtitle_evidence,
             dispatch=dispatch,
             source_cleaning_dispatch=source_cleaning_dispatch,
             speech_optimization_dispatch=speech_optimization_dispatch,
@@ -283,6 +296,7 @@ class ApplicationServices:
             "chunk_uploads": self.chunk_uploads,
             "startup_maintenance": self.startup_maintenance,
             "subtitle_review": self.subtitle_review,
+            "subtitle_evidence": self.subtitle_evidence,
             "dispatch": self.dispatch,
             "source_cleaning_dispatch": self.source_cleaning_dispatch,
             "speech_optimization_dispatch": self.speech_optimization_dispatch,

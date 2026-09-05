@@ -170,6 +170,19 @@ class DubbingLLMCorrectionTests(unittest.TestCase):
         self.assertEqual(2100, cue["timing"]["gap_from_previous_ms"])
         self.assertIn("A gap of at least 2000 ms", prompt)
 
+    def test_dispatch_correction_prompt_does_not_treat_asr_consensus_as_resolution(self):
+        prompt = llm_correction.build_correction_task_instructions(
+            subtitle_count=1,
+            dispatch_result=True,
+        )
+
+        self.assertIn(
+            "Agreement among ASR witnesses does not resolve a result that remains "
+            "semantically incoherent",
+            prompt,
+        )
+        self.assertIn("audio-native witness or mark the cue uncertain", prompt)
+
     def test_correction_prompt_timing_modes_are_exact(self):
         block = [
             {

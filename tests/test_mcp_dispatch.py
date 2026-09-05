@@ -52,7 +52,9 @@ class _Application:
             "lease_token": "lease-capability",
             "lease_expires_at": "2030-01-01T00:00:00+00:00",
             "task": {
+                "session_id": "session-1",
                 "kind": "translation",
+                "source_artifact_id": "artifact-1",
                 "source_language": "en",
                 "target_language": "pl",
                 "instructions": "Translate exactly.",
@@ -62,6 +64,7 @@ class _Application:
                 "glossary": {},
                 "timing_context_mode": "full",
                 "substantial_gap_ms": 2000,
+                "quality_policy": None,
                 "unrelated": "must not leak",
             },
             "batch": {
@@ -150,6 +153,23 @@ class DispatchHandlerTests(unittest.TestCase):
                     "operations": [{"action": "edit", "cue_ids": [1], "texts": []}],
                 },
                 idempotency_key="submit:shape",
+            )
+        with self.assertRaises(ValidationError):
+            SubmitDispatchBatchInput(
+                batch_id="batch",
+                lease_token="lease",
+                result={
+                    "kind": "correction",
+                    "operations": [],
+                    "uncertainties": [
+                        {
+                            "cue_id": 1,
+                            "reason": "still unclear",
+                            "evidence_ids": ["same", "same"],
+                        }
+                    ],
+                },
+                idempotency_key="submit:duplicate-evidence",
             )
         with self.assertRaises(ValidationError):
             CreateDispatchRunInput(

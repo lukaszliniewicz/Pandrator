@@ -23,6 +23,8 @@
   import { modalFocus } from './modal-focus';
 
   type CredentialBackend = 'database' | 'environment' | 'keyring' | 'file';
+  type InputModality = 'text' | 'image' | 'audio' | 'video' | 'pdf';
+  type OutputModality = 'text' | 'image' | 'audio';
   type Provider = {
     id: string;
     provider_key: string;
@@ -60,6 +62,9 @@
     output_cost_per_million: number | null;
     context_window_tokens: number;
     max_output_tokens: number | null;
+    input_modalities: InputModality[];
+    output_modalities: OutputModality[];
+    supports_audio_input: boolean;
     options_json: Record<string, unknown>;
     revision: number;
   };
@@ -107,6 +112,8 @@
   let outputCost = $state('');
   let contextWindow = $state('262144');
   let maxOutputTokens = $state('');
+  let inputModalities = $state<InputModality[]>(['text']);
+  let outputModalities = $state<OutputModality[]>(['text']);
   let deletingModel = $state<Model | null>(null);
   let deletingProvider = $state<Provider | null>(null);
   let replacementModelRecordId = $state('');
@@ -139,6 +146,14 @@
     'aws_region_name',
     'deployment_id'
   ];
+  const inputModalityOptions: InputModality[] = [
+    'text',
+    'image',
+    'audio',
+    'video',
+    'pdf'
+  ];
+  const outputModalityOptions: OutputModality[] = ['text', 'image', 'audio'];
   const tourSteps = [
     {
       section: 'Connections',
@@ -409,6 +424,24 @@
     outputCost = model.output_cost_per_million?.toString() ?? '';
     contextWindow = String(model.context_window_tokens || 262144);
     maxOutputTokens = model.max_output_tokens?.toString() ?? '';
+    inputModalities = model.input_modalities?.length
+      ? [...model.input_modalities]
+      : ['text'];
+    outputModalities = model.output_modalities?.length
+      ? [...model.output_modalities]
+      : ['text'];
+  }
+
+  function toggleInputModality(modality: InputModality, checked: boolean) {
+    inputModalities = checked
+      ? Array.from(new Set([...inputModalities, modality]))
+      : inputModalities.filter((item) => item !== modality);
+  }
+
+  function toggleOutputModality(modality: OutputModality, checked: boolean) {
+    outputModalities = checked
+      ? Array.from(new Set([...outputModalities, modality]))
+      : outputModalities.filter((item) => item !== modality);
   }
 
   const optionalNumber = (value: string) =>
@@ -431,7 +464,9 @@
             4096,
             Number(contextWindow) || 262144
           ),
-          max_output_tokens: optionalNumber(maxOutputTokens)
+          max_output_tokens: optionalNumber(maxOutputTokens),
+          input_modalities: inputModalities,
+          output_modalities: outputModalities
         }
       );
       edit = null;
@@ -754,6 +789,10 @@
                         class="rounded-full bg-[var(--accent-soft)] px-2 py-0.5 text-[.65rem] font-bold uppercase text-[var(--accent)]"
                         >Application default</span
                       >{/if}
+                    {#if model.supports_audio_input}<span
+                        class="rounded-full bg-violet-500/10 px-2 py-0.5 text-[.65rem] font-bold uppercase text-violet-700"
+                        >Audio input declared</span
+                      >{/if}
                   </div>
                   <p class="muted mt-1 text-xs">
                     Temperature {model.default_temperature ?? 'omit'} · Reasoning
@@ -761,6 +800,10 @@
                       '—'} / cached ${model.cached_input_cost_per_million ??
                       model.input_cost_per_million ??
                       '—'} / output ${model.output_cost_per_million ?? '—'}
+                  </p>
+                  <p class="muted mt-1 text-[.68rem] capitalize">
+                    Inputs {(model.input_modalities ?? ['text']).join(', ')} · outputs
+                    {(model.output_modalities ?? ['text']).join(', ')}
                   </p>
                 </div>
                 <div class="flex flex-wrap gap-2">
@@ -1128,6 +1171,56 @@
             generation request cap.</small
           ></label
         >
+        <fieldset
+          class="rounded-xl border border-[var(--line)] p-4 sm:col-span-2"
+        >
+          <legend class="px-1 text-sm font-semibold">Input modalities</legend>
+          <p class="muted mb-3 text-xs">
+            Declare only formats the exact model accepts. Audio-enabled models
+            can be offered as bounded subtitle evidence witnesses.
+          </p>
+          <div class="flex flex-wrap gap-2">
+            {#each inputModalityOptions as modality}
+              <label
+                class="inline-flex items-center gap-2 rounded-lg border border-[var(--line)] px-3 py-2 text-xs font-semibold capitalize"
+              >
+                <input
+                  type="checkbox"
+                  checked={inputModalities.includes(modality)}
+                  disabled={inputModalities.length === 1 &&
+                    inputModalities.includes(modality)}
+                  onchange={(event) =>
+                    toggleInputModality(modality, event.currentTarget.checked)}
+                  class="accent-[var(--accent)]"
+                />
+                {modality}
+              </label>
+            {/each}
+          </div>
+        </fieldset>
+        <fieldset
+          class="rounded-xl border border-[var(--line)] p-4 sm:col-span-2"
+        >
+          <legend class="px-1 text-sm font-semibold">Output modalities</legend>
+          <div class="flex flex-wrap gap-2">
+            {#each outputModalityOptions as modality}
+              <label
+                class="inline-flex items-center gap-2 rounded-lg border border-[var(--line)] px-3 py-2 text-xs font-semibold capitalize"
+              >
+                <input
+                  type="checkbox"
+                  checked={outputModalities.includes(modality)}
+                  disabled={outputModalities.length === 1 &&
+                    outputModalities.includes(modality)}
+                  onchange={(event) =>
+                    toggleOutputModality(modality, event.currentTarget.checked)}
+                  class="accent-[var(--accent)]"
+                />
+                {modality}
+              </label>
+            {/each}
+          </div>
+        </fieldset>
       </div>
       <button onclick={saveModel} class="btn btn-primary mt-6 w-full"
         >Save model defaults</button

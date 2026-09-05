@@ -142,6 +142,8 @@ from .schemas import (
     SourceUpdateRequest,
     SourceUrlRequest,
     StageSelectionUpdate,
+    SubtitleEvidenceCreateRequest,
+    SubtitleEvidenceResolveRequest,
     SubtitleReviewRequest,
     TokenCreateRequest,
     TrainingCreateRequest,
@@ -450,6 +452,34 @@ def _model_dict(record, fields: tuple[str, ...]) -> dict[str, Any]:
     return payload
 
 
+def _provider_model_payload(record: ProviderModel) -> dict[str, Any]:
+    payload = _model_dict(
+        record,
+        (
+            "id",
+            "provider_id",
+            "model_id",
+            "is_active",
+            "is_default",
+            "default_temperature",
+            "default_reasoning_effort",
+            "input_cost_per_million",
+            "cached_input_cost_per_million",
+            "output_cost_per_million",
+            "context_window_tokens",
+            "max_output_tokens",
+            "options_json",
+            "revision",
+        ),
+    )
+    input_modalities = list(record.input_modalities_json or ["text"])
+    output_modalities = list(record.output_modalities_json or ["text"])
+    payload["input_modalities"] = input_modalities
+    payload["output_modalities"] = output_modalities
+    payload["supports_audio_input"] = "audio" in input_modalities
+    return payload
+
+
 def _provider_payload(
     provider: Provider, database: Database, paths: DataPaths
 ) -> dict[str, Any]:
@@ -604,6 +634,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     pronunciations = services.pronunciations
     chunk_uploads = services.chunk_uploads
     subtitle_review = services.subtitle_review
+    subtitle_evidence = services.subtitle_evidence
     bootstrap = services.bootstrap
     static_dir = context.static_dir
     error_response = context.guards.error_response
@@ -3960,6 +3991,132 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             return error_response("validation_error", str(error), 422)
         return jsonify(result), 201
 
+    @app.post("/api/v1/sessions/<session_id>/subtitle-evidence")
+    @require_auth
+    def subtitle_evidence_create(session_id: str):
+        payload = SubtitleEvidenceCreateRequest.model_validate(
+            request.get_json(silent=True) or {}
+        )
+        values = payload.model_dump(mode="json")
+        idempotency_key, idempotency_error = mutation_idempotency_key()
+        if idempotency_error is not None:
+            return idempotency_error
+        try:
+            if idempotency_key is None:
+                result = subtitle_evidence.request(session_id, values)
+            else:
+                with database.immediate_session() as db_session:
+                    reservation = services.idempotency.begin(
+                        db_session,
+                        principal=context.guards.principal(),
+                        operation_id="requestSubtitleEvidence",
+                        idempotency_key=idempotency_key,
+                        payload={"session_id": session_id, **values},
+                    )
+                    if reservation.response is not None:
+                        result, status_code = reservation.response
+                        response = jsonify(result)
+                        response.status_code = status_code
+                        response.headers["Idempotency-Replayed"] = "true"
+                        return response
+                    result = subtitle_evidence.request_in_session(
+                        db_session, session_id, values
+                    )
+                    services.idempotency.complete(
+                        db_session,
+                        reservation,
+                        response=result,
+                        status_code=202,
+                        resource_kind="subtitle_evidence",
+                        resource_id=str(result["record"]["id"]),
+                    )
+        except KeyError:
+            return error_response(
+                "not_found", "Session or subtitle artifact not found.", 404
+            )
+        except (IdempotencyConflict, IdempotencyInProgress) as error:
+            return idempotency_failure(error)
+        except ValueError as error:
+            return error_response("validation_error", str(error), 422)
+        g.audit_resource_kind = "subtitle_evidence"
+        g.audit_resource_id = str(result["record"]["id"])
+        return jsonify(result), 202
+
+    @app.get("/api/v1/sessions/<session_id>/subtitle-evidence")
+    @require_auth
+    def subtitle_evidence_list(session_id: str):
+        try:
+            sessions.get(session_id)
+            return jsonify(
+                subtitle_evidence.list(
+                    session_id,
+                    request.args.get("source_artifact_id") or None,
+                )
+            )
+        except KeyError:
+            return error_response("not_found", "Session not found.", 404)
+
+    @app.get("/api/v1/subtitle-evidence/<evidence_id>")
+    @require_auth
+    def subtitle_evidence_get(evidence_id: str):
+        try:
+            return jsonify(subtitle_evidence.get(evidence_id))
+        except KeyError:
+            return error_response("not_found", "Subtitle evidence not found.", 404)
+
+    @app.post("/api/v1/sessions/<session_id>/subtitle-evidence/<evidence_id>/resolve")
+    @require_auth
+    def subtitle_evidence_resolve(session_id: str, evidence_id: str):
+        payload = SubtitleEvidenceResolveRequest.model_validate(
+            request.get_json(silent=True) or {}
+        )
+        values = payload.model_dump(mode="json")
+        idempotency_key, idempotency_error = mutation_idempotency_key()
+        if idempotency_error is not None:
+            return idempotency_error
+        try:
+            if idempotency_key is None:
+                result = subtitle_evidence.resolve(session_id, evidence_id, values)
+            else:
+                with database.immediate_session() as db_session:
+                    reservation = services.idempotency.begin(
+                        db_session,
+                        principal=context.guards.principal(),
+                        operation_id="resolveSubtitleEvidence",
+                        idempotency_key=idempotency_key,
+                        payload={
+                            "session_id": session_id,
+                            "evidence_id": evidence_id,
+                            **values,
+                        },
+                    )
+                    if reservation.response is not None:
+                        result, status_code = reservation.response
+                        response = jsonify(result)
+                        response.status_code = status_code
+                        response.headers["Idempotency-Replayed"] = "true"
+                        return response
+                    result = subtitle_evidence.resolve_in_session(
+                        db_session, session_id, evidence_id, values
+                    )
+                    services.idempotency.complete(
+                        db_session,
+                        reservation,
+                        response=result,
+                        status_code=200,
+                        resource_kind="subtitle_evidence",
+                        resource_id=evidence_id,
+                    )
+        except KeyError:
+            return error_response("not_found", "Subtitle evidence not found.", 404)
+        except (IdempotencyConflict, IdempotencyInProgress) as error:
+            return idempotency_failure(error)
+        except ValueError as error:
+            return error_response("evidence_conflict", str(error), 409)
+        g.audit_resource_kind = "subtitle_evidence"
+        g.audit_resource_id = evidence_id
+        return jsonify(result)
+
     @app.post("/api/v1/jobs/<job_id>/cancel")
     @require_auth
     def job_cancel(job_id: str):
@@ -4986,29 +5143,13 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 output_cost_per_million=payload.output_cost_per_million,
                 context_window_tokens=payload.context_window_tokens,
                 max_output_tokens=payload.max_output_tokens,
+                input_modalities_json=payload.input_modalities,
+                output_modalities_json=payload.output_modalities,
                 options_json=payload.options,
             )
             db_session.add(model)
             db_session.flush()
-            result = _model_dict(
-                model,
-                (
-                    "id",
-                    "provider_id",
-                    "model_id",
-                    "is_active",
-                    "is_default",
-                    "default_temperature",
-                    "default_reasoning_effort",
-                    "input_cost_per_million",
-                    "cached_input_cost_per_million",
-                    "output_cost_per_million",
-                    "context_window_tokens",
-                    "max_output_tokens",
-                    "options_json",
-                    "revision",
-                ),
-            )
+            result = _provider_model_payload(model)
         return jsonify(result), 201
 
     @app.post("/api/v1/providers/<provider_id>/test")
@@ -5087,25 +5228,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             return jsonify(
                 {
                     "items": [
-                        _model_dict(
-                            item,
-                            (
-                                "id",
-                                "provider_id",
-                                "model_id",
-                                "is_active",
-                                "is_default",
-                                "default_temperature",
-                                "default_reasoning_effort",
-                                "input_cost_per_million",
-                                "cached_input_cost_per_million",
-                                "output_cost_per_million",
-                                "context_window_tokens",
-                                "max_output_tokens",
-                                "options_json",
-                                "revision",
-                            ),
-                        )
+                        _provider_model_payload(item)
                         for item in records
                     ]
                 }
@@ -5150,31 +5273,17 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 for existing in db_session.scalars(select(ProviderModel)):
                     existing.is_default = existing.id == model.id
                 changes["is_active"] = True
+            if "input_modalities" in changes:
+                changes["input_modalities_json"] = changes.pop("input_modalities")
+            if "output_modalities" in changes:
+                changes["output_modalities_json"] = changes.pop("output_modalities")
             if "options" in changes:
                 changes["options_json"] = changes.pop("options")
             for key, value in changes.items():
                 setattr(model, key, value)
             model.revision += 1
             db_session.flush()
-            result = _model_dict(
-                model,
-                (
-                    "id",
-                    "provider_id",
-                    "model_id",
-                    "is_active",
-                    "is_default",
-                    "default_temperature",
-                    "default_reasoning_effort",
-                    "input_cost_per_million",
-                    "cached_input_cost_per_million",
-                    "output_cost_per_million",
-                    "context_window_tokens",
-                    "max_output_tokens",
-                    "options_json",
-                    "revision",
-                ),
-            )
+            result = _provider_model_payload(model)
         response = jsonify(result)
         response.headers["ETag"] = f'"{result["revision"]}"'
         return response
@@ -5270,6 +5379,8 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                     model_id=model_id,
                     is_active=False,
                     is_default=False,
+                    input_modalities_json=["text"],
+                    output_modalities_json=["text"],
                     options_json={"discovery_source": discovery.source},
                 )
                 db_session.add(model)

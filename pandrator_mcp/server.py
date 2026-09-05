@@ -44,6 +44,7 @@ from .schemas import (
     GetSessionSettingsInput,
     GetSourceCleaningDispatchRunInput,
     GetSpeechOptimizationDispatchRunInput,
+    GetSubtitleEvidenceInput,
     GetWorkflowInput,
     GetWorkInput,
     GetWorkLogInput,
@@ -77,6 +78,8 @@ from .schemas import (
     RenewSourceCleaningDispatchBatchInput,
     RenewSpeechOptimizationDispatchBatchInput,
     ReplaceSubtitleTextInput,
+    RequestSubtitleEvidenceInput,
+    ResolveSubtitleEvidenceInput,
     SelectTakeInput,
     SourceCleaningDispatchResultInput,
     SpeechOptimizationDispatchResultInput,
@@ -119,6 +122,7 @@ from .tools import (
     get_session_settings,
     get_source_cleaning_dispatch_run,
     get_speech_optimization_dispatch_run,
+    get_subtitle_evidence,
     get_work,
     get_work_log,
     get_workflow,
@@ -152,6 +156,8 @@ from .tools import (
     renew_source_cleaning_dispatch_batch,
     renew_speech_optimization_dispatch_batch,
     replace_subtitle_text,
+    request_subtitle_evidence,
+    resolve_subtitle_evidence,
     select_take,
     submit_dispatch_batch,
     submit_source_cleaning_dispatch_batch,
@@ -855,6 +861,108 @@ def build_server(runtime: McpRuntime):
             get_dispatch_run,
             runtime,
             GetDispatchRunInput(run_id=run_id),
+        )
+
+    @server.tool(
+        name="pandrator_request_subtitle_evidence",
+        title="Escalate a subtitle cue for audio evidence",
+        annotations=write_action,
+    )
+    def subtitle_evidence_request_tool(
+        session_id: Annotated[str, Field(min_length=1, max_length=80)],
+        source_artifact_id: Annotated[str, Field(min_length=1, max_length=80)],
+        cue_id: Annotated[int, Field(ge=1)],
+        reason: Annotated[str, Field(min_length=1, max_length=4_000)],
+        routes: Annotated[
+            list[
+                Literal[
+                    "whisper", "moss", "azure_mai_transcribe_2", "audio_llm"
+                ]
+            ],
+            Field(min_length=1, max_length=4),
+        ],
+        idempotency_key: Annotated[
+            str,
+            Field(
+                min_length=8,
+                max_length=200,
+                pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$",
+            ),
+        ],
+        padding_before_ms: Annotated[int, Field(ge=0, le=15_000)] = 2_000,
+        padding_after_ms: Annotated[int, Field(ge=0, le=15_000)] = 2_000,
+        audio_model_ids: Annotated[list[str] | None, Field(max_length=3)] = None,
+    ) -> dict[str, Any]:
+        """Queue independent, bounded re-transcriptions for one exact cue."""
+
+        return _call(
+            request_subtitle_evidence,
+            runtime,
+            RequestSubtitleEvidenceInput(
+                session_id=session_id,
+                source_artifact_id=source_artifact_id,
+                cue_id=cue_id,
+                reason=reason,
+                routes=routes,
+                audio_model_ids=audio_model_ids or [],
+                padding_before_ms=padding_before_ms,
+                padding_after_ms=padding_after_ms,
+                idempotency_key=idempotency_key,
+            ),
+        )
+
+    @server.tool(
+        name="pandrator_get_subtitle_evidence",
+        title="Inspect subtitle audio evidence",
+        annotations=read_only,
+    )
+    def subtitle_evidence_get_tool(evidence_id: str) -> dict[str, Any]:
+        """Read candidate transcripts, provenance, timing, and cost status."""
+
+        return _call(
+            get_subtitle_evidence,
+            runtime,
+            GetSubtitleEvidenceInput(evidence_id=evidence_id),
+        )
+
+    @server.tool(
+        name="pandrator_resolve_subtitle_evidence",
+        title="Resolve subtitle audio evidence",
+        annotations=write_action,
+    )
+    def subtitle_evidence_resolve_tool(
+        session_id: Annotated[str, Field(min_length=1, max_length=80)],
+        evidence_id: Annotated[str, Field(min_length=1, max_length=120)],
+        action: Literal["accepted", "edited", "deleted", "uncertain", "dismissed"],
+        idempotency_key: Annotated[
+            str,
+            Field(
+                min_length=8,
+                max_length=200,
+                pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$",
+            ),
+        ],
+        candidate_id: Annotated[
+            str | None,
+            Field(min_length=1, max_length=120),
+        ] = None,
+        text: Annotated[str | None, Field(max_length=16_000)] = None,
+        note: Annotated[str, Field(max_length=4_000)] = "",
+    ) -> dict[str, Any]:
+        """Record the explicit editorial disposition of an evidence request."""
+
+        return _call(
+            resolve_subtitle_evidence,
+            runtime,
+            ResolveSubtitleEvidenceInput(
+                session_id=session_id,
+                evidence_id=evidence_id,
+                action=action,
+                candidate_id=candidate_id,
+                text=text,
+                note=note,
+                idempotency_key=idempotency_key,
+            ),
         )
 
     @server.tool(

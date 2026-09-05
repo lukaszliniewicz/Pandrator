@@ -931,6 +931,69 @@ def build_openapi_document() -> dict:
                     },
                 }
             },
+            "/api/v1/sessions/{sessionId}/subtitle-evidence": {
+                "get": {
+                    "operationId": "listSubtitleEvidence",
+                    "parameters": [
+                        {
+                            "name": "source_artifact_id",
+                            "in": "query",
+                            "required": False,
+                            "schema": {"type": "string"},
+                        }
+                    ],
+                    "responses": {
+                        "200": {"description": "Bounded subtitle evidence requests"}
+                    },
+                },
+                "post": {
+                    "operationId": "requestSubtitleEvidence",
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/SubtitleEvidenceCreateRequest"
+                                }
+                            }
+                        },
+                    },
+                    "responses": {
+                        "202": {"description": "Subtitle evidence request queued"},
+                        "422": {"description": "Invalid cue, route, or audio model"},
+                    },
+                },
+            },
+            "/api/v1/subtitle-evidence/{evidenceId}": {
+                "get": {
+                    "operationId": "getSubtitleEvidence",
+                    "responses": {
+                        "200": {
+                            "description": "Subtitle evidence candidates and provenance"
+                        },
+                        "404": {"description": "Evidence request not found"},
+                    },
+                }
+            },
+            "/api/v1/sessions/{sessionId}/subtitle-evidence/{evidenceId}/resolve": {
+                "post": {
+                    "operationId": "resolveSubtitleEvidence",
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/SubtitleEvidenceResolveRequest"
+                                }
+                            }
+                        },
+                    },
+                    "responses": {
+                        "200": {"description": "Subtitle evidence resolution stored"},
+                        "409": {"description": "Evidence state conflict"},
+                    },
+                }
+            },
             "/api/v1/sessions/{sessionId}/pdf/apply": {
                 "post": {
                     "operationId": "applyPdfEdits",
@@ -2401,6 +2464,11 @@ def build_openapi_document() -> dict:
     # need one and every client benefits from safe retry semantics.
     for path, method in (
         ("/api/v1/sessions/{sessionId}/subtitles/{stage}/review", "post"),
+        ("/api/v1/sessions/{sessionId}/subtitle-evidence", "post"),
+        (
+            "/api/v1/sessions/{sessionId}/subtitle-evidence/{evidenceId}/resolve",
+            "post",
+        ),
         ("/api/v1/generation-segments/{segmentId}", "patch"),
         ("/api/v1/generation-segments/{segmentId}/takes/{takeId}/select", "post"),
         ("/api/v1/sessions/{sessionId}/generation-runs", "post"),
@@ -2434,6 +2502,22 @@ def build_openapi_document() -> dict:
         ("/api/v1/dispatch-batches/{batchId}/renew", "post", "app.run"),
         ("/api/v1/dispatch-batches/{batchId}/release", "post", "app.run"),
         ("/api/v1/dispatch-batches/{batchId}/submit", "post", "app.run"),
+        (
+            "/api/v1/sessions/{sessionId}/subtitle-evidence",
+            "get",
+            "app.read",
+        ),
+        (
+            "/api/v1/sessions/{sessionId}/subtitle-evidence",
+            "post",
+            "app.run",
+        ),
+        ("/api/v1/subtitle-evidence/{evidenceId}", "get", "app.read"),
+        (
+            "/api/v1/sessions/{sessionId}/subtitle-evidence/{evidenceId}/resolve",
+            "post",
+            "app.run",
+        ),
         (
             "/api/v1/sessions/{sessionId}/source-cleaning-dispatch-runs",
             "get",

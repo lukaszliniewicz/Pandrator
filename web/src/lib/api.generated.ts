@@ -1846,6 +1846,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{sessionId}/subtitle-evidence": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listSubtitleEvidence"];
+        put?: never;
+        post: operations["requestSubtitleEvidence"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/subtitle-evidence/{evidenceId}/resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["resolveSubtitleEvidence"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{sessionId}/subtitles": {
         parameters: {
             query?: never;
@@ -2176,6 +2208,22 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["claimSpeechOptimizationDispatchBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/subtitle-evidence/{evidenceId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getSubtitleEvidence"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -2922,6 +2970,17 @@ export interface components {
             kind: "correction";
             /** Operations */
             operations?: components["schemas"]["DispatchCorrectionOperation"][];
+            /** Uncertainties */
+            uncertainties?: components["schemas"]["DispatchCorrectionUncertainty"][];
+        };
+        /** DispatchCorrectionUncertainty */
+        DispatchCorrectionUncertainty: {
+            /** Cue Id */
+            cue_id: number;
+            /** Evidence Ids */
+            evidence_ids?: string[];
+            /** Reason */
+            reason: string;
         };
         /** DispatchCue */
         DispatchCue: {
@@ -3093,10 +3152,21 @@ export interface components {
              * @enum {string}
              */
             output_role: "correction" | "translation";
+            /**
+             * Quality Policy
+             * @default null
+             */
+            quality_policy?: {
+                [key: string]: unknown;
+            } | null;
             /** Result Contract */
             result_contract: {
                 [key: string]: unknown;
             };
+            /** Session Id */
+            session_id: string;
+            /** Source Artifact Id */
+            source_artifact_id: string;
             /** Source Language */
             source_language: string;
             /**
@@ -3485,6 +3555,8 @@ export interface components {
              * @default null
              */
             input_cost_per_million?: number | null;
+            /** Input Modalities */
+            input_modalities?: ("text" | "image" | "audio" | "video" | "pdf")[];
             /**
              * Is Active
              * @default false
@@ -3511,6 +3583,8 @@ export interface components {
              * @default null
              */
             output_cost_per_million?: number | null;
+            /** Output Modalities */
+            output_modalities?: ("text" | "image" | "audio")[];
         };
         /** ModelUpdate */
         ModelUpdate: {
@@ -3539,6 +3613,11 @@ export interface components {
              * @default null
              */
             input_cost_per_million?: number | null;
+            /**
+             * Input Modalities
+             * @default null
+             */
+            input_modalities?: ("text" | "image" | "audio" | "video" | "pdf")[] | null;
             /**
              * Is Active
              * @default null
@@ -3571,6 +3650,11 @@ export interface components {
              * @default null
              */
             output_cost_per_million?: number | null;
+            /**
+             * Output Modalities
+             * @default null
+             */
+            output_modalities?: ("text" | "image" | "audio")[] | null;
         };
         /** OptimizationReviewItem */
         OptimizationReviewItem: {
@@ -4646,6 +4730,52 @@ export interface components {
              */
             artifact_id?: string | null;
         };
+        /** SubtitleEvidenceCreateRequest */
+        SubtitleEvidenceCreateRequest: {
+            /** Audio Model Ids */
+            audio_model_ids?: string[];
+            /** Cue Id */
+            cue_id: number;
+            /**
+             * Padding After Ms
+             * @default 2000
+             */
+            padding_after_ms?: number;
+            /**
+             * Padding Before Ms
+             * @default 2000
+             */
+            padding_before_ms?: number;
+            /** Reason */
+            reason: string;
+            /** Routes */
+            routes: ("whisper" | "moss" | "azure_mai_transcribe_2" | "audio_llm")[];
+            /** Source Artifact Id */
+            source_artifact_id: string;
+        };
+        /** SubtitleEvidenceResolveRequest */
+        SubtitleEvidenceResolveRequest: {
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "accepted" | "edited" | "deleted" | "uncertain" | "dismissed";
+            /**
+             * Candidate Id
+             * @default null
+             */
+            candidate_id?: string | null;
+            /**
+             * Note
+             * @default
+             */
+            note?: string;
+            /**
+             * Text
+             * @default null
+             */
+            text?: string | null;
+        };
         /** SubtitleReviewRequest */
         SubtitleReviewRequest: {
             /** Expected Revision */
@@ -4662,6 +4792,19 @@ export interface components {
         SubtitleSegmentInput: {
             /** End Ms */
             end_ms: number;
+            /** Evidence Ids */
+            evidence_ids?: string[];
+            /**
+             * Review Note
+             * @default
+             */
+            review_note?: string;
+            /**
+             * Review State
+             * @default clear
+             * @enum {string}
+             */
+            review_state?: "clear" | "uncertain";
             /**
              * Speaker
              * @default null
@@ -8088,6 +8231,97 @@ export interface operations {
             };
         };
     };
+    listSubtitleEvidence: {
+        parameters: {
+            query?: {
+                source_artifact_id?: string;
+            };
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Bounded subtitle evidence requests */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    requestSubtitleEvidence: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SubtitleEvidenceCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Subtitle evidence request queued */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid cue, route, or audio model */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    resolveSubtitleEvidence: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                sessionId: string;
+                evidenceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SubtitleEvidenceResolveRequest"];
+            };
+        };
+        responses: {
+            /** @description Subtitle evidence resolution stored */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Evidence state conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     getSubtitleComparison: {
         parameters: {
             query?: never;
@@ -8677,6 +8911,33 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["SpeechOptimizationDispatchBatchClaimResponse"];
                 };
+            };
+        };
+    };
+    getSubtitleEvidence: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                evidenceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Subtitle evidence candidates and provenance */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Evidence request not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

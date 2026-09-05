@@ -656,6 +656,55 @@ class CrispASRTranscriptionTests(unittest.TestCase):
             self.assertEqual(len(calls), 1)
             self.assertEqual(Path(cloud.call_args.args[0]).suffix, ".wav")
 
+    def test_transcribe_source_reuses_a_pre_normalized_evidence_clip(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "evidence.wav"
+            source.write_bytes(b"normalized-wav")
+            words_path = Path(temp_dir) / "evidence_words.json"
+            words_path.write_text(
+                json.dumps(
+                    {
+                        "schema": "pandrator.transcript.v1",
+                        "source_format": "azure-speech-fast-transcription",
+                        "segments": [
+                            {
+                                "id": "azure-1",
+                                "start_ms": 0,
+                                "end_ms": 900,
+                                "text": "Hello friend.",
+                                "words": [
+                                    {"text": "Hello", "start_ms": 0, "end_ms": 400},
+                                    {"text": "friend.", "start_ms": 450, "end_ms": 900},
+                                ],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            result_stub = crispasr.CrispASRTranscriptionResult(
+                srt_path=str(Path(temp_dir) / "evidence.srt"),
+                word_timestamps_path=str(words_path),
+                engine="azure_mai_transcribe_2",
+                compute_backend="remote",
+            )
+            run = Mock(side_effect=AssertionError("FFmpeg must not normalize twice"))
+            with patch.object(
+                transcription.cloud_stt, "transcribe", return_value=result_stub
+            ) as cloud:
+                result = transcription.transcribe_source_file_with_metadata(
+                    temp_dir,
+                    source,
+                    {"stt_engine": "azure_mai_transcribe_2"},
+                    run_func=run,
+                    source_is_normalized=True,
+                )
+
+            run.assert_not_called()
+            cloud.assert_called_once()
+            self.assertEqual(cloud.call_args.args[0], str(source))
+            self.assertEqual(result.engine, "azure_mai_transcribe_2")
+
     def test_missing_full_json_is_a_hard_failure(self):
         def fake_run(command, **_kwargs):
             output_base = Path(command[command.index("-of") + 1])

@@ -70,6 +70,11 @@ from .speech_optimization_dispatch import (
     renew_speech_optimization_dispatch_batch,
     submit_speech_optimization_dispatch_batch,
 )
+from .subtitle_evidence import (
+    get_subtitle_evidence,
+    request_subtitle_evidence,
+    resolve_subtitle_evidence,
+)
 from .system import capabilities, system_status, target_status
 from .work import cancel_work, get_work, get_work_log, list_work
 from .workflow import (
@@ -100,6 +105,7 @@ __all__ = [
     "execute_workflow_plan",
     "execute_component_plan",
     "get_session",
+    "get_subtitle_evidence",
     "get_dispatch_run",
     "get_source_cleaning_dispatch_run",
     "get_speech_optimization_dispatch_run",
@@ -129,6 +135,8 @@ __all__ = [
     "preview_subtitles",
     "provider_status",
     "recommend_next_steps",
+    "request_subtitle_evidence",
+    "resolve_subtitle_evidence",
     "regenerate_segments",
     "release_dispatch_batch",
     "release_source_cleaning_dispatch_batch",

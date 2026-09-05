@@ -752,6 +752,63 @@ class ApplicationClient:
     def get_dispatch_run(self, run_id: str) -> dict[str, Any]:
         return self._request_json(f"/api/v1/dispatch-runs/{quote(run_id, safe='')}")
 
+    def request_subtitle_evidence(
+        self,
+        session_id: str,
+        *,
+        source_artifact_id: str,
+        cue_id: int,
+        reason: str,
+        routes: list[str],
+        audio_model_ids: list[str],
+        padding_before_ms: int,
+        padding_after_ms: int,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/sessions/{quote(session_id, safe='')}/subtitle-evidence",
+            method="POST",
+            body={
+                "source_artifact_id": source_artifact_id,
+                "cue_id": int(cue_id),
+                "reason": reason,
+                "routes": list(routes),
+                "audio_model_ids": list(audio_model_ids),
+                "padding_before_ms": int(padding_before_ms),
+                "padding_after_ms": int(padding_after_ms),
+            },
+            idempotency_key=idempotency_key,
+        )
+
+    def get_subtitle_evidence(self, evidence_id: str) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/subtitle-evidence/{quote(evidence_id, safe='')}"
+        )
+
+    def resolve_subtitle_evidence(
+        self,
+        session_id: str,
+        evidence_id: str,
+        *,
+        action: str,
+        candidate_id: str | None,
+        text: str | None,
+        note: str,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {"action": action, "note": note}
+        if candidate_id is not None:
+            body["candidate_id"] = candidate_id
+        if text is not None:
+            body["text"] = text
+        return self._request_json(
+            f"/api/v1/sessions/{quote(session_id, safe='')}/subtitle-evidence/"
+            f"{quote(evidence_id, safe='')}/resolve",
+            method="POST",
+            body=body,
+            idempotency_key=idempotency_key,
+        )
+
     def claim_dispatch_batch(
         self,
         run_id: str,

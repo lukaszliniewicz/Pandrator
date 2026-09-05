@@ -144,9 +144,29 @@ class DispatchCorrectionOperationInput(ToolInput):
         return self
 
 
+class DispatchCorrectionUncertaintyInput(ToolInput):
+    cue_id: int = Field(ge=1)
+    reason: str = Field(min_length=1, max_length=4_000)
+    evidence_ids: list[Annotated[str, Field(min_length=1, max_length=120)]] = Field(
+        default_factory=list,
+        max_length=20,
+    )
+
+    @field_validator("evidence_ids")
+    @classmethod
+    def validate_unique_evidence_ids(cls, value: list[str]) -> list[str]:
+        if len(set(value)) != len(value):
+            raise ValueError("evidence_ids must be unique.")
+        return value
+
+
 class DispatchCorrectionResultInput(ToolInput):
     kind: Literal["correction"]
     operations: list[DispatchCorrectionOperationInput] = Field(
+        default_factory=list,
+        max_length=500,
+    )
+    uncertainties: list[DispatchCorrectionUncertaintyInput] = Field(
         default_factory=list,
         max_length=500,
     )

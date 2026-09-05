@@ -10,8 +10,13 @@ from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.credentials import (
     KEYRING_SERVICE_NAME,
+    STT_SERVICE_ENVS,
     ResolvedCredential,
+    database_reference,
+    hydrate_stt_settings,
+    prepare_stt_settings_for_storage,
     provider_credential_key,
+    stt_service_credential_key,
     upsert_credential,
 )
 from pandrator.web.jobs import JobQueue, Worker
@@ -91,6 +96,90 @@ class CredentialStorageTests(unittest.TestCase):
             {"database", "keyring", "environment", "file"},
             {item["id"] for item in items},
         )
+
+    def test_azure_mai_profiles_share_the_legacy_credential_key_and_environment(self):
+        self.assertEqual(
+            STT_SERVICE_ENVS["azure_mai_transcribe_2"], "AZURE_SPEECH_KEY"
+        )
+        self.assertEqual(
+            STT_SERVICE_ENVS["azure_mai_transcribe_1_5"], "AZURE_SPEECH_KEY"
+        )
+        self.assertEqual(
+            stt_service_credential_key("azure_mai_transcribe_2"),
+            stt_service_credential_key("azure_mai_transcribe_1_5"),
+        )
+
+    def test_stt_shared_credential_survives_removing_one_azure_mai_profile(self):
+        key = stt_service_credential_key("azure_mai_transcribe_1_5")
+        reference = database_reference(key)
+        previous = {
+            "provider_configs": [
+                {"id": "azure_mai_transcribe_2", "secret_ref": reference},
+                {"id": "azure_mai_transcribe_1_5", "secret_ref": reference},
+            ]
+        }
+        value = {
+            "provider_configs": [
+                {"id": "azure_mai_transcribe_1_5", "secret_ref": reference}
+            ]
+        }
+        with self.database.session() as session:
+            upsert_credential(session, key, "Azure Speech API key", "shared-secret")
+            prepare_stt_settings_for_storage(
+                session,
+                self.database,
+                self.app.extensions["pandrator"]["paths"],
+                value,
+                previous,
+            )
+        with self.database.session() as session:
+            self.assertEqual(
+                session.get(StoredCredential, key).secret_value, "shared-secret"
+            )
+
+    def test_stt_shared_credential_is_removed_when_both_azure_profiles_clear_it(self):
+        key = stt_service_credential_key("azure_mai_transcribe_1_5")
+        reference = database_reference(key)
+        previous = {
+            "provider_configs": [
+                {"id": "azure_mai_transcribe_2", "secret_ref": reference},
+                {"id": "azure_mai_transcribe_1_5", "secret_ref": reference},
+            ]
+        }
+        value = {
+            "provider_configs": [
+                {"id": "azure_mai_transcribe_2", "clear_api_key": True},
+                {"id": "azure_mai_transcribe_1_5", "clear_api_key": True},
+            ]
+        }
+        with self.database.session() as session:
+            upsert_credential(session, key, "Azure Speech API key", "shared-secret")
+            prepare_stt_settings_for_storage(
+                session,
+                self.database,
+                self.app.extensions["pandrator"]["paths"],
+                value,
+                previous,
+            )
+        with self.database.session() as session:
+            self.assertIsNone(session.get(StoredCredential, key))
+
+    def test_mai_2_hydration_reuses_legacy_credential_without_a_copied_reference(self):
+        key = stt_service_credential_key("azure_mai_transcribe_1_5")
+        with self.database.session() as session:
+            upsert_credential(session, key, "Azure Speech API key", "shared-secret")
+        hydrated = hydrate_stt_settings(
+            self.database,
+            self.app.extensions["pandrator"]["paths"],
+            {
+                "stt_engine": "azure_mai_transcribe_2",
+                "provider_configs": [{"id": "azure_mai_transcribe_2"}],
+            },
+        )
+        self.assertEqual(
+            hydrated["provider_configs"][0]["api_key"], "shared-secret"
+        )
+        self.assertEqual(hydrated["provider_configs"][0]["api_key_env"], "")
 
     def test_environment_move_is_verified_before_reference_and_old_value_change(self):
         old_secret = "database-only-secret"

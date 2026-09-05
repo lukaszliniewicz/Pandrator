@@ -1,4 +1,5 @@
 import {
+  apiJson,
   apiJsonUpload,
   typedApiJson,
   type ApiSchema,
@@ -37,6 +38,8 @@ import type {
   StageSettingsMismatch,
   SubtitleReviewPayload,
   SubtitleReviewCatalog,
+  SubtitleEvidenceRecord,
+  SubtitleEvidenceRoute,
   TtsCatalogue,
   TtsDiscovery,
   XttsModelCatalogue,
@@ -46,6 +49,20 @@ import type {
   WaveformData,
   WorkflowSnapshot
 } from './api-models';
+
+type SubtitleEvidenceProjection = {
+  record: SubtitleEvidenceRecord;
+  job?: JobRecord | null;
+};
+
+function flattenSubtitleEvidence(
+  projection: SubtitleEvidenceProjection
+): SubtitleEvidenceRecord {
+  return {
+    ...projection.record,
+    job_status: projection.job?.status ?? projection.record.job_status
+  };
+}
 
 export const appApi = {
   authStatus: () =>
@@ -534,6 +551,65 @@ export const sessionApi = {
       query
     });
   },
+  subtitleEvidence: (sessionId: string, sourceArtifactId?: string) => {
+    const query = new URLSearchParams();
+    if (sourceArtifactId) query.set('source_artifact_id', sourceArtifactId);
+    const suffix = query.size ? `?${query.toString()}` : '';
+    return apiJson<{
+      session_id: string;
+      items: SubtitleEvidenceProjection[];
+    }>(
+      `/api/v1/sessions/${encodeURIComponent(sessionId)}/subtitle-evidence${suffix}`
+    ).then((result) => ({
+      session_id: result.session_id,
+      items: result.items.map(flattenSubtitleEvidence)
+    }));
+  },
+  subtitleEvidenceRecord: (evidenceId: string) =>
+    apiJson<SubtitleEvidenceProjection>(
+      `/api/v1/subtitle-evidence/${encodeURIComponent(evidenceId)}`
+    ).then(flattenSubtitleEvidence),
+  requestSubtitleEvidence: (
+    sessionId: string,
+    body: {
+      source_artifact_id: string;
+      cue_id: number;
+      reason: string;
+      routes: SubtitleEvidenceRoute[];
+      audio_model_ids?: string[];
+      padding_before_ms?: number;
+      padding_after_ms?: number;
+    }
+  ) =>
+    apiJson<SubtitleEvidenceProjection>(
+      `/api/v1/sessions/${encodeURIComponent(sessionId)}/subtitle-evidence`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      }
+    ).then((result) => ({
+      evidence: flattenSubtitleEvidence(result),
+      job: result.job ?? undefined
+    })),
+  resolveSubtitleEvidence: (
+    sessionId: string,
+    evidenceId: string,
+    body: {
+      action: 'accepted' | 'edited' | 'deleted' | 'uncertain' | 'dismissed';
+      candidate_id?: string;
+      text?: string;
+      note?: string;
+    }
+  ) =>
+    apiJson<SubtitleEvidenceProjection>(
+      `/api/v1/sessions/${encodeURIComponent(sessionId)}/subtitle-evidence/${encodeURIComponent(evidenceId)}/resolve`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      }
+    ).then(flattenSubtitleEvidence),
   saveSubtitleReview: (
     sessionId: string,
     stage: string,

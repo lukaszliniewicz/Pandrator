@@ -4,6 +4,7 @@
     ChevronLeft,
     ChevronDown,
     ChevronRight,
+    CircleHelp,
     Columns3,
     Filter,
     Merge,
@@ -21,11 +22,14 @@
     SubtitleReviewCatalogItem as CatalogItem,
     SubtitleReviewColumn as ReviewColumn,
     SubtitleReviewPayload as Payload,
+    SubtitleEvidenceCandidate,
+    SubtitleEvidenceRecord,
     SubtitleSegment as Segment
   } from './api-models';
   import { onDestroy, onMount, tick } from 'svelte';
   import GuidedTour from './GuidedTour.svelte';
   import AudioPlayer from './AudioPlayer.svelte';
+  import SubtitleEvidencePanel from './SubtitleEvidencePanel.svelte';
   import TextDiff from './TextDiff.svelte';
   import SearchReplaceBar from './SearchReplaceBar.svelte';
   import type { TextReplacement, TextSearchMatch } from './search-replace';
@@ -52,6 +56,7 @@
   let error = $state('');
   let loading = $state(true);
   let changedOnly = $state(false);
+  let needsReviewOnly = $state(false);
   let diffView = $state(false);
   let reviewPrimaryArtifactId = $state('');
   let editArtifactId = $state('');
@@ -65,6 +70,9 @@
   let maximized = $state(false);
   let pageIndex = $state(0);
   let rowsViewport = $state<HTMLDivElement>();
+  let evidenceRecords = $state<SubtitleEvidenceRecord[]>([]);
+  let evidenceArtifactId = $state('');
+  let evidencePanelSegmentId = $state('');
   const tourSteps = [
     {
       section: 'Review',
@@ -102,7 +110,14 @@
     'tts_optimization'
   ] as const;
   const visibleRows = $derived(
-    (payload?.rows ?? []).filter((row) => !changedOnly || row.changed)
+    (payload?.rows ?? []).filter(
+      (row) =>
+        (!changedOnly || row.changed) &&
+        (!needsReviewOnly || rowNeedsReview(row))
+    )
+  );
+  const needsReviewCount = $derived(
+    (payload?.rows ?? []).filter((row) => rowNeedsReview(row)).length
   );
   const editableTexts = $derived(
     editColumn?.segments.map((segment) => segment.text) ?? []
@@ -128,6 +143,95 @@
   function toggleChangedOnly() {
     changedOnly = !changedOnly;
     pageIndex = 0;
+  }
+
+  function toggleNeedsReviewOnly() {
+    needsReviewOnly = !needsReviewOnly;
+    pageIndex = 0;
+  }
+
+  function evidenceId(record: SubtitleEvidenceRecord) {
+    return record.evidence_id || record.id;
+  }
+
+  function evidenceFor(segment: Segment) {
+    return evidenceRecords.filter(
+      (record) =>
+        record.source_artifact_id === editArtifactId &&
+        record.cue_id === segment.ordinal + 1
+    );
+  }
+
+  function segmentNeedsReview(segment: Segment) {
+    if (segment.review_state === 'uncertain') return true;
+    const latest = evidenceFor(segment)
+      .slice()
+      .sort((left, right) =>
+        right.created_at.localeCompare(left.created_at)
+      )[0];
+    return Boolean(
+      latest &&
+      ['queued', 'running', 'completed', 'failed', 'uncertain'].includes(
+        latest.status
+      )
+    );
+  }
+
+  function rowNeedsReview(row: Row) {
+    return (row.cells[editArtifactId] ?? []).some((segment) =>
+      segmentNeedsReview(canonicalSegment(segment))
+    );
+  }
+
+  async function loadEvidence(artifactId: string) {
+    evidenceArtifactId = artifactId;
+    try {
+      const result = await sessionApi.subtitleEvidence(sessionId, artifactId);
+      if (evidenceArtifactId === artifactId) evidenceRecords = result.items;
+    } catch (caught) {
+      if (evidenceArtifactId === artifactId) error = errorMessage(caught);
+    }
+  }
+
+  function updateEvidence(record: SubtitleEvidenceRecord) {
+    const id = evidenceId(record);
+    const index = evidenceRecords.findIndex(
+      (candidate) => evidenceId(candidate) === id
+    );
+    if (index >= 0) evidenceRecords[index] = record;
+    else evidenceRecords = [record, ...evidenceRecords];
+  }
+
+  function useEvidenceCandidate(
+    segment: Segment,
+    candidate: SubtitleEvidenceCandidate,
+    requestId: string
+  ) {
+    if (candidate.text?.trim()) segment.text = candidate.text.trim();
+    segment.review_state = 'clear';
+    segment.review_note = '';
+    segment.evidence_ids = Array.from(
+      new Set([...(segment.evidence_ids ?? []), requestId])
+    );
+    evidencePanelSegmentId = '';
+  }
+
+  function markSegmentUncertain(
+    segment: Segment,
+    note: string,
+    requestId?: string
+  ) {
+    segment.review_state = 'uncertain';
+    segment.review_note = note;
+    if (requestId)
+      segment.evidence_ids = Array.from(
+        new Set([...(segment.evidence_ids ?? []), requestId])
+      );
+  }
+
+  function clearSegmentUncertainty(segment: Segment) {
+    segment.review_state = 'clear';
+    segment.review_note = '';
   }
 
   function catalogRecord(artifactId: string) {
@@ -328,7 +432,21 @@
         ...segment,
         id: undefined,
         end_ms: next.end_ms,
-        text: `${segment.text} ${next.text}`.trim()
+        text: `${segment.text} ${next.text}`.trim(),
+        review_state:
+          segment.review_state === 'uncertain' ||
+          next.review_state === 'uncertain'
+            ? ('uncertain' as const)
+            : ('clear' as const),
+        review_note: [segment.review_note, next.review_note]
+          .filter(Boolean)
+          .join(' '),
+        evidence_ids: Array.from(
+          new Set([
+            ...(segment.evidence_ids ?? []),
+            ...(next.evidence_ids ?? [])
+          ])
+        )
       };
       records.splice(index, 2, merged);
       replaceInRows(segment, [merged]);
@@ -424,11 +542,22 @@
           source_artifact_id: column.artifact_id,
           expected_revision: column.revision,
           segments: column.segments.map(
-            ({ start_ms, end_ms, text, speaker }) => ({
+            ({
               start_ms,
               end_ms,
               text,
-              speaker
+              speaker,
+              review_state,
+              review_note,
+              evidence_ids
+            }) => ({
+              start_ms,
+              end_ms,
+              text,
+              speaker,
+              review_state: review_state ?? 'clear',
+              review_note: review_note ?? '',
+              evidence_ids: evidence_ids ?? []
             })
           )
         }
@@ -452,6 +581,12 @@
     reviewPrimaryArtifactId = primaryArtifactId;
     editArtifactId = primaryArtifactId;
     void load([primaryArtifactId], true);
+  });
+
+  $effect(() => {
+    const artifactId = editArtifactId;
+    if (artifactId && artifactId !== evidenceArtifactId)
+      void loadEvidence(artifactId);
   });
 </script>
 
@@ -519,7 +654,7 @@
             subtitle revisions.</span
           >
         </span>
-        {#if changedOnly || diffView}<span
+        {#if changedOnly || needsReviewOnly || diffView}<span
             class="rounded-full bg-[var(--accent-soft)] px-2 py-1 text-[.68rem] font-semibold text-[var(--accent)]"
             >Active</span
           >{/if}
@@ -552,6 +687,17 @@
             class:active={changedOnly}
             class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3 py-2 text-sm font-semibold"
             ><Filter size={16} /> Changed only</button
+          >
+          <button
+            onclick={toggleNeedsReviewOnly}
+            aria-pressed={needsReviewOnly}
+            class:active={needsReviewOnly}
+            class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3 py-2 text-sm font-semibold"
+            ><CircleHelp size={16} /> Needs review
+            {#if needsReviewCount}<span
+                class="rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[.65rem] tabular-nums text-amber-700"
+                >{needsReviewCount}</span
+              >{/if}</button
           >
           <button
             onclick={() => (diffView = !diffView)}
@@ -693,8 +839,21 @@
                               ? canonicalSegment(segment)
                               : segment}
                           <div
+                            class:needs-review={column.artifact_id ===
+                              editArtifactId && segmentNeedsReview(item)}
                             class="rounded-xl border border-[var(--line)] bg-[var(--paper)] p-2.5"
                           >
+                            {#if column.artifact_id === editArtifactId && segmentNeedsReview(item)}<div
+                                class="mb-2 flex items-start gap-2 rounded-lg bg-amber-500/10 px-2 py-1.5 text-[.65rem] text-amber-800"
+                              >
+                                <CircleHelp size={13} class="mt-0.5 shrink-0" />
+                                <span class="min-w-0 flex-1">
+                                  <strong>Needs review</strong>
+                                  {#if item.review_note}<span class="ml-1"
+                                      >{item.review_note}</span
+                                    >{/if}
+                                </span>
+                              </div>{/if}
                             {#if speakerLabel(item.speaker)}<div class="mb-2">
                                 <span
                                   class="inline-flex rounded-full bg-[var(--accent-soft)] px-2 py-0.5 text-[.65rem] font-semibold text-[var(--muted)]"
@@ -744,11 +903,45 @@
                                   class="flex items-center gap-1 rounded-lg border border-red-400/40 px-2 py-1 text-xs text-red-500"
                                   ><Trash2 size={13} /> Delete</button
                                 >
+                                <button
+                                  onclick={() =>
+                                    (evidencePanelSegmentId =
+                                      evidencePanelSegmentId === item.id
+                                        ? ''
+                                        : (item.id ?? ''))}
+                                  disabled={!item.id}
+                                  aria-expanded={evidencePanelSegmentId ===
+                                    item.id}
+                                  class:active={evidencePanelSegmentId ===
+                                    item.id}
+                                  class="flex items-center gap-1 rounded-lg border border-[var(--line)] px-2 py-1 text-xs disabled:cursor-not-allowed disabled:opacity-40"
+                                  title={item.id
+                                    ? 'Re-transcribe a bounded clip around this cue'
+                                    : 'Save this new cue before requesting audio evidence'}
+                                  ><CircleHelp size={13} /> Recheck audio</button
+                                >
                               </div>{:else}<p
                                 class="whitespace-pre-wrap leading-relaxed"
                               >
                                 {item.text}
                               </p>{/if}
+                            {#if column.artifact_id === editArtifactId && evidencePanelSegmentId === item.id}<SubtitleEvidencePanel
+                                {sessionId}
+                                sourceArtifactId={editArtifactId}
+                                segment={item}
+                                records={evidenceFor(item)}
+                                onupdated={updateEvidence}
+                                onaccept={(candidate, requestId) =>
+                                  useEvidenceCandidate(
+                                    item,
+                                    candidate,
+                                    requestId
+                                  )}
+                                ondelete={() => removeSegment(item)}
+                                onuncertain={(note, requestId) =>
+                                  markSegmentUncertain(item, note, requestId)}
+                                onclear={() => clearSegmentUncertainty(item)}
+                              />{/if}
                           </div>{/each}
                       </div>{/if}</td
                   >{/each}
@@ -801,6 +994,10 @@
   }
   tr.changed > td {
     background: color-mix(in srgb, var(--accent-soft) 22%, transparent);
+  }
+  .needs-review {
+    border-color: color-mix(in srgb, #f59e0b 48%, var(--line));
+    box-shadow: 0 0 0 1px color-mix(in srgb, #f59e0b 10%, transparent);
   }
   button.active {
     color: var(--accent);

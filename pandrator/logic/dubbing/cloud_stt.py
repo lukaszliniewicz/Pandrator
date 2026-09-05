@@ -1,9 +1,9 @@
 """Synchronous HTTP runtime for the supported cloud STT profile.
 
 Only providers with a documented, real word-timing response belong here.  The
-current implementation intentionally contains Azure Speech
-MAI-Transcribe-1.5; adding another provider requires a separately documented
-wire contract and a parser that never fabricates timing.
+current implementation contains the documented Azure Speech MAI-Transcribe-2
+and MAI-Transcribe-1.5 wire contracts; every profile uses a parser that never
+fabricates timing.
 """
 
 from __future__ import annotations
@@ -30,6 +30,7 @@ from .languages import normalize_language_code
 from .stt_provider_profiles import (
     AZURE_MAI_TRANSCRIBE_1_5_LOCALES,
     STT_ENGINE_AZURE_MAI_TRANSCRIBE_1_5,
+    STT_ENGINE_AZURE_MAI_TRANSCRIBE_2,
     get_stt_provider_profile,
     is_cloud_stt_engine,
 )
@@ -49,6 +50,9 @@ MAX_ALLOWED_CHUNK_SECONDS = AZURE_MAX_AUDIO_SECONDS - 1.0
 _AUTO_LANGUAGE_VALUES = {"", "auto", "automatic", "detect", "und", "unknown"}
 _AZURE_SPEECH_RESOURCE_HOST = re.compile(
     r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.cognitiveservices\.azure\.com"
+)
+_AZURE_SPEECH_REGIONAL_HOST = re.compile(
+    r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.api\.cognitive\.microsoft\.com"
 )
 
 
@@ -472,7 +476,10 @@ def _profile_for(settings: Mapping[str, Any]) -> dict[str, Any]:
                 f"Unsupported cloud STT engine '{engine}'. Select a supported cloud profile."
             )
         raise CloudSTTConfigurationError("A cloud STT engine must be configured.")
-    if profile["id"] != STT_ENGINE_AZURE_MAI_TRANSCRIBE_1_5:
+    if profile["id"] not in {
+        STT_ENGINE_AZURE_MAI_TRANSCRIBE_1_5,
+        STT_ENGINE_AZURE_MAI_TRANSCRIBE_2,
+    }:
         raise CloudSTTConfigurationError(
             f"Cloud STT profile '{profile['id']}' has no documented timed-word runtime."
         )
@@ -494,6 +501,8 @@ def _profile_for(settings: Mapping[str, Any]) -> dict[str, Any]:
         "adapter",
         "path",
         "transcription_path",
+        "model",
+        "models",
         "api_key_env",
         "auth_mode",
         "auth_header_mode",
@@ -506,20 +515,21 @@ def _profile_for(settings: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def normalize_azure_speech_api_base(value: Any) -> str:
-    """Validate and canonicalize a public Azure Speech resource origin."""
+    """Validate and canonicalize a public Azure Speech endpoint origin."""
 
     configured = str(value or "").strip().rstrip("/")
     if not configured or "your-resource-name" in configured.lower():
         raise CloudSTTConfigurationError(
-            "Azure Speech requires a resource endpoint in stt_api_base "
-            "(for example, https://RESOURCE-NAME.cognitiveservices.azure.com)."
+            "Azure Speech requires a resource endpoint or regional endpoint in stt_api_base "
+            "(for example, https://RESOURCE-NAME.cognitiveservices.azure.com or "
+            "https://REGION.api.cognitive.microsoft.com)."
         )
     try:
         parsed = urlsplit(configured)
         port = parsed.port
     except ValueError as error:
         raise CloudSTTConfigurationError(
-            "Azure Speech base URL is not a valid HTTPS resource endpoint."
+            "Azure Speech base URL is not a valid HTTPS endpoint."
         ) from error
     hostname = str(parsed.hostname or "").rstrip(".").lower()
     if (
@@ -530,11 +540,15 @@ def normalize_azure_speech_api_base(value: Any) -> str:
         or parsed.path not in {"", "/"}
         or parsed.query
         or parsed.fragment
-        or _AZURE_SPEECH_RESOURCE_HOST.fullmatch(hostname) is None
+        or (
+            _AZURE_SPEECH_RESOURCE_HOST.fullmatch(hostname) is None
+            and _AZURE_SPEECH_REGIONAL_HOST.fullmatch(hostname) is None
+        )
     ):
         raise CloudSTTConfigurationError(
-            "Azure Speech base URL must be an HTTPS origin of the form "
-            "https://RESOURCE-NAME.cognitiveservices.azure.com."
+            "Azure Speech base URL must be an HTTPS origin of one of these forms: "
+            "https://RESOURCE-NAME.cognitiveservices.azure.com or "
+            "https://REGION.api.cognitive.microsoft.com."
         )
     return f"https://{hostname}"
 
@@ -583,22 +597,37 @@ def _api_key(settings: Mapping[str, Any], profile: Mapping[str, Any]) -> str:
     return value
 
 
-def _language_locale(language: Any) -> str | None:
+def _language_locale(
+    language: Any, *, profile: Mapping[str, Any] | None = None
+) -> str | None:
     raw = str(language or "").strip()
     if raw.casefold() in _AUTO_LANGUAGE_VALUES:
         return None
     lowered = raw.replace("_", "-").casefold()
-    for locale in AZURE_MAI_TRANSCRIBE_1_5_LOCALES:
+    raw_locales = (profile or {}).get("supported_locales")
+    if not isinstance(raw_locales, (list, tuple)):
+        raw_locales = AZURE_MAI_TRANSCRIBE_1_5_LOCALES
+    locales = tuple(str(locale) for locale in raw_locales)
+    for locale in locales:
         if lowered == locale.casefold():
             return locale
     language_code = normalize_language_code(raw, default="").casefold()
     if language_code in _AUTO_LANGUAGE_VALUES:
         return None
-    for locale in AZURE_MAI_TRANSCRIBE_1_5_LOCALES:
+    for locale in locales:
         if locale.casefold().split("-", 1)[0] == language_code:
             return locale
+    model = str((profile or {}).get("model") or "mai-transcribe-1.5").strip()
+    if (
+        str((profile or {}).get("id") or "")
+        .strip()
+        .lower()
+        .replace("-", "_")
+        == STT_ENGINE_AZURE_MAI_TRANSCRIBE_1_5
+    ):
+        model = "MAI-Transcribe-1.5"
     raise CloudSTTConfigurationError(
-        f"Azure Speech MAI-Transcribe-1.5 does not support the configured language '{raw}'."
+        f"Azure Speech {model} does not support the configured language '{raw}'."
     )
 
 
@@ -612,37 +641,84 @@ def _split_hotwords(value: Any) -> list[str]:
     return values
 
 
-def build_azure_definition(settings: Mapping[str, Any]) -> dict[str, Any]:
+def build_azure_definition(
+    settings: Mapping[str, Any],
+    profile: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     """Build the Azure multipart ``definition`` object from Pandrator settings."""
 
+    if profile is None:
+        selected_engine = str(
+            _setting(
+                settings,
+                "stt_engine",
+                "stt_backend",
+                "service",
+                default=STT_ENGINE_AZURE_MAI_TRANSCRIBE_1_5,
+            )
+            or STT_ENGINE_AZURE_MAI_TRANSCRIBE_1_5
+        )
+        profile = _profile_for({**dict(settings), "stt_engine": selected_engine})
+    profile_id = str(profile.get("id") or "").strip().lower().replace("-", "_")
+    is_mai_2 = profile_id == STT_ENGINE_AZURE_MAI_TRANSCRIBE_2
+    model = str(
+        profile.get("model")
+        or ("MAI-Transcribe-2" if is_mai_2 else "mai-transcribe-1.5")
+    )
     definition: dict[str, Any] = {
         "enhancedMode": {
             "enabled": True,
-            "model": "mai-transcribe-1.5",
+            "model": model,
         }
     }
     locale = _language_locale(
-        _setting(settings, "stt_language", "whisper_language", default="auto")
+        _setting(settings, "stt_language", "whisper_language", default="auto"),
+        profile=profile,
     )
     if locale is not None:
         definition["locales"] = [locale]
     hotwords = _split_hotwords(_setting(settings, "stt_hotwords", default=""))
     if hotwords:
         definition["phraseList"] = {"phrases": hotwords}
+    if is_mai_2:
+        definition["enhancedMode"]["modelOptions"] = {
+            "timestamps": "word",
+        }
+    profile_settings = profile.get("settings")
+    if not isinstance(profile_settings, Mapping):
+        profile_settings = {}
     style = (
         str(
-            _setting(settings, "stt_transcribe_style", default=DEFAULT_AZURE_STYLE)
+            _setting(
+                settings,
+                "stt_transcribe_style",
+                default=(
+                    "clean"
+                    if is_mai_2
+                    else profile_settings.get("stt_transcribe_style", DEFAULT_AZURE_STYLE)
+                ),
+            )
             or ""
         )
         .strip()
         .lower()
     )
-    if style == "verbatim":
-        definition["enhancedMode"]["transcribeStyle"] = "verbatim"
-    elif style not in {"", "readability"}:
-        raise CloudSTTConfigurationError(
-            "stt_transcribe_style must be 'readability' or 'verbatim'."
-        )
+    if is_mai_2:
+        if style in {"", "readability", "clean"}:
+            definition["enhancedMode"]["modelOptions"]["transcribeStyle"] = "clean"
+        elif style == "verbatim":
+            definition["enhancedMode"]["modelOptions"]["transcribeStyle"] = "verbatim"
+        else:
+            raise CloudSTTConfigurationError(
+                "stt_transcribe_style must be 'readability', 'clean', or 'verbatim' for Azure Speech MAI-Transcribe-2."
+            )
+    else:
+        if style == "verbatim":
+            definition["enhancedMode"]["transcribeStyle"] = "verbatim"
+        elif style not in {"", "readability"}:
+            raise CloudSTTConfigurationError(
+                "stt_transcribe_style must be 'readability' or 'verbatim'."
+            )
     diarization = bool(
         _setting(
             settings,
@@ -653,6 +729,10 @@ def build_azure_definition(settings: Mapping[str, Any]) -> dict[str, Any]:
         )
     )
     if diarization:
+        if is_mai_2:
+            raise CloudSTTConfigurationError(
+                "Azure Speech MAI-Transcribe-2 diarization is unavailable because the current Pandrator adapter has not implemented the documented diarization request contract yet."
+            )
         raise CloudSTTConfigurationError(
             "Azure Speech MAI-Transcribe-1.5 cloud transcription does not support diarization."
         )
@@ -743,7 +823,34 @@ def _azure_word(
     )
 
 
-def parse_azure_response(payload: Mapping[str, Any]) -> NormalizedTranscript:
+def _transcript_profile(
+    profile: Mapping[str, Any] | str | None,
+    *,
+    engine: str | None = None,
+) -> Mapping[str, Any]:
+    selected = engine if engine is not None else profile
+    if isinstance(selected, Mapping):
+        return selected
+    if selected is not None:
+        normalized = (
+            str(selected).strip().lower().replace("-", "_").replace(" ", "_")
+        )
+        resolved = get_stt_provider_profile(normalized)
+        if resolved is not None:
+            return resolved
+    return get_stt_provider_profile(STT_ENGINE_AZURE_MAI_TRANSCRIBE_1_5) or {
+        "id": STT_ENGINE_AZURE_MAI_TRANSCRIBE_1_5,
+        "model": "mai-transcribe-1.5",
+        "adapter": "azure_speech_fast_transcription",
+    }
+
+
+def parse_azure_response(
+    payload: Mapping[str, Any],
+    profile: Mapping[str, Any] | str | None = None,
+    *,
+    engine: str | None = None,
+) -> NormalizedTranscript:
     """Convert Azure ``phrases`` output to the canonical transcript model."""
 
     if not isinstance(payload, Mapping):
@@ -828,6 +935,13 @@ def parse_azure_response(payload: Mapping[str, Any]) -> NormalizedTranscript:
         )
     if not segments or not any(segment.words for segment in segments):
         raise CloudSTTResponseError("Azure Speech returned no real timed words.")
+    selected_profile = _transcript_profile(profile, engine=engine)
+    selected_engine = str(
+        selected_profile.get("id") or STT_ENGINE_AZURE_MAI_TRANSCRIBE_1_5
+    )
+    selected_model = str(
+        selected_profile.get("model") or "mai-transcribe-1.5"
+    )
     top_metadata = {
         key: deepcopy(value)
         for key, value in payload.items()
@@ -840,9 +954,11 @@ def parse_azure_response(payload: Mapping[str, Any]) -> NormalizedTranscript:
         language=language,
         metadata={
             "provider": "azure",
-            "adapter": "azure_speech_fast_transcription",
-            "engine": STT_ENGINE_AZURE_MAI_TRANSCRIBE_1_5,
-            "model": "mai-transcribe-1.5",
+            "adapter": str(
+                selected_profile.get("adapter") or "azure_speech_fast_transcription"
+            ),
+            "engine": selected_engine,
+            "model": selected_model,
             "remote": True,
             "response": top_metadata,
         },
@@ -926,6 +1042,7 @@ def _submit_azure(
     headers: Mapping[str, str],
     definition: Mapping[str, Any],
     timeout: float,
+    profile: Mapping[str, Any],
     request_func: RequestFunc | None,
     session: Any | None,
 ) -> NormalizedTranscript:
@@ -953,7 +1070,7 @@ def _submit_azure(
         # Injected request functions may use a custom transport exception type;
         # preserve a typed runtime error at this boundary.
         raise CloudSTTRequestError(f"Azure Speech request failed: {error}") from error
-    return parse_azure_response(_response_json(response))
+    return parse_azure_response(_response_json(response), profile)
 
 
 def _rebase_transcript(
@@ -1045,6 +1162,38 @@ def _merge_chunk_transcripts(
     )
 
 
+def _estimated_usage(
+    info: _WavInfo, profile: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Describe estimated audio billing without claiming provider-reported cost."""
+
+    submitted_seconds = info.frame_count / info.sample_rate
+    billable_seconds = (info.frame_count + info.sample_rate - 1) // info.sample_rate
+    pricing = profile.get("pricing")
+    pricing = pricing if isinstance(pricing, Mapping) else {}
+    raw_amount = pricing.get("amount_usd")
+    try:
+        amount = float(raw_amount) if raw_amount is not None else None
+    except (TypeError, ValueError):
+        amount = None
+    if amount is not None and (not math.isfinite(amount) or amount < 0):
+        amount = None
+    estimated_cost = amount * billable_seconds / 3600 if amount is not None else None
+    usage: dict[str, Any] = {
+        "submitted_audio_seconds": submitted_seconds,
+        "billing_increment_seconds": 1,
+        "billable_audio_seconds": billable_seconds,
+        "estimated_cost_usd": estimated_cost,
+        "currency": "USD",
+        "cost_source": "published_list_price_estimate",
+        "usage_reported_by_provider": False,
+    }
+    effective_until = str(pricing.get("price_effective_until") or "").strip()
+    if effective_until:
+        usage["price_effective_until"] = effective_until
+    return usage
+
+
 def transcribe(
     audio_path: str | os.PathLike[str],
     *,
@@ -1075,7 +1224,7 @@ def transcribe(
         ) from error
     info = _wav_info(audio)
     chunks = plan_cloud_stt_chunks(audio, settings)
-    definition = build_azure_definition(settings)
+    definition = build_azure_definition(settings, profile)
     url = urljoin(f"{_api_base(settings, profile)}/", str(profile["path"]).lstrip("/"))
     headers = {"Ocp-Apim-Subscription-Key": _api_key(settings, profile)}
     try:
@@ -1111,11 +1260,13 @@ def transcribe(
                 headers=headers,
                 definition=definition,
                 timeout=timeout,
+                profile=profile,
                 request_func=request_func,
                 session=session,
             )
             parsed_chunks.append(_rebase_transcript(parsed, chunk))
     transcript = _merge_chunk_transcripts(parsed_chunks, chunks, info)
+    transcript.metadata["usage"] = _estimated_usage(info, profile)
 
     words_path = session_path / f"{output_name}_words.json"
     srt_path = session_path / f"{output_name}.srt"

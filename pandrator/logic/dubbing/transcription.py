@@ -84,6 +84,81 @@ def extract_audio(
     return str(audio_path)
 
 
+def extract_audio_excerpt(
+    source_path: str | os.PathLike[str],
+    session_dir: str | os.PathLike[str],
+    output_name: str,
+    start_ms: int,
+    end_ms: int,
+    *,
+    ffmpeg_executable: str = "ffmpeg",
+    run_func: Callable[..., Any] = subprocess.run,
+    cancel_event: threading.Event | None = None,
+) -> str:
+    """Extract one bounded, normalized WAV excerpt without invoking a shell."""
+
+    try:
+        start = int(start_ms)
+        end = int(end_ms)
+    except (TypeError, ValueError) as error:
+        raise ValueError("Excerpt times must be integers in milliseconds.") from error
+    if start < 0 or end <= start:
+        raise ValueError("Excerpt start must be before its end and non-negative.")
+    duration = end - start
+    if duration > 60_000:
+        raise ValueError("Excerpt duration must not exceed 60 seconds.")
+
+    name = str(output_name or "").strip()
+    if not name or Path(name).name != name or name in {".", ".."}:
+        raise ValueError("Excerpt output name must be a simple file name.")
+    output_directory = Path(session_dir)
+    output_directory.mkdir(parents=True, exist_ok=True)
+    output_path = output_directory / (
+        name if name.lower().endswith(".wav") else f"{name}.wav"
+    )
+    def seconds(value: int) -> str:
+        return f"{value / 1000:.3f}".rstrip("0").rstrip(".")
+    command = [
+        ffmpeg_executable,
+        "-i",
+        str(source_path),
+        "-ss",
+        seconds(start),
+        "-t",
+        seconds(duration),
+        "-vn",
+        "-acodec",
+        "pcm_s16le",
+        "-ar",
+        "16000",
+        "-ac",
+        "1",
+        "-af",
+        "aresample,loudnorm",
+        "-y",
+        str(output_path),
+    ]
+    try:
+        if cancel_event is not None and run_func is subprocess.run:
+            result = run_cancellable(
+                command,
+                cancel_event=cancel_event,
+                check=True,
+                capture_output=True,
+            )
+        else:
+            result = run_func(command, check=True, capture_output=True)
+    except subprocess.CalledProcessError as error:
+        raise ExternalToolError(
+            f"FFmpeg failed to extract audio excerpt: {safe_decode(getattr(error, 'stderr', None))}"
+        ) from error
+    except OSError as error:
+        raise ExternalToolError(f"FFmpeg could not be started: {error}") from error
+    if getattr(result, "stderr", None):
+        logger.debug("FFmpeg audio excerpt: %s", safe_decode(result.stderr))
+    return str(output_path)
+
+
 def transcribe_source_file_with_metadata(
     session_dir: str | os.PathLike[str],
     source_file: str | os.PathLike[str],
@@ -96,6 +171,7 @@ def transcribe_source_file_with_metadata(
     cancel_event: threading.Event | None = None,
     cloud_request_func: Callable[..., Any] | None = None,
     cloud_session: Any | None = None,
+    source_is_normalized: bool = False,
     **_legacy_kwargs,
 ) -> CrispASRTranscriptionResult:
     session_path = Path(session_dir)
@@ -104,14 +180,19 @@ def transcribe_source_file_with_metadata(
     source_name = source_path.stem
     if progress_callback is not None:
         progress_callback(0.0, "Normalizing source audio")
-    audio_path = extract_audio(
-        source_path,
-        session_path,
-        source_name,
-        ffmpeg_executable=ffmpeg_executable,
-        run_func=run_func,
-        cancel_event=cancel_event,
-    )
+    if source_is_normalized:
+        if source_path.suffix.lower() != ".wav" or not source_path.is_file():
+            raise ValueError("A pre-normalized transcription source must be a WAV file.")
+        audio_path = str(source_path)
+    else:
+        audio_path = extract_audio(
+            source_path,
+            session_path,
+            source_name,
+            ffmpeg_executable=ffmpeg_executable,
+            run_func=run_func,
+            cancel_event=cancel_event,
+        )
     if progress_callback is not None:
         progress_callback(0.18, "Source audio normalized")
     if is_audio_source(str(source_path)):

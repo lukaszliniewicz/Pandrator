@@ -85,6 +85,7 @@ from .voice_library import (
 
 if TYPE_CHECKING:
     from .manager_proxy import LocalManagerProxy
+    from .subtitle_evidence import SubtitleEvidenceService
     from .tts_providers import TtsProviderRegistry
 
 
@@ -587,6 +588,7 @@ class WorkflowHandlers:
         tts_providers: TtsProviderRegistry | None = None,
         manager_bridge: LocalManagerProxy | None = None,
         jobs: JobQueue | None = None,
+        subtitle_evidence: SubtitleEvidenceService | None = None,
     ):
         self.database = database
         self.paths = paths
@@ -598,11 +600,20 @@ class WorkflowHandlers:
         self.tts_providers = tts_providers
         self.manager_bridge = manager_bridge
         self.jobs = jobs or JobQueue(database)
+        self.subtitle_evidence = subtitle_evidence
         self._audio_cpp_voice_ref_cache: OrderedDict[str, str] = OrderedDict()
         self._audio_cpp_voice_ref_cache_lock = threading.Lock()
         from .job_handler_domains import build_workflow_handler_registry
 
         self.handler_registry = build_workflow_handler_registry(self)
+
+    def run_subtitle_evidence(self, payload, progress, cancel_event):
+        """Delegate the durable subtitle-evidence job to its service."""
+        if self.subtitle_evidence is None:
+            raise RuntimeError("Subtitle evidence service is not configured.")
+        return self.subtitle_evidence.run_request(
+            str(payload.get("evidence_id") or ""), progress, cancel_event
+        )
 
     def _resume_generation_after_regeneration(
         self,

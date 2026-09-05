@@ -48,12 +48,12 @@ Review the array of {subtitle_count} subtitle cues below and return this JSON sh
 {response_shape}
 
 Instructions:
-1. Use your editorial judgment to fix punctuation, capitalization, spelling, and clear transcription errors. Remove isolated filler and accidental repetition when appropriate.
+1. Use your editorial judgment to fix punctuation, capitalization, spelling, and clear transcription errors. Remove isolated filler, accidental repetition, and fragments that carry no meaningful speech when appropriate.
 2. Preserve each speaker's meaning, register, names, and terminology. Do not add speaker labels to replacement text. Preserve the supplied speaker by default, but correct a likely diarization mistake when the discourse clearly supports it. When changing a speaker or merging across different supplied speakers, include one `speakers` entry for every replacement text and use only a supplied speaker ID. Otherwise omit `speakers`.
-3. Return operations only for cues that need a change; return an empty `operations` array when no changes are needed.
+3. Return operations only for cues that need a change; return an empty `operations` array when no changes are needed. Do not silently preserve a cue whose wording is nonsensical in its surrounding sentence merely because no spelling-only correction is obvious.
 4. Available actions:
    - "edit": one `cue_id` and exactly one corrected text.
-   - "delete": one or more sequential `cue_id` values that contain no meaningful speech, with an empty `texts` array.
+   - "delete": one or more sequential `cue_id` values that contain no meaningful speech, with an empty `texts` array. Deletion is an ordinary editorial action when the audio contains no recoverable contribution; it is not a last resort.
    - "merge": two or more sequential `cue_id` values whose boundary breaks one thought, with one or more corrected replacement texts.
    - "split": one `cue_id` and two or more replacement texts, only when semantic correction genuinely requires separate cues.
 5. Cue timing, reading speed, visual wrapping, and line layout are handled by Pandrator after editing. Do not insert line breaks or split/merge merely to change visual layout.
@@ -482,7 +482,9 @@ def build_correction_task_instructions(
         response_shape=(
             '{"kind":"correction","operations":['
             '{"action":"edit|delete|merge|split","cue_ids":[1],'
-            '"texts":["corrected text"],"speakers":["SPEAKER_00"]}]}'
+            '"texts":["corrected text"],"speakers":["SPEAKER_00"]}],'
+            '"uncertainties":[{"cue_id":1,"reason":"why the audio remains ambiguous",'
+            '"evidence_ids":["evidence-request-id"]}]}'
             if dispatch_result
             else '{"operations":[{"action":"edit|delete|merge|split",'
             '"cue_ids":[1],"texts":["corrected text"],'
@@ -545,6 +547,24 @@ def build_correction_task_instructions(
             "- A cue has a `timing` object only when it overlaps the preceding "
             "cue. Treat that overlap as non-spoken evidence of simultaneous "
             "speech or a possible duplicated ASR seam."
+        )
+    if dispatch_result:
+        base_prompt += (
+            "\n\nQuality escalation policy:\n"
+            "- Read each cue as part of the surrounding utterance. A locally plausible token "
+            "that makes the sentence incoherent is a transcription warning, not a reason to "
+            "pass the cue through unchanged.\n"
+            "- When `task.quality_policy.evidence_tool` is available, request a bounded audio "
+            "recheck for an unresolved suspicious cue before submitting this batch. Prefer "
+            "independent witnesses and compare their text in context; do not treat any model "
+            "as automatically authoritative. Agreement among ASR witnesses does not resolve "
+            "a result that remains semantically incoherent; escalate to an audio-native "
+            "witness or mark the cue uncertain.\n"
+            "- If the recheck resolves the wording, submit the corresponding edit or deletion. "
+            "If evidence remains conflicting or unavailable, preserve the safest text and add "
+            "exactly one `uncertainties` entry for that cue with a concrete reason and any "
+            "evidence request IDs. Do not use uncertainty as a substitute for making ordinary "
+            "editorial decisions."
         )
     return base_prompt
 

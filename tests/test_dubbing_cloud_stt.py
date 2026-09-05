@@ -40,6 +40,27 @@ def _timed_payload(start_ms: int = 100) -> dict:
 
 
 class CloudSTTTests(unittest.TestCase):
+    def test_azure_endpoint_accepts_regional_origin_and_canonicalizes(self):
+        self.assertEqual(
+            cloud_stt.normalize_azure_speech_api_base(
+                " HTTPS://EastUS.api.Cognitive.Microsoft.COM/ "
+            ),
+            "https://eastus.api.cognitive.microsoft.com",
+        )
+
+    def test_azure_endpoint_rejects_deceptive_regional_lookalikes(self):
+        invalid_endpoints = (
+            "https://nested.westus.api.cognitive.microsoft.com",
+            "https://westus.api.cognitive.microsoft.com.evil.example",
+            "https://westus.api.cognitiveservices.microsoft.com",
+            "https://api.cognitive.microsoft.com",
+        )
+        for endpoint in invalid_endpoints:
+            with self.subTest(endpoint=endpoint), self.assertRaises(
+                cloud_stt.CloudSTTConfigurationError
+            ):
+                cloud_stt.normalize_azure_speech_api_base(endpoint)
+
     def test_endpoint_and_environment_overrides_cannot_redirect_a_process_secret(self):
         with self.assertRaisesRegex(
             cloud_stt.CloudSTTConfigurationError,
@@ -116,13 +137,27 @@ class CloudSTTTests(unittest.TestCase):
     def test_azure_profile_is_deep_copied_and_describes_remote_capabilities(self):
         profiles = stt_provider_profiles.list_stt_provider_profiles()
         self.assertEqual(
-            [item["id"] for item in profiles], ["azure_mai_transcribe_1_5"]
+            [item["id"] for item in profiles],
+            ["azure_mai_transcribe_2", "azure_mai_transcribe_1_5"],
         )
-        self.assertEqual(profiles[0]["engine"], "azure_mai_transcribe_1_5")
-        self.assertEqual(profiles[0]["adapter"], "azure_speech_fast_transcription")
-        self.assertEqual(profiles[0]["word_timestamps"], True)
-        self.assertFalse(profiles[0]["diarization"])
-        profiles[0]["supported_locales"].append("mutated")
+        mai_2 = profiles[0]
+        legacy = profiles[1]
+        self.assertEqual(mai_2["name"], "Azure Speech · MAI-Transcribe-2")
+        self.assertEqual(mai_2["model"], "MAI-Transcribe-2")
+        self.assertEqual(mai_2["engine"], "azure_mai_transcribe_2")
+        self.assertEqual(mai_2["adapter"], "azure_speech_fast_transcription")
+        self.assertTrue(mai_2["word_timestamps"])
+        self.assertFalse(mai_2["diarization"])
+        self.assertEqual(mai_2["pricing"]["amount_usd"], 0.10)
+        self.assertEqual(mai_2["pricing"]["unit"], "audio_hour")
+        self.assertTrue(mai_2["pricing"]["estimate_only"])
+        self.assertEqual(mai_2["pricing"]["price_effective_until"], "2026-12-31")
+        self.assertEqual(
+            mai_2["pricing"]["source_url"],
+            "https://techcommunity.microsoft.com/blog/azure-ai-foundry-blog/mai-transcribe-2-highest-quality-transcription-at-the-fastest-speed-and-lowest-c/4550972",
+        )
+        self.assertEqual(mai_2["upload_limit"], legacy["upload_limit"])
+        mai_2["supported_locales"].append("mutated")
         self.assertNotIn(
             "mutated",
             stt_provider_profiles.list_stt_provider_profiles()[0]["supported_locales"],
@@ -154,6 +189,53 @@ class CloudSTTTests(unittest.TestCase):
         )
         self.assertEqual(explicit["locales"], ["pl"])
         self.assertEqual(explicit["enhancedMode"]["transcribeStyle"], "verbatim")
+
+        mai_2 = cloud_stt.build_azure_definition(
+            {
+                "stt_engine": "azure_mai_transcribe_2",
+                "stt_hotwords": "Pascal, IARF",
+                "stt_transcribe_style": "readability",
+            }
+        )
+        self.assertEqual(
+            mai_2["enhancedMode"],
+            {
+                "enabled": True,
+                "model": "MAI-Transcribe-2",
+                "modelOptions": {
+                    "timestamps": "word",
+                    "transcribeStyle": "clean",
+                },
+            },
+        )
+        self.assertEqual(mai_2["phraseList"], {"phrases": ["Pascal", "IARF"]})
+        self.assertEqual(
+            cloud_stt.build_azure_definition(
+                {
+                    "stt_engine": "azure_mai_transcribe_2",
+                    "stt_language": "sw",
+                }
+            )["locales"],
+            ["sw"],
+        )
+        self.assertEqual(
+            cloud_stt.build_azure_definition(
+                {
+                    "stt_engine": "azure_mai_transcribe_2",
+                    "stt_transcribe_style": "verbatim",
+                }
+            )["enhancedMode"]["modelOptions"]["transcribeStyle"],
+            "verbatim",
+        )
+        with self.assertRaisesRegex(
+            cloud_stt.CloudSTTConfigurationError, "readability.*clean.*verbatim"
+        ):
+            cloud_stt.build_azure_definition(
+                {
+                    "stt_engine": "azure_mai_transcribe_2",
+                    "stt_transcribe_style": "unsupported",
+                }
+            )
 
     def test_azure_request_and_response_conversion_write_canonical_files(self):
         payload = {
@@ -275,6 +357,59 @@ class CloudSTTTests(unittest.TestCase):
             cloud_stt.CloudSTTConfigurationError, "does not support diarization"
         ):
             cloud_stt.build_azure_definition({"diarization_enabled": True})
+        with self.assertRaisesRegex(
+            cloud_stt.CloudSTTConfigurationError,
+            "current Pandrator adapter has not implemented the documented diarization request contract yet",
+        ):
+            cloud_stt.build_azure_definition(
+                {
+                    "stt_engine": "azure_mai_transcribe_2",
+                    "diarization_enabled": True,
+                }
+            )
+
+    def test_parser_metadata_uses_selected_mai_2_engine_and_model(self):
+        transcript = cloud_stt.parse_azure_response(
+            _timed_payload(), engine="azure_mai_transcribe_2"
+        )
+        self.assertEqual(transcript.metadata["engine"], "azure_mai_transcribe_2")
+        self.assertEqual(transcript.metadata["model"], "MAI-Transcribe-2")
+
+    def test_mai_2_usage_estimate_uses_exact_pcm_duration_and_published_price(self):
+        request = {}
+
+        def fake_request(url, **kwargs):
+            request.update(url=url, **kwargs)
+            return SimpleNamespace(status_code=200, json=lambda: _timed_payload())
+
+        with tempfile.TemporaryDirectory() as directory:
+            audio = Path(directory) / "source.wav"
+            _write_wav(audio, [0] * 1001)
+            result = cloud_stt.transcribe(
+                audio,
+                session_dir=directory,
+                output_name="source",
+                settings={
+                    "stt_engine": "azure_mai_transcribe_2",
+                    "stt_api_base": "https://example.cognitiveservices.azure.com",
+                    "stt_api_key": "secret",
+                },
+                request_func=fake_request,
+            )
+            canonical = json.loads(
+                Path(result.word_timestamps_path).read_text(encoding="utf-8")
+            )
+
+        usage = canonical["metadata"]["usage"]
+        self.assertEqual(usage["submitted_audio_seconds"], 1.001)
+        self.assertEqual(usage["billing_increment_seconds"], 1)
+        self.assertEqual(usage["billable_audio_seconds"], 2)
+        self.assertAlmostEqual(usage["estimated_cost_usd"], 0.10 * 2 / 3600)
+        self.assertEqual(usage["currency"], "USD")
+        self.assertEqual(usage["cost_source"], "published_list_price_estimate")
+        self.assertFalse(usage["usage_reported_by_provider"])
+        self.assertEqual(usage["price_effective_until"], "2026-12-31")
+        self.assertNotIn("phraseList", json.loads(request["files"]["definition"][1]))
 
     def test_missing_endpoint_and_credential_are_typed_configuration_errors(self):
         with tempfile.TemporaryDirectory() as directory:

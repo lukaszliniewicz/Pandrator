@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic_core import PydanticCustomError
 
 from .dispatch_context import (
     MAX_CONTEXT_CAPSULE_BYTES,
@@ -197,6 +198,26 @@ class ProviderTestRequest(StrictModel):
     model_id: str | None = None
 
 
+ModelInputModality = Literal["text", "image", "audio", "video", "pdf"]
+ModelOutputModality = Literal["text", "image", "audio"]
+
+
+def _normalize_modalities(value: Any) -> Any:
+    if value is None:
+        raise PydanticCustomError(
+            "modalities_list", "Modalities must be provided as a list."
+        )
+    if not isinstance(value, list):
+        return value
+    return [item.strip().lower() if isinstance(item, str) else item for item in value]
+
+
+def _validate_unique_modalities(value: list[str]) -> list[str]:
+    if len(set(value)) != len(value):
+        raise PydanticCustomError("modalities_unique", "Modalities must be unique.")
+    return value
+
+
 class ModelCreate(StrictModel):
     model_id: str
     is_active: bool = False
@@ -208,7 +229,26 @@ class ModelCreate(StrictModel):
     output_cost_per_million: float | None = Field(default=None, ge=0)
     context_window_tokens: int = Field(default=262_144, ge=4096)
     max_output_tokens: int | None = Field(default=None, ge=1)
+    input_modalities: list[ModelInputModality] = Field(
+        default_factory=lambda: ["text"], min_length=1, max_length=5
+    )
+    output_modalities: list[ModelOutputModality] = Field(
+        default_factory=lambda: ["text"], min_length=1, max_length=5
+    )
     options: dict[str, Any] = Field(default_factory=dict)
+
+    _normalize_input_modalities = field_validator("input_modalities", mode="before")(
+        _normalize_modalities
+    )
+    _normalize_output_modalities = field_validator("output_modalities", mode="before")(
+        _normalize_modalities
+    )
+    _unique_input_modalities = field_validator("input_modalities")(
+        _validate_unique_modalities
+    )
+    _unique_output_modalities = field_validator("output_modalities")(
+        _validate_unique_modalities
+    )
 
 
 class ModelUpdate(StrictModel):
@@ -222,7 +262,26 @@ class ModelUpdate(StrictModel):
     output_cost_per_million: float | None = Field(default=None, ge=0)
     context_window_tokens: int | None = Field(default=None, ge=4096)
     max_output_tokens: int | None = Field(default=None, ge=1)
+    input_modalities: list[ModelInputModality] | None = Field(
+        default=None, min_length=1, max_length=5
+    )
+    output_modalities: list[ModelOutputModality] | None = Field(
+        default=None, min_length=1, max_length=5
+    )
     options: dict[str, Any] | None = None
+
+    _normalize_input_modalities = field_validator("input_modalities", mode="before")(
+        _normalize_modalities
+    )
+    _normalize_output_modalities = field_validator("output_modalities", mode="before")(
+        _normalize_modalities
+    )
+    _unique_input_modalities = field_validator("input_modalities")(
+        _validate_unique_modalities
+    )
+    _unique_output_modalities = field_validator("output_modalities")(
+        _validate_unique_modalities
+    )
 
 
 class PdfRectInput(StrictModel):
@@ -256,12 +315,88 @@ class SubtitleSegmentInput(StrictModel):
     end_ms: int = Field(gt=0)
     text: str = Field(min_length=1)
     speaker: str | None = None
+    review_state: Literal["clear", "uncertain"] = "clear"
+    review_note: str = Field(default="", max_length=4000)
+    evidence_ids: list[str] = Field(
+        default_factory=list,
+        min_length=0,
+        max_length=20,
+    )
+
+    @field_validator("evidence_ids")
+    @classmethod
+    def _validate_evidence_ids(cls, value: list[str]) -> list[str]:
+        if any(not 1 <= len(item) <= 120 for item in value):
+            raise ValueError("Evidence IDs must be between 1 and 120 characters.")
+        return value
 
 
 class SubtitleReviewRequest(StrictModel):
     source_artifact_id: str | None = None
     expected_revision: int = Field(ge=0)
     segments: list[SubtitleSegmentInput] = Field(min_length=1)
+
+
+class SubtitleEvidenceCreateRequest(StrictModel):
+    source_artifact_id: str = Field(min_length=1, max_length=80)
+    cue_id: int = Field(ge=1)
+    reason: str = Field(min_length=1, max_length=4000)
+    routes: list[
+        Literal["whisper", "moss", "azure_mai_transcribe_2", "audio_llm"]
+    ] = Field(min_length=1, max_length=4)
+    audio_model_ids: list[str] = Field(default_factory=list, max_length=3)
+    padding_before_ms: int = Field(default=2000, ge=0, le=15000)
+    padding_after_ms: int = Field(default=2000, ge=0, le=15000)
+
+    @field_validator("routes")
+    @classmethod
+    def _validate_routes(cls, value: list[str]) -> list[str]:
+        if len(set(value)) != len(value):
+            raise ValueError("Routes must be unique.")
+        return value
+
+    @field_validator("audio_model_ids")
+    @classmethod
+    def _validate_audio_model_ids(cls, value: list[str]) -> list[str]:
+        normalized = [str(item).strip() for item in value]
+        if any(not 1 <= len(item) <= 80 for item in normalized):
+            raise ValueError("Audio model IDs must be between 1 and 80 characters.")
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("Audio model IDs must be unique.")
+        return normalized
+
+    @model_validator(mode="after")
+    def _validate_audio_route(self) -> SubtitleEvidenceCreateRequest:
+        has_route = "audio_llm" in self.routes
+        if has_route != bool(self.audio_model_ids):
+            raise ValueError(
+                "audio_llm requires one or more audio_model_ids, and audio_model_ids "
+                "require the audio_llm route."
+            )
+        return self
+
+
+class SubtitleEvidenceResolveRequest(StrictModel):
+    action: Literal["accepted", "edited", "deleted", "uncertain", "dismissed"]
+    candidate_id: str | None = Field(default=None, max_length=120)
+    text: str | None = Field(default=None, max_length=16000)
+    note: str = Field(default="", max_length=4000)
+
+    @model_validator(mode="after")
+    def _validate_resolution(self) -> SubtitleEvidenceResolveRequest:
+        candidate_id = str(self.candidate_id or "").strip()
+        text = str(self.text or "")
+        if self.action == "accepted" and not candidate_id:
+            raise ValueError("Accepted evidence requires candidate_id.")
+        if self.action == "edited" and not text.strip():
+            raise ValueError("Edited evidence requires nonblank text.")
+        if self.action == "uncertain" and not self.note.strip():
+            raise ValueError("Uncertain evidence requires a concrete note.")
+        if self.action != "accepted" and candidate_id:
+            raise ValueError("Only accepted evidence may select a candidate.")
+        if self.action != "edited" and self.text is not None:
+            raise ValueError("Only edited evidence may provide text.")
+        return self
 
 
 class VoiceCreate(StrictModel):
@@ -723,9 +858,29 @@ class DispatchCorrectionOperation(StrictModel):
         return self
 
 
+class DispatchCorrectionUncertainty(StrictModel):
+    cue_id: int = Field(ge=1)
+    reason: str = Field(min_length=1, max_length=4_000)
+    evidence_ids: list[str] = Field(default_factory=list, max_length=20)
+
+    @field_validator("evidence_ids")
+    @classmethod
+    def validate_evidence_ids(cls, value: list[str]) -> list[str]:
+        normalized = [str(item).strip() for item in value]
+        if any(not 1 <= len(item) <= 120 for item in normalized):
+            raise ValueError("Evidence IDs must be between 1 and 120 characters.")
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("Evidence IDs must be unique.")
+        return normalized
+
+
 class DispatchCorrectionResult(StrictModel):
     kind: Literal["correction"]
     operations: list[DispatchCorrectionOperation] = Field(
+        default_factory=list,
+        max_length=500,
+    )
+    uncertainties: list[DispatchCorrectionUncertainty] = Field(
         default_factory=list,
         max_length=500,
     )
@@ -817,8 +972,10 @@ class DispatchClaimedBatch(StrictModel):
 
 
 class DispatchTaskContract(StrictModel):
+    session_id: str
     kind: Literal["correction", "translation"]
     output_role: Literal["correction", "translation"]
+    source_artifact_id: str
     source_language: str
     target_language: str | None = None
     instructions: str
@@ -828,6 +985,7 @@ class DispatchTaskContract(StrictModel):
     glossary: dict[str, str]
     timing_context_mode: Literal["full", "overlap_only", "none"]
     substantial_gap_ms: int | None = Field(default=None, ge=0, le=60_000)
+    quality_policy: dict[str, Any] | None = None
 
 
 class DispatchBatchClaimResponse(StrictModel):
@@ -1215,6 +1373,8 @@ SCHEMA_MODELS = {
         PdfEditRequest,
         SubtitleSegmentInput,
         SubtitleReviewRequest,
+        SubtitleEvidenceCreateRequest,
+        SubtitleEvidenceResolveRequest,
         VoiceCreate,
         VoiceUpdate,
         VoiceTranscriptReview,
@@ -1257,6 +1417,7 @@ SCHEMA_MODELS = {
         DispatchBatchRenewRequest,
         DispatchBatchReleaseRequest,
         DispatchCorrectionOperation,
+        DispatchCorrectionUncertainty,
         DispatchCorrectionResult,
         DispatchTranslationItem,
         DispatchTranslationResult,

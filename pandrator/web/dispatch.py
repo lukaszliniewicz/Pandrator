@@ -51,10 +51,13 @@ from .models import (
     DispatchRun,
     Document,
     DocumentRevision,
+    Provider,
+    ProviderModel,
     Segment,
     SegmentLineage,
     SessionRecord,
     SessionStageSelection,
+    SubtitleEvidence,
     utcnow,
 )
 
@@ -111,6 +114,9 @@ def _segment_hash(items: list[dict[str, Any]]) -> str:
                 "end_ms": int(item["end_ms"]),
                 "text": str(item["text"]),
                 "speaker": item.get("speaker") or None,
+                "review_state": item.get("review_state") or "clear",
+                "review_note": item.get("review_note") or "",
+                "evidence_ids": list(item.get("evidence_ids") or []),
             }
             for item in items
         ]
@@ -684,8 +690,33 @@ class DispatchRunService:
             settings.get("glossary"),
         )
 
+    @staticmethod
+    def _audio_witness_models(session: Session) -> list[dict[str, Any]]:
+        rows = session.execute(
+            select(ProviderModel, Provider)
+            .join(Provider, Provider.id == ProviderModel.provider_id)
+            .where(
+                Provider.kind == "llm",
+                Provider.enabled.is_(True),
+            )
+            .order_by(Provider.label, ProviderModel.model_id)
+        ).all()
+        return [
+            {
+                "id": model.id,
+                "model_id": model.model_id,
+                "provider": provider.label,
+                "input_modality_status": "declared",
+                "timing_kind": "bounded_clip",
+            }
+            for model, provider in rows
+            if (model.is_active or model.is_default)
+            and "audio" in (model.input_modalities_json or ["text"])
+        ]
+
     def _claim_response(
         self,
+        session: Session,
         run: DispatchRun,
         batch: DispatchBatch,
         batches: list[DispatchBatch],
@@ -718,6 +749,7 @@ class DispatchRunService:
         )
         block = list(batch.input_json or [])
         if run.kind == "correction":
+            audio_witness_models = self._audio_witness_models(session)
             instructions = build_correction_task_instructions(
                 subtitle_count=len(block),
                 correction_instructions=str(settings.get("instructions") or ""),
@@ -734,6 +766,13 @@ class DispatchRunService:
                     "actions": ["edit", "merge", "split"]
                     + ([] if settings.get("no_remove_subtitles") else ["delete"]),
                     "identity_field": "cue_ids",
+                },
+                "uncertainties": {
+                    "identity_field": "cue_id",
+                    "description": (
+                        "Use only after a bounded audio recheck remains conflicting or "
+                        "unavailable; include a concrete reason and evidence request IDs."
+                    ),
                 },
                 "context_delta": {
                     "placement": "outer",
@@ -841,8 +880,10 @@ class DispatchRunService:
             "run_status": run.status,
             "batch_status": batch.status,
             "task": {
+                "session_id": run.session_id,
                 "kind": run.kind,
                 "output_role": run.output_role,
+                "source_artifact_id": run.source_artifact_id,
                 "source_language": run.source_language,
                 "target_language": run.target_language,
                 "instructions": instructions,
@@ -853,6 +894,29 @@ class DispatchRunService:
                 "timing_context_mode": timing_context_mode,
                 "substantial_gap_ms": (
                     substantial_gap_ms if timing_context_mode == "full" else None
+                ),
+                "quality_policy": (
+                    {
+                        "semantic_coherence_required": True,
+                        "deletion_allowed": not bool(settings.get("no_remove_subtitles")),
+                        "evidence_tool": "pandrator_request_subtitle_evidence",
+                        "evidence_status_tool": "pandrator_get_subtitle_evidence",
+                        "available_routes": [
+                            "whisper",
+                            "moss",
+                            "azure_mai_transcribe_2",
+                        ]
+                        + (["audio_llm"] if audio_witness_models else []),
+                        "audio_witness_models": audio_witness_models,
+                        "audio_witness_policy": (
+                            "Each configured model supplies an untimed bounded-clip "
+                            "transcript. Pass its id in audio_model_ids; do not use it "
+                            "as a timing authority."
+                        ),
+                        "fallback": "mark_uncertain",
+                    }
+                    if run.kind == "correction"
+                    else None
                 ),
             },
             "batch": {
@@ -911,7 +975,7 @@ class DispatchRunService:
                 and _lease_is_active(replayed.lease_expires_at, now)
             )
         ):
-            return self._claim_response(run, replayed, batches)
+            return self._claim_response(session, run, replayed, batches)
         if run.status in {"completed", "failed", "cancelled"}:
             raise DispatchError(
                 "run_not_claimable", "Dispatch run is no longer claimable.", 409
@@ -979,7 +1043,7 @@ class DispatchRunService:
         run.status = "running"
         run.updated_at = now
         session.flush()
-        return self._claim_response(run, next_batch, batches)
+        return self._claim_response(session, run, next_batch, batches)
 
     def renew_in_session(
         self,
@@ -1072,6 +1136,7 @@ class DispatchRunService:
 
     def _normalize_response(
         self,
+        session: Session,
         run: DispatchRun,
         batch: DispatchBatch,
         *,
@@ -1109,6 +1174,15 @@ class DispatchRunService:
                     no_remove_subtitles=bool(settings.get("no_remove_subtitles")),
                     known_speakers=known,
                 )
+                uncertainties = self._normalize_uncertainties(
+                    session,
+                    run,
+                    block,
+                    operations,
+                    list(result.get("uncertainties") or [])
+                    if result is not None
+                    else [],
+                )
             except (TypeError, ValueError) as error:
                 raise DispatchError(
                     "invalid_model_response",
@@ -1138,12 +1212,40 @@ class DispatchRunService:
                         "Subtitle removal is disabled for this run.",
                         422,
                     )
+                matched = []
+                source_id = item.get("index")
+                if source_id is not None and int(source_id) in uncertainties:
+                    matched.append(int(source_id))
+                if not matched:
+                    for cue_id, uncertainty in uncertainties.items():
+                        if min(end_ms, int(uncertainty["end_ms"])) > max(
+                            start_ms, int(uncertainty["start_ms"])
+                        ):
+                            matched.append(cue_id)
+                evidence_ids = list(
+                    dict.fromkeys(
+                        evidence_id
+                        for cue_id in matched
+                        for evidence_id in uncertainties[cue_id]["evidence_ids"]
+                    )
+                )
+                review_notes = [uncertainties[cue_id]["reason"] for cue_id in matched]
                 values.append(
                     {
                         "start_ms": start_ms,
                         "end_ms": end_ms,
                         "text": text,
                         "speaker": str(item.get("speaker") or "").strip() or None,
+                        **(
+                            {
+                                "review_state": "uncertain",
+                                "review_note": " ".join(review_notes),
+                                "evidence_ids": evidence_ids,
+                                "uncertain_source_cue_ids": matched,
+                            }
+                            if matched
+                            else {}
+                        ),
                     }
                 )
             return values, glossary
@@ -1208,6 +1310,97 @@ class DispatchRunService:
                 }
             )
         return values, merge_glossaries(glossary)
+
+    @staticmethod
+    def _normalize_uncertainties(
+        session: Session,
+        run: DispatchRun,
+        block: list[dict[str, Any]],
+        operations: list[dict[str, Any]],
+        raw_uncertainties: list[dict[str, Any]],
+    ) -> dict[int, dict[str, Any]]:
+        if not isinstance(raw_uncertainties, list):
+            raise TypeError("Correction uncertainties must be a list.")
+        valid = {int(item["index"]): item for item in block}
+        deleted_ids = {
+            int(cue_id)
+            for operation in operations
+            if str(operation.get("action") or "").strip().lower() == "delete"
+            for cue_id in operation.get("cue_ids") or operation.get("ids") or []
+        }
+        normalized: dict[int, dict[str, Any]] = {}
+        for position, item in enumerate(raw_uncertainties, start=1):
+            if not isinstance(item, dict):
+                raise TypeError(
+                    f"Correction uncertainty {position} must be an object."
+                )
+            cue_id = item.get("cue_id")
+            if isinstance(cue_id, bool):
+                raise TypeError(
+                    f"Correction uncertainty {position} has an invalid cue ID."
+                )
+            try:
+                cue_id = int(cue_id)
+            except (TypeError, ValueError) as error:
+                raise ValueError(
+                    f"Correction uncertainty {position} has an invalid cue ID."
+                ) from error
+            if cue_id not in valid:
+                raise ValueError(
+                    f"Correction uncertainty {position} references a cue outside this block."
+                )
+            if cue_id in normalized:
+                raise ValueError(f"Correction uncertainty repeats cue ID {cue_id}.")
+            if cue_id in deleted_ids:
+                raise ValueError(
+                    f"Deleted cue {cue_id} cannot also be marked uncertain."
+                )
+            reason = " ".join(str(item.get("reason") or "").split()).strip()
+            if not reason or len(reason) > 4_000:
+                raise ValueError(
+                    f"Correction uncertainty {position} needs a 1-4,000 character reason."
+                )
+            raw_evidence_ids = item.get("evidence_ids") or []
+            if not isinstance(raw_evidence_ids, list) or len(raw_evidence_ids) > 20:
+                raise ValueError(
+                    f"Correction uncertainty {position} has invalid evidence IDs."
+                )
+            evidence_ids = list(
+                dict.fromkeys(
+                    str(value).strip()
+                    for value in raw_evidence_ids
+                    if str(value).strip()
+                )
+            )
+            if any(len(value) > 120 for value in evidence_ids):
+                raise ValueError(
+                    f"Correction uncertainty {position} has an invalid evidence ID."
+                )
+            for evidence_id in evidence_ids:
+                evidence = session.get(SubtitleEvidence, evidence_id)
+                if (
+                    evidence is None
+                    or evidence.session_id != run.session_id
+                    or evidence.source_artifact_id != run.source_artifact_id
+                    or evidence.cue_id != cue_id
+                ):
+                    raise ValueError(
+                        f"Correction uncertainty {position} references evidence "
+                        "from another session, subtitle revision, or cue."
+                    )
+                if evidence.status in {"queued", "running"}:
+                    raise ValueError(
+                        f"Correction uncertainty {position} references evidence "
+                        "that is still running."
+                    )
+            start_ms, end_ms = DispatchRunService._normalize_timing(valid[cue_id])
+            normalized[cue_id] = {
+                "reason": reason,
+                "evidence_ids": evidence_ids,
+                "start_ms": start_ms,
+                "end_ms": end_ms,
+            }
+        return normalized
 
     @staticmethod
     def _submit_payload(run: DispatchRun, batch: DispatchBatch) -> dict[str, Any]:
@@ -1317,6 +1510,7 @@ class DispatchRunService:
                 "response_too_large", "Model response exceeds the 512 KiB limit.", 413
             )
         normalized, glossary = self._normalize_response(
+            session,
             run,
             batch,
             result=result,
@@ -1627,6 +1821,14 @@ class DispatchRunService:
                 end_ms=int(item["end_ms"]),
                 text=str(item["text"]),
                 speaker=str(item.get("speaker") or "").strip() or None,
+                metadata_json={
+                    "review_state": str(item.get("review_state") or "clear"),
+                    "review_note": str(item.get("review_note") or ""),
+                    "evidence_ids": list(item.get("evidence_ids") or []),
+                    "uncertain_source_cue_ids": list(
+                        item.get("uncertain_source_cue_ids") or []
+                    ),
+                },
             )
             session.add(segment)
             output_segments.append(segment)
@@ -1665,6 +1867,11 @@ class DispatchRunService:
                 "stage": run.output_role,
                 "dispatch_kind": run.kind,
                 "language": document.language,
+                "uncertain_segment_count": sum(
+                    1
+                    for item in values
+                    if str(item.get("review_state") or "") == "uncertain"
+                ),
             },
         )
         run.result_artifact_id = artifact.id
