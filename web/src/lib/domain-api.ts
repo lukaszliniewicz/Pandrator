@@ -11,6 +11,7 @@ import type {
   AgentStep,
   ArtifactContext,
   ArtifactRecord,
+  AudioPreviewPreparation,
   AuthStatus,
   DocumentRecord,
   EventSnapshot,
@@ -715,6 +716,15 @@ export const artifactApi = {
       path: { artifactId },
       query: new URLSearchParams({ points: String(points) })
     }),
+  audioPreview: (artifactId: string, signal?: AbortSignal) =>
+    typedApiJson<
+      '/api/v1/artifacts/{artifactId}/audio-preview',
+      'get',
+      AudioPreviewPreparation
+    >('/api/v1/artifacts/{artifactId}/audio-preview', 'get', {
+      path: { artifactId },
+      signal
+    }),
   saveOptimizationReview: (
     artifactId: string,
     items: { index: number; text: string }[]
@@ -731,11 +741,11 @@ export const artifactApi = {
 
 export const jobApi = {
   list: (limit = 100) => appApi.jobs(limit),
-  get: (jobId: string) =>
+  get: (jobId: string, signal?: AbortSignal) =>
     typedApiJson<'/api/v1/jobs/{jobId}', 'get', JobRecord>(
       '/api/v1/jobs/{jobId}',
       'get',
-      { path: { jobId } }
+      { path: { jobId }, signal }
     ),
   cancel: (jobId: string) => sessionApi.cancelJob(jobId),
   logs: (jobId: string, limit = 2000) =>

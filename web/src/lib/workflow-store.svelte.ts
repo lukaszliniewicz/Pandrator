@@ -95,7 +95,7 @@ export class WorkflowStore {
       changed = true;
       return {
         ...stage,
-        ...(update.progress !== undefined
+        ...(update.progress !== undefined && stage.progress_basis !== 'segments'
           ? { progress: Number(update.progress) }
           : {}),
         ...(update.detail !== undefined ? { detail: update.detail } : {}),

@@ -4769,6 +4769,71 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             etag=artifact.content_hash,
         )
 
+    @app.get("/api/v1/artifacts/<artifact_id>/audio-preview")
+    @require_auth
+    def artifact_audio_preview(artifact_id: str):
+        """Return a browser-safe source preview or queue its derivation."""
+        with database.immediate_session() as db_session:
+            source = db_session.get(Artifact, artifact_id)
+            if source is None or source.state == "deleted":
+                return error_response("not_found", "Artifact not found.", 404)
+            source_path = paths.managed_path(source.relative_path)
+            if not source_path.is_file():
+                return error_response(
+                    "artifact_missing", "The artifact file is missing.", 410
+                )
+
+            preview = db_session.scalar(
+                select(Artifact)
+                .join(ArtifactEdge, ArtifactEdge.child_artifact_id == Artifact.id)
+                .where(
+                    ArtifactEdge.parent_artifact_id == source.id,
+                    Artifact.role == "source_audio_preview",
+                    Artifact.state == "current",
+                )
+                .order_by(Artifact.created_at.desc(), Artifact.id.desc())
+            )
+            if preview is not None:
+                preview_path = paths.managed_path(preview.relative_path)
+                if preview_path.is_file():
+                    return jsonify(
+                        {
+                            "status": "ready",
+                            "artifact_id": preview.id,
+                            "content_url": f"/api/v1/artifacts/{preview.id}/content",
+                            "mime_type": preview.mime_type or "audio/mpeg",
+                        }
+                    )
+
+            active_job = None
+            for candidate in db_session.scalars(
+                select(Job)
+                .where(
+                    Job.kind == "audio.preview",
+                    Job.status.in_(("queued", "running")),
+                )
+                .order_by(Job.created_at.asc(), Job.id.asc())
+            ).all():
+                payload = (
+                    candidate.payload_json
+                    if isinstance(candidate.payload_json, dict)
+                    else {}
+                )
+                if str(payload.get("source_artifact_id") or "") == source.id:
+                    active_job = candidate
+                    break
+            if active_job is None:
+                active_job = jobs.enqueue_in_session(
+                    db_session,
+                    "audio.preview",
+                    {"source_artifact_id": source.id},
+                    session_id=None,
+                    resource_keys=[f"artifact:audio-preview:{source.id}"],
+                )
+            return jsonify(
+                {"status": active_job.status, "job_id": active_job.id}
+            ), 202
+
     @app.get("/api/v1/artifacts/<artifact_id>/waveform")
     @require_auth
     def artifact_waveform(artifact_id: str):

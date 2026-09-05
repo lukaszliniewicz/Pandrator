@@ -2270,6 +2270,23 @@ def build_openapi_document() -> dict:
                     status="200",
                 )
             },
+            "/api/v1/artifacts/{artifactId}/audio-preview": {
+                "get": {
+                    **operation(
+                        "getArtifactAudioPreview",
+                        "Browser-safe source audio preview or queued generation",
+                        status="200",
+                    ),
+                    "responses": {
+                        "200": {
+                            "description": "Browser-safe source audio preview",
+                        },
+                        "202": {
+                            "description": "Preview queued or running",
+                        },
+                    },
+                }
+            },
             "/api/v1/artifacts/{artifactId}/context": {
                 "get": operation(
                     "getArtifactContext",
@@ -2615,6 +2632,7 @@ def build_openapi_document() -> dict:
         ("/api/v1/artifacts", "get", "app.read"),
         ("/api/v1/artifacts/{artifactId}/context", "get", "app.read"),
         ("/api/v1/artifacts/{artifactId}/content", "get", "app.read"),
+        ("/api/v1/artifacts/{artifactId}/audio-preview", "get", "app.read"),
         (
             "/api/v1/sessions/{sessionId}/stages/{stageKey}/artifacts/{artifactId}",
             "delete",

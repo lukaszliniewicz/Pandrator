@@ -23,7 +23,7 @@
   let duration = $state(0);
   let volume = $state(1);
   let muted = $state(false);
-  let failed = $state(false);
+  let failed = $state('');
 
   $effect(() => {
     // `element` is a bindable output; assigning it intentionally updates the parent.
@@ -36,13 +36,24 @@
     return `${Math.floor(rounded / 60)}:${String(rounded % 60).padStart(2, '0')}`;
   }
 
+  function playbackError(fallback = 'Audio could not be played.') {
+    const message =
+      {
+        1: 'Audio playback was interrupted.',
+        2: 'The audio could not be loaded.',
+        3: 'The browser could not decode this audio.',
+        4: 'This audio format is not supported by the browser.'
+      }[audio.error?.code ?? 0] ?? fallback;
+    failed = message;
+  }
+
   async function toggle() {
-    failed = false;
+    failed = '';
     if (audio.paused) {
       try {
         await audio.play();
       } catch {
-        failed = true;
+        playbackError();
       }
     } else audio.pause();
   }
@@ -83,7 +94,7 @@
       volume = audio.volume;
       muted = audio.muted;
     }}
-    onerror={() => (failed = true)}
+    onerror={() => playbackError()}
   ></audio>
   <button
     type="button"
@@ -127,11 +138,11 @@
       aria-label="Volume"
     />
   {/if}
-  {#if failed}<button
+  {#if failed}<span class="failure" role="alert">{failed}</span><button
       type="button"
       onclick={() => {
         audio.load();
-        failed = false;
+        failed = '';
       }}
       class="quiet retry"
       title="Reload audio"
@@ -219,5 +230,11 @@
   }
   .retry {
     color: #dc2626;
+  }
+  .failure {
+    max-width: 15rem;
+    color: #dc2626;
+    font-size: 0.65rem;
+    line-height: 1.2;
   }
 </style>

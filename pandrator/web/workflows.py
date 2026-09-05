@@ -23,6 +23,7 @@ from .models import (
     ArtifactEdge,
     GenerationPlan,
     GenerationRun,
+    GenerationSegment,
     Job,
     OutcomePlan,
     SessionRecord,
@@ -553,6 +554,66 @@ class WorkflowService:
                 )
                 .limit(1)
             )
+            # A resumed generation owns the card even when the workflow
+            # wrapper that originally started it has already succeeded.  Pick
+            # a running generation job first; when none is running, retain the
+            # oldest queued one so a newer queued request cannot hide work
+            # that is already waiting for a worker.
+            generation_job_rows = list(
+                session.scalars(
+                    select(Job)
+                    .where(
+                        Job.session_id == session_id,
+                        Job.kind == "generation.run",
+                        Job.status.in_(("running", "queued", "cancel_requested")),
+                    )
+                    .order_by(Job.created_at.asc(), Job.id.asc())
+                ).all()
+            )
+            generation_job_runs: dict[str, GenerationRun] = {}
+            generation_jobs: list[Job] = []
+            for candidate in generation_job_rows:
+                payload = (
+                    candidate.payload_json
+                    if isinstance(candidate.payload_json, dict)
+                    else {}
+                )
+                candidate_run_id = str(payload.get("generation_run_id") or "")
+                candidate_run = (
+                    session.get(GenerationRun, candidate_run_id)
+                    if candidate_run_id
+                    else None
+                )
+                if candidate_run is None or candidate_run.session_id != session_id:
+                    continue
+                generation_jobs.append(candidate)
+                generation_job_runs[candidate.id] = candidate_run
+            running_generation_jobs = [
+                job for job in generation_jobs if job.status == "running"
+            ]
+            queued_generation_jobs = [
+                job for job in generation_jobs if job.status == "queued"
+            ]
+            generation_job = (
+                max(
+                    running_generation_jobs, key=lambda item: (item.created_at, item.id)
+                )
+                if running_generation_jobs
+                else min(
+                    queued_generation_jobs, key=lambda item: (item.created_at, item.id)
+                )
+                if queued_generation_jobs
+                else next(
+                    (
+                        job
+                        for job in generation_jobs
+                        if job.status == "cancel_requested"
+                    ),
+                    None,
+                )
+            )
+            if generation_job is not None:
+                generation_run = generation_job_runs[generation_job.id]
             job_kinds = {
                 definition.job_kind for definition in definitions if definition.job_kind
             }
@@ -561,9 +622,12 @@ class WorkflowService:
                 session,
                 session_id,
                 job_kinds,
-                include_ids={generation_run.job_id}
-                if generation_run is not None and generation_run.job_id
-                else set(),
+                include_ids={job.id for job in generation_jobs}
+                | (
+                    {generation_run.job_id}
+                    if generation_run is not None and generation_run.job_id
+                    else set()
+                ),
             )
             job_by_id = {job.id: job for job in latest_jobs}
             agentic_job_kinds = {
@@ -652,11 +716,58 @@ class WorkflowService:
                     current.id,
                 ):
                     job_by_kind[job.kind] = job
-            if "workflow.continue" in job_by_kind:
+            if "workflow.continue" in job_by_kind and generation_job is None:
                 job_by_kind["dubbing.generate_audio"] = job_by_kind["workflow.continue"]
                 job_by_kind["audiobook.generate_audio"] = job_by_kind[
                     "workflow.continue"
                 ]
+            generation_plan_revision_id = (
+                generation_run.plan_revision_id
+                if generation_job is not None and generation_run is not None
+                else generation_plan.active_revision_id
+                if generation_plan is not None
+                else generation_run.plan_revision_id
+                if generation_run is not None
+                else None
+            )
+            generation_total = 0
+            generation_completed = 0
+            if generation_plan_revision_id:
+                generation_total = int(
+                    session.scalar(
+                        select(func.count())
+                        .select_from(GenerationSegment)
+                        .where(
+                            GenerationSegment.plan_revision_id
+                            == generation_plan_revision_id,
+                            GenerationSegment.removed.is_(False),
+                        )
+                    )
+                    or 0
+                )
+                generation_completed = int(
+                    session.scalar(
+                        select(func.count())
+                        .select_from(GenerationSegment)
+                        .where(
+                            GenerationSegment.plan_revision_id
+                            == generation_plan_revision_id,
+                            GenerationSegment.removed.is_(False),
+                            GenerationSegment.status == "completed",
+                        )
+                    )
+                    or 0
+                )
+            generation_progress = (
+                min(1.0, max(0.0, generation_completed / generation_total))
+                if generation_total
+                else 0.0
+            )
+            generation_progress_detail = (
+                f"Generated {generation_completed} of {generation_total} segments"
+                if generation_total
+                else "Generated 0 of 0 segments"
+            )
             stages = []
             stage_usage_scopes: dict[str, dict[str, str]] = {}
             document_definition = next(
@@ -680,7 +791,11 @@ class WorkflowService:
                     if history is not None
                     else latest_roles.get(effective_definition.output_role or "")
                 )
-                active = job_by_kind.get(effective_definition.job_kind or "")
+                active = (
+                    generation_job
+                    if definition.key == "generate_audio" and generation_job is not None
+                    else job_by_kind.get(effective_definition.job_kind or "")
+                )
                 agent_kind = {
                     "correct": "correction",
                     "translate": "translation",
@@ -1050,20 +1165,30 @@ class WorkflowService:
                         and agent_run is not None
                         and agent_run.status in {"failed", "interrupted"}
                     ),
-                    "progress": active.progress
-                    if active and status in {"running", "failed"}
-                    else None,
+                    "progress": (
+                        generation_progress
+                        if definition.key == "generate_audio"
+                        else active.progress
+                        if active and status in {"running", "failed"}
+                        else None
+                    ),
                     "detail": (
                         active.error_message
                         if active and status == "failed"
                         else (
-                            active.progress_detail
-                            or (
-                                "Waiting for an available worker"
-                                if active.status == "queued"
-                                else None
+                            (
+                                active.progress_detail
+                                or (
+                                    "Waiting for an available worker"
+                                    if active.status == "queued"
+                                    else generation_progress_detail
+                                    if definition.key == "generate_audio"
+                                    else None
+                                )
                             )
                             if active and status == "running"
+                            else generation_progress_detail
+                            if definition.key == "generate_audio"
                             else None
                         )
                     ),
@@ -1071,6 +1196,7 @@ class WorkflowService:
                     "run_metrics": run_metrics,
                 }
                 if definition.key == "generate_audio":
+                    stage["progress_basis"] = "segments"
                     stage["resolved_input"] = resolved_generation_input
                 stages.append(stage)
 

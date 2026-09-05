@@ -630,7 +630,11 @@ class WorkflowHandlers:
                 or not child_run.resume_source_on_completion
             ):
                 return None
-            child_run.resume_source_on_completion = False
+            from .workspace import GenerationService
+
+            GenerationService._clear_regeneration_baton(
+                session, child_run, source_run_id
+            )
             if (
                 source_run is None
                 or source_run.status != "paused"
@@ -643,8 +647,6 @@ class WorkflowHandlers:
             source_run.cancel_requested = False
             source_run.status = "queued"
             source_run.updated_at = utcnow()
-            from .workspace import GenerationService
-
             resource_keys = GenerationService._resource_keys(
                 source_run.session_id,
                 snapshot,
@@ -8002,6 +8004,142 @@ class WorkflowHandlers:
             "source_artifact_id": source.id,
             "point_count": len(waveform.points),
         }
+
+    def generate_audio_preview(self, payload, progress, cancel_event):
+        """Transcode the first source audio stream to a browser-safe MP3."""
+        from .media_process import (
+            MediaProcessCancelled,
+            MediaProcessError,
+            resolve_ffmpeg_executable,
+            run_media_process,
+        )
+
+        try:
+            source, source_path = self._resolve_input(
+                str(payload.get("source_artifact_id") or "")
+            )
+            destination_dir = (
+                self._session_dir(source.session_id)
+                if source.session_id
+                else self.paths.artifacts / "audio-previews"
+            )
+            destination_dir.mkdir(parents=True, exist_ok=True)
+        except (KeyError, OSError, ValueError):
+            raise RuntimeError(
+                "The source audio preview could not be prepared."
+            ) from None
+        destination = destination_dir / f"audio-preview-v1-{source.id}.mp3"
+        temporary_destination = (
+            destination_dir / f".audio-preview-v1-{source.id}-{new_id()}.mp3"
+        )
+        previous_destination = (
+            destination_dir / f".audio-preview-v1-{source.id}-{new_id()}.previous"
+        )
+        settings = {
+            "preview_version": "v1",
+            "codec": "mp3",
+            "bitrate_kbps": 64,
+            "channels": 1,
+            "sample_rate_hz": 48000,
+        }
+        replaced_destination = False
+        previous_destination_staged = False
+        progress(0.05, "Preparing source audio preview")
+        command = [
+            resolve_ffmpeg_executable(),
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-i",
+            str(source_path),
+            "-map",
+            "0:a:0",
+            "-vn",
+            "-sn",
+            "-dn",
+            "-map_metadata",
+            "-1",
+            "-ac",
+            "1",
+            "-ar",
+            "48000",
+            "-c:a",
+            "libmp3lame",
+            "-b:a",
+            "64k",
+            str(temporary_destination),
+        ]
+        try:
+            progress(0.1, "Transcoding source audio preview")
+            try:
+                run_media_process(command, cancel_event=cancel_event)
+            except MediaProcessCancelled:
+                raise
+            except MediaProcessError:
+                raise RuntimeError(
+                    "The source audio preview could not be transcoded."
+                ) from None
+            if cancel_event.is_set():
+                temporary_destination.unlink(missing_ok=True)
+                return {}
+            if destination.is_file():
+                os.replace(destination, previous_destination)
+                previous_destination_staged = True
+            os.replace(temporary_destination, destination)
+            replaced_destination = True
+            if cancel_event.is_set():
+                destination.unlink(missing_ok=True)
+                if previous_destination_staged:
+                    os.replace(previous_destination, destination)
+                    previous_destination_staged = False
+                replaced_destination = False
+                return {}
+            progress(0.9, "Registering source audio preview")
+            if cancel_event.is_set():
+                destination.unlink(missing_ok=True)
+                if previous_destination_staged:
+                    os.replace(previous_destination, destination)
+                    previous_destination_staged = False
+                replaced_destination = False
+                return {}
+            artifact = self.artifacts.register(
+                destination,
+                kind="audio",
+                role="source_audio_preview",
+                session_id=source.session_id,
+                parent_ids=[source.id],
+                replace_parent_ids=True,
+                settings=settings,
+                metadata={
+                    "source_artifact_id": source.id,
+                    "source_content_hash": source.content_hash,
+                    "source_artifact_hash": source.content_hash,
+                    "preview_version": "v1",
+                },
+            )
+            previous_destination.unlink(missing_ok=True)
+            previous_destination_staged = False
+            replaced_destination = False
+            return {"artifact_id": artifact.id, "source_artifact_id": source.id}
+        except MediaProcessCancelled:
+            temporary_destination.unlink(missing_ok=True)
+            if replaced_destination:
+                destination.unlink(missing_ok=True)
+            if previous_destination_staged:
+                os.replace(previous_destination, destination)
+            return {}
+        # This is the final cleanup and redaction boundary for filesystem,
+        # artifact-registration, and database failures.
+        except Exception:  # noqa: BLE001
+            temporary_destination.unlink(missing_ok=True)
+            if replaced_destination:
+                destination.unlink(missing_ok=True)
+            if previous_destination_staged:
+                os.replace(previous_destination, destination)
+            raise RuntimeError(
+                "The source audio preview could not be prepared."
+            ) from None
 
     def preview_output_mix(self, payload, progress, cancel_event):
         """Render a short, managed sample with the exact export mix graph."""

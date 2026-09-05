@@ -7,15 +7,17 @@
     CircleHelp,
     Columns3,
     Filter,
+    LoaderCircle,
     Merge,
     Play,
     Plus,
+    RefreshCw,
     Save,
     Scissors,
     Trash2,
     X
   } from '@lucide/svelte';
-  import { sessionApi } from './domain-api';
+  import { artifactApi, jobApi, sessionApi } from './domain-api';
   import type {
     SubtitleComparisonRow as Row,
     SubtitleReviewCatalog as Catalog,
@@ -41,13 +43,13 @@
   let {
     sessionId,
     primaryArtifactId,
-    sourceAudioArtifactId,
+    sourceMediaArtifactId,
     onclose,
     onsaved
   }: {
     sessionId: string;
     primaryArtifactId: string;
-    sourceAudioArtifactId?: string;
+    sourceMediaArtifactId?: string;
     onclose: () => void;
     onsaved: () => void;
   } = $props();
@@ -64,6 +66,11 @@
   let comparisonLoading = $state(false);
   let saving = $state(false);
   let audioPreview = $state<HTMLAudioElement>();
+  let sourceAudioUrl = $state('');
+  let sourceAudioPreparing = $state(false);
+  let sourceAudioError = $state('');
+  let cuePlaybackError = $state('');
+  let sourceAudioController: AbortController | undefined;
   let cuePreviewFrame: number | null = null;
   let cuePreviewEnd = 0;
   let tourOpen = $state(false);
@@ -515,19 +522,93 @@
   }
 
   async function previewSegment(segment: Segment) {
-    if (!audioPreview) return;
+    if (!audioPreview) {
+      cuePlaybackError = 'Source audio is not ready for cue playback yet.';
+      return;
+    }
+    cuePlaybackError = '';
     stopCuePreview(true);
-    audioPreview.currentTime = segment.start_ms / 1000;
-    cuePreviewEnd = segment.end_ms / 1000;
     try {
+      audioPreview.currentTime = segment.start_ms / 1000;
+      cuePreviewEnd = segment.end_ms / 1000;
       await audioPreview.play();
       cuePreviewFrame = window.requestAnimationFrame(watchCueBoundary);
-    } catch {
+    } catch (caught) {
       cuePreviewFrame = null;
+      cuePlaybackError =
+        errorMessage(caught) || 'This cue could not be played.';
     }
   }
 
-  onDestroy(() => stopCuePreview(true));
+  function waitForPreviewPoll(signal: AbortSignal) {
+    return new Promise<void>((resolve, reject) => {
+      const timer = window.setTimeout(resolve, 750);
+      signal.addEventListener(
+        'abort',
+        () => {
+          window.clearTimeout(timer);
+          reject(new DOMException('Aborted', 'AbortError'));
+        },
+        { once: true }
+      );
+    });
+  }
+
+  async function prepareSourceAudio() {
+    if (!sourceMediaArtifactId) return;
+    sourceAudioController?.abort();
+    const controller = new AbortController();
+    sourceAudioController = controller;
+    sourceAudioPreparing = true;
+    sourceAudioError = '';
+    cuePlaybackError = '';
+    try {
+      let preparation = await artifactApi.audioPreview(
+        sourceMediaArtifactId,
+        controller.signal
+      );
+      if (preparation.status === 'ready' && preparation.content_url) {
+        sourceAudioUrl = preparation.content_url;
+        return;
+      }
+      const jobId = preparation.job_id;
+      if (!jobId) throw new Error('The source-audio preview was not queued.');
+      for (let attempt = 0; attempt < 800; attempt += 1) {
+        await waitForPreviewPoll(controller.signal);
+        const job = await jobApi.get(jobId, controller.signal);
+        if (job.status === 'succeeded') {
+          preparation = await artifactApi.audioPreview(
+            sourceMediaArtifactId,
+            controller.signal
+          );
+          if (preparation.status === 'ready' && preparation.content_url) {
+            sourceAudioUrl = preparation.content_url;
+            return;
+          }
+          throw new Error('The prepared source audio could not be found.');
+        }
+        if (['failed', 'interrupted', 'canceled'].includes(job.status)) {
+          throw new Error(
+            job.error_message ||
+              'The source-audio preview could not be prepared.'
+          );
+        }
+      }
+      throw new Error('The source-audio preview is still being prepared.');
+    } catch (caught) {
+      if (!controller.signal.aborted) sourceAudioError = errorMessage(caught);
+    } finally {
+      if (sourceAudioController === controller) {
+        sourceAudioController = undefined;
+        sourceAudioPreparing = false;
+      }
+    }
+  }
+
+  onDestroy(() => {
+    sourceAudioController?.abort();
+    stopCuePreview(true);
+  });
 
   async function save() {
     const column = editColumn;
@@ -581,6 +662,7 @@
     reviewPrimaryArtifactId = primaryArtifactId;
     editArtifactId = primaryArtifactId;
     void load([primaryArtifactId], true);
+    void prepareSourceAudio();
   });
 
   $effect(() => {
@@ -769,14 +851,33 @@
           />{/if}
       </div>
     </details>
-    {#if sourceAudioArtifactId}<div
+    {#if sourceMediaArtifactId}<div
         class="border-b border-[var(--line)] px-5 py-3 sm:px-7"
       >
-        <AudioPlayer
-          bind:element={audioPreview}
-          src={`/api/v1/artifacts/${sourceAudioArtifactId}/content`}
-          label="Source audio preview"
-        />
+        {#if sourceAudioUrl}<AudioPlayer
+            bind:element={audioPreview}
+            src={sourceAudioUrl}
+            label="Source audio preview"
+          />{:else if sourceAudioPreparing}<div
+            class="muted flex items-center gap-2 text-xs"
+            role="status"
+          >
+            <LoaderCircle class="animate-spin" size={15} /> Preparing a browser-safe
+            source-audio preview…
+          </div>{:else}<div class="flex flex-wrap items-center gap-2 text-xs">
+            <span class="text-red-500" role="alert"
+              >{sourceAudioError ||
+                'Source audio is not ready for playback.'}</span
+            ><button
+              type="button"
+              onclick={prepareSourceAudio}
+              class="flex items-center gap-1 rounded-lg border border-[var(--line)] px-2 py-1 font-semibold"
+              ><RefreshCw size={13} /> Retry</button
+            >
+          </div>{/if}
+        {#if cuePlaybackError}<p class="mt-2 text-xs text-red-500" role="alert">
+            {cuePlaybackError}
+          </p>{/if}
       </div>{/if}
     {#if error}<div
         class="mx-5 mt-4 rounded-xl border border-red-400/40 bg-red-500/10 px-4 py-3 text-sm sm:mx-7"
@@ -885,8 +986,13 @@
                               ></textarea>
                               <div class="mt-2 flex flex-wrap gap-2">
                                 <button
+                                  type="button"
                                   onclick={() => previewSegment(item)}
-                                  class="flex items-center gap-1 rounded-lg border border-[var(--line)] px-2 py-1 text-xs"
+                                  disabled={!sourceAudioUrl || !audioPreview}
+                                  title={sourceAudioUrl && audioPreview
+                                    ? 'Play this cue from the source recording'
+                                    : 'Source audio is still being prepared'}
+                                  class="flex items-center gap-1 rounded-lg border border-[var(--line)] px-2 py-1 text-xs disabled:cursor-not-allowed disabled:opacity-40"
                                   ><Play size={13} /> Play</button
                                 ><button
                                   onclick={() => split(item)}

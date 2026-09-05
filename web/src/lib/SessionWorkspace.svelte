@@ -4354,7 +4354,7 @@
 {#if reviewArtifactId && SubtitleReviewComponent}<SubtitleReviewComponent
     sessionId={session.id}
     primaryArtifactId={reviewArtifactId}
-    sourceAudioArtifactId={snapshot?.sources[0]?.id}
+    sourceMediaArtifactId={snapshot?.sources[0]?.id}
     onclose={() => (reviewArtifactId = '')}
     onsaved={load}
   />{/if}

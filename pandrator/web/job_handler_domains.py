@@ -92,6 +92,7 @@ def register_generation_handlers(
                 "generation.run": "run_generation",
                 "generation.assemble": "assemble_generation_output",
                 "audio.waveform": "generate_waveform",
+                "audio.preview": "generate_audio_preview",
                 "tts.preview": "preview_tts_voice",
             },
         ),
@@ -108,6 +109,7 @@ def register_generation_handlers(
                 "generation.run": ("generation_run_id",),
                 "generation.assemble": ("output_assembly_id",),
                 "audio.waveform": ("source_artifact_id",),
+                "audio.preview": ("source_artifact_id",),
                 "tts.preview": ("text", "settings"),
             }
         ),

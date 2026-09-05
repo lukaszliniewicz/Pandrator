@@ -238,7 +238,7 @@
 {#if reviewArtifactId}<SubtitleReview
     {sessionId}
     primaryArtifactId={reviewArtifactId}
-    sourceAudioArtifactId={sourceArtifact}
+    sourceMediaArtifactId={sourceArtifact}
     onclose={() => (reviewArtifactId = '')}
     onsaved={load}
   />{/if}

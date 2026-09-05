@@ -59,6 +59,23 @@ export type GenerationLoadResult = {
   shouldExpand: boolean;
 };
 
+const ACTIVE_RUN_STATUS_PRIORITY = [
+  'running',
+  'pausing',
+  'pause_requested',
+  'cancel_requested',
+  'queued',
+  'paused'
+] as const;
+
+function preferredActiveRun(runs: GenerationRun[]) {
+  for (const status of ACTIVE_RUN_STATUS_PRIORITY) {
+    const match = runs.find((item) => item.status === status);
+    if (match) return match;
+  }
+  return null;
+}
+
 export class GenerationStore {
   payload = $state<GenerationSegmentPage>({ ...EMPTY_SEGMENTS });
   runs = $state<GenerationRun[]>([]);
@@ -116,17 +133,9 @@ export class GenerationStore {
         };
       }
       const runs = runPayload.items;
-      const activeRun =
-        runs.find((item) =>
-          [
-            'queued',
-            'running',
-            'pausing',
-            'pause_requested',
-            'cancel_requested',
-            'paused'
-          ].includes(item.status)
-        ) ?? null;
+      // Run history is newest-first, but a newer queued regeneration must not
+      // hide the run that currently owns the worker.
+      const activeRun = preferredActiveRun(runs);
       const selectedRunId =
         options.selectedRunId &&
         runs.some((item) => item.id === options.selectedRunId)

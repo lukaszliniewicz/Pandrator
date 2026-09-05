@@ -46,6 +46,14 @@ export type JobRecord = {
   updated_at?: string;
 };
 
+export type AudioPreviewPreparation = {
+  status: 'ready' | 'queued' | 'running';
+  artifact_id?: string;
+  content_url?: string;
+  mime_type?: string | null;
+  job_id?: string;
+};
+
 export type GpuDevice = {
   name: string;
   vendor: string;
@@ -447,6 +455,7 @@ export type WorkflowStage = {
   agent_run_id?: string | null;
   resumable?: boolean;
   progress?: number | null;
+  progress_basis?: 'job' | 'segments';
   detail?: string | null;
   usage?: WorkflowUsage | null;
   run_metrics?: WorkflowRunMetrics | null;

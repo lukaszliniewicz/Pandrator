@@ -2525,8 +2525,121 @@ class GenerationService:
             generation_run_id=generation_run_id,
             operation=operation,
         )
-        with self.database.session() as session:
+        with self.database.immediate_session() as session:
             return self.start_in_session(session, session_id, prepared=prepared)
+
+    @staticmethod
+    def _canonical_regeneration_root(
+        session: Session,
+        source_run: GenerationRun,
+        session_id: str,
+        plan_revision_id: str,
+    ) -> GenerationRun:
+        """Resolve a legacy regeneration chain to its full-generation root.
+
+        New targeted runs are always rooted directly at the original full
+        generation run.  Older databases can contain chains of regeneration
+        children, so follow only regeneration links and fail closed when a
+        malformed or cross-session/plan link is encountered.
+        """
+        current = source_run
+        visited: set[str] = set()
+        while current.operation == "regenerate":
+            if current.id in visited:
+                raise ValueError(
+                    "The generation regeneration lineage contains a cycle."
+                )
+            visited.add(current.id)
+            parent_id = str(current.source_generation_run_id or "")
+            if not parent_id:
+                raise ValueError(
+                    "The selected regeneration run has no source generation run."
+                )
+            parent = session.get(GenerationRun, parent_id)
+            if (
+                parent is None
+                or parent.session_id != session_id
+                or parent.plan_revision_id != plan_revision_id
+                or parent.operation == "rvc"
+            ):
+                raise ValueError(
+                    "The selected source generation run does not match this session and plan."
+                )
+            current = parent
+        if (
+            current.session_id != session_id
+            or current.plan_revision_id != plan_revision_id
+            or current.operation == "rvc"
+        ):
+            raise ValueError(
+                "The selected source generation run does not match this session and plan."
+            )
+        return current
+
+    @staticmethod
+    def _clear_regeneration_baton(
+        session: Session,
+        child_run: GenerationRun,
+        source_run_id: str,
+    ) -> None:
+        """Revoke one child's durable resume baton, including its job marker."""
+        child_run.resume_source_on_completion = False
+        child_run.updated_at = utcnow()
+        child_job = session.get(Job, child_run.job_id) if child_run.job_id else None
+        if child_job is None or not isinstance(child_job.payload_json, dict):
+            return
+        payload = dict(child_job.payload_json)
+        if payload.get("auto_resume_source_generation_run_id") == source_run_id:
+            payload.pop("auto_resume_source_generation_run_id", None)
+            child_job.payload_json = payload
+            child_job.updated_at = utcnow()
+
+    @classmethod
+    def _regeneration_baton_descendants(
+        cls,
+        session: Session,
+        source_run_id: str,
+    ) -> list[GenerationRun]:
+        """Find baton-bearing regeneration descendants, including legacy chains.
+
+        The durable flag, rather than the child's status, owns the baton.  A
+        completed child commits its terminal status immediately before it
+        consumes this flag in the resume transaction; filtering on status
+        would leave a race in which a replacement request misses the baton.
+        """
+        pending = {source_run_id}
+        visited: set[str] = set()
+        batons: list[GenerationRun] = []
+        while pending:
+            parent_ids = pending - visited
+            if not parent_ids:
+                break
+            visited.update(parent_ids)
+            descendants = list(
+                session.scalars(
+                    select(GenerationRun).where(
+                        GenerationRun.source_generation_run_id.in_(parent_ids),
+                        GenerationRun.operation == "regenerate",
+                    )
+                ).all()
+            )
+            pending.update(child.id for child in descendants)
+            batons.extend(
+                child for child in descendants if child.resume_source_on_completion
+            )
+        return batons
+
+    @classmethod
+    def _revoke_regeneration_batons(
+        cls,
+        session: Session,
+        source_run_id: str,
+    ) -> list[GenerationRun]:
+        """Revoke all existing batons below a root before assigning a replacement."""
+        batons = cls._regeneration_baton_descendants(session, source_run_id)
+        for child in batons:
+            cls._clear_regeneration_baton(session, child, source_run_id)
+        return batons
 
     def start_in_session(
         self, session: Session, session_id: str, *, prepared: dict[str, Any]
@@ -2598,14 +2711,38 @@ class GenerationService:
                     GenerationRun.created_at.desc(),
                 )
             )
+            if source_run is not None:
+                source_run = self._canonical_regeneration_root(
+                    session,
+                    source_run,
+                    session_id,
+                    plan_revision_id,
+                )
         auto_resume_source_id = None
         if source_run is not None:
-            if source_run.status in {"queued", "running"}:
+            if operation == "regenerate":
+                # The short immediate transaction used by both the route and
+                # direct service callers serializes baton replacement with a
+                # child's completion transaction.  A child can therefore
+                # never observe a baton that was reassigned to a sibling.
+                live_batons = self._regeneration_baton_descendants(
+                    session, source_run.id
+                )
+                if source_run.status in {"queued", "running"}:
+                    self._revoke_regeneration_batons(session, source_run.id)
+                    source_run.pause_requested = True
+                    source_run.status = "pausing"
+                    source_run.updated_at = utcnow()
+                    auto_resume_source_id = source_run.id
+                elif source_run.status in {"pausing", "paused"} and live_batons:
+                    self._revoke_regeneration_batons(session, source_run.id)
+                    source_run.pause_requested = True
+                    source_run.updated_at = utcnow()
+                    auto_resume_source_id = source_run.id
+            elif source_run.status in {"queued", "running"}:
                 source_run.pause_requested = True
                 source_run.status = "pausing"
                 source_run.updated_at = utcnow()
-                if operation == "regenerate":
-                    auto_resume_source_id = source_run.id
             source_snapshot = dict(source_run.settings_snapshot_json or {})
             # A previous alternate take is a useful source for ordinary
             # settings, but its *selected-only* precedence must not leak
@@ -2679,7 +2816,7 @@ class GenerationService:
         return resource_keys
 
     def request_pause(self, run_id: str) -> dict[str, Any]:
-        with self.database.session() as session:
+        with self.database.immediate_session() as session:
             run = session.get(GenerationRun, run_id)
             if run is None:
                 raise KeyError(run_id)
@@ -2692,25 +2829,18 @@ class GenerationService:
             # An explicit pause wins over a temporary pause requested by a
             # targeted regeneration. Remove the child's durable resume marker
             # so it cannot revive the source run behind the user's back.
-            child_runs = list(
+            all_batons = list(
                 session.scalars(
                     select(GenerationRun).where(
                         GenerationRun.source_generation_run_id == run.id,
+                        GenerationRun.operation == "regenerate",
                         GenerationRun.resume_source_on_completion.is_(True),
                     )
                 ).all()
             )
-            for child_run in child_runs:
-                child_run.resume_source_on_completion = False
-                child_job = (
-                    session.get(Job, child_run.job_id) if child_run.job_id else None
-                )
-                if child_job is None or not isinstance(child_job.payload_json, dict):
-                    continue
-                child_payload = dict(child_job.payload_json)
-                if child_payload.get("auto_resume_source_generation_run_id") == run.id:
-                    child_payload.pop("auto_resume_source_generation_run_id", None)
-                    child_job.payload_json = child_payload
+            for child_run in all_batons:
+                self._clear_regeneration_baton(session, child_run, run.id)
+            self._revoke_regeneration_batons(session, run.id)
             return {"id": run.id, "job_id": run.job_id, "status": run.status}
 
     def resume(self, run_id: str) -> dict[str, Any]:

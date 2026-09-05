@@ -6255,6 +6255,42 @@
         ]
       }
     },
+    "/api/v1/artifacts/{artifactId}/audio-preview": {
+      "get": {
+        "operationId": "getArtifactAudioPreview",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "artifactId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Browser-safe source audio preview"
+          },
+          "202": {
+            "description": "Preview queued or running"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
+      }
+    },
     "/api/v1/artifacts/{artifactId}/content": {
       "get": {
         "operationId": "getArtifactContent",
