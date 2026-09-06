@@ -136,18 +136,20 @@
     <div class="eyebrow animate-pulse">Loading session…</div>
   </div>
 {:else if contextState.session}
-  <div class="session-shell mx-auto max-w-[100rem]">
+  <div class="session-shell mx-auto min-w-0 max-w-[100rem] overflow-x-hidden">
     <a
       href="/sessions"
       class="muted flex items-center gap-1 text-sm font-semibold"
       ><ChevronLeft size={16} /> Sessions</a
     >
     <header class="mt-5 flex flex-wrap items-end justify-between gap-5">
-      <div>
+      <div class="min-w-0">
         <div class="eyebrow capitalize">
           {contextState.session.workflow_kind} workspace
         </div>
-        <h1 class="mt-1 text-3xl font-semibold tracking-[-.035em]">
+        <h1
+          class="mt-1 break-words text-3xl font-semibold tracking-[-.035em] [overflow-wrap:anywhere]"
+        >
           {contextState.session.name}
         </h1>
         <div
@@ -180,7 +182,7 @@
           ><Icon size={16} />{tab.label}</a
         >{/each}
     </nav>
-    <div class="py-7">{@render children()}</div>
+    <div class="min-w-0 max-w-full py-7">{@render children()}</div>
   </div>
   {#if customizeOpen && WorkflowCustomizerComponent}<WorkflowCustomizerComponent
       sessionId={contextState.session.id}

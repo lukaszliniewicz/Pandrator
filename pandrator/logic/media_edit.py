@@ -16,6 +16,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from typing import Literal
 
+from .speaker_labels import normalize_speaker_label, speaker_label_candidate
+
 
 def _validate_time(value: int, name: str) -> None:
     if not isinstance(value, int) or isinstance(value, bool) or value < 0:
@@ -116,7 +118,6 @@ _TIMESTAMP_HMS_RE = re.compile(
 )
 _VTT_TAG_RE = re.compile(r"<v(?:\s+([^>]*?))?>", re.IGNORECASE)
 _HTML_TAG_RE = re.compile(r"</?[^>]+>")
-_SPEAKER_LABEL_RE = re.compile(r"^(?P<label>[^:\n]{1,80}):\s+(?P<text>\S.*)$")
 
 
 def _parse_timestamp(value: str) -> int:
@@ -149,37 +150,6 @@ def _parse_timing_line(line: str) -> tuple[int, int]:
     return start_ms, end_ms
 
 
-def _speaker_candidate(text: str) -> tuple[str, str] | None:
-    match = _SPEAKER_LABEL_RE.fullmatch(text.strip())
-    if match is None:
-        return None
-    label = match.group("label").strip()
-    return label, match.group("text").strip()
-
-
-def _speaker_label(
-    text: str, repeated_speakers: set[str] | frozenset[str] = frozenset()
-) -> tuple[str | None, str]:
-    candidate = _speaker_candidate(text)
-    if candidate is None:
-        return None, text.strip()
-    label, payload = candidate
-    words = label.replace("-", " ").replace("_", " ").split()
-    # A short, title-like prefix is deliberately required.  This avoids
-    # turning ordinary prose such as "It was a surprise: ..." into metadata.
-    title_like = (
-        1 <= len(words) <= 6
-        and any(character.isalpha() for character in label)
-        and all(
-            word[0].isupper() or not any(character.isalpha() for character in word)
-            for word in words
-        )
-    )
-    if not title_like and label.casefold() not in repeated_speakers:
-        return None, text.strip()
-    return label, payload
-
-
 def _strip_caption_markup(payload_lines: Sequence[str]) -> tuple[str | None, str]:
     payload = "\n".join(payload_lines).strip()
     speaker: str | None = None
@@ -201,7 +171,7 @@ def _clean_caption_payload(
     if not payload:
         return speaker, ""
     if speaker is None:
-        speaker, payload = _speaker_label(payload, repeated_speakers)
+        speaker, payload = normalize_speaker_label(payload, repeated_speakers)
     return speaker, payload
 
 
@@ -250,7 +220,7 @@ def parse_caption_text(text: str) -> tuple[MediaCue, ...]:
     for _start_ms, _end_ms, speaker, cue_text in parsed_cues:
         if speaker is not None:
             continue
-        candidate = _speaker_candidate(cue_text)
+        candidate = speaker_label_candidate(cue_text)
         if candidate is not None:
             label, _payload = candidate
             key = label.casefold()
@@ -263,7 +233,7 @@ def parse_caption_text(text: str) -> tuple[MediaCue, ...]:
         speaker = markup_speaker
         cue_text = cue_payload
         if speaker is None:
-            speaker, cue_text = _speaker_label(cue_payload, repeated_speakers)
+            speaker, cue_text = normalize_speaker_label(cue_payload, repeated_speakers)
         cues.append(
             MediaCue(
                 id=f"cue-{len(cues) + 1:06d}",
@@ -284,9 +254,11 @@ def _normalise_token(token: str) -> str:
     return "".join(char for char in normalized if char.isalnum())
 
 
-def _text_tokens(text: str) -> list[str]:
+def _text_tokens(text: str) -> list[tuple[str, str]]:
+    """Return caption token surfaces together with their match keys."""
+
     return [
-        normalized
+        (raw, normalized)
         for raw in re.findall(r"\S+", text)
         if (normalized := _normalise_token(raw))
     ]
@@ -299,10 +271,18 @@ def _interpolate_words(
 ) -> tuple[MediaWord, ...]:
     matched_positions = sorted(matches)
     if len(matched_positions) < 2:
-        return (words[matches[matched_positions[0]]],)
+        position = matched_positions[0]
+        return (
+            replace(words[matches[position]], text=cue_tokens[position]),
+        )
     by_token: dict[int, MediaWord] = {}
     for position in matched_positions:
-        by_token[position] = words[matches[position]]
+        # The caption is authoritative for lexical surface text.  Keep ASR
+        # timing/confidence, but do not let its casing or punctuation leak
+        # into the edited transcript.
+        by_token[position] = replace(
+            words[matches[position]], text=cue_tokens[position]
+        )
     for left_position, right_position in itertools.pairwise(matched_positions):
         left_word = words[matches[left_position]]
         right_word = words[matches[right_position]]
@@ -341,7 +321,9 @@ def align_cues_to_words(
     previous_match_start: int | None = None
     aligned_cues: list[MediaCue] = []
     for cue in cues:
-        cue_tokens = _text_tokens(cue.text)
+        cue_token_pairs = _text_tokens(cue.text)
+        cue_tokens = [surface for surface, _normalized in cue_token_pairs]
+        cue_match_tokens = [normalized for _surface, normalized in cue_token_pairs]
         matches: dict[int, int] = {}
         search_index = cursor
         if (
@@ -359,7 +341,7 @@ def align_cues_to_words(
             search_index + max(400, len(cue_tokens) * 16),
         )
         for token_index, cue_token in enumerate(cue_tokens):
-            positions = positions_by_token.get(cue_token, ())
+            positions = positions_by_token.get(cue_match_tokens[token_index], ())
             position_index = bisect_left(positions, search_index)
             if (
                 position_index >= len(positions)
@@ -410,6 +392,59 @@ def align_cues_to_words(
             )
         )
     return tuple(aligned_cues)
+
+
+def media_cues_to_transcript(
+    cues: Sequence[MediaCue],
+    *,
+    language: str = "",
+    source_format: str = "media_edit",
+    metadata: dict[str, object] | None = None,
+) -> dict[str, object]:
+    """Serialize media-edit cues to the canonical transcript JSON shape.
+
+    Cue text and speaker labels are authoritative.  Word timing and confidence
+    remain evidence attached to those cue-owned lexical surfaces.
+    """
+
+    segments: list[dict[str, object]] = []
+    for cue in cues:
+        timing_metadata = {
+            "timing_source": cue.timing_source,
+            "timing_confidence": cue.timing_confidence,
+        }
+        words = [
+            {
+                "text": word.text,
+                "start_ms": word.start_ms,
+                "end_ms": word.end_ms,
+                "speaker": cue.speaker or None,
+                "confidence": word.confidence,
+                "metadata": {
+                    "source_cue_id": cue.id,
+                    "timing_source": cue.timing_source,
+                },
+            }
+            for word in cue.words
+        ]
+        segments.append(
+            {
+                "id": cue.id,
+                "start_ms": cue.start_ms,
+                "end_ms": cue.end_ms,
+                "speaker": cue.speaker or None,
+                "text": cue.text,
+                "metadata": timing_metadata,
+                "words": words,
+            }
+        )
+    return {
+        "schema": "pandrator.transcript.v1",
+        "source_format": source_format,
+        "language": language,
+        "metadata": dict(metadata or {}),
+        "segments": segments,
+    }
 
 
 def _merge_labels(labels: Sequence[str | None]) -> str | None:

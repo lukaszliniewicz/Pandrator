@@ -1875,6 +1875,30 @@ class WorkflowHandlers:
             raise FileNotFoundError(path)
         return artifact, path
 
+    def _current_media_edit_transcript(self, session_id: str) -> Artifact | None:
+        """Return the current caption attachment for a media-edit session."""
+
+        with self.database.session() as session:
+            record = session.get(SessionRecord, session_id)
+            if record is None or record.workflow_kind != "media_edit":
+                return None
+            artifact = session.scalar(
+                select(Artifact)
+                .join(SourceAsset, SourceAsset.artifact_id == Artifact.id)
+                .join(SessionSource, SessionSource.source_asset_id == SourceAsset.id)
+                .where(
+                    SessionSource.session_id == session_id,
+                    SessionSource.role == "transcript",
+                    SessionSource.is_current.is_(True),
+                    SourceAsset.state == "current",
+                    Artifact.state == "current",
+                )
+                .order_by(SessionSource.updated_at.desc(), SessionSource.id.desc())
+            )
+            if artifact is not None:
+                session.expunge(artifact)
+            return artifact
+
     @staticmethod
     def _is_subtitle_generation_record(record: dict[str, Any]) -> bool:
         """Identify generation units whose timing comes from subtitle cues."""
@@ -2483,7 +2507,13 @@ class WorkflowHandlers:
             }
             return document.id, revision.id
 
-    def _store_timed_words(self, revision_id: str, metadata_path: Path) -> int:
+    def _store_timed_words(
+        self,
+        revision_id: str,
+        metadata_path: Path,
+        *,
+        segment_by_source_cue_id: dict[str, int] | None = None,
+    ) -> int:
         transcript = load_transcript(metadata_path)
         words = [
             {
@@ -2505,17 +2535,32 @@ class WorkflowHandlers:
                 ).all()
             )
             for ordinal, word in enumerate(words):
-                owner = next(
-                    (
-                        segment
-                        for segment in segments
-                        if segment.start_ms is not None
-                        and segment.end_ms is not None
-                        and min(segment.end_ms, word["end_ms"])
-                        > max(segment.start_ms, word["start_ms"])
-                    ),
-                    None,
+                source_cue_id = str(
+                    word["metadata"].get("source_cue_id") or ""
                 )
+                owner = None
+                if segment_by_source_cue_id and source_cue_id:
+                    owner_ordinal = segment_by_source_cue_id.get(source_cue_id)
+                    owner = next(
+                        (
+                            segment
+                            for segment in segments
+                            if segment.ordinal == owner_ordinal
+                        ),
+                        None,
+                    )
+                if owner is None:
+                    owner = next(
+                        (
+                            segment
+                            for segment in segments
+                            if segment.start_ms is not None
+                            and segment.end_ms is not None
+                            and min(segment.end_ms, word["end_ms"])
+                            > max(segment.start_ms, word["start_ms"])
+                        ),
+                        None,
+                    )
                 session.add(
                     TimedWord(
                         revision_id=revision_id,
@@ -2749,6 +2794,237 @@ class WorkflowHandlers:
         hydrated[aliases[stage][0]] = requested or resolved_model
         return hydrated
 
+    def _transcribe_media_edit_with_caption(
+        self,
+        *,
+        session_id: str,
+        source_artifact: Artifact,
+        caption_artifact: Artifact,
+        transcription_result: Any,
+        submitted_settings: dict[str, Any],
+        progress,
+    ) -> dict[str, Any]:
+        """Project ASR timing onto the authoritative attached captions."""
+
+        from pandrator.logic.media_edit import (
+            MediaWord,
+            align_cues_to_words,
+            caption_to_srt,
+            media_cues_to_transcript,
+            parse_caption_text,
+        )
+
+        raw_srt_path = Path(transcription_result.srt_path)
+        raw_words_path = Path(transcription_result.word_timestamps_path)
+        raw_metadata = {
+            "engine": transcription_result.engine,
+            "model": transcription_result.engine,
+            "model_quantization": str(
+                submitted_settings.get("stt_model_quantization") or "f16"
+            ),
+            "compute_backend": transcription_result.compute_backend,
+            "language": str(
+                submitted_settings.get("original_language")
+                or submitted_settings.get("stt_language")
+                or "auto"
+            ),
+            "alignment_role": "evidence",
+            "source_artifact_id": source_artifact.id,
+        }
+        raw_srt_artifact = self.artifacts.register(
+            raw_srt_path,
+            kind="srt",
+            role="transcription_evidence",
+            session_id=session_id,
+            parent_ids=[source_artifact.id],
+            settings=submitted_settings,
+            metadata=raw_metadata,
+        )
+        raw_words_artifact = self.artifacts.register(
+            raw_words_path,
+            kind="json",
+            role="recognition_word_timestamps",
+            session_id=session_id,
+            parent_ids=[source_artifact.id, raw_srt_artifact.id],
+            settings={
+                **submitted_settings,
+                "stt_engine": transcription_result.engine,
+                "stt_compute_backend": transcription_result.compute_backend,
+            },
+            metadata={
+                **raw_metadata,
+                "transcription_evidence_artifact_id": raw_srt_artifact.id,
+            },
+        )
+
+        _caption_record, caption_path = self.artifacts.resolve(caption_artifact.id)
+        try:
+            cues = parse_caption_text(
+                caption_path.read_text(encoding="utf-8-sig")
+            )
+            transcript = load_transcript(raw_words_path)
+            asr_words = tuple(
+                MediaWord(
+                    text=word.text,
+                    start_ms=word.start_ms,
+                    end_ms=word.end_ms,
+                    confidence=word.confidence,
+                )
+                for word in transcript.words
+            )
+            aligned_cues = align_cues_to_words(cues, asr_words)
+            word_count = sum(len(cue.words) for cue in aligned_cues)
+            if not aligned_cues or not word_count:
+                raise ValueError(
+                    "The attached transcript could not be aligned to ASR evidence."
+                )
+        except (OSError, TypeError, ValueError, KeyError) as error:
+            raise ValueError(
+                "The attached transcript could not be parsed and aligned to ASR evidence."
+            ) from error
+
+        operation_dir = self._operation_dir(session_id, "transcribe")
+        aligned_srt_path = operation_dir / "aligned-transcription.srt"
+        aligned_json_path = operation_dir / "aligned-word-timestamps.json"
+        aligned_srt_path.write_text(
+            caption_to_srt(aligned_cues), encoding="utf-8"
+        )
+        caption_token_count = sum(
+            len(re.findall(r"\S+", cue.text)) for cue in cues
+        )
+        coverage = min(1.0, max(0.0, word_count / max(1, caption_token_count)))
+        confidences = [
+            cue.timing_confidence
+            for cue in aligned_cues
+            if cue.words and cue.timing_confidence is not None
+        ]
+        alignment_confidence = (
+            sum(confidences) / len(confidences) if confidences else 0.0
+        )
+        alignment_metadata = {
+            "alignment_method": "asr_lexical_projection",
+            "authoritative_transcript_artifact_id": caption_artifact.id,
+            "raw_asr_srt_artifact_id": raw_srt_artifact.id,
+            "raw_asr_word_timestamps_artifact_id": raw_words_artifact.id,
+            "alignment_coverage": coverage,
+            "coverage": coverage,
+            "alignment_confidence": alignment_confidence,
+            "confidence": alignment_confidence,
+            "word_count": word_count,
+            "source_artifact_id": source_artifact.id,
+        }
+        aligned_payload = media_cues_to_transcript(
+            aligned_cues,
+            language=str(
+                submitted_settings.get("original_language")
+                or submitted_settings.get("stt_language")
+                or ""
+            ),
+            source_format="media_edit_alignment",
+            metadata=alignment_metadata,
+        )
+        aligned_json_path.write_text(
+            json.dumps(aligned_payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        artifact_metadata = {
+            **raw_metadata,
+            **alignment_metadata,
+        }
+        aligned_srt_artifact = self.artifacts.register(
+            aligned_srt_path,
+            kind="srt",
+            role="transcription_alignment",
+            session_id=session_id,
+            parent_ids=[
+                source_artifact.id,
+                caption_artifact.id,
+                raw_srt_artifact.id,
+                raw_words_artifact.id,
+            ],
+            settings=submitted_settings,
+            metadata=artifact_metadata,
+        )
+        aligned_words_artifact = self.artifacts.register(
+            aligned_json_path,
+            kind="json",
+            role="word_timestamps",
+            session_id=session_id,
+            parent_ids=[
+                source_artifact.id,
+                caption_artifact.id,
+                aligned_srt_artifact.id,
+                raw_srt_artifact.id,
+                raw_words_artifact.id,
+            ],
+            settings={
+                **submitted_settings,
+                "stt_engine": transcription_result.engine,
+                "stt_compute_backend": transcription_result.compute_backend,
+            },
+            metadata=artifact_metadata,
+        )
+        language = str(
+            submitted_settings.get("original_language")
+            or submitted_settings.get("stt_language")
+            or ""
+        ) or None
+        _document_id, revision_id = self._store_srt_document(
+            session_id,
+            aligned_srt_artifact,
+            "transcription",
+            language=language,
+            parent_artifact=caption_artifact,
+            speaker_overrides={
+                index: cue.speaker
+                for index, cue in enumerate(aligned_cues, start=1)
+                if cue.speaker
+            },
+        )
+        stored_word_count = self._store_timed_words(
+            revision_id,
+            aligned_json_path,
+            segment_by_source_cue_id={
+                cue.id: index for index, cue in enumerate(aligned_cues)
+            },
+        )
+        # Promote only after native persistence succeeds.  A parse/alignment
+        # or persistence failure therefore leaves evidence and a non-stage
+        # candidate, never a selectable half-built transcription.
+        aligned_srt_artifact = self.artifacts.register(
+            aligned_srt_path,
+            kind="srt",
+            role="transcription",
+            session_id=session_id,
+            parent_ids=[
+                source_artifact.id,
+                caption_artifact.id,
+                raw_srt_artifact.id,
+                raw_words_artifact.id,
+            ],
+            settings=submitted_settings,
+        )
+        progress(0.97, "Aligned transcription ready")
+        return {
+            "artifact_id": aligned_srt_artifact.id,
+            "path": aligned_srt_artifact.relative_path,
+            "word_timestamps_artifact_id": aligned_words_artifact.id,
+            "word_timestamps_path": aligned_words_artifact.relative_path,
+            "word_count": stored_word_count,
+            "speaker_count": len(
+                {cue.speaker.casefold() for cue in aligned_cues if cue.speaker}
+            ),
+            "revision_id": revision_id,
+            "alignment_method": "asr_lexical_projection",
+            "authoritative_transcript_artifact_id": caption_artifact.id,
+            "raw_asr_srt_artifact_id": raw_srt_artifact.id,
+            "raw_asr_word_timestamps_artifact_id": raw_words_artifact.id,
+            "alignment_coverage": coverage,
+            "coverage": coverage,
+            "alignment_confidence": alignment_confidence,
+            "confidence": alignment_confidence,
+        }
+
     def transcribe(self, payload, progress, cancel_event):
         from pandrator.logic.dubbing.transcription import (
             transcribe_source_file_with_metadata,
@@ -2777,6 +3053,16 @@ class WorkflowHandlers:
             progress_callback=_scaled_progress_callback(progress, 0.05, 0.85),
             cancel_event=cancel_event,
         )
+        caption_artifact = self._current_media_edit_transcript(session_id)
+        if caption_artifact is not None:
+            return self._transcribe_media_edit_with_caption(
+                session_id=session_id,
+                source_artifact=source_artifact,
+                caption_artifact=caption_artifact,
+                transcription_result=transcription_result,
+                submitted_settings=submitted_settings,
+                progress=progress,
+            )
         output_path = Path(transcription_result.srt_path)
         progress(0.9, "Registering transcription")
         artifact = self.artifacts.register(
@@ -3633,7 +3919,12 @@ class WorkflowHandlers:
             build_removal_only_video_command,
             normalize_video_resolution,
         )
-        from pandrator.logic.media_edit import KeepRange, caption_to_srt, retime_cues
+        from pandrator.logic.media_edit import (
+            KeepRange,
+            caption_to_srt,
+            media_cues_to_transcript,
+            retime_cues,
+        )
         from pandrator.web.capabilities import ffmpeg_video_encoder_ids
 
         from .media_process import (
@@ -3694,8 +3985,28 @@ class WorkflowHandlers:
         revision_id = str(revision.get("revision_id") or "")
         revision_tag = f"{plan_id}-r{revision_number}-{revision_id}"
         subtitle_path = operation_dir / f"media-edit-{revision_tag}.srt"
+        word_timestamps_path = operation_dir / f"media-edit-{revision_tag}.json"
         output_path = operation_dir / f"media-edit-{revision_tag}.mp4"
         subtitle_path.write_text(caption_to_srt(retimed_cues), encoding="utf-8")
+        word_count = sum(len(cue.words) for cue in retimed_cues)
+        word_timestamps_path.write_text(
+            json.dumps(
+                media_cues_to_transcript(
+                    retimed_cues,
+                    source_format="media_edit",
+                    metadata={
+                        "plan_id": plan_id,
+                        "revision_id": revision_id,
+                        "revision": revision_number,
+                        "timing_method": "media_edit_retime",
+                        "word_count": word_count,
+                    },
+                ),
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
         ffmpeg_executable = resolve_ffmpeg_executable(
             str(settings.get("ffmpeg_executable") or "") or None
         )
@@ -3742,16 +4053,17 @@ class WorkflowHandlers:
         try:
             run_media_process(command, cancel_event=cancel_event)
         except MediaProcessCancelled:
-            for path in (output_path, subtitle_path):
+            for path in (output_path, subtitle_path, word_timestamps_path):
                 path.unlink(missing_ok=True)
             return {}
         except MediaProcessError as error:
-            output_path.unlink(missing_ok=True)
+            for path in (output_path, subtitle_path, word_timestamps_path):
+                path.unlink(missing_ok=True)
             raise ValueError(
                 "Media-edit rendering requires a video source and FFmpeg could not produce the MP4."
             ) from error
         if cancel_event.is_set():
-            for path in (output_path, subtitle_path):
+            for path in (output_path, subtitle_path, word_timestamps_path):
                 path.unlink(missing_ok=True)
             return {}
         parent_ids = [
@@ -3770,6 +4082,7 @@ class WorkflowHandlers:
             "settings_hash": settings_hash,
             "effective_settings": settings,
             "video_encoder": encoder,
+            "word_count": word_count,
         }
         media_artifact = self.artifacts.register(
             output_path,
@@ -3789,22 +4102,43 @@ class WorkflowHandlers:
             settings=settings,
             metadata=metadata,
         )
+        word_timestamps_artifact = self.artifacts.register(
+            word_timestamps_path,
+            kind="json",
+            role="media_edit_word_timestamps",
+            session_id=session_id,
+            parent_ids=[subtitle_artifact.id],
+            settings=settings,
+            metadata={
+                **metadata,
+                "subtitle_artifact_id": subtitle_artifact.id,
+                "timing_method": "media_edit_retime",
+            },
+        )
         editorial_id = str(
             (revision.get("editorial_transcript_artifact") or {}).get("id") or ""
         )
+        editorial_artifact = None
         if editorial_id:
             editorial_artifact, _ = self._resolve_input(editorial_id)
-            self._store_srt_document(
-                session_id,
-                subtitle_artifact,
-                "media_edit_subtitles",
-                parent_artifact=editorial_artifact,
-                speaker_overrides={
-                    index: cue.speaker
-                    for index, cue in enumerate(retimed_cues, start=1)
-                    if cue.speaker
-                },
-            )
+        document_id, document_revision_id = self._store_srt_document(
+            session_id,
+            subtitle_artifact,
+            "media_edit_subtitles",
+            parent_artifact=editorial_artifact,
+            speaker_overrides={
+                index: cue.speaker
+                for index, cue in enumerate(retimed_cues, start=1)
+                if cue.speaker
+            },
+        )
+        stored_word_count = self._store_timed_words(
+            document_revision_id,
+            word_timestamps_path,
+            segment_by_source_cue_id={
+                cue.id: index for index, cue in enumerate(retimed_cues)
+            },
+        )
         duration_ms = sum(item.end_ms - item.start_ms for item in keep_ranges)
         progress(1.0, "Edited media ready")
         return {
@@ -3814,6 +4148,12 @@ class WorkflowHandlers:
             "revision_id": revision_id,
             "revision": revision_number,
             "duration_ms": duration_ms,
+            "media_edit_word_timestamps_artifact_id": word_timestamps_artifact.id,
+            "word_timestamps_artifact_id": word_timestamps_artifact.id,
+            "word_timestamps_path": word_timestamps_artifact.relative_path,
+            "word_count": stored_word_count,
+            "document_id": document_id,
+            "document_revision_id": document_revision_id,
         }
 
     def translate(self, payload, progress, cancel_event):

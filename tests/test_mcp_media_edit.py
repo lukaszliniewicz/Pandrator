@@ -48,10 +48,10 @@ class _Application:
         return {"session_id": session_id, "plan": {"revision": 2}}
 
     def propose_media_edit(
-        self, session_id, *, revision, instructions, idempotency_key
+        self, session_id, *, revision, instructions, model=None, idempotency_key
     ):
         self.calls.append(
-            ("propose", (session_id, revision, instructions, idempotency_key))
+            ("propose", (session_id, revision, instructions, model, idempotency_key))
         )
         return {"id": "job-propose", "status": "queued", "progress": 0.0}
 
@@ -113,6 +113,16 @@ class MediaEditSchemaTests(unittest.TestCase):
                 instructions="  trim the dead air  ",
                 idempotency_key="media:propose:1",
             ).instructions,
+        )
+        self.assertEqual(
+            "custom/provider-model",
+            ProposeMediaEditArguments(
+                session_id="session-1",
+                revision=1,
+                instructions="trim the dead air",
+                model="  custom/provider-model  ",
+                idempotency_key="media:propose:model",
+            ).model,
         )
         self.assertTrue(
             RenderMediaEditArguments(
@@ -185,6 +195,22 @@ class MediaEditSchemaTests(unittest.TestCase):
                 idempotency_key="media:propose:blank",
             )
         with self.assertRaises(ValidationError):
+            ProposeMediaEditArguments(
+                session_id="session-1",
+                revision=1,
+                instructions="trim",
+                model="   ",
+                idempotency_key="media:propose:model-blank",
+            )
+        with self.assertRaises(ValidationError):
+            ProposeMediaEditArguments(
+                session_id="session-1",
+                revision=1,
+                instructions="trim",
+                model="m" * 513,
+                idempotency_key="media:propose:model-long",
+            )
+        with self.assertRaises(ValidationError):
             RenderMediaEditArguments(
                 session_id="session-1",
                 revision=1,
@@ -231,6 +257,7 @@ class MediaEditClientTests(unittest.TestCase):
             "session-1",
             revision=2,
             instructions="Remove pauses.",
+            model="custom/provider-model",
             idempotency_key="media:propose:1",
         )
         client.render_media_edit(
@@ -263,7 +290,11 @@ class MediaEditClientTests(unittest.TestCase):
         self.assertTrue(calls[3]["url"].endswith("/media-edit/propose"))
         self.assertEqual("media:propose:1", calls[3]["headers"]["Idempotency-Key"])
         self.assertEqual(
-            {"revision": 2, "instructions": "Remove pauses."},
+            {
+                "revision": 2,
+                "instructions": "Remove pauses.",
+                "model": "custom/provider-model",
+            },
             json.loads(calls[3]["data"]),
         )
         self.assertTrue(calls[4]["url"].endswith("/media-edit/render"))
@@ -319,12 +350,26 @@ class MediaEditToolTests(unittest.TestCase):
                 session_id="session-1",
                 revision=1,
                 instructions="Remove pauses.",
+                model="custom/provider-model",
                 wait=False,
                 idempotency_key="media:propose:1",
             ),
         )
         self.assertEqual("job-propose", queued.work.id)
         self.assertEqual("queued", queued.work.state)
+        self.assertEqual(
+            (
+                "propose",
+                (
+                    "session-1",
+                    1,
+                    "Remove pauses.",
+                    "custom/provider-model",
+                    "media:propose:1",
+                ),
+            ),
+            self.application.calls[0],
+        )
         self.assertFalse(any(call[0] == "wait" for call in self.application.calls))
 
         completed = render_media_edit(

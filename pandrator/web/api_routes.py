@@ -7,6 +7,7 @@ import json
 import os
 import secrets
 import shutil
+import threading
 import time
 import uuid
 from collections.abc import Iterator
@@ -4946,40 +4947,50 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 422,
             )
         role = "waveform_peaks_window" if bounded else "waveform_peaks"
-        with database.session() as db_session:
-            peak_candidates = list(
-                db_session.scalars(
-                select(Artifact)
-                .join(ArtifactEdge, ArtifactEdge.child_artifact_id == Artifact.id)
-                .where(
-                    ArtifactEdge.parent_artifact_id == artifact_id,
-                    Artifact.role == role,
-                    Artifact.state == "current",
+        def cached_peak_id() -> str | None:
+            with database.session() as db_session:
+                peak_candidates = list(
+                    db_session.scalars(
+                        select(Artifact)
+                        .join(
+                            ArtifactEdge,
+                            ArtifactEdge.child_artifact_id == Artifact.id,
+                        )
+                        .where(
+                            ArtifactEdge.parent_artifact_id == artifact_id,
+                            Artifact.role == role,
+                            Artifact.state == "current",
+                        )
+                        .order_by(Artifact.created_at.desc())
+                    ).all()
                 )
-                .order_by(Artifact.created_at.desc())
-                ).all()
-            )
-            peak_artifact = next(
-                (
-                    candidate
-                    for candidate in peak_candidates
-                    if int((candidate.metadata_json or {}).get("max_points") or 0)
-                    == points
-                    and int((candidate.metadata_json or {}).get("start_ms") or 0)
-                    == start_ms
-                    and (
-                        not bounded
-                        or int((candidate.metadata_json or {}).get("end_ms") or 0)
-                        == end_ms
-                    )
-                ),
-                None,
-            )
-            if peak_artifact is not None:
-                peak_id = peak_artifact.id
-            else:
-                peak_id = None
-        if peak_id:
+                peak_artifact = next(
+                    (
+                        candidate
+                        for candidate in peak_candidates
+                        if int(
+                            (candidate.metadata_json or {}).get("max_points") or 0
+                        )
+                        == points
+                        and int(
+                            (candidate.metadata_json or {}).get("start_ms") or 0
+                        )
+                        == start_ms
+                        and (
+                            not bounded
+                            or int(
+                                (candidate.metadata_json or {}).get("end_ms") or 0
+                            )
+                            == end_ms
+                        )
+                    ),
+                    None,
+                )
+                return peak_artifact.id if peak_artifact is not None else None
+
+        def cached_response(peak_id: str | None):
+            if not peak_id:
+                return None
             _artifact, peak_path = artifacts.resolve(peak_id)
             return send_file(
                 peak_path,
@@ -4987,12 +4998,36 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 conditional=True,
                 etag=_artifact.content_hash,
             )
+
+        cached = cached_response(cached_peak_id())
+        if cached is not None:
+            return cached
         job_payload = {
             "source_artifact_id": artifact_id,
             "max_points": points,
             "start_ms": start_ms,
             "end_ms": end_ms,
         }
+
+        # Short detail windows are requested interactively while scrubbing. Do
+        # the same generation and registration work as the durable handler
+        # inline so a small cache miss is not queued behind unrelated ASR jobs.
+        if bounded and end_ms is not None and end_ms - start_ms <= 120_000:
+            try:
+                workflow_handlers.generate_waveform(
+                    job_payload,
+                    lambda *_args: None,
+                    threading.Event(),
+                )
+            except (OSError, RuntimeError, ValueError):
+                # The durable queue remains the fallback for media/runtime
+                # failures (including unavailable FFmpeg/FFprobe).
+                pass
+            else:
+                cached = cached_response(cached_peak_id())
+                if cached is not None:
+                    return cached
+
         with database.immediate_session() as db_session:
             active_job = next(
                 (

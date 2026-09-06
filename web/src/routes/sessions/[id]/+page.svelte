@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { page } from '$app/state';
   import SessionWorkspace from '$lib/SessionWorkspace.svelte';
   import { useSessionContext } from '$lib/session-context';
   const context = useSessionContext();
@@ -8,6 +9,7 @@
     session={context.session}
     outcome={context.outcome}
     workflowStore={context.workflow}
+    initialSettingsStage={page.url.searchParams.get('settings') ?? ''}
     onback={() => (location.href = '/sessions')}
     onupdated={() => context.reload()}
   />{/if}

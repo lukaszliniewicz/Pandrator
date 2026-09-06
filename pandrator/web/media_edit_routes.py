@@ -368,6 +368,9 @@ def register_media_edit_routes(app: DomainBlueprints, context: RouteContext) -> 
                 return key_error
             _active_revision(session_id, payload.revision)
             settings, settings_hash = _settings_snapshot(session_id, "correction")
+            if payload.model is not None:
+                settings["correction_model"] = payload.model
+                settings_hash = stable_hash(settings)
             job_payload = {
                 "session_id": session_id,
                 "revision": payload.revision,

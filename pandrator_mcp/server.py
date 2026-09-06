@@ -594,6 +594,7 @@ def build_server(runtime: McpRuntime):
                 pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$",
             ),
         ],
+        model: Annotated[str | None, Field(max_length=512)] = None,
         wait: bool = True,
         timeout_seconds: Annotated[int, Field(ge=0, le=3_600)] = 60,
     ) -> dict[str, Any]:
@@ -607,6 +608,7 @@ def build_server(runtime: McpRuntime):
                 "session_id": session_id,
                 "revision": revision,
                 "instructions": instructions,
+                "model": model,
                 "idempotency_key": idempotency_key,
                 "wait": wait,
                 "timeout_seconds": timeout_seconds,

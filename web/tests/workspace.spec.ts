@@ -158,9 +158,19 @@ test('media-edit wizard attaches a reused recording and uploaded captions with c
   });
 
   await expect(page.getByText('optional', { exact: true })).toBeVisible();
+  await page
+    .getByRole('button', { name: 'Configure & align captions' })
+    .click();
   await expect(
-    page.getByRole('button', { name: 'Improve timing' })
+    page.getByRole('dialog', { name: 'Transcript & alignment' })
   ).toBeVisible();
+  await expect(
+    page.getByText('Align attached captions', { exact: true })
+  ).toBeVisible();
+  await expect(
+    page.getByRole('button', { name: 'Save & align captions' })
+  ).toBeVisible();
+  await page.getByRole('button', { name: 'Cancel' }).click();
   await page.route('**/api/v1/artifacts/**/waveform**', async (route) => {
     await route.fulfill({
       contentType: 'application/json',

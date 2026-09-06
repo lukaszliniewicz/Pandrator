@@ -20,6 +20,7 @@ from .models import Artifact, ArtifactEdge, ExportRecord, utcnow
 
 SINGLETON_SESSION_ROLES = {
     "transcription",
+    "media_edit_word_timestamps",
     "media_edit_media",
     "media_edit_subtitles",
     "correction",

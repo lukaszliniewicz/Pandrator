@@ -20,6 +20,7 @@
     stage,
     workspaceMode,
     optional = false,
+    runLabel = '',
     historyLoading = false,
     onsettings,
     ontoggle,
@@ -36,6 +37,7 @@
     stage: WorkflowStage;
     workspaceMode: 'review' | 'automatic';
     optional?: boolean;
+    runLabel?: string;
     historyLoading?: boolean;
     onsettings: () => void;
     ontoggle: (enabled: boolean) => void;
@@ -369,11 +371,13 @@
                   ? 'Resume'
                   : stage.status === 'failed'
                     ? 'Retry'
-                    : optional && stage.key === 'transcribe'
-                      ? 'Improve timing'
-                      : stage.artifact
-                        ? 'Run again'
-                        : 'Run now'}
+                    : runLabel
+                      ? runLabel
+                      : optional && stage.key === 'transcribe'
+                        ? 'Configure transcription'
+                        : stage.artifact
+                          ? 'Run again'
+                          : 'Run now'}
             </button>
           {/if}
         {/if}

@@ -80,11 +80,20 @@ export const mediaEditApi = {
       },
       body: JSON.stringify(body)
     }),
-  propose: (sessionId: string, revision: number, instructions: string) =>
+  propose: (
+    sessionId: string,
+    revision: number,
+    instructions: string,
+    model?: string
+  ) =>
     apiJson<JobRecord>(`/sessions/${sessionId}/media-edit/propose`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ revision, instructions })
+      body: JSON.stringify({
+        revision,
+        instructions,
+        ...(model ? { model } : {})
+      })
     }),
   render: (sessionId: string, revision: number) =>
     apiJson<JobRecord>(`/sessions/${sessionId}/media-edit/render`, {

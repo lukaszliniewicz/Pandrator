@@ -10,6 +10,7 @@
     detailPeaks = [],
     detailPeaksStartMs = 0,
     detailPeaksEndMs = 0,
+    detailLoading = false,
     windowMs = 60_000,
     onseek
   }: {
@@ -20,6 +21,7 @@
     detailPeaks?: number[];
     detailPeaksStartMs?: number;
     detailPeaksEndMs?: number;
+    detailLoading?: boolean;
     windowMs?: number;
     onseek: (timeMs: number) => void;
   } = $props();
@@ -110,7 +112,10 @@
     }
   }
 
-  const detailStart = $derived(
+  const hasDetail = $derived(
+    detailPeaks.length > 0 && detailPeaksEndMs > detailPeaksStartMs
+  );
+  const fallbackDetailStart = $derived(
     Math.max(
       0,
       Math.min(
@@ -119,12 +124,17 @@
       )
     )
   );
-  const detailEnd = $derived(Math.min(durationMs, detailStart + windowMs));
+  const detailStart = $derived(
+    hasDetail ? detailPeaksStartMs : fallbackDetailStart
+  );
+  const detailEnd = $derived(
+    hasDetail
+      ? detailPeaksEndMs
+      : Math.min(durationMs, fallbackDetailStart + windowMs)
+  );
 
   function draw() {
     drawWaveform(overview, 0, durationMs, peaks, 0, durationMs);
-    const hasDetail =
-      detailPeaks.length > 0 && detailPeaksEndMs > detailPeaksStartMs;
     drawWaveform(
       detail,
       detailStart,
@@ -157,6 +167,7 @@
     void detailPeaks;
     void detailPeaksStartMs;
     void detailPeaksEndMs;
+    void detailLoading;
     void detailStart;
     requestAnimationFrame(draw);
   });
@@ -199,13 +210,25 @@
         >{Math.round(windowMs / 1000)} second window</span
       >
     </div>
-    <canvas
-      bind:this={detail}
-      class="block h-28 w-full cursor-crosshair rounded-xl border border-[var(--line)]"
-      aria-label="Detailed waveform around the playhead; click to seek"
-      onclick={(event) =>
-        seekFromPointer(event, detail!, detailStart, detailEnd)}
-    ></canvas>
+    <div class="relative">
+      <canvas
+        bind:this={detail}
+        class="block h-28 w-full cursor-crosshair rounded-xl border border-[var(--line)]"
+        aria-label="Detailed waveform around the playhead; click to seek"
+        aria-busy={detailLoading}
+        onclick={(event) =>
+          seekFromPointer(event, detail!, detailStart, detailEnd)}
+      ></canvas>
+      {#if detailLoading}<div
+          class="pointer-events-none absolute inset-x-3 top-3 flex justify-end"
+          role="status"
+        >
+          <span
+            class="rounded-full bg-[var(--paper-strong)]/90 px-2.5 py-1 text-[.62rem] font-semibold text-[var(--muted)] shadow-sm"
+            >Loading detail…</span
+          >
+        </div>{/if}
+    </div>
     <div
       class="mt-1 flex justify-between text-[.6rem] tabular-nums text-[var(--muted)]"
     >

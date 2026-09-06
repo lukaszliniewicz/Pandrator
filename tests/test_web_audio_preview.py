@@ -289,6 +289,71 @@ class AudioPreviewTests(unittest.TestCase):
             ready.get_json()["content_url"],
         )
 
+    def test_bounded_waveform_cache_miss_is_generated_inline(self):
+        source = self._source("waveform-inline.wav")
+        calls = []
+
+        def generate(payload, _progress, _cancel_event):
+            calls.append(payload)
+            path = self.session_dir / "waveform-inline.json"
+            path.write_text(
+                '{"duration_ms":1000,"start_ms":0,"end_ms":1000,'
+                '"channels":1,"points":[0.5]}',
+                encoding="utf-8",
+            )
+            artifact = self.artifacts.register(
+                path,
+                kind="json",
+                role="waveform_peaks_window",
+                session_id=self.session.id,
+                parent_ids=[source.id],
+                settings={"max_points": 1600, "start_ms": 0, "end_ms": 1000},
+                metadata={"max_points": 1600, "start_ms": 0, "end_ms": 1000},
+            )
+            return {"artifact_id": artifact.id}
+
+        with mock.patch.object(self.handlers, "generate_waveform", side_effect=generate):
+            response = self.client.get(
+                f"/api/v1/artifacts/{source.id}/waveform?start_ms=0&end_ms=1000"
+            )
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual([0.5], response.get_json()["points"])
+        self.assertEqual(
+            [{"source_artifact_id": source.id, "max_points": 1600, "start_ms": 0, "end_ms": 1000}],
+            calls,
+        )
+        with self.database.session() as session:
+            self.assertEqual([], session.scalars(select(Job)).all())
+
+    def test_unbounded_waveform_cache_miss_remains_queued(self):
+        source = self._source("waveform-queued.wav")
+        with mock.patch.object(self.handlers, "generate_waveform") as generate:
+            response = self.client.get(f"/api/v1/artifacts/{source.id}/waveform")
+
+        self.assertEqual(202, response.status_code)
+        generate.assert_not_called()
+        with self.database.session() as session:
+            job = session.get(Job, response.get_json()["job_id"])
+            self.assertEqual("audio.waveform", job.kind)
+            self.assertEqual(source.id, job.payload_json["source_artifact_id"])
+
+    def test_bounded_waveform_generation_failure_falls_back_to_queue(self):
+        source = self._source("waveform-fallback.wav")
+        with mock.patch.object(
+            self.handlers,
+            "generate_waveform",
+            side_effect=RuntimeError("media backend unavailable"),
+        ):
+            response = self.client.get(
+                f"/api/v1/artifacts/{source.id}/waveform?start_ms=0&end_ms=1000"
+            )
+
+        self.assertEqual(202, response.status_code)
+        with self.database.session() as session:
+            job = session.get(Job, response.get_json()["job_id"])
+            self.assertEqual("audio.waveform", job.kind)
+
     def test_workflow_snapshot_projects_resumed_generation_job_and_segment_progress(
         self,
     ):

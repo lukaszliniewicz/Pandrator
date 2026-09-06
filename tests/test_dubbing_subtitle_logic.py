@@ -116,6 +116,40 @@ class DubbingSubtitleLogicTests(unittest.TestCase):
         self.assertEqual(segments[0].text, "Hello there.")
         self.assertNotIn("Speaker 7", srt_utils.compose_srt(segments))
 
+    def test_human_speaker_prefixes_are_normalized_without_stripping_prose(self):
+        segments = srt_utils.parse_srt(
+            """1
+00:00:00,000 --> 00:00:01,000
+Pascal Schilling: Welcome.
+
+2
+00:00:01,000 --> 00:00:02,000
+wytsk: First repeated utterance.
+
+3
+00:00:02,000 --> 00:00:03,000
+WYTSK: Second repeated utterance.
+
+4
+00:00:03,000 --> 00:00:04,000
+Reason: explanation
+"""
+        )
+
+        self.assertEqual(
+            [segment.speaker for segment in segments],
+            ["Pascal Schilling", "wytsk", "WYTSK", ""],
+        )
+        self.assertEqual(
+            [segment.text for segment in segments],
+            [
+                "Welcome.",
+                "First repeated utterance.",
+                "Second repeated utterance.",
+                "Reason: explanation",
+            ],
+        )
+
     def test_srt_composer_never_serializes_a_legacy_speaker_prefix(self):
         content = srt_utils.compose_srt(
             [SubtitleSegment(1, 0, 1000, "[SPEAKER_3]: Hello.", "SPEAKER_3")]

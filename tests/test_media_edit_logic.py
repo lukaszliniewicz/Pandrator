@@ -7,6 +7,7 @@ from pandrator.logic.media_edit import (
     align_cues_to_words,
     caption_to_srt,
     keep_ranges_from_cuts,
+    media_cues_to_transcript,
     normalize_keep_ranges,
     parse_caption_text,
     refine_boundary,
@@ -95,9 +96,64 @@ def test_alignment_handles_offset_and_punctuation_differences():
     aligned = align_cues_to_words((cue,), words)[0]
 
     assert (aligned.start_ms, aligned.end_ms) == (3_500, 4_300)
-    assert aligned.words == words
+    assert [word.text for word in aligned.words] == ["Hello,", "world!"]
+    assert [(word.start_ms, word.end_ms) for word in aligned.words] == [
+        (word.start_ms, word.end_ms) for word in words
+    ]
     assert aligned.timing_source == "asr_alignment"
     assert aligned.timing_confidence == 1
+
+
+def test_alignment_preserves_caption_surfaces_and_does_not_fabricate_edges():
+    cue = MediaCue("caption", 0, 2_000, "Leading Hello, world! trailing")
+    words = (
+        MediaWord("HELLO", 3_500, 3_800),
+        MediaWord("WORLD", 3_900, 4_300),
+    )
+
+    aligned = align_cues_to_words((cue,), words)[0]
+
+    assert [word.text for word in aligned.words] == ["Hello,", "world!"]
+    assert [(word.start_ms, word.end_ms) for word in aligned.words] == [
+        (3_500, 3_800),
+        (3_900, 4_300),
+    ]
+
+
+def test_media_cues_to_transcript_is_canonical_and_cue_authoritative():
+    payload = media_cues_to_transcript(
+        (
+            MediaCue(
+                "cue-1",
+                100,
+                500,
+                "Hello,",
+                speaker="Alice",
+                timing_source="asr_alignment",
+                timing_confidence=0.75,
+                words=(MediaWord("Hello,", 120, 300, 0.9),),
+            ),
+        )
+    )
+
+    segment = payload["segments"][0]
+    word = segment["words"][0]
+    assert payload["schema"] == "pandrator.transcript.v1"
+    assert segment["text"] == "Hello,"
+    assert segment["speaker"] == "Alice"
+    assert segment["metadata"] == {
+        "timing_source": "asr_alignment",
+        "timing_confidence": 0.75,
+    }
+    assert word["text"] == "Hello,"
+    assert word["speaker"] == "Alice"
+    assert word["start_ms"] == 120
+    assert word["end_ms"] == 300
+    assert word["confidence"] == 0.9
+    assert word["metadata"] == {
+        "source_cue_id": "cue-1",
+        "timing_source": "asr_alignment",
+    }
 
 
 def test_alignment_reuses_anchor_for_overlapping_cues():

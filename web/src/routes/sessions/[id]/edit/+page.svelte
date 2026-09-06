@@ -14,10 +14,18 @@
     Save,
     Scissors,
     Search,
+    Settings2,
+    Sparkles,
+    X,
     Trash2
   } from '@lucide/svelte';
   import { onDestroy, onMount } from 'svelte';
-  import { artifactApi, jobApi, mediaEditApi } from '$lib/domain-api';
+  import {
+    artifactApi,
+    jobApi,
+    mediaEditApi,
+    sessionApi
+  } from '$lib/domain-api';
   import type {
     JobRecord,
     MediaEditPlan,
@@ -26,6 +34,7 @@
   } from '$lib/api-models';
   import { errorMessage } from '$lib/errors';
   import MediaTimeline from '$lib/MediaTimeline.svelte';
+  import { modalFocus } from '$lib/modal-focus';
 
   type CutRange = MediaEditRange;
 
@@ -51,12 +60,20 @@
   let activeJob = $state<JobRecord | null>(null);
   let pollTimer: number | undefined;
   let detailTimer: number | undefined;
+  let playbackFrame: number | undefined;
   let detailRequest: AbortController | undefined;
   let detailKey = '';
-  let pendingDetailKey = '';
+  let pendingDetailKey = $state('');
   let loopEndMs: number | null = null;
   let captionTrackUrl = $state('');
   let cutSequence = 0;
+  let proposalOpen = $state(false);
+  let proposalModel = $state('default');
+  let proposalModels = $state<
+    { value: string; label: string; isDefault: boolean }[]
+  >([]);
+  let proposalModelsLoading = $state(false);
+  let proposalModelsError = $state('');
 
   const activeCue = $derived(
     plan?.cues.find(
@@ -101,15 +118,29 @@
     return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${String(fraction).padStart(3, '0')}`;
   }
 
+  function escapeVttText(value: string) {
+    return value
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('-->', '→');
+  }
+
+  function escapeVttVoice(value: string) {
+    return value.replaceAll('&', '&amp;').replaceAll('>', '&gt;');
+  }
+
   function updateCaptionTrack(next: MediaEditPlan | null) {
     if (captionTrackUrl) URL.revokeObjectURL(captionTrackUrl);
     captionTrackUrl = '';
     if (!next?.cues.length) return;
     const body = next.cues
       .map((cue) => {
-        const speaker = cue.speaker ? `${cue.speaker}: ` : '';
-        const text = `${speaker}${cue.text}`.replaceAll('-->', '→');
-        return `${vttTime(cue.start_ms)} --> ${vttTime(cue.end_ms)}\n${text}`;
+        const text = escapeVttText(cue.text);
+        const caption = cue.speaker
+          ? `<v ${escapeVttVoice(cue.speaker)}>${text}</v>`
+          : text;
+        return `${vttTime(cue.start_ms)} --> ${vttTime(cue.end_ms)}\n${caption}`;
       })
       .join('\n\n');
     captionTrackUrl = URL.createObjectURL(
@@ -235,6 +266,7 @@
       plan?.source_media_artifact.id ??
       workspaceState?.readiness.source_media_artifact?.id;
     if (!artifactId) return;
+    scheduleDetailWaveform();
     try {
       for (let attempt = 0; attempt < 40; attempt += 1) {
         const result = await artifactApi.waveform(artifactId, 5000);
@@ -305,6 +337,50 @@
       }
     } finally {
       if (pendingDetailKey === key) pendingDetailKey = '';
+    }
+  }
+
+  async function openProposal() {
+    proposalOpen = true;
+    if (proposalModels.length || proposalModelsLoading) return;
+    proposalModelsLoading = true;
+    proposalModelsError = '';
+    try {
+      const providerPayload = await sessionApi.providers();
+      const enabled = providerPayload.items.filter(
+        (provider) => provider.enabled
+      );
+      const groups = await Promise.all(
+        enabled.map(async (provider) => ({
+          provider,
+          models: (await sessionApi.providerModels(provider.id)).items
+        }))
+      );
+      proposalModels = groups.flatMap(({ provider, models }) =>
+        models
+          .filter((item) => item.is_active)
+          .map((item) => {
+            const custom =
+              Boolean(provider.options_json?.is_custom) ||
+              !['openai', 'gemini', 'anthropic'].includes(
+                provider.provider_key
+              );
+            const providerId = custom
+              ? provider.options_json?.provider_id || provider.id
+              : provider.options_json?.provider_id || provider.provider_key;
+            return {
+              value: custom
+                ? `custom:${providerId}/${item.model_id}`
+                : `${provider.provider_key}/${item.model_id}`,
+              label: `${provider.label} · ${item.model_id}`,
+              isDefault: Boolean(item.is_default)
+            };
+          })
+      );
+    } catch (caught) {
+      proposalModelsError = errorMessage(caught);
+    } finally {
+      proposalModelsLoading = false;
     }
   }
 
@@ -389,8 +465,14 @@
       const saved = await save(false);
       if (!saved) return;
       busy = 'propose';
+      proposalOpen = false;
       await watchJob(
-        await mediaEditApi.propose(sessionId, saved.revision, instructions),
+        await mediaEditApi.propose(
+          sessionId,
+          saved.revision,
+          instructions,
+          proposalModel === 'default' ? undefined : proposalModel
+        ),
         'The agent proposal is ready. Review every red range before rendering.'
       );
     } catch (caught) {
@@ -432,6 +514,24 @@
       video.pause();
       loopEndMs = null;
     }
+  }
+
+  function stopPlaybackTracking() {
+    if (playbackFrame !== undefined) {
+      window.cancelAnimationFrame(playbackFrame);
+      playbackFrame = undefined;
+    }
+  }
+
+  function trackPlayback() {
+    stopPlaybackTracking();
+    const tick = () => {
+      updatePlayback();
+      if (video && !video.paused && !video.ended)
+        playbackFrame = window.requestAnimationFrame(tick);
+      else playbackFrame = undefined;
+    };
+    tick();
   }
 
   function audition(timeMs: number) {
@@ -480,14 +580,15 @@
   onDestroy(() => {
     if (pollTimer !== undefined) window.clearTimeout(pollTimer);
     if (detailTimer !== undefined) window.clearTimeout(detailTimer);
+    stopPlaybackTracking();
     detailRequest?.abort();
     if (captionTrackUrl) URL.revokeObjectURL(captionTrackUrl);
   });
 </script>
 
-<div class="space-y-5">
+<div class="min-w-0 max-w-full space-y-5 overflow-x-hidden">
   <header class="flex flex-wrap items-end justify-between gap-4">
-    <div>
+    <div class="min-w-0">
       <div class="eyebrow">Transcript-guided edit</div>
       <h2 class="mt-1 text-2xl font-semibold">
         Cut the recording, not your patience
@@ -501,16 +602,31 @@
         <button
           onclick={() => prepare(true)}
           disabled={Boolean(busy)}
-          class="secondary"><RefreshCw size={15} /> Rebuild inputs</button
+          title="Re-read the current recording, captions, and optional ASR timing into a new editable plan."
+          class="secondary"><RefreshCw size={15} /> Rebuild</button
         ><button
           onclick={() => save()}
           disabled={Boolean(busy)}
-          class="secondary"><Save size={15} /> Save revision</button
-        ><button onclick={render} disabled={Boolean(busy)} class="primary"
+          title="Save the current cut ranges as a new reversible plan revision without rendering media."
+          class="secondary"><Save size={15} /> Save</button
+        ><a
+          href={`/sessions/${sessionId}?settings=transcribe`}
+          title="Choose the recognition model used to align attached captions while preserving their wording and speakers."
+          class="secondary"><Settings2 size={15} /> Alignment</a
+        ><button
+          onclick={openProposal}
+          disabled={Boolean(busy)}
+          title="Choose an LLM and ask it to propose removable transcript spans. Nothing is rendered automatically."
+          class="secondary"><Sparkles size={15} /> Process with LLM</button
+        ><button
+          onclick={render}
+          disabled={Boolean(busy)}
+          title="Mark this exact plan reviewed and create edited media plus retimed subtitles."
+          class="primary"
           >{#if busy === 'render'}<LoaderCircle
               class="animate-spin"
               size={16}
-            />{:else}<Scissors size={16} />{/if} Render reviewed edit</button
+            />{:else}<Scissors size={16} />{/if} Render</button
         >
       </div>{/if}
   </header>
@@ -549,8 +665,10 @@
       <LoaderCircle class="animate-spin text-[var(--accent)]" />
     </section>
   {:else if !plan}<section class="surface rounded-2xl p-6 sm:p-8">
-      <div class="grid gap-6 lg:grid-cols-[1fr_.85fr]">
-        <div>
+      <div
+        class="grid min-w-0 gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,.85fr)]"
+      >
+        <div class="min-w-0">
           <div class="eyebrow">Inputs</div>
           <h3 class="mt-1 text-xl font-semibold">
             Prepare the editable timeline
@@ -559,6 +677,8 @@
             Pandrator needs a recording plus either attached captions or a
             completed ASR transcription. When both exist, the caption wording
             and speakers stay authoritative while ASR supplies finer timing.
+            Aligned words remain available in the edit plan and the rendered
+            native subtitle document.
           </p>
           <button
             onclick={() => prepare(false)}
@@ -575,7 +695,7 @@
               >Open Overview to run ASR first</a
             >{/if}
         </div>
-        <div class="space-y-2">
+        <div class="min-w-0 space-y-2">
           {@render InputStatus(
             'Recording',
             Boolean(workspaceState.readiness.source_media_artifact),
@@ -593,18 +713,18 @@
               'Attach Zoom captions or run Transcribe'
           )}
           {@render InputStatus(
-            'Word timing evidence',
+            'Caption word alignment',
             Boolean(workspaceState.readiness.timing_artifact),
             workspaceState.readiness.timing_artifact?.filename ??
-              'Optional: run Transcribe for precise ASR word timing'
+              'Optional: configure Alignment to project ASR word timing onto captions'
           )}
         </div>
       </div>
     </section>
   {:else}<div
-      class="grid gap-5 2xl:grid-cols-[minmax(0,1.55fr)_minmax(23rem,.65fr)]"
+      class="grid min-w-0 max-w-full gap-5 2xl:grid-cols-[minmax(0,1.55fr)_minmax(23rem,.65fr)]"
     >
-      <div class="space-y-5">
+      <div class="min-w-0 space-y-5">
         <section class="surface overflow-hidden rounded-2xl">
           <video
             bind:this={video}
@@ -613,6 +733,10 @@
             preload="metadata"
             class="aspect-video max-h-[68vh] w-full bg-black object-contain"
             ontimeupdate={updatePlayback}
+            onseeked={updatePlayback}
+            onplay={trackPlayback}
+            onpause={stopPlaybackTracking}
+            onended={stopPlaybackTracking}
           >
             <track
               kind="captions"
@@ -645,10 +769,11 @@
               {detailPeaks}
               {detailPeaksStartMs}
               {detailPeaksEndMs}
+              detailLoading={Boolean(pendingDetailKey)}
               onseek={seek}
             />
             <div
-              class="flex flex-wrap items-end gap-2 rounded-xl bg-[var(--paper)] p-3"
+              class="flex flex-wrap items-center gap-2 rounded-xl bg-[var(--paper)] p-3"
             >
               <button onclick={() => (cutStartMs = currentMs)} class="marker">
                 Set cut start<br /><small
@@ -749,36 +874,7 @@
         </section>
       </div>
 
-      <aside class="space-y-5">
-        <section class="surface rounded-2xl p-5">
-          <div class="flex items-center gap-2">
-            <Bot class="text-[var(--accent)]" size={18} />
-            <h3 class="font-semibold">Agent edit proposal</h3>
-          </div>
-          <label
-            class="mt-4 block text-xs font-semibold uppercase tracking-[.08em] text-[var(--muted)]"
-            >Editing instructions<textarea
-              bind:value={instructions}
-              rows="7"
-              class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] p-3 text-sm font-normal normal-case tracking-normal text-[var(--ink)]"
-            ></textarea></label
-          >
-          <button
-            onclick={propose}
-            disabled={Boolean(busy) || !instructions.trim()}
-            class="primary mt-3 w-full justify-center disabled:opacity-40"
-            >{#if busy === 'propose'}<LoaderCircle
-                class="animate-spin"
-                size={16}
-              />{:else}<Bot size={16} />{/if} Propose cuts from transcript</button
-          >
-          <p class="muted mt-3 text-xs leading-relaxed">
-            The agent selects whole transcript spans. Pandrator then refines
-            each edge against ASR words and nearby speech gaps. Low-confidence
-            edges stay visible for manual review.
-          </p>
-        </section>
-
+      <aside class="min-w-0 space-y-5">
         {#if plan.evidence.warnings?.length}<section
             class="rounded-2xl border border-amber-400/40 bg-amber-500/10 p-4"
           >
@@ -850,14 +946,98 @@
     </div>{/if}
 </div>
 
+{#if proposalOpen}
+  <div
+    class="fixed inset-0 z-50 grid place-items-center bg-black/40 p-4 backdrop-blur-sm sm:p-6"
+    role="presentation"
+    onclick={(event) =>
+      event.target === event.currentTarget && (proposalOpen = false)}
+  >
+    <div
+      use:modalFocus={{
+        onclose: () => (proposalOpen = false),
+        initialFocus: '#media-edit-instructions'
+      }}
+      class="surface max-h-[92vh] w-full max-w-2xl overflow-y-auto rounded-[1.7rem] p-5 sm:p-7"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="proposal-title"
+    >
+      <div class="flex items-start justify-between gap-5">
+        <div class="min-w-0">
+          <div class="eyebrow">Transcript-guided edit</div>
+          <h2 id="proposal-title" class="mt-1 text-2xl font-semibold">
+            Process with LLM
+          </h2>
+          <p class="muted mt-2 text-sm leading-relaxed">
+            The model proposes removable transcript spans. Pandrator refines
+            their edges against word timing and speech gaps; you still review
+            every red range before rendering.
+          </p>
+        </div>
+        <button
+          onclick={() => (proposalOpen = false)}
+          aria-label="Close LLM proposal settings"
+          class="rounded-lg p-2"><X size={19} /></button
+        >
+      </div>
+      <div class="mt-6 grid gap-5">
+        <label class="text-sm font-semibold" for="media-edit-instructions"
+          >Editing instructions<textarea
+            id="media-edit-instructions"
+            bind:value={instructions}
+            rows="8"
+            class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] p-3 font-normal leading-relaxed text-[var(--ink)]"
+          ></textarea></label
+        >
+        <label class="text-sm font-semibold"
+          >LLM model<select
+            bind:value={proposalModel}
+            disabled={proposalModelsLoading}
+            class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal disabled:opacity-50"
+            ><option value="default"
+              >{proposalModelsLoading
+                ? 'Loading configured models…'
+                : 'Application default'}</option
+            >{#each proposalModels as item}<option value={item.value}
+                >{item.label}{item.isDefault ? ' · default' : ''}</option
+              >{/each}</select
+          ></label
+        >
+        {#if proposalModelsError}<p role="alert" class="text-xs text-red-500">
+            {proposalModelsError}
+          </p>{/if}
+        <a
+          href="/providers"
+          class="w-fit text-xs font-semibold text-[var(--accent)]"
+          >Manage LLM models and connections</a
+        >
+      </div>
+      <div class="mt-7 flex flex-wrap justify-end gap-3">
+        <button onclick={() => (proposalOpen = false)} class="secondary"
+          >Cancel</button
+        ><button
+          onclick={propose}
+          disabled={Boolean(busy) || !instructions.trim()}
+          class="primary disabled:opacity-40"
+          >{#if busy === 'propose'}<LoaderCircle
+              class="animate-spin"
+              size={16}
+            />{:else}<Bot size={16} />{/if} Generate proposal</button
+        >
+      </div>
+    </div>
+  </div>
+{/if}
+
 {#snippet InputStatus(label: string, ready: boolean, detail: string)}
   <div
-    class="flex items-start gap-3 rounded-xl border border-[var(--line)] p-3"
+    class="flex min-w-0 items-start gap-3 overflow-hidden rounded-xl border border-[var(--line)] p-3"
   >
     <span class:ready class="status-dot"></span>
     <div class="min-w-0">
       <strong class="text-sm">{label}</strong>
-      <p class="muted mt-0.5 truncate text-xs">{detail}</p>
+      <p class="muted mt-0.5 break-all text-xs sm:truncate">{detail}</p>
     </div>
   </div>
 {/snippet}

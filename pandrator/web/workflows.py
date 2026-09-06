@@ -302,8 +302,8 @@ SUBTITLE_STAGES = (
 MEDIA_EDIT_STAGES = (
     StageDefinition(
         "transcribe",
-        "Transcribe for timing",
-        "Create ASR captions and word timings for transcript alignment and precise cut boundaries.",
+        "Transcript & alignment",
+        "Generate word-timed ASR, or use it to align attached captions while preserving their wording and speakers.",
         prerequisite_roles=("upload",),
         output_role="transcription",
         job_kind="dubbing.transcribe",

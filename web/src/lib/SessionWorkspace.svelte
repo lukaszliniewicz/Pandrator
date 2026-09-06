@@ -64,15 +64,28 @@
     outcome: initialOutcome,
     workflowStore,
     onback,
-    onupdated
+    onupdated,
+    initialSettingsStage = ''
   }: {
     session: SessionRecord;
     outcome: OutcomePlan;
     workflowStore: WorkflowStore;
     onback: () => void;
     onupdated: (session: SessionRecord) => void;
+    initialSettingsStage?: string;
   } = $props();
   const snapshot = $derived(workflowStore.snapshot);
+  const hasAttachedCaptions = $derived(
+    session.workflow_kind === 'media_edit' &&
+      Boolean(
+        snapshot?.stages.some(
+          (stage) => stage.key === 'transcribe' && !stage.included
+        ) ||
+        snapshot?.sources.some((source) =>
+          /\.(srt|vtt|txt)$/i.test(source.filename)
+        )
+      )
+  );
   let outcome = $derived(initialOutcome);
   let capabilities = $state<RuntimeCapabilities>({});
   let ttsCatalogue = $state<TtsCatalogue>({ services: [] });
@@ -2196,8 +2209,12 @@
     fullSettingsDraft = null;
   }
 
-  async function saveSettings(mode: 'session' | 'defaults' = 'session') {
+  async function saveSettings(
+    mode: 'session' | 'defaults' = 'session',
+    runAfterSave = false
+  ) {
     if (!settingsStage) return;
+    const stage = settingsStage;
     const key = settingsStage.key;
     if (key === 'generate_audio' && publishingLibraryVoiceId) {
       error = `Wait for the selected library voice to finish ${audioCppLinkedReferences ? 'linking' : 'uploading'}.`;
@@ -2257,6 +2274,12 @@
       if (mode === 'session') {
         await load();
         settingsStage = null;
+        if (runAfterSave) {
+          const refreshed = workflowStore.snapshot?.stages.find(
+            (item) => item.key === stage.key
+          );
+          await run(refreshed ?? stage);
+        }
       }
     } catch (caught) {
       error = errorMessage(caught);
@@ -2300,6 +2323,12 @@
         ? 'automatic'
         : 'review';
     await load({ initial: true });
+    if (initialSettingsStage) {
+      const stage = workflowStore.snapshot?.stages.find(
+        (item) => item.key === initialSettingsStage
+      );
+      if (stage) await openSettings(stage);
+    }
   });
   $effect(() => {
     if (typeof localStorage !== 'undefined')
@@ -2316,7 +2345,7 @@
   });
 </script>
 
-<div class="w-full">
+<div class="min-w-0 max-w-full overflow-x-hidden">
   <button
     onclick={onback}
     class="muted mb-4 flex items-center gap-2 text-sm font-semibold"
@@ -2436,13 +2465,22 @@
         <WorkflowStageCard
           {stage}
           {workspaceMode}
+          runLabel={session.workflow_kind === 'media_edit' &&
+          stage.key === 'transcribe'
+            ? hasAttachedCaptions
+              ? 'Configure & align captions'
+              : 'Configure transcription'
+            : ''}
           optional={session.workflow_kind === 'media_edit' &&
             stage.key === 'transcribe' &&
             !stage.included}
           historyLoading={Boolean(historyLoading[stage.key])}
           onsettings={() => openSettings(stage)}
           ontoggle={toggleSpeechOptimization}
-          onrun={() => run(stage)}
+          onrun={() =>
+            session.workflow_kind === 'media_edit' && stage.key === 'transcribe'
+              ? openSettings(stage)
+              : run(stage)}
           onresume={() => resume(stage)}
           oncancel={() => cancel(stage)}
           onselect={(artifactId) => chooseStageArtifact(stage, artifactId)}
@@ -2756,6 +2794,55 @@
           </fieldset>
         {/if}
         {#if settingsStage.key === 'transcribe'}
+          {#if session.workflow_kind === 'media_edit'}<div
+              class="rounded-xl border border-[var(--line)] bg-[var(--accent-soft)] p-4"
+            >
+              <div class="text-sm font-semibold">
+                {hasAttachedCaptions
+                  ? 'Align attached captions'
+                  : 'Generate a word-timed transcript'}
+              </div>
+              {#if hasAttachedCaptions}<p
+                  class="muted mt-1 text-xs leading-relaxed"
+                >
+                  The recognizer supplies acoustic word timestamps; Pandrator
+                  projects them onto the attached caption cues. Zoom wording and
+                  speakers remain authoritative. The aligned cue and word data
+                  is stored in the edit plan and follows rendered subtitles into
+                  Pandrator's native document data for later presentation and
+                  speech-block work.
+                </p>{:else}<p class="muted mt-1 text-xs leading-relaxed">
+                  With no captions attached, this model creates the
+                  authoritative transcript, cue timing, and word timing used by
+                  the editor.
+                </p>{/if}
+              <div
+                class="mt-3 grid gap-2 text-xs leading-relaxed sm:grid-cols-3"
+              >
+                <div class="rounded-lg bg-[var(--paper)] p-3">
+                  <strong>Parakeet</strong><span class="muted mt-1 block"
+                    >Recommended for trusted Zoom captions: fast, with native
+                    timestamps.</span
+                  >
+                </div>
+                <div class="rounded-lg bg-[var(--paper)] p-3">
+                  <strong>MOSS + CTC</strong><span class="muted mt-1 block"
+                    >Use when new speaker discovery matters. Heavier; its CTC
+                    words align MOSS's own transcript.</span
+                  >
+                </div>
+                <div class="rounded-lg bg-[var(--paper)] p-3">
+                  <strong>Whisper</strong><span class="muted mt-1 block"
+                    >Broad compatibility, with approximate DTW word timestamps.</span
+                  >
+                </div>
+              </div>
+              <p class="muted mt-3 text-xs leading-relaxed">
+                Current caption alignment is an ASR-assisted lexical projection.
+                A transcript-conditioned CTC forced aligner is a separate method
+                and is not used by this pass yet.
+              </p>
+            </div>{/if}
           <label class="text-sm font-semibold"
             ><ParameterLabel
               section="stt"
@@ -4339,14 +4426,26 @@
           class="rounded-xl border border-[var(--line)] px-4 py-2.5 text-sm font-semibold"
           >Cancel</button
         ><button
-          onclick={() => saveSettings('session')}
+          onclick={() =>
+            saveSettings(
+              'session',
+              session.workflow_kind === 'media_edit' &&
+                settingsStage?.key === 'transcribe' &&
+                settingsStage.status !== 'running'
+            )}
           disabled={Boolean(publishingLibraryVoiceId) ||
             (settingsStage.key === 'translate' &&
               !translationSourceArtifactId) ||
             (settingsStage.key === 'generate_audio' &&
               !selectedTtsServiceAvailable)}
           class="rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40"
-          >Save settings</button
+          >{session.workflow_kind === 'media_edit' &&
+          settingsStage.key === 'transcribe' &&
+          settingsStage.status !== 'running'
+            ? hasAttachedCaptions
+              ? 'Save & align captions'
+              : 'Save & transcribe'
+            : 'Save settings'}</button
         >
       </div>
     </div>

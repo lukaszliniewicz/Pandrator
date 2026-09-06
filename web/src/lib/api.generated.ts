@@ -3696,6 +3696,11 @@ export interface components {
         MediaEditProposeRequest: {
             /** Instructions */
             instructions: string;
+            /**
+             * Model
+             * @default null
+             */
+            model?: string | null;
             /** Revision */
             revision: number;
         };

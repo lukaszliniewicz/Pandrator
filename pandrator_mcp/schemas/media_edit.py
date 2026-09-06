@@ -53,6 +53,7 @@ class ProposeMediaEditArguments(ToolInput):
     session_id: str = Field(min_length=1, max_length=80)
     revision: int = Field(ge=1)
     instructions: str = Field(min_length=1, max_length=10_000)
+    model: str | None = Field(default=None, max_length=512)
     wait: bool = True
     timeout_seconds: int = Field(
         default=_DEFAULT_JOB_WAIT_SECONDS,
@@ -67,6 +68,16 @@ class ProposeMediaEditArguments(ToolInput):
         normalized = value.strip()
         if not normalized:
             raise ValueError("Instructions must not be blank.")
+        return normalized
+
+    @field_validator("model")
+    @classmethod
+    def strip_model(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("Model must not be blank.")
         return normalized
 
 

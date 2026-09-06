@@ -1201,15 +1201,19 @@ class ApplicationClient:
         *,
         revision: int,
         instructions: str,
+        model: str | None = None,
         idempotency_key: str,
     ) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "revision": int(revision),
+            "instructions": instructions,
+        }
+        if model is not None:
+            body["model"] = model
         return self._request_json(
             f"/api/v1/sessions/{quote(session_id, safe='')}/media-edit/propose",
             method="POST",
-            body={
-                "revision": int(revision),
-                "instructions": instructions,
-            },
+            body=body,
             idempotency_key=idempotency_key,
         )
 

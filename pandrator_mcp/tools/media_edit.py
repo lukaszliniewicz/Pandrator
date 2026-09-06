@@ -139,14 +139,19 @@ def propose_media_edit(
     """Queue an instruction-driven edit proposal and optionally wait for it."""
 
     application = runtime.require_application()
+    proposal_kwargs: dict[str, Any] = {
+        "revision": arguments.revision,
+        "instructions": arguments.instructions,
+        "idempotency_key": arguments.idempotency_key,
+    }
+    if arguments.model is not None:
+        proposal_kwargs["model"] = arguments.model
     return _queue_job(
         runtime,
         arguments=arguments,
         enqueue=lambda: application.propose_media_edit(
             arguments.session_id,
-            revision=arguments.revision,
-            instructions=arguments.instructions,
-            idempotency_key=arguments.idempotency_key,
+            **proposal_kwargs,
         ),
         tool_name="media-edit proposal",
     )

@@ -8,6 +8,11 @@ from collections.abc import Mapping
 from dataclasses import replace
 from typing import Any, Literal, cast
 
+from pandrator.logic.speaker_labels import (
+    normalize_speaker_label,
+    speaker_label_candidate,
+)
+
 from .models import SubtitleSegment
 
 logger = logging.getLogger(__name__)
@@ -124,7 +129,7 @@ def parse_srt(srt_content: str) -> list[SubtitleSegment]:
     if not normalized:
         return []
 
-    segments: list[SubtitleSegment] = []
+    parsed_segments: list[tuple[int, int, int, str | None, str]] = []
     for fallback_index, block in enumerate(re.split(r"\n\s*\n+", normalized), start=1):
         lines = [line.rstrip() for line in block.split("\n") if line.strip()]
         if not lines:
@@ -150,22 +155,44 @@ def parse_srt(srt_content: str) -> list[SubtitleSegment]:
             logger.warning("Skipping SRT block with invalid timing: %s", error)
             continue
 
-        speaker, text = split_speaker_label("\n".join(lines[time_line_index + 1:]).strip())
+        speaker, text = split_speaker_label(
+            "\n".join(lines[time_line_index + 1 :]).strip()
+        )
         if not text:
             continue
         if end_ms <= start_ms:
             end_ms = start_ms + 100
+        parsed_segments.append((index, start_ms, end_ms, speaker, text))
 
+    candidate_counts: dict[str, int] = {}
+    for _index, _start_ms, _end_ms, speaker, text in parsed_segments:
+        if speaker:
+            continue
+        candidate = speaker_label_candidate(text)
+        if candidate is not None:
+            label, _payload = candidate
+            key = label.casefold()
+            candidate_counts[key] = candidate_counts.get(key, 0) + 1
+    repeated_speakers = {
+        label for label, count in candidate_counts.items() if count >= 2
+    }
+
+    segments: list[SubtitleSegment] = []
+    for index, start_ms, end_ms, speaker, text in parsed_segments:
+        normalized_speaker, normalized_text = speaker, text
+        if speaker is None:
+            normalized_speaker, normalized_text = normalize_speaker_label(
+                text, repeated_speakers
+            )
         segments.append(
             SubtitleSegment(
                 index=index,
                 start_ms=start_ms,
                 end_ms=end_ms,
-                text=text,
-                speaker=speaker or "",
+                text=normalized_text,
+                speaker=normalized_speaker or "",
             )
         )
-
     return segments
 
 

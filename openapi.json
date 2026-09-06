@@ -2448,6 +2448,19 @@
             "title": "Instructions",
             "type": "string"
           },
+          "model": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Model"
+          },
           "revision": {
             "minimum": 1,
             "title": "Revision",

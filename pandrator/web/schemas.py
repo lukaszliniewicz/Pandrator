@@ -493,6 +493,7 @@ class MediaEditPrepareRequest(StrictModel):
 class MediaEditProposeRequest(StrictModel):
     revision: StrictInt = Field(ge=1)
     instructions: StrictStr = Field(min_length=1, max_length=10000)
+    model: StrictStr | None = Field(default=None, max_length=512)
 
     @field_validator("instructions")
     @classmethod
@@ -500,6 +501,16 @@ class MediaEditProposeRequest(StrictModel):
         normalized = value.strip()
         if not normalized:
             raise ValueError("instructions must not be empty")
+        return normalized
+
+    @field_validator("model")
+    @classmethod
+    def _strip_model(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("model must not be empty")
         return normalized
 
 
