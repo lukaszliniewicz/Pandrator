@@ -372,6 +372,20 @@ export const voiceApi = {
         body
       }
     ),
+  promoteDesignPreview: (
+    voiceId: string,
+    revision: number,
+    body: ApiSchema<'VoiceDesignedSampleCreate'>
+  ) =>
+    typedApiJson<
+      '/api/v1/voices/{voiceId}/samples/from-preview',
+      'post',
+      JobRecord
+    >('/api/v1/voices/{voiceId}/samples/from-preview', 'post', {
+      path: { voiceId },
+      headers: { 'If-Match': `"${revision}"` },
+      body
+    }),
   replaceSample: (
     voiceId: string,
     sampleId: string,

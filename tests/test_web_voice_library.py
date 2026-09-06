@@ -13,10 +13,17 @@ from sqlalchemy import select
 
 from pandrator.logic import tts_handler
 from pandrator.web.api import create_app
-from pandrator.web.artifacts import ArtifactService
+from pandrator.web.artifacts import ArtifactService, sha256_file
 from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.database import Database
-from pandrator.web.models import AppSetting, Artifact, Voice, VoiceSample
+from pandrator.web.models import (
+    AppSetting,
+    Artifact,
+    ArtifactEdge,
+    Job,
+    Voice,
+    VoiceSample,
+)
 from pandrator.web.workflow_handlers import WorkflowHandlers
 from tests.web_test_support import prepare_web_test_data_root
 
@@ -66,6 +73,225 @@ class VoiceLibraryApiTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 202)
         self.assertEqual(response.get_json()["kind"], "voice.normalize_recording")
+
+    def test_breeze_preview_promotion_queues_reviewed_design_payload(self):
+        voice = self.client.post(
+            "/api/v1/voices",
+            json={"name": "Designed narrator", "language": "en"},
+            headers={"X-CSRF-Token": self.csrf},
+        ).get_json()
+        extension = self.app.extensions["pandrator"]
+        preview_path = extension["paths"].artifacts / "tts-previews" / "design.wav"
+        preview_path.parent.mkdir(parents=True, exist_ok=True)
+        preview_path.write_bytes(silent_wav())
+        preview = extension["artifacts"].register(
+            preview_path,
+            kind="audio",
+            role="tts_voice_preview",
+            metadata={
+                "service_id": "audio.cpp",
+                "model": "breeze_tts_2_q8_0",
+                "voice": "",
+                "language": "en",
+                "generation_prompt": "Warm delivery.",
+                "seed": 17,
+                "preview_text": "Reviewed design words.",
+                "generation_settings": {
+                    "model": "breeze_tts_2_q8_0",
+                    "api_key": "must not leave provenance",
+                },
+            },
+        )
+        response = self.client.post(
+            f"/api/v1/voices/{voice['id']}/samples/from-preview",
+            json={
+                "artifact_id": preview.id,
+                "transcript": "  Reviewed design words.  ",
+                "language": " en ",
+                "expected_voice_revision": voice["revision"],
+            },
+            headers={"X-CSRF-Token": self.csrf},
+        )
+        self.assertEqual(202, response.status_code, response.get_json())
+        queued = response.get_json()
+        self.assertEqual("voice.normalize_recording", queued["kind"])
+        self.assertEqual(preview.id, queued["payload_json"]["source_artifact_id"])
+        self.assertEqual(
+            sha256_file(preview_path),
+            queued["payload_json"]["source_artifact_sha256"],
+        )
+        self.assertEqual(
+            "tts_voice_preview", queued["payload_json"]["source_artifact_role"]
+        )
+        self.assertEqual(
+            "Reviewed design words.", queued["payload_json"]["reviewed_transcript"]
+        )
+        self.assertEqual("en", queued["payload_json"]["transcript_language"])
+        provenance = queued["payload_json"]["sample_provenance"]
+        self.assertEqual("generated_voice_design", provenance["source_kind"])
+        self.assertEqual(17, provenance["seed"])
+        self.assertNotIn("api_key", provenance["generation_settings"])
+        with extension["database"].session() as session:
+            job = session.get(Job, queued["id"])
+            artifact = session.get(Artifact, preview.id)
+            self.assertEqual([f"voice:{voice['id']}"], job.resource_keys_json)
+            self.assertEqual("current", artifact.state)
+
+    def test_breeze_preview_promotion_rejects_unapproved_artifacts_and_stale_revision(
+        self,
+    ):
+        voice = self.client.post(
+            "/api/v1/voices",
+            json={"name": "Guarded design narrator"},
+            headers={"X-CSRF-Token": self.csrf},
+        ).get_json()
+        extension = self.app.extensions["pandrator"]
+
+        def register_preview(name, **metadata):
+            path = extension["paths"].artifacts / "tts-previews" / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(silent_wav())
+            metadata.setdefault("preview_text", "Reviewed words.")
+            return extension["artifacts"].register(
+                path,
+                kind="audio",
+                role=metadata.pop("role", "tts_voice_preview"),
+                metadata=metadata,
+            )
+
+        cases = (
+            (
+                {
+                    "role": "voice_sample",
+                    "service_id": "audio_cpp",
+                    "model": "breeze_tts_2_q8_0",
+                },
+                "invalid_preview_artifact",
+            ),
+            (
+                {"service_id": "kokoro", "model": "breeze_tts_2_q8_0"},
+                "unsupported_preview_provider",
+            ),
+            (
+                {"service_id": "audio_cpp", "model": "kokoro"},
+                "unsupported_preview_model",
+            ),
+        )
+        for index, (metadata, code) in enumerate(cases):
+            preview = register_preview(f"guard-{index}.wav", **metadata)
+            response = self.client.post(
+                f"/api/v1/voices/{voice['id']}/samples/from-preview",
+                json={
+                    "artifact_id": preview.id,
+                    "transcript": "Reviewed words.",
+                    "expected_voice_revision": voice["revision"],
+                },
+                headers={"X-CSRF-Token": self.csrf},
+            )
+            self.assertEqual(422, response.status_code, response.get_json())
+            self.assertEqual(code, response.get_json()["error"]["code"])
+
+        missing = self.client.post(
+            f"/api/v1/voices/{voice['id']}/samples/from-preview",
+            json={
+                "artifact_id": "missing-preview",
+                "transcript": "Reviewed words.",
+                "expected_voice_revision": voice["revision"],
+            },
+            headers={"X-CSRF-Token": self.csrf},
+        )
+        self.assertEqual(404, missing.status_code)
+
+        mismatch = register_preview(
+            "mismatch.wav",
+            service_id="audio_cpp",
+            model="breeze_tts_2_q8_0",
+            preview_text="The words Breeze actually read.",
+        )
+        mismatched_transcript = self.client.post(
+            f"/api/v1/voices/{voice['id']}/samples/from-preview",
+            json={
+                "artifact_id": mismatch.id,
+                "transcript": "Different words.",
+                "expected_voice_revision": voice["revision"],
+            },
+            headers={"X-CSRF-Token": self.csrf},
+        )
+        self.assertEqual(422, mismatched_transcript.status_code)
+        self.assertEqual(
+            "preview_transcript_mismatch",
+            mismatched_transcript.get_json()["error"]["code"],
+        )
+
+        good = register_preview(
+            "unsafe.wav",
+            service_id="audio_cpp",
+            model="breeze_tts_2_q8_0",
+            preview_text="Reviewed words.",
+        )
+        with extension["database"].session() as session:
+            session.get(Artifact, good.id).relative_path = "../outside.wav"
+        unsafe = self.client.post(
+            f"/api/v1/voices/{voice['id']}/samples/from-preview",
+            json={
+                "artifact_id": good.id,
+                "transcript": "Reviewed words.",
+                "expected_voice_revision": voice["revision"],
+            },
+            headers={"X-CSRF-Token": self.csrf},
+        )
+        self.assertEqual(422, unsafe.status_code)
+        self.assertEqual("unsafe_preview_artifact", unsafe.get_json()["error"]["code"])
+
+        stale = self.client.post(
+            f"/api/v1/voices/{voice['id']}/samples/from-preview",
+            json={
+                "artifact_id": good.id,
+                "transcript": "Reviewed words.",
+                "expected_voice_revision": voice["revision"] + 1,
+            },
+            headers={"X-CSRF-Token": self.csrf},
+        )
+        self.assertEqual(409, stale.status_code)
+        self.assertEqual("revision_conflict", stale.get_json()["error"]["code"])
+
+    def test_breeze_preview_promotion_accepts_external_audio_cpp_profile(self):
+        voice = self.client.post(
+            "/api/v1/voices",
+            json={"name": "Externally designed narrator", "language": "en"},
+            headers={"X-CSRF-Token": self.csrf},
+        ).get_json()
+        extension = self.app.extensions["pandrator"]
+        preview_path = extension["paths"].artifacts / "tts-previews" / "external.wav"
+        preview_path.parent.mkdir(parents=True, exist_ok=True)
+        preview_path.write_bytes(silent_wav())
+        preview = extension["artifacts"].register(
+            preview_path,
+            kind="audio",
+            role="tts_voice_preview",
+            metadata={
+                "service_id": "audio-cpp-experimental",
+                "service_adapter": "audio_cpp",
+                "model": "breeze_tts_2_q8_0",
+                "preview_text": "The external Breeze sample.",
+            },
+        )
+
+        response = self.client.post(
+            f"/api/v1/voices/{voice['id']}/samples/from-preview",
+            json={
+                "artifact_id": preview.id,
+                "transcript": "The external Breeze sample.",
+                "expected_voice_revision": voice["revision"],
+            },
+            headers={"X-CSRF-Token": self.csrf},
+        )
+
+        self.assertEqual(202, response.status_code, response.get_json())
+        self.assertEqual(
+            "audio_cpp_experimental",
+            response.get_json()["payload_json"]["sample_provenance"]["service_id"],
+        )
 
     def test_voice_list_seeds_bundled_reference_sample(self):
         voices = self.client.get("/api/v1/voices").get_json()["items"]
@@ -378,6 +604,124 @@ class VoiceNormalizationTests(unittest.TestCase):
                         select(VoiceSample).where(VoiceSample.id == result["sample_id"])
                     )
                     self.assertEqual(sample.voice_id, voice_id)
+            finally:
+                database.dispose()
+
+    def test_design_normalization_stores_reviewed_transcript_and_provenance(self):
+        with tempfile.TemporaryDirectory() as directory:
+            paths = prepare_web_test_data_root(directory)
+            database = Database(paths.database)
+            try:
+                with database.session() as session:
+                    voice = Voice(name="Designed reference", language="en")
+                    session.add(voice)
+                    session.flush()
+                    voice_id = voice.id
+                source = paths.artifacts / "tts-previews" / "breeze.wav"
+                source.parent.mkdir(parents=True, exist_ok=True)
+                source.write_bytes(silent_wav())
+                artifacts = ArtifactService(database, paths)
+                preview = artifacts.register(
+                    source,
+                    kind="audio",
+                    role="tts_voice_preview",
+                    metadata={
+                        "service_id": "audio_cpp",
+                        "model": "breeze_tts_2_q8_0",
+                    },
+                )
+                result = WorkflowHandlers(database, paths).normalize_voice_recording(
+                    {
+                        "voice_id": voice_id,
+                        "source_artifact_id": preview.id,
+                        "expected_voice_revision": 1,
+                        "source_artifact_sha256": preview.content_hash,
+                        "source_artifact_role": "tts_voice_preview",
+                        "reviewed_transcript": "  Designed words.  ",
+                        "transcript_language": " en ",
+                        "sample_provenance": {
+                            "source_kind": "generated_voice_design",
+                            "source_preview_artifact_id": preview.id,
+                            "generation_prompt": "Warm delivery.",
+                            "seed": 17,
+                            "api_key": "must not persist",
+                        },
+                        "ffmpeg_executable": "ffmpeg",
+                    },
+                    lambda *_args: None,
+                    threading.Event(),
+                )
+                with database.session() as session:
+                    sample = session.get(VoiceSample, result["sample_id"])
+                    artifact = session.get(Artifact, result["artifact_id"])
+                    voice = session.get(Voice, voice_id)
+                    parent = session.scalar(
+                        select(ArtifactEdge).where(
+                            ArtifactEdge.child_artifact_id == artifact.id,
+                            ArtifactEdge.parent_artifact_id == preview.id,
+                        )
+                    )
+                    self.assertEqual("Designed words.", sample.transcript)
+                    self.assertEqual("en", sample.transcript_language)
+                    self.assertTrue(sample.transcript_reviewed)
+                    self.assertEqual(2, voice.revision)
+                    self.assertIsNotNone(parent)
+                    self.assertEqual(
+                        "generated_voice_design",
+                        artifact.metadata_json["sample_provenance"]["source_kind"],
+                    )
+                    self.assertNotIn(
+                        "api_key", artifact.metadata_json["sample_provenance"]
+                    )
+            finally:
+                database.dispose()
+
+    def test_design_normalization_rejects_audio_changed_after_review(self):
+        with tempfile.TemporaryDirectory() as directory:
+            paths = prepare_web_test_data_root(directory)
+            database = Database(paths.database)
+            try:
+                with database.session() as session:
+                    voice = Voice(name="Changed design", language="en")
+                    session.add(voice)
+                    session.flush()
+                    voice_id = voice.id
+                source = paths.artifacts / "tts-previews" / "changed.wav"
+                source.parent.mkdir(parents=True, exist_ok=True)
+                source.write_bytes(silent_wav())
+                preview = ArtifactService(database, paths).register(
+                    source,
+                    kind="audio",
+                    role="tts_voice_preview",
+                )
+                reviewed_hash = preview.content_hash
+                source.write_bytes(silent_wav() + b"changed")
+
+                with self.assertRaisesRegex(ValueError, "changed before"):
+                    WorkflowHandlers(database, paths).normalize_voice_recording(
+                        {
+                            "voice_id": voice_id,
+                            "source_artifact_id": preview.id,
+                            "source_artifact_sha256": reviewed_hash,
+                            "source_artifact_role": "tts_voice_preview",
+                            "expected_voice_revision": 1,
+                            "reviewed_transcript": "Reviewed words.",
+                            "ffmpeg_executable": "ffmpeg",
+                        },
+                        lambda *_args: None,
+                        threading.Event(),
+                    )
+                with database.session() as session:
+                    self.assertEqual(
+                        [],
+                        list(
+                            session.scalars(
+                                select(VoiceSample).where(
+                                    VoiceSample.voice_id == voice_id
+                                )
+                            )
+                        ),
+                    )
             finally:
                 database.dispose()
 

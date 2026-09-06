@@ -892,6 +892,7 @@ def _default_service_configs() -> list[dict[str, object]]:
                     "voice_reference_text": "optional",
                     "model_catalog": copy.deepcopy(AUDIO_CPP_MODEL_CATALOG),
                     "model_voice_modes": copy.deepcopy(AUDIO_CPP_MODEL_VOICE_MODES),
+                    GENERATION_PROMPT_MODELS_FIELD: ["breeze_tts_2_q8_0"],
                     "voice_catalogues": {
                         "qwen3_tts_1_7b_customvoice_q8_0": list(KOBOLD_QWEN_TTS_VOICES),
                         "magpie_tts_q8_0": magpie_voice_catalog(),
@@ -3605,14 +3606,6 @@ def _extract_generic_catalog(payload, kind: str) -> list[str]:
     return _dedupe_ordered(values)
 
 
-def _audio_cpp_model_is_supported(item: dict[str, object]) -> bool:
-    model_id = str(item.get("id") or "").strip().casefold()
-    family = str(item.get("family") or "").strip().lower()
-    # Breeze is present only on audio.cpp's development line. Keep it out of
-    # Pandrator until a stable release package is available.
-    return family != "breeze_tts" and not model_id.startswith("breeze")
-
-
 def get_audio_cpp_model_catalog(
     base_url: str,
     *,
@@ -3647,8 +3640,6 @@ def get_audio_cpp_model_catalog(
         if not model_id or model_id in seen:
             continue
         if task and task not in {"tts", "clon", "vdes"}:
-            continue
-        if not _audio_cpp_model_is_supported(raw_item):
             continue
         seen.add(model_id)
         item: dict[str, object] = {"id": model_id}
@@ -5762,20 +5753,12 @@ def _audio_cpp_model_metadata(model: str, endpoint: dict) -> dict[str, object]:
             if mode:
                 result["voice_mode"] = mode
             return result
-    if live_item:
-        result = {"id": model, **live_item}
-        if mode:
-            result["voice_mode"] = mode
-        elif result.get("mode") and not result.get("voice_mode"):
-            result["voice_mode"] = result["mode"]
-        return result
-    if mode:
-        return {"id": model, "voice_mode": mode}
-
     if "customvoice" in normalized or "magpie" in normalized:
         inferred_mode = "prebuilt"
     elif "pocket" in normalized:
         inferred_mode = "hybrid"
+    elif "breeze" in normalized:
+        inferred_mode = "optional_cloning"
     else:
         inferred_mode = "cloning"
     if "qwen" in normalized:
@@ -5794,8 +5777,24 @@ def _audio_cpp_model_metadata(model: str, endpoint: dict) -> dict[str, object]:
         family = "fireredtts3"
     elif "magpie" in normalized:
         family = "magpie_tts"
+    elif "breeze" in normalized:
+        family = "breeze_tts"
     else:
         family = ""
+    if live_item:
+        result = {"id": model, **live_item}
+        if mode:
+            result["voice_mode"] = mode
+        elif not result.get("voice_mode"):
+            live_family = str(result.get("family") or family).strip().lower()
+            result["voice_mode"] = (
+                "optional_cloning" if live_family == "breeze_tts" else inferred_mode
+            )
+        if not result.get("family") and family:
+            result["family"] = family
+        return result
+    if mode:
+        return {"id": model, "family": family, "voice_mode": mode}
     return {"id": model, "family": family, "voice_mode": inferred_mode}
 
 

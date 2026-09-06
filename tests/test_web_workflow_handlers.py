@@ -102,6 +102,109 @@ class WebWorkflowHandlerTests(unittest.TestCase):
             ),
         )
 
+    def test_breeze_preview_identity_includes_design_prompt_and_seed(self):
+        settings = {
+            "service": "audio_cpp",
+            "model": "breeze_tts_2_q8_0",
+            "xtts_model": "breeze_tts_2_q8_0",
+            "voice": "",
+            "speaker": "",
+            "language": "en",
+            "generation_prompt": "Warm delivery.",
+            "seed": 17,
+            "audio_cpp_seed": 17,
+            "preview_adapter": "audio_cpp",
+        }
+        with (
+            mock.patch.object(
+                self.handlers.tts_providers,
+                "synthesize",
+                return_value=AudioSegment.silent(duration=25),
+            ),
+            mock.patch.object(self.handlers, "_record_tts_usage"),
+        ):
+            first = self.handlers.preview_tts_voice(
+                {
+                    "text": "Designed words.",
+                    "settings": settings,
+                    "_job_id": "preview-one",
+                },
+                self.progress,
+                threading.Event(),
+            )
+            second = self.handlers.preview_tts_voice(
+                {
+                    "text": "Designed words.",
+                    "settings": {
+                        **settings,
+                        "generation_prompt": "Bright delivery.",
+                    },
+                    "_job_id": "preview-two",
+                },
+                self.progress,
+                threading.Event(),
+            )
+            third = self.handlers.preview_tts_voice(
+                {
+                    "text": "Designed words.",
+                    "settings": {**settings, "seed": 18, "audio_cpp_seed": 18},
+                    "_job_id": "preview-three",
+                },
+                self.progress,
+                threading.Event(),
+            )
+            fourth = self.handlers.preview_tts_voice(
+                {
+                    "text": "Other designed words.",
+                    "settings": settings,
+                    "_job_id": "preview-four",
+                },
+                self.progress,
+                threading.Event(),
+            )
+            repeated = self.handlers.preview_tts_voice(
+                {
+                    "text": "Designed words.",
+                    "settings": settings,
+                    "_job_id": "preview-five",
+                },
+                self.progress,
+                threading.Event(),
+            )
+        artifact_ids = {
+            first["artifact_id"],
+            second["artifact_id"],
+            third["artifact_id"],
+            fourth["artifact_id"],
+        }
+        self.assertEqual(4, len(artifact_ids))
+        self.assertNotEqual(first["artifact_id"], repeated["artifact_id"])
+        with self.database.session() as session:
+            first_artifact = session.get(Artifact, first["artifact_id"])
+            second_artifact = session.get(Artifact, second["artifact_id"])
+            third_artifact = session.get(Artifact, third["artifact_id"])
+            fourth_artifact = session.get(Artifact, fourth["artifact_id"])
+            self.assertEqual(
+                "Warm delivery.", first_artifact.metadata_json["generation_prompt"]
+            )
+            self.assertEqual(
+                "audio_cpp", first_artifact.metadata_json["service_adapter"]
+            )
+            self.assertEqual(
+                "Bright delivery.", second_artifact.metadata_json["generation_prompt"]
+            )
+            self.assertEqual(17, first_artifact.metadata_json["seed"])
+            self.assertEqual(
+                17, second_artifact.metadata_json["generation_settings"]["seed"]
+            )
+            self.assertEqual(18, third_artifact.metadata_json["seed"])
+            self.assertEqual(
+                "Other designed words.", fourth_artifact.metadata_json["preview_text"]
+            )
+            self.assertEqual(
+                "preview-one", first_artifact.metadata_json["preview_job_id"]
+            )
+
     def test_fraction_message_progress_uses_the_primary_work_counter(self):
         updates = []
         callback = _fraction_message_callback(

@@ -8,16 +8,16 @@ permissions:
 
 env:
   UPSTREAM_REPOSITORY: https://github.com/0xShug0/audio.cpp.git
-  UPSTREAM_COMMIT: c4dde1c2608a97f430f63f486f2912f531cb5e02
+  UPSTREAM_COMMIT: a2a4d4f34c0960edf1bf78e392de1fbce5a855e6
   CUDA_IMAGE: nvidia/cuda:12.4.1-devel-ubuntu22.04@sha256:da6791294b0b04d7e65d87b7451d6f2390b4d36225ab0701ee7dfec5769829f5
   CUDA_ARCHITECTURES: "75;80;86;89;90"
   CMAKE_ARCHIVE_URL: https://github.com/Kitware/CMake/releases/download/v3.31.6/cmake-3.31.6-linux-x86_64.tar.gz
   CMAKE_ARCHIVE_SHA256: 5a1133ff103c71eb5120e2cc3de922733e7d8a26a98ae716397e8676adb367bf
-  PACKAGE_NAME: audio.cpp-v0.7.1-linux-x86_64-cuda12
+  PACKAGE_NAME: audio.cpp-v0.7.2-linux-x86_64-cuda12
 
 jobs:
   build:
-    name: Build pinned audio.cpp v0.7.1 (CUDA 12.4)
+    name: Build pinned audio.cpp v0.7.2 (CUDA 12.4)
     runs-on: ubuntu-22.04
     timeout-minutes: 180
 
@@ -26,7 +26,7 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: 0xShug0/audio.cpp
-          ref: c4dde1c2608a97f430f63f486f2912f531cb5e02
+          ref: a2a4d4f34c0960edf1bf78e392de1fbce5a855e6
           path: audio.cpp
           fetch-depth: 1
 
@@ -43,8 +43,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          build_root="$RUNNER_TEMP/audio-cpp-v071-cuda-build"
-          output_root="$RUNNER_TEMP/audio-cpp-v071-cuda-output"
+          build_root="$RUNNER_TEMP/audio-cpp-v072-cuda-build"
+          output_root="$RUNNER_TEMP/audio-cpp-v072-cuda-output"
           rm -rf -- "$build_root" "$output_root"
           mkdir -p -- "$build_root" "$output_root"
           # The CUDA image may run through a rootless Docker daemon; make the
@@ -105,11 +105,12 @@ jobs:
           export SOURCE_DATE_EPOCH=0
           unset CUDAARCHS
 
-          # These are the upstream v0.7.1 Docker/CMake options. CPU-all-variants
+          # These are the upstream v0.7.2 Docker/CMake options. CPU-all-variants
           # also forces GGML_NATIVE=OFF, BUILD_SHARED_LIBS=ON, and GGML_BACKEND_DL=ON.
           "$cmake" -S /src -B /work/build \
             -DCMAKE_BUILD_TYPE=Release \
-            -DAUDIOCPP_MODEL_SET=full \
+            -DAUDIOCPP_MODEL_SET=custom \
+            '-DAUDIOCPP_MODELS=qwen3_tts;fish_audio;voxcpm2;magpie_tts;chatterbox;omnivoice;pocket_tts;fireredtts3;breeze_tts' \
             -DENGINE_ENABLE_CPU_ALL_VARIANTS=ON \
             -DENGINE_ENABLE_CUDA=ON \
             -DENGINE_ENABLE_CUDA_GRAPHS=ON \
@@ -133,11 +134,8 @@ jobs:
             -DCMAKE_EXE_LINKER_FLAGS=-Wl,--allow-shlib-undefined
 
           "$cmake" --build /work/build --parallel "$(nproc)" \
-            --target audiocpp_cli \
-            --target audiocpp_server \
-            --target audiocpp_gguf \
-            --target audiocpp_model_manager \
-            --target model_perf
+            --target audiocpp_cli audiocpp_server audiocpp_gguf \
+              audiocpp_model_manager model_perf
 
           {
             echo "upstream_repository=$UPSTREAM_REPOSITORY"
@@ -201,7 +199,9 @@ jobs:
           set -euo pipefail
           umask 022
           package_root="$OUTPUT_ROOT/$PACKAGE_NAME"
-          build_bin="$BUILD_ROOT/build/bin"
+          # BUILD_ROOT is mounted directly at /work/build inside the container,
+          # so CMake's /work/build/bin maps to BUILD_ROOT/bin on the host.
+          build_bin="$BUILD_ROOT/bin"
           mkdir -p -- "$package_root"
 
           for binary in audiocpp_cli audiocpp_server audiocpp_gguf audiocpp_model_manager; do
@@ -359,9 +359,9 @@ jobs:
       - name: Upload archive, checksum, and dependency report
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: audio.cpp-v0.7.1-linux-x86_64-cuda12
+          name: audio.cpp-v0.7.2-linux-x86_64-cuda12
           if-no-files-found: error
           path: |
-            ${{ runner.temp }}/audio-cpp-v071-cuda-output/audio.cpp-v0.7.1-linux-x86_64-cuda12.tar.gz
-            ${{ runner.temp }}/audio-cpp-v071-cuda-output/SHA256SUMS
-            ${{ runner.temp }}/audio-cpp-v071-cuda-output/dependency-report.txt
+            ${{ runner.temp }}/audio-cpp-v072-cuda-output/audio.cpp-v0.7.2-linux-x86_64-cuda12.tar.gz
+            ${{ runner.temp }}/audio-cpp-v072-cuda-output/SHA256SUMS
+            ${{ runner.temp }}/audio-cpp-v072-cuda-output/dependency-report.txt

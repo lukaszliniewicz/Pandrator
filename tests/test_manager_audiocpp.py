@@ -18,6 +18,7 @@ from pandrator_manager.components.audiocpp import (
     resolve_assets,
     server_config,
 )
+from pandrator_manager.components.catalog import PRESENTATIONS
 from pandrator_manager.context import CancellationToken, ManagerContext, WorkspaceLayout
 from pandrator_manager.errors import ManagerError
 from pandrator_manager.models import (
@@ -32,6 +33,26 @@ from pandrator_manager.operations.handlers import (
 
 
 class AudioCppManagerTests(unittest.TestCase):
+    def test_breeze_package_is_pinned_and_discloses_noncommercial_terms(self):
+        package = MODEL_PACKAGES["breeze_tts_2_q8_0"]
+        presentation = PRESENTATIONS["audio_cpp"]
+        breeze = next(
+            item
+            for item in presentation.models
+            if item.id == "breeze_tts_2_q8_0"
+        )
+
+        self.assertIn(package.id, SUPPORTED_MODEL_IDS)
+        self.assertEqual("breeze_tts", package.family)
+        self.assertEqual("tts", package.task)
+        self.assertEqual(
+            "0de52d61560f9f6b2dfeca79f9100f8fce0c2b17c52ec30622e23e150df1ad88",
+            package.sha256[0],
+        )
+        self.assertEqual(5_079_668_352, breeze.estimated_download_bytes)
+        self.assertIn("Non-Commercial", breeze.license_name)
+        self.assertIn("commercial use requires", breeze.usage_note)
+
     def test_server_config_is_local_lazy_and_covers_every_supported_package(self):
         config = server_config(ComputeVariant.VULKAN, list(SUPPORTED_MODEL_IDS))
 
@@ -51,7 +72,15 @@ class AudioCppManagerTests(unittest.TestCase):
             item for item in config["models"] if item["id"].startswith("pocket_tts")
         )
         self.assertEqual("english", pocket["load_options"]["language"])
-        self.assertEqual("clon", config["models"][-1]["task"])
+        firered = next(
+            item for item in config["models"] if item["id"].startswith("fireredtts3")
+        )
+        self.assertEqual("clon", firered["task"])
+        breeze = next(
+            item for item in config["models"] if item["id"].startswith("breeze_tts")
+        )
+        self.assertEqual("breeze_tts", breeze["family"])
+        self.assertEqual("tts", breeze["task"])
 
     def test_linux_cuda_resolves_to_the_pandrator_pinned_archive(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -67,9 +96,9 @@ class AudioCppManagerTests(unittest.TestCase):
         self.assertEqual(ComputeVariant.CUDA, effective)
         self.assertEqual(1, len(assets))
         self.assertEqual("cuda_binary", assets[0].kind)
-        self.assertEqual("audio.cpp-v0.7.1-linux-x86_64-cuda12.tar.gz", assets[0].name)
+        self.assertEqual("audio.cpp-v0.7.2-linux-x86_64-cuda12.tar.gz", assets[0].name)
         self.assertEqual(
-            "f55d39c048a2fffc96f245111fc47cdfff903550d9d352fa0a7f9e4da2356ab7",
+            "fb0f082a1226f38bc0a2ab1373891012243959d6a497df904a1498cbadcbc378",
             assets[0].sha256,
         )
         self.assertEqual(PANDRATOR_AUDIO_CPP_RELEASE_BASE, assets[0].release_base)

@@ -429,6 +429,13 @@ class VoiceTranscriptReview(StrictModel):
     expected_voice_revision: int | None = Field(default=None, ge=1)
 
 
+class VoiceDesignedSampleCreate(StrictModel):
+    artifact_id: str = Field(min_length=1, max_length=160)
+    transcript: str = Field(min_length=1, max_length=4000)
+    language: str | None = Field(default=None, max_length=40)
+    expected_voice_revision: int = Field(ge=1)
+
+
 class RvcModelUploadRequest(StrictModel):
     pth_artifact_id: str
     index_artifact_id: str
@@ -702,6 +709,8 @@ class TtsVoicePreviewRequest(StrictModel):
     model: str = Field(default="", max_length=300)
     voice: str = Field(default="", max_length=300)
     language: str = Field(default="", max_length=40)
+    generation_prompt: str | None = Field(default=None, max_length=4000)
+    seed: int | None = Field(default=None, ge=0, le=2_147_483_647)
 
 
 class ManagerDesiredComponentState(StrictModel):
@@ -1488,6 +1497,7 @@ SCHEMA_MODELS = {
         VoiceCreate,
         VoiceUpdate,
         VoiceTranscriptReview,
+        VoiceDesignedSampleCreate,
         TtsVoicePreviewRequest,
         ManagerDesiredComponentState,
         ManagerPlanRequest,

@@ -2534,6 +2534,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/voices/{voiceId}/samples/from-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["createVoiceSampleFromPreview"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/voices/{voiceId}/samples/{sampleId}": {
         parameters: {
             query?: never;
@@ -5065,6 +5081,11 @@ export interface components {
         /** TtsVoicePreviewRequest */
         TtsVoicePreviewRequest: {
             /**
+             * Generation Prompt
+             * @default null
+             */
+            generation_prompt?: string | null;
+            /**
              * Language
              * @default
              */
@@ -5074,6 +5095,11 @@ export interface components {
              * @default
              */
             model?: string;
+            /**
+             * Seed
+             * @default null
+             */
+            seed?: number | null;
             /** Text */
             text: string;
             /**
@@ -5096,6 +5122,20 @@ export interface components {
             language?: string | null;
             /** Name */
             name: string;
+        };
+        /** VoiceDesignedSampleCreate */
+        VoiceDesignedSampleCreate: {
+            /** Artifact Id */
+            artifact_id: string;
+            /** Expected Voice Revision */
+            expected_voice_revision: number;
+            /**
+             * Language
+             * @default null
+             */
+            language?: string | null;
+            /** Transcript */
+            transcript: string;
         };
         /** VoiceTranscriptReview */
         VoiceTranscriptReview: {
@@ -9768,6 +9808,30 @@ export interface operations {
             };
             /** @description Revision conflict */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createVoiceSampleFromPreview: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                voiceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VoiceDesignedSampleCreate"];
+            };
+        };
+        responses: {
+            /** @description Managed Breeze preview promotion queued */
+            202: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -540,12 +540,18 @@ class AudioCppAdapter(LegacyTtsAdapter):
         }
         for item in live_model_catalog:
             model_id = str(item.get("id") or "").strip()
-            if not model_id or not tts_handler._audio_cpp_model_is_supported(item):
+            if not model_id:
                 continue
             enriched = dict(static_by_id.get(model_id) or {})
             enriched.update(item)
             inferred = tts_handler._audio_cpp_model_metadata(model_id, service)
-            for key in ("family", "voice_mode", "experimental"):
+            for key in (
+                "family",
+                "voice_mode",
+                "experimental",
+                "license",
+                "usage_note",
+            ):
                 if key not in enriched and key in inferred:
                     enriched[key] = inferred[key]
             catalog_by_id[model_id] = enriched
@@ -592,11 +598,7 @@ class AudioCppAdapter(LegacyTtsAdapter):
         model_voice_modes = {}
         for model in models:
             catalog_item = catalog_by_id.get(model) or {}
-            mode = (
-                str(catalog_item.get("voice_mode") or catalog_item.get("mode") or "")
-                .strip()
-                .lower()
-            )
+            mode = str(catalog_item.get("voice_mode") or "").strip().lower()
             if not mode:
                 mode = str(
                     tts_handler._audio_cpp_model_metadata(model, service).get(
@@ -1699,6 +1701,9 @@ class TtsCatalogueService:
         model: str | None,
         voice: str | None,
         language: str | None,
+        generation_prompt: str | None = None,
+        seed: int | None = None,
+        preserve_blank_voice: bool = False,
     ) -> dict[str, Any] | None:
         connection_value, _, default_value, _ = self._settings()
         service = tts_handler.get_service_config(
@@ -1708,17 +1713,30 @@ class TtsCatalogueService:
         if service is None:
             return None
         resolved_id = normalize_service_id(service.get("id") or service_id)
+        resolved_adapter = str(service.get("adapter") or "").strip().casefold()
+        is_audio_cpp = resolved_adapter == "audio_cpp" or resolved_id in {
+            "audio_cpp",
+            "audio_cpp_experimental",
+        }
         resolved_model = model or str(service.get("default_model") or "")
         default_voices = (
             service.get("default_voices")
             if isinstance(service.get("default_voices"), dict)
             else {}
         )
-        resolved_voice = (
-            voice
-            or str(default_voices.get(resolved_model) or "")
-            or str(service.get("default_voice") or "")
-        )
+        if (
+            preserve_blank_voice
+            and is_audio_cpp
+            and resolved_model.strip().casefold() == "breeze_tts_2_q8_0"
+            and not str(voice or "").strip()
+        ):
+            resolved_voice = ""
+        else:
+            resolved_voice = (
+                voice
+                or str(default_voices.get(resolved_model) or "")
+                or str(service.get("default_voice") or "")
+            )
         service_name = (
             "OpenAI Compatible"
             if service.get("is_custom")
@@ -1740,8 +1758,16 @@ class TtsCatalogueService:
             "speaker": resolved_voice,
             "language": language or str(default_value.get("language") or "en"),
             "preview_service_id": resolved_id,
+            "preview_adapter": resolved_adapter,
             "preview_api_base": str(service.get("api_base") or ""),
         }
+        normalized_generation_prompt = str(generation_prompt or "").strip()
+        if normalized_generation_prompt:
+            settings["generation_prompt"] = normalized_generation_prompt
+        if seed is not None:
+            settings["seed"] = int(seed)
+            if is_audio_cpp:
+                settings["audio_cpp_seed"] = int(seed)
         if service.get("is_custom"):
             settings["openai_audio_endpoint"] = resolved_id
         return settings

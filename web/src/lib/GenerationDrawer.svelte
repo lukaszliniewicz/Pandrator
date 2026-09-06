@@ -153,12 +153,14 @@
     const catalogue = Array.from(
       service.voice_catalogues?.[selectedTtsModel] ?? []
     ).map(String);
-    const qwenCloning =
-      service.model_voice_modes?.[selectedTtsModel] === 'cloning' ||
+    const modelUsesReferences =
+      ['cloning', 'hybrid', 'optional_cloning'].includes(
+        service.model_voice_modes?.[selectedTtsModel] ?? ''
+      ) ||
       (selectedTtsServiceId === 'kobold_qwen' &&
         selectedTtsModel.toLowerCase() === 'voice cloning');
     const providerVoicesAllowed =
-      !service.supports_prebuilt_voices || qwenCloning;
+      !service.supports_prebuilt_voices || modelUsesReferences;
     const published = providerVoicesAllowed
       ? libraryVoices.flatMap((voice) => {
           const registration =
@@ -276,7 +278,9 @@
     model: string
   ) {
     const mode = service.model_voice_modes?.[model];
-    if (mode) return mode === 'cloning' || mode === 'hybrid';
+    if (mode) {
+      return ['cloning', 'hybrid', 'optional_cloning'].includes(mode);
+    }
     return Boolean(
       service.supports_voice_cloning && !service.supports_prebuilt_voices
     );

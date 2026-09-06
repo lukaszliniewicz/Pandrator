@@ -681,7 +681,7 @@ class FilesystemTaskHandler:
             SafeExtractor().extract(selected, unpacked)
             selected_assets.append(str(raw_asset.get("filename") or specification.filename))
 
-        # v0.7.1 archives are intentionally root-normalized: the server binary,
+        # v0.7.2 archives are intentionally root-normalized: the server binary,
         # model-manager script, and model_specs directory live directly below
         # the archive root. Refuse an unexpected enclosing/member root instead
         # of guessing and risking a broken or transient path in the slot.

@@ -8,7 +8,7 @@ GENERIC_JSON_ADAPTER = "generic_json"
 ELEVENLABS_NATIVE_ADAPTER = "elevenlabs_native"
 AZURE_SPEECH_ADAPTER = "azure_speech"
 
-# audio.cpp v0.7.1 ships these model families.  The server remains the source
+# audio.cpp v0.7.2 ships these model families.  The server remains the source
 # of truth when it advertises a live catalogue; these entries keep a fresh or
 # offline first-class service useful before its catalogue has been refreshed.
 AUDIO_CPP_MODEL_CATALOG = [
@@ -59,6 +59,25 @@ AUDIO_CPP_MODEL_CATALOG = [
         "family": "fireredtts3",
         "voice_mode": "cloning",
         "experimental": True,
+    },
+    {
+        "id": "breeze_tts_2_q8_0",
+        "family": "breeze_tts",
+        # Breeze can synthesize from instructions alone or use a linked
+        # reference recording and transcript for voice cloning.
+        "voice_mode": "optional_cloning",
+        "license": {
+            "name": "BreezeBlue Research and Non-Commercial License 1.1",
+            "url": (
+                "https://huggingface.co/audio-cpp/audio.cpp-gguf/blob/"
+                "dc6fecccc2b0c6bdda0a8b2f38fa61394fee0b9c/"
+                "Breeze-TTS-2-GGUF/LICENSE"
+            ),
+        },
+        "usage_note": (
+            "Research and non-commercial use only; commercial use requires "
+            "a separate written licence."
+        ),
     },
 ]
 AUDIO_CPP_MODEL_VOICE_MODES = {
@@ -1167,6 +1186,7 @@ def _audio_cpp_profile() -> dict:
         "models": model_ids,
         "model_catalog": model_catalog,
         "model_voice_modes": copy.deepcopy(AUDIO_CPP_MODEL_VOICE_MODES),
+        "generation_prompt_models": ["breeze_tts_2_q8_0"],
         # audio.cpp voice names are model-specific. Keep the provider-wide
         # fallback empty so Qwen, Magpie, and Pocket presets never leak into
         # cloning-only models when the live catalogue is unavailable.

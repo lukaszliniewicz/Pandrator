@@ -1366,6 +1366,26 @@ def build_openapi_document() -> dict:
                     },
                 },
             },
+            "/api/v1/voices/{voiceId}/samples/from-preview": {
+                "post": {
+                    "operationId": "createVoiceSampleFromPreview",
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/VoiceDesignedSampleCreate"
+                                }
+                            }
+                        },
+                    },
+                    "responses": {
+                        "202": {
+                            "description": "Managed Breeze preview promotion queued"
+                        }
+                    },
+                }
+            },
             "/api/v1/voices/{voiceId}/samples/{sampleId}": {
                 "delete": {
                     "operationId": "deleteVoiceSample",

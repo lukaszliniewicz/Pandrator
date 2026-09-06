@@ -684,7 +684,10 @@ export type TtsService = {
   supports_model_upload?: boolean;
   supports_prebuilt_voices?: boolean;
   voice_reference_text?: 'required' | 'optional' | 'ignored';
-  model_voice_modes?: Record<string, 'prebuilt' | 'cloning' | 'hybrid'>;
+  model_voice_modes?: Record<
+    string,
+    'prebuilt' | 'cloning' | 'hybrid' | 'optional_cloning'
+  >;
   supports_batch_synthesis?: boolean;
   batch_synthesis?: {
     supported?: boolean;

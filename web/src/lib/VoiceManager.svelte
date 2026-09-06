@@ -34,6 +34,7 @@
   import GuidedTour from './GuidedTour.svelte';
   import SettingsModal from './SettingsModal.svelte';
   import PrebuiltVoiceLibrary from './PrebuiltVoiceLibrary.svelte';
+  import VoiceDesignDialog from './VoiceDesignDialog.svelte';
   import { modalFocus } from './modal-focus';
 
   type Voice = VoiceRecord;
@@ -119,6 +120,8 @@
   let editName = $state('');
   let editLanguage = $state('');
   let editDescription = $state('');
+  let voiceDesignOpen = $state(false);
+  let designInitialVoiceId = $state('');
 
   const tourSteps = [
     {
@@ -265,6 +268,34 @@
     } catch (caught) {
       report(caught);
     }
+  }
+
+  function openVoiceDesigner(voiceId = '') {
+    designInitialVoiceId = voiceId;
+    voiceDesignOpen = true;
+    error = '';
+    notice = '';
+  }
+
+  async function designedVoiceSaved(
+    voiceId: string,
+    providerVoiceId?: string,
+    warning?: string
+  ) {
+    const savedNotice =
+      warning ??
+      (providerVoiceId
+        ? 'Designed sample saved with its reviewed transcript and linked to audio.cpp.'
+        : 'Designed sample saved with its reviewed transcript.');
+    try {
+      await loadVoices();
+      const voice = voices.find((item) => item.id === voiceId);
+      if (voice) await choose(voice);
+      notice = savedNotice;
+    } catch (caught) {
+      notice = `${savedNotice} The library could not refresh automatically: ${errorMessage(caught)}`;
+    }
+    if (providerVoiceId) onvoicepublished?.(providerVoiceId);
   }
 
   async function saveVoice() {
@@ -843,11 +874,14 @@
         <div class="eyebrow">Voices</div>
         <h1 class="mt-2 text-4xl font-semibold">Voice Library</h1>
         <p class="muted mt-2 text-sm">
-          Manage voice-cloning references and compare provider voices in one
-          workspace.
+          Design, record, and manage cloning references, or compare provider
+          voices in one workspace.
         </p>
       </div>
       {#if activeView === 'references'}<div class="flex gap-2">
+          <button onclick={() => openVoiceDesigner()} class="btn btn-primary"
+            ><WandSparkles size={16} /> Design voice</button
+          >
           <button
             onclick={() => (tourOpen = true)}
             class="rounded-xl border border-[var(--line)] px-4 py-2 text-sm font-semibold"
@@ -856,7 +890,7 @@
         </div>{/if}
     </header>
   {/if}
-  <div class="mb-6 flex shrink-0 gap-2 border-b border-[var(--line)]">
+  <div class="mb-6 flex shrink-0 flex-wrap gap-2 border-b border-[var(--line)]">
     <button
       onclick={() => (activeView = 'references')}
       class:active={activeView === 'references'}
@@ -866,6 +900,11 @@
       class:active={activeView === 'prebuilt'}
       class="library-tab"><AudioLines size={16} /> Pre-built voices</button
     >
+    {#if embedded && activeView === 'references'}<button
+        onclick={() => openVoiceDesigner()}
+        class="btn btn-sm btn-primary mb-2 ml-auto self-center"
+        ><WandSparkles size={15} /> Design voice</button
+      >{/if}
   </div>
   {#if activeView === 'references'}
     {#if error}<div
@@ -1020,14 +1059,22 @@
                   : 's'} · add clean speech references for reusable voices.
               </p>
             </div>
-            {#if !selected.bundled}<button
-                type="button"
-                onclick={() => sampleUploadInput?.click()}
-                disabled={uploadingSample}
-                class="btn btn-primary disabled:opacity-40"
-                ><CloudUpload size={16} />
-                {uploadingSample ? 'Uploading…' : 'Upload sample'}</button
-              ><input
+            {#if !selected.bundled}<div class="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onclick={() => openVoiceDesigner(selected?.id)}
+                  class="btn btn-secondary"
+                  ><WandSparkles size={16} /> Design sample</button
+                ><button
+                  type="button"
+                  onclick={() => sampleUploadInput?.click()}
+                  disabled={uploadingSample}
+                  class="btn btn-primary disabled:opacity-40"
+                  ><CloudUpload size={16} />
+                  {uploadingSample ? 'Uploading…' : 'Upload sample'}</button
+                >
+              </div>
+              <input
                 bind:this={sampleUploadInput}
                 type="file"
                 accept="audio/*"
@@ -1452,15 +1499,24 @@
                 class="muted rounded-2xl border border-dashed border-[var(--line)] p-10 text-center"
               >
                 <Play class="mx-auto mb-2" size={22} /> Add the first clean voice
-                sample by recording above or uploading a file.
-                {#if !selected.bundled}<button
-                    type="button"
-                    onclick={() => sampleUploadInput?.click()}
-                    disabled={uploadingSample}
-                    class="btn btn-primary mx-auto mt-4 w-fit disabled:opacity-40"
-                    ><CloudUpload size={16} />
-                    {uploadingSample ? 'Uploading…' : 'Upload sample'}</button
-                  >{/if}
+                sample by recording, designing, or uploading one.
+                {#if !selected.bundled}<div
+                    class="mx-auto mt-4 flex w-fit flex-wrap justify-center gap-2"
+                  >
+                    <button
+                      type="button"
+                      onclick={() => openVoiceDesigner(selected?.id)}
+                      class="btn btn-secondary"
+                      ><WandSparkles size={16} /> Design sample</button
+                    ><button
+                      type="button"
+                      onclick={() => sampleUploadInput?.click()}
+                      disabled={uploadingSample}
+                      class="btn btn-primary disabled:opacity-40"
+                      ><CloudUpload size={16} />
+                      {uploadingSample ? 'Uploading…' : 'Upload sample'}</button
+                    >
+                  </div>{/if}
               </div>
             {/each}
           </div>
@@ -1481,6 +1537,13 @@
     </div>
   {/if}
 </div>
+{#if voiceDesignOpen}<VoiceDesignDialog
+    services={ttsServices}
+    {voices}
+    initialVoiceId={designInitialVoiceId}
+    onclose={() => (voiceDesignOpen = false)}
+    onsaved={designedVoiceSaved}
+  />{/if}
 {#if deleteDialogOpen && selected}<div
     class="fixed inset-0 z-[80] grid place-items-center bg-black/45 p-4 backdrop-blur-sm"
     role="presentation"

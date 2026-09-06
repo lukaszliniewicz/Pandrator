@@ -153,6 +153,7 @@ from .schemas import (
     TtsEndpointDiscoveryRequest,
     TtsVoicePreviewRequest,
     VoiceCreate,
+    VoiceDesignedSampleCreate,
     VoiceTranscriptReview,
     VoiceUpdate,
 )
@@ -1509,6 +1510,11 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             model=payload.model,
             voice=payload.voice,
             language=payload.language,
+            generation_prompt=payload.generation_prompt,
+            seed=payload.seed,
+            preserve_blank_voice=(
+                "voice" in payload.model_fields_set and not payload.voice.strip()
+            ),
         )
         if settings is None:
             return error_response("not_found", "TTS service not found.", 404)
@@ -6001,6 +6007,157 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                     "voice_revision": voice.revision,
                 }
             )
+
+    @app.post("/api/v1/voices/<voice_id>/samples/from-preview")
+    @require_auth
+    def voice_sample_from_preview(voice_id: str):
+        payload = VoiceDesignedSampleCreate.model_validate(
+            request.get_json(silent=True) or {}
+        )
+        transcript = payload.transcript.strip()
+        language = str(payload.language or "").strip() or None
+        if not transcript:
+            return error_response(
+                "validation_error",
+                "A reviewed transcript is required.",
+                422,
+            )
+        with database.session() as db_session:
+            voice = db_session.get(Voice, voice_id)
+            if voice is None:
+                return error_response("not_found", "Voice not found.", 404)
+            if is_bundled_voice(voice):
+                return error_response(
+                    "bundled_voice_protected",
+                    "Samples cannot be added to the bundled reference voice.",
+                    409,
+                )
+            if voice.revision != payload.expected_voice_revision:
+                return error_response(
+                    "revision_conflict",
+                    "The voice changed in another client.",
+                    409,
+                )
+            artifact = db_session.get(Artifact, payload.artifact_id)
+            if artifact is None or artifact.state == "deleted":
+                return error_response(
+                    "not_found",
+                    "Preview artifact not found.",
+                    404,
+                )
+            if artifact.role != "tts_voice_preview" or artifact.kind != "audio":
+                return error_response(
+                    "invalid_preview_artifact",
+                    "The artifact is not a managed TTS voice preview.",
+                    422,
+                )
+            metadata = dict(artifact.metadata_json or {})
+            preview_text = str(metadata.get("preview_text") or "").strip()
+            if not preview_text:
+                return error_response(
+                    "invalid_preview_artifact",
+                    "The voice-design preview has no source transcript.",
+                    422,
+                )
+            if transcript != preview_text:
+                return error_response(
+                    "preview_transcript_mismatch",
+                    "The reviewed transcript must match the exact text used to generate the preview.",
+                    422,
+                )
+            transcript = preview_text
+            preview_service_id = normalize_tts_provider_id(metadata.get("service_id"))
+            preview_adapter = normalize_tts_provider_id(
+                metadata.get("service_adapter")
+                or (
+                    "audio_cpp"
+                    if preview_service_id in {"audio_cpp", "audio_cpp_experimental"}
+                    else ""
+                )
+            )
+            preview_model = str(metadata.get("model") or "").strip().casefold()
+            if preview_adapter != "audio_cpp":
+                return error_response(
+                    "unsupported_preview_provider",
+                    "Only audio.cpp voice-design previews can become voice samples.",
+                    422,
+                )
+            if preview_model != "breeze_tts_2_q8_0":
+                return error_response(
+                    "unsupported_preview_model",
+                    "Only Breeze TTS 2 voice-design previews can become voice samples.",
+                    422,
+                )
+            try:
+                preview_path = paths.managed_path(artifact.relative_path)
+            except (OSError, ValueError):
+                return error_response(
+                    "unsafe_preview_artifact",
+                    "The preview artifact path is not safely managed.",
+                    422,
+                )
+            if not preview_path.is_file() or not os.access(preview_path, os.R_OK):
+                return error_response(
+                    "invalid_preview_artifact",
+                    "The preview artifact is not a readable regular file.",
+                    422,
+                )
+            try:
+                preview_content_hash = sha256_file(preview_path)
+            except OSError:
+                return error_response(
+                    "invalid_preview_artifact",
+                    "The preview artifact could not be read.",
+                    422,
+                )
+            registered_hash = str(artifact.content_hash or "").strip().casefold()
+            if registered_hash and registered_hash != preview_content_hash:
+                return error_response(
+                    "preview_artifact_changed",
+                    "The voice-design preview changed after it was generated. Generate and review it again.",
+                    409,
+                )
+            preview_language = str(metadata.get("language") or "").strip() or None
+            preview_provenance = redact_inline_secrets(
+                {
+                    "source_kind": "generated_voice_design",
+                    "source_preview_artifact_id": artifact.id,
+                    "service_id": preview_service_id,
+                    "service_adapter": preview_adapter,
+                    "service": metadata.get("service"),
+                    "model": metadata.get("model"),
+                    "model_family": metadata.get("model_family")
+                    or metadata.get("family")
+                    or "breeze_tts",
+                    "generation_prompt": str(
+                        metadata.get("generation_prompt") or ""
+                    ).strip(),
+                    "seed": metadata.get("seed"),
+                    "preview_text": preview_text,
+                    "sample_transcript": transcript,
+                    "transcript": transcript,
+                    "language": language or preview_language,
+                    "generation_settings": metadata.get("generation_settings")
+                    if isinstance(metadata.get("generation_settings"), dict)
+                    else {},
+                }
+            )
+        job = jobs.enqueue(
+            "voice.normalize_recording",
+            {
+                "voice_id": voice_id,
+                "source_artifact_id": artifact.id,
+                "source_artifact_sha256": preview_content_hash,
+                "source_artifact_role": "tts_voice_preview",
+                "expected_voice_revision": payload.expected_voice_revision,
+                "reviewed_transcript": transcript,
+                "transcript_language": language or preview_language,
+                "sample_provenance": preview_provenance,
+                "ffmpeg_executable": shutil.which("ffmpeg") or "ffmpeg",
+            },
+            resource_keys=[f"voice:{voice_id}"],
+        )
+        return jsonify(_job_payload(job)), 202
 
     @app.post("/api/v1/voices/<voice_id>/samples")
     @require_auth

@@ -393,6 +393,10 @@ class TTSHandlerTests(unittest.TestCase):
             "Voice Cloning",
             services["kobold_qwen"][tts_handler.GENERATION_PROMPT_MODELS_FIELD],
         )
+        self.assertEqual(
+            ["breeze_tts_2_q8_0"],
+            services["audio_cpp"][tts_handler.GENERATION_PROMPT_MODELS_FIELD],
+        )
 
     def test_openai_generation_prompt_uses_instructions_only_on_capable_model(self):
         endpoint = {
@@ -710,6 +714,40 @@ class TTSHandlerTests(unittest.TestCase):
                 {},
             )
 
+    def test_audio_cpp_breeze_supports_design_and_optional_voice_cloning(self):
+        endpoint = {
+            "default_model": "breeze_tts_2_q8_0",
+            "model_catalog": tts_provider_profiles.AUDIO_CPP_MODEL_CATALOG,
+        }
+        designed = tts_handler._build_audio_cpp_audio_payload(
+            "Hello",
+            {
+                "language": "en-US",
+                "generation_prompt": "A calm, low documentary voice.",
+            },
+            endpoint,
+        )
+        cloned = tts_handler._build_audio_cpp_audio_payload(
+            "Hello",
+            {
+                "audio_cpp_voice_ref": {"type": "base64", "data": "UklGRg=="},
+                "audio_cpp_reference_text": "Reviewed reference words.",
+            },
+            endpoint,
+        )
+
+        self.assertEqual("A calm, low documentary voice.", designed["instructions"])
+        self.assertEqual("en", designed["language"])
+        self.assertNotIn("voice_ref", designed)
+        self.assertEqual("Reviewed reference words.", cloned["reference_text"])
+        self.assertEqual("base64", cloned["voice_ref"]["type"])
+        self.assertEqual(
+            "optional_cloning",
+            tts_handler._audio_cpp_model_metadata("breeze_tts_2_q8_0", endpoint)[
+                "voice_mode"
+            ],
+        )
+
     def test_audio_cpp_catalog_filters_non_speech_models_and_server_paths(self):
         model_response = Mock()
         model_response.json.return_value = {
@@ -744,7 +782,7 @@ class TTSHandlerTests(unittest.TestCase):
             )
 
         self.assertEqual(
-            ["fish-audio-s2-pro", "firered-clone"],
+            ["fish-audio-s2-pro", "breeze-clone", "firered-clone"],
             [item["id"] for item in models],
         )
         self.assertNotIn("path", models[0])

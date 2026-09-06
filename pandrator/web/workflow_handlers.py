@@ -942,16 +942,30 @@ class WorkflowHandlers:
         )
         if audio is None:
             raise RuntimeError("The speech service did not return preview audio.")
+        generation_prompt = str(settings.get("generation_prompt") or "").strip()
+        seed = settings.get("seed")
+        if seed is None:
+            seed = settings.get("audio_cpp_seed")
         preview_identity = {
             "service_id": service_id,
+            "service_adapter": str(settings.get("preview_adapter") or ""),
             "model": str(settings.get("model") or ""),
             "voice": str(settings.get("voice") or ""),
             "language": str(settings.get("language") or ""),
+            "preview_text": text,
+            "generation_prompt": generation_prompt,
+            "seed": seed if seed is not None else None,
         }
+        # A preview is an auditioned source artifact, not a cache entry.  Keep
+        # each job on its own immutable path so regenerating the same inputs
+        # cannot replace audio that a promotion job has already selected.
+        preview_job_id = str(payload.get("_job_id") or "").strip() or new_id()
         preview_key = hashlib.sha256(
-            json.dumps(preview_identity, sort_keys=True, separators=(",", ":")).encode(
-                "utf-8"
-            )
+            json.dumps(
+                {**preview_identity, "preview_job_id": preview_job_id},
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
         ).hexdigest()
         target_dir = self.paths.artifacts / "tts-previews"
         target_dir.mkdir(parents=True, exist_ok=True)
@@ -965,8 +979,11 @@ class WorkflowHandlers:
             settings=_secret_free_tts_settings(settings),
             metadata={
                 **preview_identity,
+                "preview_job_id": preview_job_id,
                 "service": settings.get("service"),
-                "preview_text": text,
+                "generation_settings": redact_inline_secrets(
+                    _secret_free_tts_settings(settings)
+                ),
             },
         )
         self._record_tts_usage(
@@ -5260,9 +5277,34 @@ class WorkflowHandlers:
         replace_sample_id = str(payload.get("replace_sample_id") or "") or None
         expected_raw = payload.get("expected_voice_revision")
         expected_revision = int(expected_raw) if expected_raw is not None else None
+        reviewed_transcript = str(payload.get("reviewed_transcript") or "").strip()
+        transcript_language = (
+            str(payload.get("transcript_language") or "").strip() or None
+        )
+        sample_provenance = payload.get("sample_provenance")
+        if isinstance(sample_provenance, dict):
+            sample_provenance = redact_inline_secrets(sample_provenance)
+        else:
+            sample_provenance = None
         source_artifact, source_path = self._resolve_input(
             str(payload.get("source_artifact_id") or "")
         )
+        expected_source_role = str(payload.get("source_artifact_role") or "").strip()
+        if expected_source_role and source_artifact.role != expected_source_role:
+            raise ValueError("The reviewed voice-design preview is no longer available.")
+        expected_source_hash = (
+            str(payload.get("source_artifact_sha256") or "").strip().casefold()
+        )
+        if expected_source_hash:
+            registered_hash = str(source_artifact.content_hash or "").strip().casefold()
+            actual_hash = sha256_file(source_path)
+            if (
+                registered_hash != expected_source_hash
+                or actual_hash != expected_source_hash
+            ):
+                raise ValueError(
+                    "The reviewed voice-design preview changed before it could be saved."
+                )
         with self.database.session() as session:
             voice = session.get(Voice, voice_id)
             if voice is None:
@@ -5310,6 +5352,11 @@ class WorkflowHandlers:
                 kind="audio",
                 role="voice_sample",
                 parent_ids=[source_artifact.id],
+                metadata=(
+                    {"sample_provenance": sample_provenance}
+                    if sample_provenance is not None
+                    else None
+                ),
                 _prepared=prepared,
             )
             if replace_sample_id:
@@ -5323,12 +5370,22 @@ class WorkflowHandlers:
                 if old_path is not None:
                     removable.append(old_path)
                 sample.artifact_id = artifact.id
-                sample.transcript = None
-                sample.transcript_language = None
-                sample.transcript_reviewed = False
+                sample.transcript = reviewed_transcript or None
+                sample.transcript_language = (
+                    transcript_language if reviewed_transcript else None
+                )
+                sample.transcript_reviewed = bool(reviewed_transcript)
                 sample.created_at = utcnow()
             else:
-                sample = VoiceSample(voice_id=voice_id, artifact_id=artifact.id)
+                sample = VoiceSample(
+                    voice_id=voice_id,
+                    artifact_id=artifact.id,
+                    transcript=reviewed_transcript or None,
+                    transcript_language=(
+                        transcript_language if reviewed_transcript else None
+                    ),
+                    transcript_reviewed=bool(reviewed_transcript),
+                )
                 session.add(sample)
             session.flush()
             sample_id = sample.id

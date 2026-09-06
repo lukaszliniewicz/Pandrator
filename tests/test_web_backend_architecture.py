@@ -45,9 +45,9 @@ class BackendArchitectureTests(unittest.TestCase):
 
     def test_route_contract_is_partitioned_without_losing_rules(self):
         rules = list(self.app.url_map.iter_rules())
-        self.assertEqual(212, len(rules))
+        self.assertEqual(213, len(rules))
         self.assertEqual(
-            205,
+            206,
             sum(rule.rule.startswith("/api/") for rule in rules),
         )
         self.assertEqual(set(DOMAIN_ORDER), set(self.app.blueprints))
@@ -324,20 +324,29 @@ class BackendArchitectureTests(unittest.TestCase):
             ),
             patch(
                 "pandrator.logic.tts_handler.get_audio_cpp_voice_catalog",
-                side_effect=[["narrator"], ["narrator", "reader"]],
+                side_effect=[
+                    ["narrator"],
+                    ["breeze-voice"],
+                    ["narrator", "reader"],
+                ],
             ),
         ):
             catalogue = registry.enrich_catalog(service)
 
-        self.assertEqual(["fish", "omnivoice"], catalogue["models"])
+        self.assertEqual(["fish", "breeze", "omnivoice"], catalogue["models"])
         self.assertEqual(
             {
                 "fish": ["sofia", "manual", "narrator"],
+                "breeze": ["manual", "breeze-voice"],
                 "omnivoice": ["manual", "narrator", "reader"],
             },
             catalogue["voice_catalogues"],
         )
-        self.assertEqual(["sofia", "manual", "narrator", "reader"], catalogue["voices"])
+        self.assertEqual(
+            ["sofia", "manual", "narrator", "breeze-voice", "reader"],
+            catalogue["voices"],
+        )
+        self.assertEqual("optional_cloning", catalogue["model_voice_modes"]["breeze"])
         self.assertEqual("fish", catalogue["default_model"])
 
     def test_audio_cpp_live_catalogue_excludes_models_not_configured_in_server(self):

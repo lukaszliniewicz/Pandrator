@@ -126,15 +126,14 @@ PRESENTATIONS: dict[str, ComponentPresentation] = {
         order=5,
         summary=(
             "A pinned native audio.cpp runtime with selectable local GGUF "
-            "models for cloning and pre-built voices."
+            "models for voice design, cloning, and pre-built voices."
         ),
         guidance=(
-            "The manager installs audio.cpp v0.7.1 and the selected models into "
+            "The manager installs audio.cpp v0.7.2 and the selected models into "
             "one versioned service slot. Choose at least one model package. CPU, "
             "Vulkan, and CUDA are available on Windows and Linux x86_64. The "
             "best-effort Linux CUDA build has not yet been tested on NVIDIA "
-            "hardware. FireRedTTS3 Base is experimental. Breeze is not included "
-            "until a stable package is available."
+            "hardware. FireRedTTS3 Base is experimental."
         ),
         languages=(
             "Qwen3: Chinese, English, French, German, Italian, Japanese, Korean, "
@@ -145,8 +144,10 @@ PRESENTATIONS: dict[str, ComponentPresentation] = {
             "OmniVoice: 600+ languages",
             "PocketTTS: English, German, Italian, Portuguese, Spanish",
             "FireRedTTS3: 24 languages plus Chinese dialects",
+            "BreezeTTS 2: English, Mandarin Chinese",
         ),
         capabilities=(
+            capability("voice_design", "Voice design"),
             capability("voice_cloning", "Voice cloning"),
             capability("prebuilt_voices", "Pre-built voices"),
             capability("multilingual", "Multilingual"),
@@ -249,14 +250,35 @@ PRESENTATIONS: dict[str, ComponentPresentation] = {
                 capabilities=("voice_cloning", "multilingual"),
                 estimated_download_bytes=4_180_334_848,
             ),
+            model(
+                "breeze_tts_2_q8_0",
+                "BreezeTTS 2 Q8_0",
+                description=(
+                    "Instruction-conditioned English and Mandarin voice design "
+                    "with optional reference-audio cloning."
+                ),
+                license_name="BreezeBlue Research and Non-Commercial License 1.1",
+                license_url=(
+                    "https://huggingface.co/audio-cpp/audio.cpp-gguf/blob/"
+                    "dc6fecccc2b0c6bdda0a8b2f38fa61394fee0b9c/"
+                    "Breeze-TTS-2-GGUF/LICENSE"
+                ),
+                usage_note=(
+                    "Research and non-commercial use only; commercial use "
+                    "requires a separate written licence."
+                ),
+                capabilities=("voice_design", "voice_cloning", "multilingual"),
+                estimated_download_bytes=5_079_668_352,
+            ),
         ),
-        estimated_download_bytes=24 * GiB,
-        estimated_installed_bytes=30 * GiB,
+        estimated_download_bytes=28 * GiB,
+        estimated_installed_bytes=35 * GiB,
         size_note=(
-            "Estimate includes the pinned native runtime and all nine selectable "
+            "Estimate includes the pinned native runtime and all ten selectable "
             "Q8_0 model packages. Per-model sizes were sampled from the upstream "
-            "package manager on 2026-09-02. Model files are fetched from an immutable "
-            "repository revision and verified with Pandrator-pinned SHA-256 digests."
+            "package repository on 2026-09-06. Model files are fetched from an "
+            "immutable repository revision and verified with Pandrator-pinned "
+            "SHA-256 digests."
         ),
     ),
     "kokoro": ComponentPresentation(

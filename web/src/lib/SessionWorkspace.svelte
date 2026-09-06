@@ -1373,24 +1373,30 @@
     await discoverTtsService(service);
     if (String(service?.id ?? '').toLowerCase() === 'xtts')
       await loadXttsModels();
-    voiceName = String(
-      service?.default_voices_by_language?.[ttsModel]?.[targetLanguage] ??
-        service?.default_voices?.[ttsModel] ??
-        service?.default_voice ??
-        ''
-    );
+    voiceName =
+      service?.model_voice_modes?.[ttsModel] === 'optional_cloning'
+        ? ''
+        : String(
+            service?.default_voices_by_language?.[ttsModel]?.[targetLanguage] ??
+              service?.default_voices?.[ttsModel] ??
+              service?.default_voice ??
+              ''
+          );
   }
 
   function chooseTtsModel(value: string) {
     ttsModel = value;
     const service = selectedTtsService;
     const modelVoices = service?.voice_catalogues?.[value] ?? [];
-    voiceName = String(
-      service?.default_voices_by_language?.[value]?.[targetLanguage] ??
-        service?.default_voices?.[value] ??
-        modelVoices[0] ??
-        ''
-    );
+    voiceName =
+      service?.model_voice_modes?.[value] === 'optional_cloning'
+        ? ''
+        : String(
+            service?.default_voices_by_language?.[value]?.[targetLanguage] ??
+              service?.default_voices?.[value] ??
+              modelVoices[0] ??
+              ''
+          );
   }
 
   async function openFullSettings(
@@ -1532,13 +1538,18 @@
   const selectedModelVoiceMode = $derived(
     selectedTtsService?.model_voice_modes?.[ttsModel] ?? ''
   );
+  const selectedModelAllowsReferenceFree = $derived(
+    selectedModelVoiceMode === 'optional_cloning'
+  );
   const selectedModelUsesReferences = $derived(
-    ['cloning', 'hybrid'].includes(selectedModelVoiceMode) ||
+    ['cloning', 'hybrid', 'optional_cloning'].includes(
+      selectedModelVoiceMode
+    ) ||
       (selectedTtsServiceId === 'kobold_qwen' &&
         ttsModel.toLowerCase() === 'voice cloning')
   );
-  const selectedModelIsCloningOnly = $derived(
-    selectedModelVoiceMode === 'cloning' ||
+  const selectedModelHasNoPrebuiltVoices = $derived(
+    ['cloning', 'optional_cloning'].includes(selectedModelVoiceMode) ||
       (selectedTtsServiceId === 'kobold_qwen' &&
         ttsModel.toLowerCase() === 'voice cloning')
   );
@@ -1548,7 +1559,7 @@
   const supportsPrebuiltVoices = $derived(
     Boolean(
       selectedTtsService?.supports_prebuilt_voices &&
-      !selectedModelIsCloningOnly
+      !selectedModelHasNoPrebuiltVoices
     )
   );
   const selectedModelVoiceIds = $derived(
@@ -2278,6 +2289,7 @@
     if (
       key === 'generate_audio' &&
       showClonedVoices &&
+      !selectedModelAllowsReferenceFree &&
       (!voiceName ||
         !clonedVoiceIds.some(
           (voice) => voice.toLowerCase() === voiceName.toLowerCase()
@@ -4172,7 +4184,11 @@
               >Voice<select
                 bind:value={voiceName}
                 class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
-                >{#if !showClonedVoices}<option value="">Service default</option
+                >{#if !showClonedVoices || selectedModelAllowsReferenceFree}<option
+                    value=""
+                    >{selectedModelAllowsReferenceFree
+                      ? 'Design from instructions · no reference'
+                      : 'Service default'}</option
                   >{/if}{#if supportsPrebuiltVoices}<optgroup
                     label={`${LANGUAGE_OPTIONS.find((item) => item.value === targetLanguage)?.label ?? targetLanguage} · pre-built voices`}
                     >{#each filteredPrebuiltVoices as voice}<option
@@ -4192,7 +4208,9 @@
             <div class="flex flex-wrap items-center justify-between gap-3">
               <p class="muted text-xs">
                 {showClonedVoices
-                  ? audioCppLinkedReferences
+                  ? selectedModelAllowsReferenceFree
+                    ? 'Leave “Design from instructions” selected to follow the speech direction, or choose a linked local voice to clone it.'
+                    : audioCppLinkedReferences
                     ? 'Linked local voices can be selected above. Qwen benefits from a reviewed transcript; OmniVoice requires one.'
                     : 'Provider-ready voices can be selected above. Local voices can be prepared in one click below.'
                   : 'Only voices supported by the selected model are shown.'}

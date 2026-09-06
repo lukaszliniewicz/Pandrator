@@ -646,6 +646,71 @@ class WebParityWorkspaceTests(unittest.TestCase):
         self.assertEqual("af_heart", payload["settings"]["voice"])
         self.assertEqual("en", payload["settings"]["language"])
 
+    def test_breeze_voice_preview_carries_design_prompt_seed_and_blank_voice(self):
+        response = self.client.post(
+            "/api/v1/services/tts/audio_cpp/preview",
+            json={
+                "text": "A designed preview.",
+                "model": "breeze_tts_2_q8_0",
+                "voice": "",
+                "language": "en",
+                "generation_prompt": "  Warm, intimate delivery.  ",
+                "seed": 17,
+            },
+            headers=self.headers,
+        )
+        self.assertEqual(202, response.status_code, response.get_json())
+        settings = response.get_json()["payload_json"]["settings"]
+        self.assertEqual("Warm, intimate delivery.", settings["generation_prompt"])
+        self.assertEqual(17, settings["seed"])
+        self.assertEqual(17, settings["audio_cpp_seed"])
+        self.assertEqual("", settings["voice"])
+        self.assertEqual("", settings["speaker"])
+        self.assertEqual("audio_cpp", settings["preview_adapter"])
+
+    def test_external_audio_cpp_breeze_preview_preserves_blank_design_voice(self):
+        database = self.app.extensions["pandrator"]["database"]
+        with database.session() as session:
+            session.add(
+                AppSetting(
+                    key="services.tts",
+                    value_json={
+                        "provider_configs": [
+                            {
+                                "id": "audio-cpp-experimental",
+                                "name": "External audio.cpp",
+                                "provider": "openai",
+                                "adapter": "audio_cpp",
+                                "api_base": "http://127.0.0.1:8080",
+                                "default_model": "breeze_tts_2_q8_0",
+                                "default_voice": "must-not-leak-into-design",
+                                "models": ["breeze_tts_2_q8_0"],
+                            }
+                        ]
+                    },
+                )
+            )
+
+        response = self.client.post(
+            "/api/v1/services/tts/audio-cpp-experimental/preview",
+            json={
+                "text": "An externally designed preview.",
+                "model": "breeze_tts_2_q8_0",
+                "voice": "",
+                "language": "en",
+                "generation_prompt": "Measured delivery.",
+                "seed": 21,
+            },
+            headers=self.headers,
+        )
+
+        self.assertEqual(202, response.status_code, response.get_json())
+        settings = response.get_json()["payload_json"]["settings"]
+        self.assertEqual("", settings["voice"])
+        self.assertEqual("", settings["speaker"])
+        self.assertEqual(21, settings["audio_cpp_seed"])
+        self.assertEqual("audio_cpp", settings["preview_adapter"])
+
     def test_qwen_preview_preserves_the_selected_voice_cloning_model(self):
         response = self.client.post(
             "/api/v1/services/tts/kobold_qwen/preview",

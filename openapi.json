@@ -5852,6 +5852,19 @@
       "TtsVoicePreviewRequest": {
         "additionalProperties": false,
         "properties": {
+          "generation_prompt": {
+            "anyOf": [
+              {
+                "maxLength": 4000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Generation Prompt"
+          },
           "language": {
             "default": "",
             "maxLength": 40,
@@ -5863,6 +5876,20 @@
             "maxLength": 300,
             "title": "Model",
             "type": "string"
+          },
+          "seed": {
+            "anyOf": [
+              {
+                "maximum": 2147483647,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Seed"
           },
           "text": {
             "maxLength": 1000,
@@ -5922,6 +5949,48 @@
           "name"
         ],
         "title": "VoiceCreate",
+        "type": "object"
+      },
+      "VoiceDesignedSampleCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Artifact Id",
+            "type": "string"
+          },
+          "expected_voice_revision": {
+            "minimum": 1,
+            "title": "Expected Voice Revision",
+            "type": "integer"
+          },
+          "language": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Language"
+          },
+          "transcript": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Transcript",
+            "type": "string"
+          }
+        },
+        "required": [
+          "artifact_id",
+          "transcript",
+          "expected_voice_revision"
+        ],
+        "title": "VoiceDesignedSampleCreate",
         "type": "object"
       },
       "VoiceTranscriptReview": {
@@ -12386,6 +12455,36 @@
           },
           "409": {
             "description": "Revision conflict"
+          }
+        }
+      }
+    },
+    "/api/v1/voices/{voiceId}/samples/from-preview": {
+      "post": {
+        "operationId": "createVoiceSampleFromPreview",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "voiceId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VoiceDesignedSampleCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Managed Breeze preview promotion queued"
           }
         }
       }
