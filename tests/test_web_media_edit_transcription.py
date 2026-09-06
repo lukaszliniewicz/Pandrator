@@ -2,9 +2,10 @@ import json
 import tempfile
 import threading
 import unittest
+import wave
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from sqlalchemy import select
 
@@ -23,6 +24,40 @@ from pandrator.web.models import (
 from pandrator.web.sessions import SessionService
 from pandrator.web.workflow_handlers import WorkflowHandlers
 from tests.web_test_support import prepare_web_test_data_root
+
+
+def _write_normalized_wav(path, duration_seconds=3):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(path), "wb") as output:
+        output.setnchannels(1)
+        output.setsampwidth(2)
+        output.setframerate(16000)
+        output.writeframes(b"\0\0" * 16000 * duration_seconds)
+    return path
+
+
+def _fake_extract_audio(_source, session_dir, _source_name, **_kwargs):
+    return str(_write_normalized_wav(Path(session_dir) / "normalized.wav"))
+
+
+def _fake_vad_export(_audio, output_path, *_args, **_kwargs):
+    output_path = Path(output_path)
+    output_path.write_text(
+        json.dumps(
+            {
+                "crispasr_vad": {
+                    "version": 1,
+                    "kind": "vad_segments",
+                    "sample_rate": 16000,
+                    "num_slices": 1,
+                    "slices": [{"start": 0, "end": 48000}],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    return output_path
 
 
 class MediaEditTranscriptionHandlerTests(unittest.TestCase):
@@ -136,7 +171,7 @@ class MediaEditTranscriptionHandlerTests(unittest.TestCase):
                 {
                     "session_id": self.session.id,
                     "source_artifact_id": source.id,
-                    "settings": {},
+                    "settings": {"caption_alignment_method": "asr"},
                 },
                 self.progress,
                 threading.Event(),
@@ -230,7 +265,7 @@ class MediaEditTranscriptionHandlerTests(unittest.TestCase):
                 {
                     "session_id": self.session.id,
                     "source_artifact_id": source.id,
-                    "settings": {},
+                    "settings": {"caption_alignment_method": "asr"},
                 },
                 self.progress,
                 threading.Event(),
@@ -246,6 +281,318 @@ class MediaEditTranscriptionHandlerTests(unittest.TestCase):
         self.assertIn("transcription_evidence", roles)
         self.assertIn("recognition_word_timestamps", roles)
         self.assertNotIn("transcription", roles)
+
+    def test_ctc_fallback_artifact_settings_redact_runtime_api_key(self):
+        source, _caption = self._source_and_caption()
+        normalized = self.paths.root / "normalized.wav"
+
+        def fake_extract(_source, session_dir, _source_name, **_kwargs):
+            path = Path(session_dir) / normalized.name
+            with wave.open(str(path), "wb") as output:
+                output.setnchannels(1)
+                output.setsampwidth(2)
+                output.setframerate(16000)
+                output.writeframes(b"\0\0" * 16000 * 3)
+            return str(path)
+
+        fake_result = self._mock_transcription(self.paths.root / "source.mp4")
+        observed_settings = []
+        original_register = self.handlers.artifacts.register
+
+        def register_spy(*args, **kwargs):
+            observed_settings.append(kwargs.get("settings"))
+            return original_register(*args, **kwargs)
+
+        with (
+            patch(
+                "pandrator.logic.dubbing.transcription.extract_audio",
+                side_effect=fake_extract,
+            ),
+            patch(
+                "pandrator.logic.dubbing.crispasr.run_ctc_alignment",
+                return_value=[{"word": "wrong", "start": 1.1, "end": 1.4}],
+            ),
+            patch(
+                "pandrator.logic.dubbing.transcription.transcribe_source_file_with_metadata",
+                return_value=fake_result,
+            ),
+            patch.object(
+                self.handlers.artifacts,
+                "register",
+                side_effect=register_spy,
+            ),
+        ):
+            result = self.handlers.transcribe(
+                {
+                    "session_id": self.session.id,
+                    "source_artifact_id": source.id,
+                    "settings": {
+                        "caption_alignment_method": "ctc_asr_fallback",
+                        "caption_alignment_fallback_coverage": 0.9,
+                        "crispasr_vad_enabled": False,
+                        "provider_configs": [
+                            {
+                                "id": "fallback-provider",
+                                "api_key": "injected-fallback-secret",
+                            }
+                        ],
+                    },
+                },
+                self.progress,
+                threading.Event(),
+            )
+
+        self.assertEqual("ctc_with_asr_fallback", result["alignment_method"])
+        self.assertTrue(observed_settings)
+        serialized = json.dumps(observed_settings, sort_keys=True)
+        self.assertNotIn("injected-fallback-secret", serialized)
+        self.assertNotIn('"api_key"', serialized)
+
+    def test_pure_ctc_promotes_native_words_without_whole_recording_asr(self):
+        source, _caption = self._source_and_caption()
+        asr = Mock(side_effect=AssertionError("whole-recording ASR must not run"))
+        with (
+            patch(
+                "pandrator.logic.dubbing.transcription.extract_audio",
+                side_effect=_fake_extract_audio,
+            ),
+            patch(
+                "pandrator.logic.dubbing.crispasr.run_vad_export",
+                side_effect=_fake_vad_export,
+            ),
+            patch(
+                "pandrator.logic.dubbing.crispasr.run_ctc_alignment",
+                return_value=[
+                    {"word": "Hello,", "start": 1.1, "end": 1.3},
+                    {"word": "world!", "start": 1.5, "end": 1.9},
+                ],
+            ),
+            patch(
+                "pandrator.logic.dubbing.transcription.transcribe_source_file_with_metadata",
+                asr,
+            ),
+        ):
+            result = self.handlers.transcribe(
+                {
+                    "session_id": self.session.id,
+                    "source_artifact_id": source.id,
+                    "settings": {"caption_alignment_method": "ctc"},
+                },
+                self.progress,
+                threading.Event(),
+            )
+
+        asr.assert_not_called()
+        self.assertEqual("ctc_cue_alignment", result["alignment_method"])
+        self.assertEqual(1.0, result["alignment_coverage"])
+        self.assertEqual(2, result["word_count"])
+        with self.database.session() as session:
+            transcription = session.get(Artifact, result["artifact_id"])
+            words = list(
+                session.scalars(
+                    select(TimedWord).where(
+                        TimedWord.revision_id == result["revision_id"]
+                    )
+                )
+            )
+        self.assertEqual("transcription", transcription.role)
+        self.assertEqual(["Hello,", "world!"], [word.text for word in words])
+        self.assertEqual(
+            "ctc_cue_alignment", transcription.metadata_json["alignment_method"]
+        )
+
+    def test_pure_ctc_low_coverage_keeps_evidence_but_does_not_promote(self):
+        source, _caption = self._source_and_caption()
+        asr = Mock(side_effect=AssertionError("pure CTC must not fall back"))
+        with (
+            patch(
+                "pandrator.logic.dubbing.transcription.extract_audio",
+                side_effect=_fake_extract_audio,
+            ),
+            patch(
+                "pandrator.logic.dubbing.crispasr.run_vad_export",
+                side_effect=_fake_vad_export,
+            ),
+            patch(
+                "pandrator.logic.dubbing.crispasr.run_ctc_alignment",
+                return_value=[
+                    {"word": "wrong", "start": 1.1, "end": 1.3},
+                    {"word": "also-wrong", "start": 1.5, "end": 1.9},
+                ],
+            ),
+            patch(
+                "pandrator.logic.dubbing.transcription.transcribe_source_file_with_metadata",
+                asr,
+            ),
+            self.assertRaisesRegex(
+                ValueError,
+                r"coverage is 0\.000000.*no aligned transcription was promoted",
+            ),
+        ):
+            self.handlers.transcribe(
+                {
+                    "session_id": self.session.id,
+                    "source_artifact_id": source.id,
+                    "settings": {"caption_alignment_method": "ctc"},
+                },
+                self.progress,
+                threading.Event(),
+            )
+
+        asr.assert_not_called()
+        with self.database.session() as session:
+            roles = {
+                item.role
+                for item in session.scalars(
+                    select(Artifact).where(Artifact.session_id == self.session.id)
+                )
+            }
+        self.assertIn("transcription_vad_evidence", roles)
+        self.assertIn("transcription_alignment_diagnostics", roles)
+        self.assertNotIn("transcription", roles)
+
+    def test_hybrid_threshold_not_crossed_does_not_call_asr(self):
+        source, _caption = self._source_and_caption()
+        asr = Mock(side_effect=AssertionError("fallback should not run"))
+        with (
+            patch(
+                "pandrator.logic.dubbing.transcription.extract_audio",
+                side_effect=_fake_extract_audio,
+            ),
+            patch(
+                "pandrator.logic.dubbing.crispasr.run_vad_export",
+                side_effect=_fake_vad_export,
+            ),
+            patch(
+                "pandrator.logic.dubbing.crispasr.run_ctc_alignment",
+                return_value=[
+                    {"word": "Hello,", "start": 1.1, "end": 1.3},
+                    {"word": "world!", "start": 1.5, "end": 1.9},
+                ],
+            ),
+            patch(
+                "pandrator.logic.dubbing.transcription.transcribe_source_file_with_metadata",
+                asr,
+            ),
+        ):
+            result = self.handlers.transcribe(
+                {
+                    "session_id": self.session.id,
+                    "source_artifact_id": source.id,
+                    "settings": {
+                        "caption_alignment_method": "ctc_asr_fallback",
+                        "caption_alignment_fallback_coverage": 0.9,
+                    },
+                },
+                self.progress,
+                threading.Event(),
+            )
+
+        asr.assert_not_called()
+        self.assertEqual("ctc_cue_alignment", result["alignment_method"])
+        self.assertFalse(result["fallback_triggered"])
+
+    def test_hybrid_fallback_runs_once_and_only_fills_ctc_rejections(self):
+        source = self._artifact("hybrid-source.mp4", "upload", "media", "video")
+        self._attach(source, "primary", "video")
+        caption = self._artifact(
+            "hybrid-captions.srt",
+            "captions",
+            (
+                "1\n00:00:01,000 --> 00:00:01,500\nAlice: Hello,\n\n"
+                "2\n00:00:01,500 --> 00:00:02,500\nBob: Missing\n\n"
+                "3\n00:00:04,000 --> 00:00:05,000\nEve: Outside\n"
+            ),
+            "srt",
+        )
+        self._attach(caption, "transcript", "srt")
+        raw_srt = self.paths.root / "fallback.srt"
+        raw_srt.write_text(
+            "1\n00:00:01,250 --> 00:00:01,900\nHello, Missing\n",
+            encoding="utf-8",
+        )
+        raw_json = self.paths.root / "fallback.json"
+        raw_json.write_text(
+            json.dumps(
+                {
+                    "schema": "pandrator.transcript.v1",
+                    "segments": [
+                        {
+                            "id": "fallback",
+                            "start_ms": 1250,
+                            "end_ms": 1900,
+                            "text": "Hello, Missing",
+                            "words": [
+                                {"text": "Hello,", "start_ms": 1250, "end_ms": 1400},
+                                {"text": "Missing", "start_ms": 1600, "end_ms": 1900},
+                            ],
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        fallback_result = SimpleNamespace(
+            srt_path=str(raw_srt),
+            word_timestamps_path=str(raw_json),
+            engine="test-asr",
+            compute_backend="cpu",
+        )
+        asr = Mock(return_value=fallback_result)
+
+        def ctc_words(_clip, text_path, *_args, **_kwargs):
+            if "Hello," in text_path.read_text(encoding="utf-8"):
+                return [
+                    {"word": "Hello,", "start": 1.1, "end": 1.3},
+                    {"word": "wrong", "start": 1.6, "end": 1.9},
+                ]
+            return [{"word": "wrong", "start": 1.6, "end": 1.9}]
+
+        with (
+            patch(
+                "pandrator.logic.dubbing.transcription.extract_audio",
+                side_effect=_fake_extract_audio,
+            ),
+            patch(
+                "pandrator.logic.dubbing.crispasr.run_ctc_alignment",
+                side_effect=ctc_words,
+            ),
+            patch(
+                "pandrator.logic.dubbing.transcription.transcribe_source_file_with_metadata",
+                asr,
+            ),
+        ):
+            result = self.handlers.transcribe(
+                {
+                    "session_id": self.session.id,
+                    "source_artifact_id": source.id,
+                    "settings": {
+                        "caption_alignment_method": "ctc_asr_fallback",
+                        "caption_alignment_fallback_coverage": 0.9,
+                        "crispasr_vad_enabled": False,
+                    },
+                },
+                self.progress,
+                threading.Event(),
+            )
+
+        asr.assert_called_once()
+        self.assertTrue(asr.call_args.kwargs["source_is_normalized"])
+        self.assertEqual("ctc_with_asr_fallback", result["alignment_method"])
+        self.assertEqual(1, result["fallback_filled_cue_count"])
+        self.assertEqual(1, result["fallback_filled_token_count"])
+        self.assertEqual(1, result["outside_media_count"])
+        with self.database.session() as session:
+            words = list(
+                session.scalars(
+                    select(TimedWord).where(
+                        TimedWord.revision_id == result["revision_id"]
+                    )
+                )
+            )
+        self.assertEqual(["Hello,", "Missing"], [word.text for word in words])
+        self.assertEqual(1100, words[0].start_ms)
+        self.assertEqual(1600, words[1].start_ms)
 
     def test_media_edit_transcription_rejects_exact_half_matches_without_words(self):
         source, caption = self._source_and_caption()
@@ -271,7 +618,7 @@ class MediaEditTranscriptionHandlerTests(unittest.TestCase):
                 {
                     "session_id": self.session.id,
                     "source_artifact_id": source.id,
-                    "settings": {},
+                    "settings": {"caption_alignment_method": "asr"},
                 },
                 self.progress,
                 threading.Event(),

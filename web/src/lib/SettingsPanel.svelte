@@ -52,6 +52,12 @@
       'llm_tts_batch_size'
     ],
     stt: [
+      'caption_alignment_method',
+      'caption_alignment_ctc_model',
+      'caption_alignment_padding_ms',
+      'caption_alignment_batch_seconds',
+      'caption_alignment_min_confidence',
+      'caption_alignment_fallback_coverage',
       'stt_engine',
       'stt_model_quantization',
       'stt_compute_backend',

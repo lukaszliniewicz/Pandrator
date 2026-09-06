@@ -107,28 +107,116 @@
       stage.key
     )
   );
+  const metadataNumber = (
+    metadata: Record<string, unknown>,
+    ...keys: string[]
+  ) => {
+    for (const key of keys) {
+      const value = Number(metadata[key]);
+      if (Number.isFinite(value)) return value;
+    }
+    return 0;
+  };
   const captionAlignment = $derived.by(() => {
     const metadata = stage.artifact?.metadata_json;
-    if (!metadata || metadata.alignment_method !== 'asr_lexical_projection')
+    if (!metadata) return null;
+    const method = String(metadata.alignment_method ?? '');
+    if (
+      ![
+        'asr_lexical_projection',
+        'ctc_cue_alignment',
+        'ctc_with_asr_fallback'
+      ].includes(method)
+    )
       return null;
-    const rawCoverage = Number(
-      metadata.alignment_coverage ?? metadata.coverage ?? 0
+    const coverage = Math.max(
+      0,
+      Math.min(1, metadataNumber(metadata, 'alignment_coverage', 'coverage'))
     );
-    const rawConfidence = Number(
-      metadata.alignment_confidence ?? metadata.confidence ?? 0
+    const eligibleCoverage = Math.max(
+      0,
+      Math.min(
+        1,
+        metadataNumber(
+          metadata,
+          'alignment_eligible_coverage',
+          'eligible_alignment_coverage',
+          'eligible_coverage',
+          'alignment_coverage',
+          'coverage'
+        )
+      )
     );
-    const coverage = Number.isFinite(rawCoverage)
-      ? Math.max(0, Math.min(1, rawCoverage))
-      : 0;
-    const confidence = Number.isFinite(rawConfidence)
-      ? Math.max(0, Math.min(1, rawConfidence))
-      : 0;
+    const quality = Math.max(
+      0,
+      Math.min(
+        1,
+        metadataNumber(
+          metadata,
+          'alignment_quality',
+          'alignment_confidence',
+          'confidence'
+        )
+      )
+    );
+    const ctc = method !== 'asr_lexical_projection';
     return {
+      method,
+      methodLabel:
+        method === 'ctc_cue_alignment'
+          ? 'Cue-local CTC'
+          : method === 'ctc_with_asr_fallback'
+            ? 'Cue-local CTC + ASR fallback'
+            : 'ASR lexical projection',
       coverage,
-      confidence,
-      wordCount: Math.max(0, Number(metadata.word_count ?? 0) || 0),
-      engine: String(metadata.engine ?? metadata.model ?? '').trim(),
-      reliable: coverage >= 0.5
+      eligibleCoverage,
+      quality,
+      qualityLabel: ctc ? 'mean timing quality' : 'mean cue confidence',
+      wordCount: Math.max(
+        0,
+        metadataNumber(metadata, 'word_count', 'accepted_token_count')
+      ),
+      acceptedCues: Math.max(
+        0,
+        metadataNumber(metadata, 'accepted_cue_count', 'aligned_cue_count')
+      ),
+      cueCount: Math.max(
+        0,
+        metadataNumber(metadata, 'cue_count', 'total_cue_count')
+      ),
+      batchCount: Math.max(
+        0,
+        metadataNumber(metadata, 'batch_count', 'first_pass_batch_count')
+      ),
+      retryCount: Math.max(
+        0,
+        metadataNumber(metadata, 'isolated_retry_count', 'retry_count') ||
+          metadataNumber(metadata, 'cluster_retries') +
+            metadataNumber(metadata, 'individual_retries')
+      ),
+      outsideMediaCount: Math.max(
+        0,
+        metadataNumber(
+          metadata,
+          'outside_media_cue_count',
+          'outside_media_count'
+        )
+      ),
+      oversizedCueCount: Math.max(
+        0,
+        metadataNumber(metadata, 'oversized_cue_count')
+      ),
+      engine: String(
+        metadata.ctc_model ??
+          metadata.ctc_engine ??
+          metadata.engine ??
+          metadata.model ??
+          ''
+      ).trim(),
+      fallbackUsed:
+        metadata.fallback_used === true ||
+        metadata.fallback_triggered === true,
+      reliable: coverage >= 0.5 && eligibleCoverage >= 0.5
     };
   });
 
@@ -189,16 +277,32 @@
                 : 'Caption alignment is unreliable'}
             </div>
             <p class="muted mt-1 text-xs leading-relaxed">
-              {Math.round(captionAlignment.coverage * 100)}% of caption words
-              aligned · {Math.round(captionAlignment.confidence * 100)}% mean
-              cue confidence{captionAlignment.wordCount
+              {captionAlignment.methodLabel} · {Math.round(
+                captionAlignment.coverage * 100
+              )}% of all caption words aligned · {Math.round(
+                captionAlignment.eligibleCoverage * 100
+              )}% of in-media words · {Math.round(
+                captionAlignment.quality * 100
+              )}% {captionAlignment.qualityLabel}{captionAlignment.wordCount
                 ? ` · ${captionAlignment.wordCount.toLocaleString()} timed words`
+                : ''}{captionAlignment.cueCount
+                ? ` · ${captionAlignment.acceptedCues.toLocaleString()}/${captionAlignment.cueCount.toLocaleString()} cues accepted`
+                : ''}{captionAlignment.batchCount
+                ? ` · ${captionAlignment.batchCount.toLocaleString()} CTC batches`
+                : ''}{captionAlignment.retryCount
+                ? ` · ${captionAlignment.retryCount.toLocaleString()} isolated retries`
+                : ''}{captionAlignment.outsideMediaCount
+                ? ` · ${captionAlignment.outsideMediaCount.toLocaleString()} cues outside the recording`
+                : ''}{captionAlignment.oversizedCueCount
+                ? ` · ${captionAlignment.oversizedCueCount.toLocaleString()} oversized cues retained without CTC timing`
                 : ''}{captionAlignment.engine
                 ? ` · ${captionAlignment.engine}`
+                : ''}{captionAlignment.fallbackUsed
+                ? ' · ASR fallback used'
                 : ''}.
               {captionAlignment.reliable
                 ? ' The timing is stored with the caption transcript; rebuild an existing edit timeline to consume it.'
-                : ' Keep the Zoom cue timing and run alignment again; these word times must not be used for cut refinement.'}
+                : ' Original caption timing was retained for rejected cues; those word times are excluded from cut refinement.'}
             </p>
           </div>
         {/if}

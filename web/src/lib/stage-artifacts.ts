@@ -32,7 +32,9 @@ const languageLabels = new Map(
 const engineLabels: Record<string, string> = {
   whisper: 'Whisper large-v3',
   parakeet: 'Parakeet TDT 0.6B v3',
-  moss: 'MOSS Transcribe-Diarize 0.9B'
+  moss: 'MOSS Transcribe-Diarize 0.9B',
+  ctc: 'Canary CTC aligner',
+  canary_ctc: 'Canary CTC aligner'
 };
 
 const backendLabels: Record<string, string> = {

@@ -337,7 +337,7 @@ class InstallerArchitectureTests(unittest.TestCase):
         probe = subprocess.CompletedProcess(
             args=["crispasr", "--version"],
             returncode=0,
-            stdout="version       : 0.8.20\n",
+            stdout="version       : 0.8.32\n",
             stderr="",
         )
 

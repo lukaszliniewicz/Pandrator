@@ -188,6 +188,12 @@ _DESCRIPTIONS: dict[str, dict[str, str]] = {
         "crispasr_vad_min_silence_ms": "Sets the minimum local CrispASR silence run, in milliseconds, required to close a VAD region; it is not used by Azure cloud STT.",
         "crispasr_vad_speech_pad_ms": "Adds this many milliseconds of local CrispASR audio around each detected speech region so VAD does not trim word edges; Azure cloud STT does not consume it.",
         "crispasr_vad_max_speech_seconds": "Sets the maximum duration of a local CrispASR VAD speech region in seconds before it is split; the runtime enforces a minimum of one second.",
+        "caption_alignment_method": "Selects caption-authoritative alignment: CTC, CTC with a post-CTC ASR fallback, or legacy ASR lexical projection.",
+        "caption_alignment_ctc_model": "Selects the CrispASR align-only CTC model; auto uses the bundled Canary aligner and loads no whole-recording ASR model.",
+        "caption_alignment_padding_ms": "Adds a bounded temporal margin around each caption cue for CTC alignment; the runtime clamps this value to 250 through 5000 milliseconds.",
+        "caption_alignment_batch_seconds": "Sets the maximum padded CTC first-pass window in seconds; the runtime clamps it to 5 through 60 seconds and also enforces the reference-token budget.",
+        "caption_alignment_min_confidence": "Sets the minimum timing-quality score required for a CTC cue, with a safety floor of 0.5; this is a temporal/VAD quality measure, not a model probability.",
+        "caption_alignment_fallback_coverage": "Triggers the optional ASR fallback when eligible CTC token coverage is below this fraction; the runtime clamps it to 0 through 1.",
         "diarization_enabled": "Requests speaker diarization from local non-MOSS CrispASR engines; MOSS already supplies native speaker turns and Azure MAI-Transcribe-1.5 rejects diarization.",
     },
     "subtitles": {
@@ -392,7 +398,7 @@ _METADATA: dict[str, dict[str, dict[str, object]]] = {
         "llm_concurrent_calls": {"minimum": 1, "maximum": 16},
         "speech_optimization_mode": {"choices": ["guarded", "flexible"]},
         "speech_plan_min_retention": {
-            "minimum": 0,
+            "minimum": 0.5,
             "maximum": 1,
             "applicability": "Flexible speech-optimization mode.",
         },
@@ -489,6 +495,35 @@ _METADATA: dict[str, dict[str, dict[str, object]]] = {
             "minimum": 1,
             "unit": "seconds",
             "applicability": "Local CrispASR VAD only.",
+        },
+        "caption_alignment_method": {
+            "choices": ["ctc", "ctc_asr_fallback", "asr"],
+            "applicability": "Media-edit sessions with attached captions; ASR remains available for legacy lexical projection.",
+        },
+        "caption_alignment_ctc_model": {
+            "applicability": "Media-edit caption CTC alignment only.",
+        },
+        "caption_alignment_padding_ms": {
+            "minimum": 250,
+            "maximum": 5000,
+            "unit": "milliseconds",
+            "applicability": "Media-edit caption CTC alignment only.",
+        },
+        "caption_alignment_batch_seconds": {
+            "minimum": 5,
+            "maximum": 60,
+            "unit": "seconds",
+            "applicability": "Media-edit caption CTC alignment only.",
+        },
+        "caption_alignment_min_confidence": {
+            "minimum": 0,
+            "maximum": 1,
+            "applicability": "Media-edit caption CTC alignment only; this is timing quality, not model probability.",
+        },
+        "caption_alignment_fallback_coverage": {
+            "minimum": 0,
+            "maximum": 1,
+            "applicability": "Media-edit CTC-ASR fallback mode only.",
         },
         "diarization_enabled": {
             "applicability": "Local non-MOSS CrispASR only; MOSS has native turns and Azure cloud STT does not support diarization."

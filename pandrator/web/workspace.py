@@ -116,6 +116,12 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "crispasr_vad_min_silence_ms": 800,
         "crispasr_vad_speech_pad_ms": 30,
         "crispasr_vad_max_speech_seconds": 300,
+        "caption_alignment_method": "ctc",
+        "caption_alignment_ctc_model": "auto",
+        "caption_alignment_padding_ms": 2000,
+        "caption_alignment_batch_seconds": 30,
+        "caption_alignment_min_confidence": 0.5,
+        "caption_alignment_fallback_coverage": 0.9,
         "diarization_enabled": False,
     },
     "subtitles": {

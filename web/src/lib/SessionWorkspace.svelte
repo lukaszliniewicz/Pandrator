@@ -157,6 +157,14 @@
   let reasoningEffort = $state('');
   let backend = $state('llm');
   let sttEngine = $state('whisper');
+  let captionAlignmentMethod = $state<
+    'ctc' | 'ctc_asr_fallback' | 'asr'
+  >('ctc');
+  let captionAlignmentCtcModel = $state('auto');
+  let captionAlignmentPaddingMs = $state(2000);
+  let captionAlignmentBatchSeconds = $state(30);
+  let captionAlignmentMinConfidence = $state(0.5);
+  let captionAlignmentFallbackCoverage = $state(0.9);
   let sttQuantization = $state('f16');
   let sttComputeBackend = $state('auto');
   let sttDevice = $state(0);
@@ -746,6 +754,40 @@
       hasSavedSttModel
         ? (saved.stt_engine ?? saved.stt_backend)
         : preferredSttEngine
+    );
+    const savedCaptionAlignmentMethod = String(
+      saved.caption_alignment_method ?? 'ctc'
+    );
+    captionAlignmentMethod = [
+      'ctc',
+      'ctc_asr_fallback',
+      'asr'
+    ].includes(savedCaptionAlignmentMethod)
+      ? (savedCaptionAlignmentMethod as
+          | 'ctc'
+          | 'ctc_asr_fallback'
+          | 'asr')
+      : 'ctc';
+    if (
+      hasAttachedCaptions &&
+      !hasSavedSttModel &&
+      captionAlignmentMethod === 'ctc_asr_fallback'
+    )
+      sttEngine = 'parakeet';
+    captionAlignmentCtcModel = String(
+      saved.caption_alignment_ctc_model ?? 'auto'
+    );
+    captionAlignmentPaddingMs = Number(
+      saved.caption_alignment_padding_ms ?? 2000
+    );
+    captionAlignmentBatchSeconds = Number(
+      saved.caption_alignment_batch_seconds ?? 30
+    );
+    captionAlignmentMinConfidence = Number(
+      saved.caption_alignment_min_confidence ?? 0.5
+    );
+    captionAlignmentFallbackCoverage = Number(
+      saved.caption_alignment_fallback_coverage ?? 0.9
     );
     sttQuantization = String(
       hasSavedSttModel
@@ -2018,6 +2060,13 @@
       stageSettings[key] = {
         stt_engine: sttEngine,
         stt_backend: sttEngine,
+        caption_alignment_method: captionAlignmentMethod,
+        caption_alignment_ctc_model: captionAlignmentCtcModel,
+        caption_alignment_padding_ms: captionAlignmentPaddingMs,
+        caption_alignment_batch_seconds: captionAlignmentBatchSeconds,
+        caption_alignment_min_confidence: captionAlignmentMinConfidence,
+        caption_alignment_fallback_coverage:
+          captionAlignmentFallbackCoverage,
         stt_model_quantization: sttQuantization,
         stt_compute_backend: sttComputeBackend,
         stt_compute_device: sttDevice,
@@ -2805,49 +2854,256 @@
               {#if hasAttachedCaptions}<p
                   class="muted mt-1 text-xs leading-relaxed"
                 >
-                  The recognizer supplies acoustic word timestamps; Pandrator
-                  projects them onto the attached caption cues. Zoom wording and
-                  speakers remain authoritative. The aligned cue and word data
-                  is stored in the edit plan and follows rendered subtitles into
-                  Pandrator's native document data for later presentation and
-                  speech-block work.
+                  Zoom wording and speakers remain authoritative. Local CTC
+                  aligns those exact words against short, VAD-checked audio
+                  windows; overlapping cues stay together and uncertain cues
+                  retry in isolation. The resulting word data follows the
+                  subtitles into Pandrator's native document for later layout,
+                  speech-block, and cut-boundary work.
                 </p>{:else}<p class="muted mt-1 text-xs leading-relaxed">
                   With no captions attached, this model creates the
                   authoritative transcript, cue timing, and word timing used by
                   the editor.
                 </p>{/if}
+            </div>{/if}
+          {#if hasAttachedCaptions}
+            <label class="text-sm font-semibold"
+              ><ParameterLabel
+                section="stt"
+                name="caption_alignment_method"
+                label="Caption alignment method"
+              /><select
+                bind:value={captionAlignmentMethod}
+                onchange={() => {
+                  if (
+                    captionAlignmentMethod === 'ctc_asr_fallback' &&
+                    !isCloudStt(sttEngine) &&
+                    sttEngine === 'whisper'
+                  )
+                    sttEngine = 'parakeet';
+                }}
+                class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
+                ><option value="ctc"
+                  >Local CTC forced alignment · recommended</option
+                ><option value="ctc_asr_fallback"
+                  >Local CTC, then ASR if coverage is low</option
+                ><option value="asr">ASR lexical projection · legacy</option
+                ></select
+              ><span class="muted mt-1 block text-xs font-normal"
+                >{captionAlignmentMethod === 'ctc'
+                  ? 'Uses only the supplied captions and local acoustic evidence. It does not generate replacement wording.'
+                  : captionAlignmentMethod === 'ctc_asr_fallback'
+                    ? 'Runs CTC first. ASR is loaded only when eligible CTC coverage falls below the threshold, then fills rejected cues without replacing accepted CTC timing.'
+                    : 'Transcribes the whole recording, then matches recognized words back to nearby caption cues.'}</span
+              ></label
+            >
+            {#if captionAlignmentMethod !== 'asr'}
               <div
-                class="mt-3 grid gap-2 text-xs leading-relaxed sm:grid-cols-3"
+                class="rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] p-4"
               >
-                <div class="rounded-lg bg-[var(--paper)] p-3">
-                  <strong>Parakeet</strong><span class="muted mt-1 block"
-                    >Recommended for trusted Zoom captions: fast, with native
-                    timestamps.</span
-                  >
-                </div>
-                <div class="rounded-lg bg-[var(--paper)] p-3">
-                  <strong>MOSS + CTC</strong><span class="muted mt-1 block"
-                    >Use when new speaker discovery matters. Heavier; its CTC
-                    words align MOSS's own transcript.</span
-                  >
-                </div>
-                <div class="rounded-lg bg-[var(--paper)] p-3">
-                  <strong>Whisper</strong><span class="muted mt-1 block"
-                    >Broad compatibility, with approximate DTW word timestamps.</span
-                  >
+                <div class="text-sm font-semibold">Cue-local Canary CTC</div>
+                <p class="muted mt-1 text-xs leading-relaxed">
+                  Short chronological batches reduce model reloads. Every cue
+                  must still fit its own padded Zoom interval and VAD speech
+                  evidence; failed overlap groups are retried separately.
+                </p>
+                <div class="mt-3 grid gap-3 sm:grid-cols-2">
+                  <label class="text-xs font-semibold"
+                    ><ParameterLabel
+                      section="stt"
+                      name="caption_alignment_ctc_model"
+                      label="CTC aligner"
+                      compact
+                    /><select
+                      bind:value={captionAlignmentCtcModel}
+                      class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                      ><option value="auto"
+                        >Canary CTC aligner · managed model</option
+                      ></select
+                    ></label
+                  ><label class="text-xs font-semibold"
+                    ><ParameterLabel
+                      section="stt"
+                      name="caption_alignment_padding_ms"
+                      label="Cue padding (ms)"
+                      compact
+                    /><input
+                      type="number"
+                      min="250"
+                      max="5000"
+                      step="50"
+                      bind:value={captionAlignmentPaddingMs}
+                      class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                    /></label
+                  ><label class="text-xs font-semibold"
+                    ><ParameterLabel
+                      section="stt"
+                      name="caption_alignment_batch_seconds"
+                      label="Maximum batch window (s)"
+                      compact
+                    /><input
+                      type="number"
+                      min="5"
+                      max="60"
+                      step="1"
+                      bind:value={captionAlignmentBatchSeconds}
+                      class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                    /></label
+                  ><label class="text-xs font-semibold"
+                    ><ParameterLabel
+                      section="stt"
+                      name="caption_alignment_min_confidence"
+                      label="Minimum timing quality"
+                      compact
+                    /><span
+                      class="mt-1 grid min-h-10 grid-cols-[1fr_2.5rem] items-center gap-2 rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3"
+                      ><input
+                        type="range"
+                        min="0.5"
+                        max="1"
+                        step="0.05"
+                        bind:value={captionAlignmentMinConfidence}
+                        class="w-full accent-[var(--accent)]"
+                      /><output class="text-right text-xs font-bold"
+                        >{Number(captionAlignmentMinConfidence).toFixed(
+                          2
+                        )}</output
+                      ></span
+                    ></label
+                  >{#if captionAlignmentMethod === 'ctc_asr_fallback'}<label
+                      class="text-xs font-semibold sm:col-span-2"
+                      ><ParameterLabel
+                        section="stt"
+                        name="caption_alignment_fallback_coverage"
+                        label="Run ASR below eligible coverage"
+                        compact
+                      /><span
+                        class="mt-1 grid min-h-10 grid-cols-[1fr_3rem] items-center gap-2 rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3"
+                        ><input
+                          type="range"
+                          min="0"
+                          max="1"
+                          step="0.05"
+                          bind:value={captionAlignmentFallbackCoverage}
+                          class="w-full accent-[var(--accent)]"
+                        /><output class="text-right text-xs font-bold"
+                          >{Math.round(
+                            Number(captionAlignmentFallbackCoverage) * 100
+                          )}%</output
+                        ></span
+                      ></label
+                    >{/if}
                 </div>
               </div>
-              <p class="muted mt-3 text-xs leading-relaxed">
-                Current caption alignment is an ASR-assisted lexical projection.
-                A transcript-conditioned CTC forced aligner is a separate method
-                and is not used by this pass yet.
-              </p>
-            </div>{/if}
+            {/if}
+            {#if captionAlignmentMethod === 'ctc'}
+              <div
+                class="rounded-xl border border-[var(--line)] bg-[var(--accent-soft)] p-4"
+              >
+                <div class="text-sm font-semibold">Local acoustic runtime</div>
+                <p class="muted mt-1 text-xs leading-relaxed">
+                  The selected VAD model first maps speech across the recording.
+                  Canary CTC then processes bounded caption batches on the
+                  selected compute backend; no ASR model is loaded.
+                </p>
+                <div class="mt-3 grid gap-3 sm:grid-cols-2">
+                  <label class="text-xs font-semibold"
+                    ><ParameterLabel
+                      section="stt"
+                      name="stt_compute_backend"
+                      label="Compute backend"
+                      compact
+                    /><select
+                      bind:value={sttComputeBackend}
+                      class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                      ><option value="auto">Automatic</option><option
+                        value="cpu"
+                        disabled={!supportsSttCompute('cpu')}>CPU</option
+                      ><option
+                        value="cuda"
+                        disabled={!supportsSttCompute('cuda')}>CUDA</option
+                      ><option
+                        value="vulkan"
+                        disabled={!supportsSttCompute('vulkan')}>Vulkan</option
+                      ><option
+                        value="metal"
+                        disabled={!supportsSttCompute('metal')}>Metal</option
+                      ></select
+                    ></label
+                  ><label class="text-xs font-semibold"
+                    ><ParameterLabel
+                      section="stt"
+                      name="stt_compute_device"
+                      label="Device"
+                      compact
+                    /><input
+                      type="number"
+                      min="0"
+                      disabled={['auto', 'cpu'].includes(sttComputeBackend)}
+                      bind:value={sttDevice}
+                      class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal disabled:opacity-40"
+                    /></label
+                  ><label
+                    class="flex items-center gap-3 text-xs font-semibold"
+                    ><input
+                      type="checkbox"
+                      bind:checked={vadEnabled}
+                      class="size-4 accent-[var(--accent)]"
+                    /><ParameterLabel
+                      section="stt"
+                      name="crispasr_vad_enabled"
+                      label="Validate against VAD"
+                      compact
+                    /></label
+                  >{#if vadEnabled}<label class="text-xs font-semibold"
+                      ><ParameterLabel
+                        section="stt"
+                        name="crispasr_vad_model"
+                        label="VAD model"
+                        compact
+                      /><select
+                        bind:value={vadModel}
+                        class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                        ><option value="silero">Silero · recommended</option
+                        ><option value="firered">FireRedVAD · robust</option
+                        ><option value="marblenet">MarbleNet · compact</option
+                        ><option value="whisper-vad"
+                          >Whisper VAD · experimental</option
+                        ></select
+                      ></label
+                    ><label class="text-xs font-semibold sm:col-span-2"
+                      ><ParameterLabel
+                        section="stt"
+                        name="crispasr_vad_threshold"
+                        label="VAD speech threshold"
+                        compact
+                      /><span
+                        class="mt-1 grid min-h-10 grid-cols-[1fr_2.5rem] items-center gap-2 rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3"
+                        ><input
+                          type="range"
+                          min="0"
+                          max="1"
+                          step="0.05"
+                          bind:value={vadThreshold}
+                          class="w-full accent-[var(--accent)]"
+                        /><output class="text-right text-xs font-bold"
+                          >{Number(vadThreshold).toFixed(2)}</output
+                        ></span
+                      ></label
+                    >{/if}
+                </div>
+              </div>
+            {/if}
+          {/if}
+          {#if !hasAttachedCaptions || captionAlignmentMethod !== 'ctc'}
           <label class="text-sm font-semibold"
             ><ParameterLabel
               section="stt"
               name="stt_engine"
-              label="Recognition model"
+              label={hasAttachedCaptions &&
+              captionAlignmentMethod === 'ctc_asr_fallback'
+                ? 'Fallback recognition model'
+                : 'Recognition model'}
             /><select
               bind:value={sttEngine}
               onchange={() =>
@@ -3327,6 +3583,7 @@
                   systems or diagnostics.
                 </p>{/if}
             </details>
+          {/if}
           {/if}
           <div class="rounded-xl border border-[var(--line)] p-4">
             <div class="text-sm font-semibold">

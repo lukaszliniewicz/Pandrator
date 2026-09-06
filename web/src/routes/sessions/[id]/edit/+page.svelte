@@ -98,15 +98,117 @@
         )
       : 0
   );
+  function evidenceNumber(
+    evidence: Record<string, unknown>,
+    ...keys: string[]
+  ) {
+    for (const key of keys) {
+      const value = Number(evidence[key]);
+      if (Number.isFinite(value)) return value;
+    }
+    return 0;
+  }
+
   const alignmentSummary = $derived.by(() => {
     if (!plan || typeof plan.evidence.alignment_coverage !== 'number')
       return null;
-    const coverage = Math.max(0, Math.min(1, plan.evidence.alignment_coverage));
-    const confidence = Math.max(
+    const evidence = plan.evidence;
+    const counts =
+      evidence.alignment_counts &&
+      typeof evidence.alignment_counts === 'object'
+        ? (evidence.alignment_counts as Record<string, unknown>)
+        : {};
+    const method = String(evidence.alignment_method ?? '');
+    const coverage = Math.max(
       0,
-      Math.min(1, Number(plan.evidence.alignment_confidence ?? 0))
+      Math.min(1, evidenceNumber(evidence, 'alignment_coverage', 'coverage'))
     );
-    return { coverage, confidence, reliable: coverage >= 0.5 };
+    const eligibleCoverage = Math.max(
+      0,
+      Math.min(
+        1,
+        evidenceNumber(
+          evidence,
+          'alignment_eligible_coverage',
+          'eligible_alignment_coverage',
+          'eligible_coverage',
+          'alignment_coverage',
+          'coverage'
+        )
+      )
+    );
+    const quality = Math.max(
+      0,
+      Math.min(
+        1,
+        evidenceNumber(
+          evidence,
+          'alignment_quality',
+          'alignment_confidence',
+          'confidence'
+        )
+      )
+    );
+    const ctc =
+      method === 'ctc_cue_alignment' || method === 'ctc_with_asr_fallback';
+    return {
+      methodLabel:
+        method === 'ctc_cue_alignment'
+          ? 'Cue-local CTC'
+          : method === 'ctc_with_asr_fallback'
+            ? 'Cue-local CTC + ASR fallback'
+            : method === 'asr_lexical_projection'
+              ? 'ASR lexical projection'
+              : 'Caption alignment',
+      coverage,
+      eligibleCoverage,
+      quality,
+      qualityLabel: ctc ? 'mean timing quality' : 'mean cue confidence',
+      wordCount: Math.max(
+        0,
+        evidenceNumber(evidence, 'word_count', 'accepted_token_count') ||
+          evidenceNumber(counts, 'accepted_token_count')
+      ),
+      acceptedCues: Math.max(
+        0,
+        evidenceNumber(evidence, 'accepted_cue_count', 'aligned_cue_count') ||
+          evidenceNumber(counts, 'accepted_cue_count')
+      ),
+      cueCount: Math.max(
+        0,
+        evidenceNumber(evidence, 'cue_count', 'total_cue_count')
+      ),
+      batchCount: Math.max(
+        0,
+        evidenceNumber(evidence, 'batch_count', 'first_pass_batch_count') ||
+          evidenceNumber(counts, 'first_pass_batch_count')
+      ),
+      retryCount: Math.max(
+        0,
+        evidenceNumber(evidence, 'isolated_retry_count', 'retry_count') ||
+          evidenceNumber(evidence, 'cluster_retries') +
+            evidenceNumber(evidence, 'individual_retries') ||
+          evidenceNumber(counts, 'cluster_retries') +
+            evidenceNumber(counts, 'individual_retries')
+      ),
+      outsideMediaCount: Math.max(
+        0,
+        evidenceNumber(
+          evidence,
+          'outside_media_cue_count',
+          'outside_media_count'
+        ) || evidenceNumber(counts, 'outside_media_count')
+      ),
+      oversizedCueCount: Math.max(
+        0,
+        evidenceNumber(evidence, 'oversized_cue_count') ||
+          evidenceNumber(counts, 'oversized_cue_count')
+      ),
+      fallbackUsed:
+        evidence.fallback_used === true ||
+        evidence.fallback_triggered === true,
+      reliable: coverage >= 0.5 && eligibleCoverage >= 0.5
+    };
   });
 
   function formatTime(value: number) {
@@ -621,7 +723,7 @@
           class="secondary"><Save size={15} /> Save</button
         ><a
           href={`/sessions/${sessionId}?settings=transcribe`}
-          title="Choose the recognition model used to align attached captions while preserving their wording and speakers."
+          title="Choose cue-local CTC alignment, its VAD and timing controls, or an optional ASR fallback."
           class="secondary"><Settings2 size={15} /> Alignment</a
         ><button
           onclick={openProposal}
@@ -685,10 +787,10 @@
           </h3>
           <p class="muted mt-3 text-sm leading-relaxed">
             Pandrator needs a recording plus either attached captions or a
-            completed ASR transcription. When both exist, the caption wording
-            and speakers stay authoritative while ASR supplies finer timing.
-            Aligned words remain available in the edit plan and the rendered
-            native subtitle document.
+            completed ASR transcript. Attached captions can be aligned directly
+            to the recording with cue-local CTC while their wording and speakers
+            stay authoritative. Aligned words remain available in the edit plan
+            and the rendered native subtitle document.
           </p>
           <button
             onclick={() => prepare(false)}
@@ -726,7 +828,7 @@
             'Caption word alignment',
             Boolean(workspaceState.readiness.timing_artifact),
             workspaceState.readiness.timing_artifact?.filename ??
-              'Optional: configure Alignment to project ASR word timing onto captions'
+              'Optional: run Caption alignment for cue-local acoustic word timing'
           )}
         </div>
       </div>
@@ -896,11 +998,29 @@
                 /> Caption timing is unreliable{/if}
             </div>
             <p class="muted mt-2 text-xs leading-relaxed">
-              {Math.round(alignmentSummary.coverage * 100)}% of caption words
-              aligned · {Math.round(alignmentSummary.confidence * 100)}% mean
-              cue confidence. {alignmentSummary.reliable
+              {alignmentSummary.methodLabel} · {Math.round(
+                alignmentSummary.coverage * 100
+              )}% of all words aligned · {Math.round(
+                alignmentSummary.eligibleCoverage * 100
+              )}% of in-media words · {Math.round(
+                alignmentSummary.quality * 100
+              )}% {alignmentSummary.qualityLabel}{alignmentSummary.wordCount
+                ? ` · ${alignmentSummary.wordCount.toLocaleString()} timed words`
+                : ''}{alignmentSummary.cueCount
+                ? ` · ${alignmentSummary.acceptedCues.toLocaleString()}/${alignmentSummary.cueCount.toLocaleString()} cues accepted`
+                : ''}{alignmentSummary.batchCount
+                ? ` · ${alignmentSummary.batchCount.toLocaleString()} CTC batches`
+                : ''}{alignmentSummary.retryCount
+                ? ` · ${alignmentSummary.retryCount.toLocaleString()} isolated retries`
+                : ''}{alignmentSummary.outsideMediaCount
+                ? ` · ${alignmentSummary.outsideMediaCount.toLocaleString()} cues outside media`
+                : ''}{alignmentSummary.oversizedCueCount
+                ? ` · ${alignmentSummary.oversizedCueCount.toLocaleString()} oversized cues retained without CTC timing`
+                : ''}{alignmentSummary.fallbackUsed
+                ? ' · ASR fallback used'
+                : ''}. {alignmentSummary.reliable
                 ? 'Aligned words are available for subtitle timing and cut-boundary inspection.'
-                : 'Pandrator is keeping the Zoom cue boundaries; do not use these word times for cut refinement.'}
+                : 'Original caption timing was retained for rejected cues; those word times are excluded from cut refinement.'}
             </p>
             {#if plan.evidence.warnings?.length}<ul
                 class="muted mt-2 list-disc space-y-1 pl-5 text-xs"
@@ -942,9 +1062,12 @@
                   {#if cue.speaker}<strong>{cue.speaker}</strong>{/if}
                   <span>{cue.text}</span>
                   <small
-                    >{cue.timing_source.replaceAll('_', ' ')} · {Math.round(
-                      (cue.timing_confidence ?? 0) * 100
-                    )}%</small
+                    >{cue.timing_source.replaceAll(
+                      '_',
+                      ' '
+                    )}{cue.timing_confidence != null
+                      ? ` · ${Math.round(cue.timing_confidence * 100)}% timing quality`
+                      : ''}</small
                   >
                 </span>
               </button>{/each}

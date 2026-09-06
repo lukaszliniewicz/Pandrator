@@ -482,6 +482,11 @@ class MediaEditService:
                 return None
             if not 0 <= confidence <= 1:
                 return None
+            stored_timing_source = str(
+                segment_metadata.get("timing_source") or "asr_alignment"
+            )
+            if stored_timing_source not in {"asr_alignment", "ctc_alignment"}:
+                stored_timing_source = "asr_alignment"
             consumed.append(
                 replace(
                     cue,
@@ -489,7 +494,7 @@ class MediaEditService:
                     end_ms=segment_end,
                     words=aligned_words,
                     timing_confidence=confidence,
-                    timing_source="asr_alignment",
+                    timing_source=stored_timing_source,
                 )
             )
         return tuple(consumed)
@@ -503,11 +508,20 @@ class MediaEditService:
             total += token_count
             confidence = cue.timing_confidence
             if (
-                cue.timing_source == "asr_alignment"
+                cue.timing_source in {"asr_alignment", "ctc_alignment"}
                 and cue.words
                 and confidence is not None
             ):
-                matched += min(token_count, max(0, round(token_count * confidence)))
+                if cue.timing_source == "ctc_alignment":
+                    # Forced alignment returns one validated timing for every
+                    # authoritative caption token.  Its confidence field is a
+                    # VAD/temporal quality score, not lexical coverage.
+                    matched += min(token_count, len(cue.words))
+                else:
+                    matched += min(
+                        token_count,
+                        max(0, round(token_count * confidence)),
+                    )
         return matched / total if total else 0.0
 
     @classmethod
@@ -740,6 +754,60 @@ class MediaEditService:
             "timing_available": bool(timing_words) or reused_alignment,
             "warnings": warnings,
         }
+        if timing_metadata and timing_metadata.get("alignment_method"):
+            evidence.update(
+                {
+                    "alignment_method": timing_metadata.get("alignment_method"),
+                    "alignment_engine": timing_metadata.get(
+                        "ctc_engine", timing_metadata.get("engine", "")
+                    ),
+                    "alignment_model": timing_metadata.get(
+                        "ctc_model", timing_metadata.get("model", "")
+                    ),
+                    "timing_quality_basis": timing_metadata.get(
+                        "timing_quality_basis", ""
+                    ),
+                    "alignment_artifact_reused": reused_alignment,
+                }
+            )
+            if reused_alignment:
+                for source_key, evidence_key in (
+                    ("alignment_coverage", "alignment_coverage"),
+                    ("eligible_alignment_coverage", "alignment_eligible_coverage"),
+                    ("alignment_confidence", "alignment_quality"),
+                ):
+                    try:
+                        value = float(timing_metadata[source_key])
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                    if 0 <= value <= 1:
+                        evidence[evidence_key] = round(value, 6)
+                evidence.update(
+                    {
+                        "word_count": timing_metadata.get(
+                            "word_count", timing_metadata.get("accepted_token_count", 0)
+                        ),
+                        "cue_count": timing_metadata.get("cue_count", len(cues)),
+                        "fallback_triggered": bool(
+                            timing_metadata.get("fallback_triggered", False)
+                        ),
+                        "alignment_counts": {
+                            key: timing_metadata.get(key)
+                            for key in (
+                                "accepted_cue_count",
+                                "accepted_token_count",
+                                "overlap_cluster_count",
+                                "oversized_cluster_count",
+                                "oversized_cue_count",
+                                "first_pass_batch_count",
+                                "cluster_retries",
+                                "individual_retries",
+                                "outside_media_count",
+                            )
+                            if key in timing_metadata
+                        },
+                    }
+                )
         return cue_payloads, evidence
 
     def prepare(self, session_id: str, *, force: bool = False) -> dict[str, Any]:
@@ -1076,7 +1144,7 @@ class MediaEditService:
             word_keys: set[tuple[str, int, int, float | None]] = set()
             for cue in cues:
                 if (
-                    cue.timing_source != "asr_alignment"
+                    cue.timing_source not in {"asr_alignment", "ctc_alignment"}
                     or cue.timing_confidence is None
                     or cue.timing_confidence < 0.5
                 ):
@@ -1091,7 +1159,7 @@ class MediaEditService:
                 cue: MediaCue, boundary_ms: int, *, side: Literal["start", "end"]
             ) -> BoundaryEvidence:
                 if (
-                    cue.timing_source == "asr_alignment"
+                    cue.timing_source in {"asr_alignment", "ctc_alignment"}
                     and cue.timing_confidence is not None
                     and cue.timing_confidence >= 0.5
                     and cue.words

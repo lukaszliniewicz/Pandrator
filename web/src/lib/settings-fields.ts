@@ -74,6 +74,14 @@ const CHOICES: Record<string, SettingOption[]> = {
     option('moss', 'MOSS Transcribe-Diarize 0.9B'),
     option('azure_mai_transcribe_1_5', 'Azure Speech · MAI-Transcribe-1.5')
   ],
+  caption_alignment_method: [
+    option('ctc', 'Local CTC forced alignment · recommended'),
+    option('ctc_asr_fallback', 'Local CTC, then ASR below threshold'),
+    option('asr', 'ASR lexical projection · legacy')
+  ],
+  caption_alignment_ctc_model: [
+    option('auto', 'Canary CTC aligner · managed model')
+  ],
   stt_transcribe_style: [
     option('readability', 'Readable transcript'),
     option('verbatim', 'Verbatim · preserve fillers')
@@ -320,6 +328,12 @@ const SETTING_ORDER: Record<string, string[]> = {
     'third_prompt'
   ],
   stt: [
+    'caption_alignment_method',
+    'caption_alignment_ctc_model',
+    'caption_alignment_padding_ms',
+    'caption_alignment_batch_seconds',
+    'caption_alignment_min_confidence',
+    'caption_alignment_fallback_coverage',
     'stt_engine',
     'stt_language',
     'stt_transcribe_style',
@@ -513,6 +527,10 @@ const STT_LOCAL_KEYS = new Set([
   'stt_chunk_seconds',
   'stt_lid_backend'
 ]);
+const CAPTION_CTC_RUNTIME_KEYS = new Set([
+  'stt_compute_backend',
+  'stt_threads'
+]);
 const STT_NON_MOSS_LOCAL_KEYS = new Set([
   'stt_chunk_overlap_seconds',
   'stt_beam_size',
@@ -686,15 +704,30 @@ export function settingApplies(
   if (section !== 'stt') return true;
 
   const engine = selected('stt_engine', 'whisper');
+  const captionAlignmentMethod = selected('caption_alignment_method', 'ctc');
+  const captionCtc = captionAlignmentMethod !== 'asr';
   const local = STT_LOCAL_ENGINES.has(engine);
   const moss = engine === 'moss';
   const nonMossLocal = engine === 'whisper' || engine === 'parakeet';
 
+  if (key === 'caption_alignment_method') return true;
+  if (
+    [
+      'caption_alignment_ctc_model',
+      'caption_alignment_padding_ms',
+      'caption_alignment_batch_seconds',
+      'caption_alignment_min_confidence'
+    ].includes(key)
+  )
+    return captionAlignmentMethod !== 'asr';
+  if (key === 'caption_alignment_fallback_coverage')
+    return captionAlignmentMethod === 'ctc_asr_fallback';
+  if (CAPTION_CTC_RUNTIME_KEYS.has(key) && captionCtc) return true;
   if (STT_LOCAL_KEYS.has(key)) return local;
   if (STT_NON_MOSS_LOCAL_KEYS.has(key)) return nonMossLocal;
   if (key === 'stt_compute_device')
     return (
-      local &&
+      (local || captionCtc) &&
       !['auto', 'cpu'].includes(selected('stt_compute_backend', 'auto'))
     );
   if (key === 'whisper_prompt') return engine === 'whisper';
@@ -709,10 +742,10 @@ export function settingApplies(
       return enabled('moss_ctc_alignment_enabled', true);
     return true;
   }
-  if (key === 'crispasr_vad_enabled') return nonMossLocal;
+  if (key === 'crispasr_vad_enabled') return nonMossLocal || captionCtc;
   if (STT_VAD_DETAIL_KEYS.has(key))
     return (
-      local &&
+      (local || captionCtc) &&
       (moss
         ? enabled('moss_vad_enabled')
         : enabled('crispasr_vad_enabled', true))
@@ -740,6 +773,20 @@ export function isMultiline(key: string): boolean {
 
 export function numberPresentation(key: string): NumberPresentation {
   const meta: Record<string, NumberPresentation> = {
+    caption_alignment_padding_ms: { min: 250, max: 5000, step: 50 },
+    caption_alignment_batch_seconds: { min: 5, max: 60, step: 1 },
+    caption_alignment_min_confidence: {
+      min: 0.5,
+      max: 1,
+      step: 0.05,
+      range: true
+    },
+    caption_alignment_fallback_coverage: {
+      min: 0,
+      max: 1,
+      step: 0.05,
+      range: true
+    },
     crispasr_vad_threshold: { min: 0, max: 1, step: 0.05, range: true },
     index_rate: { min: 0, max: 1, step: 0.05, range: true },
     volume_envelope: { min: 0, max: 1, step: 0.05, range: true },
@@ -884,7 +931,13 @@ export function settingLabel(key: string): string {
     moss_ctc_alignment_enabled: 'Align each MOSS turn to words with CTC',
     moss_ctc_aligner_model: 'MOSS CTC aligner model',
     moss_ctc_padding_seconds: 'MOSS turn CTC padding (seconds)',
-    crispasr_vad_enabled: 'Use VAD for Whisper and Parakeet',
+    caption_alignment_method: 'Attached-caption alignment method',
+    caption_alignment_ctc_model: 'Caption CTC aligner model',
+    caption_alignment_padding_ms: 'Cue audio padding (ms)',
+    caption_alignment_batch_seconds: 'Maximum CTC batch window (seconds)',
+    caption_alignment_min_confidence: 'Minimum timing-quality score',
+    caption_alignment_fallback_coverage: 'ASR fallback coverage threshold',
+    crispasr_vad_enabled: 'Use voice activity detection',
     crispasr_vad_model: 'VAD model',
     crispasr_vad_threshold: 'VAD speech threshold',
     crispasr_vad_min_speech_ms: 'Minimum detected speech (ms)',

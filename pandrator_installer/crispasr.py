@@ -9,7 +9,7 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-CRISPASR_VERSION = "0.8.20"
+CRISPASR_VERSION = "0.8.32"
 CRISPASR_RELEASE_BASE = f"https://github.com/CrispStrobe/CrispASR/releases/download/v{CRISPASR_VERSION}"
 
 
@@ -26,15 +26,15 @@ class CrispASRAsset:
 
 
 ASSETS = {
-    ("windows", "x86_64", "cpu"): CrispASRAsset("crispasr-windows-x86_64-cpu.zip", "7ed04c9d78c0e733f930e9a6c9df04f7584ff5b89eaf0e6425650365e9453701", "cpu", ("cpu",)),
-    ("windows", "x86_64", "cuda"): CrispASRAsset("crispasr-windows-x86_64-cuda.zip", "7371783dbe6fef28257e8cb6d501c8e9a98e36b55833c66145895c8815db3b79", "cuda", ("cuda", "cpu")),
-    ("windows", "x86_64", "vulkan"): CrispASRAsset("crispasr-windows-x86_64-vulkan.zip", "f26c261a35f469bb571a91774db8e28c996bda4b5e7a77bf5b3f8214f3ce01a4", "vulkan", ("vulkan", "cpu")),
-    ("linux", "x86_64", "cpu"): CrispASRAsset("crispasr-linux-x86_64.tar.gz", "c8aae93543a8293a1e07a8afd83c16aca8af342e6ee6aa076d179464fe866e98", "cpu", ("cpu",)),
-    ("linux", "x86_64", "cuda"): CrispASRAsset("crispasr-linux-x86_64-cuda.tar.gz", "fccf84c0d627a25a5a4e4ba08b1d1d32b9a62318586badf046a99bfa959e899b", "cuda", ("cuda", "cpu")),
-    ("linux", "x86_64", "vulkan"): CrispASRAsset("crispasr-linux-x86_64-vulkan.tar.gz", "1db7b06af2736a45181cdd6abb9ec048d5b9509f16bce9bdd0613bece2e17508", "vulkan", ("vulkan", "cpu")),
-    ("linux", "aarch64", "cpu"): CrispASRAsset("crispasr-linux-arm64.tar.gz", "04fdf1675e47a2b7fdfcb5ff7f50d98967573ea2e74b906cc4369670d2cf978a", "cpu", ("cpu",)),
-    ("darwin", "aarch64", "metal"): CrispASRAsset("crispasr-macos.tar.gz", "75bc46aec934cac1fc57b98b0cce5af3cb9faa63bb918ae93661703083f87ec6", "metal", ("metal", "cpu")),
-    ("darwin", "aarch64", "cpu"): CrispASRAsset("crispasr-macos.tar.gz", "75bc46aec934cac1fc57b98b0cce5af3cb9faa63bb918ae93661703083f87ec6", "metal", ("metal", "cpu")),
+    ("windows", "x86_64", "cpu"): CrispASRAsset("crispasr-windows-x86_64-cpu.zip", "ac8b6caf4dd448d00c5050907275bce4d154747110c37943aa4f69ee7fac9541", "cpu", ("cpu",)),
+    ("windows", "x86_64", "cuda"): CrispASRAsset("crispasr-windows-x86_64-cuda.zip", "9108d2be9b61415cf2c6d758d09a6fbfda369c2cda2d98f1f3d61e1326792d01", "cuda", ("cuda", "cpu")),
+    ("windows", "x86_64", "vulkan"): CrispASRAsset("crispasr-windows-x86_64-vulkan.zip", "112a33912d464346ba1c2a75f975864a7ed0a3c1bd1ad0c3cf8806b6919efd7d", "vulkan", ("vulkan", "cpu")),
+    ("linux", "x86_64", "cpu"): CrispASRAsset("crispasr-linux-x86_64.tar.gz", "6953d1e6cd8d7d828183befcf76877f1a7e3908514548a511de786887106ff08", "cpu", ("cpu",)),
+    ("linux", "x86_64", "cuda"): CrispASRAsset("crispasr-linux-x86_64-cuda.tar.gz", "becc7ae1359713af19fa09446cdc32d55c7cbca137b0a0f8cfddb6d45be04cde", "cuda", ("cuda", "cpu")),
+    ("linux", "x86_64", "vulkan"): CrispASRAsset("crispasr-linux-x86_64-vulkan.tar.gz", "8d670a24830610861a3f47c4b2e78eeefc5174ef68cf415c8b0accc6545141fe", "vulkan", ("vulkan", "cpu")),
+    ("linux", "aarch64", "cpu"): CrispASRAsset("crispasr-linux-arm64.tar.gz", "eb39ca1274084add172764ce638a600e50fc4b65f4b18776aa78dcf31486570c", "cpu", ("cpu",)),
+    ("darwin", "aarch64", "metal"): CrispASRAsset("crispasr-macos.tar.gz", "5e740d35e91a8dcaa79efd3ef0be3412de4796b68066921a9ea6984d2fc6b2ad", "metal", ("metal", "cpu")),
+    ("darwin", "aarch64", "cpu"): CrispASRAsset("crispasr-macos.tar.gz", "5e740d35e91a8dcaa79efd3ef0be3412de4796b68066921a9ea6984d2fc6b2ad", "metal", ("metal", "cpu")),
 }
 
 

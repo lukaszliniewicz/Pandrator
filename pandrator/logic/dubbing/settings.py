@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 from typing import Any
 
@@ -187,6 +188,39 @@ def migrate_dubbing_payload(
     migrated.setdefault("moss_ctc_aligner_model", "auto")
     migrated.setdefault("moss_ctc_padding_seconds", 0.5)
     migrated.setdefault("crispasr_vad_model", "silero")
+    migrated["caption_alignment_method"] = str(
+        migrated.get("caption_alignment_method") or "ctc"
+    ).strip().lower()
+    if migrated["caption_alignment_method"] not in {"ctc", "ctc_asr_fallback", "asr"}:
+        migrated["caption_alignment_method"] = "ctc"
+    migrated.setdefault("caption_alignment_ctc_model", "auto")
+    migrated.setdefault("caption_alignment_padding_ms", 2000)
+    migrated.setdefault("caption_alignment_batch_seconds", 30)
+    migrated.setdefault("caption_alignment_min_confidence", 0.5)
+    migrated.setdefault("caption_alignment_fallback_coverage", 0.9)
+    try:
+        migrated["caption_alignment_padding_ms"] = max(
+            250, min(5000, int(migrated["caption_alignment_padding_ms"]))
+        )
+    except (TypeError, ValueError, OverflowError):
+        migrated["caption_alignment_padding_ms"] = 2000
+    try:
+        migrated["caption_alignment_batch_seconds"] = max(
+            5, min(60, int(migrated["caption_alignment_batch_seconds"]))
+        )
+    except (TypeError, ValueError, OverflowError):
+        migrated["caption_alignment_batch_seconds"] = 30
+    for key, default, minimum in (
+        ("caption_alignment_min_confidence", 0.5, 0.5),
+        ("caption_alignment_fallback_coverage", 0.9, 0.0),
+    ):
+        try:
+            value = float(migrated[key])
+            if not math.isfinite(value):
+                raise ValueError("alignment fraction must be finite")
+            migrated[key] = max(minimum, min(1.0, value))
+        except (TypeError, ValueError, OverflowError):
+            migrated[key] = default
     if "crispasr_vad_enabled" not in migrated:
         migrated["crispasr_vad_enabled"] = bool(
             migrated.get("parakeet_vad_enabled", True)
@@ -301,6 +335,12 @@ def normalize_dubbing_state(
         "crispasr_vad_min_silence_ms",
         "crispasr_vad_max_speech_seconds",
         "crispasr_vad_speech_pad_ms",
+        "caption_alignment_method",
+        "caption_alignment_ctc_model",
+        "caption_alignment_padding_ms",
+        "caption_alignment_batch_seconds",
+        "caption_alignment_min_confidence",
+        "caption_alignment_fallback_coverage",
         "speech_block_min_chars",
         "speech_block_max_chars",
         "speech_block_merge_threshold",

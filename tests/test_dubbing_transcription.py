@@ -42,6 +42,19 @@ def _crisp_json(words=None):
 
 
 class CrispASRTranscriptionTests(unittest.TestCase):
+    def test_vad_export_command_passes_raw_output_as_flag_value(self):
+        command = crispasr.build_vad_export_command(
+            "normalized.wav",
+            "vad.json",
+            {"crispasr_vad_enabled": True},
+            executable="crispasr",
+        )
+
+        raw_flag = command.index("--vad-export-raw")
+        self.assertEqual(command[raw_flag + 1], "vad.json")
+        self.assertNotIn("-of", command)
+        self.assertIn("-f", command)
+
     def test_windows_prefetch_downloads_selected_model_atomically(self):
         requested = {}
 

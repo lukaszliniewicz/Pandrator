@@ -21,7 +21,7 @@ from urllib.request import Request, urlopen
 from ..cancellable_process import ProcessCancelled, run_cancellable
 from .languages import normalize_language_code
 
-CRISPASR_VERSION = "0.8.20"
+CRISPASR_VERSION = "0.8.32"
 CRISPASR_EXECUTABLE_ENV = "CRISPASR_EXECUTABLE"
 CRISPASR_CACHE_DIR_ENV = "CRISPASR_CACHE_DIR"
 
@@ -327,9 +327,10 @@ def _prefetch_windows_vad_model(
     settings: dict[str, Any],
     *,
     opener: Callable[..., Any] = urlopen,
+    force: bool = False,
 ) -> Path | None:
     engine = normalize_engine(settings.get("stt_engine") or settings.get("stt_backend"))
-    if not _vad_enabled(settings, engine):
+    if not force and not _vad_enabled(settings, engine):
         return None
 
     configured = str(settings.get("crispasr_vad_model") or "silero").strip()
@@ -374,6 +375,28 @@ def _prefetch_windows_moss_aligner(
             opener=opener,
         )
 
+    candidate = Path(configured).expanduser()
+    return candidate if candidate.is_file() else None
+
+
+def _prefetch_windows_ctc_aligner(
+    settings: dict[str, Any],
+    *,
+    opener: Callable[..., Any] = urlopen,
+) -> Path | None:
+    """Atomically cache the standalone caption CTC model on Windows."""
+
+    configured = str(_setting(settings, "caption_alignment_ctc_model", "auto")).strip() or "auto"
+    if configured.lower() in {
+        "auto",
+        "canary-ctc-aligner",
+        DEFAULT_CTC_ALIGNER_ARTIFACT.filename,
+    }:
+        return _prefetch_windows_artifact(
+            settings,
+            DEFAULT_CTC_ALIGNER_ARTIFACT,
+            opener=opener,
+        )
     candidate = Path(configured).expanduser()
     return candidate if candidate.is_file() else None
 
@@ -629,6 +652,190 @@ def build_moss_alignment_command(
         command.append("--auto-download")
     _append_runtime_options(command, settings)
     return command
+
+
+def build_ctc_alignment_command(
+    audio_path: str | os.PathLike[str],
+    text_path: str | os.PathLike[str],
+    output_path: str | os.PathLike[str],
+    settings: dict[str, Any],
+    *,
+    executable: str = "",
+    aligner_model_path: str | os.PathLike[str] | None = None,
+) -> list[str]:
+    """Build one generic align-only CTC invocation.
+
+    The command intentionally contains no transcription backend/model flags;
+    CrispASR loads only the selected aligner for each bounded batch.
+    """
+
+    if aligner_model_path is not None:
+        aligner = str(aligner_model_path)
+    else:
+        configured = str(
+            _setting(settings, "caption_alignment_ctc_model", "auto")
+        ).strip() or "auto"
+        aligner = (
+            configured
+            if configured.lower() in {
+                "auto",
+                "canary-ctc-aligner",
+                DEFAULT_CTC_ALIGNER_ARTIFACT.filename,
+            }
+            or Path(configured).is_file()
+            else "auto"
+        )
+    command = [
+        resolve_executable(executable),
+        "--align-only",
+        "-am",
+        aligner,
+        "-f",
+        str(audio_path),
+        "--text-file",
+        str(text_path),
+        "--align-granularity",
+        "word",
+        "--align-format",
+        "json",
+        "--align-output",
+        str(output_path),
+    ]
+    if aligner_model_path is None:
+        command.append("--auto-download")
+    _append_runtime_options(command, settings)
+    return command
+
+
+def build_vad_export_command(
+    audio_path: str | os.PathLike[str],
+    output_path: str | os.PathLike[str],
+    settings: dict[str, Any],
+    *,
+    executable: str = "",
+    vad_model_path: str | os.PathLike[str] | None = None,
+) -> list[str]:
+    """Build a full-recording raw VAD export with no ASR model initialization."""
+
+    command = [
+        resolve_executable(executable),
+        "--vad-export-raw",
+        str(output_path),
+        "-f",
+        str(audio_path),
+    ]
+    _append_runtime_options(command, settings)
+    command.append("--vad")
+    if vad_model_path is not None:
+        command.extend(("--vad-model", str(vad_model_path)))
+    else:
+        vad_model = str(settings.get("crispasr_vad_model") or "silero").strip().lower()
+        if vad_model not in {"", "auto", "silero"}:
+            command.extend(("--vad-model", vad_model))
+    command.extend(
+        (
+            "--vad-threshold",
+            str(max(0.0, min(1.0, float(_setting(settings, "crispasr_vad_threshold", 0.5))))),
+            "--vad-min-speech-duration-ms",
+            str(max(0, int(_setting(settings, "crispasr_vad_min_speech_ms", 250)))),
+            "--vad-min-silence-duration-ms",
+            str(max(0, int(_setting(settings, "crispasr_vad_min_silence_ms", 800)))),
+            "--vad-max-speech-duration-s",
+            str(max(1.0, float(_setting(settings, "crispasr_vad_max_speech_seconds", 300.0)))),
+            "--vad-speech-pad-ms",
+            str(max(0, int(_setting(settings, "crispasr_vad_speech_pad_ms", 30)))),
+        )
+    )
+    return command
+
+
+def run_vad_export(
+    audio_path: str | os.PathLike[str],
+    output_path: str | os.PathLike[str],
+    settings: dict[str, Any],
+    *,
+    executable: str = "",
+    run_func: Callable[..., Any] = subprocess.run,
+    cancel_event: threading.Event | None = None,
+) -> Path:
+    """Execute one standalone full-recording VAD export."""
+
+    if cancel_event is not None and cancel_event.is_set():
+        raise ProcessCancelled("VAD export was canceled.")
+    # This standalone export is owned by caption alignment, so its model
+    # prefetch follows crispasr_vad_enabled rather than the fallback STT
+    # engine's MOSS-specific switch.
+    prefetched = _prefetch_windows_vad_model(settings, force=True)
+    command = build_vad_export_command(
+        audio_path,
+        output_path,
+        settings,
+        executable=executable,
+        vad_model_path=prefetched,
+    )
+    try:
+        _run_tool(command, run_func=run_func, cancel_event=cancel_event)
+    except ProcessCancelled:
+        raise
+    except (FileNotFoundError, subprocess.CalledProcessError) as error:
+        stderr = getattr(error, "stderr", b"")
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode("utf-8", errors="replace")
+        raise CrispASRError(f"CrispASR VAD export failed: {str(stderr or error).strip()}") from error
+    generated = Path(output_path)
+    if not generated.is_file():
+        # Some CrispASR builds append ``.json`` to the requested export path.
+        candidate = Path(f"{output_path}.json")
+        if candidate.is_file():
+            generated = candidate
+    if not generated.is_file():
+        raise CrispASRError("CrispASR did not produce a VAD export.")
+    if cancel_event is not None and cancel_event.is_set():
+        raise ProcessCancelled("VAD export was canceled.")
+    return generated
+
+
+def run_ctc_alignment(
+    audio_path: str | os.PathLike[str],
+    text_path: str | os.PathLike[str],
+    output_path: str | os.PathLike[str],
+    settings: dict[str, Any],
+    *,
+    executable: str = "",
+    run_func: Callable[..., Any] = subprocess.run,
+    cancel_event: threading.Event | None = None,
+) -> Any:
+    """Run one bounded align-only CTC batch and return its JSON payload."""
+
+    if cancel_event is not None and cancel_event.is_set():
+        raise ProcessCancelled("CTC alignment was canceled.")
+    prefetched = _prefetch_windows_ctc_aligner(settings)
+    command = build_ctc_alignment_command(
+        audio_path,
+        text_path,
+        output_path,
+        settings,
+        executable=executable,
+        aligner_model_path=prefetched,
+    )
+    try:
+        _run_tool(command, run_func=run_func, cancel_event=cancel_event)
+    except ProcessCancelled:
+        raise
+    except (FileNotFoundError, subprocess.CalledProcessError) as error:
+        stderr = getattr(error, "stderr", b"")
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode("utf-8", errors="replace")
+        raise CrispASRError(f"CrispASR CTC alignment failed: {str(stderr or error).strip()}") from error
+    produced = Path(output_path)
+    if not produced.is_file():
+        raise CrispASRError("CrispASR did not produce CTC alignment JSON.")
+    if cancel_event is not None and cancel_event.is_set():
+        raise ProcessCancelled("CTC alignment was canceled.")
+    try:
+        return json.loads(produced.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise CrispASRError("CrispASR CTC alignment output is invalid JSON.") from error
 
 
 def _align_moss_segments(

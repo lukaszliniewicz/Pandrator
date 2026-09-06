@@ -320,6 +320,78 @@ class MediaEditServiceTests(unittest.TestCase):
             )
         )
 
+    def test_prepare_preserves_ctc_coverage_separately_from_timing_quality(self):
+        media, captions, _timing = self._seed_external()
+        prealigned = self._register(
+            "prealigned-ctc.json",
+            "word_timestamps",
+            json.dumps(
+                {
+                    "schema": "pandrator.transcript.v1",
+                    "segments": [
+                        {
+                            "id": "cue-000001",
+                            "start_ms": 1_900,
+                            "end_ms": 3_000,
+                            "text": "hello world",
+                            "metadata": {
+                                "timing_confidence": 0.5,
+                                "timing_source": "ctc_alignment",
+                            },
+                            "words": [
+                                {"text": "hello", "start_ms": 2_000, "end_ms": 2_400},
+                                {"text": "world", "start_ms": 2_500, "end_ms": 2_900},
+                            ],
+                        },
+                        {
+                            "id": "cue-000002",
+                            "start_ms": 2_900,
+                            "end_ms": 3_900,
+                            "text": "overlap",
+                            "metadata": {
+                                "timing_confidence": 0.5,
+                                "timing_source": "ctc_alignment",
+                            },
+                            "words": [
+                                {"text": "overlap", "start_ms": 3_000, "end_ms": 3_800}
+                            ],
+                        },
+                    ],
+                }
+            ),
+            "json",
+            parent_ids=[media.id],
+            metadata={
+                "alignment_method": "ctc_cue_alignment",
+                "authoritative_transcript_artifact_id": captions.id,
+                "alignment_coverage": 1.0,
+                "eligible_alignment_coverage": 0.99,
+                "alignment_confidence": 0.5,
+                "word_count": 3,
+                "cue_count": 2,
+                "accepted_cue_count": 2,
+                "accepted_token_count": 3,
+                "first_pass_batch_count": 1,
+                "fallback_triggered": False,
+            },
+        )
+
+        state = self._service().prepare(self.session_id)
+
+        evidence = state["plan"]["evidence"]
+        self.assertEqual(state["plan"]["timing_artifact"]["id"], prealigned.id)
+        self.assertEqual(
+            [cue["timing_source"] for cue in state["plan"]["cues"]],
+            ["ctc_alignment", "ctc_alignment"],
+        )
+        self.assertEqual(1.0, evidence["alignment_coverage"])
+        self.assertEqual(0.99, evidence["alignment_eligible_coverage"])
+        self.assertEqual(0.5, evidence["alignment_quality"])
+        self.assertEqual(3, evidence["word_count"])
+        self.assertEqual(2, evidence["cue_count"])
+        self.assertTrue(evidence["alignment_artifact_reused"])
+        self.assertFalse(evidence["fallback_triggered"])
+
     def test_prepare_ignores_pre_aligned_artifact_from_different_transcript(self):
         media, _captions, _timing = self._seed_external()
         mismatched = self._register(
