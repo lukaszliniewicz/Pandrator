@@ -30,6 +30,7 @@ from pandrator_manager.operations.handlers import (
     FilesystemTaskHandler,
     OperationTaskContext,
 )
+from pandrator_manager.tls import select_ca_bundle
 
 
 class AudioCppManagerTests(unittest.TestCase):
@@ -37,9 +38,7 @@ class AudioCppManagerTests(unittest.TestCase):
         package = MODEL_PACKAGES["breeze_tts_2_q8_0"]
         presentation = PRESENTATIONS["audio_cpp"]
         breeze = next(
-            item
-            for item in presentation.models
-            if item.id == "breeze_tts_2_q8_0"
+            item for item in presentation.models if item.id == "breeze_tts_2_q8_0"
         )
 
         self.assertIn(package.id, SUPPORTED_MODEL_IDS)
@@ -282,6 +281,11 @@ class AudioCppManagerTests(unittest.TestCase):
                     staged_spec["packages"][0]["download"]["revision"],
                 )
                 self.assertEqual(1, run.call_count)
+                model_install = run.call_args.args[0]
+                self.assertEqual(
+                    str(select_ca_bundle(application.context.environment).path),
+                    model_install.env["SSL_CERT_FILE"],
+                )
 
                 required = MODEL_PACKAGES["qwen3_tts_1_7b_base_q8_0"].required_paths(
                     target / "models"

@@ -76,7 +76,7 @@ from ..runtime_specs import (
 )
 from ..state import ManagerStore
 from ..supervisor import ProcessSupervisor
-from ..tls import CABundleSelection, dulwich_config_with_ca
+from ..tls import CABundleSelection, dulwich_config_with_ca, select_ca_bundle
 from ..uninstall import (
     prepare_uninstall_handoff,
     rollback_prepared_uninstall,
@@ -561,9 +561,7 @@ class FilesystemTaskHandler:
                     download = {}
                     entry["download"] = download
                 if not isinstance(download, dict):
-                    raise RuntimeError(
-                        f"Invalid audio.cpp download spec for {entry.get('id')}."
-                    )
+                    raise RuntimeError(f"Invalid audio.cpp download spec for {entry.get('id')}.")
                 download["revision"] = AUDIO_CPP_MODEL_REVISION
                 remaining.remove(str(entry["id"]))
                 changed = True
@@ -721,12 +719,11 @@ class FilesystemTaskHandler:
         elif not getattr(sys, "frozen", False):
             python_executable = sys.executable
         else:
-            python_executable = (
-                shutil.which("python3")
-                or shutil.which("python")
-                or sys.executable
-            )
+            python_executable = shutil.which("python3") or shutil.which("python") or sys.executable
         invocations: list[list[str]] = []
+        model_installer_environment = {
+            "SSL_CERT_FILE": str(select_ca_bundle(execution.context.environment).path)
+        }
         for package in packages:
             execution.check_cancelled()
             invocation = [
@@ -745,6 +742,7 @@ class FilesystemTaskHandler:
                 CommandSpec(
                     argv=tuple(invocation),
                     cwd=target,
+                    env=model_installer_environment,
                     timeout_seconds=2 * 60 * 60,
                     label=f"audio-cpp-model-{package.id}",
                 )
