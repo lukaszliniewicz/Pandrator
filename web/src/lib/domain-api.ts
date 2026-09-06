@@ -295,7 +295,8 @@ export const sessionApi = {
     }),
   previewOutputMix: (
     sessionId: string,
-    body: ApiSchema<'OutputMixPreviewRequest'>
+    body: ApiSchema<'OutputMixPreviewRequest'>,
+    signal?: AbortSignal
   ) =>
     typedApiJson<
       '/api/v1/sessions/{sessionId}/output-mix-preview',
@@ -303,7 +304,8 @@ export const sessionApi = {
       JobRecord
     >('/api/v1/sessions/{sessionId}/output-mix-preview', 'post', {
       path: { sessionId },
-      body
+      body,
+      signal
     }),
   selectStageArtifact: (
     sessionId: string,
@@ -708,14 +710,15 @@ export const artifactApi = {
     >('/api/v1/artifacts/{artifactId}/context', 'get', {
       path: { artifactId }
     }),
-  waveform: (artifactId: string, points = 1600) =>
+  waveform: (artifactId: string, points = 1600, signal?: AbortSignal) =>
     typedApiJson<
       '/api/v1/artifacts/{artifactId}/waveform',
       'get',
       WaveformData
     >('/api/v1/artifacts/{artifactId}/waveform', 'get', {
       path: { artifactId },
-      query: new URLSearchParams({ points: String(points) })
+      query: new URLSearchParams({ points: String(points) }),
+      signal
     }),
   audioPreview: (artifactId: string, signal?: AbortSignal) =>
     typedApiJson<

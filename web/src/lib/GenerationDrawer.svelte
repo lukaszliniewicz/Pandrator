@@ -1826,12 +1826,30 @@
             texts={editableTexts}
             onreplace={applySearchReplacements}
             onnavigate={navigateSearchMatch}
-            onactivate={loadAllSegments}
             disabled={searchLoading || loading}
             label={searchScopeLabel}
-          />{#if searchLoading}<p class="muted mt-1 px-1 text-[.65rem]">
-              Loading all {searchScopeLabel} for search…
-            </p>{/if}
+          />
+          {#if payload.next_cursor != null || searchLoading}
+            <div
+              class="muted mt-1 flex flex-wrap items-center justify-between gap-2 px-1 text-[.65rem]"
+              aria-live="polite"
+            >
+              <span>
+                Searching {payload.items.length} loaded {searchScopeLabel} out of
+                {payload.total}.
+              </span>
+              <button
+                type="button"
+                onclick={loadAllSegments}
+                disabled={searchLoading || loading}
+                class="font-semibold text-[var(--accent)] underline decoration-dotted underline-offset-2 disabled:opacity-50"
+              >
+                {searchLoading
+                  ? 'Loading all segments…'
+                  : `Load all ${payload.total} for search`}
+              </button>
+            </div>
+          {/if}
         </div>
 
         {#if selectedAssembly?.status === 'completed' && selectedAssembly.artifact_id}

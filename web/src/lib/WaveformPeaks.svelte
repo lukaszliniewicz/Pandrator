@@ -2,11 +2,14 @@
   import { errorMessage } from './errors';
   import { Activity, LoaderCircle } from '@lucide/svelte';
   import { artifactApi } from './domain-api';
+  import { onDestroy } from 'svelte';
 
   let { artifactId }: { artifactId: string } = $props();
   let loading = $state(false);
   let points = $state<number[]>([]);
   let error = $state('');
+  let controller: AbortController | undefined;
+  let loadedArtifactId = '';
   const bars = $derived(
     points.length
       ? points.filter(
@@ -16,25 +19,64 @@
       : []
   );
 
+  function waitForRetry(signal: AbortSignal) {
+    return new Promise<void>((resolve, reject) => {
+      if (signal.aborted) {
+        reject(new DOMException('Aborted', 'AbortError'));
+        return;
+      }
+      const timer = window.setTimeout(() => {
+        signal.removeEventListener('abort', abort);
+        resolve();
+      }, 700);
+      const abort = () => {
+        window.clearTimeout(timer);
+        reject(new DOMException('Aborted', 'AbortError'));
+      };
+      signal.addEventListener('abort', abort, { once: true });
+    });
+  }
+
   async function load() {
+    controller?.abort();
+    const request = new AbortController();
+    controller = request;
     loading = true;
     error = '';
     try {
       for (let attempt = 0; attempt < 30; attempt += 1) {
-        const result = await artifactApi.waveform(artifactId);
+        const result = await artifactApi.waveform(
+          artifactId,
+          1600,
+          request.signal
+        );
         if (Array.isArray(result.points)) {
           points = result.points;
           return;
         }
-        await new Promise((resolve) => setTimeout(resolve, 700));
+        await waitForRetry(request.signal);
       }
       error = 'Waveform is still being prepared.';
     } catch (caught) {
-      error = errorMessage(caught);
+      if (!request.signal.aborted) error = errorMessage(caught);
     } finally {
-      loading = false;
+      if (controller === request) {
+        controller = undefined;
+        loading = false;
+      }
     }
   }
+
+  $effect(() => {
+    if (artifactId === loadedArtifactId) return;
+    loadedArtifactId = artifactId;
+    controller?.abort();
+    controller = undefined;
+    loading = false;
+    points = [];
+    error = '';
+  });
+  onDestroy(() => controller?.abort());
 </script>
 
 {#if points.length}

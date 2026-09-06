@@ -137,17 +137,25 @@
   }
 
   function autoExpand(node: HTMLTextAreaElement) {
+    if (CSS.supports('field-sizing', 'content')) return;
+
+    let frame: number | undefined;
     const adjust = () => {
-      node.style.height = 'auto';
-      node.style.height = `${Math.max(node.scrollHeight, 36)}px`;
+      if (frame !== undefined) cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        frame = undefined;
+        node.style.height = 'auto';
+        node.style.height = `${Math.max(node.scrollHeight, 36)}px`;
+      });
     };
-    requestAnimationFrame(adjust);
+    adjust();
     node.addEventListener('input', adjust);
     return {
       update() {
         adjust();
       },
       destroy() {
+        if (frame !== undefined) cancelAnimationFrame(frame);
         node.removeEventListener('input', adjust);
       }
     };

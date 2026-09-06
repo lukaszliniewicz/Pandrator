@@ -1,7 +1,7 @@
 <script lang="ts">
   import { errorMessage } from '$lib/errors';
   import { page } from '$app/state';
-  import { onMount } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
   import {
     Check,
     CheckCircle2,
@@ -56,6 +56,7 @@
   let preview = $state<ArtifactRecord | null>(null);
   let deleting = $state<Record<string, boolean>>({});
   let copiedPath = $state('');
+  let assemblyController: AbortController | undefined;
   const outputContext = $derived(
     outputProfile?.context && typeof outputProfile.context === 'object'
       ? (outputProfile.context as Record<string, unknown>)
@@ -124,10 +125,27 @@
       selectedRunId =
         runs.find((item) => item.status === 'completed')?.id ?? '';
   }
-  async function waitForAssembly(runId: string) {
+  function waitForAssemblyPoll(signal: AbortSignal) {
+    return new Promise<void>((resolve, reject) => {
+      if (signal.aborted) {
+        reject(new DOMException('Aborted', 'AbortError'));
+        return;
+      }
+      const timer = window.setTimeout(() => {
+        signal.removeEventListener('abort', abort);
+        resolve();
+      }, 800);
+      const abort = () => {
+        window.clearTimeout(timer);
+        reject(new DOMException('Aborted', 'AbortError'));
+      };
+      signal.addEventListener('abort', abort, { once: true });
+    });
+  }
+  async function waitForAssembly(runId: string, signal: AbortSignal) {
     for (let attempt = 0; attempt < 300; attempt += 1) {
-      await new Promise((resolve) => window.setTimeout(resolve, 800));
-      const result = await generationApi.runs(sessionId);
+      await waitForAssemblyPoll(signal);
+      const result = await generationApi.runs(sessionId, signal);
       runs = result.items ?? [];
       const assembly = runs.find((item) => item.id === runId)?.assembly;
       if (assembly?.status === 'completed') return assembly;
@@ -147,6 +165,9 @@
       error = 'Output settings are still loading. Please try again.';
       return;
     }
+    assemblyController?.abort();
+    const controller = new AbortController();
+    assemblyController = controller;
     busy = true;
     error = '';
     try {
@@ -208,7 +229,7 @@
             selectedRunId,
             runOverride
           );
-        await waitForAssembly(selectedRunId);
+        await waitForAssembly(selectedRunId, controller.signal);
       }
       const job = await sessionApi.runStage(sessionId, 'export', {
         ...runOverride,
@@ -221,11 +242,15 @@
       message = `Export ${job.id.slice(0, 8)} was submitted${needsAssembly && selected?.label ? ` from ${selected.label}` : ''}. Live progress is shown below.`;
       await load();
     } catch (caught) {
-      error = errorMessage(caught);
+      if (!controller.signal.aborted) error = errorMessage(caught);
     } finally {
-      busy = false;
+      if (assemblyController === controller) {
+        assemblyController = undefined;
+        busy = false;
+      }
     }
   }
+  onDestroy(() => assemblyController?.abort());
   function canRemove(artifact: ArtifactRecord) {
     return (
       artifact.kind === 'export' ||

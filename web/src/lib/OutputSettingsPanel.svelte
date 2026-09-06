@@ -19,6 +19,7 @@
   } from './api-models';
   import ArtifactPreview from './ArtifactPreview.svelte';
   import { artifactFilename } from './artifact-display';
+  import { onDestroy } from 'svelte';
 
   type SavedOutputProfile = {
     output: Record<string, unknown>;
@@ -46,6 +47,7 @@
   let previewJobId = $state('');
   let previewStartSeconds = $state<number | undefined>(undefined);
   let previewAttempt = 0;
+  let previewController: AbortController | undefined;
   let busy = $state(false);
   let message = $state('');
   let error = $state('');
@@ -258,9 +260,30 @@
     return saved;
   }
 
+  function waitForPreviewPoll(signal: AbortSignal) {
+    return new Promise<void>((resolve, reject) => {
+      if (signal.aborted) {
+        reject(new DOMException('Aborted', 'AbortError'));
+        return;
+      }
+      const timer = window.setTimeout(() => {
+        signal.removeEventListener('abort', abort);
+        resolve();
+      }, 500);
+      const abort = () => {
+        window.clearTimeout(timer);
+        reject(new DOMException('Aborted', 'AbortError'));
+      };
+      signal.addEventListener('abort', abort, { once: true });
+    });
+  }
+
   async function previewMix() {
     if (!generationRunId || previewBusy) return;
     const attempt = ++previewAttempt;
+    previewController?.abort();
+    const controller = new AbortController();
+    previewController = controller;
     previewBusy = true;
     previewJobId = '';
     error = '';
@@ -269,20 +292,24 @@
       const ducking = String(
         value('mix_ducking', 'strong')
       ) as ApiSchema<'OutputMixPreviewRequest'>['mix_ducking'];
-      const job = await sessionApi.previewOutputMix(sessionId, {
-        generation_run_id: generationRunId,
-        start_seconds:
-          previewStartSeconds == null
-            ? null
-            : Math.max(0, Number(previewStartSeconds) || 0),
-        duration_seconds: 12,
-        mix_source_gain_db: Number(value('mix_source_gain_db', 0)),
-        mix_voice_gain_db: Number(value('mix_voice_gain_db', 0)),
-        mix_voice_lufs: Number(value('mix_voice_lufs', -16)),
-        mix_ducking: ducking,
-        mix_attack_ms: Math.round(Number(value('mix_attack_ms', 25))),
-        mix_release_ms: Math.round(Number(value('mix_release_ms', 350)))
-      });
+      const job = await sessionApi.previewOutputMix(
+        sessionId,
+        {
+          generation_run_id: generationRunId,
+          start_seconds:
+            previewStartSeconds == null
+              ? null
+              : Math.max(0, Number(previewStartSeconds) || 0),
+          duration_seconds: 12,
+          mix_source_gain_db: Number(value('mix_source_gain_db', 0)),
+          mix_voice_gain_db: Number(value('mix_voice_gain_db', 0)),
+          mix_voice_lufs: Number(value('mix_voice_lufs', -16)),
+          mix_ducking: ducking,
+          mix_attack_ms: Math.round(Number(value('mix_attack_ms', 25))),
+          mix_release_ms: Math.round(Number(value('mix_release_ms', 350)))
+        },
+        controller.signal
+      );
       if (attempt !== previewAttempt) {
         await jobApi.cancel(job.id).catch(() => null);
         return;
@@ -299,8 +326,8 @@
                 ? 'Soundtrack mix preview was canceled.'
                 : 'Soundtrack mix preview failed.')
           );
-        await new Promise((resolve) => window.setTimeout(resolve, 500));
-        completed = await jobApi.get(job.id);
+        await waitForPreviewPoll(controller.signal);
+        completed = await jobApi.get(job.id, controller.signal);
       }
       if (completed.status !== 'succeeded')
         throw new Error(
@@ -333,18 +360,22 @@
       ).toFixed(1);
       message = `${completed.result_json?.automatic_start ? 'The first voiceover was found automatically. ' : ''}Preview ready from ${previewStart} seconds; it used the current controls without saving them.`;
     } catch (caught) {
-      if (attempt === previewAttempt) error = errorMessage(caught);
+      if (attempt === previewAttempt && !controller.signal.aborted)
+        error = errorMessage(caught);
     } finally {
       if (attempt === previewAttempt) {
         previewBusy = false;
         previewJobId = '';
       }
+      if (previewController === controller) previewController = undefined;
     }
   }
 
   async function cancelMixPreview() {
     const jobId = previewJobId;
     previewAttempt += 1;
+    previewController?.abort();
+    previewController = undefined;
     previewBusy = false;
     previewJobId = '';
     error = '';
@@ -356,6 +387,12 @@
       error = errorMessage(caught);
     }
   }
+
+  onDestroy(() => {
+    previewAttempt += 1;
+    previewController?.abort();
+    previewController = undefined;
+  });
 
   async function saveAsDefaults() {
     busy = true;

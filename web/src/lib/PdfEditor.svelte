@@ -96,6 +96,7 @@
   let activeOffset = $state({ x: 0, y: 0 });
   let activePageIndex = $state(0);
   let renderEpoch = 0;
+  let renderedStackPages: HTMLCanvasElement[] = [];
   let renderProgress = $state('');
   let plan = $state<Plan>({
     first_page_side: 'right',
@@ -203,9 +204,27 @@
     visiblePages().filter((page) => !plan.deleted_pages.includes(page)).length
   );
 
+  function compositeRenderedPages() {
+    if (!canvas || !renderedStackPages.length) return;
+    const context = canvas.getContext('2d');
+    if (!context) return;
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    renderedStackPages.forEach((pageCanvas, index) => {
+      context.globalAlpha = index === 0 ? 1 : opacity;
+      context.drawImage(
+        pageCanvas,
+        (canvas!.width - pageCanvas.width) / 2,
+        (canvas!.height - pageCanvas.height) / 2
+      );
+    });
+    context.globalAlpha = 1;
+  }
+
   async function render() {
     if (!canvas || !document || !metadata) return;
     const epoch = ++renderEpoch;
+    renderedStackPages = [];
+    canvas.getContext('2d')?.clearRect(0, 0, canvas.width, canvas.height);
     const targetPages = visiblePages().filter(
       (page) => !plan.deleted_pages.includes(page)
     );
@@ -214,12 +233,16 @@
       rendered: pages.length,
       targeted: targetPages.length
     };
-    if (!pages.length) return;
+    if (!pages.length) {
+      renderProgress = '';
+      return;
+    }
     const representative = pages.includes(selectedPage)
       ? selectedPage
       : pages[0];
     activePageIndex = representative;
     const first = await document.getPage(representative + 1);
+    if (epoch !== renderEpoch) return;
     const baseViewport = first.getViewport({ scale: 1 });
     const isStack = pages.length > 1;
     const widest = Math.max(
@@ -250,8 +273,6 @@
       x: (canvas.width - viewport.width) / 2,
       y: (canvas.height - viewport.height) / 2
     };
-    const context = canvas.getContext('2d')!;
-    context.clearRect(0, 0, canvas.width, canvas.height);
     let drawn = 0;
     for (const pageIndex of pages) {
       if (epoch !== renderEpoch) return;
@@ -266,12 +287,8 @@
         viewport: pageViewport
       }).promise;
       if (epoch !== renderEpoch) return;
-      context.globalAlpha = drawn === 0 ? 1 : opacity;
-      context.drawImage(
-        offscreen,
-        (canvas.width - offscreen.width) / 2,
-        (canvas.height - offscreen.height) / 2
-      );
+      renderedStackPages = [...renderedStackPages, offscreen];
+      compositeRenderedPages();
       drawn += 1;
       renderProgress = `${drawn} / ${pages.length}`;
       if (drawn % 4 === 0)
@@ -279,7 +296,6 @@
           requestAnimationFrame(() => resolve())
         );
     }
-    context.globalAlpha = 1;
     if (epoch === renderEpoch) renderProgress = '';
   }
 
@@ -440,11 +456,14 @@
   }
 
   $effect(() => {
-    void opacity;
     void mode;
     void selectedPage;
     void fullStackPreview;
     if (document && metadata) void render();
+  });
+  $effect(() => {
+    void opacity;
+    compositeRenderedPages();
   });
   onMount(load);
 </script>
