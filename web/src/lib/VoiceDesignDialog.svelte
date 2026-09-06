@@ -7,7 +7,7 @@
     WandSparkles,
     X
   } from '@lucide/svelte';
-  import { onDestroy } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
   import { speechServiceApi, voiceApi } from './admin-api';
   import type { JobRecord, TtsService, VoiceRecord } from './api-models';
   import { jobApi } from './domain-api';
@@ -41,9 +41,12 @@
     seed: number;
   };
 
+  let catalogueServices = $state<TtsService[]>([]);
+  let catalogueLoading = $state(true);
+  let catalogueError = $state('');
   const availableVoices = $derived(voices.filter((voice) => !voice.bundled));
   const audioCpp = $derived(
-    services.find(
+    catalogueServices.find(
       (service) => service.id === 'audio_cpp' || service.adapter === 'audio_cpp'
     )
   );
@@ -56,7 +59,12 @@
     (audioCpp?.model_catalog ?? []).find((model) => model.id === breezeModel)
   );
   const canGenerate = $derived(
-    Boolean(audioCpp && breezeModel && audioCpp.available !== false)
+    Boolean(
+      !catalogueLoading &&
+      audioCpp &&
+      breezeModel &&
+      audioCpp.available !== false
+    )
   );
 
   let targetVoiceId = $state('');
@@ -109,6 +117,20 @@
   function chooseAnotherSeed() {
     seed = randomSeed();
     invalidatePreview();
+  }
+
+  async function refreshCatalogue() {
+    catalogueLoading = true;
+    catalogueError = '';
+    catalogueServices = services;
+    try {
+      const payload = await speechServiceApi.catalogue(true);
+      if (alive) catalogueServices = payload.services ?? [];
+    } catch (caught) {
+      if (alive) catalogueError = errorMessage(caught);
+    } finally {
+      if (alive) catalogueLoading = false;
+    }
   }
 
   async function waitJob(id: string, attempts = 4000): Promise<JobRecord> {
@@ -264,6 +286,10 @@
     }
   }
 
+  onMount(() => {
+    void refreshCatalogue();
+  });
+
   onDestroy(() => {
     alive = false;
   });
@@ -282,7 +308,7 @@
     role="dialog"
     aria-modal="true"
     aria-labelledby="voice-design-title"
-    aria-busy={generating || saving}
+    aria-busy={catalogueLoading || generating || saving}
   >
     <header class="flex items-start justify-between gap-4">
       <div>
@@ -312,7 +338,24 @@
         <CircleAlert class="mt-0.5 shrink-0" size={16} /><span>{error}</span>
       </div>{/if}
 
-    {#if !breezeModel}<div
+    {#if catalogueLoading}<div
+        role="status"
+        class="mt-5 flex items-center gap-2 rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 text-sm"
+      >
+        <LoaderCircle class="animate-spin text-[var(--accent)]" size={16} />
+        Checking the installed audio.cpp models…
+      </div>{:else if catalogueError}<div
+        role="alert"
+        class="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--warning)]/40 bg-[var(--warning)]/10 px-4 py-3 text-sm"
+      >
+        <span>Could not refresh the audio.cpp model list: {catalogueError}</span
+        >
+        <button
+          type="button"
+          onclick={refreshCatalogue}
+          class="btn btn-sm btn-secondary"><RefreshCw size={14} /> Retry</button
+        >
+      </div>{:else if !breezeModel}<div
         class="mt-5 rounded-xl border border-[var(--warning)]/40 bg-[var(--warning)]/10 px-4 py-3 text-sm"
       >
         Install the Breeze TTS 2 model for audio.cpp before designing a voice.
