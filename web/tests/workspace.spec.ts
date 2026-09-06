@@ -744,8 +744,13 @@ test('reading mode flows segments together and separates only saved paragraphs',
 
   const paragraphs = page.locator('.reading-paragraph');
   await expect(paragraphs).toHaveCount(2);
-  await expect(paragraphs.nth(0)).toHaveText(`${first} ${second}`);
-  await expect(paragraphs.nth(1)).toHaveText(third);
+  await expect(paragraphs.nth(0).locator('.reading-sentence')).toHaveText([
+    first,
+    second
+  ]);
+  await expect(paragraphs.nth(1).locator('.reading-sentence')).toHaveText([
+    third
+  ]);
   await paragraphs.nth(0).evaluate((paragraph) => {
     paragraph.style.width = '600px';
     paragraph.style.font = '16px monospace';
@@ -770,6 +775,70 @@ test('reading mode flows segments together and separates only saved paragraphs',
   expect(segmentRects[1].rects[0].x).toBeGreaterThan(
     segmentRects[0].rects[0].x + 100
   );
+});
+
+test('speech-block boundaries expose evidence and cursor edits are reversible', async ({
+  page
+}) => {
+  await signIn(page);
+  const sessionId = await createGenerationPlan(page, [
+    { text: 'A🙂 B' },
+    { text: 'A second block.', paragraph_break_after: true }
+  ]);
+  const topologyRequests: Array<Record<string, unknown>> = [];
+  page.on('request', (request) => {
+    if (
+      request.method() === 'POST' &&
+      request.url().endsWith(`/sessions/${sessionId}/generation-plan/topology`)
+    ) {
+      topologyRequests.push(request.postDataJSON() as Record<string, unknown>);
+    }
+  });
+
+  await page.goto(`/sessions/${sessionId}`);
+  await page.getByRole('button', { name: 'Generation', exact: true }).click();
+  const rows = page.locator('tbody tr[data-segment-id]');
+  await expect(rows).toHaveCount(2);
+
+  const text = rows.nth(0).locator('textarea');
+  await text.evaluate((node: HTMLTextAreaElement) => {
+    // Browser offsets are UTF-16 code units; this lands after the emoji.
+    node.setSelectionRange(3, 3);
+    node.dispatchEvent(new Event('select', { bubbles: true }));
+  });
+  const split = rows
+    .nth(0)
+    .getByRole('button', { name: 'Split segment 1 at text cursor' });
+  await expect(split).toBeEnabled();
+  await split.click();
+
+  await expect(rows).toHaveCount(3);
+  await expect
+    .poll(() => topologyRequests.at(0))
+    .toMatchObject({
+      action: 'split',
+      cursor: 2,
+      text_layer: 'display'
+    });
+
+  const firstBoundary = page
+    .getByRole('button', { name: /^Boundary before segment 2:/ })
+    .first();
+  await firstBoundary.focus();
+  const details = page
+    .getByRole('group', { name: 'Speech block boundary details' })
+    .first();
+  await expect(details).toBeVisible();
+  await expect(details).toContainText('Join blocks 1–2');
+  await details.getByRole('button', { name: 'Join blocks 1–2' }).click();
+
+  await expect(rows).toHaveCount(2);
+  await expect.poll(() => topologyRequests.at(1)?.action).toBe('merge');
+  await page
+    .getByRole('button', { name: 'Undo the latest speech-block edit' })
+    .click();
+  await expect(rows).toHaveCount(3);
+  await expect.poll(() => topologyRequests.at(2)?.action).toBe('restore');
 });
 
 test('running generation controls stay on one drawer header row', async ({
@@ -862,14 +931,16 @@ test('generation segments support Ctrl and Shift multi-selection in both review 
   await page.goto(`/sessions/${sessionId}`);
   await page.getByRole('button', { name: 'Generation', exact: true }).click();
 
-  const rows = page.locator('tbody tr');
+  const rows = page.locator('tbody tr[data-segment-id]');
   await rows.nth(0).locator('td').nth(1).click();
   await rows
     .nth(2)
     .locator('td')
     .nth(1)
     .click({ modifiers: ['Control'] });
-  await expect(page.locator('tbody tr.selected')).toHaveCount(2);
+  await expect(page.locator('tbody tr[data-segment-id].selected')).toHaveCount(
+    2
+  );
   await rows
     .nth(3)
     .locator('td')
@@ -1227,7 +1298,7 @@ test('selecting a take from history returns to Active mix without changing anoth
   await picker.selectOption(firstRunId);
   await expect(picker).toHaveValue(firstRunId);
 
-  const rows = page.locator('tbody tr');
+  const rows = page.locator('tbody tr[data-segment-id]');
   const firstAudioTake = rows.nth(0).locator('td').nth(3).locator('select');
   const secondAudioTake = rows.nth(1).locator('td').nth(3).locator('select');
   await expect(firstAudioTake).toHaveValue('take-1-old');

@@ -881,6 +881,36 @@ export type AudioTake = {
   audio_verification?: AudioVerification | null;
 };
 
+type SpeechBlockSourceCue = {
+  reference: string | number;
+  start_ms?: number | null;
+  end_ms?: number | null;
+  display_text?: string;
+  speech_text?: string;
+  display_spans?: [number, number][];
+  speech_spans?: [number, number][];
+};
+
+export type SpeechBlockDecision = {
+  action?: string;
+  reason_code?: string;
+  summary?: string;
+  measurements?: Record<string, string | number | boolean | null>;
+  source_references?: (string | number)[];
+  [key: string]: unknown;
+};
+
+type SpeechBlockProvenance = {
+  schema_version?: string | number;
+  origin?: string;
+  source_reference_namespace?: string;
+  source_cues?: SpeechBlockSourceCue[];
+  formation_events?: SpeechBlockDecision[];
+  boundary_before?: SpeechBlockDecision | null;
+  risk_flags?: string[];
+  [key: string]: unknown;
+};
+
 export type GenerationSegment = {
   id: string;
   ordinal: number;
@@ -888,8 +918,9 @@ export type GenerationSegment = {
   paragraph_break_after: boolean;
   speaker?: string | null;
   text: string;
-  source_segment_ids?: string[];
+  source_segment_ids?: (string | number)[];
   alignment_group?: string | null;
+  speech_block_provenance?: SpeechBlockProvenance | null;
   optimized_text?: string | null;
   speech_plan?: SpeechPlan;
   optimization_status?: string | null;
@@ -911,6 +942,19 @@ export type GenerationSegmentPage = {
   next_cursor: number | null;
   total: number;
   plan_revision_id: string | null;
+  plan_revision_number?: number | null;
+  parent_revision_id?: string | null;
+  operation_json?: Record<string, unknown> | null;
+  speech_block_settings?: Record<string, unknown> | null;
+};
+
+export type SpeechBlockTopologyResult = {
+  plan_revision_id: string;
+  parent_revision_id?: string | null;
+  revision_number: number;
+  operation_json?: Record<string, unknown>;
+  segment_ids: string[];
+  affected_segment_ids?: string[];
 };
 
 export type OutputAssembly = {

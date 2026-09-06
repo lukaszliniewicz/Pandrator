@@ -114,6 +114,7 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                         "pandrator_replace_subtitle_text",
                         "pandrator_request_subtitle_evidence",
                         "pandrator_resolve_subtitle_evidence",
+                        "pandrator_revise_speech_block_plan",
                         "pandrator_select_take",
                         "pandrator_submit_dispatch_batch",
                         "pandrator_submit_source_cleaning_dispatch_batch",
@@ -148,6 +149,27 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                         tool.annotations.read_only_hint,
                     )
                 tools_by_name = {tool.name: tool for tool in listed.tools}
+                topology_schema = tools_by_name[
+                    "pandrator_revise_speech_block_plan"
+                ].input_schema
+                topology_validator = Draft202012Validator(topology_schema)
+                self.assertEqual(
+                    r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$",
+                    topology_schema["properties"]["idempotency_key"]["pattern"],
+                )
+                self.assertTrue(
+                    list(
+                        topology_validator.iter_errors(
+                            {
+                                "session_id": "session-1",
+                                "expected_revision_id": "revision-1",
+                                "action": "restore",
+                                "target_revision_id": "revision-0",
+                                "idempotency_key": "!!!!!!!!",
+                            }
+                        )
+                    )
+                )
                 execution_contracts = {
                     "pandrator_create_dispatch_run": {
                         "session_id": "session-1",
@@ -331,6 +353,23 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                     {"application_unavailable", "network_policy_denied"},
                 )
                 self.assertTrue(failure["request_id"])
+
+                invalid_topology = await client.call_tool(
+                    "pandrator_revise_speech_block_plan",
+                    {
+                        "session_id": "session-1",
+                        "expected_revision_id": "revision-1",
+                        "action": "restore",
+                        "segment_id": "segment-1",
+                        "idempotency_key": "topology:invalid:1",
+                    },
+                )
+                self.assertTrue(invalid_topology.is_error)
+                failure_text = invalid_topology.content[0].text
+                failure = json.loads(failure_text[failure_text.index("{") :])
+                self.assertEqual("validation_error", failure["code"])
+                self.assertTrue(failure["request_id"])
+                self.assertTrue(failure["details"]["errors"])
 
                 resources = await client.list_resources()
                 self.assertIn(

@@ -19,6 +19,7 @@ import type {
   GenerationRun,
   GenerationSegment,
   GenerationSegmentPage,
+  SpeechBlockTopologyResult,
   GlobalDefaultsPayload,
   ItemPage,
   JobRecord,
@@ -767,6 +768,16 @@ export type GenerationSegmentBatchChange = {
   changes: GenerationSegmentChanges;
 };
 
+export type SpeechBlockTopologyOperation = {
+  action: 'split' | 'merge' | 'restore';
+  segment_id?: string;
+  left_segment_id?: string;
+  right_segment_id?: string;
+  cursor?: number;
+  text_layer?: 'display' | 'speech';
+  target_revision_id?: string;
+};
+
 export const generationApi = {
   runs: (sessionId: string, signal?: AbortSignal) =>
     typedApiJson<
@@ -787,6 +798,25 @@ export const generationApi = {
       query,
       signal
     }),
+  reviseSpeechBlocks: (
+    sessionId: string,
+    planRevisionId: string,
+    operation: SpeechBlockTopologyOperation
+  ) =>
+    apiJson<SpeechBlockTopologyResult>(
+      `/api/v1/sessions/${encodeURIComponent(sessionId)}/generation-plan/topology`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'If-Match': `"${planRevisionId}"`
+        },
+        body: JSON.stringify({
+          expected_revision_id: planRevisionId,
+          ...operation
+        })
+      }
+    ),
   updateSegments: (
     sessionId: string,
     updates: GenerationSegmentBatchChange[]

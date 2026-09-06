@@ -16,6 +16,7 @@
     Sparkles,
     Square,
     Trash2,
+    Undo2,
     WandSparkles
   } from '@lucide/svelte';
   import { onMount, tick, untrack } from 'svelte';
@@ -94,6 +95,7 @@
   let comparisonDiff = $state(false);
   let searchLoading = $state(false);
   let speechOptionsLoading = $state(false);
+  let topologyBusy = $state(false);
   let supportingOptionsLoaded = false;
   let ttsSettings = $state<Record<string, unknown>>({});
   let ttsCatalogue = $state<TtsCatalogue>({ services: [] });
@@ -441,6 +443,19 @@
   const comparisonPlan = $derived<SpeechPlan>(
     comparisonItem?.speech_plan ?? {}
   );
+  const topologyDisabled = $derived(
+    topologyBusy || Boolean(selectedRunId) || !payload.plan_revision_id
+  );
+  const boundaryRiskCount = $derived(
+    payload.items.filter(
+      (item) => (item.speech_block_provenance?.risk_flags?.length ?? 0) > 0
+    ).length
+  );
+  const topologyUndoLabel = $derived(
+    payload.operation_json?.action === 'restore'
+      ? 'Redo the reverted speech-block edit'
+      : 'Undo the latest speech-block edit'
+  );
   const comparisonDecisionRows = $derived.by(() => {
     const decisions = new Map(
       (comparisonPlan?.decisions ?? [])
@@ -715,6 +730,70 @@
     if (!updated) return;
     comparisonItem = null;
     if (regenerateAfterReview) await start('regenerate', [item.id]);
+  }
+
+  async function reviseSpeechBlocks(operation: {
+    action: 'split' | 'merge' | 'restore';
+    segment_id?: string;
+    left_segment_id?: string;
+    right_segment_id?: string;
+    cursor?: number;
+    text_layer?: 'display' | 'speech';
+    target_revision_id?: string;
+  }) {
+    if (!payload.plan_revision_id || topologyBusy || selectedRunId) return;
+    topologyBusy = true;
+    error = '';
+    stopPlayback();
+    try {
+      await generationApi.reviseSpeechBlocks(
+        sessionId,
+        payload.plan_revision_id,
+        operation
+      );
+      selectedRow = '';
+      selectedRows = [];
+      selectionAnchor = '';
+      await load(true, false);
+      await refreshAssembly();
+    } catch (caught) {
+      error = errorMessage(caught);
+      await load(true, true);
+    } finally {
+      topologyBusy = false;
+    }
+  }
+
+  function splitSpeechBlock(
+    item: GenerationSegment,
+    textLayer: 'display' | 'speech',
+    cursor: number
+  ) {
+    return reviseSpeechBlocks({
+      action: 'split',
+      segment_id: item.id,
+      cursor,
+      text_layer: textLayer
+    });
+  }
+
+  function mergeSpeechBlocks(
+    left: GenerationSegment,
+    right: GenerationSegment
+  ) {
+    return reviseSpeechBlocks({
+      action: 'merge',
+      left_segment_id: left.id,
+      right_segment_id: right.id
+    });
+  }
+
+  function undoSpeechBlockRevision() {
+    if (!payload.parent_revision_id) return;
+    return reviseSpeechBlocks({
+      action: 'restore',
+      target_revision_id: payload.parent_revision_id
+    });
   }
 
   async function refreshAssembly() {
@@ -1505,6 +1584,28 @@
             </div>
           {/if}
         </div>
+        {#if boundaryRiskCount > 0}
+          <span
+            class="rounded-full bg-amber-500/12 px-2 py-1 text-[.62rem] font-semibold text-amber-700"
+            title="Speech-block boundaries carrying deterministic review flags"
+          >
+            {boundaryRiskCount} block {boundaryRiskCount === 1
+              ? 'flag'
+              : 'flags'}
+          </span>
+        {/if}
+        {#if payload.parent_revision_id && !selectedRunId}
+          <button
+            type="button"
+            onclick={undoSpeechBlockRevision}
+            disabled={topologyBusy}
+            class="action icon-action"
+            title={topologyUndoLabel}
+            aria-label={topologyUndoLabel}
+          >
+            <Undo2 size={14} />
+          </button>
+        {/if}
       {/if}
       <div class="ml-auto flex flex-wrap gap-2">
         {#if !run || ['completed', 'partial', 'failed', 'canceled'].includes(run.status)}
@@ -1803,6 +1904,9 @@
               onverificationtitle={verificationTitle}
               onregenerate={(item) => start('regenerate', [item.id])}
               onregeneratewith={(item) => openAlternateRegeneration([item.id])}
+              onmerge={mergeSpeechBlocks}
+              onsplit={splitSpeechBlock}
+              {topologyDisabled}
             />
           {:else}
             <GenerationReadingView
@@ -1823,6 +1927,8 @@
               onregenerate={(item) => start('regenerate', [item.id])}
               onregeneratewith={(item) => openAlternateRegeneration([item.id])}
               onpatch={patchSegment}
+              onmerge={mergeSpeechBlocks}
+              {topologyDisabled}
             />
           {/if}
           {#if payload.next_cursor != null}<button

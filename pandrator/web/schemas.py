@@ -4,7 +4,14 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictInt,
+    field_validator,
+    model_validator,
+)
 from pydantic_core import PydanticCustomError
 
 from .dispatch_context import (
@@ -341,9 +348,9 @@ class SubtitleEvidenceCreateRequest(StrictModel):
     source_artifact_id: str = Field(min_length=1, max_length=80)
     cue_id: int = Field(ge=1)
     reason: str = Field(min_length=1, max_length=4000)
-    routes: list[
-        Literal["whisper", "moss", "azure_mai_transcribe_2", "audio_llm"]
-    ] = Field(min_length=1, max_length=4)
+    routes: list[Literal["whisper", "moss", "azure_mai_transcribe_2", "audio_llm"]] = (
+        Field(min_length=1, max_length=4)
+    )
     audio_model_ids: list[str] = Field(default_factory=list, max_length=3)
     padding_before_ms: int = Field(default=2000, ge=0, le=15000)
     padding_after_ms: int = Field(default=2000, ge=0, le=15000)
@@ -491,7 +498,7 @@ class ChunkUploadInitialize(StrictModel):
 
 class GenerationSegmentCreate(StrictModel):
     text: str = Field(min_length=1)
-    source_segment_ids: list[str] = Field(default_factory=list)
+    source_segment_ids: list[str | int] = Field(default_factory=list)
     alignment_group: str | None = Field(default=None, max_length=64)
     node_kind: Literal["paragraph", "heading", "chapter_marker", "subtitle_cue"] = (
         "paragraph"
@@ -508,6 +515,59 @@ class GenerationPlanCreate(StrictModel):
     source_revision_id: str | None = None
     segments: list[GenerationSegmentCreate] = Field(min_length=1)
     settings: dict[str, Any] = Field(default_factory=dict)
+
+
+class GenerationPlanTopologyRequest(StrictModel):
+    """One of the three immutable, typed generation-plan topology edits."""
+
+    expected_revision_id: str = Field(min_length=1, max_length=80)
+    action: Literal["split", "merge", "restore"]
+    segment_id: str | None = Field(default=None, min_length=1, max_length=80)
+    cursor: StrictInt | None = None
+    text_layer: Literal["display", "speech"] | None = None
+    left_segment_id: str | None = Field(default=None, min_length=1, max_length=80)
+    right_segment_id: str | None = Field(default=None, min_length=1, max_length=80)
+    target_revision_id: str | None = Field(default=None, min_length=1, max_length=80)
+
+    @model_validator(mode="after")
+    def validate_action_shape(self) -> GenerationPlanTopologyRequest:
+        fields = {
+            "segment_id": self.segment_id,
+            "cursor": self.cursor,
+            "text_layer": self.text_layer,
+            "left_segment_id": self.left_segment_id,
+            "right_segment_id": self.right_segment_id,
+            "target_revision_id": self.target_revision_id,
+        }
+        required: set[str]
+        if self.action == "split":
+            required = {"segment_id", "cursor", "text_layer"}
+        elif self.action == "merge":
+            required = {"left_segment_id", "right_segment_id"}
+        else:
+            required = {"target_revision_id"}
+        missing = sorted(key for key in required if fields[key] is None)
+        forbidden = sorted(
+            key
+            for key, value in fields.items()
+            if key not in required and value is not None
+        )
+        if missing or forbidden:
+            details = []
+            if missing:
+                details.append(f"missing {', '.join(missing)}")
+            if forbidden:
+                details.append(f"forbidden {', '.join(forbidden)}")
+            raise ValueError(
+                f"Invalid {self.action} topology operation ({'; '.join(details)})."
+            )
+        if (
+            self.action == "split"
+            and self.cursor is not None
+            and not isinstance(self.cursor, int)
+        ):
+            raise ValueError("Split cursor must be an integer.")
+        return self
 
 
 class GenerationSegmentUpdate(StrictModel):
@@ -1402,6 +1462,7 @@ SCHEMA_MODELS = {
         ChunkUploadInitialize,
         GenerationSegmentCreate,
         GenerationPlanCreate,
+        GenerationPlanTopologyRequest,
         GenerationSegmentUpdate,
         GenerationSegmentBatchUpdateItem,
         GenerationSegmentBatchUpdate,

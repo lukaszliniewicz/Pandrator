@@ -28,9 +28,10 @@ class SpeechBlock:
     speaker: str = ""
     alignment_group: str = ""
     optimized_text: str = ""
+    provenance: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        payload = {
+        payload: dict[str, Any] = {
             "number": self.number,
             "text": self.text,
             "subtitles": list(self.subtitles),
@@ -44,6 +45,7 @@ class SpeechBlock:
             # stores this as ``optimized_text`` rather than exposing a second
             # viewer-facing subtitle string.
             payload["_optimized_text"] = self.optimized_text
+        payload["provenance"] = dict(self.provenance)
         return payload
 
 

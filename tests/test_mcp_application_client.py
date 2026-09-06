@@ -367,6 +367,52 @@ class ApplicationClientTests(unittest.TestCase):
         )
         self.assertEqual('"0"', settings["headers"]["If-Match"])
 
+    def test_speech_block_topology_maps_revision_and_typed_operation(self):
+        origin = "http://127.0.0.1:8097"
+        session = FakeSession(
+            [FakeResponse(201, {"plan_revision_id": "plan-revision-4"})]
+        )
+        client = ApplicationClient(
+            local_registry(origin).bind("local"),
+            CredentialResolver(()),
+            session=session,
+            local_bootstrap=lambda _target, _session: "csrf-value",
+        )
+
+        result = client.revise_generation_plan_topology(
+            "session-1",
+            expected_revision_id="plan-revision-3",
+            action="split",
+            segment_id="segment-1",
+            cursor=7,
+            text_layer="display",
+            idempotency_key="topology:split:1",
+        )
+
+        self.assertEqual("plan-revision-4", result["plan_revision_id"])
+        request = session.calls[0]
+        self.assertEqual("POST", request["method"])
+        self.assertTrue(
+            request["url"].endswith(
+                "/api/v1/sessions/session-1/generation-plan/topology"
+            )
+        )
+        self.assertEqual(
+            {
+                "expected_revision_id": "plan-revision-3",
+                "action": "split",
+                "segment_id": "segment-1",
+                "cursor": 7,
+                "text_layer": "display",
+            },
+            json.loads(request["data"]),
+        )
+        self.assertEqual('"plan-revision-3"', request["headers"]["If-Match"])
+        self.assertEqual(
+            "topology:split:1",
+            request["headers"]["Idempotency-Key"],
+        )
+
     def test_dispatch_methods_map_exact_routes_bodies_and_queries(self):
         origin = "http://127.0.0.1:8097"
         session = FakeSession(

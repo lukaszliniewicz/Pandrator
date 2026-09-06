@@ -143,7 +143,7 @@ class ApplicationClient:
         parameters: dict[str, Any] | list[tuple[str, Any]] | None = None,
         body: dict[str, Any] | None = None,
         idempotency_key: str | None = None,
-        if_match_revision: int | None = None,
+        if_match_revision: int | str | None = None,
         maximum_body_bytes: int = 512 * 1024,
         _allow_local_retry: bool = True,
     ) -> dict[str, Any]:
@@ -171,10 +171,15 @@ class ApplicationClient:
                 raise ValueError("The application request exceeds the bounded body limit.")
         if idempotency_key is not None and not _IDEMPOTENCY_KEY.fullmatch(idempotency_key):
             raise ValueError("Idempotency keys must contain 8-200 safe ASCII characters.")
-        if if_match_revision is not None and (
-            isinstance(if_match_revision, bool) or int(if_match_revision) < 0
-        ):
-            raise ValueError("If-Match revisions must be non-negative integers.")
+        if if_match_revision is not None:
+            if isinstance(if_match_revision, bool):
+                raise ValueError("If-Match revisions must be non-negative integers.")
+            if isinstance(if_match_revision, int) and if_match_revision < 0:
+                raise ValueError("If-Match revisions must be non-negative integers.")
+            if isinstance(if_match_revision, str) and not if_match_revision.strip():
+                raise ValueError("If-Match revision IDs must not be blank.")
+            if not isinstance(if_match_revision, (int, str)):
+                raise ValueError("If-Match must contain a revision number or ID.")
         target = self.binding.resolve()
         local_bootstrap = self._local_bootstrap
         headers = {
@@ -238,7 +243,7 @@ class ApplicationClient:
                     if idempotency_key is not None:
                         headers["Idempotency-Key"] = idempotency_key
                     if if_match_revision is not None:
-                        headers["If-Match"] = f'"{int(if_match_revision)}"'
+                        headers["If-Match"] = f'"{if_match_revision}"'
                     if (
                         method not in {"GET", "HEAD", "OPTIONS"}
                         and target.application_credential is None
@@ -781,9 +786,7 @@ class ApplicationClient:
         )
 
     def get_subtitle_evidence(self, evidence_id: str) -> dict[str, Any]:
-        return self._request_json(
-            f"/api/v1/subtitle-evidence/{quote(evidence_id, safe='')}"
-        )
+        return self._request_json(f"/api/v1/subtitle-evidence/{quote(evidence_id, safe='')}")
 
     def resolve_subtitle_evidence(
         self,
@@ -1400,6 +1403,41 @@ class ApplicationClient:
         return self._request_json(
             f"/api/v1/sessions/{quote(session_id, safe='')}/generation-segments",
             parameters=params,
+        )
+
+    def revise_generation_plan_topology(
+        self,
+        session_id: str,
+        *,
+        expected_revision_id: str,
+        action: str,
+        segment_id: str | None = None,
+        cursor: int | None = None,
+        text_layer: str | None = None,
+        left_segment_id: str | None = None,
+        right_segment_id: str | None = None,
+        target_revision_id: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "expected_revision_id": expected_revision_id,
+            "action": action,
+        }
+        optional = {
+            "segment_id": segment_id,
+            "cursor": cursor,
+            "text_layer": text_layer,
+            "left_segment_id": left_segment_id,
+            "right_segment_id": right_segment_id,
+            "target_revision_id": target_revision_id,
+        }
+        body.update({key: value for key, value in optional.items() if value is not None})
+        return self._request_json(
+            f"/api/v1/sessions/{quote(session_id, safe='')}/generation-plan/topology",
+            method="POST",
+            body=body,
+            if_match_revision=expected_revision_id,
+            idempotency_key=idempotency_key,
         )
 
     def update_generation_segment(

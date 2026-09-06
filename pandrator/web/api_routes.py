@@ -112,6 +112,7 @@ from .schemas import (
     ChunkUploadInitialize,
     CredentialUpdate,
     GenerationPlanCreate,
+    GenerationPlanTopologyRequest,
     GenerationSegmentBatchUpdate,
     GenerationSegmentUpdate,
     GenerationStartRequest,
@@ -2724,6 +2725,87 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             return error_response("validation_error", str(error), 422)
         return jsonify(result), 201
 
+    @app.post("/api/v1/sessions/<session_id>/generation-plan/topology")
+    @require_auth
+    def generation_plan_topology(session_id: str):
+        payload = GenerationPlanTopologyRequest.model_validate(
+            request.get_json(silent=True) or {}
+        )
+        raw_etag = request.headers.get("If-Match", "").strip('W/" ')
+        if not raw_etag:
+            return error_response(
+                "precondition_required",
+                "If-Match must contain the current plan revision ID.",
+                428,
+            )
+        if raw_etag != payload.expected_revision_id:
+            return error_response(
+                "revision_conflict",
+                "The request revision does not match If-Match.",
+                409,
+            )
+        idempotency_key, idempotency_error = mutation_idempotency_key()
+        if idempotency_error is not None:
+            return idempotency_error
+        if idempotency_key is None:
+            return error_response(
+                "idempotency_key_required",
+                "Speech-block topology revisions require Idempotency-Key.",
+                400,
+            )
+        operation = payload.model_dump(
+            exclude={"expected_revision_id"}, exclude_none=True
+        )
+        try:
+            with database.immediate_session() as db_session:
+                reservation = services.idempotency.begin(
+                    db_session,
+                    principal=context.guards.principal(),
+                    operation_id="reviseGenerationPlanTopology",
+                    idempotency_key=idempotency_key,
+                    payload={
+                        "session_id": session_id,
+                        "expected_revision_id": payload.expected_revision_id,
+                        **operation,
+                    },
+                )
+                if reservation.response is not None:
+                    result, status_code = reservation.response
+                    response = jsonify(result)
+                    response.status_code = status_code
+                    response.headers["Idempotency-Replayed"] = "true"
+                    response.headers["ETag"] = f'"{result["plan_revision_id"]}"'
+                    return response
+                result = generation.revise_topology_in_session(
+                    db_session,
+                    session_id,
+                    payload.expected_revision_id,
+                    operation,
+                )
+                services.idempotency.complete(
+                    db_session,
+                    reservation,
+                    response=result,
+                    status_code=201,
+                    resource_kind="generation_plan_revision",
+                    resource_id=result["plan_revision_id"],
+                )
+        except (IdempotencyConflict, IdempotencyInProgress, ValueError) as error:
+            if isinstance(error, WorkspaceRevisionConflict):
+                return error_response("revision_conflict", str(error), 409)
+            return idempotency_failure(error)
+        except KeyError:
+            return error_response(
+                "not_found",
+                "Session, generation plan revision, or segment not found.",
+                404,
+            )
+        response = jsonify(result)
+        response.status_code = 201
+        response.headers["Idempotency-Replayed"] = "false"
+        response.headers["ETag"] = f'"{result["plan_revision_id"]}"'
+        return response
+
     @app.get("/api/v1/sessions/<session_id>/generation-segments")
     @require_auth
     def generation_segment_list(session_id: str):
@@ -4830,9 +4912,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                     session_id=None,
                     resource_keys=[f"artifact:audio-preview:{source.id}"],
                 )
-            return jsonify(
-                {"status": active_job.status, "job_id": active_job.id}
-            ), 202
+            return jsonify({"status": active_job.status, "job_id": active_job.id}), 202
 
     @app.get("/api/v1/artifacts/<artifact_id>/waveform")
     @require_auth
@@ -5291,12 +5371,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 ).all()
             )
             return jsonify(
-                {
-                    "items": [
-                        _provider_model_payload(item)
-                        for item in records
-                    ]
-                }
+                {"items": [_provider_model_payload(item) for item in records]}
             )
 
     @app.patch("/api/v1/providers/<provider_id>/models/<model_record_id>")

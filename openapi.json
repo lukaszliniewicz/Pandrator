@@ -1613,6 +1613,117 @@
         "title": "GenerationPlanCreate",
         "type": "object"
       },
+      "GenerationPlanTopologyRequest": {
+        "additionalProperties": false,
+        "description": "One of the three immutable, typed generation-plan topology edits.",
+        "properties": {
+          "action": {
+            "enum": [
+              "split",
+              "merge",
+              "restore"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "cursor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cursor"
+          },
+          "expected_revision_id": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Expected Revision Id",
+            "type": "string"
+          },
+          "left_segment_id": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Left Segment Id"
+          },
+          "right_segment_id": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Right Segment Id"
+          },
+          "segment_id": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Segment Id"
+          },
+          "target_revision_id": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Target Revision Id"
+          },
+          "text_layer": {
+            "anyOf": [
+              {
+                "enum": [
+                  "display",
+                  "speech"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Text Layer"
+          }
+        },
+        "required": [
+          "expected_revision_id",
+          "action"
+        ],
+        "title": "GenerationPlanTopologyRequest",
+        "type": "object"
+      },
       "GenerationSegmentBatchUpdate": {
         "additionalProperties": false,
         "properties": {
@@ -1710,7 +1821,14 @@
           },
           "source_segment_ids": {
             "items": {
-              "type": "string"
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
             },
             "title": "Source Segment Ids",
             "type": "array"
@@ -9008,6 +9126,68 @@
             "description": "Generation plan created"
           }
         }
+      }
+    },
+    "/api/v1/sessions/{sessionId}/generation-plan/topology": {
+      "post": {
+        "operationId": "reviseGenerationPlanTopology",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenerationPlanTopologyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Create an immutable generation-plan topology revision"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
+            ]
+          }
+        ]
       }
     },
     "/api/v1/sessions/{sessionId}/generation-runs": {

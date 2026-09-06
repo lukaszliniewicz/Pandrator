@@ -30,6 +30,7 @@ from .generation import (
     AssembleGenerationRunInput,
     ListGenerationSegmentsInput,
     RegenerateSegmentsInput,
+    ReviseSpeechBlockPlanInput,
     SelectTakeInput,
     UpdateGenerationSegmentInput,
 )
@@ -174,6 +175,7 @@ TOOL_INPUT_MODELS = (
     UpdateGenerationSegmentInput,
     SelectTakeInput,
     RegenerateSegmentsInput,
+    ReviseSpeechBlockPlanInput,
     AssembleGenerationRunInput,
 )
 
@@ -241,6 +243,7 @@ __all__ = [
     "RequestSubtitleEvidenceInput",
     "ResolveSubtitleEvidenceInput",
     "RegenerateSegmentsInput",
+    "ReviseSpeechBlockPlanInput",
     "ReleaseDispatchBatchInput",
     "ReleaseSourceCleaningDispatchBatchInput",
     "ReleaseSpeechOptimizationDispatchBatchInput",

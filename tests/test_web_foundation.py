@@ -28,12 +28,14 @@ from pandrator.web.legacy_migration import import_legacy_data
 from pandrator.web.models import (
     AgentRun,
     Artifact,
+    AudioTake,
     Document,
     DocumentRevision,
     GenerationPlan,
     GenerationPlanRevision,
     GenerationRun,
     GenerationSegment,
+    GenerationSegmentRevision,
     Job,
     JobEvent,
     ProviderModel,
@@ -426,6 +428,132 @@ class SchemaUpgradeTests(unittest.TestCase):
                         )
                     ],
                 )
+
+    def test_populated_generation_graph_survives_0040_round_trip(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database_path = Path(directory) / "pandrator.sqlite3"
+            upgrade_database(database_path)
+            database = Database(database_path)
+            try:
+                with database.session() as session:
+                    session_record = SessionRecord(name="Migration fixture")
+                    session.add(session_record)
+                    session.flush()
+                    plan = GenerationPlan(session_id=session_record.id)
+                    session.add(plan)
+                    session.flush()
+                    plan_revision = GenerationPlanRevision(
+                        plan_id=plan.id,
+                        revision_number=1,
+                        content_hash="migration-fixture",
+                    )
+                    session.add(plan_revision)
+                    session.flush()
+                    plan.active_revision_id = plan_revision.id
+                    segment = GenerationSegment(
+                        plan_revision_id=plan_revision.id,
+                        ordinal=1,
+                        text="Existing speech block",
+                    )
+                    generation_run = GenerationRun(
+                        session_id=session_record.id,
+                        plan_revision_id=plan_revision.id,
+                    )
+                    session.add_all([segment, generation_run])
+                    session.flush()
+                    segment_revision = GenerationSegmentRevision(
+                        generation_segment_id=segment.id,
+                        revision=1,
+                        text=segment.text,
+                    )
+                    audio_take = AudioTake(
+                        generation_segment_id=segment.id,
+                        generation_run_id=generation_run.id,
+                    )
+                    session.add_all([segment_revision, audio_take])
+                    session.flush()
+                    expected_ids = {
+                        "plan_revision": plan_revision.id,
+                        "generation_run": generation_run.id,
+                        "segment": segment.id,
+                        "segment_revision": segment_revision.id,
+                        "audio_take": audio_take.id,
+                    }
+            finally:
+                database.dispose()
+
+            config = Config()
+            config.set_main_option(
+                "script_location",
+                str(Path(__file__).parents[1] / "pandrator" / "web" / "migrations"),
+            )
+            config.set_main_option("sqlalchemy.url", sqlite_url(database_path))
+            command.downgrade(config, "0039_subtitle_evidence_media_provenance")
+
+            with closing(sqlite3.connect(database_path)) as connection:
+                self.assertEqual(
+                    "0039_subtitle_evidence_media_provenance",
+                    connection.execute(
+                        "SELECT version_num FROM alembic_version"
+                    ).fetchone()[0],
+                )
+                self.assertEqual(
+                    [], connection.execute("PRAGMA foreign_key_check").fetchall()
+                )
+                for table, expected_id in (
+                    ("generation_plan_revisions", expected_ids["plan_revision"]),
+                    ("generation_runs", expected_ids["generation_run"]),
+                    ("generation_segments", expected_ids["segment"]),
+                    (
+                        "generation_segment_revisions",
+                        expected_ids["segment_revision"],
+                    ),
+                    ("audio_takes", expected_ids["audio_take"]),
+                ):
+                    self.assertEqual(
+                        expected_id,
+                        connection.execute(
+                            f"SELECT id FROM {table} WHERE id = ?", (expected_id,)
+                        ).fetchone()[0],
+                    )
+
+            upgrade_database(database_path)
+
+            with closing(sqlite3.connect(database_path)) as connection:
+                self.assertEqual(
+                    SCHEMA_HEAD,
+                    connection.execute(
+                        "SELECT version_num FROM alembic_version"
+                    ).fetchone()[0],
+                )
+                self.assertEqual(
+                    [], connection.execute("PRAGMA foreign_key_check").fetchall()
+                )
+                self.assertIn(
+                    "parent_revision_id",
+                    {
+                        row[1]
+                        for row in connection.execute(
+                            "PRAGMA table_info(generation_plan_revisions)"
+                        )
+                    },
+                )
+                for table, expected_id in (
+                    ("generation_plan_revisions", expected_ids["plan_revision"]),
+                    ("generation_runs", expected_ids["generation_run"]),
+                    ("generation_segments", expected_ids["segment"]),
+                    (
+                        "generation_segment_revisions",
+                        expected_ids["segment_revision"],
+                    ),
+                    ("audio_takes", expected_ids["audio_take"]),
+                ):
+                    self.assertEqual(
+                        expected_id,
+                        connection.execute(
+                            f"SELECT id FROM {table} WHERE id = ?", (expected_id,)
+                        ).fetchone()[0],
+                    )
 
     def test_segment_language_equal_to_plan_default_becomes_inherited(self):
         with tempfile.TemporaryDirectory() as directory:

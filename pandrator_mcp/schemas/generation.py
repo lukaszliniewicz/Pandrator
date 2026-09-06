@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from pydantic import Field
+from typing import Literal
+
+from pydantic import Field, StrictInt, model_validator
 
 from .common import ToolInput
 
@@ -42,3 +44,50 @@ class AssembleGenerationRunInput(ToolInput):
     session_id: str = Field(min_length=1, max_length=80)
     generation_run_id: str | None = Field(default=None, max_length=80)
     idempotency_key: str = Field(min_length=1, max_length=120)
+
+
+class ReviseSpeechBlockPlanInput(ToolInput):
+    """Strict typed immutable split, merge, or restore operation."""
+
+    session_id: str = Field(min_length=1, max_length=80)
+    expected_revision_id: str = Field(min_length=1, max_length=80)
+    action: Literal["split", "merge", "restore"]
+    segment_id: str | None = Field(default=None, min_length=1, max_length=80)
+    cursor: StrictInt | None = None
+    text_layer: Literal["display", "speech"] | None = None
+    left_segment_id: str | None = Field(default=None, min_length=1, max_length=80)
+    right_segment_id: str | None = Field(default=None, min_length=1, max_length=80)
+    target_revision_id: str | None = Field(default=None, min_length=1, max_length=80)
+    idempotency_key: str = Field(
+        min_length=8,
+        max_length=200,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$",
+    )
+
+    @model_validator(mode="after")
+    def validate_action_shape(self) -> "ReviseSpeechBlockPlanInput":
+        values = {
+            "segment_id": self.segment_id,
+            "cursor": self.cursor,
+            "text_layer": self.text_layer,
+            "left_segment_id": self.left_segment_id,
+            "right_segment_id": self.right_segment_id,
+            "target_revision_id": self.target_revision_id,
+        }
+        required = {
+            "split": {"segment_id", "cursor", "text_layer"},
+            "merge": {"left_segment_id", "right_segment_id"},
+            "restore": {"target_revision_id"},
+        }[self.action]
+        missing = sorted(key for key in required if values[key] is None)
+        forbidden = sorted(
+            key for key, value in values.items() if key not in required and value is not None
+        )
+        if missing or forbidden:
+            detail = []
+            if missing:
+                detail.append(f"missing {', '.join(missing)}")
+            if forbidden:
+                detail.append(f"forbidden {', '.join(forbidden)}")
+            raise ValueError(f"Invalid {self.action} topology operation ({'; '.join(detail)}).")
+        return self

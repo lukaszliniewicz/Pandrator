@@ -5,6 +5,7 @@ from pandrator_mcp.schemas.generation import (
     AssembleGenerationRunInput,
     ListGenerationSegmentsInput,
     RegenerateSegmentsInput,
+    ReviseSpeechBlockPlanInput,
     SelectTakeInput,
     UpdateGenerationSegmentInput,
 )
@@ -20,6 +21,7 @@ from pandrator_mcp.tools.generation import (
     assemble_generation_run,
     list_generation_segments,
     regenerate_segments,
+    revise_speech_block_plan,
     select_take,
     update_generation_segment,
 )
@@ -188,8 +190,35 @@ class _FakeApplication:
                     "start_ms": 0,
                     "end_ms": 2000,
                     "speaker": "Narrator",
+                    "node_kind": "paragraph",
+                    "source_segment_ids": ["source-1"],
+                    "alignment_group": "a0001",
                     "text": "Original cue text",
                     "optimized_text": "Optimized spoken text",
+                    "speech_block_provenance": {
+                        "schema_version": 1,
+                        "origin": "automatic",
+                        "source_reference_namespace": "document_segment_id",
+                        "source_cues": [
+                            {
+                                "reference": "source-1",
+                                "start_ms": 0,
+                                "end_ms": 2000,
+                                "display_spans": [[0, 17]],
+                                "speech_spans": [[0, 21]],
+                            }
+                        ],
+                        "formation_events": [],
+                        "boundary_before": {
+                            "action": "keep_boundary",
+                            "reason_code": "document_start",
+                            "summary": "Speech block starts the document.",
+                            "measurements": {},
+                            "source_references": ["source-1"],
+                        },
+                        "risk_flags": [],
+                    },
+                    "speech_plan": {"version": 1, "status": "reviewed"},
                     "voice_id": "voice-pl-1",
                     "voice": "Marek",
                     "language": "pl",
@@ -208,6 +237,47 @@ class _FakeApplication:
             ],
             "next_cursor": None,
             "total": 1,
+            "plan_revision_id": "plan-revision-3",
+            "plan_revision_number": 3,
+            "parent_revision_id": "plan-revision-2",
+            "operation_json": {"action": "split"},
+            "speech_block_settings": {"speech_block_max_chars": 220},
+        }
+
+    def revise_generation_plan_topology(
+        self,
+        session_id,
+        *,
+        expected_revision_id,
+        action,
+        segment_id=None,
+        cursor=None,
+        text_layer=None,
+        left_segment_id=None,
+        right_segment_id=None,
+        target_revision_id=None,
+        idempotency_key=None,
+    ):
+        payload = {
+            "session_id": session_id,
+            "expected_revision_id": expected_revision_id,
+            "action": action,
+            "segment_id": segment_id,
+            "cursor": cursor,
+            "text_layer": text_layer,
+            "left_segment_id": left_segment_id,
+            "right_segment_id": right_segment_id,
+            "target_revision_id": target_revision_id,
+            "idempotency_key": idempotency_key,
+        }
+        self.calls.append(("revise_generation_plan_topology", payload))
+        return {
+            "plan_revision_id": "plan-revision-4",
+            "parent_revision_id": expected_revision_id,
+            "revision_number": 4,
+            "operation": {"action": action},
+            "segment_ids": ["segment-left", "segment-right"],
+            "affected_segment_ids": ["segment-1"],
         }
 
     def update_generation_segment(
@@ -370,8 +440,18 @@ class PreviewAndGenerationTests(unittest.TestCase):
         segment = listed["items"][0]
         self.assertEqual("segment-1", segment["id"])
         self.assertEqual("Optimized spoken text", segment["optimized_text"])
+        self.assertEqual(["source-1"], segment["source_segment_ids"])
+        self.assertEqual("a0001", segment["alignment_group"])
+        self.assertEqual(
+            "document_start",
+            segment["speech_block_provenance"]["boundary_before"]["reason_code"],
+        )
         self.assertEqual(1, len(segment["takes"]))
         self.assertEqual("artifact-take-1", segment["takes"][0]["artifact_id"])
+        self.assertEqual("plan-revision-3", listed["plan_revision_id"])
+        self.assertEqual("plan-revision-2", listed["parent_revision_id"])
+        self.assertEqual({"action": "split"}, listed["operation_json"])
+        self.assertEqual(220, listed["speech_block_settings"]["speech_block_max_chars"])
 
         updated = update_generation_segment(
             self.runtime,
@@ -385,6 +465,34 @@ class PreviewAndGenerationTests(unittest.TestCase):
         )
         self.assertEqual(4, updated.result["revision"])
         self.assertEqual("Better spoken text", updated.result["optimized_text"])
+
+    def test_revise_speech_block_plan_exposes_typed_split_and_follow_up(self):
+        revised = revise_speech_block_plan(
+            self.runtime,
+            ReviseSpeechBlockPlanInput(
+                session_id="session-1",
+                expected_revision_id="plan-revision-3",
+                action="split",
+                segment_id="segment-1",
+                cursor=7,
+                text_layer="display",
+                idempotency_key="topology:split:1",
+            ),
+        )
+
+        self.assertEqual("plan-revision-4", revised.result["plan_revision_id"])
+        self.assertEqual(
+            "pandrator_list_generation_segments",
+            revised.next_actions[0].tool,
+        )
+        call = next(
+            payload
+            for name, payload in self.application.calls
+            if name == "revise_generation_plan_topology"
+        )
+        self.assertEqual("split", call["action"])
+        self.assertEqual(7, call["cursor"])
+        self.assertEqual("display", call["text_layer"])
 
     def test_select_take(self):
         selected = select_take(

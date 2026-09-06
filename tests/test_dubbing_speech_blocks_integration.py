@@ -7,7 +7,6 @@ from unittest.mock import patch
 from pandrator.logic import dubbing_handler
 from pandrator.logic.dubbing import speech_blocks
 
-
 MERGE_SRT = """1
 00:00:00,000 --> 00:00:01,000
 Hello there
@@ -39,9 +38,13 @@ class DubbingSpeechBlocksIntegrationTests(unittest.TestCase):
             merge_threshold=50,
         )
 
-        self.assertEqual([block["text"] for block in merged], ["Hello there friend", "Later"])
+        self.assertEqual(
+            [block["text"] for block in merged], ["Hello there friend", "Later"]
+        )
         self.assertEqual(merged[0]["subtitles"], [1, 2])
-        self.assertEqual([block["text"] for block in unmerged], ["Hello there", "friend", "Later"])
+        self.assertEqual(
+            [block["text"] for block in unmerged], ["Hello there", "friend", "Later"]
+        )
 
     def test_short_leading_fragment_merges_when_the_timing_rule_allows_it(self):
         content = """1
@@ -120,7 +123,9 @@ Webinarreihe geht heute weiter.
         )
 
         self.assertEqual(
-            ["Und wir sind Mark und diese sehr interessante Webinarreihe geht heute weiter."],
+            [
+                "Und wir sind Mark und diese sehr interessante Webinarreihe geht heute weiter."
+            ],
             [block["text"] for block in blocks],
         )
         self.assertEqual([1, 2, 3], blocks[0]["subtitles"])
@@ -216,8 +221,10 @@ epistemology.
 
         self.assertEqual(
             [
-                "Whereas this is one internal question that raises points about "
-                "epistemology."
+                (
+                    "Whereas this is one internal question that raises points about "
+                    "epistemology."
+                )
             ],
             [block["text"] for block in blocks],
         )
@@ -305,12 +312,13 @@ Second sentence.
             merge_threshold=100,
         )
 
-        self.assertEqual(["First sentence. Second sentence."], [
-            block["text"] for block in merged
-        ])
-        self.assertEqual(["First sentence.", "Second sentence."], [
-            block["text"] for block in separate
-        ])
+        self.assertEqual(
+            ["First sentence. Second sentence."], [block["text"] for block in merged]
+        )
+        self.assertEqual(
+            ["First sentence.", "Second sentence."],
+            [block["text"] for block in separate],
+        )
 
     def test_small_same_speaker_timestamp_overlap_is_treated_as_jitter(self):
         content = """1
@@ -426,6 +434,51 @@ This second cue contains another deliberately long complete sentence that also n
         self.assertEqual(1, len({block["alignment_group"] for block in second}))
         self.assertNotEqual(first[0]["alignment_group"], second[0]["alignment_group"])
         self.assertTrue(all(len(str(block["text"])) <= 42 for block in blocks))
+
+    def test_capacity_split_provenance_is_local_complete_and_reviewable(self):
+        content = """1
+00:00:00,000 --> 00:00:05,000
+First natural clause, followed by more words that need another chunk.
+"""
+
+        blocks = speech_blocks.create_speech_blocks(
+            content,
+            target_language="en",
+            min_chars=5,
+            max_chars=32,
+            merge_threshold=250,
+        )
+
+        self.assertEqual(3, len(blocks))
+        for block in blocks:
+            provenance = block["provenance"]
+            self.assertEqual(1, provenance["schema_version"])
+            self.assertEqual("automatic", provenance["origin"])
+            self.assertEqual(
+                "subtitle_ordinal", provenance["source_reference_namespace"]
+            )
+            cue = provenance["source_cues"][0]
+            self.assertEqual(1, cue["reference"])
+            self.assertEqual((0, 5000), (cue["start_ms"], cue["end_ms"]))
+            self.assertEqual(
+                [[0, len(block["text"])]],
+                cue["display_spans"],
+            )
+            event = provenance["formation_events"][-1]
+            self.assertEqual("capacity_split", event["reason_code"])
+            self.assertEqual(69, event["measurements"]["display_length"])
+            self.assertEqual(
+                len(block["text"]),
+                event["measurements"]["block_display_length"],
+            )
+        self.assertEqual(
+            "document_start", blocks[0]["provenance"]["boundary_before"]["reason_code"]
+        )
+        self.assertNotIn("hard_capacity_split", blocks[0]["provenance"]["risk_flags"])
+        self.assertEqual(
+            "capacity_split",
+            blocks[1]["provenance"]["boundary_before"]["reason_code"],
+        )
 
     def test_reviewed_speech_is_split_once_without_text_duplication(self):
         display = """1
@@ -547,7 +600,9 @@ but spoken continuously.
                 merge_threshold=200,
             )
 
-            self.assertEqual(output_path, os.path.join(temp_dir, "sample_speech_blocks.json"))
+            self.assertEqual(
+                output_path, os.path.join(temp_dir, "sample_speech_blocks.json")
+            )
             with open(output_path, "r", encoding="utf-8") as handle:
                 payload = json.load(handle)
             self.assertEqual(payload[0]["number"], "0001")
@@ -576,7 +631,9 @@ but spoken continuously.
                 )
             )
 
-            self.assertTrue(os.path.exists(os.path.join(temp_dir, "native_speech_blocks.json")))
+            self.assertTrue(
+                os.path.exists(os.path.join(temp_dir, "native_speech_blocks.json"))
+            )
 
     def test_dubbing_handler_equalization_writes_native_result(self):
         with tempfile.TemporaryDirectory() as temp_dir:

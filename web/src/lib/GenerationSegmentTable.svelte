@@ -1,11 +1,18 @@
 <script lang="ts">
-  import { RefreshCw, RotateCcw, Trash2, WandSparkles } from '@lucide/svelte';
+  import {
+    RefreshCw,
+    RotateCcw,
+    Scissors,
+    Trash2,
+    WandSparkles
+  } from '@lucide/svelte';
   import type { GenerationSegment } from './api-models';
   import type { GenerationSegmentChanges } from './domain-api';
   import type { PlayableTake } from './generation-view-models';
   import type { SettingOption } from './settings-fields';
   import type { VoiceDescriptor } from './voice-catalog';
   import AudioPlayer from './AudioPlayer.svelte';
+  import SpeechBoundaryMarker from './SpeechBoundaryMarker.svelte';
   import WaveformPeaks from './WaveformPeaks.svelte';
 
   let {
@@ -31,6 +38,9 @@
     onverificationtitle,
     onregenerate,
     onregeneratewith,
+    onmerge,
+    onsplit,
+    topologyDisabled = false,
     textMode = 'display'
   }: {
     items: GenerationSegment[];
@@ -58,8 +68,73 @@
     onverificationtitle: (take: GenerationSegment['takes'][number]) => string;
     onregenerate: (item: GenerationSegment) => unknown;
     onregeneratewith: (item: GenerationSegment) => unknown;
+    onmerge: (left: GenerationSegment, right: GenerationSegment) => unknown;
+    onsplit: (
+      item: GenerationSegment,
+      textLayer: 'display' | 'speech',
+      cursor: number
+    ) => unknown;
+    topologyDisabled?: boolean;
     textMode?: 'display' | 'speech';
   } = $props();
+
+  type CursorState = {
+    layer: 'display' | 'speech';
+    offset: number;
+    value: string;
+  };
+
+  let cursorBySegment = $state<Record<string, CursorState>>({});
+
+  function codePointOffset(value: string, codeUnitOffset: number) {
+    return Array.from(value.slice(0, codeUnitOffset)).length;
+  }
+
+  function rememberCursor(
+    item: GenerationSegment,
+    layer: 'display' | 'speech',
+    node: HTMLTextAreaElement
+  ) {
+    cursorBySegment[item.id] = {
+      layer,
+      offset: codePointOffset(node.value, node.selectionStart ?? 0),
+      value: node.value
+    };
+  }
+
+  function storedLayerText(
+    item: GenerationSegment,
+    layer: 'display' | 'speech'
+  ) {
+    return layer === 'speech'
+      ? String(item.optimized_text ?? item.text)
+      : String(item.text);
+  }
+
+  function validCursor(item: GenerationSegment) {
+    const cursor = cursorBySegment[item.id];
+    if (!cursor || cursor.layer !== textMode) return false;
+    const stored = storedLayerText(item, cursor.layer);
+    return (
+      cursor.value === stored &&
+      cursor.offset > 0 &&
+      cursor.offset < Array.from(stored).length &&
+      Array.from(stored).slice(0, cursor.offset).join('').trim().length > 0 &&
+      Array.from(stored).slice(cursor.offset).join('').trim().length > 0
+    );
+  }
+
+  function splitTitle(item: GenerationSegment) {
+    if (topologyDisabled)
+      return 'Return to the current plan to edit its blocks';
+    const cursor = cursorBySegment[item.id];
+    if (!cursor || cursor.layer !== textMode)
+      return 'Place the text cursor where this block should split';
+    if (cursor.value !== storedLayerText(item, cursor.layer))
+      return 'Save the text edit first, then place the cursor again';
+    if (!validCursor(item)) return 'Place the cursor between non-empty text';
+    return `Split ${textMode} text at cursor`;
+  }
 
   function autoExpand(node: HTMLTextAreaElement) {
     const adjust = () => {
@@ -93,6 +168,20 @@
   <tbody>
     {#each items as item, itemIndex (item.id)}
       {@const selectedTake = onactivetake(item)}
+      {#if itemIndex > 0}
+        <tr class="boundary-row">
+          <td colspan="6">
+            <SpeechBoundaryMarker
+              left={items[itemIndex - 1]}
+              right={item}
+              compact
+              disabled={topologyDisabled ||
+                items[itemIndex - 1].ordinal + 1 !== item.ordinal}
+              {onmerge}
+            />
+          </td>
+        </tr>
+      {/if}
       <tr
         onclick={(event) => onselect(item, event)}
         class:selected={selectedRows.includes(item.id)}
@@ -146,6 +235,16 @@
               value={item.optimized_text ?? item.text}
               aria-label={`Spoken override for segment ${item.ordinal + 1}`}
               data-generation-search-index={itemIndex}
+              onselect={(event) =>
+                rememberCursor(item, 'speech', event.currentTarget)}
+              onkeyup={(event) =>
+                rememberCursor(item, 'speech', event.currentTarget)}
+              oninput={(event) =>
+                rememberCursor(item, 'speech', event.currentTarget)}
+              onclick={(event) => {
+                event.stopPropagation();
+                rememberCursor(item, 'speech', event.currentTarget);
+              }}
               onblur={(event) => {
                 const text = event.currentTarget.value.trim();
                 if (!text) {
@@ -164,7 +263,18 @@
             <textarea
               use:autoExpand
               value={item.text}
+              aria-label={`Script text for segment ${item.ordinal + 1}`}
               data-generation-search-index={itemIndex}
+              onselect={(event) =>
+                rememberCursor(item, 'display', event.currentTarget)}
+              onkeyup={(event) =>
+                rememberCursor(item, 'display', event.currentTarget)}
+              oninput={(event) =>
+                rememberCursor(item, 'display', event.currentTarget)}
+              onclick={(event) => {
+                event.stopPropagation();
+                rememberCursor(item, 'display', event.currentTarget);
+              }}
               onblur={(event) => {
                 const text = event.currentTarget.value.trim();
                 if (text !== item.text.trim()) onpatch(item, { text });
@@ -299,6 +409,21 @@
         <td>
           <div class="flex justify-center gap-1">
             <button
+              onmousedown={(event) => event.preventDefault()}
+              onclick={(event) => {
+                event.stopPropagation();
+                const cursor = cursorBySegment[item.id];
+                if (cursor && validCursor(item))
+                  onsplit(item, cursor.layer, cursor.offset);
+              }}
+              disabled={loading || topologyDisabled || !validCursor(item)}
+              class="action icon-action"
+              title={splitTitle(item)}
+              aria-label={`Split segment ${item.ordinal + 1} at text cursor`}
+            >
+              <Scissors size={14} />
+            </button>
+            <button
               onclick={(event) => {
                 event.stopPropagation();
                 onregenerate(item);
@@ -348,6 +473,11 @@
     padding: 0.55rem;
     text-align: center;
     vertical-align: middle;
+  }
+  tr.boundary-row td {
+    height: 0.8rem;
+    border-bottom: 0;
+    padding: 0;
   }
   tr.removed {
     opacity: 0.42;

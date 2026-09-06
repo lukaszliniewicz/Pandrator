@@ -1462,6 +1462,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{sessionId}/generation-plan/topology": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["reviseGenerationPlanTopology"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{sessionId}/generation-runs": {
         parameters: {
             query?: never;
@@ -3270,6 +3286,49 @@ export interface components {
              */
             source_revision_id?: string | null;
         };
+        /**
+         * GenerationPlanTopologyRequest
+         * @description One of the three immutable, typed generation-plan topology edits.
+         */
+        GenerationPlanTopologyRequest: {
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "split" | "merge" | "restore";
+            /**
+             * Cursor
+             * @default null
+             */
+            cursor?: number | null;
+            /** Expected Revision Id */
+            expected_revision_id: string;
+            /**
+             * Left Segment Id
+             * @default null
+             */
+            left_segment_id?: string | null;
+            /**
+             * Right Segment Id
+             * @default null
+             */
+            right_segment_id?: string | null;
+            /**
+             * Segment Id
+             * @default null
+             */
+            segment_id?: string | null;
+            /**
+             * Target Revision Id
+             * @default null
+             */
+            target_revision_id?: string | null;
+            /**
+             * Text Layer
+             * @default null
+             */
+            text_layer?: ("display" | "speech") | null;
+        };
         /** GenerationSegmentBatchUpdate */
         GenerationSegmentBatchUpdate: {
             /** Updates */
@@ -3312,7 +3371,7 @@ export interface components {
              */
             silence_after_ms?: number;
             /** Source Segment Ids */
-            source_segment_ids?: string[];
+            source_segment_ids?: (string | number)[];
             /**
              * Speaker
              * @default null
@@ -7511,6 +7570,33 @@ export interface operations {
         };
         responses: {
             /** @description Generation plan created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    reviseGenerationPlanTopology: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+                "If-Match": string;
+            };
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GenerationPlanTopologyRequest"];
+            };
+        };
+        responses: {
+            /** @description Create an immutable generation-plan topology revision */
             201: {
                 headers: {
                     [name: string]: unknown;

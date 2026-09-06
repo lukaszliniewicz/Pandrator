@@ -5244,6 +5244,11 @@ class WorkflowHandlers:
                         or record.get("subtitles")
                         or []
                     ),
+                    speech_block_provenance_json=dict(
+                        record.get("speech_block_provenance")
+                        or record.get("provenance")
+                        or {}
+                    ),
                     alignment_group=str(record.get("alignment_group") or "").strip()
                     or None,
                     node_kind=str(
@@ -7282,12 +7287,37 @@ class WorkflowHandlers:
             assembly = session.get(OutputAssembly, assembly_id)
             if assembly is None:
                 raise KeyError(assembly_id)
-            assembly.status = "running"
-            assembly.error_message = None
-            assembly.updated_at = utcnow()
             session_id = assembly.session_id
             settings_container = dict(assembly.settings_json or {})
             plan_revision_id = str(settings_container.get("plan_revision_id") or "")
+            current_plan = (
+                session.scalar(
+                    select(GenerationPlan).where(
+                        GenerationPlan.session_id == session_id
+                    )
+                )
+                if assembly.generation_run_id is None
+                else None
+            )
+            if (
+                cancel_event.is_set()
+                or assembly.status in {"stale", "canceled", "cancel_requested"}
+                or (
+                    assembly.generation_run_id is None
+                    and (
+                        current_plan is None
+                        or str(current_plan.active_revision_id or "")
+                        != plan_revision_id
+                    )
+                )
+            ):
+                assembly.status = "canceled"
+                assembly.error_message = None
+                assembly.updated_at = utcnow()
+                return {}
+            assembly.status = "running"
+            assembly.error_message = None
+            assembly.updated_at = utcnow()
             resolved = (
                 settings_container.get("resolved")
                 if isinstance(settings_container.get("resolved"), dict)
@@ -7866,6 +7896,8 @@ class WorkflowHandlers:
                     "output": output_settings,
                 },
             )
+            if cancel_event.is_set():
+                raise MediaProcessCancelled("Output assembly was canceled.")
             artifact = self.artifacts.register(
                 destination,
                 kind="audio",
@@ -7896,19 +7928,55 @@ class WorkflowHandlers:
                 },
             )
             output_registered = True
-            with self.database.session() as session:
+            invalidated = False
+            with self.database.immediate_session() as session:
                 assembly = session.get(OutputAssembly, assembly_id)
+                if assembly is None:
+                    raise KeyError(assembly_id)
+                current_plan = (
+                    session.scalar(
+                        select(GenerationPlan).where(
+                            GenerationPlan.session_id == session_id
+                        )
+                    )
+                    if assembly.generation_run_id is None
+                    else None
+                )
+                invalidated = (
+                    cancel_event.is_set()
+                    or assembly.status in {"stale", "canceled", "cancel_requested"}
+                    or (
+                        assembly.generation_run_id is None
+                        and (
+                            current_plan is None
+                            or str(current_plan.active_revision_id or "")
+                            != plan_revision_id
+                        )
+                    )
+                )
                 assembly.artifact_id = artifact.id
-                assembly.status = "completed"
-                assembly.error_message = None
-                assembly.settings_json = {
-                    **dict(assembly.settings_json or {}),
-                    "takes": manifest,
-                    "duration_ms": assembly_result.duration_ms,
-                    "assembly_backend": assembly_result.backend,
-                    "synchronization": alignment_diagnostics,
-                }
+                if invalidated:
+                    stored_artifact = session.get(Artifact, artifact.id)
+                    if stored_artifact is not None:
+                        stored_artifact.state = "stale"
+                        ArtifactService._mark_descendants_stale(
+                            session, stored_artifact.id
+                        )
+                    assembly.status = "canceled"
+                    assembly.error_message = None
+                else:
+                    assembly.status = "completed"
+                    assembly.error_message = None
+                    assembly.settings_json = {
+                        **dict(assembly.settings_json or {}),
+                        "takes": manifest,
+                        "duration_ms": assembly_result.duration_ms,
+                        "assembly_backend": assembly_result.backend,
+                        "synchronization": alignment_diagnostics,
+                    }
                 assembly.updated_at = utcnow()
+            if invalidated:
+                return {}
             progress(1.0, "Output assembly ready")
             return {
                 "output_assembly_id": assembly_id,

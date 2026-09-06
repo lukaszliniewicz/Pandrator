@@ -342,6 +342,18 @@ ACTION_CATALOG = ActionCatalog(
             True,
         ),
         ActionSpec(
+            "pandrator_revise_speech_block_plan",
+            "Revise generation speech-block topology",
+            "ReviseSpeechBlockPlanInput",
+            RiskClass.WRITE,
+            "app.write",
+            "reviseGenerationPlanTopology",
+            "POST",
+            "/api/v1/sessions/{sessionId}/generation-plan/topology",
+            True,
+            True,
+        ),
+        ActionSpec(
             "pandrator_update_generation_segment",
             "Update generation segment text or voice overrides",
             "UpdateGenerationSegmentInput",

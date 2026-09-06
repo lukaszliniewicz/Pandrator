@@ -2310,6 +2310,14 @@ def build_openapi_document() -> dict:
                     "201",
                 )
             },
+            "/api/v1/sessions/{sessionId}/generation-plan/topology": {
+                "post": operation(
+                    "reviseGenerationPlanTopology",
+                    "Create an immutable generation-plan topology revision",
+                    "GenerationPlanTopologyRequest",
+                    "201",
+                )
+            },
             "/api/v1/sessions/{sessionId}/generation-segments": {
                 "get": {
                     **operation(
@@ -2494,6 +2502,11 @@ def build_openapi_document() -> dict:
         parameters = paths[path][method].setdefault("parameters", [])
         if not any(item.get("name") == "Idempotency-Key" for item in parameters):
             parameters.append(idempotency_header(required=False))
+    topology_parameters = paths[
+        "/api/v1/sessions/{sessionId}/generation-plan/topology"
+    ]["post"].setdefault("parameters", [])
+    if not any(item.get("name") == "Idempotency-Key" for item in topology_parameters):
+        topology_parameters.append(dict(idempotency_parameter))
     for path, method in (
         (
             "/api/v1/sessions/{sessionId}/settings/{section}",
@@ -2501,6 +2514,7 @@ def build_openapi_document() -> dict:
         ),
         ("/api/v1/sessions/{sessionId}/sources", "post"),
         ("/api/v1/uploads/init", "post"),
+        ("/api/v1/sessions/{sessionId}/generation-plan/topology", "post"),
     ):
         parameters = paths[path][method].setdefault("parameters", [])
         if not any(item.get("name") == "If-Match" for item in parameters):
@@ -2646,6 +2660,11 @@ def build_openapi_document() -> dict:
             "/api/v1/sessions/{sessionId}/generation-runs",
             "get",
             "app.read",
+        ),
+        (
+            "/api/v1/sessions/{sessionId}/generation-plan/topology",
+            "post",
+            "app.write",
         ),
         ("/api/v1/work", "get", "app.read"),
         ("/api/v1/work/{jobId}", "get", "app.read"),

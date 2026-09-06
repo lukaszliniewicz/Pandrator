@@ -23,6 +23,7 @@ from .generation import (
     assemble_generation_run,
     list_generation_segments,
     regenerate_segments,
+    revise_speech_block_plan,
     select_take,
     update_generation_segment,
 )
@@ -119,6 +120,7 @@ __all__ = [
     "list_artifacts",
     "list_generation_runs",
     "list_generation_segments",
+    "revise_speech_block_plan",
     "list_dispatch_runs",
     "list_source_cleaning_dispatch_runs",
     "list_speech_optimization_dispatch_runs",

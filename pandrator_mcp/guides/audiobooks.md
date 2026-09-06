@@ -48,3 +48,9 @@ Generation can send narration text to a configured TTS provider. Cleanup or
 optimization can send text to an LLM provider. A useful plan therefore states
 which provider receives which data before execution. Generated takes and final
 exports are different artifacts; generation does not imply final assembly.
+
+For deterministic speech-block review, use `pandrator_list_generation_segments`
+to inspect provenance, alignment groups, and the active plan revision. Apply
+only typed immutable topology edits with
+`pandrator_revise_speech_block_plan` (split, merge, or restore), then follow
+its next action to re-list the new revision.

@@ -10,6 +10,7 @@
   import type { GenerationSegment } from './api-models';
   import type { GenerationSegmentChanges } from './domain-api';
   import type { ReadingBlock } from './generation-view-models';
+  import SpeechBoundaryMarker from './SpeechBoundaryMarker.svelte';
 
   let {
     blocks,
@@ -28,7 +29,9 @@
     onplay,
     onregenerate,
     onregeneratewith,
-    onpatch
+    onpatch,
+    onmerge,
+    topologyDisabled = false
   }: {
     blocks: ReadingBlock[];
     selectedRunLabel?: string | null;
@@ -53,6 +56,8 @@
       item: GenerationSegment,
       changes: GenerationSegmentChanges
     ) => unknown;
+    onmerge: (left: GenerationSegment, right: GenerationSegment) => unknown;
+    topologyDisabled?: boolean;
   } = $props();
 </script>
 
@@ -184,8 +189,16 @@
                   />{/if}
               </button>
             </span>
-          </span>{#if index < block.items.length - 1}<span aria-hidden="true">
-            </span>{/if}
+          </span>{#if index < block.items.length - 1}
+            <SpeechBoundaryMarker
+              left={item}
+              right={block.items[index + 1]}
+              disabled={topologyDisabled ||
+                item.ordinal + 1 !== block.items[index + 1].ordinal}
+              {onmerge}
+            />
+            <span aria-hidden="true"> </span>
+          {/if}
         {/each}
       </p>
     {/if}

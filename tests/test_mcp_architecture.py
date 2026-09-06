@@ -351,6 +351,7 @@ class McpArchitectureTests(unittest.TestCase):
                 "pandrator_renew_speech_optimization_dispatch_batch",
                 "pandrator_replace_subtitle_text",
                 "pandrator_resolve_subtitle_evidence",
+                "pandrator_revise_speech_block_plan",
                 "pandrator_select_take",
                 "pandrator_submit_dispatch_batch",
                 "pandrator_submit_source_cleaning_dispatch_batch",

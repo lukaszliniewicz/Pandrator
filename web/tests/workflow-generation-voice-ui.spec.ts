@@ -59,6 +59,7 @@ test('generation and voice controls expose resolved selection semantics', () => 
 test('generation workspace exposes the compact review controls', () => {
   const drawer = source('GenerationDrawer.svelte');
   const segmentTable = source('GenerationSegmentTable.svelte');
+  const boundaryMarker = source('SpeechBoundaryMarker.svelte');
   const stageCard = source('WorkflowStageCard.svelte');
   const workspace = source('SessionWorkspace.svelte');
 
@@ -76,6 +77,14 @@ test('generation workspace exposes the compact review controls', () => {
     'Starts from the script; edits affect speech only.'
   );
   expect(segmentTable).toContain('onpatch(item, { optimized_text: null })');
+  expect(segmentTable).toContain('codePointOffset');
+  expect(segmentTable).toContain(
+    'Split segment ${item.ordinal + 1} at text cursor'
+  );
+  expect(drawer).toContain('Undo the latest speech-block edit');
+  expect(drawer).toContain('generationApi.reviseSpeechBlocks');
+  expect(boundaryMarker).toContain('Speech block boundary details');
+  expect(boundaryMarker).toContain('sourceCues');
 });
 
 test('standalone voice library lets users choose a cloning provider', async ({

@@ -11,6 +11,7 @@ from ..schemas.generation import (
     AssembleGenerationRunInput,
     ListGenerationSegmentsInput,
     RegenerateSegmentsInput,
+    ReviseSpeechBlockPlanInput,
     SelectTakeInput,
     UpdateGenerationSegmentInput,
 )
@@ -39,8 +40,16 @@ def _segment_projection(segment: dict[str, Any]) -> dict[str, Any]:
         "start_ms": segment.get("start_ms"),
         "end_ms": segment.get("end_ms"),
         "speaker": segment.get("speaker"),
+        "node_kind": segment.get("node_kind"),
+        "source_segment_ids": segment.get("source_segment_ids") or [],
+        "alignment_group": segment.get("alignment_group"),
         "text": segment.get("text"),
         "optimized_text": segment.get("optimized_text"),
+        "speech_block_provenance": segment.get("speech_block_provenance") or {},
+        "speech_plan": segment.get("speech_plan") or {},
+        "optimization_status": segment.get("optimization_status"),
+        "optimization_model": segment.get("optimization_model"),
+        "optimization_reviewed": segment.get("optimization_reviewed"),
         "voice_id": segment.get("voice_id"),
         "voice": segment.get("voice"),
         "language": segment.get("language"),
@@ -67,7 +76,41 @@ def list_generation_segments(
         "items": [_segment_projection(item) for item in items if isinstance(item, dict)],
         "next_cursor": payload.get("next_cursor"),
         "total": payload.get("total"),
+        "plan_revision_id": payload.get("plan_revision_id"),
+        "plan_revision_number": payload.get("plan_revision_number"),
+        "parent_revision_id": payload.get("parent_revision_id"),
+        "operation_json": payload.get("operation_json") or {},
+        "speech_block_settings": payload.get("speech_block_settings") or {},
     }
+
+
+def revise_speech_block_plan(
+    runtime: McpRuntime,
+    arguments: ReviseSpeechBlockPlanInput,
+) -> ToolOutcome:
+    application = runtime.require_application()
+    result = application.revise_generation_plan_topology(
+        arguments.session_id,
+        expected_revision_id=arguments.expected_revision_id,
+        action=arguments.action,
+        segment_id=arguments.segment_id,
+        cursor=arguments.cursor,
+        text_layer=arguments.text_layer,
+        left_segment_id=arguments.left_segment_id,
+        right_segment_id=arguments.right_segment_id,
+        target_revision_id=arguments.target_revision_id,
+        idempotency_key=arguments.idempotency_key,
+    )
+    return ToolOutcome(
+        result=result,
+        next_actions=[
+            NextAction(
+                tool="pandrator_list_generation_segments",
+                arguments={"session_id": arguments.session_id},
+                reason="Re-list segments and inspect the new immutable plan revision.",
+            )
+        ],
+    )
 
 
 def update_generation_segment(

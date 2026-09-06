@@ -9,7 +9,7 @@ import uuid
 from contextlib import redirect_stdout
 from typing import Annotated, Any, Literal
 
-from pydantic import Field
+from pydantic import Field, ValidationError
 
 from . import __version__
 from .context import McpRuntime
@@ -80,6 +80,7 @@ from .schemas import (
     ReplaceSubtitleTextInput,
     RequestSubtitleEvidenceInput,
     ResolveSubtitleEvidenceInput,
+    ReviseSpeechBlockPlanInput,
     SelectTakeInput,
     SourceCleaningDispatchResultInput,
     SpeechOptimizationDispatchResultInput,
@@ -158,6 +159,7 @@ from .tools import (
     replace_subtitle_text,
     request_subtitle_evidence,
     resolve_subtitle_evidence,
+    revise_speech_block_plan,
     select_take,
     submit_dispatch_batch,
     submit_source_cleaning_dispatch_batch,
@@ -227,6 +229,32 @@ def _call(function, *args) -> dict[str, Any]:
         "warnings": [],
         "next_actions": [],
     }
+
+
+def _call_with_validated_input(
+    function,
+    runtime: McpRuntime,
+    model: type[Any],
+    values: dict[str, Any],
+) -> dict[str, Any]:
+    def invoke() -> Any:
+        try:
+            arguments = model.model_validate(values)
+        except ValidationError as error:
+            raise PandratorMcpError(
+                "validation_error",
+                "The tool input is invalid.",
+                details={
+                    "errors": error.errors(
+                        include_url=False,
+                        include_context=False,
+                        include_input=False,
+                    )
+                },
+            ) from error
+        return function(runtime, arguments)
+
+    return _call(invoke)
 
 
 def _resource_call(function, *args) -> str:
@@ -874,11 +902,7 @@ def build_server(runtime: McpRuntime):
         cue_id: Annotated[int, Field(ge=1)],
         reason: Annotated[str, Field(min_length=1, max_length=4_000)],
         routes: Annotated[
-            list[
-                Literal[
-                    "whisper", "moss", "azure_mai_transcribe_2", "audio_llm"
-                ]
-            ],
+            list[Literal["whisper", "moss", "azure_mai_transcribe_2", "audio_llm"]],
             Field(min_length=1, max_length=4),
         ],
         idempotency_key: Annotated[
@@ -2102,6 +2126,50 @@ def build_server(runtime: McpRuntime):
                 limit=limit,
                 generation_run_id=generation_run_id,
             ),
+        )
+
+    @server.tool(
+        name="pandrator_revise_speech_block_plan",
+        title="Revise generation speech-block topology",
+        annotations=write_action,
+    )
+    def generation_topology_revision_tool(
+        session_id: str,
+        expected_revision_id: str,
+        action: Literal["split", "merge", "restore"],
+        idempotency_key: Annotated[
+            str,
+            Field(
+                min_length=8,
+                max_length=200,
+                pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$",
+            ),
+        ],
+        segment_id: str | None = None,
+        cursor: Annotated[int | None, Field(strict=True)] = None,
+        text_layer: Literal["display", "speech"] | None = None,
+        left_segment_id: str | None = None,
+        right_segment_id: str | None = None,
+        target_revision_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Create a typed immutable split, merge, or restore plan revision."""
+
+        return _call_with_validated_input(
+            revise_speech_block_plan,
+            runtime,
+            ReviseSpeechBlockPlanInput,
+            {
+                "session_id": session_id,
+                "expected_revision_id": expected_revision_id,
+                "action": action,
+                "idempotency_key": idempotency_key,
+                "segment_id": segment_id,
+                "cursor": cursor,
+                "text_layer": text_layer,
+                "left_segment_id": left_segment_id,
+                "right_segment_id": right_segment_id,
+                "target_revision_id": target_revision_id,
+            },
         )
 
     @server.tool(

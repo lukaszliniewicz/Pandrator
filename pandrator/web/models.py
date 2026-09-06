@@ -482,7 +482,9 @@ class SubtitleEvidence(Base):
         ForeignKey("artifacts.id", ondelete="RESTRICT"), nullable=True, index=True
     )
     source_revision_id: Mapped[str] = mapped_column(
-        ForeignKey("document_revisions.id", ondelete="RESTRICT"), nullable=False, index=True
+        ForeignKey("document_revisions.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
     )
     source_segment_id: Mapped[str | None] = mapped_column(
         ForeignKey("segments.id", ondelete="SET NULL"), index=True
@@ -679,8 +681,14 @@ class GenerationPlanRevision(Base):
     source_revision_id: Mapped[str | None] = mapped_column(
         ForeignKey("document_revisions.id", ondelete="SET NULL"), index=True
     )
+    parent_revision_id: Mapped[str | None] = mapped_column(
+        ForeignKey("generation_plan_revisions.id", ondelete="SET NULL"), index=True
+    )
     revision_number: Mapped[int] = mapped_column(Integer, nullable=False)
     settings_json: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
+    operation_json: Mapped[dict[str, Any]] = mapped_column(
         JSON, nullable=False, default=dict
     )
     content_hash: Mapped[str] = mapped_column(String(128), nullable=False)
@@ -757,8 +765,11 @@ class GenerationSegment(Base):
         index=True,
     )
     ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
-    source_segment_ids_json: Mapped[list[str]] = mapped_column(
+    source_segment_ids_json: Mapped[list[str | int]] = mapped_column(
         JSON, nullable=False, default=list
+    )
+    speech_block_provenance_json: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict
     )
     alignment_group: Mapped[str | None] = mapped_column(String(64), index=True)
     node_kind: Mapped[str] = mapped_column(
@@ -819,6 +830,13 @@ class GenerationSegmentRevision(Base):
         index=True,
     )
     revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    ordinal: Mapped[int | None] = mapped_column(Integer)
+    source_segment_ids_json: Mapped[list[str | int]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+    speech_block_provenance_json: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
     alignment_group: Mapped[str | None] = mapped_column(String(64))
     node_kind: Mapped[str] = mapped_column(
         String(40), nullable=False, default="paragraph"

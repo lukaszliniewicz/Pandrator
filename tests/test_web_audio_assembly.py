@@ -1063,6 +1063,27 @@ class DurableOutputAssemblyTests(unittest.TestCase):
                 "canceled", session.get(OutputAssembly, queued["id"]).status
             )
 
+    def test_current_selection_assembly_refuses_to_start_after_plan_change(self):
+        self._plan_with_takes()
+        queued = self.generation.create_assembly(self.record.id)
+        self.generation.create_plan(
+            self.record.id,
+            source_revision_id=None,
+            segments=[{"text": "Replacement plan"}],
+        )
+
+        result = WorkflowHandlers(self.database, self.paths).assemble_generation_output(
+            {"output_assembly_id": queued["id"]},
+            lambda *_args: None,
+            threading.Event(),
+        )
+
+        self.assertEqual({}, result)
+        with self.database.session() as session:
+            assembly = session.get(OutputAssembly, queued["id"])
+            self.assertEqual("canceled", assembly.status)
+            self.assertIsNone(assembly.artifact_id)
+
 
 if __name__ == "__main__":
     unittest.main()
