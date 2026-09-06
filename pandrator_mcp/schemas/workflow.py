@@ -230,7 +230,7 @@ class DescribeParametersInput(ToolInput):
         default=(),
         max_length=50,
     )
-    workflow_kind: Literal["audiobook", "subtitles", "voiceover"] | None = None
+    workflow_kind: Literal["audiobook", "subtitles", "voiceover", "media_edit"] | None = None
     query: str | None = Field(default=None, max_length=100)
     limit: int = Field(default=100, ge=1, le=300)
 

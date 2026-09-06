@@ -201,7 +201,7 @@ class ParameterDefinitionsApiTests(unittest.TestCase):
             self.assertEqual("form", parameter["style"])
             self.assertTrue(parameter["explode"])
         self.assertEqual(
-            ["audiobook", "subtitles", "voiceover"],
+            ["audiobook", "subtitles", "voiceover", "media_edit"],
             parameters["workflow_kind"]["schema"]["enum"],
         )
         self.assertEqual(1, parameters["limit"]["schema"]["minimum"])

@@ -18,6 +18,7 @@ from .models import (
 
 STAGE_OUTPUT_ROLES: dict[str, tuple[str, ...]] = {
     "transcribe": ("transcription",),
+    "edit_media": ("media_edit_subtitles",),
     "correct": ("correction",),
     "translate": ("translation",),
     "clean_source": ("clean_text",),
@@ -32,6 +33,7 @@ ROLE_TO_STAGE = {
 STAGE_RANK = {
     "transcribe": 10,
     "clean_source": 10,
+    "edit_media": 15,
     "correct": 20,
     "prepare_text": 20,
     "translate": 30,

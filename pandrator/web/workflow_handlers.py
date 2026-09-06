@@ -32,7 +32,7 @@ from pandrator.logic.dubbing.transcript_normalization import load_transcript
 from pandrator.runtime import DataPaths
 
 from .artifact_selection import canonical_stage_key, selected_artifacts
-from .artifacts import ArtifactService
+from .artifacts import ArtifactService, sha256_file
 from .audio_verification import add_run_rms_warning, run_rms_outliers, verify_audio
 from .credentials import (
     auxiliary_credential_key,
@@ -57,6 +57,8 @@ from .models import (
     GenerationPlanRevision,
     GenerationRun,
     GenerationSegment,
+    MediaEditPlan,
+    MediaEditPlanRevision,
     OutcomePlan,
     OutputAssembly,
     Segment,
@@ -593,6 +595,9 @@ class WorkflowHandlers:
         self.database = database
         self.paths = paths
         self.artifacts = ArtifactService(database, paths)
+        from .media_edit import MediaEditService
+
+        self.media_edit = MediaEditService(database, self.artifacts, self._session_dir)
         if tts_providers is None:
             from .tts_providers import TtsProviderRegistry
 
@@ -1199,7 +1204,13 @@ class WorkflowHandlers:
             if (
                 candidate is None
                 or candidate.state == "deleted"
-                or candidate.role not in {"transcription", "correction", "upload"}
+                or candidate.role
+                not in {
+                    "media_edit_subtitles",
+                    "transcription",
+                    "correction",
+                    "upload",
+                }
                 or Path(candidate.relative_path).suffix.lower() != ".srt"
                 or (
                     candidate.session_id != session_id
@@ -1209,6 +1220,29 @@ class WorkflowHandlers:
                 return None
             session.expunge(candidate)
             return candidate
+
+    def _matches_active_media_edit_revision(
+        self, session_id: str, artifact: Artifact | None
+    ) -> bool:
+        if artifact is None:
+            return False
+        metadata = (
+            artifact.metadata_json if isinstance(artifact.metadata_json, dict) else {}
+        )
+        with self.database.session() as session:
+            revision = session.scalar(
+                select(MediaEditPlanRevision)
+                .join(
+                    MediaEditPlan,
+                    MediaEditPlan.active_revision_id == MediaEditPlanRevision.id,
+                )
+                .where(MediaEditPlan.session_id == session_id)
+            )
+        return bool(
+            revision is not None
+            and str(metadata.get("revision_id") or "") == revision.id
+            and str(metadata.get("content_hash") or "") == revision.content_hash
+        )
 
     @staticmethod
     def _continuation_input_roles(
@@ -1223,7 +1257,11 @@ class WorkflowHandlers:
             return (
                 ("correction",)
                 if translation_parent == "correction"
-                else ("transcription", "upload")
+                else (
+                    ("media_edit_subtitles",)
+                    if workflow_kind == "media_edit"
+                    else ("transcription", "upload")
+                )
             )
         if definition_key not in {"optimize_document", "generate_audio"}:
             return default_roles
@@ -1234,6 +1272,11 @@ class WorkflowHandlers:
         if workflow_kind == "audiobook":
             return ("prepared_text",)
         generation_parent = str(input_choices.get("generation") or "translation")
+        if workflow_kind == "media_edit" and generation_parent in {
+            "source",
+            "media_edit",
+        }:
+            return ("media_edit_subtitles",)
         return {
             "translation": ("translation",),
             "correction": ("correction",),
@@ -1242,13 +1285,17 @@ class WorkflowHandlers:
 
     def continue_workflow(self, payload, progress, cancel_event):
         """Run only missing/stale included prerequisites, then the requested outcome stage."""
-        from .workflows import AUDIOBOOK_STAGES, DUBBING_STAGES
+        from .workflows import AUDIOBOOK_STAGES, DUBBING_STAGES, MEDIA_EDIT_STAGES
 
         session_id = str(payload.get("session_id") or "")
         target_key = str(payload.get("target_stage") or "generate_audio")
         record = self._session_record(session_id)
         definitions = (
-            AUDIOBOOK_STAGES if record.workflow_kind == "audiobook" else DUBBING_STAGES
+            AUDIOBOOK_STAGES
+            if record.workflow_kind == "audiobook"
+            else MEDIA_EDIT_STAGES
+            if record.workflow_kind == "media_edit"
+            else DUBBING_STAGES
         )
         is_srt_source = False
         if record.workflow_kind != "audiobook":
@@ -1316,6 +1363,19 @@ class WorkflowHandlers:
             input_choices,
             transformations,
         )
+        if record.workflow_kind == "media_edit" and target_key not in {
+            "transcribe",
+            "edit_media",
+        }:
+            rendered_subtitles = self._latest_stage_input(
+                session_id, ("media_edit_subtitles",)
+            )
+            if not self._matches_active_media_edit_revision(
+                session_id, rendered_subtitles
+            ):
+                raise ValueError(
+                    "Review and render the media edit before running downstream stages."
+                )
         runnable = [
             item
             for index, item in enumerate(definitions)
@@ -1467,7 +1527,7 @@ class WorkflowHandlers:
         if workflow_kind == "audiobook" and target_key in {"generate_audio", "export"}:
             required.update({"clean_source", "prepare_text"})
         elif target_key in {"generate_audio", "export"}:
-            if not is_srt_source:
+            if workflow_kind != "media_edit" and not is_srt_source:
                 required.add("transcribe")
             translation_parent = str(input_choices.get("translation") or "correction")
             generation_parent = str(input_choices.get("generation") or "translation")
@@ -1639,7 +1699,7 @@ class WorkflowHandlers:
         contract, while ``reasons`` distinguishes semantic changes from a
         legacy hash that cannot prove freshness and from broken source lineage.
         """
-        from .workflows import AUDIOBOOK_STAGES, DUBBING_STAGES
+        from .workflows import AUDIOBOOK_STAGES, DUBBING_STAGES, MEDIA_EDIT_STAGES
         from .workspace import WorkspaceSettingsService, adapt_runtime_settings
 
         record = self._session_record(session_id)
@@ -1653,7 +1713,11 @@ class WorkflowHandlers:
             else ""
         )
         definitions = (
-            AUDIOBOOK_STAGES if record.workflow_kind == "audiobook" else DUBBING_STAGES
+            AUDIOBOOK_STAGES
+            if record.workflow_kind == "audiobook"
+            else MEDIA_EDIT_STAGES
+            if record.workflow_kind == "media_edit"
+            else DUBBING_STAGES
         )
         if record.workflow_kind != "audiobook" and filename.endswith(".srt"):
             definitions = tuple(
@@ -2188,8 +2252,12 @@ class WorkflowHandlers:
                 roles = ("tts_optimized",)
             elif generation_input == "correction":
                 roles = ("correction",)
-            elif generation_input == "source":
-                roles = ("transcription", "upload")
+            elif generation_input in {"source", "media_edit"}:
+                roles = (
+                    ("media_edit_subtitles",)
+                    if record.workflow_kind == "media_edit"
+                    else ("transcription", "upload")
+                )
             else:
                 roles = ("translation",)
             selected = self._latest_stage_input(session_id, roles)
@@ -3363,6 +3431,389 @@ class WorkflowHandlers:
             "cost": result.cost,
             "agent_run_id": agent_run.id,
             "resumed": agent_run.resumed,
+        }
+
+    def media_edit_propose(self, payload, progress, cancel_event):
+        """Ask the configured correction model for removal-only cue spans."""
+
+        from pandrator.logic import llm_handler
+
+        session_id = str(payload.get("session_id") or "")
+        try:
+            revision_number = int(payload.get("revision"))
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                "Media-edit proposal revision must be an integer."
+            ) from error
+        revision = self.media_edit.revision(session_id, revision_number)
+        if revision is None:
+            raise ValueError(
+                f"Media-edit revision {revision_number} is not available for this session."
+            )
+        instructions = str(payload.get("instructions") or "").strip()
+        if not instructions:
+            raise ValueError("Media-edit proposal instructions must not be empty.")
+        cues = [
+            {
+                "id": str(item.get("id") or ""),
+                "start_ms": int(item.get("start_ms")),
+                "end_ms": int(item.get("end_ms")),
+                "speaker": item.get("speaker"),
+                "text": str(item.get("text") or ""),
+            }
+            for item in revision.get("cues") or []
+            if isinstance(item, dict)
+        ]
+        if not cues:
+            raise ValueError("The selected media-edit revision has no cues to review.")
+        settings = dict(payload.get("settings") or {})
+        settings = self._with_database_llm_settings(settings, "correction")
+        correction_model = str(
+            settings.get("correction_model") or settings.get("llm_default_model") or ""
+        ).strip()
+        settings["media_edit_model"] = correction_model
+        request_payload = {
+            "instructions": instructions,
+            "cues": cues,
+        }
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "Review this immutable transcript for removal-only video edits. "
+                    "Return JSON only, with exactly this shape: "
+                    '{"cuts":[{"start_cue_id":"cue-...",'
+                    '"end_cue_id":"cue-...","reason":"..."}]}. '
+                    "Use only the supplied cue IDs; a cut includes every cue from "
+                    "start through end. Do not return markdown or any other fields."
+                ),
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
+                    request_payload, ensure_ascii=False, separators=(",", ":")
+                ),
+            },
+        ]
+        progress(0.08, "Requesting media-edit proposal")
+        result = llm_handler.chat_completion_with_metadata(
+            messages=messages,
+            model_name=correction_model or None,
+            llm_settings=settings,
+            cancel_event=cancel_event,
+        )
+        self._record_usage(
+            session_id,
+            "media_edit",
+            settings,
+            result,
+            job_id=str(payload.get("_job_id") or "") or None,
+        )
+        if cancel_event.is_set():
+            return {}
+        content = (
+            result.get("content")
+            if isinstance(result, dict) and "content" in result
+            else getattr(result, "content", result)
+        )
+        if isinstance(content, dict):
+            decoded = content
+        else:
+            raw_content = str(content or "").strip()
+            if raw_content.startswith("```"):
+                raw_content = re.sub(
+                    r"^```(?:json)?\s*|\s*```$", "", raw_content, flags=re.IGNORECASE
+                ).strip()
+            try:
+                decoded = json.loads(raw_content)
+            except (TypeError, json.JSONDecodeError) as error:
+                raise ValueError("Media-edit proposal must be valid JSON.") from error
+        if not isinstance(decoded, dict) or set(decoded) != {"cuts"}:
+            raise ValueError("Media-edit proposal must contain only a cuts array.")
+        proposed = decoded.get("cuts")
+        if not isinstance(proposed, list):
+            raise TypeError("Media-edit proposal cuts must be an array.")
+        if len(proposed) > 500:
+            raise ValueError("Media-edit proposal contains more than 500 cuts.")
+        cue_order = {item["id"]: index for index, item in enumerate(cues)}
+        cuts: list[dict[str, str]] = []
+        for item in proposed:
+            if not isinstance(item, dict) or set(item) != {
+                "start_cue_id",
+                "end_cue_id",
+                "reason",
+            }:
+                raise ValueError("Each proposal cut must contain exactly three fields.")
+            start_id = item.get("start_cue_id")
+            end_id = item.get("end_cue_id")
+            if not isinstance(item.get("reason"), str):
+                raise TypeError("Proposal cut reason must be a string.")
+            reason = item["reason"].strip()
+            if not isinstance(start_id, str) or start_id not in cue_order:
+                raise ValueError("Proposal cut references an unknown start cue ID.")
+            if not isinstance(end_id, str) or end_id not in cue_order:
+                raise ValueError("Proposal cut references an unknown end cue ID.")
+            if cue_order[end_id] < cue_order[start_id]:
+                raise ValueError("Proposal cut cue IDs are out of order.")
+            if not reason:
+                raise ValueError("Proposal cut reasons must not be empty.")
+            if len(reason) > 500:
+                raise ValueError("Proposal cut reasons must be at most 500 characters.")
+            cuts.append(
+                {
+                    "start_cue_id": start_id,
+                    "end_cue_id": end_id,
+                    "reason": reason,
+                }
+            )
+        if not cuts:
+            progress(1.0, "No removals proposed")
+            return {
+                "plan_id": revision.get("plan_id"),
+                "revision_id": revision.get("revision_id"),
+                "revision": revision.get("revision"),
+                "cut_count": 0,
+            }
+        progress(0.72, "Applying media-edit proposal")
+        state = self.media_edit.apply_proposal(session_id, revision_number, cuts)
+        plan = state.get("plan") or {}
+        progress(1.0, "Media-edit proposal ready")
+        return {
+            "plan_id": plan.get("plan_id"),
+            "revision_id": plan.get("revision_id"),
+            "revision": plan.get("revision"),
+            "cut_count": len(cuts),
+        }
+
+    @staticmethod
+    def _media_edit_cues(payload: dict[str, Any]):
+        from pandrator.logic.media_edit import MediaCue, MediaWord
+
+        cues = []
+        for item in payload.get("cues") or []:
+            if not isinstance(item, dict):
+                continue
+            words = tuple(
+                MediaWord(
+                    text=str(word.get("text") or ""),
+                    start_ms=int(word.get("start_ms")),
+                    end_ms=int(word.get("end_ms")),
+                    confidence=(
+                        float(word["confidence"])
+                        if word.get("confidence") is not None
+                        else None
+                    ),
+                )
+                for word in item.get("words") or []
+                if isinstance(word, dict)
+            )
+            cues.append(
+                MediaCue(
+                    id=str(item.get("id") or ""),
+                    start_ms=int(item.get("start_ms")),
+                    end_ms=int(item.get("end_ms")),
+                    text=str(item.get("text") or ""),
+                    speaker=item.get("speaker"),
+                    words=words,
+                    timing_confidence=(
+                        float(item["timing_confidence"])
+                        if item.get("timing_confidence") is not None
+                        else None
+                    ),
+                    timing_source=str(item.get("timing_source") or "caption"),
+                )
+            )
+        return cues
+
+    def media_edit_render(self, payload, progress, cancel_event):
+        """Render one reviewed immutable media-edit revision."""
+
+        from pandrator.logic.dubbing.audio_sync import media_has_audio_stream
+        from pandrator.logic.dubbing.video_muxing import (
+            build_removal_only_video_command,
+            normalize_video_resolution,
+        )
+        from pandrator.logic.media_edit import KeepRange, caption_to_srt, retime_cues
+        from pandrator.web.capabilities import ffmpeg_video_encoder_ids
+
+        from .media_process import (
+            MediaProcessCancelled,
+            MediaProcessError,
+            resolve_ffmpeg_executable,
+            resolve_ffprobe_executable,
+            run_media_process,
+        )
+
+        session_id = str(payload.get("session_id") or "")
+        try:
+            revision_number = int(payload.get("revision"))
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                "Media-edit render revision must be an integer."
+            ) from error
+        revision = self.media_edit.revision(session_id, revision_number)
+        if revision is None:
+            raise ValueError(
+                f"Media-edit revision {revision_number} is not available for this session."
+            )
+        if not bool(revision.get("reviewed")):
+            raise ValueError(
+                "The media-edit revision must be reviewed before rendering."
+            )
+        source_info = revision.get("source_media_artifact")
+        source_id = str((source_info or {}).get("id") or "")
+        source_artifact, source_path = self._resolve_input(source_id)
+        expected_hash = str(source_artifact.content_hash or "").strip()
+        if not expected_hash:
+            raise ValueError(
+                "The pinned source artifact has no registered content hash."
+            )
+        if sha256_file(source_path) != expected_hash:
+            raise ValueError(
+                "The pinned source artifact changed after the revision was created."
+            )
+
+        settings = dict(payload.get("settings") or {})
+        settings_hash = str(payload.get("settings_hash") or "")
+        cues = self._media_edit_cues(revision)
+        keep_ranges = tuple(
+            KeepRange(
+                str(item.get("id") or f"keep-{index:06d}"),
+                int(item.get("start_ms")),
+                int(item.get("end_ms")),
+                item.get("label"),
+            )
+            for index, item in enumerate(revision.get("keep_ranges") or [], start=1)
+            if isinstance(item, dict)
+        )
+        if not keep_ranges:
+            raise ValueError("The selected media-edit revision has no retained ranges.")
+        retimed_cues = retime_cues(cues, keep_ranges)
+        operation_dir = self._operation_dir(session_id, "media-edit-render")
+        plan_id = str(revision.get("plan_id") or "")
+        revision_id = str(revision.get("revision_id") or "")
+        revision_tag = f"{plan_id}-r{revision_number}-{revision_id}"
+        subtitle_path = operation_dir / f"media-edit-{revision_tag}.srt"
+        output_path = operation_dir / f"media-edit-{revision_tag}.mp4"
+        subtitle_path.write_text(caption_to_srt(retimed_cues), encoding="utf-8")
+        ffmpeg_executable = resolve_ffmpeg_executable(
+            str(settings.get("ffmpeg_executable") or "") or None
+        )
+        encoder = str(settings.get("burn_video_encoder") or "libx264").strip().lower()
+        if encoder not in ffmpeg_video_encoder_ids(ffmpeg_executable):
+            raise ValueError(
+                f"The selected FFmpeg build does not provide the {encoder} video encoder."
+            )
+        resolution = normalize_video_resolution(
+            settings.get("burn_video_resolution", "source")
+        )
+        try:
+            has_audio = media_has_audio_stream(
+                source_path,
+                ffprobe_executable=resolve_ffprobe_executable(
+                    str(settings.get("ffprobe_executable") or "") or None
+                ),
+            )
+        except (OSError, subprocess.SubprocessError) as error:
+            raise ValueError(
+                "The pinned source media could not be inspected for audio."
+            ) from error
+        command = build_removal_only_video_command(
+            str(source_path),
+            str(output_path),
+            tuple((item.start_ms, item.end_ms) for item in keep_ranges),
+            has_audio=has_audio,
+            ffmpeg_executable=ffmpeg_executable,
+            video_encoder=encoder,
+            video_quality=settings.get("burn_video_quality", 18),
+            video_speed=str(settings.get("burn_video_speed") or "balanced"),
+            audio_bitrate=str(settings.get("burn_audio_bitrate") or "192k"),
+            hardware_device=(
+                str(
+                    settings.get("burn_video_hardware_device")
+                    or settings.get("hardware_device")
+                    or ""
+                ).strip()
+                or None
+            ),
+            video_resolution=resolution,
+        )
+        progress(0.2, "Rendering edited media")
+        try:
+            run_media_process(command, cancel_event=cancel_event)
+        except MediaProcessCancelled:
+            for path in (output_path, subtitle_path):
+                path.unlink(missing_ok=True)
+            return {}
+        except MediaProcessError as error:
+            output_path.unlink(missing_ok=True)
+            raise ValueError(
+                "Media-edit rendering requires a video source and FFmpeg could not produce the MP4."
+            ) from error
+        if cancel_event.is_set():
+            for path in (output_path, subtitle_path):
+                path.unlink(missing_ok=True)
+            return {}
+        parent_ids = [
+            source_id,
+            str((revision.get("editorial_transcript_artifact") or {}).get("id") or ""),
+            str((revision.get("timing_artifact") or {}).get("id") or ""),
+        ]
+        parent_ids = [item for item in parent_ids if item]
+        metadata = {
+            "plan_id": plan_id,
+            "revision_id": revision_id,
+            "revision": revision_number,
+            "content_hash": revision.get("content_hash"),
+            "source_artifact_id": source_id,
+            "source_content_hash": expected_hash,
+            "settings_hash": settings_hash,
+            "effective_settings": settings,
+            "video_encoder": encoder,
+        }
+        media_artifact = self.artifacts.register(
+            output_path,
+            kind="video",
+            role="media_edit_media",
+            session_id=session_id,
+            parent_ids=parent_ids,
+            settings=settings,
+            metadata=metadata,
+        )
+        subtitle_artifact = self.artifacts.register(
+            subtitle_path,
+            kind="srt",
+            role="media_edit_subtitles",
+            session_id=session_id,
+            parent_ids=[*parent_ids, media_artifact.id],
+            settings=settings,
+            metadata=metadata,
+        )
+        editorial_id = str(
+            (revision.get("editorial_transcript_artifact") or {}).get("id") or ""
+        )
+        if editorial_id:
+            editorial_artifact, _ = self._resolve_input(editorial_id)
+            self._store_srt_document(
+                session_id,
+                subtitle_artifact,
+                "media_edit_subtitles",
+                parent_artifact=editorial_artifact,
+                speaker_overrides={
+                    index: cue.speaker
+                    for index, cue in enumerate(retimed_cues, start=1)
+                    if cue.speaker
+                },
+            )
+        duration_ms = sum(item.end_ms - item.start_ms for item in keep_ranges)
+        progress(1.0, "Edited media ready")
+        return {
+            "media_artifact_id": media_artifact.id,
+            "subtitle_artifact_id": subtitle_artifact.id,
+            "plan_id": plan_id,
+            "revision_id": revision_id,
+            "revision": revision_number,
+            "duration_ms": duration_ms,
         }
 
     def translate(self, payload, progress, cancel_event):
@@ -6179,6 +6630,7 @@ class WorkflowHandlers:
                 text_to_synthesize: str = synthesized_text,
                 settings_for_segment: dict[str, Any] = segment_tts_settings,
                 segment_index: int = index,
+                synthesis_progress_share: float = synthesis_share,
             ):
                 return self.tts_providers.synthesize(
                     text_to_synthesize,
@@ -6187,12 +6639,14 @@ class WorkflowHandlers:
                     cancel_event=cancel_event,
                     retry_callback=lambda attempt, total, delay: progress(
                         optimization_share
-                        + ((segment_index - 1) / len(records)) * synthesis_share,
+                        + ((segment_index - 1) / len(records))
+                        * synthesis_progress_share,
                         f"Retrying segment {segment_index} ({attempt}/{total}) in {delay:.1f}s",
                     ),
                     recovery_callback=lambda cycle, total, timeout: progress(
                         optimization_share
-                        + ((segment_index - 1) / len(records)) * synthesis_share,
+                        + ((segment_index - 1) / len(records))
+                        * synthesis_progress_share,
                         f"Waiting for Qwen3 TTS before segment {segment_index} ({cycle}/{total}, up to {timeout:.0f}s)",
                     ),
                     **tts_urls,
@@ -7284,21 +7738,24 @@ class WorkflowHandlers:
         destination: Path | None = None
         output_registered = False
         with self.database.session() as session:
-            assembly = session.get(OutputAssembly, assembly_id)
-            if assembly is None:
+            assembly_row = session.execute(
+                select(OutputAssembly, GenerationPlan)
+                .select_from(OutputAssembly)
+                .outerjoin(
+                    GenerationPlan,
+                    and_(
+                        OutputAssembly.generation_run_id.is_(None),
+                        GenerationPlan.session_id == OutputAssembly.session_id,
+                    ),
+                )
+                .where(OutputAssembly.id == assembly_id)
+            ).one_or_none()
+            if assembly_row is None:
                 raise KeyError(assembly_id)
+            assembly, current_plan = assembly_row
             session_id = assembly.session_id
             settings_container = dict(assembly.settings_json or {})
             plan_revision_id = str(settings_container.get("plan_revision_id") or "")
-            current_plan = (
-                session.scalar(
-                    select(GenerationPlan).where(
-                        GenerationPlan.session_id == session_id
-                    )
-                )
-                if assembly.generation_run_id is None
-                else None
-            )
             if (
                 cancel_event.is_set()
                 or assembly.status in {"stale", "canceled", "cancel_requested"}
@@ -7640,7 +8097,7 @@ class WorkflowHandlers:
                                 end_ms=max(previous.end_ms, block.end_ms),
                                 audio_files=[*previous.audio_files, *block.audio_files],
                                 subtitles=sorted(
-                                    set([*previous.subtitles, *block.subtitles])
+                                    {*previous.subtitles, *block.subtitles}
                                 ),
                             )
                         else:
@@ -7671,8 +8128,8 @@ class WorkflowHandlers:
                     raw_speed = float(
                         audio_settings.get("synchronization_speed") or 1.0
                     )
-                    speed_up_percent = int(
-                        round(raw_speed * 100 if raw_speed <= 10 else raw_speed)
+                    speed_up_percent = round(
+                        raw_speed * 100 if raw_speed <= 10 else raw_speed
                     )
                     logger.info(
                         "Assembling %s with subtitle timing: blocks=%d max_speed=%.3fx max_delay=%dms sentence_gap=%dms",
@@ -8021,6 +8478,10 @@ class WorkflowHandlers:
             str(payload.get("source_artifact_id") or "")
         )
         max_points = max(128, min(5000, int(payload.get("max_points") or 1600)))
+        start_ms = max(0, int(payload.get("start_ms") or 0))
+        raw_end_ms = payload.get("end_ms")
+        end_ms = int(raw_end_ms) if raw_end_ms is not None else None
+        bounded = raw_end_ms is not None or start_ms > 0
         destination_dir = (
             self._session_dir(source.session_id)
             if source.session_id
@@ -8034,17 +8495,24 @@ class WorkflowHandlers:
                 max_points=max_points,
                 work_dir=destination_dir,
                 cancel_event=cancel_event,
+                start_ms=start_ms,
+                end_ms=end_ms,
             )
         except MediaProcessCancelled:
             return {}
         if cancel_event.is_set():
             return {}
         progress(0.9, "Writing waveform peaks")
-        destination = destination_dir / f"waveform-{source.id}-{max_points}.json"
+        destination = destination_dir / (
+            f"waveform-{source.id}-{waveform.start_ms}-{waveform.end_ms}-"
+            f"{max_points}.json"
+        )
         destination.write_text(
             json.dumps(
                 {
                     "duration_ms": waveform.duration_ms,
+                    "start_ms": waveform.start_ms,
+                    "end_ms": waveform.end_ms,
                     "channels": waveform.channels,
                     "points": waveform.points,
                 },
@@ -8056,13 +8524,20 @@ class WorkflowHandlers:
         artifact = self.artifacts.register(
             destination,
             kind="json",
-            role="waveform_peaks",
+            role="waveform_peaks_window" if bounded else "waveform_peaks",
             session_id=source.session_id,
             parent_ids=[source.id],
-            settings={"max_points": max_points},
+            settings={
+                "max_points": max_points,
+                "start_ms": waveform.start_ms,
+                "end_ms": waveform.end_ms,
+            },
             metadata={
                 "source_artifact_id": source.id,
                 "duration_ms": waveform.duration_ms,
+                "start_ms": waveform.start_ms,
+                "end_ms": waveform.end_ms,
+                "max_points": max_points,
                 "analysis_sample_rate_hz": waveform.analysis_sample_rate_hz,
             },
         )
@@ -8071,6 +8546,8 @@ class WorkflowHandlers:
             "artifact_id": artifact.id,
             "source_artifact_id": source.id,
             "point_count": len(waveform.points),
+            "start_ms": waveform.start_ms,
+            "end_ms": waveform.end_ms,
         }
 
     def generate_audio_preview(self, payload, progress, cancel_event):
@@ -8533,7 +9010,17 @@ class WorkflowHandlers:
                 resolved_settings_snapshot
             )
         record = self._session_record(session_id)
+        active_media_edit_revision: MediaEditPlanRevision | None = None
         with self.database.session() as session:
+            if record.workflow_kind == "media_edit":
+                active_media_edit_revision = session.scalar(
+                    select(MediaEditPlanRevision)
+                    .join(
+                        MediaEditPlan,
+                        MediaEditPlan.active_revision_id == MediaEditPlanRevision.id,
+                    )
+                    .where(MediaEditPlan.session_id == session_id)
+                )
             current = list(
                 session.scalars(
                     select(Artifact).where(
@@ -8716,6 +9203,7 @@ class WorkflowHandlers:
             translated = by_role.get("translation")
             source_subtitle = (
                 by_role.get("correction")
+                or by_role.get("media_edit_subtitles")
                 or by_role.get("transcription")
                 or next(
                     (
@@ -8748,6 +9236,41 @@ class WorkflowHandlers:
             )
             if contract is not None:
                 export_mode = contract.export_mode
+            if record.workflow_kind == "media_edit" and export_mode == "media":
+                edited_media = by_role.get("media_edit_media")
+                if contract is None or edited_media is None:
+                    raise ValueError(
+                        "The rendered media edit is no longer available; render it again before exporting."
+                    )
+                if edited_media.id != contract.source_artifact_id:
+                    raise ValueError(
+                        "The selected media edit changed after this export was queued."
+                    )
+                if (
+                    contract.source_content_hash
+                    and edited_media.content_hash != contract.source_content_hash
+                ):
+                    raise ValueError(
+                        "The rendered media edit no longer matches its immutable export contract."
+                    )
+                edited_metadata = (
+                    edited_media.metadata_json
+                    if isinstance(edited_media.metadata_json, dict)
+                    else {}
+                )
+                if not (
+                    active_media_edit_revision is not None
+                    and str(edited_metadata.get("revision_id") or "")
+                    == active_media_edit_revision.id
+                    and str(edited_metadata.get("content_hash") or "")
+                    == active_media_edit_revision.content_hash
+                ):
+                    raise ValueError(
+                        "The media-edit revision changed after this export was queued; "
+                        "render and submit the export again."
+                    )
+                upload_media = edited_media
+                upload_audio = None
             subtitle_format = str(settings.get("subtitle_format") or "srt").lower()
             if subtitle_format not in {"srt", "vtt"}:
                 subtitle_format = "srt"

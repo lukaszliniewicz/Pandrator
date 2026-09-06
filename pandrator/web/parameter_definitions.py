@@ -30,6 +30,18 @@ WORKFLOW_SECTIONS = {
             "output",
         }
     ),
+    "media_edit": frozenset(
+        {
+            "stt",
+            "subtitles",
+            "correction",
+            "translation",
+            "tts",
+            "audio",
+            "rvc",
+            "output",
+        }
+    ),
 }
 VALUE_TYPES = frozenset({"boolean", "integer", "number", "string", "object", "array"})
 

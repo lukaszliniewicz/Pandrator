@@ -36,6 +36,13 @@ from .manager import (
     manager_status,
     plan_component_change,
 )
+from .media_edit import (
+    get_media_edit,
+    prepare_media_edit,
+    propose_media_edit,
+    render_media_edit,
+    update_media_edit,
+)
 from .recommendations import recommend_next_steps
 from .sessions import (
     attach_existing_source,
@@ -106,6 +113,7 @@ __all__ = [
     "execute_workflow_plan",
     "execute_component_plan",
     "get_session",
+    "get_media_edit",
     "get_subtitle_evidence",
     "get_dispatch_run",
     "get_source_cleaning_dispatch_run",
@@ -130,15 +138,18 @@ __all__ = [
     "manager_doctor",
     "manager_status",
     "patch_subtitle_cues",
+    "prepare_media_edit",
     "plan_workflow",
     "plan_orchestrated_workflow",
     "plan_export_variant",
     "plan_component_change",
     "preview_subtitles",
     "provider_status",
+    "propose_media_edit",
     "recommend_next_steps",
     "request_subtitle_evidence",
     "resolve_subtitle_evidence",
+    "render_media_edit",
     "regenerate_segments",
     "release_dispatch_batch",
     "release_source_cleaning_dispatch_batch",
@@ -155,6 +166,7 @@ __all__ = [
     "target_status",
     "tts_catalog",
     "update_generation_segment",
+    "update_media_edit",
     "update_session",
     "update_session_settings",
     "voice_catalog",

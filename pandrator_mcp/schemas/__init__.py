@@ -42,6 +42,14 @@ from .manager import (
     ManagerDesiredComponentInput,
     PlanComponentChangeInput,
 )
+from .media_edit import (
+    GetMediaEditArguments,
+    MediaEditKeepRange,
+    PrepareMediaEditArguments,
+    ProposeMediaEditArguments,
+    RenderMediaEditArguments,
+    UpdateMediaEditArguments,
+)
 from .recommendations import RecommendNextStepsInput
 from .sessions import (
     AttachExistingSourceInput,
@@ -177,6 +185,11 @@ TOOL_INPUT_MODELS = (
     RegenerateSegmentsInput,
     ReviseSpeechBlockPlanInput,
     AssembleGenerationRunInput,
+    GetMediaEditArguments,
+    PrepareMediaEditArguments,
+    ProposeMediaEditArguments,
+    RenderMediaEditArguments,
+    UpdateMediaEditArguments,
 )
 
 __all__ = [
@@ -208,6 +221,7 @@ __all__ = [
     "GuideTopic",
     "ExecuteWorkflowPlanInput",
     "GetSessionInput",
+    "GetMediaEditArguments",
     "GetSubtitleEvidenceInput",
     "GetDispatchRunInput",
     "GetSourceCleaningDispatchRunInput",
@@ -233,17 +247,21 @@ __all__ = [
     "ExecuteComponentPlanInput",
     "ManagerDesiredComponentInput",
     "PatchSubtitleCuesInput",
+    "MediaEditKeepRange",
     "PlanComponentChangeInput",
     "PreviewSubtitlesInput",
     "ProviderStatusInput",
     "PlanWorkflowInput",
+    "PrepareMediaEditArguments",
     "PlanOrchestratedWorkflowInput",
     "PlanExportVariantInput",
     "RecommendNextStepsInput",
+    "ProposeMediaEditArguments",
     "RequestSubtitleEvidenceInput",
     "ResolveSubtitleEvidenceInput",
     "RegenerateSegmentsInput",
     "ReviseSpeechBlockPlanInput",
+    "RenderMediaEditArguments",
     "ReleaseDispatchBatchInput",
     "ReleaseSourceCleaningDispatchBatchInput",
     "ReleaseSpeechOptimizationDispatchBatchInput",
@@ -269,6 +287,7 @@ __all__ = [
     "ToolEnvelope",
     "ToolInput",
     "UpdateGenerationSegmentInput",
+    "UpdateMediaEditArguments",
     "UpdateSessionInput",
     "UpdateSessionSettingsInput",
     "WorkReference",

@@ -17,6 +17,7 @@
 
   const sessionId = String(page.params.id);
   let sources = $state<SessionSource[]>([]);
+  let mediaEditWorkspace = $state(false);
   let error = $state('');
   let message = $state('');
   let pdf = $state<{ id: string; filename: string } | null>(null);
@@ -24,7 +25,12 @@
   let sourceDialog = $state(false);
 
   async function load() {
-    sources = (await sessionApi.sources(sessionId)).items;
+    const [sourcePage, session] = await Promise.all([
+      sessionApi.sources(sessionId),
+      sessionApi.get(sessionId)
+    ]);
+    sources = sourcePage.items;
+    mediaEditWorkspace = session.workflow_kind === 'media_edit';
   }
   async function makeCurrent(source: SessionSource) {
     error = '';
@@ -167,6 +173,7 @@
 </div>
 {#if sourceDialog}<AddSourceDialog
     {sessionId}
+    allowTranscriptRole={mediaEditWorkspace}
     onclose={() => (sourceDialog = false)}
     onadded={sourceAdded}
   />{/if}

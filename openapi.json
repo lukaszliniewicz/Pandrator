@@ -2379,6 +2379,146 @@
         "title": "ManagerUninstallPlanRequest",
         "type": "object"
       },
+      "MediaEditKeepRange": {
+        "additionalProperties": false,
+        "properties": {
+          "end_ms": {
+            "exclusiveMinimum": 0,
+            "title": "End Ms",
+            "type": "integer"
+          },
+          "id": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Id"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Label"
+          },
+          "start_ms": {
+            "minimum": 0,
+            "title": "Start Ms",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "start_ms",
+          "end_ms"
+        ],
+        "title": "MediaEditKeepRange",
+        "type": "object"
+      },
+      "MediaEditPrepareRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "force": {
+            "default": false,
+            "title": "Force",
+            "type": "boolean"
+          }
+        },
+        "title": "MediaEditPrepareRequest",
+        "type": "object"
+      },
+      "MediaEditProposeRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "instructions": {
+            "maxLength": 10000,
+            "minLength": 1,
+            "title": "Instructions",
+            "type": "string"
+          },
+          "revision": {
+            "minimum": 1,
+            "title": "Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "revision",
+          "instructions"
+        ],
+        "title": "MediaEditProposeRequest",
+        "type": "object"
+      },
+      "MediaEditRenderRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "revision": {
+            "minimum": 1,
+            "title": "Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "revision"
+        ],
+        "title": "MediaEditRenderRequest",
+        "type": "object"
+      },
+      "MediaEditUpdateRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "instructions": {
+            "anyOf": [
+              {
+                "maxLength": 10000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Instructions"
+          },
+          "keep_ranges": {
+            "items": {
+              "$ref": "#/components/schemas/MediaEditKeepRange"
+            },
+            "maxItems": 1000,
+            "title": "Keep Ranges",
+            "type": "array"
+          },
+          "reviewed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reviewed"
+          }
+        },
+        "required": [
+          "keep_ranges"
+        ],
+        "title": "MediaEditUpdateRequest",
+        "type": "object"
+      },
       "ModelCreate": {
         "additionalProperties": false,
         "properties": {
@@ -3701,7 +3841,8 @@
             "enum": [
               "audiobook",
               "subtitles",
-              "voiceover"
+              "voiceover",
+              "media_edit"
             ],
             "title": "Workflow Kind",
             "type": "string"
@@ -3838,7 +3979,8 @@
                 "enum": [
                   "audiobook",
                   "subtitles",
-                  "voiceover"
+                  "voiceover",
+                  "media_edit"
                 ],
                 "type": "string"
               },
@@ -7916,7 +8058,8 @@
               "enum": [
                 "audiobook",
                 "subtitles",
-                "voiceover"
+                "voiceover",
+                "media_edit"
               ],
               "type": "string"
             }
@@ -9338,6 +9481,275 @@
             "description": "Generation segments updated atomically"
           }
         }
+      }
+    },
+    "/api/v1/sessions/{sessionId}/media-edit": {
+      "get": {
+        "operationId": "getMediaEdit",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Media-edit state"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
+      },
+      "put": {
+        "operationId": "updateMediaEdit",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Automation principals require it; browser writes may omit it. Use it for safe retries.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MediaEditUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Updated media-edit revision"
+          },
+          "409": {
+            "description": "Revision conflict"
+          },
+          "428": {
+            "description": "Revision precondition required"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/sessions/{sessionId}/media-edit/prepare": {
+      "post": {
+        "operationId": "prepareMediaEdit",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Automation principals require it; browser writes may omit it. Use it for safe retries.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MediaEditPrepareRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Existing media-edit revision"
+          },
+          "201": {
+            "description": "Prepared media-edit revision"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/sessions/{sessionId}/media-edit/propose": {
+      "post": {
+        "operationId": "proposeMediaEdit",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Automation principals require it; browser writes may omit it. Use it for safe retries.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MediaEditProposeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Proposal job queued"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.run"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/sessions/{sessionId}/media-edit/render": {
+      "post": {
+        "operationId": "renderMediaEdit",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Automation principals require it; browser writes may omit it. Use it for safe retries.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MediaEditRenderRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Render job queued"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.run"
+            ]
+          }
+        ]
       }
     },
     "/api/v1/sessions/{sessionId}/outcome-plan": {

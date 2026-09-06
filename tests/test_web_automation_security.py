@@ -453,6 +453,17 @@ class AutomationSecurityTests(unittest.TestCase):
         )
         session_id = created.get_json()["id"]
 
+        missing_media_edit_key = self.client.post(
+            f"/api/v1/sessions/{session_id}/media-edit/prepare",
+            json={"force": False},
+            headers=headers,
+        )
+        self.assertEqual(400, missing_media_edit_key.status_code)
+        self.assertEqual(
+            "idempotency_key_required",
+            missing_media_edit_key.get_json()["error"]["code"],
+        )
+
         changed_body = self.client.post(
             "/api/v1/sessions",
             json={**create_body, "name": "Different project"},
@@ -997,6 +1008,10 @@ class AutomationSecurityTests(unittest.TestCase):
             ],
             paths["/api/v1/sessions/{sessionId}/generation-runs"]["post"],
             paths["/api/v1/sessions/{sessionId}/output-assemblies"]["post"],
+            paths["/api/v1/sessions/{sessionId}/media-edit"]["put"],
+            paths["/api/v1/sessions/{sessionId}/media-edit/prepare"]["post"],
+            paths["/api/v1/sessions/{sessionId}/media-edit/propose"]["post"],
+            paths["/api/v1/sessions/{sessionId}/media-edit/render"]["post"],
         )
         for operation in optional_retry_operations:
             header = next(

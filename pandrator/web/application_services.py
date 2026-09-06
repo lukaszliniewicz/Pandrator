@@ -23,6 +23,7 @@ from .identity import ApplicationIdentityService
 from .jobs import JobQueue
 from .legacy_migration import import_legacy_data
 from .manager_proxy import LocalManagerProxy
+from .media_edit import MediaEditService
 from .models import AppSetting, SessionRecord
 from .pronunciations import PronunciationLibrary
 from .session_forks import SessionForkService
@@ -84,6 +85,7 @@ class ApplicationServices:
     dispatch: DispatchRunService
     source_cleaning_dispatch: SourceCleaningDispatchRunService
     speech_optimization_dispatch: SpeechOptimizationDispatchRunService
+    media_edit: MediaEditService
     bootstrap: BootstrapTokenStore
     session_directory: Callable[[str], Path]
 
@@ -148,6 +150,7 @@ class ApplicationServices:
             destination.mkdir(parents=True, exist_ok=True)
             return destination
 
+        media_edit = MediaEditService(database, artifacts, session_directory)
         subtitle_evidence = SubtitleEvidenceService(
             database,
             artifacts,
@@ -259,6 +262,7 @@ class ApplicationServices:
             dispatch=dispatch,
             source_cleaning_dispatch=source_cleaning_dispatch,
             speech_optimization_dispatch=speech_optimization_dispatch,
+            media_edit=media_edit,
             bootstrap=bootstrap_tokens or BootstrapTokenStore(),
             session_directory=session_directory,
         )
@@ -300,6 +304,7 @@ class ApplicationServices:
             "dispatch": self.dispatch,
             "source_cleaning_dispatch": self.source_cleaning_dispatch,
             "speech_optimization_dispatch": self.speech_optimization_dispatch,
+            "media_edit": self.media_edit,
             "bootstrap": self.bootstrap,
             "migration": self.migration,
             "services": self,

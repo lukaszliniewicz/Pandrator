@@ -9,7 +9,7 @@ export type SessionRecord = {
   id: string;
   name: string;
   storage_key: string;
-  workflow_kind: 'audiobook' | 'subtitles' | 'voiceover';
+  workflow_kind: 'audiobook' | 'subtitles' | 'voiceover' | 'media_edit';
   source_language: string;
   target_language: string | null;
   workflow_preset: string;
@@ -18,6 +18,77 @@ export type SessionRecord = {
   revision: number;
   created_at: string;
   updated_at: string;
+};
+
+type MediaEditWord = {
+  text: string;
+  start_ms: number;
+  end_ms: number;
+  confidence?: number | null;
+};
+
+type MediaEditCue = {
+  id: string;
+  start_ms: number;
+  end_ms: number;
+  text: string;
+  speaker?: string | null;
+  words: MediaEditWord[];
+  timing_confidence?: number | null;
+  timing_source: string;
+};
+
+export type MediaEditRange = {
+  id: string;
+  start_ms: number;
+  end_ms: number;
+  label?: string | null;
+};
+
+type MediaEditArtifact = {
+  id: string;
+  role: string;
+  kind: string;
+  filename: string;
+  content_url: string;
+  content_hash?: string | null;
+};
+
+export type MediaEditPlan = {
+  plan_id: string;
+  revision_id: string;
+  revision: number;
+  parent_revision_id?: string | null;
+  source_media_artifact: MediaEditArtifact;
+  editorial_transcript_artifact: MediaEditArtifact;
+  timing_artifact?: MediaEditArtifact | null;
+  duration_ms: number;
+  instructions: string;
+  keep_ranges: MediaEditRange[];
+  cues: MediaEditCue[];
+  evidence: {
+    warnings?: string[];
+    alignment_coverage?: number;
+    alignment_confidence?: number;
+    [key: string]: unknown;
+  };
+  operation: Record<string, unknown>;
+  reviewed: boolean;
+  content_hash: string;
+  created_at: string;
+};
+
+export type MediaEditState = {
+  session_id: string;
+  workflow_kind: 'media_edit';
+  readiness: {
+    ready: boolean;
+    source_media_artifact?: MediaEditArtifact | null;
+    external_transcript_artifact?: MediaEditArtifact | null;
+    transcription_artifact?: MediaEditArtifact | null;
+    timing_artifact?: MediaEditArtifact | null;
+  };
+  plan?: MediaEditPlan | null;
 };
 
 export type ForkedSessionRecord = SessionRecord & {
@@ -262,6 +333,8 @@ export type WaveformData = {
   min?: number[];
   max?: number[];
   duration_ms?: number;
+  start_ms?: number;
+  end_ms?: number;
   [key: string]: unknown;
 };
 

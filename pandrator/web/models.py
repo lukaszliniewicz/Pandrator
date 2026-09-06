@@ -703,6 +703,84 @@ class GenerationPlanRevision(Base):
     )
 
 
+class MediaEditPlan(Base):
+    """The active immutable media-edit revision for one session."""
+
+    __tablename__ = "media_edit_plans"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("sessions.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    active_revision_id: Mapped[str | None] = mapped_column(String(36))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+
+class MediaEditPlanRevision(Base):
+    """An immutable media-edit snapshot."""
+
+    __tablename__ = "media_edit_plan_revisions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    plan_id: Mapped[str] = mapped_column(
+        ForeignKey("media_edit_plans.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    parent_revision_id: Mapped[str | None] = mapped_column(
+        ForeignKey("media_edit_plan_revisions.id", ondelete="SET NULL"),
+        index=True,
+    )
+    revision_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_media_artifact_id: Mapped[str] = mapped_column(
+        ForeignKey("artifacts.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    editorial_transcript_artifact_id: Mapped[str] = mapped_column(
+        ForeignKey("artifacts.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    timing_artifact_id: Mapped[str | None] = mapped_column(
+        ForeignKey("artifacts.id", ondelete="SET NULL"),
+        index=True,
+    )
+    duration_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    instructions: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    keep_ranges_json: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+    cues_json: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+    evidence_json: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
+    operation_json: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
+    reviewed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    content_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "plan_id", "revision_number", name="uq_media_edit_plan_revision"
+        ),
+    )
+
+
 class GenerationRun(Base):
     __tablename__ = "generation_runs"
 

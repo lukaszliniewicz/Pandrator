@@ -11,6 +11,7 @@
     FolderOpen,
     Gauge,
     Link2,
+    Scissors,
     Trash2,
     Upload,
     X
@@ -30,12 +31,12 @@
     startAtSource = false,
     onclose
   }: {
-    initialKind?: 'audiobook' | 'subtitles' | 'voiceover';
+    initialKind?: 'audiobook' | 'subtitles' | 'voiceover' | 'media_edit';
     startAtSource?: boolean;
     onclose: () => void;
   } = $props();
   let step = $state(untrack(() => (startAtSource ? 2 : 1)));
-  let kind = $state<'audiobook' | 'subtitles' | 'voiceover'>(
+  let kind = $state<'audiobook' | 'subtitles' | 'voiceover' | 'media_edit'>(
     untrack(() => initialKind)
   );
   let custom = $state(false);
@@ -43,6 +44,7 @@
     'upload'
   );
   let sourceFile = $state<File | null>(null);
+  let captionFile = $state<File | null>(null);
   let pastedText = $state('');
   let sourceUrl = $state('');
   let sourceAssetId = $state('');
@@ -57,6 +59,7 @@
   let subtitleExport = $state<'srt' | 'vtt' | 'text'>('srt');
   let normalizeText = $state(true);
   let optimizeTts = $state(false);
+  let generateVoiceover = $state(false);
   let audiobookFormat = $state<'m4b' | 'mp3' | 'opus' | 'flac' | 'wav'>('m4b');
   let creating = $state(false);
   let progress = $state(0);
@@ -90,8 +93,25 @@
       .toLowerCase()
       .endsWith('.srt')
   );
+  function isReusableMedia(item: SourceAsset) {
+    const mime = String(item.mime_type ?? '').toLowerCase();
+    const kindValue = String(item.kind ?? '')
+      .replace(/^\./, '')
+      .toLowerCase();
+    return (
+      mime.startsWith('video/') ||
+      /^(mp4|mkv|mov|avi|webm|m4v|mpeg|mpg)$/.test(kindValue)
+    );
+  }
+  const reusableCandidates = $derived(
+    kind === 'media_edit'
+      ? reusableSources.filter(isReusableMedia)
+      : reusableSources
+  );
   const needsTranscription = $derived(
-    kind !== 'audiobook' && !isSrt && sourceMode !== 'later'
+    kind !== 'audiobook' &&
+      (kind === 'media_edit' || !isSrt) &&
+      sourceMode !== 'later'
   );
   const pipeline = $derived([
     ...(kind === 'audiobook'
@@ -99,14 +119,21 @@
       : needsTranscription
         ? ['Transcribe']
         : ['Use subtitles']),
+    ...(kind === 'media_edit' ? ['Plan and review cuts', 'Render edit'] : []),
     ...(kind !== 'audiobook' && correct ? ['Correct'] : []),
     ...(kind !== 'audiobook' && translate ? ['Translate'] : []),
     ...(kind === 'audiobook' ? ['Segment narration'] : []),
-    ...(kind === 'voiceover' || (kind === 'audiobook' && normalizeText)
+    ...(kind === 'voiceover' ||
+    (kind === 'media_edit' && generateVoiceover) ||
+    (kind === 'audiobook' && normalizeText)
       ? ['Deterministic speech normalization']
       : []),
     ...(kind === 'audiobook' && optimizeTts ? ['LLM speech optimization'] : []),
-    ...(kind === 'voiceover' || kind === 'audiobook' ? ['Generate audio'] : []),
+    ...(kind === 'voiceover' ||
+    kind === 'audiobook' ||
+    (kind === 'media_edit' && generateVoiceover)
+      ? ['Generate audio']
+      : []),
     kind === 'subtitles'
       ? subtitleExport === 'text'
         ? 'Export text'
@@ -117,7 +144,10 @@
   async function loadSources() {
     try {
       reusableSources = (await sourceApi.list()).items;
-      sourceAssetId ||= reusableSources[0]?.id ?? '';
+      sourceAssetId ||=
+        (kind === 'media_edit'
+          ? reusableSources.find(isReusableMedia)?.id
+          : reusableSources[0]?.id) ?? '';
     } catch {
       reusableSources = [];
     }
@@ -129,6 +159,13 @@
     if (value === 'audiobook' && sourceMode === 'url') sourceMode = 'upload';
     if (value === 'audiobook' && sourceLanguage === 'auto')
       sourceLanguage = 'en';
+    if (
+      value === 'media_edit' &&
+      !reusableSources.some(
+        (item) => item.id === sourceAssetId && isReusableMedia(item)
+      )
+    )
+      sourceAssetId = reusableSources.find(isReusableMedia)?.id ?? '';
     custom = full;
     step = 2;
   }
@@ -144,7 +181,9 @@
         ? 'New audiobook'
         : kind === 'voiceover'
           ? 'New voiceover'
-          : 'New subtitles');
+          : kind === 'media_edit'
+            ? 'New recording edit'
+            : 'New subtitles');
     name = String(raw)
       .replace(/\.[^.]+$/, '')
       .replace(/[_-]+/g, ' ')
@@ -173,9 +212,12 @@
         : [
             ...(kind === 'audiobook' ? ['clean_source', 'prepare_text'] : []),
             ...(needsTranscription ? ['transcribe'] : []),
+            ...(kind === 'media_edit' ? ['edit_media'] : []),
             ...(correct ? ['correct'] : []),
             ...(translate ? ['translate'] : []),
-            ...(kind === 'voiceover' || kind === 'audiobook'
+            ...(kind === 'voiceover' ||
+            kind === 'audiobook' ||
+            (kind === 'media_edit' && generateVoiceover)
               ? ['generate_audio']
               : []),
             'export'
@@ -199,17 +241,24 @@
         deliverables: {
           audiobook: kind === 'audiobook',
           subtitles: kind === 'subtitles' || subtitleMode !== 'none',
-          voiceover: kind === 'voiceover'
+          voiceover:
+            kind === 'voiceover' ||
+            (kind === 'media_edit' && generateVoiceover),
+          edited_media: kind === 'media_edit'
         },
         transformations: {
           transcribe: needsTranscription,
+          media_edit: kind === 'media_edit',
           correct: kind === 'audiobook' ? false : correct,
           translate: kind === 'audiobook' ? false : translate,
           deterministic_normalization:
             kind === 'audiobook' ? normalizeText : true,
           llm_tts_document_optimization: false,
           llm_tts_optimization: kind === 'audiobook' && optimizeTts,
-          generate_audio: kind === 'voiceover' || kind === 'audiobook',
+          generate_audio:
+            kind === 'voiceover' ||
+            kind === 'audiobook' ||
+            (kind === 'media_edit' && generateVoiceover),
           rvc: false
         },
         inputs: {
@@ -218,7 +267,9 @@
             ? 'translation'
             : correct
               ? 'correction'
-              : 'source'
+              : kind === 'media_edit'
+                ? 'media_edit'
+                : 'source'
         },
         export: {
           mode:
@@ -228,7 +279,9 @@
                 : 'subtitles'
               : 'media',
           audio:
-            kind === 'voiceover' || kind === 'audiobook'
+            kind === 'voiceover' ||
+            kind === 'audiobook' ||
+            (kind === 'media_edit' && generateVoiceover)
               ? 'generated'
               : 'preserve',
           subtitle_mode:
@@ -284,13 +337,21 @@
                 audio_mode: 'preserve',
                 language: speechLanguage
               }
-            : {
-                export_mode: 'media',
-                audio_mode: 'dubbing_only',
-                subtitle_mode: subtitleMode,
-                subtitle_selection: subtitleSelection,
-                language: speechLanguage
-              };
+            : kind === 'media_edit'
+              ? {
+                  export_mode: 'media',
+                  audio_mode: generateVoiceover ? 'dubbing_only' : 'preserve',
+                  subtitle_mode: subtitleMode,
+                  subtitle_selection: subtitleSelection,
+                  language: speechLanguage
+                }
+              : {
+                  export_mode: 'media',
+                  audio_mode: 'dubbing_only',
+                  subtitle_mode: subtitleMode,
+                  subtitle_selection: subtitleSelection,
+                  language: speechLanguage
+                };
       await Promise.all([
         updateSettings('stt', { stt_language: sourceLanguage }),
         updateSettings('translation', {
@@ -323,6 +384,21 @@
         progress = 0.8;
         progressDetail = 'Attaching reusable source';
         await sessionApi.attachSource(session.id, sourceAssetId);
+      }
+      if (kind === 'media_edit' && captionFile) {
+        progress = 0.955;
+        progressDetail = 'Uploading captions';
+        const uploaded = await uploadManagedFile(captionFile, undefined);
+        const captionSourceId = String(uploaded.source_asset_id ?? '');
+        if (!captionSourceId)
+          throw new Error(
+            'The caption upload did not create a reusable source.'
+          );
+        await sessionApi.attachSource(
+          session.id,
+          captionSourceId,
+          'transcript'
+        );
       }
       progress = 0.97;
       progressDetail = 'Opening workspace';
@@ -377,7 +453,7 @@
         {error}
       </div>{/if}
     {#if step === 1}
-      <div class="mt-7 grid gap-4 md:grid-cols-3">
+      <div class="mt-7 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <button onclick={() => chooseKind('audiobook')} class="choice"
           ><BookOpenText size={25} /><strong>Generate an audiobook</strong><span
             >Prepare a document or pasted text for narration.</span
@@ -390,6 +466,10 @@
           ><AudioLines size={25} /><strong>Create a voiceover</strong><span
             >Start with media or an existing subtitle file.</span
           ></button
+        ><button onclick={() => chooseKind('media_edit')} class="choice"
+          ><Scissors size={25} /><strong>Edit a recording</strong><span
+            >Remove setup, breaks, mistakes, or extract clips from a transcript.</span
+          ></button
         >
       </div>
       <button
@@ -399,7 +479,7 @@
       >
     {:else if step === 2}
       <div class="mt-7 grid gap-3 sm:grid-cols-5">
-        {#each [{ id: 'upload', label: 'Upload', icon: Upload }, { id: 'paste', label: 'Paste', icon: FileText }, ...(kind === 'audiobook' ? [] : [{ id: 'url', label: 'URL', icon: Link2 }]), { id: 'reuse', label: 'Reuse', icon: BookOpenText }, { id: 'later', label: 'Add later', icon: Gauge }] as mode}{@const Icon =
+        {#each [{ id: 'upload', label: 'Upload', icon: Upload }, ...(kind === 'media_edit' ? [] : [{ id: 'paste', label: 'Paste', icon: FileText }]), ...(kind === 'audiobook' ? [] : [{ id: 'url', label: 'URL', icon: Link2 }]), { id: 'reuse', label: 'Reuse', icon: BookOpenText }, { id: 'later', label: 'Add later', icon: Gauge }] as mode}{@const Icon =
             mode.icon}<button
             onclick={() => (sourceMode = mode.id as typeof sourceMode)}
             class:active={sourceMode === mode.id}
@@ -411,6 +491,9 @@
           <label class="text-sm font-semibold"
             >Source file<input
               type="file"
+              accept={kind === 'media_edit'
+                ? 'video/*,.mp4,.mkv,.mov,.avi,.webm,.m4v,.mpeg,.mpg'
+                : undefined}
               onchange={(event) => {
                 sourceFile =
                   (event.currentTarget as HTMLInputElement).files?.[0] ?? null;
@@ -455,17 +538,44 @@
             >Source library<select
               bind:value={sourceAssetId}
               class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3"
-              >{#each reusableSources as source}<option value={source.id}
+              >{#each reusableCandidates as source}<option value={source.id}
                   >{source.display_name} · {source.kind}</option
                 >{/each}</select
             ></label
           >
+          {#if kind === 'media_edit' && !reusableCandidates.length}<p
+              class="muted mt-3 text-xs"
+            >
+              No reusable video sources are available yet.
+            </p>{/if}
         {:else}
           <p class="muted text-sm">
             Create the session now and attach one or more sources from its
             Sources tab later.
           </p>
         {/if}
+        {#if kind === 'media_edit' && sourceMode !== 'later'}<div
+            class="mt-5 border-t border-[var(--line)] pt-5"
+          >
+            <label class="text-sm font-semibold"
+              >Zoom or other captions <span class="muted font-normal"
+                >(optional)</span
+              ><input
+                type="file"
+                accept=".srt,.vtt,.txt,text/plain,text/vtt,application/x-subrip"
+                onchange={(event) =>
+                  (captionFile =
+                    (event.currentTarget as HTMLInputElement).files?.[0] ??
+                    null)}
+                class="mt-2 block w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] p-3"
+              /></label
+            >
+            <p class="muted mt-2 text-xs leading-relaxed">
+              Pandrator keeps speaker identity separately from subtitle text. If
+              you omit captions, the selected ASR backend supplies both the
+              words and timing. With captions, ASR is used as timing evidence.
+            </p>
+          </div>{/if}
       </div>
     {:else if step === 3}
       {#if kind === 'audiobook'}
@@ -518,6 +628,16 @@
         </div>
       {:else}
         <div class="mt-7 grid gap-4 md:grid-cols-2">
+          {#if kind === 'media_edit'}<div
+              class="rounded-2xl bg-[var(--accent-soft)] p-4 text-sm md:col-span-2"
+            >
+              <strong>The edit remains reversible until you render it</strong>
+              <p class="muted mt-1 text-xs leading-relaxed">
+                An agent can suggest removals from your instructions. You will
+                review the exact boundaries against video, waveform, and
+                transcript before Pandrator creates a new media file.
+              </p>
+            </div>{/if}
           <label class="text-sm font-semibold"
             >Source language<select
               bind:value={sourceLanguage}
@@ -551,6 +671,13 @@
               ><input type="checkbox" bind:checked={keepSourceSubtitles} /><span
                 ><strong>Keep same-language subtitles</strong><small
                   >Allows source/translation dual-track exports.</small
+                ></span
+              ></label
+            >{/if}{#if kind === 'media_edit'}<label class="option"
+              ><input type="checkbox" bind:checked={generateVoiceover} /><span
+                ><strong>Generate a voiceover after editing</strong><small
+                  >Uses the retimed edited subtitles, so correction and
+                  translation can still happen before speech generation.</small
                 ></span
               ></label
             >{/if}{#if kind === 'subtitles'}<label class="text-sm font-semibold"

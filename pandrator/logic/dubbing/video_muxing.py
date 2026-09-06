@@ -67,7 +67,9 @@ def default_vaapi_render_device() -> str | None:
     dri = Path("/dev/dri")
     if not dri.is_dir():
         return None
-    return next((str(path) for path in sorted(dri.glob("renderD*")) if path.exists()), None)
+    return next(
+        (str(path) for path in sorted(dri.glob("renderD*")) if path.exists()), None
+    )
 
 
 def _video_transcode_arguments(
@@ -138,9 +140,7 @@ def _video_transcode_arguments(
         arguments.extend(
             [
                 "-preset",
-                {"fast": "p3", "balanced": "p4", "quality": "p6"}[
-                    normalized_speed
-                ],
+                {"fast": "p3", "balanced": "p4", "quality": "p6"}[normalized_speed],
                 "-rc",
                 "vbr",
                 "-cq",
@@ -229,6 +229,126 @@ def build_video_transcode_command(
         "+faststart",
         output_path,
     ]
+
+
+def _format_filter_time(milliseconds: int) -> str:
+    """Format an integer millisecond boundary for an FFmpeg filter."""
+
+    return f"{int(milliseconds) / 1000:.3f}"
+
+
+def build_removal_only_video_command(
+    video_path: str,
+    output_path: str,
+    keep_ranges: list[tuple[int, int]] | tuple[tuple[int, int], ...],
+    *,
+    has_audio: bool,
+    ffmpeg_executable: str = "ffmpeg",
+    video_encoder: str = "libx264",
+    video_quality: int = 18,
+    video_speed: str = "balanced",
+    audio_bitrate: str = "192k",
+    hardware_device: str | None = None,
+    video_resolution: str | int | None = "source",
+) -> list[str]:
+    """Build a removal-only trim/concat command for a source video.
+
+    The source is split into exact millisecond keep ranges.  Every segment has
+    its timestamps reset before concat so the resulting media timeline is
+    contiguous.  Audio is intentionally encoded as AAC: stream-copy audio
+    cannot be used through a filter/concat graph.
+    """
+
+    normalized_ranges = []
+    for item in keep_ranges:
+        if hasattr(item, "start_ms") and hasattr(item, "end_ms"):
+            start_ms, end_ms = item.start_ms, item.end_ms
+        else:
+            if len(item) != 2:
+                raise ValueError(
+                    "Each keep range must contain start and end milliseconds"
+                )
+            start_ms, end_ms = item
+        if not isinstance(start_ms, int) or isinstance(start_ms, bool):
+            raise TypeError("keep range start must be an integer")
+        if not isinstance(end_ms, int) or isinstance(end_ms, bool):
+            raise TypeError("keep range end must be an integer")
+        if start_ms < 0 or end_ms <= start_ms:
+            raise ValueError("keep ranges must have positive millisecond durations")
+        normalized_ranges.append((start_ms, end_ms))
+    if not normalized_ranges:
+        raise ValueError("At least one keep range is required")
+
+    before_input, transcode_arguments = _video_transcode_arguments(
+        video_encoder=video_encoder,
+        video_quality=video_quality,
+        video_speed=video_speed,
+        audio_codec="aac",
+        audio_bitrate=audio_bitrate,
+        hardware_device=hardware_device,
+        video_resolution=video_resolution,
+    )
+    output_video_filter = None
+    if "-vf" in transcode_arguments:
+        filter_index = transcode_arguments.index("-vf")
+        output_video_filter = transcode_arguments[filter_index + 1]
+        del transcode_arguments[filter_index : filter_index + 2]
+
+    filter_parts: list[str] = []
+    concat_inputs: list[str] = []
+    for index, (start_ms, end_ms) in enumerate(normalized_ranges):
+        video_label = f"v{index}"
+        filter_parts.append(
+            f"[0:v]trim=start={_format_filter_time(start_ms)}:"
+            f"end={_format_filter_time(end_ms)},setpts=PTS-STARTPTS[{video_label}]"
+        )
+        concat_inputs.append(f"[{video_label}]")
+        if has_audio:
+            audio_label = f"a{index}"
+            filter_parts.append(
+                f"[0:a]atrim=start={_format_filter_time(start_ms)}:"
+                f"end={_format_filter_time(end_ms)},asetpts=PTS-STARTPTS[{audio_label}]"
+            )
+            concat_inputs.append(f"[{audio_label}]")
+    output_video_label = "vout"
+    concat_video_label = "vconcat" if output_video_filter else output_video_label
+    output_audio_label = "aout" if has_audio else None
+    concat_inputs_text = "".join(concat_inputs)
+    concat_outputs = f"[{concat_video_label}]"
+    if output_audio_label:
+        concat_outputs += f"[{output_audio_label}]"
+    filter_parts.append(
+        f"{concat_inputs_text}concat=n={len(normalized_ranges)}:v=1:"
+        f"a={1 if has_audio else 0}{concat_outputs}"
+    )
+    if output_video_filter:
+        filter_parts.append(
+            f"[{concat_video_label}]{output_video_filter}[{output_video_label}]"
+        )
+    command = [
+        ffmpeg_executable,
+        "-y",
+        *before_input,
+        "-i",
+        video_path,
+        "-filter_complex",
+        ";".join(filter_parts),
+        "-map",
+        f"[{output_video_label}]",
+    ]
+    if output_audio_label:
+        command.extend(["-map", f"[{output_audio_label}]"])
+    command.extend(
+        [
+            "-map_metadata",
+            "0",
+            *transcode_arguments,
+            "-movflags",
+            "+faststart",
+            output_path,
+        ]
+    )
+    return command
 
 
 def build_add_subtitles_command(

@@ -1,0 +1,1022 @@
+"""Revisioned media-edit preparation and manual timeline updates."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Literal
+
+from sqlalchemy import select
+
+from pandrator.logic.dubbing.transcript_normalization import load_transcript
+from pandrator.logic.media_edit import (
+    BoundaryEvidence,
+    KeepRange,
+    MediaCue,
+    MediaWord,
+    align_cues_to_words,
+    keep_ranges_from_cuts,
+    normalize_keep_ranges,
+    parse_caption_text,
+    refine_boundary,
+)
+
+from .artifacts import ArtifactService
+from .database import Database
+from .media_process import probe_audio_stream
+from .models import (
+    Artifact,
+    ArtifactEdge,
+    MediaEditPlan,
+    MediaEditPlanRevision,
+    SessionRecord,
+    SessionSource,
+    SourceAsset,
+    utcnow,
+)
+from .source_resolution import classify_source, resolve_primary_source
+
+
+class MediaEditRevisionConflict(RuntimeError):
+    """The caller attempted to update a revision which is no longer active."""
+
+    def __init__(self, expected: int, current: int | None):
+        self.expected = expected
+        self.current = current
+        current_text = "none" if current is None else str(current)
+        super().__init__(
+            f"Media-edit revision conflict: expected {expected}, current is {current_text}."
+        )
+
+
+class MediaEditInputsChanged(RuntimeError):
+    """The prepared media inputs changed before the snapshot could be stored."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "Media-edit inputs changed while preparing; retry preparation."
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _ArtifactSnapshot:
+    id: str
+    content_hash: str | None
+    relative_path: str
+
+    @classmethod
+    def from_artifact(cls, artifact: Artifact) -> _ArtifactSnapshot:
+        return cls(
+            id=artifact.id,
+            content_hash=artifact.content_hash,
+            relative_path=artifact.relative_path,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _MediaEditInputSnapshot:
+    session_id: str
+    primary: _ArtifactSnapshot
+    editorial: _ArtifactSnapshot
+    timing: _ArtifactSnapshot | None
+    external_editorial: bool
+
+
+class MediaEditService:
+    def __init__(
+        self,
+        database: Database,
+        artifacts: ArtifactService,
+        session_directory: Callable[[str], Path],
+        duration_probe: Callable[[Path], Any] | None = None,
+    ):
+        self.database = database
+        self.artifacts = artifacts
+        self.session_directory = session_directory
+        self.duration_probe = duration_probe or probe_audio_stream
+
+    @staticmethod
+    def _artifact_payload(artifact: Artifact | None) -> dict[str, Any] | None:
+        if artifact is None:
+            return None
+        metadata = dict(artifact.metadata_json or {})
+        return {
+            "id": artifact.id,
+            "kind": artifact.kind,
+            "role": artifact.role,
+            "mime_type": artifact.mime_type,
+            "size_bytes": artifact.size_bytes,
+            "content_hash": artifact.content_hash,
+            "state": artifact.state,
+            "filename": metadata.get("original_filename")
+            or Path(artifact.relative_path).name,
+            "content_url": f"/api/v1/artifacts/{artifact.id}/content",
+            "created_at": artifact.created_at.isoformat(),
+        }
+
+    @staticmethod
+    def _lookup_current_artifact(
+        session, session_id: str, role: str
+    ) -> Artifact | None:
+        return session.scalar(
+            select(Artifact)
+            .where(
+                Artifact.session_id == session_id,
+                Artifact.role == role,
+                Artifact.state == "current",
+            )
+            .order_by(Artifact.created_at.desc(), Artifact.id.desc())
+        )
+
+    @staticmethod
+    def _invalidate_rendered_outputs(session, session_id: str) -> None:
+        """Make every artifact derived from the previous render unusable.
+
+        The files and provenance edges remain available for inspection, but a
+        newly active edit revision must not inherit media, subtitles, corrected
+        text, translations, generated audio, or exports from an older cut.
+        """
+
+        rendered = list(
+            session.scalars(
+                select(Artifact).where(
+                    Artifact.session_id == session_id,
+                    Artifact.role.in_(("media_edit_media", "media_edit_subtitles")),
+                    Artifact.state == "current",
+                )
+            ).all()
+        )
+        for artifact in rendered:
+            artifact.state = "stale"
+            ArtifactService._mark_descendants_stale(session, artifact.id)
+
+    @staticmethod
+    def _lookup_external_transcript(session, session_id: str) -> Artifact | None:
+        return session.scalar(
+            select(Artifact)
+            .join(SourceAsset, SourceAsset.artifact_id == Artifact.id)
+            .join(SessionSource, SessionSource.source_asset_id == SourceAsset.id)
+            .where(
+                SessionSource.session_id == session_id,
+                SessionSource.role == "transcript",
+                SessionSource.is_current.is_(True),
+                SourceAsset.state == "current",
+                Artifact.state == "current",
+            )
+            .order_by(SessionSource.updated_at.desc(), SessionSource.id.desc())
+        )
+
+    @staticmethod
+    def _is_direct_derivative(session, source_id: str, artifact_id: str) -> bool:
+        return session.get(ArtifactEdge, (source_id, artifact_id)) is not None
+
+    @staticmethod
+    def _snapshot_artifact(
+        artifact: Artifact | None,
+        *,
+        label: str,
+    ) -> _ArtifactSnapshot:
+        if artifact is None:
+            raise ValueError(f"No current {label} artifact is available.")
+        return _ArtifactSnapshot.from_artifact(artifact)
+
+    def _input_snapshot(self, session, session_id: str) -> _MediaEditInputSnapshot:
+        record = session.get(SessionRecord, session_id)
+        if record is None:
+            raise KeyError("session")
+        if record.workflow_kind != "media_edit":
+            raise ValueError(
+                "Media-edit operations require a media_edit workflow session."
+            )
+        primary = resolve_primary_source(session, session_id).artifact
+        if primary is None:
+            raise ValueError(
+                "Attach a primary source media artifact before preparing an edit."
+            )
+        primary_metadata = dict(primary.metadata_json or {})
+        if (
+            classify_source(
+                name=str(
+                    primary_metadata.get("original_filename") or primary.relative_path
+                ),
+                kind=str(primary.kind or ""),
+                mime_type=str(primary.mime_type or ""),
+            )
+            != "video"
+        ):
+            raise ValueError(
+                "Transcript-guided media editing currently requires video."
+            )
+        external = self._lookup_external_transcript(session, session_id)
+        transcription = self._lookup_current_artifact(
+            session, session_id, "transcription"
+        )
+        if transcription is not None and not self._is_direct_derivative(
+            session, primary.id, transcription.id
+        ):
+            transcription = None
+        editorial = external or transcription
+        if editorial is None:
+            raise ValueError(
+                "Attach captions or run transcription before preparing an edit."
+            )
+        timing = self._lookup_current_artifact(session, session_id, "word_timestamps")
+        if timing is not None and not self._is_direct_derivative(
+            session, primary.id, timing.id
+        ):
+            timing = None
+        return _MediaEditInputSnapshot(
+            session_id=session_id,
+            primary=self._snapshot_artifact(primary, label="primary source media"),
+            editorial=self._snapshot_artifact(editorial, label="editorial transcript"),
+            timing=(
+                _ArtifactSnapshot.from_artifact(timing) if timing is not None else None
+            ),
+            external_editorial=external is not None,
+        )
+
+    def _snapshot_paths(
+        self, snapshot: _MediaEditInputSnapshot
+    ) -> tuple[Path, Path, Path | None]:
+        return (
+            self.artifacts.paths.managed_path(snapshot.primary.relative_path),
+            self.artifacts.paths.managed_path(snapshot.editorial.relative_path),
+            (
+                self.artifacts.paths.managed_path(snapshot.timing.relative_path)
+                if snapshot.timing is not None
+                else None
+            ),
+        )
+
+    def _resolve_snapshot_artifacts(
+        self, session, snapshot: _MediaEditInputSnapshot
+    ) -> tuple[Artifact, Artifact, Artifact | None]:
+        try:
+            current = self._input_snapshot(session, snapshot.session_id)
+        except (KeyError, ValueError) as error:
+            raise MediaEditInputsChanged() from error
+        if current != snapshot:
+            raise MediaEditInputsChanged()
+        primary = session.get(Artifact, snapshot.primary.id)
+        editorial = session.get(Artifact, snapshot.editorial.id)
+        timing = session.get(Artifact, snapshot.timing.id) if snapshot.timing else None
+        if primary is None or editorial is None:
+            raise MediaEditInputsChanged()
+        return primary, editorial, timing
+
+    @staticmethod
+    def _duration(value: Any) -> int:
+        raw = getattr(value, "duration_ms", value)
+        try:
+            duration_ms = int(raw)
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                "The duration probe returned an invalid duration."
+            ) from error
+        if duration_ms <= 0:
+            raise ValueError("The source media duration must be greater than zero.")
+        return duration_ms
+
+    @staticmethod
+    def _word_payload(word: Any) -> dict[str, Any]:
+        return {
+            "text": str(getattr(word, "text", "")),
+            "start_ms": int(getattr(word, "start_ms", 0)),
+            "end_ms": int(getattr(word, "end_ms", 0)),
+            "confidence": getattr(word, "confidence", None),
+        }
+
+    @classmethod
+    def _cue_payload(cls, cue: Any) -> dict[str, Any]:
+        return {
+            "id": str(getattr(cue, "id", "")),
+            "start_ms": int(getattr(cue, "start_ms", 0)),
+            "end_ms": int(getattr(cue, "end_ms", 0)),
+            "text": str(getattr(cue, "text", "")),
+            "speaker": getattr(cue, "speaker", None),
+            "words": [cls._word_payload(word) for word in getattr(cue, "words", ())],
+            "timing_confidence": getattr(cue, "timing_confidence", None),
+            "timing_source": str(getattr(cue, "timing_source", "caption")),
+        }
+
+    @staticmethod
+    def _required_int(item: dict[str, Any], key: str) -> int:
+        value = item.get(key)
+        if value is None:
+            raise ValueError(f"Media-edit field '{key}' is required.")
+        return int(value)
+
+    @staticmethod
+    def _keep_range_from_payload(item: dict[str, Any], index: int) -> KeepRange:
+        if not isinstance(item, dict):
+            raise TypeError("Each keep range must be an object.")
+        return KeepRange(
+            str(item.get("id") or f"keep-{index:06d}"),
+            MediaEditService._required_int(item, "start_ms"),
+            MediaEditService._required_int(item, "end_ms"),
+            item.get("label"),
+        )
+
+    @staticmethod
+    def _keep_range_payload(item: Any) -> dict[str, Any]:
+        return {
+            "id": str(getattr(item, "id", "")),
+            "start_ms": int(getattr(item, "start_ms", 0)),
+            "end_ms": int(getattr(item, "end_ms", 0)),
+            "label": getattr(item, "label", None),
+        }
+
+    @staticmethod
+    def _content_hash(snapshot: dict[str, Any]) -> str:
+        encoded = json.dumps(
+            snapshot,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    @classmethod
+    def _revision_snapshot(cls, revision: MediaEditPlanRevision) -> dict[str, Any]:
+        return {
+            "source_media_artifact_id": revision.source_media_artifact_id,
+            "editorial_transcript_artifact_id": revision.editorial_transcript_artifact_id,
+            "timing_artifact_id": revision.timing_artifact_id,
+            "duration_ms": revision.duration_ms,
+            "instructions": revision.instructions,
+            "keep_ranges": list(revision.keep_ranges_json or []),
+            "cues": list(revision.cues_json or []),
+            "evidence": dict(revision.evidence_json or {}),
+            "operation": dict(revision.operation_json or {}),
+            "reviewed": bool(revision.reviewed),
+        }
+
+    @classmethod
+    def _payload(
+        cls,
+        revision: MediaEditPlanRevision,
+        artifacts_by_id: dict[str, Artifact | None],
+    ) -> dict[str, Any]:
+        return {
+            "plan_id": revision.plan_id,
+            "revision_id": revision.id,
+            "revision": revision.revision_number,
+            "parent_revision_id": revision.parent_revision_id,
+            "source_media_artifact": cls._artifact_payload(
+                artifacts_by_id.get(revision.source_media_artifact_id)
+            ),
+            "editorial_transcript_artifact": cls._artifact_payload(
+                artifacts_by_id.get(revision.editorial_transcript_artifact_id)
+            ),
+            "timing_artifact": cls._artifact_payload(
+                artifacts_by_id.get(revision.timing_artifact_id)
+            )
+            if revision.timing_artifact_id
+            else None,
+            "duration_ms": revision.duration_ms,
+            "instructions": revision.instructions,
+            "keep_ranges": list(revision.keep_ranges_json or []),
+            "cues": list(revision.cues_json or []),
+            "evidence": dict(revision.evidence_json or {}),
+            "operation": dict(revision.operation_json or {}),
+            "reviewed": bool(revision.reviewed),
+            "content_hash": revision.content_hash,
+            "created_at": revision.created_at.isoformat(),
+        }
+
+    def _state_in_session(self, session, session_id: str) -> dict[str, Any]:
+        record = session.get(SessionRecord, session_id)
+        if record is None:
+            raise KeyError("session")
+        if record.workflow_kind != "media_edit":
+            raise ValueError(
+                "Media-edit operations require a media_edit workflow session."
+            )
+        primary = resolve_primary_source(session, session_id).artifact
+        external = self._lookup_external_transcript(session, session_id)
+        transcription = self._lookup_current_artifact(
+            session, session_id, "transcription"
+        )
+        timing = self._lookup_current_artifact(session, session_id, "word_timestamps")
+        if primary is not None:
+            if transcription is not None and not self._is_direct_derivative(
+                session, primary.id, transcription.id
+            ):
+                transcription = None
+            if timing is not None and not self._is_direct_derivative(
+                session, primary.id, timing.id
+            ):
+                timing = None
+        plan = session.scalar(
+            select(MediaEditPlan).where(MediaEditPlan.session_id == session_id)
+        )
+        active = (
+            session.get(MediaEditPlanRevision, plan.active_revision_id)
+            if plan and plan.active_revision_id
+            else None
+        )
+        artifact_ids: set[str] = set()
+        if active is not None:
+            artifact_ids.update(
+                item
+                for item in (
+                    active.source_media_artifact_id,
+                    active.editorial_transcript_artifact_id,
+                    active.timing_artifact_id,
+                )
+                if item
+            )
+        artifacts_by_id = {
+            artifact.id: artifact
+            for artifact in session.scalars(
+                select(Artifact).where(Artifact.id.in_(artifact_ids))
+            ).all()
+        }
+        ready = primary is not None and (
+            external is not None or transcription is not None
+        )
+        readiness = {
+            "ready": ready,
+            "source_media_artifact": self._artifact_payload(primary),
+            "external_transcript_artifact": self._artifact_payload(external),
+            "transcription_artifact": self._artifact_payload(transcription),
+            "timing_artifact": self._artifact_payload(timing),
+        }
+        return {
+            "session_id": session_id,
+            "workflow_kind": record.workflow_kind,
+            "readiness": readiness,
+            "plan": self._payload(active, artifacts_by_id) if active else None,
+        }
+
+    def state(self, session_id: str) -> dict[str, Any]:
+        with self.database.session() as session:
+            return self._state_in_session(session, session_id)
+
+    def _parse_editorial(
+        self,
+        editorial_path: Path,
+        timing_path: Path | None,
+        duration_ms: int,
+        *,
+        external: bool,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        text = editorial_path.read_text(encoding="utf-8-sig")
+        cues = parse_caption_text(text)
+        warnings: list[str] = []
+        timing_words: list[MediaWord] = []
+        if timing_path is not None:
+            try:
+                transcript = load_transcript(timing_path)
+                timing_words = [
+                    MediaWord(
+                        text=word.text,
+                        start_ms=word.start_ms,
+                        end_ms=word.end_ms,
+                        confidence=word.confidence,
+                    )
+                    for word in transcript.words
+                ]
+            except (OSError, ValueError, TypeError):
+                timing_words = []
+                warnings.append(
+                    "The word-timing artifact could not be used for alignment."
+                )
+        aligned = align_cues_to_words(cues, timing_words) if timing_words else cues
+        cue_payloads = [self._cue_payload(cue) for cue in aligned]
+        aligned_cues = [
+            cue
+            for cue in aligned
+            if str(getattr(cue, "timing_source", "caption")) == "asr_alignment"
+        ]
+        coverage = len(aligned_cues) / len(aligned) if aligned else 0.0
+        confidence_values = [
+            float(confidence)
+            for cue in aligned
+            if (confidence := getattr(cue, "timing_confidence", None)) is not None
+        ]
+        if (
+            external
+            and not timing_words
+            and max(int(getattr(cue, "end_ms", 0)) for cue in cues) > duration_ms
+        ):
+            warnings.append(
+                "External transcript timing extends beyond the probed media duration; "
+                "caption spans were preserved without clipping."
+            )
+        if external and not timing_words:
+            warnings.append(
+                "No ASR timing was available to verify that the attached captions "
+                "match this recording; confirm the pairing before rendering."
+            )
+        elif external and coverage < 0.5:
+            warnings.append(
+                "Fewer than half of the attached caption cues aligned reliably to "
+                "this recording; verify the transcript pairing and cut boundaries."
+            )
+        evidence = {
+            "source_kind": "external_transcript" if external else "asr_transcription",
+            "alignment_coverage": round(coverage, 6),
+            "alignment_confidence": round(
+                sum(confidence_values) / len(confidence_values), 6
+            )
+            if confidence_values
+            else 0.0,
+            "timing_available": bool(timing_words),
+            "warnings": warnings,
+        }
+        return cue_payloads, evidence
+
+    def prepare(self, session_id: str, *, force: bool = False) -> dict[str, Any]:
+        # Keep the write transaction short: probing media and parsing captions
+        # can involve substantial I/O and must not hold SQLite's write lock.
+        with self.database.session() as read_session:
+            input_snapshot = self._input_snapshot(read_session, session_id)
+        primary_path, editorial_path, timing_path = self._snapshot_paths(input_snapshot)
+        duration_ms = self._duration(self.duration_probe(primary_path))
+        cues, evidence = self._parse_editorial(
+            editorial_path,
+            timing_path,
+            duration_ms,
+            external=input_snapshot.external_editorial,
+        )
+        keep_ranges = [
+            {"id": "keep-000001", "start_ms": 0, "end_ms": duration_ms, "label": None}
+        ]
+        operation = {"type": "prepare"}
+
+        with self.database.immediate_session() as session:
+            primary, editorial, timing = self._resolve_snapshot_artifacts(
+                session, input_snapshot
+            )
+            plan = session.scalar(
+                select(MediaEditPlan).where(MediaEditPlan.session_id == session_id)
+            )
+            active = (
+                session.get(MediaEditPlanRevision, plan.active_revision_id)
+                if plan and plan.active_revision_id
+                else None
+            )
+            if active is not None and not force:
+                active_artifacts = {
+                    artifact.id: artifact
+                    for artifact in session.scalars(
+                        select(Artifact).where(
+                            Artifact.id.in_(
+                                [
+                                    active.source_media_artifact_id,
+                                    active.editorial_transcript_artifact_id,
+                                    active.timing_artifact_id,
+                                ]
+                            )
+                        )
+                    ).all()
+                }
+                active_media_hash = (
+                    active_artifacts[active.source_media_artifact_id].content_hash
+                    if active.source_media_artifact_id in active_artifacts
+                    else None
+                )
+                active_editorial_hash = (
+                    active_artifacts[
+                        active.editorial_transcript_artifact_id
+                    ].content_hash
+                    if active.editorial_transcript_artifact_id in active_artifacts
+                    else None
+                )
+                active_timing_hash = (
+                    active_artifacts[active.timing_artifact_id].content_hash
+                    if active.timing_artifact_id in active_artifacts
+                    else None
+                )
+                if (
+                    active.duration_ms == duration_ms
+                    and active_media_hash == primary.content_hash
+                    and active_editorial_hash == editorial.content_hash
+                    and (
+                        (active.timing_artifact_id is None and timing is None)
+                        or (
+                            active.timing_artifact_id is not None
+                            and timing is not None
+                            and active_timing_hash == timing.content_hash
+                        )
+                    )
+                ):
+                    return self._state_in_session(session, session_id)
+            if plan is None:
+                plan = MediaEditPlan(session_id=session_id)
+                session.add(plan)
+                session.flush()
+            revision_number = (active.revision_number + 1) if active else 1
+            revision_snapshot = {
+                "source_media_artifact_id": primary.id,
+                "editorial_transcript_artifact_id": editorial.id,
+                "timing_artifact_id": timing.id if timing else None,
+                "duration_ms": duration_ms,
+                "instructions": "",
+                "keep_ranges": keep_ranges,
+                "cues": cues,
+                "evidence": evidence,
+                "operation": operation,
+                "reviewed": False,
+            }
+            revision = MediaEditPlanRevision(
+                plan_id=plan.id,
+                parent_revision_id=active.id if active else None,
+                revision_number=revision_number,
+                source_media_artifact_id=primary.id,
+                editorial_transcript_artifact_id=editorial.id,
+                timing_artifact_id=timing.id if timing else None,
+                duration_ms=duration_ms,
+                instructions="",
+                keep_ranges_json=keep_ranges,
+                cues_json=cues,
+                evidence_json=evidence,
+                operation_json=operation,
+                reviewed=False,
+                content_hash=self._content_hash(revision_snapshot),
+            )
+            session.add(revision)
+            session.flush()
+            self._invalidate_rendered_outputs(session, session_id)
+            plan.active_revision_id = revision.id
+            plan.updated_at = utcnow()
+            session.flush()
+            return self._state_in_session(session, session_id)
+
+    def update(
+        self,
+        session_id: str,
+        expected_revision: int,
+        *,
+        keep_ranges: list[dict[str, Any]],
+        instructions: str | None = None,
+        reviewed: bool | None = None,
+    ) -> dict[str, Any]:
+        with self.database.immediate_session() as session:
+            record = session.get(SessionRecord, session_id)
+            if record is None:
+                raise KeyError("session")
+            if record.workflow_kind != "media_edit":
+                raise ValueError(
+                    "Media-edit operations require a media_edit workflow session."
+                )
+            plan = session.scalar(
+                select(MediaEditPlan).where(MediaEditPlan.session_id == session_id)
+            )
+            active = (
+                session.get(MediaEditPlanRevision, plan.active_revision_id)
+                if plan and plan.active_revision_id
+                else None
+            )
+            if active is None or active.revision_number != expected_revision:
+                raise MediaEditRevisionConflict(
+                    expected_revision, active.revision_number if active else None
+                )
+            normalized = normalize_keep_ranges(
+                [
+                    self._keep_range_from_payload(item, index)
+                    for index, item in enumerate(keep_ranges, start=1)
+                ],
+                active.duration_ms,
+            )
+            normalized_ranges = [self._keep_range_payload(item) for item in normalized]
+            next_instructions = (
+                active.instructions if instructions is None else instructions
+            )
+            content_changed = (
+                normalized_ranges != list(active.keep_ranges_json or [])
+                or next_instructions != active.instructions
+            )
+            next_reviewed = (
+                False
+                if content_changed and reviewed is None
+                else active.reviewed
+                if reviewed is None
+                else bool(reviewed)
+            )
+            if (
+                normalized_ranges == list(active.keep_ranges_json or [])
+                and next_instructions == active.instructions
+                and next_reviewed == active.reviewed
+            ):
+                return self._state_in_session(session, session_id)
+            operation = {"type": "manual_update"}
+            snapshot = {
+                **self._revision_snapshot(active),
+                "instructions": next_instructions,
+                "keep_ranges": normalized_ranges,
+                "operation": operation,
+                "reviewed": next_reviewed,
+            }
+            revision = MediaEditPlanRevision(
+                plan_id=active.plan_id,
+                parent_revision_id=active.id,
+                revision_number=active.revision_number + 1,
+                source_media_artifact_id=active.source_media_artifact_id,
+                editorial_transcript_artifact_id=active.editorial_transcript_artifact_id,
+                timing_artifact_id=active.timing_artifact_id,
+                duration_ms=active.duration_ms,
+                instructions=next_instructions,
+                keep_ranges_json=normalized_ranges,
+                cues_json=list(active.cues_json or []),
+                evidence_json=dict(active.evidence_json or {}),
+                operation_json=operation,
+                reviewed=next_reviewed,
+                content_hash=self._content_hash(snapshot),
+            )
+            session.add(revision)
+            session.flush()
+            self._invalidate_rendered_outputs(session, session_id)
+            plan.active_revision_id = revision.id
+            plan.updated_at = utcnow()
+            session.flush()
+            return self._state_in_session(session, session_id)
+
+    def revision(
+        self, session_id: str, revision_number: int | None = None
+    ) -> dict[str, Any] | None:
+        with self.database.session() as session:
+            record = session.get(SessionRecord, session_id)
+            if record is None:
+                raise KeyError("session")
+            if record.workflow_kind != "media_edit":
+                raise ValueError(
+                    "Media-edit operations require a media_edit workflow session."
+                )
+            plan = session.scalar(
+                select(MediaEditPlan).where(MediaEditPlan.session_id == session_id)
+            )
+            if plan is None:
+                return None
+            revision = (
+                session.get(MediaEditPlanRevision, plan.active_revision_id)
+                if revision_number is None
+                else session.scalar(
+                    select(MediaEditPlanRevision).where(
+                        MediaEditPlanRevision.plan_id == plan.id,
+                        MediaEditPlanRevision.revision_number == revision_number,
+                    )
+                )
+            )
+            if revision is None:
+                return None
+            ids = {
+                revision.source_media_artifact_id,
+                revision.editorial_transcript_artifact_id,
+                revision.timing_artifact_id,
+            }
+            artifacts_by_id = {
+                artifact.id: artifact
+                for artifact in session.scalars(
+                    select(Artifact).where(
+                        Artifact.id.in_([item for item in ids if item])
+                    )
+                ).all()
+            }
+            return self._payload(revision, artifacts_by_id)
+
+    @staticmethod
+    def _cue_from_payload(item: dict[str, Any]) -> MediaCue:
+        words = tuple(
+            MediaWord(
+                text=str(word.get("text") or ""),
+                start_ms=MediaEditService._required_int(word, "start_ms"),
+                end_ms=MediaEditService._required_int(word, "end_ms"),
+                confidence=(
+                    float(word["confidence"])
+                    if word.get("confidence") is not None
+                    else None
+                ),
+            )
+            for word in (item.get("words") or [])
+            if isinstance(word, dict)
+        )
+        return MediaCue(
+            id=str(item.get("id") or ""),
+            start_ms=MediaEditService._required_int(item, "start_ms"),
+            end_ms=MediaEditService._required_int(item, "end_ms"),
+            text=str(item.get("text") or ""),
+            speaker=item.get("speaker"),
+            words=words,
+            timing_confidence=(
+                float(item["timing_confidence"])
+                if item.get("timing_confidence") is not None
+                else None
+            ),
+            timing_source=str(item.get("timing_source") or "caption"),
+        )
+
+    @staticmethod
+    def _boundary_payload(evidence) -> dict[str, Any]:
+        return {
+            "original_ms": evidence.original_ms,
+            "refined_ms": evidence.refined_ms,
+            "confidence": evidence.confidence,
+            "method": evidence.method,
+            "warnings": list(evidence.warnings),
+        }
+
+    def apply_proposal(
+        self,
+        session_id: str,
+        expected_revision: int,
+        cuts: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Apply validated agent cuts as one immutable, unreviewed revision."""
+
+        if not cuts:
+            raise ValueError("The proposal contains no usable cuts.")
+        with self.database.immediate_session() as session:
+            record = session.get(SessionRecord, session_id)
+            if record is None:
+                raise KeyError("session")
+            if record.workflow_kind != "media_edit":
+                raise ValueError(
+                    "Media-edit operations require a media_edit workflow session."
+                )
+            plan = session.scalar(
+                select(MediaEditPlan).where(MediaEditPlan.session_id == session_id)
+            )
+            active = (
+                session.get(MediaEditPlanRevision, plan.active_revision_id)
+                if plan and plan.active_revision_id
+                else None
+            )
+            if active is None or active.revision_number != expected_revision:
+                raise MediaEditRevisionConflict(
+                    expected_revision,
+                    active.revision_number if active else None,
+                )
+
+            cues = [self._cue_from_payload(item) for item in active.cues_json or []]
+            cue_by_id = {cue.id: (index, cue) for index, cue in enumerate(cues)}
+            trustworthy_words: list[MediaWord] = []
+            word_keys: set[tuple[str, int, int, float | None]] = set()
+            for cue in cues:
+                if (
+                    cue.timing_source != "asr_alignment"
+                    or cue.timing_confidence is None
+                    or cue.timing_confidence < 0.5
+                ):
+                    continue
+                for word in cue.words:
+                    word_key = (word.text, word.start_ms, word.end_ms, word.confidence)
+                    if word_key not in word_keys:
+                        word_keys.add(word_key)
+                        trustworthy_words.append(word)
+
+            def refine_cue_boundary(
+                cue: MediaCue, boundary_ms: int, *, side: Literal["start", "end"]
+            ) -> BoundaryEvidence:
+                if (
+                    cue.timing_source == "asr_alignment"
+                    and cue.timing_confidence is not None
+                    and cue.timing_confidence >= 0.5
+                    and cue.words
+                ):
+                    return refine_boundary(
+                        boundary_ms,
+                        trustworthy_words,
+                        side=side,
+                    )
+                return BoundaryEvidence(
+                    original_ms=boundary_ms,
+                    refined_ms=boundary_ms,
+                    confidence=0.0,
+                    method="caption_boundary",
+                    warnings=(
+                        (
+                            "caption boundary preserved because no reliable ASR word "
+                            "alignment was available"
+                        ),
+                    ),
+                )
+
+            normalized_cuts: list[tuple[int, int, str, str, Any, Any]] = []
+            seen: set[tuple[str, str]] = set()
+            for item in cuts:
+                if not isinstance(item, dict):
+                    raise TypeError("Each proposal cut must be an object.")
+                start_id = str(item.get("start_cue_id") or "")
+                end_id = str(item.get("end_cue_id") or "")
+                if not isinstance(item.get("reason"), str):
+                    raise TypeError("Proposal cut reason must be a string.")
+                reason = item["reason"].strip()
+                if start_id not in cue_by_id or end_id not in cue_by_id:
+                    raise ValueError("Proposal cut references an unknown cue ID.")
+                start_index, start_cue = cue_by_id[start_id]
+                end_index, end_cue = cue_by_id[end_id]
+                if end_index < start_index:
+                    raise ValueError("Proposal cut cue IDs are out of order.")
+                if not reason:
+                    raise ValueError("Proposal cut reasons must not be empty.")
+                if len(reason) > 500:
+                    raise ValueError(
+                        "Proposal cut reasons must be at most 500 characters."
+                    )
+                key = (start_id, end_id)
+                if key in seen:
+                    continue
+                seen.add(key)
+                start_evidence = refine_cue_boundary(
+                    start_cue,
+                    start_cue.start_ms,
+                    side="start",
+                )
+                end_evidence = refine_cue_boundary(
+                    end_cue,
+                    end_cue.end_ms,
+                    side="end",
+                )
+                if end_evidence.refined_ms <= start_evidence.refined_ms:
+                    raise ValueError(
+                        "Proposal cut boundaries do not form a positive interval."
+                    )
+                normalized_cuts.append(
+                    (
+                        start_evidence.refined_ms,
+                        end_evidence.refined_ms,
+                        start_id,
+                        end_id,
+                        reason,
+                        (start_evidence, end_evidence),
+                    )
+                )
+            if not normalized_cuts:
+                raise ValueError("The proposal contains no usable cuts.")
+
+            keep_ranges = keep_ranges_from_cuts(
+                [(item[0], item[1]) for item in normalized_cuts],
+                active.duration_ms,
+            )
+            if not keep_ranges:
+                raise ValueError("The proposal would remove the entire recording.")
+            normalized_ranges = [self._keep_range_payload(item) for item in keep_ranges]
+            evidence = dict(active.evidence_json or {})
+            warnings = list(evidence.get("warnings") or [])
+            boundary_records: list[dict[str, Any]] = []
+            for (
+                start_ms,
+                end_ms,
+                start_id,
+                end_id,
+                reason,
+                boundaries,
+            ) in normalized_cuts:
+                start_evidence, end_evidence = boundaries
+                boundary_records.append(
+                    {
+                        "start_cue_id": start_id,
+                        "end_cue_id": end_id,
+                        "start_ms": start_ms,
+                        "end_ms": end_ms,
+                        "reason": reason,
+                        "start": self._boundary_payload(start_evidence),
+                        "end": self._boundary_payload(end_evidence),
+                    }
+                )
+                warnings.extend(start_evidence.warnings)
+                warnings.extend(end_evidence.warnings)
+            for cue in cues:
+                if cue.timing_confidence is not None and cue.timing_confidence < 0.5:
+                    warnings.append(f"Low-confidence timing for cue {cue.id}.")
+            evidence["warnings"] = list(dict.fromkeys(str(item) for item in warnings))
+            evidence["agent_proposal"] = {"cuts": boundary_records}
+            operation = {
+                "type": "agent_proposal",
+                "cuts": boundary_records,
+            }
+            snapshot = {
+                **self._revision_snapshot(active),
+                "keep_ranges": normalized_ranges,
+                "evidence": evidence,
+                "operation": operation,
+                "reviewed": False,
+            }
+            revision = MediaEditPlanRevision(
+                plan_id=active.plan_id,
+                parent_revision_id=active.id,
+                revision_number=active.revision_number + 1,
+                source_media_artifact_id=active.source_media_artifact_id,
+                editorial_transcript_artifact_id=active.editorial_transcript_artifact_id,
+                timing_artifact_id=active.timing_artifact_id,
+                duration_ms=active.duration_ms,
+                instructions=active.instructions,
+                keep_ranges_json=normalized_ranges,
+                cues_json=list(active.cues_json or []),
+                evidence_json=evidence,
+                operation_json=operation,
+                reviewed=False,
+                content_hash=self._content_hash(snapshot),
+            )
+            session.add(revision)
+            session.flush()
+            self._invalidate_rendered_outputs(session, session_id)
+            plan.active_revision_id = revision.id
+            plan.updated_at = utcnow()
+            session.flush()
+            return self._state_in_session(session, session_id)

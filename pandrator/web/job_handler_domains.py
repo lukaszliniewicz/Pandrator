@@ -216,6 +216,28 @@ def register_delivery_handlers(
     )
 
 
+def register_media_edit_handlers(
+    registry: JobHandlerRegistry,
+    handlers: WorkflowHandlers,
+) -> None:
+    registry.register_many(
+        "media_edit",
+        _bind_many(
+            handlers,
+            {
+                "media_edit.propose": "media_edit_propose",
+                "media_edit.render": "media_edit_render",
+            },
+        ),
+        payload_contracts=_contracts(
+            {
+                "media_edit.propose": ("session_id", "revision", "instructions"),
+                "media_edit.render": ("session_id", "revision", "settings"),
+            }
+        ),
+    )
+
+
 def register_workflow_handlers(
     registry: JobHandlerRegistry,
     handlers: WorkflowHandlers,
@@ -237,5 +259,6 @@ def build_workflow_handler_registry(
     register_voice_handlers(registry, handlers)
     register_source_handlers(registry, handlers)
     register_delivery_handlers(registry, handlers)
+    register_media_edit_handlers(registry, handlers)
     register_workflow_handlers(registry, handlers)
     return registry

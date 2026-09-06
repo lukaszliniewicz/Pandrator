@@ -24,6 +24,8 @@ import type {
   ItemPage,
   JobRecord,
   JobLogRecord,
+  MediaEditRange,
+  MediaEditState,
   OutcomePlan,
   OutputAssembly,
   ProviderModelRecord,
@@ -51,6 +53,46 @@ import type {
   WaveformData,
   WorkflowSnapshot
 } from './api-models';
+
+export const mediaEditApi = {
+  state: (sessionId: string) =>
+    apiJson<MediaEditState>(`/sessions/${sessionId}/media-edit`),
+  prepare: (sessionId: string, force = false) =>
+    apiJson<MediaEditState>(`/sessions/${sessionId}/media-edit/prepare`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ force })
+    }),
+  update: (
+    sessionId: string,
+    revision: number,
+    body: {
+      keep_ranges: MediaEditRange[];
+      instructions?: string;
+      reviewed?: boolean;
+    }
+  ) =>
+    apiJson<MediaEditState>(`/sessions/${sessionId}/media-edit`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'If-Match': `"${revision}"`
+      },
+      body: JSON.stringify(body)
+    }),
+  propose: (sessionId: string, revision: number, instructions: string) =>
+    apiJson<JobRecord>(`/sessions/${sessionId}/media-edit/propose`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ revision, instructions })
+    }),
+  render: (sessionId: string, revision: number) =>
+    apiJson<JobRecord>(`/sessions/${sessionId}/media-edit/render`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ revision })
+    })
+};
 
 type SubtitleEvidenceProjection = {
   record: SubtitleEvidenceRecord;
@@ -720,6 +762,21 @@ export const artifactApi = {
       query: new URLSearchParams({ points: String(points) }),
       signal
     }),
+  waveformWindow: (
+    artifactId: string,
+    startMs: number,
+    endMs: number,
+    points = 3000,
+    signal?: AbortSignal
+  ) =>
+    apiJson<WaveformData>(
+      `/artifacts/${artifactId}/waveform?${new URLSearchParams({
+        points: String(points),
+        start_ms: String(startMs),
+        end_ms: String(endMs)
+      })}`,
+      { signal }
+    ),
   audioPreview: (artifactId: string, signal?: AbortSignal) =>
     typedApiJson<
       '/api/v1/artifacts/{artifactId}/audio-preview',

@@ -40,6 +40,7 @@ from .schemas import (
     ExecuteWorkflowPlanInput,
     ExplainSystemInput,
     GetDispatchRunInput,
+    GetMediaEditArguments,
     GetSessionInput,
     GetSessionSettingsInput,
     GetSourceCleaningDispatchRunInput,
@@ -62,18 +63,22 @@ from .schemas import (
     ListSpeechOptimizationDispatchRunsInput,
     ListWorkInput,
     ManagerDesiredComponentInput,
+    MediaEditKeepRange,
     PatchSubtitleCuesInput,
     PlanComponentChangeInput,
     PlanExportVariantInput,
     PlanOrchestratedWorkflowInput,
     PlanWorkflowInput,
+    PrepareMediaEditArguments,
     PreviewSubtitlesInput,
+    ProposeMediaEditArguments,
     ProviderStatusInput,
     RecommendNextStepsInput,
     RegenerateSegmentsInput,
     ReleaseDispatchBatchInput,
     ReleaseSourceCleaningDispatchBatchInput,
     ReleaseSpeechOptimizationDispatchBatchInput,
+    RenderMediaEditArguments,
     RenewDispatchBatchInput,
     RenewSourceCleaningDispatchBatchInput,
     RenewSpeechOptimizationDispatchBatchInput,
@@ -92,6 +97,7 @@ from .schemas import (
     TargetStatusInput,
     TtsCatalogInput,
     UpdateGenerationSegmentInput,
+    UpdateMediaEditArguments,
     UpdateSessionInput,
     UpdateSessionSettingsInput,
     VoiceCatalogInput,
@@ -119,6 +125,7 @@ from .tools import (
     execute_workflow_plan,
     explain_system,
     get_dispatch_run,
+    get_media_edit,
     get_session,
     get_session_settings,
     get_source_cleaning_dispatch_run,
@@ -146,13 +153,16 @@ from .tools import (
     plan_export_variant,
     plan_orchestrated_workflow,
     plan_workflow,
+    prepare_media_edit,
     preview_subtitles,
+    propose_media_edit,
     provider_status,
     recommend_next_steps,
     regenerate_segments,
     release_dispatch_batch,
     release_source_cleaning_dispatch_batch,
     release_speech_optimization_dispatch_batch,
+    render_media_edit,
     renew_dispatch_batch,
     renew_source_cleaning_dispatch_batch,
     renew_speech_optimization_dispatch_batch,
@@ -168,6 +178,7 @@ from .tools import (
     target_status,
     tts_catalog,
     update_generation_segment,
+    update_media_edit,
     update_session,
     update_session_settings,
     voice_catalog,
@@ -438,7 +449,7 @@ def build_server(runtime: McpRuntime):
     )
     def sessions_tool(
         limit: Annotated[int, Field(ge=1, le=100)] = 50,
-        workflow_kind: Literal["audiobook", "subtitles", "voiceover"] | None = None,
+        workflow_kind: Literal["audiobook", "subtitles", "voiceover", "media_edit"] | None = None,
         state: str | None = None,
         query: str | None = None,
     ) -> dict[str, Any]:
@@ -481,6 +492,159 @@ def build_server(runtime: McpRuntime):
             get_workflow,
             runtime,
             GetWorkflowInput(session_id=session_id),
+        )
+
+    @server.tool(
+        name="pandrator_get_media_edit",
+        title="Inspect media-edit plan state",
+        annotations=read_only,
+    )
+    def media_edit_get_tool(
+        session_id: Annotated[str, Field(min_length=1, max_length=80)],
+    ) -> dict[str, Any]:
+        """Inspect media-edit readiness and the active immutable revision."""
+
+        return _call_with_validated_input(
+            get_media_edit,
+            runtime,
+            GetMediaEditArguments,
+            {"session_id": session_id},
+        )
+
+    @server.tool(
+        name="pandrator_prepare_media_edit",
+        title="Prepare a media-edit plan",
+        annotations=write_action,
+    )
+    def media_edit_prepare_tool(
+        session_id: Annotated[str, Field(min_length=1, max_length=80)],
+        idempotency_key: Annotated[
+            str,
+            Field(
+                min_length=8,
+                max_length=200,
+                pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$",
+            ),
+        ],
+        force: bool = False,
+    ) -> dict[str, Any]:
+        """Prepare or explicitly refresh the media-edit plan for a session."""
+
+        return _call_with_validated_input(
+            prepare_media_edit,
+            runtime,
+            PrepareMediaEditArguments,
+            {
+                "session_id": session_id,
+                "force": force,
+                "idempotency_key": idempotency_key,
+            },
+        )
+
+    @server.tool(
+        name="pandrator_update_media_edit",
+        title="Update media-edit keep ranges",
+        annotations=write_action,
+    )
+    def media_edit_update_tool(
+        session_id: Annotated[str, Field(min_length=1, max_length=80)],
+        expected_revision: Annotated[int, Field(ge=1)],
+        keep_ranges: list[MediaEditKeepRange],
+        idempotency_key: Annotated[
+            str,
+            Field(
+                min_length=8,
+                max_length=200,
+                pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$",
+            ),
+        ],
+        instructions: Annotated[str | None, Field(max_length=10_000)] = None,
+        reviewed: bool | None = None,
+    ) -> dict[str, Any]:
+        """Apply keep ranges only when the supplied media-edit revision is current."""
+
+        return _call_with_validated_input(
+            update_media_edit,
+            runtime,
+            UpdateMediaEditArguments,
+            {
+                "session_id": session_id,
+                "expected_revision": expected_revision,
+                "keep_ranges": keep_ranges,
+                "idempotency_key": idempotency_key,
+                "instructions": instructions,
+                "reviewed": reviewed,
+            },
+        )
+
+    @server.tool(
+        name="pandrator_propose_media_edit",
+        title="Propose a media edit",
+        annotations=write_action,
+    )
+    def media_edit_propose_tool(
+        session_id: Annotated[str, Field(min_length=1, max_length=80)],
+        revision: Annotated[int, Field(ge=1)],
+        instructions: Annotated[str, Field(min_length=1, max_length=10_000)],
+        idempotency_key: Annotated[
+            str,
+            Field(
+                min_length=8,
+                max_length=200,
+                pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$",
+            ),
+        ],
+        wait: bool = True,
+        timeout_seconds: Annotated[int, Field(ge=0, le=3_600)] = 60,
+    ) -> dict[str, Any]:
+        """Queue an instruction-driven proposal and optionally wait for its job."""
+
+        return _call_with_validated_input(
+            propose_media_edit,
+            runtime,
+            ProposeMediaEditArguments,
+            {
+                "session_id": session_id,
+                "revision": revision,
+                "instructions": instructions,
+                "idempotency_key": idempotency_key,
+                "wait": wait,
+                "timeout_seconds": timeout_seconds,
+            },
+        )
+
+    @server.tool(
+        name="pandrator_render_media_edit",
+        title="Render a reviewed media edit",
+        annotations=execute_action,
+    )
+    def media_edit_render_tool(
+        session_id: Annotated[str, Field(min_length=1, max_length=80)],
+        revision: Annotated[int, Field(ge=1)],
+        idempotency_key: Annotated[
+            str,
+            Field(
+                min_length=8,
+                max_length=200,
+                pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$",
+            ),
+        ],
+        wait: bool = True,
+        timeout_seconds: Annotated[int, Field(ge=0, le=3_600)] = 60,
+    ) -> dict[str, Any]:
+        """Queue a reviewed media-edit render and optionally wait for its job."""
+
+        return _call_with_validated_input(
+            render_media_edit,
+            runtime,
+            RenderMediaEditArguments,
+            {
+                "session_id": session_id,
+                "revision": revision,
+                "idempotency_key": idempotency_key,
+                "wait": wait,
+                "timeout_seconds": timeout_seconds,
+            },
         )
 
     @server.tool(
@@ -672,7 +836,7 @@ def build_server(runtime: McpRuntime):
             ...,
         ] = (),
         names: tuple[Annotated[str, Field(min_length=1, max_length=50)], ...] = (),
-        workflow_kind: Literal["audiobook", "subtitles", "voiceover"] | None = None,
+        workflow_kind: Literal["audiobook", "subtitles", "voiceover", "media_edit"] | None = None,
         query: Annotated[str | None, Field(max_length=100)] = None,
         limit: Annotated[int, Field(ge=1, le=300)] = 100,
     ) -> dict[str, Any]:
@@ -1602,6 +1766,7 @@ def build_server(runtime: McpRuntime):
             "audiobook",
             "subtitles",
             "voiceover",
+            "media_edit",
         ] = "audiobook",
         source_language: Annotated[
             str,
@@ -1667,6 +1832,7 @@ def build_server(runtime: McpRuntime):
             "audiobook",
             "subtitles",
             "voiceover",
+            "media_edit",
         ]
         | None = None,
         source_language: Annotated[

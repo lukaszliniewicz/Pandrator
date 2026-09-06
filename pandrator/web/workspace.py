@@ -38,7 +38,7 @@ from .models import (
     UsageEvent,
     utcnow,
 )
-from .source_resolution import resolve_primary_source
+from .source_resolution import classify_source, resolve_primary_source
 from .tts_optimization import (
     DEFAULT_FIRST_PROMPT,
     DEFAULT_PROMPT,
@@ -615,16 +615,51 @@ class WorkspaceSettingsService:
     @staticmethod
     def _output_context(session, session_record: SessionRecord) -> dict[str, Any]:
         source = resolve_primary_source(session, session_record.id)
-        source_profile = source.profile
-        has_source_video = source.has_video
-        has_source_audio = source.has_audio
         workflow_kind = session_record.workflow_kind
+        source_artifact = source.artifact
+        source_name = source.name
+        source_kind = source.kind
+        source_mime_type = source.mime_type
+        source_resolution = source.resolution
+        if workflow_kind == "media_edit":
+            edited_media = session.scalar(
+                select(Artifact)
+                .where(
+                    Artifact.session_id == session_record.id,
+                    Artifact.role == "media_edit_media",
+                    Artifact.state == "current",
+                )
+                .order_by(Artifact.created_at.desc(), Artifact.id.desc())
+            )
+            if edited_media is not None:
+                source_artifact = edited_media
+                source_name = str(
+                    (edited_media.metadata_json or {}).get("original_filename")
+                    or Path(edited_media.relative_path).name
+                )
+                source_kind = str(edited_media.kind or "video")
+                source_mime_type = str(edited_media.mime_type or "")
+                source_resolution = "derived_media_edit"
+        source_profile = classify_source(
+            name=source_name,
+            kind=source_kind,
+            mime_type=source_mime_type,
+        )
+        has_source_video = source_profile == "video"
+        has_source_audio = source_profile in {"video", "audio"}
         available_subtitle_roles = set(
             session.scalars(
                 select(Artifact.role).where(
                     Artifact.session_id == session_record.id,
                     Artifact.state == "current",
-                    Artifact.role.in_(("transcription", "correction", "translation")),
+                    Artifact.role.in_(
+                        (
+                            "media_edit_subtitles",
+                            "transcription",
+                            "correction",
+                            "translation",
+                        )
+                    ),
                 )
             ).all()
         )
@@ -634,6 +669,7 @@ class WorkspaceSettingsService:
                 for role, selection in (
                     ("translation", "translation"),
                     ("correction", "correction"),
+                    ("media_edit_subtitles", "source"),
                     ("transcription", "source"),
                 )
                 if role in available_subtitle_roles
@@ -679,11 +715,11 @@ class WorkspaceSettingsService:
         return {
             "workflow_kind": workflow_kind,
             "source_profile": source_profile,
-            "source_name": source.name,
-            "source_kind": source.kind,
-            "source_mime_type": source.mime_type,
-            "source_artifact_id": source.artifact.id if source.artifact else None,
-            "source_resolution": source.resolution,
+            "source_name": source_name,
+            "source_kind": source_kind,
+            "source_mime_type": source_mime_type,
+            "source_artifact_id": source_artifact.id if source_artifact else None,
+            "source_resolution": source_resolution,
             "has_source_video": has_source_video,
             "has_source_audio": has_source_audio,
             "has_generated_voiceover": has_generated_voiceover,
@@ -773,6 +809,15 @@ class WorkspaceSettingsService:
                     "audio_mode": "preserve",
                     "subtitle_mode": "none",
                     "subtitle_selection": "source",
+                }
+            elif session_record.workflow_kind == "media_edit":
+                session_context = {
+                    "export_mode": "media",
+                    "audio_mode": "preserve",
+                    "subtitle_selection": "source",
+                    "subtitle_mode": (
+                        "soft" if output_context["has_source_video"] else "none"
+                    ),
                 }
             elif session_record.workflow_kind == "voiceover":
                 subtitle_first = bool(
@@ -1147,9 +1192,11 @@ def derive_legacy_outcome(record: SessionRecord) -> dict[str, Any]:
             "audiobook": kind == "audiobook",
             "subtitles": kind == "subtitles" or "export" in included,
             "voiceover": kind == "voiceover" or "generate_audio" in included,
+            "edited_media": kind == "media_edit",
         },
         "transformations": {
             "transcribe": "transcribe" in included,
+            "media_edit": kind == "media_edit" or "edit_media" in included,
             "correct": "correct" in included,
             "translate": "translate" in included,
             "deterministic_normalization": True,
@@ -1191,6 +1238,8 @@ def resolve_pipeline(
         stages.append(("prepare_text", "Segment narration"))
     elif source_requires_transcription or transformations.get("transcribe"):
         stages.append(("transcribe", "Transcribe"))
+    if kind == "media_edit" or transformations.get("media_edit"):
+        stages.append(("edit_media", "Review and render edit"))
     if transformations.get("correct"):
         stages.append(("correct", "Correct subtitles"))
     if transformations.get("translate"):

@@ -17,16 +17,19 @@
 
   let {
     sessionId,
+    allowTranscriptRole = false,
     onclose,
     onadded
   }: {
     sessionId: string;
+    allowTranscriptRole?: boolean;
     onclose: () => void;
     onadded: (message: string) => void | Promise<void>;
   } = $props();
 
   type SourceMode = 'upload' | 'paste' | 'url' | 'reuse';
   let mode = $state<SourceMode>('upload');
+  let role = $state<'primary' | 'transcript'>('primary');
   let file = $state<File | null>(null);
   let pastedText = $state('');
   let pastedName = $state('Pasted text');
@@ -38,6 +41,42 @@
   let progressDetail = $state('');
   let error = $state('');
   let pastedTextArea = $state<HTMLTextAreaElement>();
+  let previousRole: typeof role = 'primary';
+
+  function isRoleCompatible(source: SourceAsset) {
+    const name =
+      `${source.display_name ?? ''}.${source.kind ?? ''}`.toLowerCase();
+    const mime = String(source.mime_type ?? '').toLowerCase();
+    return role === 'transcript'
+      ? /\.(srt|vtt|txt)(?:\.|$)/.test(name) ||
+          ['text/plain', 'text/vtt', 'application/x-subrip'].includes(mime)
+      : mime.startsWith('video/') ||
+          /\.(mp4|mkv|mov|avi|webm|m4v|mpeg|mpg)(?:\.|$)/.test(name);
+  }
+
+  const compatibleSources = $derived(
+    allowTranscriptRole ? sources.filter(isRoleCompatible) : sources
+  );
+
+  $effect(() => {
+    if (
+      allowTranscriptRole &&
+      !compatibleSources.some((source) => source.id === sourceAssetId)
+    )
+      sourceAssetId = compatibleSources[0]?.id ?? '';
+  });
+
+  $effect(() => {
+    const nextRole = role;
+    if (!allowTranscriptRole || nextRole === previousRole) return;
+    file = null;
+    if (
+      (nextRole === 'primary' && mode === 'paste') ||
+      (nextRole === 'transcript' && mode === 'url')
+    )
+      mode = 'upload';
+    previousRole = nextRole;
+  });
 
   function navigatePastedText(match: TextSearchMatch) {
     pastedTextArea?.focus();
@@ -85,7 +124,11 @@
     if (mode === 'paste')
       return Boolean(pastedText.trim() && pastedName.trim());
     if (mode === 'url') return Boolean(sourceUrl.trim());
-    return Boolean(sourceAssetId);
+    return Boolean(
+      sourceAssetId &&
+      (!allowTranscriptRole ||
+        compatibleSources.some((source) => source.id === sourceAssetId))
+    );
   }
 
   async function add() {
@@ -96,9 +139,22 @@
       mode === 'paste' ? 'Creating pasted source' : 'Uploading source';
     error = '';
     try {
-      let message = 'Source added and selected as the current input.';
+      let message =
+        role === 'transcript'
+          ? 'Captions attached as the current editorial transcript.'
+          : 'Source added and selected as the current input.';
       if (mode === 'upload' && file) {
-        await uploadManagedFile(file, sessionId, (value) => (progress = value));
+        const uploaded = await uploadManagedFile(
+          file,
+          role === 'primary' ? sessionId : undefined,
+          (value) => (progress = value)
+        );
+        if (role === 'transcript') {
+          const sourceId = String(uploaded.source_asset_id ?? '');
+          if (!sourceId)
+            throw new Error('The upload did not create a reusable source.');
+          await sessionApi.attachSource(sessionId, sourceId, role);
+        }
       } else if (mode === 'paste') {
         const safeName =
           pastedName
@@ -108,19 +164,27 @@
         const textFile = new File([pastedText.trim()], `${safeName}.txt`, {
           type: 'text/plain'
         });
-        await uploadManagedFile(
+        const uploaded = await uploadManagedFile(
           textFile,
-          sessionId,
+          role === 'primary' ? sessionId : undefined,
           (value) => (progress = value)
         );
+        if (role === 'transcript') {
+          const sourceId = String(uploaded.source_asset_id ?? '');
+          if (!sourceId)
+            throw new Error('The upload did not create a reusable source.');
+          await sessionApi.attachSource(sessionId, sourceId, role);
+        }
       } else if (mode === 'url') {
         await sessionApi.downloadSourceUrl(sessionId, sourceUrl.trim());
         message =
           'Source download queued. It will become the current input when the download finishes.';
       } else {
-        await sessionApi.attachSource(sessionId, sourceAssetId);
+        await sessionApi.attachSource(sessionId, sourceAssetId, role);
         message =
-          'Source-library item attached and selected as the current input.';
+          role === 'transcript'
+            ? 'Source-library item attached as the current editorial transcript.'
+            : 'Source-library item attached and selected as the current input.';
       }
       await onadded(message);
       onclose();
@@ -154,8 +218,9 @@
           Add a source
         </h2>
         <p class="muted mt-2 text-sm">
-          The new source becomes current; earlier sources and their artifact
-          histories remain available.
+          {allowTranscriptRole
+            ? 'Attach the recording to edit or a timed transcript to guide it. Earlier source history remains available.'
+            : 'The new source becomes current; earlier sources and their artifact histories remain available.'}
         </p>
       </div>
       <button
@@ -170,8 +235,27 @@
       >
         {error}
       </p>{/if}
+    {#if allowTranscriptRole}<fieldset class="mt-6">
+        <legend class="text-sm font-semibold">Use this source as</legend>
+        <div class="mt-2 grid gap-2 sm:grid-cols-2">
+          <label class:active={role === 'primary'} class="source-role"
+            ><input type="radio" bind:group={role} value="primary" /><span
+              ><strong>Recording</strong><small
+                >The video that will be cut.</small
+              ></span
+            ></label
+          ><label class:active={role === 'transcript'} class="source-role"
+            ><input type="radio" bind:group={role} value="transcript" /><span
+              ><strong>Captions</strong><small
+                >Zoom VTT, SRT, or another timed transcript.</small
+              ></span
+            ></label
+          >
+        </div>
+      </fieldset>{/if}
     <div class="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-      {#each choices as choice}{@const Icon = choice.icon}<button
+      {#each choices.filter( (choice) => (role === 'transcript' ? choice.id !== 'url' : !allowTranscriptRole || choice.id !== 'paste') ) as choice}{@const Icon =
+          choice.icon}<button
           onclick={() => (mode = choice.id)}
           class:active={mode === choice.id}
           class="source-mode"
@@ -184,8 +268,13 @@
     <div class="mt-5 rounded-2xl border border-[var(--line)] p-5">
       {#if mode === 'upload'}
         <label class="text-sm font-semibold"
-          >Source file<input
+          >{role === 'transcript' ? 'Caption file' : 'Video file'}<input
             type="file"
+            accept={allowTranscriptRole
+              ? role === 'transcript'
+                ? '.srt,.vtt,.txt,text/plain,text/vtt,application/x-subrip'
+                : 'video/*,.mp4,.mkv,.mov,.avi,.webm,.m4v,.mpeg,.mpg'
+              : undefined}
             onchange={(event) =>
               (file =
                 (event.currentTarget as HTMLInputElement).files?.[0] ?? null)}
@@ -237,7 +326,7 @@
             bind:value={sourceAssetId}
             class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
             ><option value="">No source-library items available</option
-            >{#each sources as source}<option value={source.id}
+            >{#each compatibleSources as source}<option value={source.id}
                 >{source.display_name} · {source.kind}</option
               >{/each}</select
           ></label
@@ -297,6 +386,30 @@
   .source-mode.active {
     border-color: var(--accent);
     background: var(--accent-soft);
+  }
+  .source-role {
+    display: flex;
+    gap: 0.65rem;
+    border: 1px solid var(--line);
+    border-radius: 0.9rem;
+    padding: 0.8rem;
+  }
+  .source-role.active {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+  }
+  .source-role input {
+    margin-top: 0.15rem;
+    accent-color: var(--accent);
+  }
+  .source-role strong,
+  .source-role small {
+    display: block;
+  }
+  .source-role small {
+    margin-top: 0.15rem;
+    color: var(--muted);
+    font-size: 0.7rem;
   }
   .source-mode :global(svg) {
     margin-top: 0.1rem;

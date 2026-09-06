@@ -178,7 +178,12 @@ def build_openapi_document() -> dict:
                             "required": False,
                             "schema": {
                                 "type": "string",
-                                "enum": ["audiobook", "subtitles", "voiceover"],
+                                "enum": [
+                                    "audiobook",
+                                    "subtitles",
+                                    "voiceover",
+                                    "media_edit",
+                                ],
                             },
                         },
                         {
@@ -301,6 +306,127 @@ def build_openapi_document() -> dict:
                         "409": {"description": "Revision conflict"},
                     },
                 },
+            },
+            "/api/v1/sessions/{sessionId}/media-edit": {
+                "get": {
+                    "operationId": "getMediaEdit",
+                    "parameters": [
+                        {
+                            "name": "sessionId",
+                            "in": "path",
+                            "required": True,
+                            "schema": {"type": "string", "format": "uuid"},
+                        }
+                    ],
+                    "responses": {"200": {"description": "Media-edit state"}},
+                },
+                "put": {
+                    "operationId": "updateMediaEdit",
+                    "parameters": [
+                        {
+                            "name": "sessionId",
+                            "in": "path",
+                            "required": True,
+                            "schema": {"type": "string", "format": "uuid"},
+                        },
+                        {
+                            "name": "If-Match",
+                            "in": "header",
+                            "required": True,
+                            "schema": {"type": "string"},
+                        },
+                    ],
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/MediaEditUpdateRequest"
+                                }
+                            }
+                        },
+                    },
+                    "responses": {
+                        "200": {"description": "Updated media-edit revision"},
+                        "409": {"description": "Revision conflict"},
+                        "428": {"description": "Revision precondition required"},
+                    },
+                },
+            },
+            "/api/v1/sessions/{sessionId}/media-edit/prepare": {
+                "post": {
+                    "operationId": "prepareMediaEdit",
+                    "parameters": [
+                        {
+                            "name": "sessionId",
+                            "in": "path",
+                            "required": True,
+                            "schema": {"type": "string", "format": "uuid"},
+                        }
+                    ],
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/MediaEditPrepareRequest"
+                                }
+                            }
+                        },
+                    },
+                    "responses": {
+                        "200": {"description": "Existing media-edit revision"},
+                        "201": {"description": "Prepared media-edit revision"},
+                    },
+                }
+            },
+            "/api/v1/sessions/{sessionId}/media-edit/propose": {
+                "post": {
+                    "operationId": "proposeMediaEdit",
+                    "parameters": [
+                        {
+                            "name": "sessionId",
+                            "in": "path",
+                            "required": True,
+                            "schema": {"type": "string", "format": "uuid"},
+                        }
+                    ],
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/MediaEditProposeRequest"
+                                }
+                            }
+                        },
+                    },
+                    "responses": {"202": {"description": "Proposal job queued"}},
+                }
+            },
+            "/api/v1/sessions/{sessionId}/media-edit/render": {
+                "post": {
+                    "operationId": "renderMediaEdit",
+                    "parameters": [
+                        {
+                            "name": "sessionId",
+                            "in": "path",
+                            "required": True,
+                            "schema": {"type": "string", "format": "uuid"},
+                        }
+                    ],
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/MediaEditRenderRequest"
+                                }
+                            }
+                        },
+                    },
+                    "responses": {"202": {"description": "Render job queued"}},
+                }
             },
             "/api/v1/sessions/{sessionId}/forks": {
                 "post": {
@@ -2498,6 +2624,10 @@ def build_openapi_document() -> dict:
         ("/api/v1/generation-segments/{segmentId}/takes/{takeId}/select", "post"),
         ("/api/v1/sessions/{sessionId}/generation-runs", "post"),
         ("/api/v1/sessions/{sessionId}/output-assemblies", "post"),
+        ("/api/v1/sessions/{sessionId}/media-edit", "put"),
+        ("/api/v1/sessions/{sessionId}/media-edit/prepare", "post"),
+        ("/api/v1/sessions/{sessionId}/media-edit/propose", "post"),
+        ("/api/v1/sessions/{sessionId}/media-edit/render", "post"),
     ):
         parameters = paths[path][method].setdefault("parameters", [])
         if not any(item.get("name") == "Idempotency-Key" for item in parameters):
@@ -2627,6 +2757,23 @@ def build_openapi_document() -> dict:
             "/api/v1/sessions/{sessionId}/workflow",
             "get",
             "app.read",
+        ),
+        ("/api/v1/sessions/{sessionId}/media-edit", "get", "app.read"),
+        ("/api/v1/sessions/{sessionId}/media-edit", "put", "app.write"),
+        (
+            "/api/v1/sessions/{sessionId}/media-edit/prepare",
+            "post",
+            "app.write",
+        ),
+        (
+            "/api/v1/sessions/{sessionId}/media-edit/propose",
+            "post",
+            "app.run",
+        ),
+        (
+            "/api/v1/sessions/{sessionId}/media-edit/render",
+            "post",
+            "app.run",
         ),
         (
             "/api/v1/sessions/{sessionId}/workflow-plans",

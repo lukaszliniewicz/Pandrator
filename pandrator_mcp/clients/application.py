@@ -7,6 +7,7 @@ import json
 import os
 import re
 import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
@@ -1152,6 +1153,80 @@ class ApplicationClient:
     def get_session(self, session_id: str) -> dict[str, Any]:
         return self._request_json(f"/api/v1/sessions/{quote(session_id, safe='')}")
 
+    def get_media_edit(self, session_id: str) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/sessions/{quote(session_id, safe='')}/media-edit"
+        )
+
+    def prepare_media_edit(
+        self,
+        session_id: str,
+        *,
+        force: bool = False,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/sessions/{quote(session_id, safe='')}/media-edit/prepare",
+            method="POST",
+            body={"force": bool(force)},
+            idempotency_key=idempotency_key,
+        )
+
+    def update_media_edit(
+        self,
+        session_id: str,
+        *,
+        expected_revision: int,
+        idempotency_key: str,
+        keep_ranges: list[dict[str, Any]],
+        instructions: str | None = None,
+        reviewed: bool | None = None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {"keep_ranges": list(keep_ranges)}
+        if instructions is not None:
+            body["instructions"] = instructions
+        if reviewed is not None:
+            body["reviewed"] = reviewed
+        return self._request_json(
+            f"/api/v1/sessions/{quote(session_id, safe='')}/media-edit",
+            method="PUT",
+            body=body,
+            if_match_revision=expected_revision,
+            idempotency_key=idempotency_key,
+        )
+
+    def propose_media_edit(
+        self,
+        session_id: str,
+        *,
+        revision: int,
+        instructions: str,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/sessions/{quote(session_id, safe='')}/media-edit/propose",
+            method="POST",
+            body={
+                "revision": int(revision),
+                "instructions": instructions,
+            },
+            idempotency_key=idempotency_key,
+        )
+
+    def render_media_edit(
+        self,
+        session_id: str,
+        *,
+        revision: int,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/sessions/{quote(session_id, safe='')}/media-edit/render",
+            method="POST",
+            body={"revision": int(revision)},
+            idempotency_key=idempotency_key,
+        )
+
     def get_workflow(self, session_id: str) -> dict[str, Any]:
         return self._request_json(f"/api/v1/sessions/{quote(session_id, safe='')}/workflow")
 
@@ -1752,6 +1827,37 @@ class ApplicationClient:
 
     def get_work(self, work_id: str) -> dict[str, Any]:
         return self._request_json(f"/api/v1/work/{quote(work_id, safe='')}")
+
+    def wait_for_job(
+        self,
+        work_id: str,
+        *,
+        timeout_seconds: int = 60,
+    ) -> dict[str, Any]:
+        """Poll one application job to terminal, preserving its response shape."""
+
+        timeout = max(0.0, min(float(timeout_seconds), 3_600.0))
+        started = time.monotonic()
+        deadline = started + timeout
+        result = self.get_work(work_id)
+        while timeout and not self._job_is_terminal(result):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            poll_after_ms = result.get("poll_after_ms", 0)
+            try:
+                poll_delay = float(poll_after_ms) / 1_000.0
+            except (TypeError, ValueError):
+                poll_delay = 0.0
+            delay = min(max(0.25, min(poll_delay, 10.0)), remaining)
+            time.sleep(delay)
+            result = self.get_work(work_id)
+        return result
+
+    @staticmethod
+    def _job_is_terminal(payload: dict[str, Any]) -> bool:
+        state = str(payload.get("state") or payload.get("status") or "").strip().lower()
+        return state in {"succeeded", "failed", "cancelled", "canceled"}
 
     def get_work_events(
         self,

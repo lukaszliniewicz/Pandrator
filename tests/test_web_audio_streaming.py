@@ -13,6 +13,7 @@ from unittest import mock
 from pydub import AudioSegment
 from pydub.generators import Sine
 
+from pandrator.web.artifacts import ArtifactService
 from pandrator.web.audio_assembly import (
     PYDUB_BACKEND,
     STREAMING_BACKEND,
@@ -22,7 +23,6 @@ from pandrator.web.audio_assembly import (
     build_audio_assembly_plan,
     resolve_assembly_backend,
 )
-from pandrator.web.artifacts import ArtifactService
 from pandrator.web.database import Database
 from pandrator.web.media_process import (
     MediaProcessCancelled,
@@ -285,6 +285,27 @@ class BoundedWaveformTests(unittest.TestCase):
             self.assertLess(peak, 4 * 1024 * 1024)
             self.assertEqual([], list(root.glob(".waveform-*")))
 
+    def test_waveform_window_reports_source_domain_and_only_decodes_window(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory, "window.wav")
+            (
+                AudioSegment.silent(duration=1000, frame_rate=8000)
+                + Sine(440, sample_rate=8000).to_audio_segment(duration=1000)
+                + AudioSegment.silent(duration=1000, frame_rate=8000)
+            ).export(source, format="wav").close()
+
+            result = generate_waveform_peaks(
+                source,
+                max_points=256,
+                start_ms=1000,
+                end_ms=2000,
+            )
+
+            self.assertLessEqual(abs(result.duration_ms - 3000), 10)
+            self.assertEqual(1000, result.start_ms)
+            self.assertEqual(2000, result.end_ms)
+            self.assertGreater(max(result.points), 0.8)
+
     def test_waveform_cancellation_cleans_temporary_files(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -352,6 +373,38 @@ class WaveformHandlerTests(unittest.TestCase):
         self.assertLessEqual(len(payload["points"]), 256)
         self.assertEqual(len(payload["points"]), result["point_count"])
         self.assertEqual(8000, artifact.metadata_json["analysis_sample_rate_hz"])
+
+    def test_handler_registers_a_separate_bounded_window_artifact(self):
+        source_path = self.session_dir / "source.wav"
+        Sine(440, sample_rate=16000).to_audio_segment(duration=2000).export(
+            source_path, format="wav"
+        ).close()
+        source = ArtifactService(self.database, self.paths).register(
+            source_path,
+            kind="audio",
+            role="source_audio",
+            session_id=self.record.id,
+        )
+
+        result = WorkflowHandlers(self.database, self.paths).generate_waveform(
+            {
+                "source_artifact_id": source.id,
+                "max_points": 256,
+                "start_ms": 500,
+                "end_ms": 1500,
+            },
+            lambda *_args: None,
+            threading.Event(),
+        )
+        artifact, waveform_path = ArtifactService(self.database, self.paths).resolve(
+            result["artifact_id"]
+        )
+        payload = json.loads(waveform_path.read_text(encoding="utf-8"))
+
+        self.assertEqual("waveform_peaks_window", artifact.role)
+        self.assertEqual(500, payload["start_ms"])
+        self.assertEqual(1500, payload["end_ms"])
+        self.assertEqual(256, artifact.metadata_json["max_points"])
 
 
 if __name__ == "__main__":

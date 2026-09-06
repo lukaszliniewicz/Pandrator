@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import os
 import math
+import os
 import re
 import threading
 from dataclasses import dataclass
@@ -15,7 +15,6 @@ from .media_process import (
     run_media_process,
 )
 
-
 WAVEFORM_MAX_SAMPLE_RATE = 8000
 PEAK_LEVEL_RE = re.compile(r"lavfi\.astats\.Overall\.Peak_level=(-?(?:inf|\d+(?:\.\d+)?))")
 
@@ -25,6 +24,8 @@ WaveformCancelled = MediaProcessCancelled
 @dataclass(frozen=True)
 class WaveformPeaks:
     duration_ms: int
+    start_ms: int
+    end_ms: int
     channels: int
     points: tuple[float, ...]
     analysis_sample_rate_hz: int
@@ -52,8 +53,10 @@ def generate_waveform_peaks(
     ffmpeg_executable: str | None = None,
     ffprobe_executable: str | None = None,
     cancel_event: threading.Event | None = None,
+    start_ms: int = 0,
+    end_ms: int | None = None,
 ) -> WaveformPeaks:
-    """Compute peak bins in FFmpeg and return only resolution-sized metadata."""
+    """Compute bounded peak bins without decoding an entire long recording."""
 
     points = max(128, min(5000, int(max_points or 1600)))
     info = probe_audio_stream(
@@ -61,12 +64,21 @@ def generate_waveform_peaks(
         ffprobe_executable=ffprobe_executable,
         cancel_event=cancel_event,
     )
+    window_start_ms = max(0, min(info.duration_ms, int(start_ms or 0)))
+    window_end_ms = (
+        info.duration_ms
+        if end_ms is None
+        else max(window_start_ms, min(info.duration_ms, int(end_ms)))
+    )
+    if window_end_ms <= window_start_ms:
+        raise ValueError("Waveform end_ms must be greater than start_ms.")
+    window_duration_ms = window_end_ms - window_start_ms
     analysis_rate = min(WAVEFORM_MAX_SAMPLE_RATE, info.sample_rate_hz)
     analysis_samples = max(
         1,
-        int(math.ceil(info.duration_ms * analysis_rate / 1000)),
+        math.ceil(window_duration_ms * analysis_rate / 1000),
     )
-    samples_per_bin = max(1, int(math.ceil(analysis_samples / points)))
+    samples_per_bin = max(1, math.ceil(analysis_samples / points))
     filter_graph = (
         f"aresample={analysis_rate},"
         f"asetnsamples=n={samples_per_bin}:p=1,"
@@ -75,6 +87,14 @@ def generate_waveform_peaks(
         "ametadata=print:key=lavfi.astats.Overall.Peak_level:"
         "file='pipe\\:1'"
     )
+    seek_arguments = []
+    if window_start_ms or window_end_ms < info.duration_ms:
+        seek_arguments = [
+            "-ss",
+            f"{window_start_ms / 1000:.3f}",
+            "-t",
+            f"{window_duration_ms / 1000:.3f}",
+        ]
     result = run_media_process(
         [
             resolve_ffmpeg_executable(ffmpeg_executable),
@@ -82,6 +102,7 @@ def generate_waveform_peaks(
             "-hide_banner",
             "-loglevel",
             "error",
+            *seek_arguments,
             "-i",
             os.fspath(source),
             "-map",
@@ -101,6 +122,8 @@ def generate_waveform_peaks(
     peaks = _parse_peak_levels(result.stdout, points)
     return WaveformPeaks(
         duration_ms=info.duration_ms,
+        start_ms=window_start_ms,
+        end_ms=window_end_ms,
         channels=info.channels,
         points=peaks,
         analysis_sample_rate_hz=analysis_rate,

@@ -14,13 +14,14 @@ from sqlalchemy.orm import Session
 
 from pandrator.runtime import DataPaths
 
+from .artifact_selection import activate_registered_artifact
 from .database import Database
 from .models import Artifact, ArtifactEdge, ExportRecord, utcnow
-from .artifact_selection import activate_registered_artifact
-
 
 SINGLETON_SESSION_ROLES = {
     "transcription",
+    "media_edit_media",
+    "media_edit_subtitles",
     "correction",
     "translation",
     "tts_optimized",
@@ -348,4 +349,3 @@ class ArtifactService:
                         }
                     )
         return reports
-

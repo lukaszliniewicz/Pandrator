@@ -8,6 +8,7 @@
     ChevronRight,
     CirclePlus,
     FolderClock,
+    Scissors,
     ServerCog
   } from '@lucide/svelte';
   import { appState } from '$lib/app-state.svelte';
@@ -16,9 +17,9 @@
   import SetupChecklist from '$lib/SetupChecklist.svelte';
   import { onMount } from 'svelte';
   let wizard = $state(false);
-  let initialKind = $state<'audiobook' | 'subtitles' | 'voiceover'>(
-    'audiobook'
-  );
+  let initialKind = $state<
+    'audiobook' | 'subtitles' | 'voiceover' | 'media_edit'
+  >('audiobook');
   let skipKindStep = $state(false);
   type WebPreferences = {
     show_startup_wizard?: boolean;
@@ -66,7 +67,7 @@
       ><CirclePlus size={18} /> New session</button
     >
   </header>
-  <section class="mt-9 grid gap-4 md:grid-cols-3">
+  <section class="mt-9 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
     <button onclick={() => start('audiobook')} class="task"
       ><BookOpenText size={26} />
       <h2>Generate an audiobook</h2>
@@ -80,6 +81,13 @@
       <h2>Create a voiceover</h2>
       <p>
         Build dubbed audio directly from subtitles or start with media.
+      </p></button
+    ><button onclick={() => start('media_edit')} class="task"
+      ><Scissors size={26} />
+      <h2>Edit a recording</h2>
+      <p>
+        Plan precise cuts from Zoom captions or a fresh ASR transcript, then
+        render synchronized video and subtitles.
       </p></button
     >
   </section>
@@ -107,6 +115,8 @@
                 {#if session.workflow_kind === 'audiobook'}<BookOpenText
                     size={18}
                   />{:else if session.workflow_kind === 'voiceover'}<AudioLines
+                    size={18}
+                  />{:else if session.workflow_kind === 'media_edit'}<Scissors
                     size={18}
                   />{:else}<Captions size={18} />{/if}
               </div>

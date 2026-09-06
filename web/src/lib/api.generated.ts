@@ -1526,6 +1526,70 @@ export interface paths {
         patch: operations["updateGenerationSegments"];
         trace?: never;
     };
+    "/api/v1/sessions/{sessionId}/media-edit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getMediaEdit"];
+        put: operations["updateMediaEdit"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/media-edit/prepare": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["prepareMediaEdit"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/media-edit/propose": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["proposeMediaEdit"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/media-edit/render": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["renderMediaEdit"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{sessionId}/outcome-plan": {
         parameters: {
             query?: never;
@@ -3603,6 +3667,58 @@ export interface components {
              */
             purge_data?: boolean;
         };
+        /** MediaEditKeepRange */
+        MediaEditKeepRange: {
+            /** End Ms */
+            end_ms: number;
+            /**
+             * Id
+             * @default null
+             */
+            id?: string | null;
+            /**
+             * Label
+             * @default null
+             */
+            label?: string | null;
+            /** Start Ms */
+            start_ms: number;
+        };
+        /** MediaEditPrepareRequest */
+        MediaEditPrepareRequest: {
+            /**
+             * Force
+             * @default false
+             */
+            force?: boolean;
+        };
+        /** MediaEditProposeRequest */
+        MediaEditProposeRequest: {
+            /** Instructions */
+            instructions: string;
+            /** Revision */
+            revision: number;
+        };
+        /** MediaEditRenderRequest */
+        MediaEditRenderRequest: {
+            /** Revision */
+            revision: number;
+        };
+        /** MediaEditUpdateRequest */
+        MediaEditUpdateRequest: {
+            /**
+             * Instructions
+             * @default null
+             */
+            instructions?: string | null;
+            /** Keep Ranges */
+            keep_ranges: components["schemas"]["MediaEditKeepRange"][];
+            /**
+             * Reviewed
+             * @default null
+             */
+            reviewed?: boolean | null;
+        };
         /** ModelCreate */
         ModelCreate: {
             /**
@@ -4147,7 +4263,7 @@ export interface components {
              * @default audiobook
              * @enum {string}
              */
-            workflow_kind?: "audiobook" | "subtitles" | "voiceover";
+            workflow_kind?: "audiobook" | "subtitles" | "voiceover" | "media_edit";
             /**
              * Workflow Preset
              * @default custom
@@ -4202,7 +4318,7 @@ export interface components {
              * Workflow Kind
              * @default null
              */
-            workflow_kind?: ("audiobook" | "subtitles" | "voiceover") | null;
+            workflow_kind?: ("audiobook" | "subtitles" | "voiceover" | "media_edit") | null;
             /**
              * Workflow Preset
              * @default null
@@ -6607,7 +6723,7 @@ export interface operations {
             query?: {
                 section?: string[];
                 name?: string[];
-                workflow_kind?: "audiobook" | "subtitles" | "voiceover";
+                workflow_kind?: "audiobook" | "subtitles" | "voiceover" | "media_edit";
                 query?: string;
                 limit?: number;
             };
@@ -7712,6 +7828,156 @@ export interface operations {
         responses: {
             /** @description Generation segments updated atomically */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getMediaEdit: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Media-edit state */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    updateMediaEdit: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": string;
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MediaEditUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Updated media-edit revision */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision precondition required */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    prepareMediaEdit: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MediaEditPrepareRequest"];
+            };
+        };
+        responses: {
+            /** @description Existing media-edit revision */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Prepared media-edit revision */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    proposeMediaEdit: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MediaEditProposeRequest"];
+            };
+        };
+        responses: {
+            /** @description Proposal job queued */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    renderMediaEdit: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MediaEditRenderRequest"];
+            };
+        };
+        responses: {
+            /** @description Render job queued */
+            202: {
                 headers: {
                     [name: string]: unknown;
                 };

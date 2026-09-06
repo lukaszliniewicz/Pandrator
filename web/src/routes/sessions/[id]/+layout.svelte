@@ -9,6 +9,7 @@
     FileText,
     Layers3,
     Settings2,
+    Scissors,
     Sparkles,
     WandSparkles
   } from '@lucide/svelte';
@@ -109,6 +110,7 @@
     [
       { href: '', label: 'Overview', icon: Sparkles },
       { href: '/sources', label: 'Sources', icon: Layers3 },
+      { href: '/edit', label: 'Edit', icon: Scissors },
       { href: '/text', label: 'Text & subtitles', icon: FileText },
       { href: '/voice', label: 'Voice & audio', icon: AudioLines },
       { href: '/output', label: 'Output', icon: Settings2 },
@@ -118,6 +120,8 @@
       (tab) =>
         (tab.href !== '/voice' ||
           contextState.session?.workflow_kind !== 'subtitles') &&
+        (tab.href !== '/edit' ||
+          contextState.session?.workflow_kind === 'media_edit') &&
         (tab.href !== '/cleaning' || sourceProfile === 'document')
     )
   );

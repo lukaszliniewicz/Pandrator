@@ -118,6 +118,7 @@ class ListSessionsInput(ToolInput):
             "audiobook",
             "subtitles",
             "voiceover",
+            "media_edit",
         ]
         | None
     ) = None
@@ -275,6 +276,7 @@ class CreateSessionInput(ToolInput):
         "audiobook",
         "subtitles",
         "voiceover",
+        "media_edit",
     ] = "audiobook"
     source_language: str = Field(
         default="auto",
@@ -322,6 +324,7 @@ class UpdateSessionInput(ToolInput):
             "audiobook",
             "subtitles",
             "voiceover",
+            "media_edit",
         ]
         | None
     ) = None

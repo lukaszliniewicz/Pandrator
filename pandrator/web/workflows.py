@@ -25,6 +25,8 @@ from .models import (
     GenerationRun,
     GenerationSegment,
     Job,
+    MediaEditPlan,
+    MediaEditPlanRevision,
     OutcomePlan,
     SessionRecord,
     SessionSetting,
@@ -33,7 +35,11 @@ from .models import (
     UsageEvent,
     utcnow,
 )
-from .source_resolution import resolve_primary_source
+from .source_resolution import (
+    PrimarySourceResolution,
+    classify_source,
+    resolve_primary_source,
+)
 
 WORKFLOW_HISTORY_PREVIEW_LIMIT = 10
 
@@ -293,6 +299,100 @@ SUBTITLE_STAGES = (
     ),
 )
 
+MEDIA_EDIT_STAGES = (
+    StageDefinition(
+        "transcribe",
+        "Transcribe for timing",
+        "Create ASR captions and word timings for transcript alignment and precise cut boundaries.",
+        prerequisite_roles=("upload",),
+        output_role="transcription",
+        job_kind="dubbing.transcribe",
+    ),
+    StageDefinition(
+        "edit_media",
+        "Review and render edit",
+        "Use the transcript-guided editor to propose removals, audit exact boundaries, and render a reversible edit revision.",
+        executable=False,
+        output_role="media_edit_subtitles",
+    ),
+    StageDefinition(
+        "correct",
+        "Correct edited subtitles",
+        "Review punctuation, wording, merges, and splits after the timeline has been retimed.",
+        prerequisite_roles=("media_edit_subtitles",),
+        output_role="correction",
+        job_kind="dubbing.correct",
+    ),
+    StageDefinition(
+        "translate",
+        "Translate",
+        "Translate the retimed edited subtitles into a separate target-language artifact.",
+        prerequisite_roles=("correction", "media_edit_subtitles"),
+        output_role="translation",
+        job_kind="dubbing.translate",
+    ),
+    StageDefinition(
+        "optimize_document",
+        "Optimize subtitles before generation",
+        "Optionally create a separate, reviewable speech-optimized revision before voice generation.",
+        prerequisite_roles=(
+            "translation",
+            "correction",
+            "media_edit_subtitles",
+        ),
+        output_role="tts_optimized",
+        job_kind="text.optimize_tts",
+    ),
+    StageDefinition(
+        "optimize_tts",
+        "Optimize text for speech",
+        "Choose whether speech optimization happens before or during optional voice generation.",
+        executable=False,
+        prerequisite_roles=(
+            "translation",
+            "correction",
+            "media_edit_subtitles",
+        ),
+    ),
+    StageDefinition(
+        "preview",
+        "Preview",
+        "Compare the edited source subtitles, correction, and translation with recorded lineage.",
+        executable=False,
+        prerequisite_roles=(
+            "translation",
+            "correction",
+            "media_edit_subtitles",
+        ),
+    ),
+    StageDefinition(
+        "generate_audio",
+        "Generate voiceover",
+        "Create reviewable per-segment takes from the retimed edited subtitles or a later text revision.",
+        prerequisite_roles=(
+            "translation",
+            "correction",
+            "media_edit_subtitles",
+        ),
+        job_kind="dubbing.generate_audio",
+    ),
+    StageDefinition(
+        "export",
+        "Export",
+        "Package the rendered edit with optional corrected, translated, or generated tracks.",
+        prerequisite_roles=(
+            "media_edit_media",
+            "assembled_audio",
+            "dubbing_audio",
+            "translation",
+            "correction",
+            "media_edit_subtitles",
+        ),
+        output_role="export",
+        job_kind="export.create",
+    ),
+)
+
 AUDIOBOOK_STAGES = (
     StageDefinition(
         "clean_source",
@@ -370,6 +470,8 @@ class WorkflowService:
         definitions: tuple[StageDefinition, ...]
         if record.workflow_kind == "subtitles":
             definitions = SUBTITLE_STAGES
+        elif record.workflow_kind == "media_edit":
+            definitions = MEDIA_EDIT_STAGES
         else:
             definitions = DUBBING_STAGES
         upload = next(
@@ -392,6 +494,23 @@ class WorkflowService:
             item
             for item in definitions
             if not (filename.endswith(".srt") and item.key == "transcribe")
+        )
+
+    @staticmethod
+    def _matches_active_media_edit_revision(
+        artifact: Artifact,
+        active_revision: MediaEditPlanRevision | None,
+    ) -> bool:
+        if artifact.role not in {"media_edit_media", "media_edit_subtitles"}:
+            return True
+        if active_revision is None:
+            return False
+        metadata = (
+            artifact.metadata_json if isinstance(artifact.metadata_json, dict) else {}
+        )
+        return bool(
+            str(metadata.get("revision_id") or "") == active_revision.id
+            and str(metadata.get("content_hash") or "") == active_revision.content_hash
         )
 
     @staticmethod
@@ -459,7 +578,8 @@ class WorkflowService:
         return bool(
             artifact is not None
             and artifact.state != "deleted"
-            and artifact.role in {"transcription", "correction", "upload"}
+            and artifact.role
+            in {"media_edit_subtitles", "transcription", "correction", "upload"}
             and (
                 artifact.session_id == session_id or artifact.id in attached_source_ids
             )
@@ -469,7 +589,13 @@ class WorkflowService:
     def snapshot(self, session_id: str) -> dict[str, Any]:
         with self.database.session() as session:
             record_row = session.execute(
-                select(SessionRecord, SessionSetting, OutcomePlan, GenerationPlan)
+                select(
+                    SessionRecord,
+                    SessionSetting,
+                    OutcomePlan,
+                    GenerationPlan,
+                    MediaEditPlanRevision,
+                )
                 .outerjoin(
                     SessionSetting,
                     and_(
@@ -482,11 +608,25 @@ class WorkflowService:
                     GenerationPlan,
                     GenerationPlan.session_id == SessionRecord.id,
                 )
+                .outerjoin(
+                    MediaEditPlan,
+                    MediaEditPlan.session_id == SessionRecord.id,
+                )
+                .outerjoin(
+                    MediaEditPlanRevision,
+                    MediaEditPlanRevision.id == MediaEditPlan.active_revision_id,
+                )
                 .where(SessionRecord.id == session_id)
             ).one_or_none()
             if record_row is None:
                 raise KeyError(session_id)
-            record, translation_setting, outcome, generation_plan = record_row
+            (
+                record,
+                translation_setting,
+                outcome,
+                generation_plan,
+                active_media_edit_revision,
+            ) = record_row
             configured_translation_source_id = str(
                 (
                     translation_setting.value_json
@@ -666,11 +806,17 @@ class WorkflowService:
             roles: dict[str, Artifact] = {}
             artifact: Artifact | None
             for artifact in selections.values():
-                roles.setdefault(artifact.role, artifact)
+                if self._matches_active_media_edit_revision(
+                    artifact, active_media_edit_revision
+                ):
+                    roles.setdefault(artifact.role, artifact)
             for artifact in attached_sources:
                 roles.setdefault("upload", artifact)
             for artifact in latest_current_artifacts:
-                roles.setdefault(artifact.role, artifact)
+                if self._matches_active_media_edit_revision(
+                    artifact, active_media_edit_revision
+                ):
+                    roles.setdefault(artifact.role, artifact)
             completed_generation_run = (
                 generation_run
                 if generation_run is not None and generation_run.status == "completed"
@@ -706,7 +852,11 @@ class WorkflowService:
                 else {}
             )
             latest_roles = {
-                artifact.role: artifact for artifact in latest_current_artifacts
+                artifact.role: artifact
+                for artifact in latest_current_artifacts
+                if self._matches_active_media_edit_revision(
+                    artifact, active_media_edit_revision
+                )
             }
             job_by_kind: dict[str, Job] = {}
             for job in latest_jobs:
@@ -791,6 +941,13 @@ class WorkflowService:
                     if history is not None
                     else latest_roles.get(effective_definition.output_role or "")
                 )
+                if (
+                    artifact is not None
+                    and not self._matches_active_media_edit_revision(
+                        artifact, active_media_edit_revision
+                    )
+                ):
+                    artifact = None
                 active = (
                     generation_job
                     if definition.key == "generate_audio" and generation_job is not None
@@ -831,7 +988,11 @@ class WorkflowService:
                     and str(input_choices.get("translation") or "correction")
                     != "correction"
                 ):
-                    prerequisite_roles = ("transcription", "upload")
+                    prerequisite_roles = (
+                        ("media_edit_subtitles",)
+                        if record.workflow_kind == "media_edit"
+                        else ("transcription", "upload")
+                    )
                 elif effective_definition.key in {
                     "optimize_document",
                     "generate_audio",
@@ -847,6 +1008,7 @@ class WorkflowService:
                         prerequisite_roles = {
                             "translation": ("translation",),
                             "correction": ("correction",),
+                            "media_edit": ("media_edit_subtitles",),
                             "source": ("transcription", "upload"),
                         }.get(
                             str(input_choices.get("generation") or "translation"),
@@ -1525,6 +1687,18 @@ class WorkflowService:
             record = session.get(SessionRecord, session_id)
             if record is None:
                 raise KeyError(session_id)
+            media_edit_plan = (
+                session.scalar(
+                    select(MediaEditPlan).where(MediaEditPlan.session_id == session_id)
+                )
+                if record.workflow_kind == "media_edit"
+                else None
+            )
+            active_media_edit_revision = (
+                session.get(MediaEditPlanRevision, media_edit_plan.active_revision_id)
+                if media_edit_plan is not None and media_edit_plan.active_revision_id
+                else None
+            )
             all_artifacts = list(
                 session.scalars(
                     select(Artifact)
@@ -1573,7 +1747,11 @@ class WorkflowService:
                 stage_key == "translate"
                 and str(inputs.get("translation") or "correction") != "correction"
             ):
-                prerequisite_roles = ("transcription", "upload")
+                prerequisite_roles = (
+                    ("media_edit_subtitles",)
+                    if record.workflow_kind == "media_edit"
+                    else ("transcription", "upload")
+                )
             elif stage_key in {"optimize_document", "generate_audio"}:
                 transformations = (
                     (outcome.value_json or {}).get("transformations", {})
@@ -1590,6 +1768,7 @@ class WorkflowService:
                     prerequisite_roles = {
                         "translation": ("translation",),
                         "correction": ("correction",),
+                        "media_edit": ("media_edit_subtitles",),
                         "source": ("transcription", "upload"),
                     }.get(
                         str(inputs.get("generation") or "translation"),
@@ -1598,17 +1777,30 @@ class WorkflowService:
             selections = selected_artifacts(session, session_id, all_artifacts)
             by_role: dict[str, Artifact] = {}
             for selected in selections.values():
-                by_role.setdefault(selected.role, selected)
+                if self._matches_active_media_edit_revision(
+                    selected, active_media_edit_revision
+                ):
+                    by_role.setdefault(selected.role, selected)
             for attached in attached_sources:
                 by_role.setdefault("upload", attached)
             for candidate in all_artifacts:
-                if candidate.state == "current":
+                if (
+                    candidate.state == "current"
+                    and self._matches_active_media_edit_revision(
+                        candidate, active_media_edit_revision
+                    )
+                ):
                     by_role.setdefault(candidate.role, candidate)
             source = None
             if requested_source_artifact_id:
                 requested = session.get(Artifact, requested_source_artifact_id)
                 allowed_requested_roles = (
-                    {"transcription", "correction", "upload"}
+                    {
+                        "media_edit_subtitles",
+                        "transcription",
+                        "correction",
+                        "upload",
+                    }
                     if stage_key == "translate"
                     else set(prerequisite_roles)
                 )
@@ -1622,6 +1814,9 @@ class WorkflowService:
                     )
                     or not self._usable_input(
                         definition, requested, record.workflow_kind
+                    )
+                    or not self._matches_active_media_edit_revision(
+                        requested, active_media_edit_revision
                     )
                 ):
                     if explicit_requested_source:
@@ -1652,6 +1847,10 @@ class WorkflowService:
                     None,
                 )
             if prerequisite_roles and source is None:
+                if record.workflow_kind == "media_edit" and stage_key == "export":
+                    raise ValueError(
+                        "Render and review the active media edit before exporting it."
+                    )
                 raise ValueError(
                     f"Stage '{stage_key}' is missing a required input artifact."
                 )
@@ -1663,10 +1862,37 @@ class WorkflowService:
                 "settings_hash": settings_hash,
             }
             if stage_key == "export":
+                export_source = primary_source
+                if record.workflow_kind == "media_edit":
+                    edited_media = by_role.get("media_edit_media")
+                    if edited_media is None:
+                        raise ValueError(
+                            "Render and review the media edit before exporting it."
+                        )
+                    edited_name = str(
+                        (edited_media.metadata_json or {}).get("original_filename")
+                        or edited_media.relative_path.rsplit("/", 1)[-1]
+                    )
+                    edited_kind = str(edited_media.kind or "video")
+                    edited_mime = str(edited_media.mime_type or "")
+                    export_source = PrimarySourceResolution(
+                        artifact=edited_media,
+                        source_asset=None,
+                        attachment=None,
+                        profile=classify_source(
+                            name=edited_name,
+                            kind=edited_kind,
+                            mime_type=edited_mime,
+                        ),
+                        name=edited_name,
+                        kind=edited_kind,
+                        mime_type=edited_mime,
+                        resolution="derived_media_edit",
+                    )
                 payload["export_contract"] = build_export_contract(
                     workflow_kind=record.workflow_kind,
                     settings=flattened,
-                    source=primary_source,
+                    source=export_source,
                 )
         if stage_key == "generate_audio" or continuation:
             payload.update(

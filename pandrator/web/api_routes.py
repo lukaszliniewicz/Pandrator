@@ -74,6 +74,7 @@ from .idempotency import IdempotencyConflict, IdempotencyInProgress
 from .knowledge import KnowledgeLedgerStore, KnowledgeValidationError
 from .managed_services import binding_for_provider, normalize_tts_provider_id
 from .manager_proxy import register_manager_routes
+from .media_edit_routes import register_media_edit_routes
 from .models import (
     AgentRun,
     AgentStep,
@@ -756,6 +757,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     )
     register_automation_routes(app, context)
     register_workflow_plan_routes(app, context)
+    register_media_edit_routes(app, context)
     register_dispatch_routes(app, context)
     register_source_cleaning_dispatch_routes(app, context)
     register_speech_optimization_dispatch_routes(app, context)
@@ -4921,16 +4923,57 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             source, _path = artifacts.resolve(artifact_id)
         except KeyError:
             return error_response("not_found", "Audio artifact not found.", 404)
+        try:
+            points = int(request.args.get("points") or 1600)
+            if not 128 <= points <= 5000:
+                raise ValueError
+            raw_start = request.args.get("start_ms")
+            raw_end = request.args.get("end_ms")
+            bounded = raw_start is not None or raw_end is not None
+            start_ms = int(raw_start or 0)
+            end_ms = int(raw_end) if raw_end is not None else None
+            if bounded and (
+                start_ms < 0
+                or end_ms is None
+                or end_ms <= start_ms
+                or end_ms - start_ms > 10 * 60 * 1000
+            ):
+                raise ValueError
+        except (TypeError, ValueError):
+            return error_response(
+                "validation_error",
+                "Waveform points must be 128–5000; bounded windows must be positive and at most 10 minutes.",
+                422,
+            )
+        role = "waveform_peaks_window" if bounded else "waveform_peaks"
         with database.session() as db_session:
-            peak_artifact = db_session.scalar(
+            peak_candidates = list(
+                db_session.scalars(
                 select(Artifact)
                 .join(ArtifactEdge, ArtifactEdge.child_artifact_id == Artifact.id)
                 .where(
                     ArtifactEdge.parent_artifact_id == artifact_id,
-                    Artifact.role == "waveform_peaks",
+                    Artifact.role == role,
                     Artifact.state == "current",
                 )
                 .order_by(Artifact.created_at.desc())
+                ).all()
+            )
+            peak_artifact = next(
+                (
+                    candidate
+                    for candidate in peak_candidates
+                    if int((candidate.metadata_json or {}).get("max_points") or 0)
+                    == points
+                    and int((candidate.metadata_json or {}).get("start_ms") or 0)
+                    == start_ms
+                    and (
+                        not bounded
+                        or int((candidate.metadata_json or {}).get("end_ms") or 0)
+                        == end_ms
+                    )
+                ),
+                None,
             )
             if peak_artifact is not None:
                 peak_id = peak_artifact.id
@@ -4944,15 +4987,40 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 conditional=True,
                 etag=_artifact.content_hash,
             )
-        job = jobs.enqueue(
-            "audio.waveform",
-            {
-                "source_artifact_id": artifact_id,
-                "max_points": request.args.get("points", 1600, type=int),
-            },
-            session_id=source.session_id,
-            resource_keys=[f"session:{source.session_id}"] if source.session_id else [],
-        )
+        job_payload = {
+            "source_artifact_id": artifact_id,
+            "max_points": points,
+            "start_ms": start_ms,
+            "end_ms": end_ms,
+        }
+        with database.immediate_session() as db_session:
+            active_job = next(
+                (
+                    candidate
+                    for candidate in db_session.scalars(
+                        select(Job)
+                        .where(
+                            Job.kind == "audio.waveform",
+                            Job.status.in_(("queued", "running")),
+                        )
+                        .order_by(Job.created_at.asc(), Job.id.asc())
+                    ).all()
+                    if all(
+                        (candidate.payload_json or {}).get(key) == value
+                        for key, value in job_payload.items()
+                    )
+                ),
+                None,
+            )
+            job = active_job or jobs.enqueue_in_session(
+                db_session,
+                "audio.waveform",
+                job_payload,
+                session_id=source.session_id,
+                resource_keys=[f"session:{source.session_id}"]
+                if source.session_id
+                else [f"artifact:waveform:{source.id}"],
+            )
         return jsonify({"status": "queued", "job_id": job.id}), 202
 
     @app.get("/api/v1/artifacts/<artifact_id>/pdf")

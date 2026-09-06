@@ -46,6 +46,11 @@ from .models import (
 _SOURCE_ROLES_BY_WORKFLOW = {
     "audiobook": ("prepared_text", "clean_text", "upload"),
     "voiceover": ("translation", "correction", "transcription", "upload"),
+    "media_edit": (
+        "translation",
+        "correction",
+        "media_edit_subtitles",
+    ),
 }
 _SUPPORTED_SUFFIXES = frozenset({".srt", ".json", ".txt"})
 
@@ -512,10 +517,10 @@ class SpeechOptimizationDispatchRunService:
         record = session.get(SessionRecord, session_id)
         if record is None or record.trashed_at is not None:
             raise DispatchError("not_found", "Session not found.", 404)
-        if record.workflow_kind not in {"audiobook", "voiceover"}:
+        if record.workflow_kind not in {"audiobook", "voiceover", "media_edit"}:
             raise DispatchError(
                 "ineligible_session",
-                "Speech optimisation requires an audiobook or voiceover session.",
+                "Speech optimisation requires an audiobook, voiceover, or media-edit session.",
                 422,
             )
         source, source_path, source_format = self._load_source(

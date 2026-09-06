@@ -9,6 +9,7 @@ from pydantic import (
     ConfigDict,
     Field,
     StrictInt,
+    StrictStr,
     field_validator,
     model_validator,
 )
@@ -61,7 +62,9 @@ class ErrorBody(StrictModel):
 
 class SessionCreate(StrictModel):
     name: str = Field(min_length=1, max_length=255)
-    workflow_kind: Literal["audiobook", "subtitles", "voiceover"] = "audiobook"
+    workflow_kind: Literal["audiobook", "subtitles", "voiceover", "media_edit"] = (
+        "audiobook"
+    )
     source_language: str = Field(default="auto", min_length=2, max_length=40)
     target_language: str | None = Field(default=None, min_length=2, max_length=40)
     workflow_preset: str = "custom"
@@ -71,7 +74,9 @@ class SessionCreate(StrictModel):
 
 class SessionUpdate(StrictModel):
     name: str | None = Field(default=None, min_length=1, max_length=255)
-    workflow_kind: Literal["audiobook", "subtitles", "voiceover"] | None = None
+    workflow_kind: Literal[
+        "audiobook", "subtitles", "voiceover", "media_edit"
+    ] | None = None
     source_language: str | None = Field(default=None, min_length=2, max_length=40)
     target_language: str | None = Field(default=None, min_length=2, max_length=40)
     workflow_preset: str | None = None
@@ -479,6 +484,40 @@ class SourceAttachRequest(StrictModel):
 
 class SourceUpdateRequest(StrictModel):
     display_name: str = Field(min_length=1, max_length=255)
+
+
+class MediaEditPrepareRequest(StrictModel):
+    force: bool = False
+
+
+class MediaEditProposeRequest(StrictModel):
+    revision: StrictInt = Field(ge=1)
+    instructions: StrictStr = Field(min_length=1, max_length=10000)
+
+    @field_validator("instructions")
+    @classmethod
+    def _strip_instructions(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("instructions must not be empty")
+        return normalized
+
+
+class MediaEditRenderRequest(StrictModel):
+    revision: StrictInt = Field(ge=1)
+
+
+class MediaEditKeepRange(StrictModel):
+    id: str | None = Field(default=None, min_length=1, max_length=120)
+    start_ms: int = Field(ge=0)
+    end_ms: int = Field(gt=0)
+    label: str | None = Field(default=None, max_length=255)
+
+
+class MediaEditUpdateRequest(StrictModel):
+    keep_ranges: list[MediaEditKeepRange] = Field(max_length=1000)
+    instructions: str | None = Field(default=None, max_length=10000)
+    reviewed: bool | None = None
 
 
 class StageSelectionUpdate(StrictModel):
@@ -1458,6 +1497,11 @@ SCHEMA_MODELS = {
         OutcomePlanUpdate,
         SourceAttachRequest,
         SourceUpdateRequest,
+        MediaEditPrepareRequest,
+        MediaEditProposeRequest,
+        MediaEditRenderRequest,
+        MediaEditKeepRange,
+        MediaEditUpdateRequest,
         StageSelectionUpdate,
         ChunkUploadInitialize,
         GenerationSegmentCreate,

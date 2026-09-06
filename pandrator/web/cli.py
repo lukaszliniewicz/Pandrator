@@ -741,7 +741,7 @@ def command_workflow_run(args) -> int:
     try:
         settings = json.loads(args.settings)
         if not isinstance(settings, dict):
-            raise ValueError("--settings must be a JSON object.")
+            raise TypeError("--settings must be a JSON object.")
         if args.stage == "generate_audio" and not args.rerun_changed_prerequisites:
             mismatches = WorkflowHandlers(database, paths).settings_mismatches(args.session_id, args.stage)
             if mismatches:
@@ -958,7 +958,13 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--port", type=int, default=8097)
     serve.add_argument("--threads", type=int, default=12)
     serve.add_argument("--trusted-host", action="append", default=[])
-    serve.add_argument("--proxy-hops", type=int, choices=range(0, 4), default=0, help="Trust this many explicitly configured reverse proxies.")
+    serve.add_argument(
+        "--proxy-hops",
+        type=int,
+        choices=range(4),
+        default=0,
+        help="Trust this many explicitly configured reverse proxies.",
+    )
     serve.add_argument(
         "--public-url",
         help="Exact browser-facing HTTP(S) origin when using LAN access or a reverse proxy.",
@@ -1040,7 +1046,11 @@ def build_parser() -> argparse.ArgumentParser:
     session_list.set_defaults(handler=command_session_list)
     session_create = session_commands.add_parser("create")
     session_create.add_argument("name")
-    session_create.add_argument("--kind", choices=["audiobook", "subtitles", "voiceover"], default="audiobook")
+    session_create.add_argument(
+        "--kind",
+        choices=["audiobook", "subtitles", "voiceover", "media_edit"],
+        default="audiobook",
+    )
     session_create.add_argument("--source-language", default="auto")
     session_create.add_argument("--target-language")
     session_create.add_argument("--preset", default="custom")
