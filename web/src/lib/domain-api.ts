@@ -479,7 +479,12 @@ export const sessionApi = {
     >('/api/v1/sessions/{sessionId}/sources', 'get', {
       path: { sessionId }
     }),
-  attachSource: (sessionId: string, sourceAssetId: string, role = 'primary') =>
+  attachSource: (
+    sessionId: string,
+    sourceAssetId: string,
+    sessionRevision: number,
+    role = 'primary'
+  ) =>
     typedApiJson<
       '/api/v1/sessions/{sessionId}/sources',
       'post',
@@ -490,9 +495,11 @@ export const sessionApi = {
         role: string;
         is_current: boolean;
         revision: number;
+        session_revision: number;
       }
     >('/api/v1/sessions/{sessionId}/sources', 'post', {
       path: { sessionId },
+      headers: { 'If-Match': `"${sessionRevision}"` },
       body: { source_asset_id: sourceAssetId, role }
     }),
   detachSource: (sessionId: string, attachmentId: string, revision: number) =>

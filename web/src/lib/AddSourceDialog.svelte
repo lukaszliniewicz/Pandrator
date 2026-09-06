@@ -131,6 +131,11 @@
     );
   }
 
+  async function attachSource(sourceId: string) {
+    const session = await sessionApi.get(sessionId);
+    return sessionApi.attachSource(sessionId, sourceId, session.revision, role);
+  }
+
   async function add() {
     if (!valid()) return;
     busy = true;
@@ -153,7 +158,7 @@
           const sourceId = String(uploaded.source_asset_id ?? '');
           if (!sourceId)
             throw new Error('The upload did not create a reusable source.');
-          await sessionApi.attachSource(sessionId, sourceId, role);
+          await attachSource(sourceId);
         }
       } else if (mode === 'paste') {
         const safeName =
@@ -173,14 +178,14 @@
           const sourceId = String(uploaded.source_asset_id ?? '');
           if (!sourceId)
             throw new Error('The upload did not create a reusable source.');
-          await sessionApi.attachSource(sessionId, sourceId, role);
+          await attachSource(sourceId);
         }
       } else if (mode === 'url') {
         await sessionApi.downloadSourceUrl(sessionId, sourceUrl.trim());
         message =
           'Source download queued. It will become the current input when the download finishes.';
       } else {
-        await sessionApi.attachSource(sessionId, sourceAssetId, role);
+        await attachSource(sourceAssetId);
         message =
           role === 'transcript'
             ? 'Source-library item attached as the current editorial transcript.'

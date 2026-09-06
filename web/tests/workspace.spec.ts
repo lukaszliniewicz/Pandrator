@@ -69,6 +69,67 @@ test('wizard creates a guided subtitle workspace and preserves setup return', as
   await expect(page.getByRole('button', { name: 'Tour' })).toBeVisible();
 });
 
+test('media-edit wizard attaches a reused recording and uploaded captions with current session revisions', async ({
+  page
+}) => {
+  const sessionName = uniqueName('Playwright recording edit');
+  await signIn(page);
+  const authStatus = await page.request.get('/api/v1/auth/status');
+  const csrfToken = (await authStatus.json()).csrf_token;
+  const uploadedVideo = await page.request.post('/api/v1/uploads', {
+    headers: { 'X-CSRF-Token': csrfToken },
+    multipart: {
+      purpose: 'source',
+      file: {
+        name: 'reusable-recording.mp4',
+        mimeType: 'video/mp4',
+        buffer: Buffer.from('media fixture')
+      }
+    }
+  });
+  expect(uploadedVideo.ok()).toBeTruthy();
+  const videoSourceId = (await uploadedVideo.json()).source_asset_id as string;
+
+  await page
+    .getByRole('button', { name: /Edit a recording/ })
+    .first()
+    .click();
+  await page.getByRole('button', { name: 'Reuse' }).click();
+  await page.getByLabel('Source library').selectOption(videoSourceId);
+  await page.getByLabel(/Zoom or other captions/).setInputFiles({
+    name: 'zoom-captions.vtt',
+    mimeType: 'text/vtt',
+    buffer: Buffer.from('WEBVTT\n\n00:00.000 --> 00:01.000\nSpeaker: Hello\n')
+  });
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await page.getByRole('button', { name: 'Review', exact: true }).click();
+  await page.getByLabel('Session name').fill(sessionName);
+
+  const sessionNameBox = await page.getByLabel('Session name').boundingBox();
+  const pipelineBox = await page.getByText('Prepared pipeline').boundingBox();
+  expect(sessionNameBox).not.toBeNull();
+  expect(pipelineBox).not.toBeNull();
+  expect(pipelineBox!.y).toBeGreaterThan(
+    sessionNameBox!.y + sessionNameBox!.height
+  );
+
+  await page.getByRole('button', { name: 'Create workspace' }).click();
+  await expect(page.getByRole('heading', { name: sessionName })).toBeVisible();
+
+  const sessions = await page.request.get('/api/v1/sessions');
+  const created = (await sessions.json()).items.find(
+    (item: { name: string }) => item.name === sessionName
+  );
+  expect(created).toBeTruthy();
+  const attached = await page.request.get(
+    `/api/v1/sessions/${created.id}/sources`
+  );
+  const roles = (await attached.json()).items.map(
+    (item: { attachment: { role: string } }) => item.attachment.role
+  );
+  expect(roles).toEqual(expect.arrayContaining(['primary', 'transcript']));
+});
+
 test('correction and translation cards expose independent reasoning levels', async ({
   page
 }) => {

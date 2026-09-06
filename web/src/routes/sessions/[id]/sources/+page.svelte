@@ -17,6 +17,7 @@
 
   const sessionId = String(page.params.id);
   let sources = $state<SessionSource[]>([]);
+  let sessionRevision = $state(0);
   let mediaEditWorkspace = $state(false);
   let error = $state('');
   let message = $state('');
@@ -30,16 +31,19 @@
       sessionApi.get(sessionId)
     ]);
     sources = sourcePage.items;
+    sessionRevision = session.revision;
     mediaEditWorkspace = session.workflow_kind === 'media_edit';
   }
   async function makeCurrent(source: SessionSource) {
     error = '';
     try {
-      await sessionApi.attachSource(
+      const attachment = await sessionApi.attachSource(
         sessionId,
         source.id,
+        sessionRevision,
         source.attachment.role
       );
+      sessionRevision = attachment.session_revision;
       message = `${source.display_name} is now the current ${source.attachment.role} source.`;
       await load();
     } catch (caught) {

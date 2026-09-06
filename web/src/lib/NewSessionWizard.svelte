@@ -231,6 +231,7 @@
         included_stages: included,
         ...(overwrite && existing ? { overwrite_session_id: existing.id } : {})
       });
+      let sessionRevision = session.revision;
       progress = 0.15;
       progressDetail = 'Saving workflow plan';
       const current = await sessionApi.outcome(session.id);
@@ -361,6 +362,12 @@
         updateSettings('tts', { language: speechLanguage }),
         updateSettings('output', outputSettings)
       ]);
+      if (
+        (sourceMode === 'reuse' && sourceAssetId) ||
+        (kind === 'media_edit' && captionFile)
+      ) {
+        sessionRevision = (await sessionApi.get(session.id)).revision;
+      }
       let file =
         sourceMode === 'paste' && pastedText.trim()
           ? new File([pastedText.trim()], `${unique}.txt`, {
@@ -383,7 +390,12 @@
       } else if (sourceMode === 'reuse' && sourceAssetId) {
         progress = 0.8;
         progressDetail = 'Attaching reusable source';
-        await sessionApi.attachSource(session.id, sourceAssetId);
+        const attachment = await sessionApi.attachSource(
+          session.id,
+          sourceAssetId,
+          sessionRevision
+        );
+        sessionRevision = attachment.session_revision;
       }
       if (kind === 'media_edit' && captionFile) {
         progress = 0.955;
@@ -394,11 +406,13 @@
           throw new Error(
             'The caption upload did not create a reusable source.'
           );
-        await sessionApi.attachSource(
+        const attachment = await sessionApi.attachSource(
           session.id,
           captionSourceId,
+          sessionRevision,
           'transcript'
         );
+        sessionRevision = attachment.session_revision;
       }
       progress = 0.97;
       progressDetail = 'Opening workspace';
@@ -704,7 +718,7 @@
         </div>
       {/if}
     {:else}
-      <div class="mt-7 grid gap-6 md:grid-cols-[1fr_1.2fr]">
+      <div class="mt-7 space-y-5">
         <div>
           <label class="text-sm font-semibold"
             >Session name<input
