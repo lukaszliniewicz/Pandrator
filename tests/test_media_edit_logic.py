@@ -89,13 +89,13 @@ def test_parse_unicode_speaker_label():
 def test_alignment_handles_offset_and_punctuation_differences():
     cue = MediaCue("caption", 0, 2_000, "Hello, world!")
     words = (
-        MediaWord("HELLO", 3_500, 3_800),
-        MediaWord("world", 3_900, 4_300),
+        MediaWord("HELLO", 1_500, 1_700),
+        MediaWord("world", 1_800, 2_000),
     )
 
     aligned = align_cues_to_words((cue,), words)[0]
 
-    assert (aligned.start_ms, aligned.end_ms) == (3_500, 4_300)
+    assert (aligned.start_ms, aligned.end_ms) == (1_500, 2_000)
     assert [word.text for word in aligned.words] == ["Hello,", "world!"]
     assert [(word.start_ms, word.end_ms) for word in aligned.words] == [
         (word.start_ms, word.end_ms) for word in words
@@ -105,18 +105,19 @@ def test_alignment_handles_offset_and_punctuation_differences():
 
 
 def test_alignment_preserves_caption_surfaces_and_does_not_fabricate_edges():
-    cue = MediaCue("caption", 0, 2_000, "Leading Hello, world! trailing")
+    cue = MediaCue("caption", 0, 2_000, "Hello, world! trailing")
     words = (
-        MediaWord("HELLO", 3_500, 3_800),
-        MediaWord("WORLD", 3_900, 4_300),
+        MediaWord("HELLO", 500, 800),
+        MediaWord("WORLD", 900, 1_200),
     )
 
     aligned = align_cues_to_words((cue,), words)[0]
 
     assert [word.text for word in aligned.words] == ["Hello,", "world!"]
+    assert (aligned.start_ms, aligned.end_ms) == (500, 2_000)
     assert [(word.start_ms, word.end_ms) for word in aligned.words] == [
-        (3_500, 3_800),
-        (3_900, 4_300),
+        (500, 800),
+        (900, 1_200),
     ]
 
 
@@ -169,8 +170,90 @@ def test_alignment_reuses_anchor_for_overlapping_cues():
 
     aligned = align_cues_to_words(cues, words)
 
-    assert aligned[1].start_ms == words[1].start_ms
+    assert aligned[1].start_ms == cues[1].start_ms
+    assert aligned[1].end_ms == words[2].end_ms
     assert aligned[0].end_ms > aligned[1].start_ms
+
+
+def test_partial_alignment_preserves_unanchored_caption_edges():
+    cues = (
+        MediaCue("missing-leading", 1_000, 2_000, "leading middle trailing"),
+        MediaCue("missing-trailing", 4_000, 6_000, "leading middle trailing"),
+    )
+    words = (
+        MediaWord("middle", 1_500, 1_700),
+        MediaWord("trailing", 1_800, 2_000),
+        MediaWord("leading", 4_500, 4_700),
+        MediaWord("middle", 4_800, 5_000),
+    )
+
+    missing_leading, missing_trailing = align_cues_to_words(cues, words)
+
+    assert (missing_leading.start_ms, missing_leading.end_ms) == (1_000, 2_000)
+    assert (missing_trailing.start_ms, missing_trailing.end_ms) == (4_500, 6_000)
+
+
+def test_fully_anchored_alignment_moves_both_caption_edges():
+    cue = MediaCue("fully-anchored", 1_000, 3_000, "hello world")
+
+    aligned = align_cues_to_words(
+        (cue,),
+        (
+            MediaWord("hello", 1_500, 1_700),
+            MediaWord("world", 2_500, 2_700),
+        ),
+    )[0]
+
+    assert aligned.timing_source == "asr_alignment"
+    assert (aligned.start_ms, aligned.end_ms) == (1_500, 2_700)
+
+
+def test_alignment_failed_cue_does_not_drift_cursor_for_following_cue():
+    cues = (
+        MediaCue("missing", 0, 1_000, "absent"),
+        MediaCue("following", 20_000, 21_000, "nearby"),
+    )
+    words = (
+        MediaWord("absent", 30_000, 30_200),
+        MediaWord("nearby", 20_100, 20_300),
+    )
+
+    failed, following = align_cues_to_words(cues, words)
+
+    assert failed.timing_source == "caption"
+    assert failed.words == ()
+    assert following.timing_source == "asr_alignment"
+    assert following.start_ms == 20_100
+
+
+def test_alignment_rejects_overlong_raw_word():
+    cue = MediaCue("cue", 1_000, 2_000, "hello")
+
+    aligned = align_cues_to_words(
+        (cue,),
+        (MediaWord("hello", 1_000, 7_000),),
+    )[0]
+
+    assert aligned.timing_source == "caption"
+    assert aligned.words == ()
+    assert aligned.timing_confidence == 0
+
+
+def test_alignment_exact_half_match_has_no_applied_confidence_or_words():
+    cues = (
+        MediaCue("one", 1_000, 2_000, "alpha missing"),
+        MediaCue("two", 2_000, 3_000, "beta missing"),
+    )
+    words = (
+        MediaWord("alpha", 1_100, 1_300),
+        MediaWord("beta", 2_100, 2_300),
+    )
+
+    aligned = align_cues_to_words(cues, words)
+
+    assert all(cue.timing_source == "caption" for cue in aligned)
+    assert all(cue.timing_confidence == 0.0 for cue in aligned)
+    assert all(cue.words == () for cue in aligned)
 
 
 def test_alignment_rejects_sparse_or_distant_lexical_coincidence():
@@ -182,14 +265,14 @@ def test_alignment_rejects_sparse_or_distant_lexical_coincidence():
             MediaWord(f"word-{index}", 30 + index * 10, 35 + index * 10)
             for index in range(450)
         ),
-        MediaWord("target", 5_000, 5_100),
+        MediaWord("target", 10_000, 10_100),
     )
 
     aligned_sparse, aligned_distant = align_cues_to_words((sparse, distant), words)
 
     assert aligned_sparse.timing_source == "caption"
     assert aligned_sparse.start_ms == sparse.start_ms
-    assert aligned_sparse.timing_confidence == 0.25
+    assert aligned_sparse.timing_confidence == 0.0
     assert aligned_distant.timing_source == "caption"
     assert aligned_distant.start_ms == distant.start_ms
 

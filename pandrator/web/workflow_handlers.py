@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import threading
 import time
+import unicodedata
 from collections import OrderedDict
 from copy import deepcopy
 from dataclasses import replace
@@ -95,6 +96,21 @@ logger = logging.getLogger(__name__)
 
 CLAUSE_PAUSE_RATIO = 1 / 3
 GENERATION_SEGMENT_POLICY_VERSION = 5
+
+
+def _media_edit_token_count(text: str) -> int:
+    """Count authoritative lexical tokens using media-edit normalization."""
+
+    return sum(
+        bool(
+            "".join(
+                character
+                for character in unicodedata.normalize("NFKC", token).casefold()
+                if character.isalnum()
+            )
+        )
+        for token in re.findall(r"\S+", text)
+    )
 
 
 def _effective_subtitle_language(*candidates: object) -> str:
@@ -2874,7 +2890,7 @@ class WorkflowHandlers:
             )
             aligned_cues = align_cues_to_words(cues, asr_words)
             word_count = sum(len(cue.words) for cue in aligned_cues)
-            if not aligned_cues or not word_count:
+            if not aligned_cues:
                 raise ValueError(
                     "The attached transcript could not be aligned to ASR evidence."
                 )
@@ -2886,20 +2902,41 @@ class WorkflowHandlers:
         operation_dir = self._operation_dir(session_id, "transcribe")
         aligned_srt_path = operation_dir / "aligned-transcription.srt"
         aligned_json_path = operation_dir / "aligned-word-timestamps.json"
-        aligned_srt_path.write_text(
-            caption_to_srt(aligned_cues), encoding="utf-8"
-        )
         caption_token_count = sum(
-            len(re.findall(r"\S+", cue.text)) for cue in cues
+            _media_edit_token_count(cue.text) for cue in cues
         )
-        coverage = min(1.0, max(0.0, word_count / max(1, caption_token_count)))
-        confidences = [
-            cue.timing_confidence
+        matched_token_count = sum(
+            min(
+                _media_edit_token_count(cue.text),
+                max(
+                    0,
+                    round(
+                        _media_edit_token_count(cue.text)
+                        * float(cue.timing_confidence or 0.0)
+                    ),
+                ),
+            )
             for cue in aligned_cues
-            if cue.words and cue.timing_confidence is not None
+            if cue.timing_source == "asr_alignment" and cue.words
+        )
+        coverage = min(
+            1.0,
+            max(0.0, matched_token_count / max(1, caption_token_count)),
+        )
+        confidences = [
+            float(cue.timing_confidence or 0.0)
+            for cue in aligned_cues
         ]
         alignment_confidence = (
             sum(confidences) / len(confidences) if confidences else 0.0
+        )
+        if coverage < 0.5:
+            raise ValueError(
+                f"Aligned transcription coverage is {coverage:.6f}, below 0.5; "
+                "no aligned transcription was promoted."
+            )
+        aligned_srt_path.write_text(
+            caption_to_srt(aligned_cues), encoding="utf-8"
         )
         alignment_metadata = {
             "alignment_method": "asr_lexical_projection",
@@ -3003,6 +3040,7 @@ class WorkflowHandlers:
                 raw_words_artifact.id,
             ],
             settings=submitted_settings,
+            metadata=artifact_metadata,
         )
         progress(0.97, "Aligned transcription ready")
         return {

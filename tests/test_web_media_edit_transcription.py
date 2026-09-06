@@ -186,6 +186,14 @@ class MediaEditTranscriptionHandlerTests(unittest.TestCase):
         self.assertEqual("asr_lexical_projection", result["alignment_method"])
         self.assertEqual(2, result["word_count"])
         self.assertEqual("asr_lexical_projection", transcription.metadata_json["alignment_method"])
+        self.assertEqual(
+            result["alignment_coverage"],
+            transcription.metadata_json["alignment_coverage"],
+        )
+        self.assertEqual(
+            result["alignment_confidence"],
+            transcription.metadata_json["alignment_confidence"],
+        )
         payload = json.loads(
             self.artifacts.resolve(word_artifact.id)[1].read_text(encoding="utf-8")
         )
@@ -214,7 +222,51 @@ class MediaEditTranscriptionHandlerTests(unittest.TestCase):
         with patch(
             "pandrator.logic.dubbing.transcription.transcribe_source_file_with_metadata",
             return_value=fake_result,
-        ), self.assertRaises(ValueError):
+        ), self.assertRaisesRegex(
+            ValueError,
+            r"coverage is 0\.000000.*no aligned transcription was promoted",
+        ):
+            self.handlers.transcribe(
+                {
+                    "session_id": self.session.id,
+                    "source_artifact_id": source.id,
+                    "settings": {},
+                },
+                self.progress,
+                threading.Event(),
+            )
+
+        with self.database.session() as session:
+            roles = {
+                item.role
+                for item in session.scalars(
+                    select(Artifact).where(Artifact.session_id == self.session.id)
+                )
+            }
+        self.assertIn("transcription_evidence", roles)
+        self.assertIn("recognition_word_timestamps", roles)
+        self.assertNotIn("transcription", roles)
+
+    def test_media_edit_transcription_rejects_exact_half_matches_without_words(self):
+        source, caption = self._source_and_caption()
+        caption_path = self.artifacts.resolve(caption.id)[1]
+        caption_path.write_text(
+            (
+                "1\n00:00:01,000 --> 00:00:02,000\n"
+                "Alice: Hello missing\n\n"
+                "2\n00:00:01,800 --> 00:00:02,800\n"
+                "Bob: World missing\n"
+            ),
+            encoding="utf-8",
+        )
+        fake_result = self._mock_transcription(self.paths.root / "source.mp4")
+        with patch(
+            "pandrator.logic.dubbing.transcription.transcribe_source_file_with_metadata",
+            return_value=fake_result,
+        ), self.assertRaisesRegex(
+            ValueError,
+            r"coverage is 0\.000000.*no aligned transcription was promoted",
+        ):
             self.handlers.transcribe(
                 {
                     "session_id": self.session.id,

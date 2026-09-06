@@ -98,6 +98,16 @@
         )
       : 0
   );
+  const alignmentSummary = $derived.by(() => {
+    if (!plan || typeof plan.evidence.alignment_coverage !== 'number')
+      return null;
+    const coverage = Math.max(0, Math.min(1, plan.evidence.alignment_coverage));
+    const confidence = Math.max(
+      0,
+      Math.min(1, Number(plan.evidence.alignment_confidence ?? 0))
+    );
+    return { coverage, confidence, reliable: coverage >= 0.5 };
+  });
 
   function formatTime(value: number) {
     const milliseconds = Math.max(0, Math.round(value));
@@ -875,15 +885,30 @@
       </div>
 
       <aside class="min-w-0 space-y-5">
-        {#if plan.evidence.warnings?.length}<section
-            class="rounded-2xl border border-amber-400/40 bg-amber-500/10 p-4"
+        {#if alignmentSummary}<section
+            class={alignmentSummary.reliable
+              ? 'rounded-2xl border border-emerald-400/35 bg-emerald-500/10 p-4'
+              : 'rounded-2xl border border-amber-400/40 bg-amber-500/10 p-4'}
           >
             <div class="flex gap-2 text-sm font-semibold">
-              <CircleAlert size={17} /> Timing review needed
+              {#if alignmentSummary.reliable}<Check size={17} /> Caption timing applied{:else}<CircleAlert
+                  size={17}
+                /> Caption timing is unreliable{/if}
             </div>
-            <ul class="muted mt-2 list-disc space-y-1 pl-5 text-xs">
-              {#each plan.evidence.warnings as warning}<li>{warning}</li>{/each}
-            </ul>
+            <p class="muted mt-2 text-xs leading-relaxed">
+              {Math.round(alignmentSummary.coverage * 100)}% of caption words
+              aligned · {Math.round(alignmentSummary.confidence * 100)}% mean
+              cue confidence. {alignmentSummary.reliable
+                ? 'Aligned words are available for subtitle timing and cut-boundary inspection.'
+                : 'Pandrator is keeping the Zoom cue boundaries; do not use these word times for cut refinement.'}
+            </p>
+            {#if plan.evidence.warnings?.length}<ul
+                class="muted mt-2 list-disc space-y-1 pl-5 text-xs"
+              >
+                {#each plan.evidence.warnings as warning}<li>
+                    {warning}
+                  </li>{/each}
+              </ul>{/if}
           </section>{/if}
 
         <section class="surface rounded-2xl p-5">

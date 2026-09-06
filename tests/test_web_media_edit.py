@@ -212,6 +212,228 @@ class MediaEditServiceTests(unittest.TestCase):
         self.assertIsNone(state["readiness"]["timing_artifact"])
         self.assertNotEqual(timing.id, state["plan"].get("timing_artifact_id"))
 
+    def test_prepare_ignores_low_coverage_pre_aligned_artifact(self):
+        media, captions, _timing = self._seed_external()
+        prealigned = self._register(
+            "prealigned-low.json",
+            "word_timestamps",
+            json.dumps(
+                {
+                    "schema": "pandrator.transcript.v1",
+                    "metadata": {"alignment_coverage": 0.4},
+                    "segments": [
+                        {
+                            "id": "cue-000001",
+                            "start_ms": 2_000,
+                            "end_ms": 2_400,
+                            "text": "hello world",
+                            "words": [
+                                {"text": "hello", "start_ms": 2_000, "end_ms": 2_400}
+                            ],
+                        }
+                    ],
+                }
+            ),
+            "json",
+            parent_ids=[media.id],
+            metadata={
+                "alignment_method": "asr_lexical_projection",
+                "authoritative_transcript_artifact_id": captions.id,
+                "alignment_coverage": 0.4,
+            },
+        )
+
+        state = self._service().prepare(self.session_id)
+
+        self.assertEqual(state["plan"]["timing_artifact"]["id"], prealigned.id)
+        self.assertEqual(
+            [cue["timing_source"] for cue in state["plan"]["cues"]],
+            ["caption", "caption"],
+        )
+        self.assertEqual(
+            [cue["start_ms"] for cue in state["plan"]["cues"]], [1000, 1800]
+        )
+
+    def test_prepare_consumes_valid_same_source_alignment_without_reprojection(self):
+        media, captions, _timing = self._seed_external()
+        prealigned = self._register(
+            "prealigned-valid.json",
+            "word_timestamps",
+            json.dumps(
+                {
+                    "schema": "pandrator.transcript.v1",
+                    "metadata": {"alignment_coverage": 1.0},
+                    "segments": [
+                        {
+                            "id": "cue-000001",
+                            "start_ms": 1_900,
+                            "end_ms": 3_000,
+                            "text": "hello world",
+                            "metadata": {"timing_confidence": 1.0},
+                            "words": [
+                                {"text": "hello", "start_ms": 2_000, "end_ms": 2_400},
+                                {"text": "world", "start_ms": 2_500, "end_ms": 2_900},
+                            ],
+                        },
+                        {
+                            "id": "cue-000002",
+                            "start_ms": 2_900,
+                            "end_ms": 3_900,
+                            "text": "overlap",
+                            "metadata": {"timing_confidence": 1.0},
+                            "words": [
+                                {"text": "overlap", "start_ms": 3_000, "end_ms": 3_800}
+                            ],
+                        },
+                    ],
+                }
+            ),
+            "json",
+            parent_ids=[media.id],
+            metadata={
+                "alignment_method": "asr_lexical_projection",
+                "authoritative_transcript_artifact_id": captions.id,
+                "alignment_coverage": 1.0,
+            },
+        )
+
+        with patch(
+            "pandrator.web.media_edit.align_cues_to_words",
+            side_effect=AssertionError("pre-aligned artifacts must not be projected again"),
+        ):
+            state = self._service().prepare(self.session_id)
+
+        self.assertEqual(state["plan"]["timing_artifact"]["id"], prealigned.id)
+        self.assertEqual(
+            [cue["start_ms"] for cue in state["plan"]["cues"]], [1900, 2900]
+        )
+        self.assertEqual(
+            [cue["end_ms"] for cue in state["plan"]["cues"]], [3000, 3900]
+        )
+        self.assertEqual(
+            [cue["speaker"] for cue in state["plan"]["cues"]], ["Alice", "Bob"]
+        )
+        self.assertFalse(
+            any(
+                "No ASR timing was available" in warning
+                for warning in state["plan"]["evidence"]["warnings"]
+            )
+        )
+
+    def test_prepare_ignores_pre_aligned_artifact_from_different_transcript(self):
+        media, _captions, _timing = self._seed_external()
+        mismatched = self._register(
+            "prealigned-mismatch.json",
+            "word_timestamps",
+            json.dumps(
+                {
+                    "schema": "pandrator.transcript.v1",
+                    "segments": [
+                        {
+                            "id": "cue-000001",
+                            "start_ms": 2_000,
+                            "end_ms": 2_900,
+                            "text": "hello world",
+                            "words": [
+                                {"text": "hello", "start_ms": 2_000, "end_ms": 2_400},
+                                {"text": "world", "start_ms": 2_500, "end_ms": 2_900},
+                            ],
+                        },
+                        {
+                            "id": "cue-000002",
+                            "start_ms": 3_000,
+                            "end_ms": 3_800,
+                            "text": "overlap",
+                            "words": [
+                                {"text": "overlap", "start_ms": 3_000, "end_ms": 3_800}
+                            ],
+                        },
+                    ],
+                }
+            ),
+            "json",
+            parent_ids=[media.id],
+            metadata={
+                "alignment_method": "asr_lexical_projection",
+                "authoritative_transcript_artifact_id": "different-caption-id",
+                "alignment_coverage": 1.0,
+            },
+        )
+
+        state = self._service().prepare(self.session_id)
+
+        self.assertEqual(state["plan"]["timing_artifact"]["id"], mismatched.id)
+        self.assertEqual(
+            [cue["timing_source"] for cue in state["plan"]["cues"]],
+            ["caption", "caption"],
+        )
+        self.assertEqual(
+            [cue["start_ms"] for cue in state["plan"]["cues"]], [1000, 1800]
+        )
+        self.assertTrue(
+            any(
+                "does not match" in warning
+                for warning in state["plan"]["evidence"]["warnings"]
+            )
+        )
+
+    def test_prepare_rejects_pre_aligned_word_outside_stored_segment(self):
+        media, captions, _timing = self._seed_external()
+        invalid = self._register(
+            "prealigned-outside-segment.json",
+            "word_timestamps",
+            json.dumps(
+                {
+                    "schema": "pandrator.transcript.v1",
+                    "segments": [
+                        {
+                            "id": "cue-000001",
+                            "start_ms": 1_900,
+                            "end_ms": 3_000,
+                            "text": "hello world",
+                            "words": [
+                                {"text": "hello", "start_ms": 1_800, "end_ms": 2_400},
+                                {"text": "world", "start_ms": 2_500, "end_ms": 2_900},
+                            ],
+                        },
+                        {
+                            "id": "cue-000002",
+                            "start_ms": 2_900,
+                            "end_ms": 3_900,
+                            "text": "overlap",
+                            "words": [
+                                {"text": "overlap", "start_ms": 3_000, "end_ms": 3_800}
+                            ],
+                        },
+                    ],
+                }
+            ),
+            "json",
+            parent_ids=[media.id],
+            metadata={
+                "alignment_method": "asr_lexical_projection",
+                "authoritative_transcript_artifact_id": captions.id,
+                "alignment_coverage": 1.0,
+            },
+        )
+
+        state = self._service().prepare(self.session_id)
+
+        self.assertEqual(state["plan"]["timing_artifact"]["id"], invalid.id)
+        self.assertEqual(
+            [cue["timing_source"] for cue in state["plan"]["cues"]],
+            ["caption", "caption"],
+        )
+        self.assertEqual(
+            [cue["start_ms"] for cue in state["plan"]["cues"]], [1000, 1800]
+        )
+        self.assertTrue(
+            any(
+                "failed its cue provenance or timing checks" in warning
+                for warning in state["plan"]["evidence"]["warnings"]
+            )
+        )
+
     def test_update_is_immutable_and_normalizes_ranges(self):
         self._seed_external()
         service = self._service()

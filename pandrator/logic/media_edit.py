@@ -11,7 +11,6 @@ import html
 import itertools
 import re
 import unicodedata
-from bisect import bisect_left
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from typing import Literal
@@ -264,6 +263,13 @@ def _text_tokens(text: str) -> list[tuple[str, str]]:
     ]
 
 
+# Alignment deliberately has a bounded temporal search area.  Keeping the
+# value here makes the safety boundary explicit while allowing callers that
+# have a more precise timing contract to choose a different padding.
+DEFAULT_ALIGNMENT_PADDING_MS = 2_000
+MAX_ALIGNMENT_WORD_SPAN_MS = 5_000
+
+
 def _interpolate_words(
     cue_tokens: Sequence[str],
     matches: dict[int, int],
@@ -304,88 +310,122 @@ def _interpolate_words(
 
 
 def align_cues_to_words(
-    cues: Sequence[MediaCue], words: Sequence[MediaWord]
+    cues: Sequence[MediaCue],
+    words: Sequence[MediaWord],
+    *,
+    padding_ms: int = DEFAULT_ALIGNMENT_PADDING_MS,
 ) -> tuple[MediaCue, ...]:
-    """Align caption tokens to monotonic ASR words using lexical matches."""
+    """Align caption tokens to cue-local, monotonic ASR word matches.
+
+    ASR words are evidence only when their complete spans fit inside the
+    caption cue's original interval plus ``padding_ms``.  Matching restarts
+    for every cue so a failed cue cannot move a global lexical cursor past
+    words that belong to a later cue; overlapping cues may therefore reuse
+    the same evidence.
+    """
 
     if not cues:
         return ()
+    _validate_time(padding_ms, "padding_ms")
     external_words = tuple(words)
-    normalized_words = [_normalise_token(word.text) for word in external_words]
-    positions_by_token: dict[str, list[int]] = {}
-    for word_index, token in enumerate(normalized_words):
-        if token:
-            positions_by_token.setdefault(token, []).append(word_index)
-    cursor = 0
-    previous_cue_end: int | None = None
-    previous_match_start: int | None = None
     aligned_cues: list[MediaCue] = []
     for cue in cues:
         cue_token_pairs = _text_tokens(cue.text)
         cue_tokens = [surface for surface, _normalized in cue_token_pairs]
         cue_match_tokens = [normalized for _surface, normalized in cue_token_pairs]
+        window_start = max(0, cue.start_ms - padding_ms)
+        window_end = cue.end_ms + padding_ms
+        candidate_positions = [
+            index
+            for index, word in enumerate(external_words)
+            if word.end_ms - word.start_ms <= MAX_ALIGNMENT_WORD_SPAN_MS
+            and word.start_ms >= window_start
+            and word.end_ms <= window_end
+        ]
+        positions_by_token: dict[str, list[int]] = {}
+        for word_index in candidate_positions:
+            token = _normalise_token(external_words[word_index].text)
+            if token:
+                positions_by_token.setdefault(token, []).append(word_index)
         matches: dict[int, int] = {}
-        search_index = cursor
-        if (
-            previous_cue_end is not None
-            and cue.start_ms < previous_cue_end
-            and previous_match_start is not None
-        ):
-            # Overlapping captions commonly repeat the last word of the
-            # preceding cue.  Reusing that lexical anchor preserves the
-            # source overlap while keeping the global search monotonic for
-            # non-overlapping cues.
-            search_index = previous_match_start
-        search_limit = min(
-            len(external_words),
-            search_index + max(400, len(cue_tokens) * 16),
-        )
-        for token_index, cue_token in enumerate(cue_tokens):
+        search_index = candidate_positions[0] if candidate_positions else 0
+        for token_index, _cue_token in enumerate(cue_tokens):
             positions = positions_by_token.get(cue_match_tokens[token_index], ())
-            position_index = bisect_left(positions, search_index)
-            if (
-                position_index >= len(positions)
-                or positions[position_index] >= search_limit
-            ):
+            match_index = next(
+                (position for position in positions if position >= search_index),
+                None,
+            )
+            if match_index is None:
                 continue
-            match_index = positions[position_index]
             matches[token_index] = match_index
             search_index = match_index + 1
-        if not matches:
+        confidence = len(matches) / max(1, len(cue_tokens))
+        accepts_alignment = bool(matches) and (
+            len(cue_tokens) == 1 or confidence > 0.5
+        )
+        if not accepts_alignment:
             aligned_cues.append(
-                replace(cue, timing_confidence=0.0, timing_source="caption")
+                replace(
+                    cue,
+                    words=(),
+                    timing_confidence=0.0,
+                    timing_source="caption",
+                )
             )
-            previous_cue_end = cue.end_ms
-            previous_match_start = None
             continue
         matched_words = _interpolate_words(cue_tokens, matches, external_words)
-        if not matched_words:
+        if not matched_words or any(
+            word.start_ms < window_start
+            or word.end_ms > window_end
+            or word.end_ms - word.start_ms > MAX_ALIGNMENT_WORD_SPAN_MS
+            for word in matched_words
+        ):
             aligned_cues.append(
-                replace(cue, timing_confidence=0.0, timing_source="caption")
+                replace(
+                    cue,
+                    words=(),
+                    timing_confidence=0.0,
+                    timing_source="caption",
+                )
             )
             continue
         first_word = external_words[min(matches.values())]
         last_word = external_words[max(matches.values())]
-        confidence = len(matches) / max(1, len(cue_tokens))
-        if confidence < 0.5:
+        first_token_matched = 0 in matches
+        final_token_matched = (len(cue_tokens) - 1) in matches
+        chosen_start = cue.start_ms
+        chosen_end = cue.end_ms
+        if (
+            first_token_matched
+            and abs(first_word.start_ms - cue.start_ms) <= padding_ms
+        ):
+            chosen_start = first_word.start_ms
+        if (
+            final_token_matched
+            and abs(last_word.end_ms - cue.end_ms) <= padding_ms
+        ):
+            chosen_end = last_word.end_ms
+        if (
+            chosen_end <= chosen_start
+            or any(
+                word.start_ms < chosen_start or word.end_ms > chosen_end
+                for word in matched_words
+            )
+        ):
             aligned_cues.append(
                 replace(
                     cue,
-                    timing_confidence=max(0.0, min(1.0, confidence)),
+                    words=(),
+                    timing_confidence=0.0,
                     timing_source="caption",
                 )
             )
-            previous_cue_end = cue.end_ms
-            previous_match_start = None
             continue
-        cursor = max(cursor, max(matches.values()) + 1)
-        previous_cue_end = cue.end_ms
-        previous_match_start = min(matches.values())
         aligned_cues.append(
             replace(
                 cue,
-                start_ms=first_word.start_ms,
-                end_ms=last_word.end_ms,
+                start_ms=chosen_start,
+                end_ms=chosen_end,
                 words=matched_words,
                 timing_confidence=max(0.0, min(1.0, confidence)),
                 timing_source="asr_alignment",

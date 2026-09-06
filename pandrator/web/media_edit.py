@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
+import unicodedata
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal
 
@@ -13,6 +15,8 @@ from sqlalchemy import select
 
 from pandrator.logic.dubbing.transcript_normalization import load_transcript
 from pandrator.logic.media_edit import (
+    DEFAULT_ALIGNMENT_PADDING_MS,
+    MAX_ALIGNMENT_WORD_SPAN_MS,
     BoundaryEvidence,
     KeepRange,
     MediaCue,
@@ -66,6 +70,7 @@ class _ArtifactSnapshot:
     id: str
     content_hash: str | None
     relative_path: str
+    metadata: dict[str, Any]
 
     @classmethod
     def from_artifact(cls, artifact: Artifact) -> _ArtifactSnapshot:
@@ -73,6 +78,7 @@ class _ArtifactSnapshot:
             id=artifact.id,
             content_hash=artifact.content_hash,
             relative_path=artifact.relative_path,
+            metadata=dict(artifact.metadata_json or {}),
         )
 
 
@@ -339,6 +345,171 @@ class MediaEditService:
         ).encode("utf-8")
         return hashlib.sha256(encoded).hexdigest()
 
+    @staticmethod
+    def _normalised_tokens(text: str) -> tuple[tuple[str, str], ...]:
+        return tuple(
+            (surface, normalized)
+            for surface in re.findall(r"\S+", text)
+            if (
+                normalized := "".join(
+                    character
+                    for character in unicodedata.normalize("NFKC", surface).casefold()
+                    if character.isalnum()
+                )
+            )
+        )
+
+    @classmethod
+    def _consume_pre_aligned_cues(
+        cls,
+        cues: list[MediaCue],
+        transcript,
+    ) -> tuple[MediaCue, ...] | None:
+        """Consume cue-owned timing without performing another projection.
+
+        A media-edit alignment artifact is trusted only when every canonical
+        segment is identified by the authoritative cue ID, has equivalent
+        normalized text, and its words remain plausible evidence for that
+        cue's original padded interval.
+        """
+
+        segments = tuple(transcript.segments)
+        segment_by_id: dict[str, Any] = {}
+        for segment in segments:
+            identifier = str(getattr(segment, "identifier", "") or "")
+            if not identifier or identifier in segment_by_id:
+                return None
+            segment_by_id[identifier] = segment
+        cue_ids = {cue.id for cue in cues}
+        if set(segment_by_id) != cue_ids:
+            return None
+
+        consumed: list[MediaCue] = []
+        for cue in cues:
+            segment = segment_by_id[cue.id]
+            if cls._normalised_tokens(str(segment.text or "")) != cls._normalised_tokens(
+                cue.text
+            ):
+                return None
+            cue_tokens = cls._normalised_tokens(cue.text)
+            segment_start = getattr(segment, "start_ms", None)
+            segment_end = getattr(segment, "end_ms", None)
+            if (
+                not isinstance(segment_start, int)
+                or isinstance(segment_start, bool)
+                or not isinstance(segment_end, int)
+                or isinstance(segment_end, bool)
+                or segment_end <= segment_start
+            ):
+                return None
+            window_start = max(0, cue.start_ms - DEFAULT_ALIGNMENT_PADDING_MS)
+            window_end = cue.end_ms + DEFAULT_ALIGNMENT_PADDING_MS
+            if (
+                segment_start < window_start
+                or segment_end > window_end
+            ):
+                return None
+            raw_words = tuple(getattr(segment, "words", ()) or ())
+            if not raw_words:
+                consumed.append(
+                    replace(
+                        cue,
+                        words=(),
+                        timing_confidence=0.0,
+                        timing_source="caption",
+                    )
+                )
+                continue
+
+            words: list[MediaWord] = []
+            word_keys: list[str] = []
+            previous_start = -1
+            for raw_word in raw_words:
+                try:
+                    word = MediaWord(
+                        text=str(getattr(raw_word, "text", "") or ""),
+                        start_ms=int(getattr(raw_word, "start_ms", None)),
+                        end_ms=int(getattr(raw_word, "end_ms", None)),
+                        confidence=getattr(raw_word, "confidence", None),
+                    )
+                except (TypeError, ValueError):
+                    return None
+                if (
+                    word.start_ms < window_start
+                    or word.end_ms > window_end
+                    or word.start_ms < segment_start
+                    or word.end_ms > segment_end
+                    or word.end_ms - word.start_ms > MAX_ALIGNMENT_WORD_SPAN_MS
+                    or word.start_ms < previous_start
+                ):
+                    return None
+                key = cls._normalised_tokens(word.text)
+                if not key:
+                    return None
+                words.append(word)
+                word_keys.append(key[0][1])
+                previous_start = word.start_ms
+
+            surfaces: list[str] = []
+            token_index = 0
+            for key in word_keys:
+                match_index = next(
+                    (
+                        index
+                        for index in range(token_index, len(cue_tokens))
+                        if cue_tokens[index][1] == key
+                    ),
+                    None,
+                )
+                if match_index is None:
+                    return None
+                surfaces.append(cue_tokens[match_index][0])
+                token_index = match_index + 1
+            lexical_coverage = len(surfaces) / max(1, len(cue_tokens))
+            if len(cue_tokens) > 1 and lexical_coverage <= 0.5:
+                return None
+            aligned_words = tuple(
+                replace(word, text=surface)
+                for word, surface in zip(words, surfaces, strict=True)
+            )
+            confidence = lexical_coverage
+            segment_metadata = dict(getattr(segment, "metadata", {}) or {})
+            try:
+                stored_confidence = segment_metadata.get("timing_confidence")
+                if stored_confidence is not None:
+                    confidence = float(stored_confidence)
+            except (TypeError, ValueError):
+                return None
+            if not 0 <= confidence <= 1:
+                return None
+            consumed.append(
+                replace(
+                    cue,
+                    start_ms=segment_start,
+                    end_ms=segment_end,
+                    words=aligned_words,
+                    timing_confidence=confidence,
+                    timing_source="asr_alignment",
+                )
+            )
+        return tuple(consumed)
+
+    @staticmethod
+    def _token_coverage(cues: list[MediaCue]) -> float:
+        total = 0
+        matched = 0
+        for cue in cues:
+            token_count = len(MediaEditService._normalised_tokens(cue.text))
+            total += token_count
+            confidence = cue.timing_confidence
+            if (
+                cue.timing_source == "asr_alignment"
+                and cue.words
+                and confidence is not None
+            ):
+                matched += min(token_count, max(0, round(token_count * confidence)))
+        return matched / total if total else 0.0
+
     @classmethod
     def _revision_snapshot(cls, revision: MediaEditPlanRevision) -> dict[str, Any]:
         return {
@@ -463,40 +634,81 @@ class MediaEditService:
         duration_ms: int,
         *,
         external: bool,
+        timing_metadata: dict[str, Any] | None = None,
+        authoritative_artifact_id: str | None = None,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         text = editorial_path.read_text(encoding="utf-8-sig")
         cues = parse_caption_text(text)
         warnings: list[str] = []
         timing_words: list[MediaWord] = []
+        reused_alignment = False
         if timing_path is not None:
             try:
                 transcript = load_transcript(timing_path)
-                timing_words = [
-                    MediaWord(
-                        text=word.text,
-                        start_ms=word.start_ms,
-                        end_ms=word.end_ms,
-                        confidence=word.confidence,
+                metadata = dict(timing_metadata or {})
+                is_alignment_artifact = bool(metadata.get("alignment_method"))
+                same_authoritative_source = (
+                    is_alignment_artifact
+                    and str(metadata.get("authoritative_transcript_artifact_id") or "")
+                    == str(authoritative_artifact_id or "")
+                )
+                if is_alignment_artifact and not same_authoritative_source:
+                    aligned = cues
+                    warnings.append(
+                        "The pre-aligned word-timing artifact does not match the "
+                        "current authoritative transcript; caption timing was preserved."
                     )
-                    for word in transcript.words
-                ]
+                elif same_authoritative_source:
+                    try:
+                        stored_coverage = float(
+                            metadata.get(
+                                "alignment_coverage",
+                                metadata.get("coverage"),
+                            )
+                        )
+                    except (TypeError, ValueError):
+                        stored_coverage = 0.0
+                    if stored_coverage >= 0.5:
+                        direct = self._consume_pre_aligned_cues(cues, transcript)
+                        if direct is not None and self._token_coverage(list(direct)) >= 0.5:
+                            aligned = direct
+                            reused_alignment = True
+                        else:
+                            aligned = cues
+                            warnings.append(
+                                "The pre-aligned word-timing artifact failed its "
+                                "cue provenance or timing checks; caption timing was preserved."
+                            )
+                    else:
+                        aligned = cues
+                        warnings.append(
+                            "The pre-aligned word-timing artifact has coverage below "
+                            "0.5; caption timing was preserved."
+                        )
+                else:
+                    timing_words = [
+                        MediaWord(
+                            text=word.text,
+                            start_ms=word.start_ms,
+                            end_ms=word.end_ms,
+                            confidence=word.confidence,
+                        )
+                        for word in transcript.words
+                    ]
+                    aligned = align_cues_to_words(cues, timing_words)
             except (OSError, ValueError, TypeError):
                 timing_words = []
                 warnings.append(
                     "The word-timing artifact could not be used for alignment."
                 )
-        aligned = align_cues_to_words(cues, timing_words) if timing_words else cues
+                aligned = cues
+        else:
+            aligned = cues
         cue_payloads = [self._cue_payload(cue) for cue in aligned]
-        aligned_cues = [
-            cue
-            for cue in aligned
-            if str(getattr(cue, "timing_source", "caption")) == "asr_alignment"
-        ]
-        coverage = len(aligned_cues) / len(aligned) if aligned else 0.0
+        coverage = self._token_coverage(aligned)
         confidence_values = [
-            float(confidence)
+            float(cue.timing_confidence or 0.0)
             for cue in aligned
-            if (confidence := getattr(cue, "timing_confidence", None)) is not None
         ]
         if (
             external
@@ -507,7 +719,7 @@ class MediaEditService:
                 "External transcript timing extends beyond the probed media duration; "
                 "caption spans were preserved without clipping."
             )
-        if external and not timing_words:
+        if external and not timing_words and not reused_alignment:
             warnings.append(
                 "No ASR timing was available to verify that the attached captions "
                 "match this recording; confirm the pairing before rendering."
@@ -525,7 +737,7 @@ class MediaEditService:
             )
             if confidence_values
             else 0.0,
-            "timing_available": bool(timing_words),
+            "timing_available": bool(timing_words) or reused_alignment,
             "warnings": warnings,
         }
         return cue_payloads, evidence
@@ -542,6 +754,12 @@ class MediaEditService:
             timing_path,
             duration_ms,
             external=input_snapshot.external_editorial,
+            timing_metadata=(
+                dict(input_snapshot.timing.metadata)
+                if input_snapshot.timing is not None
+                else None
+            ),
+            authoritative_artifact_id=input_snapshot.editorial.id,
         )
         keep_ranges = [
             {"id": "keep-000001", "start_ms": 0, "end_ms": duration_ms, "label": None}

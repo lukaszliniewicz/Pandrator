@@ -107,6 +107,30 @@
       stage.key
     )
   );
+  const captionAlignment = $derived.by(() => {
+    const metadata = stage.artifact?.metadata_json;
+    if (!metadata || metadata.alignment_method !== 'asr_lexical_projection')
+      return null;
+    const rawCoverage = Number(
+      metadata.alignment_coverage ?? metadata.coverage ?? 0
+    );
+    const rawConfidence = Number(
+      metadata.alignment_confidence ?? metadata.confidence ?? 0
+    );
+    const coverage = Number.isFinite(rawCoverage)
+      ? Math.max(0, Math.min(1, rawCoverage))
+      : 0;
+    const confidence = Number.isFinite(rawConfidence)
+      ? Math.max(0, Math.min(1, rawConfidence))
+      : 0;
+    return {
+      coverage,
+      confidence,
+      wordCount: Math.max(0, Number(metadata.word_count ?? 0) || 0),
+      engine: String(metadata.engine ?? metadata.model ?? '').trim(),
+      reliable: coverage >= 0.5
+    };
+  });
 
   const StatusIcon = $derived(statusIcon(stage.status));
 </script>
@@ -149,6 +173,35 @@
         <p class="muted mt-1.5 max-w-2xl text-sm leading-relaxed">
           {stage.explanation}
         </p>
+
+        {#if captionAlignment}
+          <div
+            class:alignment-warning={!captionAlignment.reliable}
+            class="alignment-result mt-3 max-w-2xl rounded-xl border px-3.5 py-3 text-sm"
+            role={captionAlignment.reliable ? 'status' : 'alert'}
+          >
+            <div class="flex items-center gap-2 font-semibold">
+              {#if captionAlignment.reliable}<Check
+                  size={15}
+                />{:else}<CircleAlert size={15} />{/if}
+              {captionAlignment.reliable
+                ? 'Caption word timing is ready'
+                : 'Caption alignment is unreliable'}
+            </div>
+            <p class="muted mt-1 text-xs leading-relaxed">
+              {Math.round(captionAlignment.coverage * 100)}% of caption words
+              aligned · {Math.round(captionAlignment.confidence * 100)}% mean
+              cue confidence{captionAlignment.wordCount
+                ? ` · ${captionAlignment.wordCount.toLocaleString()} timed words`
+                : ''}{captionAlignment.engine
+                ? ` · ${captionAlignment.engine}`
+                : ''}.
+              {captionAlignment.reliable
+                ? ' The timing is stored with the caption transcript; rebuild an existing edit timeline to consume it.'
+                : ' Keep the Zoom cue timing and run alignment again; these word times must not be used for cut refinement.'}
+            </p>
+          </div>
+        {/if}
 
         {#if stage.key === 'generate_audio' && stage.resolved_input}
           <div
@@ -423,5 +476,13 @@
     box-shadow: none;
     filter: saturate(0.45);
     opacity: 0.72;
+  }
+  .alignment-result {
+    border-color: color-mix(in srgb, var(--success) 35%, var(--line));
+    background: color-mix(in srgb, var(--success) 8%, transparent);
+  }
+  .alignment-result.alignment-warning {
+    border-color: color-mix(in srgb, var(--warning) 45%, var(--line));
+    background: color-mix(in srgb, var(--warning) 10%, transparent);
   }
 </style>
