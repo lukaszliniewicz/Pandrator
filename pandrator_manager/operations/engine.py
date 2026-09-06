@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import queue
+import sqlite3
 import threading
 from _thread import RLock as RLockType
 from collections.abc import Callable
@@ -33,7 +34,20 @@ class _StoreCancellation:
 
     @property
     def requested(self) -> bool:
-        return self.store.cancellation_requested(self.operation_id)
+        try:
+            return self.store.cancellation_requested(self.operation_id)
+        except sqlite3.OperationalError as error:
+            if "locked" not in str(error).casefold():
+                raise
+            # Cancellation is polled repeatedly while the child process runs.
+            # A transient busy database must not turn into task failure; the
+            # next poll will observe the durable flag after the writer commits.
+            logging.warning(
+                "Manager database was busy while polling cancellation for %s; "
+                "the operation remains active and will retry.",
+                self.operation_id,
+            )
+            return False
 
     def raise_if_requested(self) -> None:
         if self.requested:

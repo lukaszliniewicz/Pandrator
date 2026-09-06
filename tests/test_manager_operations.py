@@ -1,4 +1,5 @@
 import shutil
+import sqlite3
 import sys
 import tempfile
 import threading
@@ -31,6 +32,7 @@ from pandrator_manager.models import (
     TaskState,
 )
 from pandrator_manager.operations import OperationEngine
+from pandrator_manager.operations.engine import _StoreCancellation
 from pandrator_manager.operations.handlers import (
     FilesystemTaskHandler,
     OperationTaskContext,
@@ -82,6 +84,26 @@ def _wait(application, operation_id: str, timeout: float = 10):
 
 
 class OperationEngineTests(unittest.TestCase):
+    def test_transient_database_lock_does_not_abort_subprocess_cancellation_poll(self):
+        store = mock.Mock()
+        store.cancellation_requested.side_effect = sqlite3.OperationalError(
+            "database is locked"
+        )
+        cancellation = _StoreCancellation(store, "operation-one")
+
+        with self.assertLogs(level="WARNING"):
+            self.assertFalse(cancellation.requested)
+
+    def test_cancellation_poll_does_not_hide_other_database_errors(self):
+        store = mock.Mock()
+        store.cancellation_requested.side_effect = sqlite3.OperationalError(
+            "disk I/O error"
+        )
+        cancellation = _StoreCancellation(store, "operation-one")
+
+        with self.assertRaisesRegex(sqlite3.OperationalError, "disk I/O"):
+            cancellation.requested
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)

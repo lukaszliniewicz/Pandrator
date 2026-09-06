@@ -65,7 +65,6 @@ class ManagerStore:
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute(f"PRAGMA busy_timeout={self.busy_timeout_ms}")
-        connection.execute("PRAGMA journal_mode=WAL")
         return connection
 
     @contextmanager
@@ -87,6 +86,11 @@ class ManagerStore:
         with self._write_lock:
             connection = self._connect()
             try:
+                # Journal mode is persistent database state. Reassert it once
+                # during single-daemon initialization, not on every short-lived
+                # reader: concurrent PRAGMA journal_mode calls can themselves
+                # raise SQLITE_BUSY while an operation is being journalled.
+                connection.execute("PRAGMA journal_mode=WAL")
                 connection.execute("BEGIN IMMEDIATE")
                 version = migrate(connection)
                 connection.commit()

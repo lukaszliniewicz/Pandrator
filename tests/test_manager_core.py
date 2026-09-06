@@ -247,6 +247,30 @@ class ManagerMcpConfigCliTests(unittest.TestCase):
 
 
 class StateStoreTests(unittest.TestCase):
+    def test_wal_mode_is_configured_at_initialization_not_each_read(self):
+        with tempfile.TemporaryDirectory() as directory:
+            statements: list[str] = []
+            real_connect = sqlite3.connect
+
+            def tracked_connect(*args, **kwargs):
+                connection = real_connect(*args, **kwargs)
+                connection.set_trace_callback(statements.append)
+                return connection
+
+            with mock.patch(
+                "pandrator_manager.state.store.sqlite3.connect",
+                side_effect=tracked_connect,
+            ):
+                store = ManagerStore(Path(directory) / "manager.sqlite3")
+                self.assertTrue(
+                    any("PRAGMA journal_mode=WAL" in item for item in statements)
+                )
+                statements.clear()
+
+                store.configuration_revision()
+
+            self.assertFalse(any("PRAGMA journal_mode" in item for item in statements))
+
     def test_schema_and_typed_state_survive_restart(self):
         with tempfile.TemporaryDirectory() as directory:
             database = Path(directory) / "manager.sqlite3"
