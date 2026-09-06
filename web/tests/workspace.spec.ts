@@ -104,6 +104,9 @@ test('media-edit wizard attaches a reused recording and uploaded captions with c
   await page.getByRole('button', { name: 'Continue' }).click();
   await page.getByRole('button', { name: 'Review', exact: true }).click();
   await page.getByLabel('Session name').fill(sessionName);
+  await expect(
+    page.getByRole('dialog').getByText('Transcribe', { exact: true })
+  ).toHaveCount(0);
 
   const sessionNameBox = await page.getByLabel('Session name').boundingBox();
   const pipelineBox = await page.getByText('Prepared pipeline').boundingBox();
@@ -128,6 +131,45 @@ test('media-edit wizard attaches a reused recording and uploaded captions with c
     (item: { attachment: { role: string } }) => item.attachment.role
   );
   expect(roles).toEqual(expect.arrayContaining(['primary', 'transcript']));
+
+  const outcome = await page.request.get(
+    `/api/v1/sessions/${created.id}/outcome-plan`
+  );
+  expect(outcome.ok()).toBeTruthy();
+  expect(
+    (await outcome.json()).pipeline.map((stage: { key: string }) => stage.key)
+  ).toEqual(['edit_media', 'export']);
+
+  const workflow = await page.request.get(
+    `/api/v1/sessions/${created.id}/workflow`
+  );
+  expect(workflow.ok()).toBeTruthy();
+  const stages = (await workflow.json()).stages as Array<{
+    key: string;
+    included: boolean;
+    executable: boolean;
+  }>;
+  expect(stages.find((stage) => stage.key === 'transcribe')?.included).toBe(
+    false
+  );
+  expect(stages.find((stage) => stage.key === 'edit_media')).toMatchObject({
+    included: true,
+    executable: false
+  });
+
+  await expect(page.getByText('optional', { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole('button', { name: 'Improve timing' })
+  ).toBeVisible();
+  await page.route('**/api/v1/artifacts/**/waveform**', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({ points: [0, 0.4, 0.1, 0.3] })
+    });
+  });
+  await page.getByRole('button', { name: 'Open editor' }).click();
+  await expect(page).toHaveURL(`/sessions/${created.id}/edit`);
+  await expect(page.getByText('Editorial transcript')).toBeVisible();
 });
 
 test('correction and translation cards expose independent reasoning levels', async ({

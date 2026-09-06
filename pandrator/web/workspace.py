@@ -1348,6 +1348,7 @@ class OutcomePlanService:
                 key
                 for key in (
                     "transcribe",
+                    "edit_media",
                     "correct",
                     "translate",
                     "optimize_tts",

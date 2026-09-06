@@ -110,8 +110,8 @@
   );
   const needsTranscription = $derived(
     kind !== 'audiobook' &&
-      (kind === 'media_edit' || !isSrt) &&
-      sourceMode !== 'later'
+      sourceMode !== 'later' &&
+      (kind === 'media_edit' ? !captionFile : !isSrt)
   );
   const pipeline = $derived([
     ...(kind === 'audiobook'
@@ -416,7 +416,6 @@
       }
       progress = 0.97;
       progressDetail = 'Opening workspace';
-      await appState.refresh();
       progress = 1;
       location.href = `/sessions/${session.id}`;
     } catch (caught) {
@@ -749,7 +748,7 @@
           </p>
         </div>
       </div>
-      {#if duplicateSession}
+      {#if duplicateSession && !creating}
         <div
           role="alert"
           class="mt-5 rounded-2xl border border-amber-400/50 bg-amber-500/10 p-4"

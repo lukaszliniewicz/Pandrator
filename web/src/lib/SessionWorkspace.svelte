@@ -424,6 +424,10 @@
     confirmed = false,
     reuseStages: string[] = []
   ) {
+    if (stage.key === 'edit_media') {
+      location.href = `/sessions/${session.id}/edit`;
+      return;
+    }
     if (stage.key === 'preview') {
       const artifactId = defaultReviewArtifactId();
       if (artifactId) await openSubtitleReview(artifactId);
@@ -2432,6 +2436,9 @@
         <WorkflowStageCard
           {stage}
           {workspaceMode}
+          optional={session.workflow_kind === 'media_edit' &&
+            stage.key === 'transcribe' &&
+            !stage.included}
           historyLoading={Boolean(historyLoading[stage.key])}
           onsettings={() => openSettings(stage)}
           ontoggle={toggleSpeechOptimization}

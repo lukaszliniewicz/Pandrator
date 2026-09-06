@@ -7,6 +7,7 @@
     Eye,
     LoaderCircle,
     Play,
+    Scissors,
     Settings2,
     Sparkles
   } from '@lucide/svelte';
@@ -18,6 +19,7 @@
   let {
     stage,
     workspaceMode,
+    optional = false,
     historyLoading = false,
     onsettings,
     ontoggle,
@@ -33,6 +35,7 @@
   }: {
     stage: WorkflowStage;
     workspaceMode: 'review' | 'automatic';
+    optional?: boolean;
     historyLoading?: boolean;
     onsettings: () => void;
     ontoggle: (enabled: boolean) => void;
@@ -136,7 +139,9 @@
               ? stage.enabled
                 ? 'enabled'
                 : 'disabled'
-              : stage.status}
+              : optional && stage.status === 'ready'
+                ? 'optional'
+                : stage.status}
           </span>
         </div>
         <p class="muted mt-1.5 max-w-2xl text-sm leading-relaxed">
@@ -364,9 +369,11 @@
                   ? 'Resume'
                   : stage.status === 'failed'
                     ? 'Retry'
-                    : stage.artifact
-                      ? 'Run again'
-                      : 'Run now'}
+                    : optional && stage.key === 'transcribe'
+                      ? 'Improve timing'
+                      : stage.artifact
+                        ? 'Run again'
+                        : 'Run now'}
             </button>
           {/if}
         {/if}
@@ -376,7 +383,11 @@
           disabled={stage.status === 'unavailable'}
           class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-35"
         >
-          <Sparkles size={16} /> Open comparison
+          {#if stage.key === 'edit_media'}
+            <Scissors size={16} /> Open editor
+          {:else}
+            <Sparkles size={16} /> Open comparison
+          {/if}
         </button>
       {/if}
     </div>

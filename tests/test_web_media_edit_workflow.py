@@ -11,6 +11,7 @@ from pandrator.web.models import OutcomePlan, SessionSource, SourceAsset
 from pandrator.web.sessions import SessionService
 from pandrator.web.workflow_handlers import WorkflowHandlers
 from pandrator.web.workflows import MEDIA_EDIT_STAGES, WorkflowService
+from pandrator.web.workspace import OutcomePlanService
 
 
 class MediaEditWorkflowTests(unittest.TestCase):
@@ -133,6 +134,21 @@ class MediaEditWorkflowTests(unittest.TestCase):
         edit = next(stage for stage in MEDIA_EDIT_STAGES if stage.key == "edit_media")
         self.assertFalse(edit.executable)
         self.assertEqual(("media_edit_subtitles",), STAGE_OUTPUT_ROLES["edit_media"])
+
+    def test_outcome_plan_projection_retains_media_edit_stage(self):
+        service = OutcomePlanService(self.database)
+        current = service.get(self.record.id)
+
+        updated = service.update(
+            self.record.id,
+            current["revision"],
+            current["value"],
+        )
+
+        self.assertIn("edit_media", [item["key"] for item in updated["pipeline"]])
+        with self.database.session() as session:
+            record = session.get(type(self.record), self.record.id)
+            self.assertIn("edit_media", record.included_stages_json)
 
     def test_edited_subtitles_feed_text_stages_and_generation(self):
         edited_subtitles = self._artifact(
