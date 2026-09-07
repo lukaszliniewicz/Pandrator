@@ -1150,13 +1150,99 @@ class ApplicationClient:
             maximum_body_bytes=4 * 1024 * 1024,
         )
 
+    def create_media_edit_dispatch_run(
+        self,
+        session_id: str,
+        *,
+        revision: int,
+        instructions: str,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/sessions/{quote(session_id, safe='')}/media-edit-dispatch-runs",
+            method="POST",
+            body={"revision": int(revision), "instructions": instructions},
+            idempotency_key=idempotency_key,
+        )
+
+    def list_media_edit_dispatch_runs(
+        self,
+        session_id: str,
+        *,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/sessions/{quote(session_id, safe='')}/media-edit-dispatch-runs",
+            parameters={"limit": max(1, min(int(limit), 100))},
+        )
+
+    def get_media_edit_dispatch_run(self, run_id: str) -> dict[str, Any]:
+        return self._request_json(f"/api/v1/media-edit-dispatch-runs/{quote(run_id, safe='')}")
+
+    def claim_media_edit_dispatch_batch(
+        self,
+        run_id: str,
+        *,
+        lease_seconds: int,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/media-edit-dispatch-runs/{quote(run_id, safe='')}/claim",
+            method="POST",
+            body={"lease_seconds": int(lease_seconds)},
+            idempotency_key=idempotency_key,
+        )
+
+    def renew_media_edit_dispatch_batch(
+        self,
+        batch_id: str,
+        *,
+        lease_token: str,
+        lease_seconds: int,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/media-edit-dispatch-batches/{quote(batch_id, safe='')}/renew",
+            method="POST",
+            body={"lease_token": lease_token, "lease_seconds": int(lease_seconds)},
+            idempotency_key=idempotency_key,
+        )
+
+    def release_media_edit_dispatch_batch(
+        self,
+        batch_id: str,
+        *,
+        lease_token: str,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/media-edit-dispatch-batches/{quote(batch_id, safe='')}/release",
+            method="POST",
+            body={"lease_token": lease_token},
+            idempotency_key=idempotency_key,
+        )
+
+    def submit_media_edit_dispatch_batch(
+        self,
+        batch_id: str,
+        *,
+        lease_token: str,
+        result: dict[str, Any],
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/media-edit-dispatch-batches/{quote(batch_id, safe='')}/submit",
+            method="POST",
+            body={"lease_token": lease_token, "result": result},
+            idempotency_key=idempotency_key,
+            maximum_body_bytes=4 * 1024 * 1024,
+        )
+
     def get_session(self, session_id: str) -> dict[str, Any]:
         return self._request_json(f"/api/v1/sessions/{quote(session_id, safe='')}")
 
     def get_media_edit(self, session_id: str) -> dict[str, Any]:
-        return self._request_json(
-            f"/api/v1/sessions/{quote(session_id, safe='')}/media-edit"
-        )
+        return self._request_json(f"/api/v1/sessions/{quote(session_id, safe='')}/media-edit")
 
     def prepare_media_edit(
         self,

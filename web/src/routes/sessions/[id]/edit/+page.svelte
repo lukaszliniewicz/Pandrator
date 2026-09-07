@@ -28,6 +28,7 @@
   } from '$lib/domain-api';
   import type {
     JobRecord,
+    MediaEditDispatchRun,
     MediaEditPlan,
     MediaEditRange,
     MediaEditState
@@ -68,12 +69,20 @@
   let captionTrackUrl = $state('');
   let cutSequence = 0;
   let proposalOpen = $state(false);
+  let proposalMode = $state<'passive' | 'configured'>('passive');
   let proposalModel = $state('default');
   let proposalModels = $state<
     { value: string; label: string; isDefault: boolean }[]
   >([]);
   let proposalModelsLoading = $state(false);
   let proposalModelsError = $state('');
+  let passiveRun = $state<MediaEditDispatchRun | null>(null);
+  let passivePollTimer: number | undefined;
+
+  const passiveActive = $derived(
+    passiveRun != null &&
+      ['ready', 'running', 'finalizing'].includes(passiveRun.status)
+  );
 
   const activeCue = $derived(
     plan?.cues.find(
@@ -114,8 +123,7 @@
       return null;
     const evidence = plan.evidence;
     const counts =
-      evidence.alignment_counts &&
-      typeof evidence.alignment_counts === 'object'
+      evidence.alignment_counts && typeof evidence.alignment_counts === 'object'
         ? (evidence.alignment_counts as Record<string, unknown>)
         : {};
     const method = String(evidence.alignment_method ?? '');
@@ -205,8 +213,7 @@
           evidenceNumber(counts, 'oversized_cue_count')
       ),
       fallbackUsed:
-        evidence.fallback_used === true ||
-        evidence.fallback_triggered === true,
+        evidence.fallback_used === true || evidence.fallback_triggered === true,
       reliable: coverage >= 0.5 && eligibleCoverage >= 0.5
     };
   });
@@ -368,6 +375,7 @@
     try {
       adopt(await mediaEditApi.state(sessionId));
       if (workspaceState?.readiness.source_media_artifact) void loadWaveform();
+      void loadLatestPassiveRun();
     } catch (caught) {
       error = errorMessage(caught);
     }
@@ -489,6 +497,9 @@
             };
           })
       );
+      const selected =
+        proposalModels.find((item) => item.isDefault) ?? proposalModels[0];
+      proposalModel = selected?.value ?? 'default';
     } catch (caught) {
       proposalModelsError = errorMessage(caught);
     } finally {
@@ -593,6 +604,69 @@
     }
   }
 
+  function schedulePassivePoll() {
+    if (passivePollTimer !== undefined) window.clearTimeout(passivePollTimer);
+    passivePollTimer = undefined;
+    if (!passiveActive || !passiveRun) return;
+    passivePollTimer = window.setTimeout(() => void pollPassiveRun(), 1200);
+  }
+
+  async function pollPassiveRun() {
+    if (!passiveRun) return;
+    try {
+      const current = await mediaEditApi.dispatchRun(passiveRun.id);
+      passiveRun = current;
+      if (current.status === 'completed') {
+        await load();
+        message =
+          'The passive proposal is ready. Review every red range before rendering.';
+      } else if (current.status === 'failed') {
+        error = current.error_message || 'The passive media-edit task failed.';
+      }
+    } catch (caught) {
+      error = errorMessage(caught);
+    } finally {
+      schedulePassivePoll();
+    }
+  }
+
+  async function loadLatestPassiveRun() {
+    try {
+      const payload = await mediaEditApi.dispatchRuns(sessionId, 20);
+      const active = payload.items.find((item) =>
+        ['ready', 'running', 'finalizing'].includes(item.status)
+      );
+      passiveRun = active ?? payload.items[0] ?? null;
+      schedulePassivePoll();
+    } catch {
+      // The editable plan remains usable if passive-run status is unavailable.
+    }
+  }
+
+  async function createPassiveProposal() {
+    if (!plan || !instructions.trim()) return;
+    error = '';
+    message = '';
+    const saved = await save(false);
+    if (!saved) return;
+    busy = 'passive';
+    try {
+      passiveRun = await mediaEditApi.createDispatch(
+        sessionId,
+        saved.revision,
+        instructions
+      );
+      proposalOpen = false;
+      message =
+        'Passive task created. A connected MCP agent can now claim the transcript and submit a proposal.';
+      schedulePassivePoll();
+    } catch (caught) {
+      error = errorMessage(caught);
+    } finally {
+      busy = '';
+    }
+  }
+
   async function render() {
     if (!plan) return;
     busy = 'render';
@@ -691,6 +765,7 @@
   onMount(load);
   onDestroy(() => {
     if (pollTimer !== undefined) window.clearTimeout(pollTimer);
+    if (passivePollTimer !== undefined) window.clearTimeout(passivePollTimer);
     if (detailTimer !== undefined) window.clearTimeout(detailTimer);
     stopPlaybackTracking();
     detailRequest?.abort();
@@ -728,8 +803,8 @@
         ><button
           onclick={openProposal}
           disabled={Boolean(busy)}
-          title="Choose an LLM and ask it to propose removable transcript spans. Nothing is rendered automatically."
-          class="secondary"><Sparkles size={15} /> Process with LLM</button
+          title="Create a provider-free task for a connected MCP agent, or run the proposal with a configured LLM. Nothing is rendered automatically."
+          class="secondary"><Sparkles size={15} /> Process</button
         ><button
           onclick={render}
           disabled={Boolean(busy)}
@@ -770,6 +845,58 @@
         >
       </div>
     </div>{/if}
+
+  {#if passiveRun}<section
+      class="surface rounded-2xl border border-[var(--accent)]/30 p-4"
+      aria-live="polite"
+    >
+      <div class="flex min-w-0 items-start gap-3">
+        {#if passiveRun.status === 'ready'}<Bot
+            class="mt-0.5 shrink-0 text-[var(--accent)]"
+            size={19}
+          />{:else if ['running', 'finalizing'].includes(passiveRun.status)}<LoaderCircle
+            class="mt-0.5 shrink-0 animate-spin text-[var(--accent)]"
+            size={19}
+          />{:else if passiveRun.status === 'completed'}<Check
+            class="mt-0.5 shrink-0 text-emerald-500"
+            size={19}
+          />{:else}<CircleAlert
+            class="mt-0.5 shrink-0 text-red-500"
+            size={19}
+          />{/if}
+        <div class="min-w-0 flex-1">
+          <div class="flex flex-wrap items-center gap-2">
+            <strong class="text-sm"
+              >{passiveRun.status === 'ready'
+                ? 'Waiting for an MCP agent'
+                : passiveRun.status === 'running'
+                  ? 'Agent is reviewing the recording'
+                  : passiveRun.status === 'finalizing'
+                    ? 'Applying the passive proposal'
+                    : passiveRun.status === 'completed'
+                      ? 'Passive proposal applied'
+                      : 'Passive task failed'}</strong
+            >
+            <span class="badge">provider-free</span>
+          </div>
+          <p class="muted mt-1 text-xs leading-relaxed">
+            {passiveRun.status === 'ready'
+              ? 'This durable task is ready to be claimed through Pandrator MCP. You can leave this page open or return later.'
+              : passiveRun.status === 'running'
+                ? 'The transcript and exact source revision are leased to an external agent. Pandrator will reject a stale result rather than rebase it.'
+                : passiveRun.status === 'finalizing'
+                  ? 'The submitted cue ranges are being validated and refined against local timing evidence.'
+                  : passiveRun.status === 'completed'
+                    ? 'A new unreviewed edit-plan revision was created. Review every red range before rendering.'
+                    : passiveRun.error_message ||
+                      'The task did not create a new edit-plan revision.'}
+          </p>
+          <p class="muted mt-1 font-mono text-[.62rem]">
+            task {passiveRun.id}
+          </p>
+        </div>
+      </div>
+    </section>{/if}
 
   {#if !workspaceState}<section
       class="surface grid min-h-56 place-items-center rounded-2xl"
@@ -1115,21 +1242,60 @@
         <div class="min-w-0">
           <div class="eyebrow">Transcript-guided edit</div>
           <h2 id="proposal-title" class="mt-1 text-2xl font-semibold">
-            Process with LLM
+            Process the transcript
           </h2>
           <p class="muted mt-2 text-sm leading-relaxed">
-            The model proposes removable transcript spans. Pandrator refines
-            their edges against word timing and speech gaps; you still review
-            every red range before rendering.
+            Choose where the editorial reasoning runs. Pandrator refines every
+            submitted cue boundary against local word timing and speech gaps;
+            you still review the red ranges before rendering.
           </p>
         </div>
         <button
           onclick={() => (proposalOpen = false)}
-          aria-label="Close LLM proposal settings"
+          aria-label="Close transcript processing settings"
           class="rounded-lg p-2"><X size={19} /></button
         >
       </div>
       <div class="mt-6 grid gap-5">
+        <div>
+          <div class="text-sm font-semibold">Processing mode</div>
+          <div
+            class="mt-2 grid gap-2 sm:grid-cols-2"
+            role="group"
+            aria-label="Transcript processing mode"
+          >
+            <button
+              type="button"
+              class:active={proposalMode === 'passive'}
+              class="proposal-mode"
+              aria-pressed={proposalMode === 'passive'}
+              onclick={() => (proposalMode = 'passive')}
+            >
+              <span class="proposal-mode-heading"
+                ><Bot size={17} /> Passive agent
+                <span class="badge">recommended</span></span
+              >
+              <span class="muted"
+                >Create a durable MCP task. No configured provider or billing is
+                required.</span
+              >
+            </button>
+            <button
+              type="button"
+              class:active={proposalMode === 'configured'}
+              class="proposal-mode"
+              aria-pressed={proposalMode === 'configured'}
+              onclick={() => (proposalMode = 'configured')}
+            >
+              <span class="proposal-mode-heading"
+                ><Sparkles size={17} /> Configured LLM</span
+              >
+              <span class="muted"
+                >Run inside Pandrator with one of your enabled provider models.</span
+              >
+            </button>
+          </div>
+        </div>
         <label class="text-sm font-semibold" for="media-edit-instructions"
           >Editing instructions<textarea
             id="media-edit-instructions"
@@ -1138,40 +1304,76 @@
             class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] p-3 font-normal leading-relaxed text-[var(--ink)]"
           ></textarea></label
         >
-        <label class="text-sm font-semibold"
-          >LLM model<select
-            bind:value={proposalModel}
-            disabled={proposalModelsLoading}
-            class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal disabled:opacity-50"
-            ><option value="default"
-              >{proposalModelsLoading
-                ? 'Loading configured models…'
-                : 'Application default'}</option
-            >{#each proposalModels as item}<option value={item.value}
-                >{item.label}{item.isDefault ? ' · default' : ''}</option
-              >{/each}</select
-          ></label
-        >
-        {#if proposalModelsError}<p role="alert" class="text-xs text-red-500">
-            {proposalModelsError}
-          </p>{/if}
-        <a
-          href="/providers"
-          class="w-fit text-xs font-semibold text-[var(--accent)]"
-          >Manage LLM models and connections</a
-        >
+        {#if proposalMode === 'passive'}<div
+            class="rounded-xl border border-[var(--accent)]/30 bg-[var(--accent-soft)] p-4 text-sm"
+          >
+            <strong
+              >{passiveActive
+                ? 'A passive task is already active'
+                : 'What happens next'}</strong
+            >
+            <p class="muted mt-1 text-xs leading-relaxed">
+              {passiveActive
+                ? `Task ${passiveRun?.id ?? ''} is still waiting, running, or applying its result. You can monitor it above, or choose Configured LLM without creating a duplicate passive task.`
+                : 'A connected agent claims one whole-recording transcript lease, submits cue ranges and reasons, and Pandrator applies the result only if this exact revision is still current. You may leave this page and return later.'}
+            </p>
+          </div>{:else}<div class="grid gap-3">
+            <label class="text-sm font-semibold"
+              >LLM model<select
+                bind:value={proposalModel}
+                disabled={proposalModelsLoading || !proposalModels.length}
+                class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal disabled:opacity-50"
+                >{#if proposalModelsLoading}<option value="default"
+                    >Loading configured models…</option
+                  >{:else if !proposalModels.length}<option value="default"
+                    >No active models configured</option
+                  >{:else}{#each proposalModels as item}<option
+                      value={item.value}
+                      >{item.label}{item.isDefault ? ' · default' : ''}</option
+                    >{/each}{/if}</select
+              ></label
+            >
+            {#if proposalModelsError}<p
+                role="alert"
+                class="text-xs text-red-500"
+              >
+                {proposalModelsError}
+              </p>{:else if !proposalModelsLoading && !proposalModels.length}<p
+                class="rounded-xl bg-amber-500/10 p-3 text-xs leading-relaxed text-amber-600"
+              >
+                No enabled LLM model is available. Use passive mode or configure
+                a provider first.
+              </p>{/if}
+            <a
+              href="/providers"
+              class="w-fit text-xs font-semibold text-[var(--accent)]"
+              >Manage LLM models and connections</a
+            >
+          </div>{/if}
       </div>
       <div class="mt-7 flex flex-wrap justify-end gap-3">
         <button onclick={() => (proposalOpen = false)} class="secondary"
           >Cancel</button
         ><button
-          onclick={propose}
-          disabled={Boolean(busy) || !instructions.trim()}
+          onclick={() =>
+            proposalMode === 'passive' ? createPassiveProposal() : propose()}
+          disabled={Boolean(busy) ||
+            !instructions.trim() ||
+            (proposalMode === 'passive' && passiveActive) ||
+            (proposalMode === 'configured' &&
+              (proposalModelsLoading || !proposalModels.length))}
           class="primary disabled:opacity-40"
-          >{#if busy === 'propose'}<LoaderCircle
+          >{#if busy === 'propose' || busy === 'passive'}<LoaderCircle
               class="animate-spin"
               size={16}
-            />{:else}<Bot size={16} />{/if} Generate proposal</button
+            />{:else if proposalMode === 'passive'}<Bot
+              size={16}
+            />{:else}<Sparkles size={16} />{/if}
+          {proposalMode === 'passive'
+            ? passiveActive
+              ? 'Agent task already active'
+              : 'Create agent task'
+            : 'Generate proposal'}</button
         >
       </div>
     </div>
@@ -1226,6 +1428,37 @@
   }
   .alert.success {
     background: var(--accent-soft);
+  }
+  .proposal-mode {
+    display: grid;
+    gap: 0.5rem;
+    min-width: 0;
+    border: 1px solid var(--line);
+    border-radius: 0.85rem;
+    background: var(--paper);
+    padding: 0.85rem;
+    text-align: left;
+    font-size: 0.72rem;
+    line-height: 1.45;
+  }
+  .proposal-mode:hover,
+  .proposal-mode.active {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+  }
+  .proposal-mode.active {
+    box-shadow: 0 0 0 1px var(--accent);
+  }
+  .proposal-mode-heading {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    gap: 0.45rem;
+    font-size: 0.8rem;
+    font-weight: 750;
+  }
+  .proposal-mode-heading .badge {
+    margin-left: auto;
   }
   .marker {
     min-width: 8.5rem;

@@ -91,6 +91,35 @@ export type MediaEditState = {
   plan?: MediaEditPlan | null;
 };
 
+type MediaEditDispatchBatch = {
+  id: string;
+  batch_ordinal: number;
+  status: string;
+  lease_expires_at?: string | null;
+  accepted_at?: string | null;
+};
+
+export type MediaEditDispatchRun = {
+  id: string;
+  session_id: string;
+  kind: 'media_edit';
+  source_revision_id: string;
+  source_revision_number: number;
+  source_content_hash: string;
+  instructions: string;
+  status: string;
+  batch_count: number;
+  total_batches?: number;
+  completed_batch_count: number;
+  remaining_batch_count?: number;
+  result_revision_id?: string | null;
+  error_code?: string | null;
+  error_message?: string | null;
+  created_at: string;
+  updated_at: string;
+  batches?: MediaEditDispatchBatch[];
+};
+
 export type ForkedSessionRecord = SessionRecord & {
   forked_from_session_id: string;
   checkpoint_artifact_id: string;

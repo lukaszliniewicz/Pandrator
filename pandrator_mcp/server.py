@@ -23,11 +23,13 @@ from .schemas import (
     CancelWorkInput,
     CapabilitiesInput,
     ClaimDispatchBatchInput,
+    ClaimMediaEditDispatchBatchInput,
     ClaimSourceCleaningDispatchBatchInput,
     ClaimSpeechOptimizationDispatchBatchInput,
     ConfigureTtsInput,
     ControlRuntimeInput,
     CreateDispatchRunInput,
+    CreateMediaEditDispatchRunInput,
     CreateSessionInput,
     CreateSourceCleaningDispatchRunInput,
     CreateSpeechOptimizationDispatchRunInput,
@@ -41,6 +43,7 @@ from .schemas import (
     ExplainSystemInput,
     GetDispatchRunInput,
     GetMediaEditArguments,
+    GetMediaEditDispatchRunInput,
     GetSessionInput,
     GetSessionSettingsInput,
     GetSourceCleaningDispatchRunInput,
@@ -57,12 +60,14 @@ from .schemas import (
     ListDispatchRunsInput,
     ListGenerationRunsInput,
     ListGenerationSegmentsInput,
+    ListMediaEditDispatchRunsInput,
     ListSessionsInput,
     ListSourceCleaningDispatchRunsInput,
     ListSourcesInput,
     ListSpeechOptimizationDispatchRunsInput,
     ListWorkInput,
     ManagerDesiredComponentInput,
+    MediaEditDispatchResultInput,
     MediaEditKeepRange,
     PatchSubtitleCuesInput,
     PlanComponentChangeInput,
@@ -76,10 +81,12 @@ from .schemas import (
     RecommendNextStepsInput,
     RegenerateSegmentsInput,
     ReleaseDispatchBatchInput,
+    ReleaseMediaEditDispatchBatchInput,
     ReleaseSourceCleaningDispatchBatchInput,
     ReleaseSpeechOptimizationDispatchBatchInput,
     RenderMediaEditArguments,
     RenewDispatchBatchInput,
+    RenewMediaEditDispatchBatchInput,
     RenewSourceCleaningDispatchBatchInput,
     RenewSpeechOptimizationDispatchBatchInput,
     ReplaceSubtitleTextInput,
@@ -90,6 +97,7 @@ from .schemas import (
     SourceCleaningDispatchResultInput,
     SpeechOptimizationDispatchResultInput,
     SubmitDispatchBatchInput,
+    SubmitMediaEditDispatchBatchInput,
     SubmitSourceCleaningDispatchBatchInput,
     SubmitSpeechOptimizationDispatchBatchInput,
     SubtitleStage,
@@ -110,11 +118,13 @@ from .tools import (
     cancel_work,
     capabilities,
     claim_dispatch_batch,
+    claim_media_edit_dispatch_batch,
     claim_source_cleaning_dispatch_batch,
     claim_speech_optimization_dispatch_batch,
     configure_tts,
     control_runtime,
     create_dispatch_run,
+    create_media_edit_dispatch_run,
     create_session,
     create_source_cleaning_dispatch_run,
     create_speech_optimization_dispatch_run,
@@ -126,6 +136,7 @@ from .tools import (
     explain_system,
     get_dispatch_run,
     get_media_edit,
+    get_media_edit_dispatch_run,
     get_session,
     get_session_settings,
     get_source_cleaning_dispatch_run,
@@ -141,6 +152,7 @@ from .tools import (
     list_dispatch_runs,
     list_generation_runs,
     list_generation_segments,
+    list_media_edit_dispatch_runs,
     list_sessions,
     list_source_cleaning_dispatch_runs,
     list_sources,
@@ -160,10 +172,12 @@ from .tools import (
     recommend_next_steps,
     regenerate_segments,
     release_dispatch_batch,
+    release_media_edit_dispatch_batch,
     release_source_cleaning_dispatch_batch,
     release_speech_optimization_dispatch_batch,
     render_media_edit,
     renew_dispatch_batch,
+    renew_media_edit_dispatch_batch,
     renew_source_cleaning_dispatch_batch,
     renew_speech_optimization_dispatch_batch,
     replace_subtitle_text,
@@ -172,6 +186,7 @@ from .tools import (
     revise_speech_block_plan,
     select_take,
     submit_dispatch_batch,
+    submit_media_edit_dispatch_batch,
     submit_source_cleaning_dispatch_batch,
     submit_speech_optimization_dispatch_batch,
     system_status,
@@ -1749,6 +1764,168 @@ def build_server(runtime: McpRuntime):
             submit_speech_optimization_dispatch_batch,
             runtime,
             SubmitSpeechOptimizationDispatchBatchInput(
+                batch_id=batch_id,
+                lease_token=lease_token,
+                result=result,
+                idempotency_key=idempotency_key,
+            ),
+        )
+
+    @server.tool(
+        name="pandrator_create_media_edit_dispatch_run",
+        title="Create a passive media-edit run",
+        annotations=write_action,
+    )
+    def media_edit_dispatch_create_tool(
+        session_id: str,
+        revision: Annotated[int, Field(ge=1)],
+        idempotency_key: Annotated[
+            str,
+            Field(min_length=8, max_length=200, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$"),
+        ],
+        instructions: Annotated[str, Field(min_length=1, max_length=16_000)],
+    ) -> dict[str, Any]:
+        """Create one pinned whole-recording cue-evidence batch."""
+
+        return _call(
+            create_media_edit_dispatch_run,
+            runtime,
+            CreateMediaEditDispatchRunInput(
+                session_id=session_id,
+                revision=revision,
+                instructions=instructions,
+                idempotency_key=idempotency_key,
+            ),
+        )
+
+    @server.tool(
+        name="pandrator_list_media_edit_dispatch_runs",
+        title="List passive media-edit runs",
+        annotations=read_only,
+    )
+    def media_edit_dispatch_list_tool(
+        session_id: str,
+        limit: Annotated[int, Field(ge=1, le=100)] = 50,
+    ) -> dict[str, Any]:
+        """List media-edit dispatch metadata without exposing cue evidence."""
+
+        return _call(
+            list_media_edit_dispatch_runs,
+            runtime,
+            ListMediaEditDispatchRunsInput(session_id=session_id, limit=limit),
+        )
+
+    @server.tool(
+        name="pandrator_get_media_edit_dispatch_run",
+        title="Inspect a passive media-edit run",
+        annotations=read_only,
+    )
+    def media_edit_dispatch_get_tool(run_id: str) -> dict[str, Any]:
+        """Inspect media-edit dispatch status and result revision metadata."""
+
+        return _call(
+            get_media_edit_dispatch_run,
+            runtime,
+            GetMediaEditDispatchRunInput(run_id=run_id),
+        )
+
+    @server.tool(
+        name="pandrator_claim_media_edit_dispatch_batch",
+        title="Claim a passive media-edit batch",
+        annotations=write_action,
+    )
+    def media_edit_dispatch_claim_tool(
+        run_id: str,
+        idempotency_key: Annotated[
+            str,
+            Field(min_length=8, max_length=200, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$"),
+        ],
+        lease_seconds: Annotated[int, Field(ge=30, le=3_600)] = 900,
+    ) -> dict[str, Any]:
+        """Claim the single global cue-evidence batch with a short lease."""
+
+        return _call(
+            claim_media_edit_dispatch_batch,
+            runtime,
+            ClaimMediaEditDispatchBatchInput(
+                run_id=run_id,
+                lease_seconds=lease_seconds,
+                idempotency_key=idempotency_key,
+            ),
+        )
+
+    @server.tool(
+        name="pandrator_renew_media_edit_dispatch_batch",
+        title="Renew a media-edit lease",
+        annotations=write_action,
+    )
+    def media_edit_dispatch_renew_tool(
+        batch_id: str,
+        lease_token: Annotated[str, Field(min_length=1, max_length=160)],
+        idempotency_key: Annotated[
+            str,
+            Field(min_length=8, max_length=200, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$"),
+        ],
+        lease_seconds: Annotated[int, Field(ge=30, le=3_600)] = 900,
+    ) -> dict[str, Any]:
+        """Renew only the matching media-edit batch lease."""
+
+        return _call(
+            renew_media_edit_dispatch_batch,
+            runtime,
+            RenewMediaEditDispatchBatchInput(
+                batch_id=batch_id,
+                lease_token=lease_token,
+                lease_seconds=lease_seconds,
+                idempotency_key=idempotency_key,
+            ),
+        )
+
+    @server.tool(
+        name="pandrator_release_media_edit_dispatch_batch",
+        title="Release a media-edit lease",
+        annotations=write_action,
+    )
+    def media_edit_dispatch_release_tool(
+        batch_id: str,
+        lease_token: Annotated[str, Field(min_length=1, max_length=160)],
+        idempotency_key: Annotated[
+            str,
+            Field(min_length=8, max_length=200, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$"),
+        ],
+    ) -> dict[str, Any]:
+        """Release an unfinished media-edit batch back to ready."""
+
+        return _call(
+            release_media_edit_dispatch_batch,
+            runtime,
+            ReleaseMediaEditDispatchBatchInput(
+                batch_id=batch_id,
+                lease_token=lease_token,
+                idempotency_key=idempotency_key,
+            ),
+        )
+
+    @server.tool(
+        name="pandrator_submit_media_edit_dispatch_batch",
+        title="Submit a passive media-edit batch",
+        annotations=write_action,
+    )
+    def media_edit_dispatch_submit_tool(
+        batch_id: str,
+        lease_token: Annotated[str, Field(min_length=1, max_length=160)],
+        result: MediaEditDispatchResultInput,
+        idempotency_key: Annotated[
+            str,
+            Field(min_length=8, max_length=200, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$"),
+        ],
+    ) -> dict[str, Any]:
+        """Submit whole-cue removal spans, including an explicit empty result."""
+
+        return _call(
+            submit_media_edit_dispatch_batch,
+            runtime,
+            SubmitMediaEditDispatchBatchInput(
                 batch_id=batch_id,
                 lease_token=lease_token,
                 result=result,

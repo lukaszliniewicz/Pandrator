@@ -24,6 +24,7 @@ import type {
   ItemPage,
   JobRecord,
   JobLogRecord,
+  MediaEditDispatchRun,
   MediaEditRange,
   MediaEditState,
   OutcomePlan,
@@ -95,6 +96,21 @@ export const mediaEditApi = {
         ...(model ? { model } : {})
       })
     }),
+  dispatchRuns: (sessionId: string, limit = 20) =>
+    apiJson<ItemPage<MediaEditDispatchRun>>(
+      `/sessions/${sessionId}/media-edit-dispatch-runs?limit=${limit}`
+    ),
+  dispatchRun: (runId: string) =>
+    apiJson<MediaEditDispatchRun>(`/media-edit-dispatch-runs/${runId}`),
+  createDispatch: (sessionId: string, revision: number, instructions: string) =>
+    apiJson<MediaEditDispatchRun>(
+      `/sessions/${sessionId}/media-edit-dispatch-runs`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ revision, instructions })
+      }
+    ),
   render: (sessionId: string, revision: number) =>
     apiJson<JobRecord>(`/sessions/${sessionId}/media-edit/render`, {
       method: 'POST',

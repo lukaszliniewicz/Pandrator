@@ -24,6 +24,7 @@ from .jobs import JobQueue
 from .legacy_migration import import_legacy_data
 from .manager_proxy import LocalManagerProxy
 from .media_edit import MediaEditService
+from .media_edit_dispatch import MediaEditDispatchRunService
 from .models import AppSetting, SessionRecord
 from .pronunciations import PronunciationLibrary
 from .session_forks import SessionForkService
@@ -85,6 +86,7 @@ class ApplicationServices:
     dispatch: DispatchRunService
     source_cleaning_dispatch: SourceCleaningDispatchRunService
     speech_optimization_dispatch: SpeechOptimizationDispatchRunService
+    media_edit_dispatch: MediaEditDispatchRunService
     media_edit: MediaEditService
     bootstrap: BootstrapTokenStore
     session_directory: Callable[[str], Path]
@@ -113,7 +115,9 @@ class ApplicationServices:
                             key="defaults.stt",
                             value_json={
                                 "stt_engine": stt_preferences["engine"],
-                                "stt_model_quantization": stt_preferences["quantization"],
+                                "stt_model_quantization": stt_preferences[
+                                    "quantization"
+                                ],
                             },
                         )
                     )
@@ -227,6 +231,7 @@ class ApplicationServices:
             artifacts,
             session_directory,
         )
+        media_edit_dispatch = MediaEditDispatchRunService(database, media_edit)
         return cls(
             paths=paths,
             migration=migration,
@@ -262,6 +267,7 @@ class ApplicationServices:
             dispatch=dispatch,
             source_cleaning_dispatch=source_cleaning_dispatch,
             speech_optimization_dispatch=speech_optimization_dispatch,
+            media_edit_dispatch=media_edit_dispatch,
             media_edit=media_edit,
             bootstrap=bootstrap_tokens or BootstrapTokenStore(),
             session_directory=session_directory,
@@ -304,6 +310,7 @@ class ApplicationServices:
             "dispatch": self.dispatch,
             "source_cleaning_dispatch": self.source_cleaning_dispatch,
             "speech_optimization_dispatch": self.speech_optimization_dispatch,
+            "media_edit_dispatch": self.media_edit_dispatch,
             "media_edit": self.media_edit,
             "bootstrap": self.bootstrap,
             "migration": self.migration,

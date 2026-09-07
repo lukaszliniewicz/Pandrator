@@ -387,9 +387,9 @@ class MediaEditService:
         consumed: list[MediaCue] = []
         for cue in cues:
             segment = segment_by_id[cue.id]
-            if cls._normalised_tokens(str(segment.text or "")) != cls._normalised_tokens(
-                cue.text
-            ):
+            if cls._normalised_tokens(
+                str(segment.text or "")
+            ) != cls._normalised_tokens(cue.text):
                 return None
             cue_tokens = cls._normalised_tokens(cue.text)
             segment_start = getattr(segment, "start_ms", None)
@@ -404,10 +404,7 @@ class MediaEditService:
                 return None
             window_start = max(0, cue.start_ms - DEFAULT_ALIGNMENT_PADDING_MS)
             window_end = cue.end_ms + DEFAULT_ALIGNMENT_PADDING_MS
-            if (
-                segment_start < window_start
-                or segment_end > window_end
-            ):
+            if segment_start < window_start or segment_end > window_end:
                 return None
             raw_words = tuple(getattr(segment, "words", ()) or ())
             if not raw_words:
@@ -661,11 +658,9 @@ class MediaEditService:
                 transcript = load_transcript(timing_path)
                 metadata = dict(timing_metadata or {})
                 is_alignment_artifact = bool(metadata.get("alignment_method"))
-                same_authoritative_source = (
-                    is_alignment_artifact
-                    and str(metadata.get("authoritative_transcript_artifact_id") or "")
-                    == str(authoritative_artifact_id or "")
-                )
+                same_authoritative_source = is_alignment_artifact and str(
+                    metadata.get("authoritative_transcript_artifact_id") or ""
+                ) == str(authoritative_artifact_id or "")
                 if is_alignment_artifact and not same_authoritative_source:
                     aligned = cues
                     warnings.append(
@@ -684,7 +679,10 @@ class MediaEditService:
                         stored_coverage = 0.0
                     if stored_coverage >= 0.5:
                         direct = self._consume_pre_aligned_cues(cues, transcript)
-                        if direct is not None and self._token_coverage(list(direct)) >= 0.5:
+                        if (
+                            direct is not None
+                            and self._token_coverage(list(direct)) >= 0.5
+                        ):
                             aligned = direct
                             reused_alignment = True
                         else:
@@ -720,10 +718,7 @@ class MediaEditService:
             aligned = cues
         cue_payloads = [self._cue_payload(cue) for cue in aligned]
         coverage = self._token_coverage(aligned)
-        confidence_values = [
-            float(cue.timing_confidence or 0.0)
-            for cue in aligned
-        ]
+        confidence_values = [float(cue.timing_confidence or 0.0) for cue in aligned]
         if (
             external
             and not timing_words
@@ -940,6 +935,218 @@ class MediaEditService:
             session.flush()
             return self._state_in_session(session, session_id)
 
+    def apply_proposal_in_session(
+        self,
+        session,
+        *,
+        session_id: str,
+        expected_revision: int,
+        cuts: list[dict[str, Any]],
+        allow_empty: bool = False,
+        provenance: dict[str, Any] | None = None,
+        proposal_instructions: str | None = None,
+        reject_duplicate_pairs: bool = False,
+    ) -> dict[str, Any]:
+        """Create an unreviewed revision inside a caller-owned transaction.
+
+        The active provider-backed proposal route keeps its historical
+        non-empty invariant. Passive dispatch uses ``allow_empty`` to record a
+        valid global no-op while retaining the pinned keep ranges.
+        """
+
+        if not cuts and not allow_empty:
+            raise ValueError("The proposal contains no usable cuts.")
+        record = session.get(SessionRecord, session_id)
+        if record is None:
+            raise KeyError("session")
+        if record.workflow_kind != "media_edit":
+            raise ValueError(
+                "Media-edit operations require a media_edit workflow session."
+            )
+        plan = session.scalar(
+            select(MediaEditPlan).where(MediaEditPlan.session_id == session_id)
+        )
+        active = (
+            session.get(MediaEditPlanRevision, plan.active_revision_id)
+            if plan and plan.active_revision_id
+            else None
+        )
+        if active is None or active.revision_number != expected_revision:
+            raise MediaEditRevisionConflict(
+                expected_revision,
+                active.revision_number if active else None,
+            )
+
+        normalized_cuts: list[tuple[int, int, str, str, str, tuple[Any, Any]]] = []
+        cues = [self._cue_from_payload(item) for item in active.cues_json or []]
+        cue_by_id = {cue.id: (index, cue) for index, cue in enumerate(cues)}
+        trustworthy_words: list[MediaWord] = []
+        word_keys: set[tuple[str, int, int, float | None]] = set()
+        for cue in cues:
+            if (
+                cue.timing_source not in {"asr_alignment", "ctc_alignment"}
+                or cue.timing_confidence is None
+                or cue.timing_confidence < 0.5
+            ):
+                continue
+            for word in cue.words:
+                key = (word.text, word.start_ms, word.end_ms, word.confidence)
+                if key not in word_keys:
+                    word_keys.add(key)
+                    trustworthy_words.append(word)
+
+        def refine_cue_boundary(
+            cue: MediaCue, boundary_ms: int, *, side: Literal["start", "end"]
+        ) -> BoundaryEvidence:
+            if (
+                cue.timing_source in {"asr_alignment", "ctc_alignment"}
+                and cue.timing_confidence is not None
+                and cue.timing_confidence >= 0.5
+                and cue.words
+            ):
+                return refine_boundary(boundary_ms, trustworthy_words, side=side)
+            return BoundaryEvidence(
+                original_ms=boundary_ms,
+                refined_ms=boundary_ms,
+                confidence=0.0,
+                method="caption_boundary",
+                warnings=(
+                    (
+                        "caption boundary preserved because no reliable ASR word "
+                        "alignment was available"
+                    ),
+                ),
+            )
+
+        seen: set[tuple[str, str]] = set()
+        for item in cuts:
+            if not isinstance(item, dict):
+                raise TypeError("Each proposal cut must be an object.")
+            start_id = str(item.get("start_cue_id") or "")
+            end_id = str(item.get("end_cue_id") or "")
+            reason_value = item.get("reason")
+            if not isinstance(reason_value, str):
+                raise TypeError("Proposal cut reason must be a string.")
+            reason = reason_value.strip()
+            if start_id not in cue_by_id or end_id not in cue_by_id:
+                raise ValueError("Proposal cut references an unknown cue ID.")
+            start_index, start_cue = cue_by_id[start_id]
+            end_index, end_cue = cue_by_id[end_id]
+            if end_index < start_index:
+                raise ValueError("Proposal cut cue IDs are out of order.")
+            if not reason:
+                raise ValueError("Proposal cut reasons must not be empty.")
+            if len(reason) > 500:
+                raise ValueError("Proposal cut reasons must be at most 500 characters.")
+            key = (start_id, end_id)
+            if key in seen:
+                if reject_duplicate_pairs:
+                    raise ValueError("Proposal cut cue IDs must be unique.")
+                continue
+            seen.add(key)
+            start_evidence = refine_cue_boundary(
+                start_cue, start_cue.start_ms, side="start"
+            )
+            end_evidence = refine_cue_boundary(end_cue, end_cue.end_ms, side="end")
+            if end_evidence.refined_ms <= start_evidence.refined_ms:
+                raise ValueError(
+                    "Proposal cut boundaries do not form a positive interval."
+                )
+            normalized_cuts.append(
+                (
+                    start_evidence.refined_ms,
+                    end_evidence.refined_ms,
+                    start_id,
+                    end_id,
+                    reason,
+                    (start_evidence, end_evidence),
+                )
+            )
+
+        if normalized_cuts:
+            keep_ranges = keep_ranges_from_cuts(
+                [(item[0], item[1]) for item in normalized_cuts], active.duration_ms
+            )
+            if not keep_ranges:
+                raise ValueError("The proposal would remove the entire recording.")
+            normalized_ranges = [self._keep_range_payload(item) for item in keep_ranges]
+        else:
+            normalized_ranges = list(active.keep_ranges_json or [])
+
+        next_instructions = (
+            active.instructions
+            if proposal_instructions is None
+            else proposal_instructions.strip()
+        )
+        if proposal_instructions is not None and not next_instructions:
+            raise ValueError("Proposal instructions must not be empty.")
+
+        evidence = dict(active.evidence_json or {})
+        warnings = list(evidence.get("warnings") or [])
+        boundary_records: list[dict[str, Any]] = []
+        for start_ms, end_ms, start_id, end_id, reason, boundaries in normalized_cuts:
+            start_evidence, end_evidence = boundaries
+            boundary_records.append(
+                {
+                    "start_cue_id": start_id,
+                    "end_cue_id": end_id,
+                    "start_ms": start_ms,
+                    "end_ms": end_ms,
+                    "reason": reason,
+                    "start": self._boundary_payload(start_evidence),
+                    "end": self._boundary_payload(end_evidence),
+                }
+            )
+            warnings.extend(start_evidence.warnings)
+            warnings.extend(end_evidence.warnings)
+        for cue in cues:
+            if cue.timing_confidence is not None and cue.timing_confidence < 0.5:
+                warnings.append(f"Low-confidence timing for cue {cue.id}.")
+        evidence["warnings"] = list(dict.fromkeys(str(item) for item in warnings))
+        evidence["agent_proposal"] = {"cuts": boundary_records}
+        operation = {
+            "type": "agent_proposal",
+            "cuts": boundary_records,
+        }
+        if provenance:
+            operation = {
+                "type": "passive_dispatch",
+                **provenance,
+                "cuts": boundary_records,
+            }
+            evidence["passive_dispatch"] = dict(provenance)
+        snapshot = {
+            **self._revision_snapshot(active),
+            "instructions": next_instructions,
+            "keep_ranges": normalized_ranges,
+            "evidence": evidence,
+            "operation": operation,
+            "reviewed": False,
+        }
+        revision = MediaEditPlanRevision(
+            plan_id=active.plan_id,
+            parent_revision_id=active.id,
+            revision_number=active.revision_number + 1,
+            source_media_artifact_id=active.source_media_artifact_id,
+            editorial_transcript_artifact_id=active.editorial_transcript_artifact_id,
+            timing_artifact_id=active.timing_artifact_id,
+            duration_ms=active.duration_ms,
+            instructions=next_instructions,
+            keep_ranges_json=normalized_ranges,
+            cues_json=list(active.cues_json or []),
+            evidence_json=evidence,
+            operation_json=operation,
+            reviewed=False,
+            content_hash=self._content_hash(snapshot),
+        )
+        session.add(revision)
+        session.flush()
+        self._invalidate_rendered_outputs(session, session_id)
+        plan.active_revision_id = revision.id
+        plan.updated_at = utcnow()
+        session.flush()
+        return self._state_in_session(session, session_id)
+
     def update(
         self,
         session_id: str,
@@ -1124,192 +1331,9 @@ class MediaEditService:
         if not cuts:
             raise ValueError("The proposal contains no usable cuts.")
         with self.database.immediate_session() as session:
-            record = session.get(SessionRecord, session_id)
-            if record is None:
-                raise KeyError("session")
-            if record.workflow_kind != "media_edit":
-                raise ValueError(
-                    "Media-edit operations require a media_edit workflow session."
-                )
-            plan = session.scalar(
-                select(MediaEditPlan).where(MediaEditPlan.session_id == session_id)
+            return self.apply_proposal_in_session(
+                session,
+                session_id=session_id,
+                expected_revision=expected_revision,
+                cuts=cuts,
             )
-            active = (
-                session.get(MediaEditPlanRevision, plan.active_revision_id)
-                if plan and plan.active_revision_id
-                else None
-            )
-            if active is None or active.revision_number != expected_revision:
-                raise MediaEditRevisionConflict(
-                    expected_revision,
-                    active.revision_number if active else None,
-                )
-
-            cues = [self._cue_from_payload(item) for item in active.cues_json or []]
-            cue_by_id = {cue.id: (index, cue) for index, cue in enumerate(cues)}
-            trustworthy_words: list[MediaWord] = []
-            word_keys: set[tuple[str, int, int, float | None]] = set()
-            for cue in cues:
-                if (
-                    cue.timing_source not in {"asr_alignment", "ctc_alignment"}
-                    or cue.timing_confidence is None
-                    or cue.timing_confidence < 0.5
-                ):
-                    continue
-                for word in cue.words:
-                    word_key = (word.text, word.start_ms, word.end_ms, word.confidence)
-                    if word_key not in word_keys:
-                        word_keys.add(word_key)
-                        trustworthy_words.append(word)
-
-            def refine_cue_boundary(
-                cue: MediaCue, boundary_ms: int, *, side: Literal["start", "end"]
-            ) -> BoundaryEvidence:
-                if (
-                    cue.timing_source in {"asr_alignment", "ctc_alignment"}
-                    and cue.timing_confidence is not None
-                    and cue.timing_confidence >= 0.5
-                    and cue.words
-                ):
-                    return refine_boundary(
-                        boundary_ms,
-                        trustworthy_words,
-                        side=side,
-                    )
-                return BoundaryEvidence(
-                    original_ms=boundary_ms,
-                    refined_ms=boundary_ms,
-                    confidence=0.0,
-                    method="caption_boundary",
-                    warnings=(
-                        (
-                            "caption boundary preserved because no reliable ASR word "
-                            "alignment was available"
-                        ),
-                    ),
-                )
-
-            normalized_cuts: list[tuple[int, int, str, str, Any, Any]] = []
-            seen: set[tuple[str, str]] = set()
-            for item in cuts:
-                if not isinstance(item, dict):
-                    raise TypeError("Each proposal cut must be an object.")
-                start_id = str(item.get("start_cue_id") or "")
-                end_id = str(item.get("end_cue_id") or "")
-                if not isinstance(item.get("reason"), str):
-                    raise TypeError("Proposal cut reason must be a string.")
-                reason = item["reason"].strip()
-                if start_id not in cue_by_id or end_id not in cue_by_id:
-                    raise ValueError("Proposal cut references an unknown cue ID.")
-                start_index, start_cue = cue_by_id[start_id]
-                end_index, end_cue = cue_by_id[end_id]
-                if end_index < start_index:
-                    raise ValueError("Proposal cut cue IDs are out of order.")
-                if not reason:
-                    raise ValueError("Proposal cut reasons must not be empty.")
-                if len(reason) > 500:
-                    raise ValueError(
-                        "Proposal cut reasons must be at most 500 characters."
-                    )
-                key = (start_id, end_id)
-                if key in seen:
-                    continue
-                seen.add(key)
-                start_evidence = refine_cue_boundary(
-                    start_cue,
-                    start_cue.start_ms,
-                    side="start",
-                )
-                end_evidence = refine_cue_boundary(
-                    end_cue,
-                    end_cue.end_ms,
-                    side="end",
-                )
-                if end_evidence.refined_ms <= start_evidence.refined_ms:
-                    raise ValueError(
-                        "Proposal cut boundaries do not form a positive interval."
-                    )
-                normalized_cuts.append(
-                    (
-                        start_evidence.refined_ms,
-                        end_evidence.refined_ms,
-                        start_id,
-                        end_id,
-                        reason,
-                        (start_evidence, end_evidence),
-                    )
-                )
-            if not normalized_cuts:
-                raise ValueError("The proposal contains no usable cuts.")
-
-            keep_ranges = keep_ranges_from_cuts(
-                [(item[0], item[1]) for item in normalized_cuts],
-                active.duration_ms,
-            )
-            if not keep_ranges:
-                raise ValueError("The proposal would remove the entire recording.")
-            normalized_ranges = [self._keep_range_payload(item) for item in keep_ranges]
-            evidence = dict(active.evidence_json or {})
-            warnings = list(evidence.get("warnings") or [])
-            boundary_records: list[dict[str, Any]] = []
-            for (
-                start_ms,
-                end_ms,
-                start_id,
-                end_id,
-                reason,
-                boundaries,
-            ) in normalized_cuts:
-                start_evidence, end_evidence = boundaries
-                boundary_records.append(
-                    {
-                        "start_cue_id": start_id,
-                        "end_cue_id": end_id,
-                        "start_ms": start_ms,
-                        "end_ms": end_ms,
-                        "reason": reason,
-                        "start": self._boundary_payload(start_evidence),
-                        "end": self._boundary_payload(end_evidence),
-                    }
-                )
-                warnings.extend(start_evidence.warnings)
-                warnings.extend(end_evidence.warnings)
-            for cue in cues:
-                if cue.timing_confidence is not None and cue.timing_confidence < 0.5:
-                    warnings.append(f"Low-confidence timing for cue {cue.id}.")
-            evidence["warnings"] = list(dict.fromkeys(str(item) for item in warnings))
-            evidence["agent_proposal"] = {"cuts": boundary_records}
-            operation = {
-                "type": "agent_proposal",
-                "cuts": boundary_records,
-            }
-            snapshot = {
-                **self._revision_snapshot(active),
-                "keep_ranges": normalized_ranges,
-                "evidence": evidence,
-                "operation": operation,
-                "reviewed": False,
-            }
-            revision = MediaEditPlanRevision(
-                plan_id=active.plan_id,
-                parent_revision_id=active.id,
-                revision_number=active.revision_number + 1,
-                source_media_artifact_id=active.source_media_artifact_id,
-                editorial_transcript_artifact_id=active.editorial_transcript_artifact_id,
-                timing_artifact_id=active.timing_artifact_id,
-                duration_ms=active.duration_ms,
-                instructions=active.instructions,
-                keep_ranges_json=normalized_ranges,
-                cues_json=list(active.cues_json or []),
-                evidence_json=evidence,
-                operation_json=operation,
-                reviewed=False,
-                content_hash=self._content_hash(snapshot),
-            )
-            session.add(revision)
-            session.flush()
-            self._invalidate_rendered_outputs(session, session_id)
-            plan.active_revision_id = revision.id
-            plan.updated_at = utcnow()
-            session.flush()
-            return self._state_in_session(session, session_id)

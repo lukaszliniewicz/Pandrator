@@ -2,10 +2,23 @@
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
 from ..context import McpRuntime
 from ..schemas import RecommendNextStepsInput
+
+
+def _media_edit_key(
+    action: str,
+    session_id: str,
+    *,
+    revision: int | None = None,
+    goal: str = "",
+) -> str:
+    goal_hash = hashlib.sha256(goal.encode("utf-8")).hexdigest()[:12]
+    revision_part = str(revision) if revision is not None else "prepare"
+    return f"media-edit-{action}:{session_id}:{revision_part}:{goal_hash}"[:200]
 
 
 def recommend_next_steps(
@@ -109,6 +122,58 @@ def recommend_next_steps(
                 "reason": "Create a passive speech-optimization run for this model.",
             }
         )
+    if session.get("workflow_kind") == "media_edit" and any(
+        word in goal for word in ("media edit", "cut video", "remove scene", "trim video")
+    ):
+        media_edit = application.get_media_edit(arguments.session_id)
+        active_plan = media_edit.get("plan")
+        revision_value = active_plan.get("revision") if isinstance(active_plan, dict) else None
+        if isinstance(revision_value, int) and revision_value >= 1:
+            instructions = arguments.goal.strip()
+            steps.append(
+                {
+                    "tool": "pandrator_create_media_edit_dispatch_run",
+                    "arguments": {
+                        "session_id": arguments.session_id,
+                        "revision": revision_value,
+                        "instructions": instructions,
+                        "idempotency_key": _media_edit_key(
+                            "create",
+                            arguments.session_id,
+                            revision=revision_value,
+                            goal=instructions,
+                        ),
+                    },
+                    "reason": (
+                        "Create a passive whole-recording media-edit run pinned to "
+                        "the active plan so the model can reason globally over "
+                        "cue-level evidence without a provider."
+                    ),
+                }
+            )
+        else:
+            steps.extend(
+                [
+                    {
+                        "tool": "pandrator_prepare_media_edit",
+                        "arguments": {
+                            "session_id": arguments.session_id,
+                            "force": False,
+                            "idempotency_key": _media_edit_key(
+                                "prepare",
+                                arguments.session_id,
+                                goal=arguments.goal,
+                            ),
+                        },
+                        "reason": "Prepare the cue timeline before pinning a passive edit run.",
+                    },
+                    {
+                        "tool": "pandrator_get_media_edit",
+                        "arguments": {"session_id": arguments.session_id},
+                        "reason": "Read the prepared active revision before creating the passive run.",
+                    },
+                ]
+            )
     if any(word in goal for word in ("tts", "voice", "narrat", "audio")):
         steps.extend(
             [

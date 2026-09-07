@@ -2059,6 +2059,139 @@ def build_openapi_document() -> dict:
                     },
                 }
             },
+            "/api/v1/sessions/{sessionId}/media-edit-dispatch-runs": {
+                "post": {
+                    "operationId": "createMediaEditDispatchRun",
+                    "parameters": [idempotency_header(required=False)],
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/MediaEditDispatchRunCreateRequest"
+                                }
+                            }
+                        },
+                    },
+                    "responses": {
+                        "201": {"description": "Passive media-edit run created"}
+                    },
+                },
+                "get": {
+                    "operationId": "listMediaEditDispatchRuns",
+                    "responses": {
+                        "200": {"description": "Media-edit dispatch run metadata"}
+                    },
+                },
+            },
+            "/api/v1/media-edit-dispatch-runs/{runId}": {
+                "get": {
+                    "operationId": "getMediaEditDispatchRun",
+                    "responses": {
+                        "200": {"description": "Media-edit dispatch run metadata"}
+                    },
+                }
+            },
+            "/api/v1/media-edit-dispatch-runs/{runId}/claim": {
+                "post": {
+                    "operationId": "claimMediaEditDispatchBatch",
+                    "parameters": [idempotency_header(required=True)],
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/DispatchBatchClaimRequest"
+                                }
+                            }
+                        },
+                    },
+                    "responses": {
+                        "200": {
+                            "description": "Claimed media-edit batch",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "$ref": "#/components/schemas/MediaEditDispatchBatchClaimResponse"
+                                    }
+                                }
+                            },
+                        }
+                    },
+                }
+            },
+            "/api/v1/media-edit-dispatch-batches/{batchId}/renew": {
+                "post": {
+                    "operationId": "renewMediaEditDispatchBatch",
+                    "parameters": [idempotency_header(required=False)],
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/DispatchBatchRenewRequest"
+                                }
+                            }
+                        },
+                    },
+                    "responses": {"200": {"description": "Lease renewed"}},
+                }
+            },
+            "/api/v1/media-edit-dispatch-batches/{batchId}/release": {
+                "post": {
+                    "operationId": "releaseMediaEditDispatchBatch",
+                    "parameters": [idempotency_header(required=False)],
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/DispatchBatchReleaseRequest"
+                                }
+                            }
+                        },
+                    },
+                    "responses": {"200": {"description": "Batch returned to ready"}},
+                }
+            },
+            "/api/v1/media-edit-dispatch-batches/{batchId}/submit": {
+                "post": {
+                    "operationId": "submitMediaEditDispatchBatch",
+                    "parameters": [idempotency_header(required=True)],
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/MediaEditDispatchBatchSubmitRequest"
+                                }
+                            }
+                        },
+                    },
+                    "responses": {
+                        "200": {
+                            "description": "Media-edit batch accepted",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "$ref": "#/components/schemas/MediaEditDispatchBatchSubmitResponse"
+                                    }
+                                }
+                            },
+                        },
+                        "202": {
+                            "description": "Batch accepted; finalization continues",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "$ref": "#/components/schemas/MediaEditDispatchBatchSubmitResponse"
+                                    }
+                                }
+                            },
+                        },
+                    },
+                }
+            },
             "/api/v1/parity": {
                 "get": operation("getParityRegistry", "Qt-to-web parity registry")
             },
@@ -2648,6 +2781,11 @@ def build_openapi_document() -> dict:
         ("/api/v1/sessions/{sessionId}/media-edit/prepare", "post"),
         ("/api/v1/sessions/{sessionId}/media-edit/propose", "post"),
         ("/api/v1/sessions/{sessionId}/media-edit/render", "post"),
+        ("/api/v1/sessions/{sessionId}/media-edit-dispatch-runs", "post"),
+        ("/api/v1/media-edit-dispatch-runs/{runId}/claim", "post"),
+        ("/api/v1/media-edit-dispatch-batches/{batchId}/renew", "post"),
+        ("/api/v1/media-edit-dispatch-batches/{batchId}/release", "post"),
+        ("/api/v1/media-edit-dispatch-batches/{batchId}/submit", "post"),
     ):
         parameters = paths[path][method].setdefault("parameters", [])
         if not any(item.get("name") == "Idempotency-Key" for item in parameters):
@@ -2767,6 +2905,33 @@ def build_openapi_document() -> dict:
         ),
         (
             "/api/v1/speech-optimization-dispatch-batches/{batchId}/submit",
+            "post",
+            "app.run",
+        ),
+        (
+            "/api/v1/sessions/{sessionId}/media-edit-dispatch-runs",
+            "get",
+            "app.read",
+        ),
+        (
+            "/api/v1/sessions/{sessionId}/media-edit-dispatch-runs",
+            "post",
+            "app.run",
+        ),
+        ("/api/v1/media-edit-dispatch-runs/{runId}", "get", "app.read"),
+        ("/api/v1/media-edit-dispatch-runs/{runId}/claim", "post", "app.run"),
+        (
+            "/api/v1/media-edit-dispatch-batches/{batchId}/renew",
+            "post",
+            "app.run",
+        ),
+        (
+            "/api/v1/media-edit-dispatch-batches/{batchId}/release",
+            "post",
+            "app.run",
+        ),
+        (
+            "/api/v1/media-edit-dispatch-batches/{batchId}/submit",
             "post",
             "app.run",
         ),

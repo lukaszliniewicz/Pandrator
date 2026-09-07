@@ -40,6 +40,17 @@ REQUIRED_DISPATCH_OPERATION_IDS = frozenset(
         "submitDispatchBatch",
     }
 )
+REQUIRED_MEDIA_EDIT_DISPATCH_OPERATION_IDS = frozenset(
+    {
+        "claimMediaEditDispatchBatch",
+        "createMediaEditDispatchRun",
+        "getMediaEditDispatchRun",
+        "listMediaEditDispatchRuns",
+        "releaseMediaEditDispatchBatch",
+        "renewMediaEditDispatchBatch",
+        "submitMediaEditDispatchBatch",
+    }
+)
 _VERSION_PREFIX = re.compile(r"^(\d+)\.(\d+)\.(\d+)")
 
 
@@ -95,6 +106,7 @@ def negotiate_compatibility(
 
     required = set(REQUIRED_READ_OPERATION_IDS)
     required.update(REQUIRED_DISPATCH_OPERATION_IDS)
+    required.update(REQUIRED_MEDIA_EDIT_DISPATCH_OPERATION_IDS)
     if manager_expected:
         required.update(REQUIRED_MANAGER_OPERATION_IDS)
     missing = sorted(required - _operations(openapi))

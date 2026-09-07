@@ -72,3 +72,14 @@ absent from read-only boundary context. Submit every unit exactly once and in
 order. Character and unit limits bound transport, not model tokens or effort;
 Pandrator calls no model. The final batch registers `tts_optimized` only if the
 pinned source, relevant selections, and previous output head remain unchanged.
+
+Media-edit dispatch is a provider-free whole-recording run. Create it against
+the active prepared media-edit revision, then claim its single immutable batch.
+The claim discloses cue-level transcript evidence and current keep ranges, never
+word arrays; cues wholly outside the recording duration are omitted. Return
+only ordered whole-cue removal spans with reasons; an empty `cuts` list is valid
+when no removal is warranted. Renew or release the lease while reasoning, and
+submit with a stable idempotency key. Finalization creates one new unreviewed
+revision only when the pinned revision ID, number, and content hash are still
+active; a changed source fails without rebasing. After a completed submission,
+inspect the media-edit plan and review the resulting revision before rendering.

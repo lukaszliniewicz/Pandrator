@@ -75,6 +75,7 @@ from .idempotency import IdempotencyConflict, IdempotencyInProgress
 from .knowledge import KnowledgeLedgerStore, KnowledgeValidationError
 from .managed_services import binding_for_provider, normalize_tts_provider_id
 from .manager_proxy import register_manager_routes
+from .media_edit_dispatch_routes import register_media_edit_dispatch_routes
 from .media_edit_routes import register_media_edit_routes
 from .models import (
     AgentRun,
@@ -760,6 +761,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     register_automation_routes(app, context)
     register_workflow_plan_routes(app, context)
     register_media_edit_routes(app, context)
+    register_media_edit_dispatch_routes(app, context)
     register_dispatch_routes(app, context)
     register_source_cleaning_dispatch_routes(app, context)
     register_speech_optimization_dispatch_routes(app, context)
@@ -4953,6 +4955,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 422,
             )
         role = "waveform_peaks_window" if bounded else "waveform_peaks"
+
         def cached_peak_id() -> str | None:
             with database.session() as db_session:
                 peak_candidates = list(
@@ -4974,19 +4977,13 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                     (
                         candidate
                         for candidate in peak_candidates
-                        if int(
-                            (candidate.metadata_json or {}).get("max_points") or 0
-                        )
+                        if int((candidate.metadata_json or {}).get("max_points") or 0)
                         == points
-                        and int(
-                            (candidate.metadata_json or {}).get("start_ms") or 0
-                        )
+                        and int((candidate.metadata_json or {}).get("start_ms") or 0)
                         == start_ms
                         and (
                             not bounded
-                            or int(
-                                (candidate.metadata_json or {}).get("end_ms") or 0
-                            )
+                            or int((candidate.metadata_json or {}).get("end_ms") or 0)
                             == end_ms
                         )
                     ),

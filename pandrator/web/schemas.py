@@ -74,9 +74,9 @@ class SessionCreate(StrictModel):
 
 class SessionUpdate(StrictModel):
     name: str | None = Field(default=None, min_length=1, max_length=255)
-    workflow_kind: Literal[
-        "audiobook", "subtitles", "voiceover", "media_edit"
-    ] | None = None
+    workflow_kind: (
+        Literal["audiobook", "subtitles", "voiceover", "media_edit"] | None
+    ) = None
     source_language: str | None = Field(default=None, min_length=2, max_length=40)
     target_language: str | None = Field(default=None, min_length=2, max_length=40)
     workflow_preset: str | None = None
@@ -1264,6 +1264,96 @@ class SpeechOptimizationDispatchBatchSubmitResponse(StrictModel):
     error_message: str | None = None
 
 
+class MediaEditDispatchRunCreateRequest(StrictModel):
+    revision: int = Field(ge=1)
+    instructions: str = Field(min_length=1, max_length=16_000)
+
+    @field_validator("instructions")
+    @classmethod
+    def _strip_instructions(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("instructions must not be empty")
+        return normalized
+
+
+class MediaEditDispatchCut(StrictModel):
+    start_cue_id: str = Field(min_length=1, max_length=120)
+    end_cue_id: str = Field(min_length=1, max_length=120)
+    reason: str = Field(min_length=1, max_length=500)
+
+
+class MediaEditDispatchResult(StrictModel):
+    kind: Literal["media_edit"]
+    cuts: list[MediaEditDispatchCut] = Field(max_length=1000)
+
+
+class MediaEditDispatchBatchSubmitRequest(StrictModel):
+    lease_token: str = Field(min_length=1, max_length=160)
+    result: MediaEditDispatchResult
+
+
+class MediaEditDispatchCue(StrictModel):
+    id: str
+    start_ms: int = Field(ge=0)
+    end_ms: int = Field(gt=0)
+    text: str
+    speaker: str | None = None
+    timing_source: str
+    timing_confidence: float | None = None
+
+
+class MediaEditDispatchBatch(StrictModel):
+    duration_ms: int = Field(gt=0)
+    keep_ranges: list[MediaEditKeepRange]
+    cues: list[MediaEditDispatchCue]
+    cue_count: int = Field(ge=0)
+    valid_cue_ids: list[str]
+    evidence: dict[str, Any]
+    artifact_ids: dict[str, str | None]
+
+
+class MediaEditDispatchTaskContract(StrictModel):
+    kind: Literal["media_edit"]
+    instructions: str
+    result_contract: dict[str, Any]
+
+
+class MediaEditDispatchBatchClaimResponse(StrictModel):
+    schema_version: Literal["1"] = "1"
+    run_id: str
+    batch_id: str
+    batch_ordinal: int = Field(ge=1)
+    status: str
+    run_status: str
+    batch_status: str
+    source_revision: dict[str, Any]
+    task: MediaEditDispatchTaskContract
+    batch: MediaEditDispatchBatch
+    lease_token: str
+    lease_expires_at: str | None
+
+
+class MediaEditDispatchBatchSubmitResponse(StrictModel):
+    run_id: str
+    batch_id: str
+    session_id: str
+    kind: Literal["media_edit"]
+    status: str
+    run_status: str
+    batch_status: str
+    accepted: bool
+    completed_batch_count: int = Field(ge=0)
+    completed_batches: int = Field(ge=0)
+    batch_count: int = Field(ge=1)
+    total_batches: int = Field(ge=1)
+    remaining_batches: int = Field(ge=0)
+    finalized: bool
+    result_revision_id: str | None = None
+    error_code: str | None = None
+    error_message: str | None = None
+
+
 class SourceCleaningDispatchRunCreateRequest(StrictModel):
     source_artifact_id: str | None = Field(default=None, min_length=1, max_length=80)
     instructions: str = Field(default="", max_length=16_000)
@@ -1568,6 +1658,15 @@ SCHEMA_MODELS = {
         SpeechOptimizationDispatchTaskContract,
         SpeechOptimizationDispatchBatchClaimResponse,
         SpeechOptimizationDispatchBatchSubmitResponse,
+        MediaEditDispatchRunCreateRequest,
+        MediaEditDispatchCut,
+        MediaEditDispatchResult,
+        MediaEditDispatchBatchSubmitRequest,
+        MediaEditDispatchCue,
+        MediaEditDispatchBatch,
+        MediaEditDispatchTaskContract,
+        MediaEditDispatchBatchClaimResponse,
+        MediaEditDispatchBatchSubmitResponse,
         SourceCleaningDispatchRunCreateRequest,
         SourceCleaningDispatchDecision,
         SourceCleaningDispatchOperation,

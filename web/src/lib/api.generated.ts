@@ -1014,6 +1014,86 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/media-edit-dispatch-batches/{batchId}/release": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["releaseMediaEditDispatchBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/media-edit-dispatch-batches/{batchId}/renew": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["renewMediaEditDispatchBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/media-edit-dispatch-batches/{batchId}/submit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["submitMediaEditDispatchBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/media-edit-dispatch-runs/{runId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getMediaEditDispatchRun"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/media-edit-dispatch-runs/{runId}/claim": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["claimMediaEditDispatchBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/parameter-definitions": {
         parameters: {
             query?: never;
@@ -1536,6 +1616,22 @@ export interface paths {
         get: operations["getMediaEdit"];
         put: operations["updateMediaEdit"];
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/media-edit-dispatch-runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listMediaEditDispatchRuns"];
+        put?: never;
+        post: operations["createMediaEditDispatchRun"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3682,6 +3778,176 @@ export interface components {
              * @default false
              */
             purge_data?: boolean;
+        };
+        /** MediaEditDispatchBatch */
+        MediaEditDispatchBatch: {
+            /** Artifact Ids */
+            artifact_ids: {
+                [key: string]: string | null;
+            };
+            /** Cue Count */
+            cue_count: number;
+            /** Cues */
+            cues: components["schemas"]["MediaEditDispatchCue"][];
+            /** Duration Ms */
+            duration_ms: number;
+            /** Evidence */
+            evidence: {
+                [key: string]: unknown;
+            };
+            /** Keep Ranges */
+            keep_ranges: components["schemas"]["MediaEditKeepRange"][];
+            /** Valid Cue Ids */
+            valid_cue_ids: string[];
+        };
+        /** MediaEditDispatchBatchClaimResponse */
+        MediaEditDispatchBatchClaimResponse: {
+            batch: components["schemas"]["MediaEditDispatchBatch"];
+            /** Batch Id */
+            batch_id: string;
+            /** Batch Ordinal */
+            batch_ordinal: number;
+            /** Batch Status */
+            batch_status: string;
+            /** Lease Expires At */
+            lease_expires_at: string | null;
+            /** Lease Token */
+            lease_token: string;
+            /** Run Id */
+            run_id: string;
+            /** Run Status */
+            run_status: string;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version?: "1";
+            /** Source Revision */
+            source_revision: {
+                [key: string]: unknown;
+            };
+            /** Status */
+            status: string;
+            task: components["schemas"]["MediaEditDispatchTaskContract"];
+        };
+        /** MediaEditDispatchBatchSubmitRequest */
+        MediaEditDispatchBatchSubmitRequest: {
+            /** Lease Token */
+            lease_token: string;
+            result: components["schemas"]["MediaEditDispatchResult"];
+        };
+        /** MediaEditDispatchBatchSubmitResponse */
+        MediaEditDispatchBatchSubmitResponse: {
+            /** Accepted */
+            accepted: boolean;
+            /** Batch Count */
+            batch_count: number;
+            /** Batch Id */
+            batch_id: string;
+            /** Batch Status */
+            batch_status: string;
+            /** Completed Batch Count */
+            completed_batch_count: number;
+            /** Completed Batches */
+            completed_batches: number;
+            /**
+             * Error Code
+             * @default null
+             */
+            error_code?: string | null;
+            /**
+             * Error Message
+             * @default null
+             */
+            error_message?: string | null;
+            /** Finalized */
+            finalized: boolean;
+            /**
+             * Kind
+             * @constant
+             */
+            kind: "media_edit";
+            /** Remaining Batches */
+            remaining_batches: number;
+            /**
+             * Result Revision Id
+             * @default null
+             */
+            result_revision_id?: string | null;
+            /** Run Id */
+            run_id: string;
+            /** Run Status */
+            run_status: string;
+            /** Session Id */
+            session_id: string;
+            /** Status */
+            status: string;
+            /** Total Batches */
+            total_batches: number;
+        };
+        /** MediaEditDispatchCue */
+        MediaEditDispatchCue: {
+            /** End Ms */
+            end_ms: number;
+            /** Id */
+            id: string;
+            /**
+             * Speaker
+             * @default null
+             */
+            speaker?: string | null;
+            /** Start Ms */
+            start_ms: number;
+            /** Text */
+            text: string;
+            /**
+             * Timing Confidence
+             * @default null
+             */
+            timing_confidence?: number | null;
+            /** Timing Source */
+            timing_source: string;
+        };
+        /** MediaEditDispatchCut */
+        MediaEditDispatchCut: {
+            /** End Cue Id */
+            end_cue_id: string;
+            /** Reason */
+            reason: string;
+            /** Start Cue Id */
+            start_cue_id: string;
+        };
+        /** MediaEditDispatchResult */
+        MediaEditDispatchResult: {
+            /** Cuts */
+            cuts: components["schemas"]["MediaEditDispatchCut"][];
+            /**
+             * Kind
+             * @constant
+             */
+            kind: "media_edit";
+        };
+        /** MediaEditDispatchRunCreateRequest */
+        MediaEditDispatchRunCreateRequest: {
+            /** Instructions */
+            instructions: string;
+            /** Revision */
+            revision: number;
+        };
+        /** MediaEditDispatchTaskContract */
+        MediaEditDispatchTaskContract: {
+            /** Instructions */
+            instructions: string;
+            /**
+             * Kind
+             * @constant
+             */
+            kind: "media_edit";
+            /** Result Contract */
+            result_contract: {
+                [key: string]: unknown;
+            };
         };
         /** MediaEditKeepRange */
         MediaEditKeepRange: {
@@ -6763,6 +7029,147 @@ export interface operations {
             };
         };
     };
+    releaseMediaEditDispatchBatch: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                batchId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DispatchBatchReleaseRequest"];
+            };
+        };
+        responses: {
+            /** @description Batch returned to ready */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    renewMediaEditDispatchBatch: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                batchId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DispatchBatchRenewRequest"];
+            };
+        };
+        responses: {
+            /** @description Lease renewed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    submitMediaEditDispatchBatch: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
+                "Idempotency-Key": string;
+            };
+            path: {
+                batchId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MediaEditDispatchBatchSubmitRequest"];
+            };
+        };
+        responses: {
+            /** @description Media-edit batch accepted */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MediaEditDispatchBatchSubmitResponse"];
+                };
+            };
+            /** @description Batch accepted; finalization continues */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MediaEditDispatchBatchSubmitResponse"];
+                };
+            };
+        };
+    };
+    getMediaEditDispatchRun: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Media-edit dispatch run metadata */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    claimMediaEditDispatchBatch: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
+                "Idempotency-Key": string;
+            };
+            path: {
+                runId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DispatchBatchClaimRequest"];
+            };
+        };
+        responses: {
+            /** @description Claimed media-edit batch */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MediaEditDispatchBatchClaimResponse"];
+                };
+            };
+        };
+    };
     getParameterDefinitions: {
         parameters: {
             query?: {
@@ -7935,6 +8342,53 @@ export interface operations {
             };
             /** @description Revision precondition required */
             428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listMediaEditDispatchRuns: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Media-edit dispatch run metadata */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createMediaEditDispatchRun: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MediaEditDispatchRunCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Passive media-edit run created */
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };
