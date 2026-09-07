@@ -44,6 +44,7 @@ class AlignmentBatch:
     cues: tuple[MediaCue, ...]
     start_ms: int
     end_ms: int
+    target_cue_id: str
 
     @property
     def token_count(self) -> int:
@@ -53,7 +54,8 @@ class AlignmentBatch:
 @dataclass
 class AlignmentDiagnostics:
     method: str = "ctc_cue_alignment"
-    request_strategy: str = "independent_per_cue"
+    request_strategy: str = "independent_target_with_following_context"
+    endpoint_strategy: str = "ctc_onsets_with_shifted_caption_duration_cap"
     timing_quality_basis: str = "vad_midpoint_support_and_temporal_checks"
     ctc_request_count: int = 0
     first_pass_batch_count: int = 0
@@ -89,6 +91,7 @@ class AlignmentDiagnostics:
         return {
             "alignment_method": self.method,
             "alignment_request_strategy": self.request_strategy,
+            "alignment_endpoint_strategy": self.endpoint_strategy,
             "timing_quality_basis": self.timing_quality_basis,
             "ctc_request_count": self.ctc_request_count,
             "first_pass_batch_count": self.first_pass_batch_count,
@@ -271,34 +274,60 @@ def build_alignment_batches(
     batch_seconds: int = 30,
     token_budget: int = 160,
 ) -> tuple[AlignmentBatch, ...]:
-    """Plan one bounded, independently aligned request per caption cue.
+    """Plan one bounded, independently evaluated request per caption cue.
 
     ``AlignmentBatch`` and this helper's public name are retained for artifact
-    and integration compatibility.  A request deliberately never contains
-    text from more than one cue: concatenating captions turns independent CTC
-    paths into one fragile sequence and lets a bad boundary poison its
-    neighbours.  Strictly overlapping cues are therefore isolated too.
+    and integration compatibility.  A request includes the target's overlap
+    cluster and as much of the next cluster as fits.  That local reference
+    context prevents a short target from becoming an ambiguous terminal CTC
+    token, while only the named target result is retained.  A bad target can
+    therefore never invalidate its neighbours' independently evaluated runs.
     """
 
     if padding_ms < 0 or batch_seconds <= 0 or token_budget <= 0:
         raise ValueError("invalid batch bounds")
     batches: list[AlignmentBatch] = []
-    for cluster in clusters:
-        for cue in cluster:
-            start_ms = max(0, cue.start_ms - padding_ms)
-            end_ms = min(duration_ms, cue.end_ms + padding_ms)
+
+    def fits(selected: Sequence[MediaCue]) -> bool:
+        if not selected:
+            return False
+        start_ms = max(0, min(cue.start_ms for cue in selected) - padding_ms)
+        end_ms = min(duration_ms, max(cue.end_ms for cue in selected) + padding_ms)
+        return (
+            end_ms > start_ms
+            and end_ms - start_ms <= batch_seconds * 1000
+            and sum(len(token_surfaces(cue.text)) for cue in selected) <= token_budget
+        )
+
+    normalized_clusters = tuple(tuple(cluster) for cluster in clusters if cluster)
+    for cluster_index, cluster in enumerate(normalized_clusters):
+        for target in cluster:
+            if not fits((target,)):
+                continue
+            selected = list(cluster) if fits(cluster) else [target]
+            if cluster_index + 1 < len(normalized_clusters):
+                for context_cue in normalized_clusters[cluster_index + 1]:
+                    candidate = (*selected, context_cue)
+                    if not fits(candidate):
+                        break
+                    selected.append(context_cue)
+            start_ms = max(0, min(cue.start_ms for cue in selected) - padding_ms)
+            end_ms = min(
+                duration_ms,
+                max(cue.end_ms for cue in selected) + padding_ms,
+            )
             if (
-                len(token_surfaces(cue.text)) > token_budget
-                or end_ms <= start_ms
-                or end_ms - start_ms > batch_seconds * 1000
+                target.id not in {cue.id for cue in selected}
+                or not fits(selected)
             ):
                 continue
             batches.append(
                 AlignmentBatch(
                     len(batches) + 1,
-                    (cue,),
+                    tuple(selected),
                     start_ms,
                     end_ms,
+                    target.id,
                 )
             )
     return tuple(batches)
@@ -486,8 +515,6 @@ def validate_cue_words(
     if duration_ms is not None:
         local_end = min(local_end, duration_ms)
     parsed: list[MediaWord] = []
-    previous_start = -1
-    previous_end = -1
     for index, raw in enumerate(words):
         try:
             if isinstance(raw, MediaWord):
@@ -500,23 +527,40 @@ def validate_cue_words(
                 return replace(cue, words=(), timing_confidence=0.0, timing_source="caption"), "empty_word", 0.0
             if token_key(observed) != token_key(surfaces[index]):
                 return replace(cue, words=(), timing_confidence=0.0, timing_source="caption"), "wrong_surface", 0.0
-            if start_ms < local_start or end_ms > local_end:
-                return replace(cue, words=(), timing_confidence=0.0, timing_source="caption"), "out_of_window", 0.0
-            if end_ms - start_ms > 2500:
-                return replace(cue, words=(), timing_confidence=0.0, timing_source="caption"), "overlong_word", 0.0
-            if (
-                end_ms <= start_ms
-                or start_ms <= previous_start
-                or end_ms <= previous_end
-            ):
+            if end_ms <= start_ms:
                 return replace(cue, words=(), timing_confidence=0.0, timing_source="caption"), "nonmonotonic", 0.0
         except (AttributeError, TypeError, ValueError):
             return replace(cue, words=(), timing_confidence=0.0, timing_source="caption"), "malformed_word", 0.0
         parsed.append(MediaWord(surfaces[index], start_ms, end_ms))
-        previous_start = start_ms
-        previous_end = end_ms
     if not parsed:
         return replace(cue, words=(), timing_confidence=0.0, timing_source="caption"), "no_words", 0.0
+
+    # Canary's word-granularity CTC path assigns terminal blank frames to the
+    # final reference token.  With an isolated target that can stretch its
+    # last word through the following silence or all the way to the clip edge.
+    # Preserve every acoustic onset, but cap that terminal tail by the Zoom
+    # cue duration translated by the observed first-word onset shift.
+    terminal_tail_is_pathological = (
+        parsed[-1].end_ms > local_end
+        or parsed[-1].end_ms - parsed[-1].start_ms > 2500
+    )
+    aligned_duration_cap = cue.end_ms + (parsed[0].start_ms - cue.start_ms)
+    if terminal_tail_is_pathological and parsed[-1].end_ms > aligned_duration_cap:
+        if aligned_duration_cap <= parsed[-1].start_ms:
+            return replace(cue, words=(), timing_confidence=0.0, timing_source="caption"), "caption_duration_conflict", 0.0
+        parsed[-1] = replace(parsed[-1], end_ms=aligned_duration_cap)
+
+    previous_start = -1
+    previous_end = -1
+    for word in parsed:
+        if word.start_ms < local_start or word.end_ms > local_end:
+            return replace(cue, words=(), timing_confidence=0.0, timing_source="caption"), "out_of_window", 0.0
+        if word.end_ms - word.start_ms > 2500:
+            return replace(cue, words=(), timing_confidence=0.0, timing_source="caption"), "overlong_word", 0.0
+        if word.start_ms <= previous_start or word.end_ms <= previous_end:
+            return replace(cue, words=(), timing_confidence=0.0, timing_source="caption"), "nonmonotonic", 0.0
+        previous_start = word.start_ms
+        previous_end = word.end_ms
     if vad_enabled:
         support = sum(
             _midpoint_supported((word.start_ms + word.end_ms) / 2, vad_spans)
@@ -627,7 +671,7 @@ def align_caption_cues(
         padding_ms=options["caption_alignment_padding_ms"],
         batch_seconds=options["caption_alignment_batch_seconds"],
     )
-    planned_cue_ids = {batch.cues[0].id for batch in batches}
+    planned_cue_ids = {batch.target_cue_id for batch in batches}
     oversized_cues = tuple(
         cue
         for cluster in clusters
@@ -683,26 +727,33 @@ def align_caption_cues(
         root = Path(temporary)
 
         def execute(
-            selected_cues: Sequence[MediaCue],
-            start_ms: int,
-            end_ms: int,
+            batch: AlignmentBatch,
             stem: str,
-        ) -> tuple[MediaCue, ...]:
+        ) -> MediaCue:
             clip = root / f"{stem}.wav"
             text = root / f"{stem}.txt"
             output = root / f"{stem}.json"
-            _write_wave_clip(Path(normalized_wav), clip, start_ms, end_ms)
+            _write_wave_clip(
+                Path(normalized_wav),
+                clip,
+                batch.start_ms,
+                batch.end_ms,
+            )
             text.write_text(
-                " ".join(token for cue in selected_cues for token in token_surfaces(cue.text)),
+                " ".join(
+                    token
+                    for cue in batch.cues
+                    for token in token_surfaces(cue.text)
+                ),
                 encoding="utf-8",
             )
             try:
                 raw = runner(clip, text, str(output), options, cancel_event)
                 failure_reasons: dict[str, str] = {}
                 mapped = map_ctc_words_to_cues(
-                    selected_cues,
+                    batch.cues,
                     parse_ctc_words(raw if raw is not None else output),
-                    clip_start_ms=start_ms,
+                    clip_start_ms=batch.start_ms,
                     padding_ms=options["caption_alignment_padding_ms"],
                     vad_spans=vad,
                     vad_enabled=vad_spans is not None,
@@ -710,17 +761,35 @@ def align_caption_cues(
                     duration_ms=duration_ms,
                     failure_reasons=failure_reasons,
                 )
-                for cue_id, reason in failure_reasons.items():
-                    _record_failure(diagnostics, cue_id, reason)
-                return mapped
+                candidate = next(
+                    cue for cue in mapped if cue.id == batch.target_cue_id
+                )
+                if reason := failure_reasons.get(batch.target_cue_id):
+                    _record_failure(diagnostics, batch.target_cue_id, reason)
+                return candidate
             except ProcessCancelled:
                 raise
-            except (CaptionAlignmentError, OSError, ValueError, TypeError, subprocess.CalledProcessError) as error:
-                for cue in selected_cues:
-                    _record_failure(diagnostics, cue.id, str(error) or "ctc_failed")
-                return tuple(
-                    replace(cue, words=(), timing_confidence=0.0, timing_source="caption")
-                    for cue in selected_cues
+            except (
+                CaptionAlignmentError,
+                crispasr.CrispASRError,
+                OSError,
+                ValueError,
+                TypeError,
+                subprocess.CalledProcessError,
+            ) as error:
+                target = next(
+                    cue for cue in batch.cues if cue.id == batch.target_cue_id
+                )
+                _record_failure(
+                    diagnostics,
+                    target.id,
+                    str(error) or "ctc_failed",
+                )
+                return replace(
+                    target,
+                    words=(),
+                    timing_confidence=0.0,
+                    timing_source="caption",
                 )
 
         for index, batch in enumerate(batches, start=1):
@@ -728,11 +797,10 @@ def align_caption_cues(
                 raise ProcessCancelled("Caption alignment was canceled.")
             if progress:
                 progress(index / max(1, len(batches)), f"Aligning cue {index}/{len(batches)}")
-            mapped = execute(batch.cues, batch.start_ms, batch.end_ms, f"batch-{index:04d}")
+            candidate = execute(batch, f"batch-{index:04d}")
             if cancel_event is not None and cancel_event.is_set():
                 raise ProcessCancelled("Caption alignment was canceled.")
-            for cue, candidate in zip(batch.cues, mapped, strict=True):
-                accepted_by_id[cue.id] = candidate
+            accepted_by_id[batch.target_cue_id] = candidate
 
     diagnostics.accepted_cue_count = sum(bool(cue.words) for cue in accepted_by_id.values())
     diagnostics.accepted_token_count = sum(len(cue.words) for cue in accepted_by_id.values())

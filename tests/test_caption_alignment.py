@@ -15,6 +15,7 @@ from pandrator.logic.dubbing.caption_alignment import (
     parse_vad_export,
     validate_cue_words,
 )
+from pandrator.logic.dubbing.crispasr import CrispASRError
 from pandrator.logic.media_edit import MediaCue
 
 
@@ -76,10 +77,11 @@ def test_first_pass_requests_isolate_every_cue_and_enforce_bounds():
         batch_seconds=10,
     )
 
+    assert [batch.target_cue_id for batch in batches] == ["a", "b", "c", "d"]
     assert [[cue.id for cue in batch.cues] for batch in batches] == [
-        ["a"],
-        ["b"],
-        ["c"],
+        ["a", "b", "c"],
+        ["a", "b", "c"],
+        ["c", "d"],
         ["d"],
     ]
     assert all(
@@ -89,7 +91,10 @@ def test_first_pass_requests_isolate_every_cue_and_enforce_bounds():
         batch.end_ms - batch.start_ms <= 10000 and batch.token_count <= 160
         for batch in batches
     )
-    assert all(len(batch.cues) == 1 for batch in batches)
+    assert all(
+        batch.target_cue_id in {cue.id for cue in batch.cues}
+        for batch in batches
+    )
 
 
 def test_large_overlap_cluster_still_aligns_each_bounded_cue_once(tmp_path):
@@ -112,7 +117,14 @@ def test_large_overlap_cluster_still_aligns_each_bounded_cue_once(tmp_path):
 
     result = align_caption_cues(normalized, cues, ctc_runner=runner)
 
-    assert result.metrics["alignment_request_strategy"] == "independent_per_cue"
+    assert (
+        result.metrics["alignment_request_strategy"]
+        == "independent_target_with_following_context"
+    )
+    assert (
+        result.metrics["alignment_endpoint_strategy"]
+        == "ctc_onsets_with_shifted_caption_duration_cap"
+    )
     assert result.diagnostics.first_pass_batch_count == 2
     assert result.diagnostics.ctc_request_count == 2
     assert result.diagnostics.oversized_cluster_count == 0
@@ -168,6 +180,22 @@ def test_ctc_validation_enforces_surfaces_count_windows_spans_and_quality():
     assert [word.text for word in accepted.words] == ["Hello", "world"]
     assert (accepted.start_ms, accepted.end_ms) == (1100, 1800)
     assert all(word.confidence == 1.0 for word in accepted.words)
+
+    tailed, reason, quality = validate_cue_words(
+        cue,
+        [
+            {"word": "Hello", "start": 1.1, "end": 1.3},
+            {"word": "world", "start": 1.5, "end": 3.9},
+        ],
+        padding_ms=200,
+        vad_spans=(SpeechSpan(0, 3000),),
+        vad_enabled=True,
+        min_confidence=0.5,
+        duration_ms=4000,
+    )
+    assert reason is None
+    assert quality == 1.0
+    assert tailed.words[-1].end_ms == 2100
 
     cases = (
         (valid[:1], "wrong_count"),
@@ -268,10 +296,12 @@ def test_align_caption_cues_keeps_one_bad_cue_from_poisoning_neighbours(tmp_path
     def runner(_clip, text_path, _output, _settings, _event):
         text = text_path.read_text(encoding="utf-8")
         calls.append(text)
-        if text == "Alpha":
-            return [{"word": "poison", "start": 1.1, "end": 1.3}]
-        if text == "Beta":
-            return [{"word": "Beta", "start": 1.5, "end": 1.7}]
+        if text == "Alpha Beta Gamma":
+            return [
+                {"word": "poison", "start": 1.1, "end": 1.3},
+                {"word": "Beta", "start": 1.5, "end": 1.7},
+                {"word": "Gamma", "start": 8.1, "end": 8.3},
+            ]
         return [{"word": "Gamma", "start": 2.1, "end": 2.3}]
 
     result = align_caption_cues(
@@ -281,7 +311,8 @@ def test_align_caption_cues_keeps_one_bad_cue_from_poisoning_neighbours(tmp_path
         ctc_runner=runner,
     )
 
-    assert calls == ["Alpha", "Beta", "Gamma"]
+    assert calls == ["Alpha Beta Gamma", "Alpha Beta Gamma", "Gamma"]
+    assert all("Pascal Schilling" not in text for text in calls)
     assert result.diagnostics.first_pass_batch_count == 3
     assert result.diagnostics.ctc_request_count == 3
     assert result.diagnostics.overlap_cluster_count == 2
@@ -322,6 +353,33 @@ def test_align_caption_cues_pre_cancel_never_invokes_runner(tmp_path):
             cancel_event=event,
         )
     assert not invoked
+
+
+def test_one_crispasr_process_failure_rejects_only_its_target(tmp_path):
+    normalized = _normalized_wav(tmp_path / "normalized.wav")
+    cues = (
+        _cue("first", 1000, 2000, "First"),
+        _cue("second", 4000, 5000, "Second"),
+    )
+    calls = 0
+
+    def runner(_clip, _text, _output, _settings, _event):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise CrispASRError("synthetic process failure")
+        return [{"word": "Second", "start": 2.1, "end": 2.4}]
+
+    result = align_caption_cues(normalized, cues, ctc_runner=runner)
+
+    assert calls == 2
+    assert result.diagnostics.failed_cue_ids == {
+        "first": ["synthetic process failure"]
+    }
+    assert [cue.timing_source for cue in result.cues] == [
+        "caption",
+        "ctc_alignment",
+    ]
 
 
 def test_parse_real_crispasr_vad_export_schema():

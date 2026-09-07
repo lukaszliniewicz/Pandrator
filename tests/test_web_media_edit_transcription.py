@@ -542,7 +542,10 @@ class MediaEditTranscriptionHandlerTests(unittest.TestCase):
 
         def ctc_words(_clip, text_path, *_args, **_kwargs):
             if "Hello," in text_path.read_text(encoding="utf-8"):
-                return [{"word": "Hello,", "start": 1.1, "end": 1.3}]
+                return [
+                    {"word": "Hello,", "start": 1.1, "end": 1.3},
+                    {"word": "wrong", "start": 1.6, "end": 1.9},
+                ]
             return [{"word": "wrong", "start": 1.6, "end": 1.9}]
 
         with (

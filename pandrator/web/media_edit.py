@@ -770,6 +770,9 @@ class MediaEditService:
                     "alignment_request_strategy": timing_metadata.get(
                         "alignment_request_strategy", ""
                     ),
+                    "alignment_endpoint_strategy": timing_metadata.get(
+                        "alignment_endpoint_strategy", ""
+                    ),
                     "alignment_artifact_reused": reused_alignment,
                 }
             )

@@ -934,7 +934,7 @@ export function settingLabel(key: string): string {
     caption_alignment_method: 'Attached-caption alignment method',
     caption_alignment_ctc_model: 'Caption CTC aligner model',
     caption_alignment_padding_ms: 'Cue audio padding (ms)',
-    caption_alignment_batch_seconds: 'Maximum padded cue window (seconds)',
+    caption_alignment_batch_seconds: 'Maximum local-context window (seconds)',
     caption_alignment_min_confidence: 'Minimum timing-quality score',
     caption_alignment_fallback_coverage: 'ASR fallback coverage threshold',
     crispasr_vad_enabled: 'Use voice activity detection',

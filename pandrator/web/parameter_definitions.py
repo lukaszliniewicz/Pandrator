@@ -191,7 +191,7 @@ _DESCRIPTIONS: dict[str, dict[str, str]] = {
         "caption_alignment_method": "Selects caption-authoritative alignment: CTC, CTC with a post-CTC ASR fallback, or legacy ASR lexical projection.",
         "caption_alignment_ctc_model": "Selects the CrispASR align-only CTC model; auto uses the bundled Canary aligner and loads no whole-recording ASR model.",
         "caption_alignment_padding_ms": "Adds a bounded temporal margin around each caption cue for CTC alignment; the runtime clamps this value to 250 through 5000 milliseconds.",
-        "caption_alignment_batch_seconds": "Sets the maximum padded CTC window for each independently aligned caption cue; the runtime clamps it to 5 through 60 seconds and also enforces the per-cue reference-token budget.",
+        "caption_alignment_batch_seconds": "Sets the maximum local-context window for each independently evaluated caption cue; the runtime clamps it to 5 through 60 seconds and also enforces the reference-token budget.",
         "caption_alignment_min_confidence": "Sets the minimum timing-quality score required for a CTC cue, with a safety floor of 0.5; this is a temporal/VAD quality measure, not a model probability.",
         "caption_alignment_fallback_coverage": "Triggers the optional ASR fallback when eligible CTC token coverage is below this fraction; the runtime clamps it to 0 through 1.",
         "diarization_enabled": "Requests speaker diarization from local non-MOSS CrispASR engines; MOSS already supplies native speaker turns and Azure MAI-Transcribe-1.5 rejects diarization.",

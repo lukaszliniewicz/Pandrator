@@ -2913,12 +2913,13 @@
               <div
                 class="rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] p-4"
               >
-                <div class="text-sm font-semibold">Cue-local Canary CTC</div>
+                <div class="text-sm font-semibold">Target-local Canary CTC</div>
                 <p class="muted mt-1 text-xs leading-relaxed">
-                  Each cleaned cue is aligned independently inside its own
-                  padded interval, so one bad cue cannot shift its neighbours.
-                  VAD checks that returned word times land on speech; rejected
-                  cues retain their caption timing.
+                  Each cleaned cue is evaluated independently with bounded
+                  following-caption context; only that target cue's timing is
+                  kept. VAD checks word placement, and CTC blank tails are
+                  capped by the shifted caption duration. Rejected cues retain
+                  their original timing.
                 </p>
                 <div class="mt-3 grid gap-3 sm:grid-cols-2">
                   <label class="text-xs font-semibold"
@@ -2952,7 +2953,7 @@
                     ><ParameterLabel
                       section="stt"
                       name="caption_alignment_batch_seconds"
-                      label="Maximum cue window (s)"
+                      label="Maximum context window (s)"
                       compact
                     /><input
                       type="number"
