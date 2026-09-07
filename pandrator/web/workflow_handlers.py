@@ -4201,6 +4201,8 @@ class WorkflowHandlers:
     def media_edit_propose(self, payload, progress, cancel_event):
         """Ask the configured correction model for removal-only cue spans."""
 
+        from types import SimpleNamespace
+
         from pandrator.logic import llm_handler
 
         session_id = str(payload.get("session_id") or "")
@@ -4237,6 +4239,11 @@ class WorkflowHandlers:
             settings.get("correction_model") or settings.get("llm_default_model") or ""
         ).strip()
         settings["media_edit_model"] = correction_model
+        llm_settings = SimpleNamespace(
+            provider_configs=settings["llm_provider_configs"],
+            default_model=settings["llm_default_model"],
+            request_timeout_seconds=settings["request_timeout_seconds"],
+        )
         request_payload = {
             "instructions": instructions,
             "cues": cues,
@@ -4264,7 +4271,7 @@ class WorkflowHandlers:
         result = llm_handler.chat_completion_with_metadata(
             messages=messages,
             model_name=correction_model or None,
-            llm_settings=settings,
+            llm_settings=llm_settings,
             cancel_event=cancel_event,
         )
         self._record_usage(

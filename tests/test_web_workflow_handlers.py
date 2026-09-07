@@ -59,6 +59,71 @@ class WebWorkflowHandlerTests(unittest.TestCase):
     def progress(_value, _detail=None):
         return None
 
+    def test_media_edit_proposal_passes_hydrated_provider_configs_to_llm(self):
+        model = "custom:provider-id/gemini-3.7-flash"
+        provider_configs = [
+            {
+                "id": "provider-id",
+                "provider": "vertex_ai",
+                "is_custom": True,
+                "models": [{"id": "gemini-3.7-flash"}],
+            }
+        ]
+        revision = {
+            "plan_id": "plan-id",
+            "revision_id": "revision-id",
+            "revision": 4,
+            "cues": [
+                {
+                    "id": "cue-000001",
+                    "start_ms": 1000,
+                    "end_ms": 2000,
+                    "speaker": "Speaker",
+                    "text": "Keep this.",
+                }
+            ],
+        }
+        hydrated = {
+            "correction_model": model,
+            "llm_default_model": model,
+            "llm_provider_configs": provider_configs,
+            "request_timeout_seconds": 600,
+        }
+
+        with (
+            mock.patch.object(
+                self.handlers.media_edit,
+                "revision",
+                return_value=revision,
+            ),
+            mock.patch.object(
+                self.handlers,
+                "_with_database_llm_settings",
+                return_value=hydrated,
+            ),
+            mock.patch.object(self.handlers, "_record_usage"),
+            mock.patch(
+                "pandrator.logic.llm_handler.chat_completion_with_metadata",
+                return_value=SimpleNamespace(content='{"cuts":[]}'),
+            ) as completion,
+        ):
+            result = self.handlers.media_edit_propose(
+                {
+                    "session_id": self.session.id,
+                    "revision": 4,
+                    "instructions": "Remove only setup chatter.",
+                    "settings": {},
+                },
+                self.progress,
+                threading.Event(),
+            )
+
+        self.assertEqual(0, result["cut_count"])
+        llm_settings = completion.call_args.kwargs["llm_settings"]
+        self.assertEqual(provider_configs, llm_settings.provider_configs)
+        self.assertEqual(model, llm_settings.default_model)
+        self.assertEqual(600, llm_settings.request_timeout_seconds)
+
     def test_prepare_text_fallbacks_match_canonical_text_defaults(self):
         source_path = self.session_dir / "cleaned.txt"
         source_path.write_text("LOUD HEADING\n\nNarration.", encoding="utf-8")
