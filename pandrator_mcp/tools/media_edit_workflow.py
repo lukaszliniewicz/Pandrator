@@ -669,9 +669,12 @@ def plan_media_edit_workflow(
                         )
                         phases[5]["approval_action"] = approval_action.model_dump(mode="json")
                         next_action = _next_action(
-                            "pandrator_get_media_edit",
-                            {"session_id": arguments.session_id},
-                            "Inspect the unreviewed proposal before considering the gated approval action.",
+                            "pandrator_list_media_edit_cuts",
+                            {
+                                "session_id": arguments.session_id,
+                                "revision": active_revision,
+                            },
+                            "List the unreviewed cuts, then inspect each relevant start/end boundary before considering the gated approval action.",
                         )
                         phases[5]["next_action"] = next_action.model_dump(mode="json")
                     else:

@@ -3,11 +3,13 @@
   import {
     Bot,
     Check,
+    ChevronDown,
     ChevronRight,
     CircleAlert,
     Clock3,
     Download,
     LoaderCircle,
+    LocateFixed,
     Play,
     Plus,
     RefreshCw,
@@ -15,6 +17,8 @@
     Scissors,
     Search,
     Settings2,
+    SkipBack,
+    SkipForward,
     Sparkles,
     X,
     Trash2
@@ -38,6 +42,7 @@
   import { modalFocus } from '$lib/modal-focus';
 
   type CutRange = MediaEditRange;
+  type CutEdge = 'start_ms' | 'end_ms';
 
   const sessionId = String(page.params.id);
   let workspaceState = $state<MediaEditState | null>(null);
@@ -106,6 +111,18 @@
           0
         )
       : 0
+  );
+  const editPoints = $derived.by(() =>
+    cuts
+      .flatMap((range) => [
+        {
+          rangeId: range.id,
+          edge: 'start_ms' as const,
+          timeMs: range.start_ms
+        },
+        { rangeId: range.id, edge: 'end_ms' as const, timeMs: range.end_ms }
+      ])
+      .sort((a, b) => a.timeMs - b.timeMs)
   );
   function evidenceNumber(
     evidence: Record<string, unknown>,
@@ -692,6 +709,47 @@
     scheduleDetailWaveform();
   }
 
+  function jumpToEditPoint(direction: -1 | 1) {
+    if (!editPoints.length) return;
+    const toleranceMs = 10;
+    const point =
+      direction < 0
+        ? ([...editPoints]
+            .reverse()
+            .find((item) => item.timeMs < currentMs - toleranceMs) ??
+          editPoints.at(-1))
+        : (editPoints.find((item) => item.timeMs > currentMs + toleranceMs) ??
+          editPoints[0]);
+    if (point) seek(point.timeMs);
+  }
+
+  function setCutBoundary(
+    rangeId: string,
+    edge: CutEdge,
+    value: number,
+    syncVideo = false
+  ) {
+    if (!plan || !Number.isFinite(value)) return;
+    const index = cuts.findIndex((range) => range.id === rangeId);
+    if (index < 0) return;
+    const range = cuts[index];
+    const minimum =
+      edge === 'start_ms'
+        ? (cuts[index - 1]?.end_ms ?? 0)
+        : range.start_ms + 20;
+    const maximum =
+      edge === 'start_ms'
+        ? range.end_ms - 20
+        : (cuts[index + 1]?.start_ms ?? plan.duration_ms);
+    const nextValue = Math.max(minimum, Math.min(maximum, Math.round(value)));
+    cuts = cuts.map((item, itemIndex) =>
+      itemIndex === index ? { ...item, [edge]: nextValue } : item
+    );
+    currentMs = nextValue;
+    if (syncVideo && video) video.currentTime = nextValue / 1000;
+    scheduleDetailWaveform();
+  }
+
   function updatePlayback() {
     if (!video) return;
     currentMs = Math.round(video.currentTime * 1000);
@@ -748,18 +806,8 @@
     cutEndMs = null;
   }
 
-  function nudge(index: number, edge: 'start_ms' | 'end_ms', amount: number) {
-    cuts = cuts.map((range, rangeIndex) =>
-      rangeIndex === index
-        ? {
-            ...range,
-            [edge]: Math.max(
-              0,
-              Math.min(plan?.duration_ms ?? 0, range[edge] + amount)
-            )
-          }
-        : range
-    );
+  function nudge(range: CutRange, edge: CutEdge, amount: number) {
+    setCutBoundary(range.id, edge, range[edge] + amount, true);
   }
 
   onMount(load);
@@ -1004,36 +1052,63 @@
               durationMs={plan.duration_ms}
               {currentMs}
               keepRanges={keepFromCuts(cuts, plan.duration_ms)}
+              cutRanges={cuts}
               {peaks}
               {detailPeaks}
               {detailPeaksStartMs}
               {detailPeaksEndMs}
               detailLoading={Boolean(pendingDetailKey)}
               onseek={seek}
+              onboundaryinput={(rangeId, edge, timeMs) =>
+                setCutBoundary(rangeId, edge, timeMs)}
+              onboundarycommit={(rangeId, edge, timeMs) =>
+                setCutBoundary(rangeId, edge, timeMs, true)}
             />
             <div
-              class="flex flex-wrap items-center gap-2 rounded-xl bg-[var(--paper)] p-3"
+              class="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-[var(--paper)] p-3"
             >
-              <button onclick={() => (cutStartMs = currentMs)} class="marker">
-                Set cut start<br /><small
-                  >{cutStartMs == null
-                    ? 'at playhead'
-                    : formatTime(cutStartMs)}</small
+              <div class="flex flex-wrap items-center gap-2">
+                <button onclick={() => (cutStartMs = currentMs)} class="marker">
+                  Set cut start<br /><small
+                    >{cutStartMs == null
+                      ? 'at playhead'
+                      : formatTime(cutStartMs)}</small
+                  >
+                </button>
+                <button onclick={() => (cutEndMs = currentMs)} class="marker">
+                  Set cut end<br /><small
+                    >{cutEndMs == null
+                      ? 'at playhead'
+                      : formatTime(cutEndMs)}</small
+                  >
+                </button>
+                <button
+                  onclick={addCut}
+                  disabled={cutStartMs == null || cutEndMs == null}
+                  class="primary self-center disabled:opacity-40"
+                  ><Plus size={15} /> Add cut</button
                 >
-              </button>
-              <button onclick={() => (cutEndMs = currentMs)} class="marker">
-                Set cut end<br /><small
-                  >{cutEndMs == null
-                    ? 'at playhead'
-                    : formatTime(cutEndMs)}</small
-                >
-              </button>
-              <button
-                onclick={addCut}
-                disabled={cutStartMs == null || cutEndMs == null}
-                class="primary disabled:opacity-40"
-                ><Plus size={15} /> Add cut</button
+              </div>
+              <div
+                class="flex items-center gap-1"
+                role="group"
+                aria-label="Edit boundary navigation"
               >
+                <button
+                  onclick={() => jumpToEditPoint(-1)}
+                  disabled={!editPoints.length}
+                  title="Go to the previous removal edge; wraps at the beginning."
+                  class="boundary-nav disabled:opacity-40"
+                  ><SkipBack size={14} /> Previous edge</button
+                >
+                <button
+                  onclick={() => jumpToEditPoint(1)}
+                  disabled={!editPoints.length}
+                  title="Go to the next removal edge; wraps at the end."
+                  class="boundary-nav disabled:opacity-40"
+                  >Next edge <SkipForward size={14} /></button
+                >
+              </div>
             </div>
           </div>
         </section>
@@ -1056,7 +1131,14 @@
                       min="0"
                       max={plan.duration_ms}
                       step="20"
-                      bind:value={cut.start_ms}
+                      value={cut.start_ms}
+                      onchange={(event) =>
+                        setCutBoundary(
+                          cut.id,
+                          'start_ms',
+                          Number(event.currentTarget.value),
+                          true
+                        )}
                     />
                     <small>{formatTime(cut.start_ms)}</small></label
                   ><label
@@ -1066,7 +1148,14 @@
                       min="0"
                       max={plan.duration_ms}
                       step="20"
-                      bind:value={cut.end_ms}
+                      value={cut.end_ms}
+                      onchange={(event) =>
+                        setCutBoundary(
+                          cut.id,
+                          'end_ms',
+                          Number(event.currentTarget.value),
+                          true
+                        )}
                     />
                     <small>{formatTime(cut.end_ms)}</small></label
                   >
@@ -1075,25 +1164,53 @@
                     bind:value={cut.label}
                     class="sm:col-span-2"
                   />
-                  <div class="sm:col-span-2 flex flex-wrap gap-1">
-                    <button onclick={() => nudge(index, 'start_ms', -100)}
-                      >-100 start</button
-                    >
-                    <button onclick={() => nudge(index, 'start_ms', 100)}
-                      >+100 start</button
-                    >
-                    <button onclick={() => audition(cut.start_ms)}
-                      ><Play size={12} /> start</button
-                    >
-                    <button onclick={() => nudge(index, 'end_ms', -100)}
-                      >-100 end</button
-                    >
-                    <button onclick={() => nudge(index, 'end_ms', 100)}
-                      >+100 end</button
-                    >
-                    <button onclick={() => audition(cut.end_ms)}
-                      ><Play size={12} /> end</button
-                    >
+                  <div class="sm:col-span-2 grid gap-2">
+                    <div class="boundary-control-row">
+                      <span>Start</span>
+                      <button
+                        onclick={() => nudge(cut, 'start_ms', -100)}
+                        title="Move the start edge 100 milliseconds earlier."
+                        >−100 ms</button
+                      >
+                      <button
+                        onclick={() => nudge(cut, 'start_ms', 100)}
+                        title="Move the start edge 100 milliseconds later."
+                        >+100 ms</button
+                      >
+                      <button
+                        onclick={() => seek(cut.start_ms)}
+                        title="Move the playhead to this start edge without playing."
+                        ><LocateFixed size={12} /> Go to</button
+                      >
+                      <button
+                        onclick={() => audition(cut.start_ms)}
+                        title="Play 1.3 seconds before and after this start edge."
+                        ><Play size={12} /> Preview</button
+                      >
+                    </div>
+                    <div class="boundary-control-row">
+                      <span>End</span>
+                      <button
+                        onclick={() => nudge(cut, 'end_ms', -100)}
+                        title="Move the end edge 100 milliseconds earlier, retaining more silence before speech resumes."
+                        >−100 ms</button
+                      >
+                      <button
+                        onclick={() => nudge(cut, 'end_ms', 100)}
+                        title="Move the end edge 100 milliseconds later."
+                        >+100 ms</button
+                      >
+                      <button
+                        onclick={() => seek(cut.end_ms)}
+                        title="Move the playhead to this end edge without playing."
+                        ><LocateFixed size={12} /> Go to</button
+                      >
+                      <button
+                        onclick={() => audition(cut.end_ms)}
+                        title="Play 1.3 seconds before and after this end edge."
+                        ><Play size={12} /> Preview</button
+                      >
+                    </div>
                   </div>
                 </div>
                 <button
@@ -1114,49 +1231,90 @@
       </div>
 
       <aside class="min-w-0 space-y-5">
-        {#if alignmentSummary}<section
+        {#if alignmentSummary}<details
             class={alignmentSummary.reliable
-              ? 'rounded-2xl border border-emerald-400/35 bg-emerald-500/10 p-4'
-              : 'rounded-2xl border border-amber-400/40 bg-amber-500/10 p-4'}
+              ? 'alignment-card rounded-2xl border border-emerald-400/35 bg-emerald-500/10'
+              : 'alignment-card rounded-2xl border border-amber-400/40 bg-amber-500/10'}
           >
-            <div class="flex gap-2 text-sm font-semibold">
-              {#if alignmentSummary.reliable}<Check size={17} /> Caption timing applied{:else}<CircleAlert
+            <summary
+              class="flex cursor-pointer list-none items-center gap-2 p-4 text-sm"
+            >
+              {#if alignmentSummary.reliable}<Check
                   size={17}
-                /> Caption timing is unreliable{/if}
-            </div>
-            <p class="muted mt-2 text-xs leading-relaxed">
-              {alignmentSummary.methodLabel} · {Math.round(
-                alignmentSummary.coverage * 100
-              )}% of all words aligned · {Math.round(
-                alignmentSummary.eligibleCoverage * 100
-              )}% of in-media words · {Math.round(
-                alignmentSummary.quality * 100
-              )}% {alignmentSummary.qualityLabel}{alignmentSummary.wordCount
-                ? ` · ${alignmentSummary.wordCount.toLocaleString()} timed words`
-                : ''}{alignmentSummary.cueCount
-                ? ` · ${alignmentSummary.acceptedCues.toLocaleString()}/${alignmentSummary.cueCount.toLocaleString()} cues accepted`
-                : ''}{alignmentSummary.batchCount
-                ? ` · ${alignmentSummary.batchCount.toLocaleString()} CTC batches`
-                : ''}{alignmentSummary.retryCount
-                ? ` · ${alignmentSummary.retryCount.toLocaleString()} isolated retries`
-                : ''}{alignmentSummary.outsideMediaCount
-                ? ` · ${alignmentSummary.outsideMediaCount.toLocaleString()} cues outside media`
-                : ''}{alignmentSummary.oversizedCueCount
-                ? ` · ${alignmentSummary.oversizedCueCount.toLocaleString()} oversized cues retained without CTC timing`
-                : ''}{alignmentSummary.fallbackUsed
-                ? ' · ASR fallback used'
-                : ''}. {alignmentSummary.reliable
-                ? 'Aligned words are available for subtitle timing and cut-boundary inspection.'
-                : 'Original caption timing was retained for rejected cues; those word times are excluded from cut refinement.'}
-            </p>
-            {#if plan.evidence.warnings?.length}<ul
-                class="muted mt-2 list-disc space-y-1 pl-5 text-xs"
+                />{:else}<CircleAlert size={17} />{/if}
+              <span class="min-w-0 flex-1">
+                <strong class="block">
+                  {alignmentSummary.reliable
+                    ? 'Caption timing applied'
+                    : 'Caption timing needs attention'}
+                </strong>
+                <span class="muted mt-0.5 block text-xs font-normal">
+                  {alignmentSummary.methodLabel} · {Math.round(
+                    alignmentSummary.eligibleCoverage * 100
+                  )}% of in-media words · {Math.round(
+                    alignmentSummary.quality * 100
+                  )}% {alignmentSummary.qualityLabel}
+                </span>
+              </span>
+              <span class="alignment-chevron muted shrink-0"
+                ><ChevronDown size={16} /></span
               >
-                {#each plan.evidence.warnings as warning}<li>
-                    {warning}
-                  </li>{/each}
-              </ul>{/if}
-          </section>{/if}
+            </summary>
+            <div class="border-t border-[var(--line)] px-4 py-3">
+              <p class="text-xs font-semibold leading-relaxed">
+                {alignmentSummary.reliable
+                  ? 'No action is required here. Acoustic word times improve cut inspection while the Zoom wording and speakers remain authoritative.'
+                  : 'Rejected words retain their original caption timing and are not used for automatic boundary refinement.'}
+              </p>
+              {#if alignmentSummary.reliable}
+                <p class="muted mt-2 text-xs leading-relaxed">
+                  The render keeps a retimed word-timing artifact alongside the
+                  edited subtitles. Subtitle formatting and speech-block
+                  creation currently use the retimed SRT rather than that
+                  word-level artifact directly.
+                </p>
+              {/if}
+              <p class="muted mt-2 text-xs leading-relaxed">
+                {alignmentSummary.methodLabel} · {Math.round(
+                  alignmentSummary.coverage * 100
+                )}% of all words aligned · {Math.round(
+                  alignmentSummary.eligibleCoverage * 100
+                )}% of in-media words · {Math.round(
+                  alignmentSummary.quality * 100
+                )}% {alignmentSummary.qualityLabel}{alignmentSummary.wordCount
+                  ? ` · ${alignmentSummary.wordCount.toLocaleString()} timed words`
+                  : ''}{alignmentSummary.cueCount
+                  ? ` · ${alignmentSummary.acceptedCues.toLocaleString()}/${alignmentSummary.cueCount.toLocaleString()} cues accepted`
+                  : ''}{alignmentSummary.batchCount
+                  ? ` · ${alignmentSummary.batchCount.toLocaleString()} CTC batches`
+                  : ''}{alignmentSummary.retryCount
+                  ? ` · ${alignmentSummary.retryCount.toLocaleString()} isolated retries`
+                  : ''}{alignmentSummary.outsideMediaCount
+                  ? ` · ${alignmentSummary.outsideMediaCount.toLocaleString()} cues outside media`
+                  : ''}{alignmentSummary.oversizedCueCount
+                  ? ` · ${alignmentSummary.oversizedCueCount.toLocaleString()} oversized cues retained without CTC timing`
+                  : ''}{alignmentSummary.fallbackUsed
+                  ? ' · ASR fallback used'
+                  : ''}.
+              </p>
+              {#if plan.evidence.warnings?.length}<details
+                  class="mt-3 rounded-xl border border-[var(--line)] bg-[var(--paper)]"
+                >
+                  <summary
+                    class="cursor-pointer px-3 py-2 text-xs font-semibold"
+                    >{plan.evidence.warnings.length} diagnostic warning{plan
+                      .evidence.warnings.length === 1
+                      ? ''
+                      : 's'}</summary
+                  >
+                  <ul class="muted list-disc space-y-1 px-7 pb-3 text-xs">
+                    {#each plan.evidence.warnings as warning}<li>
+                        {warning}
+                      </li>{/each}
+                  </ul>
+                </details>{/if}
+            </div>
+          </details>{/if}
 
         <section class="surface rounded-2xl p-5">
           <div class="flex items-center justify-between gap-3">
@@ -1473,6 +1631,17 @@
     color: var(--muted);
     font-weight: 500;
   }
+  .boundary-nav {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    border: 1px solid var(--line);
+    border-radius: 0.65rem;
+    background: var(--paper-strong);
+    padding: 0.55rem 0.65rem;
+    font-size: 0.68rem;
+    font-weight: 700;
+  }
   .badge {
     border-radius: 999px;
     background: var(--accent-soft);
@@ -1523,6 +1692,29 @@
     padding: 0.35rem 0.45rem;
     font-size: 0.65rem;
     font-weight: 650;
+  }
+  .boundary-control-row {
+    display: flex;
+    min-width: 0;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.25rem;
+  }
+  .boundary-control-row > span {
+    width: 2.5rem;
+    color: var(--muted);
+    font-size: 0.62rem;
+    font-weight: 750;
+    text-transform: uppercase;
+  }
+  .alignment-card > summary::-webkit-details-marker {
+    display: none;
+  }
+  .alignment-chevron {
+    transition: transform 160ms ease;
+  }
+  .alignment-card[open] .alignment-chevron {
+    transform: rotate(180deg);
   }
   .delete {
     color: #dc4b4b;

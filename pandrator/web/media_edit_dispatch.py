@@ -69,6 +69,9 @@ class MediaEditDispatchRunService:
 
     @staticmethod
     def _run_payload(run: MediaEditDispatchRun) -> dict[str, Any]:
+        result_revision = (
+            run.source_revision_number + 1 if run.result_revision_id else None
+        )
         return {
             "id": run.id,
             "run_id": run.id,
@@ -90,6 +93,7 @@ class MediaEditDispatchRunService:
                 0, run.batch_count - run.completed_batch_count
             ),
             "result_revision_id": run.result_revision_id,
+            "result_revision": result_revision,
             "error_code": run.error_code,
             "error_message": run.error_message,
             "created_at": run.created_at.isoformat(),
@@ -334,8 +338,10 @@ class MediaEditDispatchRunService:
                     "Reason globally over the complete recording and return only "
                     "whole-cue removal spans. The packet omits transcript cues wholly "
                     "outside the source-media duration. Do not return word arrays, "
-                    "revised transcript text, or provider/model data. Empty cuts is "
-                    "valid when no removal is warranted."
+                    "revised transcript text, or provider/model data. Use "
+                    "start_at_media_start=true for captionless material before the "
+                    "first cue, and end_at_media_end=true for trailing material after "
+                    "the last cue. Empty cuts is valid when no removal is warranted."
                     + (
                         f"\n\nUser instructions:\n{run.instructions}"
                         if run.instructions
@@ -346,8 +352,10 @@ class MediaEditDispatchRunService:
                     "kind": "media_edit",
                     "cuts": [
                         {
-                            "start_cue_id": "string",
-                            "end_cue_id": "string",
+                            "start_cue_id": "string (omit when start_at_media_start=true)",
+                            "start_at_media_start": "boolean, default false",
+                            "end_cue_id": "string (omit when end_at_media_end=true)",
+                            "end_at_media_end": "boolean, default false",
                             "reason": "nonblank string, max 500 characters",
                         }
                     ],
@@ -524,7 +532,7 @@ class MediaEditDispatchRunService:
         cue_positions = {
             str(cue.get("id")): index for index, cue in enumerate(valid_cues)
         }
-        normalized: list[dict[str, str]] = []
+        normalized: list[dict[str, Any]] = []
         seen: set[tuple[str, str]] = set()
         for item in cuts:
             if not isinstance(item, dict):
@@ -533,10 +541,26 @@ class MediaEditDispatchRunService:
                     "Every media-edit cut must be an object.",
                     422,
                 )
+            start_at_media_start = bool(item.get("start_at_media_start", False))
+            end_at_media_end = bool(item.get("end_at_media_end", False))
             start_id = item.get("start_cue_id")
             end_id = item.get("end_cue_id")
             reason = item.get("reason")
-            if not isinstance(start_id, str) or not isinstance(end_id, str):
+            if (start_id is not None) == start_at_media_start:
+                raise DispatchError(
+                    "invalid_model_response",
+                    "Exactly one start_cue_id or start_at_media_start=true is required.",
+                    422,
+                )
+            if (end_id is not None) == end_at_media_end:
+                raise DispatchError(
+                    "invalid_model_response",
+                    "Exactly one end_cue_id or end_at_media_end=true is required.",
+                    422,
+                )
+            if (not start_at_media_start and not isinstance(start_id, str)) or (
+                not end_at_media_end and not isinstance(end_id, str)
+            ):
                 raise DispatchError(
                     "invalid_model_response", "Cut cue IDs must be strings.", 422
                 )
@@ -544,14 +568,22 @@ class MediaEditDispatchRunService:
                 raise DispatchError(
                     "invalid_model_response", "Cut reason must be a string.", 422
                 )
-            start_id = start_id.strip()
-            end_id = end_id.strip()
+            start_id = start_id.strip() if isinstance(start_id, str) else ""
+            end_id = end_id.strip() if isinstance(end_id, str) else ""
             reason = reason.strip()
-            if start_id not in cue_positions or end_id not in cue_positions:
+            if not start_at_media_start and start_id not in cue_positions:
                 raise DispatchError(
                     "invalid_model_response", "Cut references an unknown cue ID.", 422
                 )
-            if cue_positions[start_id] > cue_positions[end_id]:
+            if not end_at_media_end and end_id not in cue_positions:
+                raise DispatchError(
+                    "invalid_model_response", "Cut references an unknown cue ID.", 422
+                )
+            start_position = -1 if start_at_media_start else cue_positions[start_id]
+            end_position = (
+                len(valid_cues) if end_at_media_end else cue_positions[end_id]
+            )
+            if start_position > end_position:
                 raise DispatchError(
                     "invalid_model_response", "Cut cue IDs are out of order.", 422
                 )
@@ -565,14 +597,23 @@ class MediaEditDispatchRunService:
                     "Cut reasons must be at most 500 characters.",
                     422,
                 )
-            pair = (start_id, end_id)
+            pair = (
+                "__media_start__" if start_at_media_start else start_id,
+                "__media_end__" if end_at_media_end else end_id,
+            )
             if pair in seen:
                 raise DispatchError(
                     "invalid_model_response", "Cut cue-ID pairs must be unique.", 422
                 )
             seen.add(pair)
             normalized.append(
-                {"start_cue_id": start_id, "end_cue_id": end_id, "reason": reason}
+                {
+                    "start_cue_id": None if start_at_media_start else start_id,
+                    "start_at_media_start": start_at_media_start,
+                    "end_cue_id": None if end_at_media_end else end_id,
+                    "end_at_media_end": end_at_media_end,
+                    "reason": reason,
+                }
             )
         return {"kind": "media_edit", "cuts": normalized}
 
@@ -581,6 +622,9 @@ class MediaEditDispatchRunService:
         run: MediaEditDispatchRun,
         batch: MediaEditDispatchBatch,
     ) -> dict[str, Any]:
+        result_revision = (
+            run.source_revision_number + 1 if run.result_revision_id else None
+        )
         return {
             "run_id": run.id,
             "batch_id": batch.id,
@@ -596,7 +640,9 @@ class MediaEditDispatchRunService:
             "completed_batches": run.completed_batch_count,
             "remaining_batches": max(0, run.batch_count - run.completed_batch_count),
             "finalized": run.status == "completed",
+            "source_revision_number": run.source_revision_number,
             "result_revision_id": run.result_revision_id,
+            "result_revision": result_revision,
             "error_code": run.error_code,
             "error_message": run.error_message,
         }

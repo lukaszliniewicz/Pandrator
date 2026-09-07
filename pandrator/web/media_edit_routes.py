@@ -14,6 +14,7 @@ from .media_edit import MediaEditInputsChanged, MediaEditRevisionConflict
 from .models import Job
 from .route_context import RouteContext
 from .schemas import (
+    MediaEditBoundaryRequest,
     MediaEditPrepareRequest,
     MediaEditProposeRequest,
     MediaEditRenderRequest,
@@ -87,6 +88,8 @@ def register_media_edit_routes(app: DomainBlueprints, context: RouteContext) -> 
         response.status_code = status_code
         response.headers["Idempotency-Replayed"] = "true"
         revision = (payload.get("plan") or {}).get("revision")
+        if revision is None:
+            revision = (payload.get("current_revision") or {}).get("revision")
         if revision is not None:
             response.headers["ETag"] = f'"{revision}"'
         return response
@@ -233,6 +236,129 @@ def register_media_edit_routes(app: DomainBlueprints, context: RouteContext) -> 
             MediaEditRevisionConflict,
             ValueError,
         ) as error:
+            return service_error(error)
+
+    @app.get("/api/v1/sessions/<session_id>/media-edit/cuts")
+    @require_scope("app.read")
+    def media_edit_cuts(session_id: str):
+        def _query_int(
+            name: str, *, minimum: int | None = None, maximum: int | None = None
+        ):
+            raw = request.args.get(name)
+            if raw is None or raw == "":
+                return None
+            try:
+                value = int(raw)
+            except (TypeError, ValueError) as error:
+                raise ValueError(f"{name} must be an integer.") from error
+            if minimum is not None and value < minimum:
+                raise ValueError(f"{name} must be at least {minimum}.")
+            if maximum is not None and value > maximum:
+                raise ValueError(f"{name} must be at most {maximum}.")
+            return value
+
+        try:
+            revision = _query_int("revision", minimum=1)
+            cut_index = _query_int("cut_index", minimum=1)
+            edge = request.args.get("edge")
+            if edge is not None and edge not in {"start", "end"}:
+                raise ValueError("edge must be 'start' or 'end'.")
+            context_ms = _query_int("context_ms", minimum=250, maximum=30_000)
+            cue_limit = _query_int("cue_limit", minimum=1, maximum=100)
+            return jsonify(
+                media_edit.list_cuts(
+                    session_id,
+                    revision,
+                    cut_index=cut_index,
+                    edge=edge,
+                    context_ms=5_000 if context_ms is None else context_ms,
+                    cue_limit=40 if cue_limit is None else cue_limit,
+                )
+            )
+        except (
+            KeyError,
+            MediaEditInputsChanged,
+            MediaEditRevisionConflict,
+            ValueError,
+        ) as error:
+            return service_error(error)
+
+    @app.patch("/api/v1/sessions/<session_id>/media-edit/boundary")
+    @require_scope("app.write")
+    def media_edit_boundary(session_id: str):
+        raw_etag = request.headers.get("If-Match", "").strip('W/" ')
+        if not raw_etag:
+            return error_response(
+                "precondition_required",
+                "If-Match must contain the current media-edit revision.",
+                428,
+            )
+        try:
+            expected_revision = int(raw_etag)
+            if expected_revision < 1:
+                raise ValueError
+        except ValueError:
+            return error_response(
+                "precondition_required",
+                "If-Match must contain the current media-edit revision.",
+                428,
+            )
+        reservation_id = None
+        try:
+            payload = MediaEditBoundaryRequest.model_validate(
+                request.get_json(silent=True) or {}
+            )
+            reservation_id, replay, key_error = _begin_detached_reservation(
+                "refineMediaEditBoundary",
+                {
+                    "session_id": session_id,
+                    "expected_revision": expected_revision,
+                    **payload.model_dump(mode="json"),
+                },
+            )
+            if key_error is not None:
+                return key_error
+            if replay is not None:
+                return replay
+            result = media_edit.refine_boundary(
+                session_id,
+                expected_revision,
+                cut_index=payload.cut_index,
+                edge=payload.edge,
+                position_ms=payload.position_ms,
+                delta_ms=payload.delta_ms,
+            )
+            status_code = 200
+            _finish_detached_reservation(
+                reservation_id,
+                result,
+                status_code,
+                resource_kind="media_edit_revision",
+                resource_id=str(
+                    (result.get("current_revision") or {}).get("revision_id") or ""
+                )
+                or None,
+            )
+            response = jsonify(result)
+            response.headers["ETag"] = f'"{result["current_revision"]["revision"]}"'
+            return response
+        except ValidationError:
+            _abandon_detached_reservation(reservation_id)
+            raise
+        except (
+            IdempotencyConflict,
+            IdempotencyInProgress,
+            KeyError,
+            MediaEditInputsChanged,
+            MediaEditRevisionConflict,
+            OSError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+        ) as error:
+            _abandon_detached_reservation(reservation_id)
+            if isinstance(error, (IdempotencyConflict, IdempotencyInProgress)):
+                return _idempotency_error(error)
             return service_error(error)
 
     @app.post("/api/v1/sessions/<session_id>/media-edit/prepare")

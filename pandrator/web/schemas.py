@@ -538,6 +538,21 @@ class MediaEditUpdateRequest(StrictModel):
     reviewed: bool | None = None
 
 
+class MediaEditBoundaryRequest(StrictModel):
+    cut_index: StrictInt = Field(ge=1)
+    edge: Literal["start", "end"]
+    position_ms: StrictInt | None = Field(default=None, ge=0)
+    delta_ms: StrictInt | None = None
+
+    @model_validator(mode="after")
+    def validate_target(self) -> MediaEditBoundaryRequest:
+        if (self.position_ms is None) == (self.delta_ms is None):
+            raise ValueError("Exactly one of position_ms or delta_ms is required.")
+        if self.delta_ms == 0:
+            raise ValueError("delta_ms must be nonzero.")
+        return self
+
+
 class StageSelectionUpdate(StrictModel):
     artifact_id: str | None = None
 
@@ -1278,9 +1293,23 @@ class MediaEditDispatchRunCreateRequest(StrictModel):
 
 
 class MediaEditDispatchCut(StrictModel):
-    start_cue_id: str = Field(min_length=1, max_length=120)
-    end_cue_id: str = Field(min_length=1, max_length=120)
+    start_cue_id: str | None = Field(default=None, min_length=1, max_length=120)
+    start_at_media_start: bool = False
+    end_cue_id: str | None = Field(default=None, min_length=1, max_length=120)
+    end_at_media_end: bool = False
     reason: str = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_boundaries(self) -> MediaEditDispatchCut:
+        if (self.start_cue_id is not None) == self.start_at_media_start:
+            raise ValueError(
+                "Exactly one of start_cue_id or start_at_media_start=true is required."
+            )
+        if (self.end_cue_id is not None) == self.end_at_media_end:
+            raise ValueError(
+                "Exactly one of end_cue_id or end_at_media_end=true is required."
+            )
+        return self
 
 
 class MediaEditDispatchResult(StrictModel):
@@ -1349,7 +1378,9 @@ class MediaEditDispatchBatchSubmitResponse(StrictModel):
     total_batches: int = Field(ge=1)
     remaining_batches: int = Field(ge=0)
     finalized: bool
+    source_revision_number: int = Field(ge=1)
     result_revision_id: str | None = None
+    result_revision: int | None = Field(default=None, ge=1)
     error_code: str | None = None
     error_message: str | None = None
 
@@ -1613,6 +1644,7 @@ SCHEMA_MODELS = {
         MediaEditRenderRequest,
         MediaEditKeepRange,
         MediaEditUpdateRequest,
+        MediaEditBoundaryRequest,
         StageSelectionUpdate,
         ChunkUploadInitialize,
         GenerationSegmentCreate,

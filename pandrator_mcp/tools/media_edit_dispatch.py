@@ -112,6 +112,7 @@ def _run_metadata(payload: dict[str, Any]) -> dict[str, Any]:
         "accepted_batch_count",
         "remaining_batch_count",
         "result_revision_id",
+        "result_revision",
         "error_code",
         "error_message",
         "created_at",
@@ -185,13 +186,27 @@ def get_media_edit_dispatch_run(
     elif state == "finalizing":
         actions.append(_get_action(arguments.run_id))
     elif state == "completed" and result.get("result_revision_id"):
-        actions.append(
-            NextAction(
-                tool="pandrator_get_media_edit",
-                arguments={"session_id": result.get("session_id")},
-                reason="Inspect the newly materialized unreviewed media-edit revision before review/render.",
+        result_revision = result.get("result_revision")
+        if result_revision is None:
+            try:
+                result_revision = (
+                    int(result.get("source_revision_number") or result.get("source_revision")) + 1
+                )
+            except (TypeError, ValueError):
+                result_revision = None
+        if result_revision is not None:
+            actions.append(
+                NextAction(
+                    tool="pandrator_list_media_edit_cuts",
+                    arguments={
+                        "session_id": result.get("session_id"),
+                        "revision": result_revision,
+                    },
+                    reason="List the newly materialized unreviewed cut topology before boundary inspection and approval.",
+                )
             )
-        )
+        else:
+            actions.append(_get_action(arguments.run_id))
     return ToolOutcome(result=_run_metadata(result), next_actions=actions)
 
 
@@ -257,13 +272,30 @@ def submit_media_edit_dispatch_batch(
     run_id = str(result.get("run_id") or "")
     state = str(result.get("status") or result.get("run_status") or "").lower()
     if state == "completed" and result.get("session_id"):
-        actions = [
-            NextAction(
-                tool="pandrator_get_media_edit",
-                arguments={"session_id": result["session_id"]},
-                reason="Inspect and review the newly materialized unreviewed media-edit revision before rendering.",
-            )
-        ]
+        result_revision = result.get("result_revision")
+        if result_revision is None:
+            try:
+                result_revision = (
+                    int(result.get("source_revision_number") or result.get("source_revision")) + 1
+                )
+            except (TypeError, ValueError):
+                result_revision = None
+        actions = (
+            [
+                NextAction(
+                    tool="pandrator_list_media_edit_cuts",
+                    arguments={
+                        "session_id": result["session_id"],
+                        "revision": result_revision,
+                    },
+                    reason="List the newly materialized unreviewed cut topology before boundary inspection and approval.",
+                )
+            ]
+            if result_revision is not None
+            else [_get_action(run_id)]
+            if run_id
+            else []
+        )
     elif state == "finalizing":
         actions = [
             _retry_submit_action(

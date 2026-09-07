@@ -1010,6 +1010,7 @@ class AutomationSecurityTests(unittest.TestCase):
             paths["/api/v1/sessions/{sessionId}/output-assemblies"]["post"],
             paths["/api/v1/sessions/{sessionId}/media-edit"]["put"],
             paths["/api/v1/sessions/{sessionId}/media-edit/prepare"]["post"],
+            paths["/api/v1/sessions/{sessionId}/media-edit/boundary"]["patch"],
             paths["/api/v1/sessions/{sessionId}/media-edit/propose"]["post"],
             paths["/api/v1/sessions/{sessionId}/media-edit/render"]["post"],
         )
@@ -1021,6 +1022,11 @@ class AutomationSecurityTests(unittest.TestCase):
             )
             self.assertFalse(header["required"])
             self.assertIn("Automation principals require it", header["description"])
+        boundary = paths["/api/v1/sessions/{sessionId}/media-edit/boundary"]["patch"]
+        self.assertIn(
+            "If-Match", {item["name"] for item in boundary.get("parameters", [])}
+        )
+        self.assertEqual({"200", "409", "422", "428"}, set(boundary["responses"]))
         self.assertIn(
             {"nativeOAuth": ["app.read"]},
             paths["/api/v1/sessions/{sessionId}/workflow-plans"]["post"]["security"],

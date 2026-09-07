@@ -9,8 +9,11 @@ from pandrator_mcp.clients.application import ApplicationClient
 from pandrator_mcp.credentials import CredentialResolver
 from pandrator_mcp.schemas.media_edit import (
     GetMediaEditArguments,
+    InspectMediaEditBoundaryArguments,
+    ListMediaEditCutsArguments,
     PrepareMediaEditArguments,
     ProposeMediaEditArguments,
+    RefineMediaEditBoundaryArguments,
     RenderMediaEditArguments,
     UpdateMediaEditArguments,
 )
@@ -23,8 +26,11 @@ from pandrator_mcp.schemas.workflow import DescribeParametersInput
 from pandrator_mcp.server import build_server
 from pandrator_mcp.tools.media_edit import (
     get_media_edit,
+    inspect_media_edit_boundary,
+    list_media_edit_cuts,
     prepare_media_edit,
     propose_media_edit,
+    refine_media_edit_boundary,
     render_media_edit,
     update_media_edit,
 )
@@ -38,6 +44,27 @@ class _Application:
     def get_media_edit(self, session_id):
         self.calls.append(("get", session_id))
         return {"session_id": session_id, "plan": None}
+
+    def list_media_edit_cuts(self, session_id, *, revision=None):
+        self.calls.append(("list_cuts", (session_id, revision)))
+        return {"session_id": session_id, "revision": revision or 3, "cuts": []}
+
+    def inspect_media_edit_boundary(self, session_id, **kwargs):
+        self.calls.append(("inspect_boundary", (session_id, kwargs)))
+        return {
+            "session_id": session_id,
+            "revision": kwargs.get("revision") or 3,
+            "cut_index": kwargs["cut_index"],
+            "edge": kwargs["edge"],
+        }
+
+    def refine_media_edit_boundary(self, session_id, **kwargs):
+        self.calls.append(("refine_boundary", (session_id, kwargs)))
+        return {
+            "session_id": session_id,
+            "current_revision": {"revision": 4},
+            "affected_cut": {"index": kwargs["cut_index"]},
+        }
 
     def prepare_media_edit(self, session_id, *, force=False, idempotency_key):
         self.calls.append(("prepare", (session_id, force, idempotency_key)))
@@ -220,6 +247,50 @@ class MediaEditSchemaTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             GetMediaEditArguments(session_id="session-1", extra=True)
 
+    def test_boundary_arguments_require_one_bounded_target(self):
+        inspection = InspectMediaEditBoundaryArguments(
+            session_id="session-1",
+            cut_index=2,
+            edge="end",
+            context_ms=750,
+            cue_limit=3,
+        )
+        self.assertEqual(750, inspection.context_ms)
+        self.assertEqual(
+            2,
+            ListMediaEditCutsArguments(session_id="session-1", revision=2).revision,
+        )
+        refinement = RefineMediaEditBoundaryArguments(
+            session_id="session-1",
+            expected_revision=2,
+            cut_index=1,
+            edge="start",
+            delta_ms=-100,
+            idempotency_key="media:boundary:1",
+        )
+        self.assertEqual(-100, refinement.delta_ms)
+        for values in (
+            {},
+            {"position_ms": 900, "delta_ms": -100},
+            {"delta_ms": 0},
+        ):
+            with self.subTest(values=values), self.assertRaises(ValidationError):
+                RefineMediaEditBoundaryArguments(
+                    session_id="session-1",
+                    expected_revision=2,
+                    cut_index=1,
+                    edge="start",
+                    idempotency_key="media:boundary:bad",
+                    **values,
+                )
+        with self.assertRaises(ValidationError):
+            InspectMediaEditBoundaryArguments(
+                session_id="session-1",
+                cut_index=1,
+                edge="start",
+                context_ms=30_001,
+            )
+
 
 class MediaEditClientTests(unittest.TestCase):
     def test_client_media_edit_methods_use_exact_routes_bodies_and_revision_header(
@@ -300,6 +371,65 @@ class MediaEditClientTests(unittest.TestCase):
         self.assertTrue(calls[4]["url"].endswith("/media-edit/render"))
         self.assertEqual("media:render:1", calls[4]["headers"]["Idempotency-Key"])
         self.assertEqual({"revision": 2}, json.loads(calls[4]["data"]))
+
+    def test_client_boundary_methods_use_bounded_query_and_atomic_patch(self):
+        session = FakeSession(
+            [
+                FakeResponse(200, {"session_id": "session-1", "cuts": []}),
+                FakeResponse(200, {"session_id": "session-1", "cut_index": 2}),
+                FakeResponse(
+                    200,
+                    {
+                        "session_id": "session-1",
+                        "current_revision": {"revision": 4},
+                    },
+                ),
+            ]
+        )
+        client = ApplicationClient(
+            local_registry("http://127.0.0.1:8097").bind("local"),
+            CredentialResolver(()),
+            session=session,
+            local_bootstrap=lambda _target, _session: "csrf-value",
+        )
+
+        client.list_media_edit_cuts("session-1", revision=3)
+        client.inspect_media_edit_boundary(
+            "session-1",
+            revision=3,
+            cut_index=2,
+            edge="end",
+            context_ms=750,
+            cue_limit=4,
+        )
+        client.refine_media_edit_boundary(
+            "session-1",
+            expected_revision=3,
+            cut_index=2,
+            edge="end",
+            delta_ms=-100,
+            idempotency_key="media:boundary:2",
+        )
+
+        calls = session.calls
+        self.assertEqual({"revision": 3}, calls[0]["params"])
+        self.assertEqual(
+            {
+                "revision": 3,
+                "cut_index": 2,
+                "edge": "end",
+                "context_ms": 750,
+                "cue_limit": 4,
+            },
+            calls[1]["params"],
+        )
+        self.assertEqual("PATCH", calls[2]["method"])
+        self.assertEqual('"3"', calls[2]["headers"]["If-Match"])
+        self.assertEqual("media:boundary:2", calls[2]["headers"]["Idempotency-Key"])
+        self.assertEqual(
+            {"cut_index": 2, "edge": "end", "delta_ms": -100},
+            json.loads(calls[2]["data"]),
+        )
 
 
 class MediaEditToolTests(unittest.TestCase):
@@ -387,14 +517,57 @@ class MediaEditToolTests(unittest.TestCase):
         self.assertEqual(("wait", ("job-render", 17)), self.application.calls[-1])
         self.assertEqual({"artifact_id": "artifact-1"}, completed.result["result"])
 
+    def test_boundary_tools_return_concise_reinspection_actions(self):
+        listed = list_media_edit_cuts(
+            self.runtime,
+            ListMediaEditCutsArguments(session_id="session-1", revision=3),
+        )
+        inspected = inspect_media_edit_boundary(
+            self.runtime,
+            InspectMediaEditBoundaryArguments(
+                session_id="session-1",
+                revision=3,
+                cut_index=2,
+                edge="end",
+                context_ms=750,
+                cue_limit=4,
+            ),
+        )
+        refined = refine_media_edit_boundary(
+            self.runtime,
+            RefineMediaEditBoundaryArguments(
+                session_id="session-1",
+                expected_revision=3,
+                cut_index=2,
+                edge="end",
+                delta_ms=-100,
+                idempotency_key="media:boundary:3",
+            ),
+        )
+
+        self.assertEqual(3, listed["revision"])
+        self.assertEqual("end", inspected["edge"])
+        self.assertEqual(
+            [
+                "pandrator_list_media_edit_cuts",
+                "pandrator_inspect_media_edit_boundary",
+            ],
+            [action.tool for action in refined.next_actions],
+        )
+        self.assertEqual(4, refined.next_actions[0].arguments["revision"])
+        self.assertEqual(2, refined.next_actions[1].arguments["cut_index"])
+
 
 class MediaEditServerRegistrationTests(unittest.TestCase):
     def test_server_source_registers_all_media_edit_tools(self):
         source = inspect.getsource(build_server)
         for name in (
             "pandrator_get_media_edit",
+            "pandrator_list_media_edit_cuts",
+            "pandrator_inspect_media_edit_boundary",
             "pandrator_prepare_media_edit",
             "pandrator_update_media_edit",
+            "pandrator_refine_media_edit_boundary",
             "pandrator_propose_media_edit",
             "pandrator_render_media_edit",
         ):

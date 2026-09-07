@@ -55,6 +55,7 @@ class _Application:
             "batch_count": 1,
             "completed_batch_count": 1 if self.status == "completed" else 0,
             "result_revision_id": "revision-3" if self.status == "completed" else None,
+            "result_revision": 3 if self.status == "completed" else None,
             "batches": [{"input_json": {"private": True}}],
         }
 
@@ -106,7 +107,9 @@ class _Application:
             "completed_batches": 1,
             "remaining_batches": 0,
             "finalized": not finalizing,
+            "source_revision_number": 2,
             "result_revision_id": None if finalizing else "revision-3",
+            "result_revision": None if finalizing else 3,
         }
 
 
@@ -176,16 +179,18 @@ class MediaEditDispatchMcpToolTests(unittest.TestCase):
         )
         self.assertEqual("completed", submitted.result["status"])
         self.assertEqual(
-            "pandrator_get_media_edit",
+            "pandrator_list_media_edit_cuts",
             submitted.next_actions[0].tool,
         )
+        self.assertEqual(3, submitted.next_actions[0].arguments["revision"])
         self.application.status = "completed"
         fetched = get_media_edit_dispatch_run(
             self.runtime,
             GetMediaEditDispatchRunInput(run_id="run-1"),
         )
-        self.assertEqual("pandrator_get_media_edit", fetched.next_actions[0].tool)
+        self.assertEqual("pandrator_list_media_edit_cuts", fetched.next_actions[0].tool)
         self.assertEqual("session-1", fetched.next_actions[0].arguments["session_id"])
+        self.assertEqual(3, fetched.next_actions[0].arguments["revision"])
 
     def test_finalizing_submission_can_be_retried_exactly(self):
         self.application.submit_status = "finalizing"

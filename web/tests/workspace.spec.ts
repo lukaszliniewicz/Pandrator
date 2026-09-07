@@ -162,7 +162,7 @@ test('media-edit wizard attaches a reused recording and uploaded captions with c
     .getByRole('button', { name: 'Configure & align captions' })
     .click();
   await expect(
-    page.getByRole('dialog', { name: 'Transcript & alignment' })
+    page.getByRole('dialog', { name: 'Transcript or caption alignment' })
   ).toBeVisible();
   await expect(
     page.getByText('Align attached captions', { exact: true })

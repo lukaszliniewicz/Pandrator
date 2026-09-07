@@ -380,6 +380,100 @@ def build_openapi_document() -> dict:
                     },
                 }
             },
+            "/api/v1/sessions/{sessionId}/media-edit/cuts": {
+                "get": {
+                    "operationId": "listMediaEditCuts",
+                    "parameters": [
+                        {
+                            "name": "sessionId",
+                            "in": "path",
+                            "required": True,
+                            "schema": {"type": "string", "format": "uuid"},
+                        },
+                        {
+                            "name": "revision",
+                            "in": "query",
+                            "required": False,
+                            "schema": {"type": "integer", "minimum": 1},
+                        },
+                        {
+                            "name": "cut_index",
+                            "in": "query",
+                            "required": False,
+                            "schema": {"type": "integer", "minimum": 1},
+                        },
+                        {
+                            "name": "edge",
+                            "in": "query",
+                            "required": False,
+                            "schema": {"type": "string", "enum": ["start", "end"]},
+                        },
+                        {
+                            "name": "context_ms",
+                            "in": "query",
+                            "required": False,
+                            "schema": {
+                                "type": "integer",
+                                "minimum": 250,
+                                "maximum": 30000,
+                                "default": 5000,
+                            },
+                        },
+                        {
+                            "name": "cue_limit",
+                            "in": "query",
+                            "required": False,
+                            "schema": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 100,
+                                "default": 40,
+                            },
+                        },
+                    ],
+                    "responses": {
+                        "200": {
+                            "description": "Bounded media-edit cuts or boundary evidence"
+                        },
+                        "422": {"description": "Invalid cut or boundary query"},
+                    },
+                }
+            },
+            "/api/v1/sessions/{sessionId}/media-edit/boundary": {
+                "patch": {
+                    "operationId": "refineMediaEditBoundary",
+                    "parameters": [
+                        {
+                            "name": "sessionId",
+                            "in": "path",
+                            "required": True,
+                            "schema": {"type": "string", "format": "uuid"},
+                        },
+                        {
+                            "name": "If-Match",
+                            "in": "header",
+                            "required": True,
+                            "schema": {"type": "string"},
+                        },
+                    ],
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/MediaEditBoundaryRequest"
+                                }
+                            }
+                        },
+                    },
+                    "responses": {
+                        "200": {"description": "Boundary refinement result"},
+                        "409": {"description": "Revision conflict"},
+                        "422": {"description": "Invalid boundary refinement"},
+                        "428": {"description": "Revision precondition required"},
+                    },
+                }
+            },
             "/api/v1/sessions/{sessionId}/media-edit/propose": {
                 "post": {
                     "operationId": "proposeMediaEdit",
@@ -2779,6 +2873,7 @@ def build_openapi_document() -> dict:
         ("/api/v1/sessions/{sessionId}/output-assemblies", "post"),
         ("/api/v1/sessions/{sessionId}/media-edit", "put"),
         ("/api/v1/sessions/{sessionId}/media-edit/prepare", "post"),
+        ("/api/v1/sessions/{sessionId}/media-edit/boundary", "patch"),
         ("/api/v1/sessions/{sessionId}/media-edit/propose", "post"),
         ("/api/v1/sessions/{sessionId}/media-edit/render", "post"),
         ("/api/v1/sessions/{sessionId}/media-edit-dispatch-runs", "post"),
@@ -2944,7 +3039,17 @@ def build_openapi_document() -> dict:
             "app.read",
         ),
         ("/api/v1/sessions/{sessionId}/media-edit", "get", "app.read"),
+        (
+            "/api/v1/sessions/{sessionId}/media-edit/cuts",
+            "get",
+            "app.read",
+        ),
         ("/api/v1/sessions/{sessionId}/media-edit", "put", "app.write"),
+        (
+            "/api/v1/sessions/{sessionId}/media-edit/boundary",
+            "patch",
+            "app.write",
+        ),
         (
             "/api/v1/sessions/{sessionId}/media-edit/prepare",
             "post",

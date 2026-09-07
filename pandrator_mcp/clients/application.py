@@ -1244,6 +1244,70 @@ class ApplicationClient:
     def get_media_edit(self, session_id: str) -> dict[str, Any]:
         return self._request_json(f"/api/v1/sessions/{quote(session_id, safe='')}/media-edit")
 
+    def list_media_edit_cuts(
+        self,
+        session_id: str,
+        *,
+        revision: int | None = None,
+    ) -> dict[str, Any]:
+        parameters: dict[str, Any] = {}
+        if revision is not None:
+            parameters["revision"] = int(revision)
+        return self._request_json(
+            f"/api/v1/sessions/{quote(session_id, safe='')}/media-edit/cuts",
+            parameters=parameters,
+        )
+
+    def inspect_media_edit_boundary(
+        self,
+        session_id: str,
+        *,
+        cut_index: int,
+        edge: str,
+        revision: int | None = None,
+        context_ms: int = 5_000,
+        cue_limit: int = 40,
+    ) -> dict[str, Any]:
+        parameters: dict[str, Any] = {
+            "cut_index": int(cut_index),
+            "edge": edge,
+            "context_ms": int(context_ms),
+            "cue_limit": int(cue_limit),
+        }
+        if revision is not None:
+            parameters["revision"] = int(revision)
+        return self._request_json(
+            f"/api/v1/sessions/{quote(session_id, safe='')}/media-edit/cuts",
+            parameters=parameters,
+        )
+
+    def refine_media_edit_boundary(
+        self,
+        session_id: str,
+        *,
+        expected_revision: int,
+        cut_index: int,
+        edge: str,
+        idempotency_key: str,
+        position_ms: int | None = None,
+        delta_ms: int | None = None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "cut_index": int(cut_index),
+            "edge": edge,
+        }
+        if position_ms is not None:
+            body["position_ms"] = int(position_ms)
+        if delta_ms is not None:
+            body["delta_ms"] = int(delta_ms)
+        return self._request_json(
+            f"/api/v1/sessions/{quote(session_id, safe='')}/media-edit/boundary",
+            method="PATCH",
+            body=body,
+            if_match_revision=expected_revision,
+            idempotency_key=idempotency_key,
+        )
+
     def prepare_media_edit(
         self,
         session_id: str,

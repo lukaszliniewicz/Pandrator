@@ -30,7 +30,7 @@
             "type": "string"
           },
           "application_version": {
-            "default": "0.8.19",
+            "default": "0.8.20",
             "title": "Application Version",
             "type": "string"
           },
@@ -2379,6 +2379,55 @@
         "title": "ManagerUninstallPlanRequest",
         "type": "object"
       },
+      "MediaEditBoundaryRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "cut_index": {
+            "minimum": 1,
+            "title": "Cut Index",
+            "type": "integer"
+          },
+          "delta_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Delta Ms"
+          },
+          "edge": {
+            "enum": [
+              "start",
+              "end"
+            ],
+            "title": "Edge",
+            "type": "string"
+          },
+          "position_ms": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Position Ms"
+          }
+        },
+        "required": [
+          "cut_index",
+          "edge"
+        ],
+        "title": "MediaEditBoundaryRequest",
+        "type": "object"
+      },
       "MediaEditDispatchBatch": {
         "additionalProperties": false,
         "properties": {
@@ -2610,6 +2659,19 @@
             "title": "Remaining Batches",
             "type": "integer"
           },
+          "result_revision": {
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Result Revision"
+          },
           "result_revision_id": {
             "anyOf": [
               {
@@ -2633,6 +2695,11 @@
           "session_id": {
             "title": "Session Id",
             "type": "string"
+          },
+          "source_revision_number": {
+            "minimum": 1,
+            "title": "Source Revision Number",
+            "type": "integer"
           },
           "status": {
             "title": "Status",
@@ -2658,7 +2725,8 @@
           "batch_count",
           "total_batches",
           "remaining_batches",
-          "finalized"
+          "finalized",
+          "source_revision_number"
         ],
         "title": "MediaEditDispatchBatchSubmitResponse",
         "type": "object"
@@ -2726,11 +2794,24 @@
       "MediaEditDispatchCut": {
         "additionalProperties": false,
         "properties": {
+          "end_at_media_end": {
+            "default": false,
+            "title": "End At Media End",
+            "type": "boolean"
+          },
           "end_cue_id": {
-            "maxLength": 120,
-            "minLength": 1,
-            "title": "End Cue Id",
-            "type": "string"
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "End Cue Id"
           },
           "reason": {
             "maxLength": 500,
@@ -2738,16 +2819,27 @@
             "title": "Reason",
             "type": "string"
           },
+          "start_at_media_start": {
+            "default": false,
+            "title": "Start At Media Start",
+            "type": "boolean"
+          },
           "start_cue_id": {
-            "maxLength": 120,
-            "minLength": 1,
-            "title": "Start Cue Id",
-            "type": "string"
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Start Cue Id"
           }
         },
         "required": [
-          "start_cue_id",
-          "end_cue_id",
           "reason"
         ],
         "title": "MediaEditDispatchCut",
@@ -10465,6 +10557,167 @@
           {
             "nativeOAuth": [
               "app.run"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/sessions/{sessionId}/media-edit/boundary": {
+      "patch": {
+        "operationId": "refineMediaEditBoundary",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Automation principals require it; browser writes may omit it. Use it for safe retries.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MediaEditBoundaryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Boundary refinement result"
+          },
+          "409": {
+            "description": "Revision conflict"
+          },
+          "422": {
+            "description": "Invalid boundary refinement"
+          },
+          "428": {
+            "description": "Revision precondition required"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/sessions/{sessionId}/media-edit/cuts": {
+      "get": {
+        "operationId": "listMediaEditCuts",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "revision",
+            "required": false,
+            "schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cut_index",
+            "required": false,
+            "schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "edge",
+            "required": false,
+            "schema": {
+              "enum": [
+                "start",
+                "end"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "context_ms",
+            "required": false,
+            "schema": {
+              "default": 5000,
+              "maximum": 30000,
+              "minimum": 250,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cue_limit",
+            "required": false,
+            "schema": {
+              "default": 40,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Bounded media-edit cuts or boundary evidence"
+          },
+          "422": {
+            "description": "Invalid cut or boundary query"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
             ]
           }
         ]

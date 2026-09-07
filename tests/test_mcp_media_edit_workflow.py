@@ -16,6 +16,7 @@ from pandrator_mcp.schemas import (
     GetWorkInput,
     ImportLocalSourceInput,
     ListArtifactsInput,
+    ListMediaEditCutsArguments,
     PlanMediaEditWorkflowInput,
     PlanWorkflowInput,
     PrepareMediaEditArguments,
@@ -180,6 +181,7 @@ def _plan(application, **kwargs):
         "pandrator_get_work": GetWorkInput,
         "pandrator_import_local_source": ImportLocalSourceInput,
         "pandrator_list_artifacts": ListArtifactsInput,
+        "pandrator_list_media_edit_cuts": ListMediaEditCutsArguments,
         "pandrator_plan_workflow": PlanWorkflowInput,
         "pandrator_prepare_media_edit": PrepareMediaEditArguments,
         "pandrator_render_media_edit": RenderMediaEditArguments,
@@ -491,7 +493,7 @@ class MediaEditWorkflowPlannerTests(unittest.TestCase):
         application = _Application(media=proposed, runs=[completed])
         result = _plan(application)
         self.assertEqual(
-            "pandrator_get_media_edit", result.result["next_action"]["tool"]
+            "pandrator_list_media_edit_cuts", result.result["next_action"]["tool"]
         )
         self.assertEqual(
             "pandrator_update_media_edit",

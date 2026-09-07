@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
 from .common import ToolInput
 
@@ -55,9 +55,21 @@ class ReleaseMediaEditDispatchBatchInput(ToolInput):
 
 
 class MediaEditDispatchCutInput(ToolInput):
-    start_cue_id: str = Field(min_length=1, max_length=120)
-    end_cue_id: str = Field(min_length=1, max_length=120)
+    start_cue_id: str | None = Field(default=None, min_length=1, max_length=120)
+    start_at_media_start: bool = False
+    end_cue_id: str | None = Field(default=None, min_length=1, max_length=120)
+    end_at_media_end: bool = False
     reason: str = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_boundaries(self) -> "MediaEditDispatchCutInput":
+        if (self.start_cue_id is not None) == self.start_at_media_start:
+            raise ValueError(
+                "Exactly one of start_cue_id or start_at_media_start=true is required."
+            )
+        if (self.end_cue_id is not None) == self.end_at_media_end:
+            raise ValueError("Exactly one of end_cue_id or end_at_media_end=true is required.")
+        return self
 
 
 class MediaEditDispatchResultInput(ToolInput):

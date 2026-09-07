@@ -100,7 +100,7 @@ class McpArchitectureTests(unittest.TestCase):
         payload = tomllib.loads(
             (MCP_ROOT / "pyproject.toml").read_text(encoding="utf-8")
         )
-        self.assertEqual("0.3.3", __version__)
+        self.assertEqual("0.3.4", __version__)
         self.assertEqual(__version__, payload["project"]["version"])
         self.assertIn("mcp==2.1.1", payload["project"]["dependencies"])
         server_source = (MCP_ROOT / "server.py").read_text(encoding="utf-8")
@@ -347,6 +347,7 @@ class McpArchitectureTests(unittest.TestCase):
                 "pandrator_propose_media_edit",
                 "pandrator_regenerate_segments",
                 "pandrator_render_media_edit",
+                "pandrator_refine_media_edit_boundary",
                 "pandrator_release_dispatch_batch",
                 "pandrator_release_media_edit_dispatch_batch",
                 "pandrator_release_source_cleaning_dispatch_batch",

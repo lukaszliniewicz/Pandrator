@@ -76,12 +76,15 @@ attached is a blocking state, not permission to overwrite those captions.
 The default `caption_alignment_ctc_model=auto` uses Pandrator's managed Canary
 CTC aligner and does not load a whole-recording ASR model.
 
-The passive proposal is never auto-approved. Inspect `pandrator_get_media_edit`
-and review its exact `keep_ranges` before executing the planner's gated
-`pandrator_update_media_edit(reviewed=true)` action. Only a reviewed revision
-may be rendered. The planner is a live procedure rather than an atomic
-snapshot; re-inspect after every action and monitor workflow plans or durable
-work with their returned actions.
+The passive proposal is never auto-approved. First call
+`pandrator_list_media_edit_cuts` with the returned session and revision, then
+call `pandrator_inspect_media_edit_boundary` for each relevant start/end edge.
+Use `pandrator_refine_media_edit_boundary` for one edge at a time, then
+re-list and re-inspect the changed revision before executing the planner's
+gated `pandrator_update_media_edit(reviewed=true)` action. Only a reviewed
+revision may be rendered. The planner is a live procedure rather than an
+atomic snapshot; re-inspect after every action and monitor workflow plans or
+durable work with their returned actions.
 
 Recording and transcript files may be imported only from a named,
 operator-approved local source root returned by

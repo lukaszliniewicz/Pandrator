@@ -9,8 +9,11 @@ from ..errors import NextAction, PandratorMcpError
 from ..results import ToolOutcome
 from ..schemas.media_edit import (
     GetMediaEditArguments,
+    InspectMediaEditBoundaryArguments,
+    ListMediaEditCutsArguments,
     PrepareMediaEditArguments,
     ProposeMediaEditArguments,
+    RefineMediaEditBoundaryArguments,
     RenderMediaEditArguments,
     UpdateMediaEditArguments,
 )
@@ -45,11 +48,7 @@ def _job_outcome(
 ) -> ToolOutcome:
     application = runtime.require_application()
     job_id = _job_id(job)
-    result = (
-        application.wait_for_job(job_id, timeout_seconds=timeout_seconds)
-        if wait
-        else job
-    )
+    result = application.wait_for_job(job_id, timeout_seconds=timeout_seconds) if wait else job
     next_actions: list[NextAction] = []
     if not _is_terminal(result):
         next_actions.append(
@@ -80,6 +79,78 @@ def get_media_edit(
     return runtime.require_application().get_media_edit(arguments.session_id)
 
 
+def list_media_edit_cuts(
+    runtime: McpRuntime,
+    arguments: ListMediaEditCutsArguments,
+) -> dict[str, Any]:
+    """List bounded removal cuts without exposing the full cue array."""
+
+    return runtime.require_application().list_media_edit_cuts(
+        arguments.session_id,
+        revision=arguments.revision,
+    )
+
+
+def inspect_media_edit_boundary(
+    runtime: McpRuntime,
+    arguments: InspectMediaEditBoundaryArguments,
+) -> dict[str, Any]:
+    """Inspect one bounded cue and word-evidence window around a cut edge."""
+
+    return runtime.require_application().inspect_media_edit_boundary(
+        arguments.session_id,
+        cut_index=arguments.cut_index,
+        edge=arguments.edge,
+        revision=arguments.revision,
+        context_ms=arguments.context_ms,
+        cue_limit=arguments.cue_limit,
+    )
+
+
+def refine_media_edit_boundary(
+    runtime: McpRuntime,
+    arguments: RefineMediaEditBoundaryArguments,
+) -> ToolOutcome:
+    """Apply one revision-safe boundary refinement and suggest reinspection."""
+
+    result = runtime.require_application().refine_media_edit_boundary(
+        arguments.session_id,
+        expected_revision=arguments.expected_revision,
+        cut_index=arguments.cut_index,
+        edge=arguments.edge,
+        idempotency_key=arguments.idempotency_key,
+        position_ms=arguments.position_ms,
+        delta_ms=arguments.delta_ms,
+    )
+    current = result.get("current_revision") or {}
+    revision = current.get("revision")
+    actions = [
+        NextAction(
+            tool="pandrator_list_media_edit_cuts",
+            arguments={
+                "session_id": arguments.session_id,
+                "revision": revision,
+            },
+            reason="Re-list the current cut topology after the boundary refinement.",
+        )
+    ]
+    affected = result.get("affected_cut")
+    if isinstance(affected, dict):
+        actions.append(
+            NextAction(
+                tool="pandrator_inspect_media_edit_boundary",
+                arguments={
+                    "session_id": arguments.session_id,
+                    "revision": revision,
+                    "cut_index": affected.get("index"),
+                    "edge": arguments.edge,
+                },
+                reason="Inspect the changed boundary before any further refinement or approval.",
+            )
+        )
+    return ToolOutcome(result=result, next_actions=actions)
+
+
 def prepare_media_edit(
     runtime: McpRuntime,
     arguments: PrepareMediaEditArguments,
@@ -108,8 +179,7 @@ def update_media_edit(
         expected_revision=arguments.expected_revision,
         idempotency_key=arguments.idempotency_key,
         keep_ranges=[
-            item.model_dump(mode="json", exclude_none=True)
-            for item in arguments.keep_ranges
+            item.model_dump(mode="json", exclude_none=True) for item in arguments.keep_ranges
         ],
         **{key: value for key, value in optional.items() if value is not None},
     )

@@ -1638,6 +1638,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{sessionId}/media-edit/boundary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch: operations["refineMediaEditBoundary"];
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/media-edit/cuts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listMediaEditCuts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{sessionId}/media-edit/prepare": {
         parameters: {
             query?: never;
@@ -2831,7 +2863,7 @@ export interface components {
             api_version?: string;
             /**
              * Application Version
-             * @default 0.8.19
+             * @default 0.8.20
              */
             application_version?: string;
             /** Canonical Origin */
@@ -3779,6 +3811,26 @@ export interface components {
              */
             purge_data?: boolean;
         };
+        /** MediaEditBoundaryRequest */
+        MediaEditBoundaryRequest: {
+            /** Cut Index */
+            cut_index: number;
+            /**
+             * Delta Ms
+             * @default null
+             */
+            delta_ms?: number | null;
+            /**
+             * Edge
+             * @enum {string}
+             */
+            edge: "start" | "end";
+            /**
+             * Position Ms
+             * @default null
+             */
+            position_ms?: number | null;
+        };
         /** MediaEditDispatchBatch */
         MediaEditDispatchBatch: {
             /** Artifact Ids */
@@ -3871,6 +3923,11 @@ export interface components {
             /** Remaining Batches */
             remaining_batches: number;
             /**
+             * Result Revision
+             * @default null
+             */
+            result_revision?: number | null;
+            /**
              * Result Revision Id
              * @default null
              */
@@ -3881,6 +3938,8 @@ export interface components {
             run_status: string;
             /** Session Id */
             session_id: string;
+            /** Source Revision Number */
+            source_revision_number: number;
             /** Status */
             status: string;
             /** Total Batches */
@@ -3911,12 +3970,28 @@ export interface components {
         };
         /** MediaEditDispatchCut */
         MediaEditDispatchCut: {
-            /** End Cue Id */
-            end_cue_id: string;
+            /**
+             * End At Media End
+             * @default false
+             */
+            end_at_media_end?: boolean;
+            /**
+             * End Cue Id
+             * @default null
+             */
+            end_cue_id?: string | null;
             /** Reason */
             reason: string;
-            /** Start Cue Id */
-            start_cue_id: string;
+            /**
+             * Start At Media Start
+             * @default false
+             */
+            start_at_media_start?: boolean;
+            /**
+             * Start Cue Id
+             * @default null
+             */
+            start_cue_id?: string | null;
         };
         /** MediaEditDispatchResult */
         MediaEditDispatchResult: {
@@ -8389,6 +8464,88 @@ export interface operations {
         responses: {
             /** @description Passive media-edit run created */
             201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    refineMediaEditBoundary: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": string;
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MediaEditBoundaryRequest"];
+            };
+        };
+        responses: {
+            /** @description Boundary refinement result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid boundary refinement */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision precondition required */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listMediaEditCuts: {
+        parameters: {
+            query?: {
+                revision?: number;
+                cut_index?: number;
+                edge?: "start" | "end";
+                context_ms?: number;
+                cue_limit?: number;
+            };
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Bounded media-edit cuts or boundary evidence */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid cut or boundary query */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

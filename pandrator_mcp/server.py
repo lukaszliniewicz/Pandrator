@@ -55,11 +55,13 @@ from .schemas import (
     GuideTopic,
     ImportLocalSourceInput,
     ImportSubtitlesInput,
+    InspectMediaEditBoundaryArguments,
     InspectSourceCleaningDispatchExtractionInput,
     ListArtifactsInput,
     ListDispatchRunsInput,
     ListGenerationRunsInput,
     ListGenerationSegmentsInput,
+    ListMediaEditCutsArguments,
     ListMediaEditDispatchRunsInput,
     ListSessionsInput,
     ListSourceCleaningDispatchRunsInput,
@@ -81,6 +83,7 @@ from .schemas import (
     ProposeMediaEditArguments,
     ProviderStatusInput,
     RecommendNextStepsInput,
+    RefineMediaEditBoundaryArguments,
     RegenerateSegmentsInput,
     ReleaseDispatchBatchInput,
     ReleaseMediaEditDispatchBatchInput,
@@ -149,11 +152,13 @@ from .tools import (
     get_workflow,
     import_local_source,
     import_subtitles,
+    inspect_media_edit_boundary,
     inspect_source_cleaning_dispatch_extraction,
     list_artifacts,
     list_dispatch_runs,
     list_generation_runs,
     list_generation_segments,
+    list_media_edit_cuts,
     list_media_edit_dispatch_runs,
     list_sessions,
     list_source_cleaning_dispatch_runs,
@@ -173,6 +178,7 @@ from .tools import (
     propose_media_edit,
     provider_status,
     recommend_next_steps,
+    refine_media_edit_boundary,
     regenerate_segments,
     release_dispatch_batch,
     release_media_edit_dispatch_batch,
@@ -530,6 +536,53 @@ def build_server(runtime: McpRuntime):
         )
 
     @server.tool(
+        name="pandrator_list_media_edit_cuts",
+        title="List bounded media-edit cuts",
+        annotations=read_only,
+    )
+    def media_edit_cuts_list_tool(
+        session_id: Annotated[str, Field(min_length=1, max_length=80)],
+        revision: Annotated[int | None, Field(ge=1)] = None,
+    ) -> dict[str, Any]:
+        """List the current removal cuts without exposing the full cue array."""
+
+        return _call_with_validated_input(
+            list_media_edit_cuts,
+            runtime,
+            ListMediaEditCutsArguments,
+            {"session_id": session_id, "revision": revision},
+        )
+
+    @server.tool(
+        name="pandrator_inspect_media_edit_boundary",
+        title="Inspect a media-edit boundary",
+        annotations=read_only,
+    )
+    def media_edit_boundary_inspect_tool(
+        session_id: Annotated[str, Field(min_length=1, max_length=80)],
+        cut_index: Annotated[int, Field(ge=1)],
+        edge: Literal["start", "end"],
+        revision: Annotated[int | None, Field(ge=1)] = None,
+        context_ms: Annotated[int, Field(ge=250, le=30_000)] = 5_000,
+        cue_limit: Annotated[int, Field(ge=1, le=100)] = 40,
+    ) -> dict[str, Any]:
+        """Inspect bounded cue, word, and speech-gap evidence around one edge."""
+
+        return _call_with_validated_input(
+            inspect_media_edit_boundary,
+            runtime,
+            InspectMediaEditBoundaryArguments,
+            {
+                "session_id": session_id,
+                "cut_index": cut_index,
+                "edge": edge,
+                "revision": revision,
+                "context_ms": context_ms,
+                "cue_limit": cue_limit,
+            },
+        )
+
+    @server.tool(
         name="pandrator_plan_media_edit_workflow",
         title="Plan a media-edit workflow procedure",
         annotations=read_only,
@@ -695,6 +748,44 @@ def build_server(runtime: McpRuntime):
                 "idempotency_key": idempotency_key,
                 "instructions": instructions,
                 "reviewed": reviewed,
+            },
+        )
+
+    @server.tool(
+        name="pandrator_refine_media_edit_boundary",
+        title="Refine a media-edit boundary",
+        annotations=write_action,
+    )
+    def media_edit_boundary_refine_tool(
+        session_id: Annotated[str, Field(min_length=1, max_length=80)],
+        expected_revision: Annotated[int, Field(ge=1)],
+        cut_index: Annotated[int, Field(ge=1)],
+        edge: Literal["start", "end"],
+        idempotency_key: Annotated[
+            str,
+            Field(
+                min_length=8,
+                max_length=200,
+                pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$",
+            ),
+        ],
+        position_ms: Annotated[int | None, Field(ge=0)] = None,
+        delta_ms: int | None = None,
+    ) -> dict[str, Any]:
+        """Move one cut edge atomically against the expected active revision."""
+
+        return _call_with_validated_input(
+            refine_media_edit_boundary,
+            runtime,
+            RefineMediaEditBoundaryArguments,
+            {
+                "session_id": session_id,
+                "expected_revision": expected_revision,
+                "cut_index": cut_index,
+                "edge": edge,
+                "position_ms": position_ms,
+                "delta_ms": delta_ms,
+                "idempotency_key": idempotency_key,
             },
         )
 

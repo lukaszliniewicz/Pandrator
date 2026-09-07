@@ -1,6 +1,7 @@
 <script lang="ts">
   import {
     Check,
+    ChevronDown,
     ChevronRight,
     CircleAlert,
     Clock3,
@@ -214,8 +215,7 @@
           ''
       ).trim(),
       fallbackUsed:
-        metadata.fallback_used === true ||
-        metadata.fallback_triggered === true,
+        metadata.fallback_used === true || metadata.fallback_triggered === true,
       reliable: coverage >= 0.5 && eligibleCoverage >= 0.5
     };
   });
@@ -228,14 +228,14 @@
   class:stage-disabled={Boolean(stage.toggle && !stage.enabled)}
   class="surface rounded-[1.4rem] p-5 sm:p-6"
 >
-  <div class="flex flex-col gap-5 lg:flex-row lg:items-center">
+  <div class="grid gap-5">
     <div class="flex min-w-0 flex-1 items-start gap-4">
       <div
         class="grid size-11 shrink-0 place-items-center rounded-2xl bg-[var(--accent-soft)] text-sm font-bold text-[var(--accent)]"
       >
         {stage.number}
       </div>
-      <div class="min-w-0">
+      <div class="min-w-0 flex-1">
         <div class="flex flex-wrap items-center gap-2">
           <h2 class="text-lg font-semibold">{stage.title}</h2>
           <span
@@ -258,58 +258,88 @@
                 : stage.status}
           </span>
         </div>
-        <p class="muted mt-1.5 max-w-2xl text-sm leading-relaxed">
+        <p class="muted mt-1.5 max-w-3xl text-sm leading-relaxed">
           {stage.explanation}
         </p>
 
         {#if captionAlignment}
-          <div
+          <details
             class:alignment-warning={!captionAlignment.reliable}
-            class="alignment-result mt-3 max-w-2xl rounded-xl border px-3.5 py-3 text-sm"
-            role={captionAlignment.reliable ? 'status' : 'alert'}
+            class="alignment-result mt-3 max-w-3xl overflow-hidden rounded-xl border text-sm"
           >
-            <div class="flex items-center gap-2 font-semibold">
+            <summary
+              class="alignment-summary flex cursor-pointer list-none items-center gap-2 px-3.5 py-3"
+            >
               {#if captionAlignment.reliable}<Check
                   size={15}
                 />{:else}<CircleAlert size={15} />{/if}
-              {captionAlignment.reliable
-                ? 'Caption word timing is ready'
-                : 'Caption alignment is unreliable'}
+              <span class="min-w-0 flex-1">
+                <strong class="block">
+                  {captionAlignment.reliable
+                    ? 'Caption word timing is ready'
+                    : 'Caption alignment is unreliable'}
+                </strong>
+                <span class="muted mt-0.5 block text-xs font-normal">
+                  {captionAlignment.methodLabel} · {Math.round(
+                    captionAlignment.eligibleCoverage * 100
+                  )}% of in-media words · {Math.round(
+                    captionAlignment.quality * 100
+                  )}% {captionAlignment.qualityLabel}
+                </span>
+              </span>
+              <span class="alignment-chevron muted shrink-0"
+                ><ChevronDown size={16} /></span
+              >
+            </summary>
+            <div class="border-t border-[var(--line)] px-3.5 py-3">
+              <p class="text-xs font-semibold leading-relaxed">
+                {captionAlignment.reliable
+                  ? 'No action is required. The editor uses these acoustic word times to inspect and refine cuts while preserving the caption wording and speakers.'
+                  : 'Review the diagnostics before relying on automatic cut refinement.'}
+              </p>
+              {#if captionAlignment.reliable}
+                <p class="muted mt-2 text-xs leading-relaxed">
+                  After rendering, subtitle formatting and speech-block creation
+                  currently use the retimed SRT. The word-timing artifact stays
+                  attached for provenance, but those later stages do not consume
+                  it directly yet.
+                </p>
+              {/if}
+              <p class="muted mt-2 text-xs leading-relaxed">
+                {captionAlignment.methodLabel} · {Math.round(
+                  captionAlignment.coverage * 100
+                )}% of all caption words aligned · {Math.round(
+                  captionAlignment.eligibleCoverage * 100
+                )}% of in-media words · {Math.round(
+                  captionAlignment.quality * 100
+                )}% {captionAlignment.qualityLabel}{captionAlignment.wordCount
+                  ? ` · ${captionAlignment.wordCount.toLocaleString()} timed words`
+                  : ''}{captionAlignment.cueCount
+                  ? ` · ${captionAlignment.acceptedCues.toLocaleString()}/${captionAlignment.cueCount.toLocaleString()} cues accepted`
+                  : ''}{captionAlignment.batchCount
+                  ? ` · ${captionAlignment.batchCount.toLocaleString()} CTC batches`
+                  : ''}{captionAlignment.retryCount
+                  ? ` · ${captionAlignment.retryCount.toLocaleString()} isolated retries`
+                  : ''}{captionAlignment.outsideMediaCount
+                  ? ` · ${captionAlignment.outsideMediaCount.toLocaleString()} cues outside the recording`
+                  : ''}{captionAlignment.oversizedCueCount
+                  ? ` · ${captionAlignment.oversizedCueCount.toLocaleString()} oversized cues retained without CTC timing`
+                  : ''}{captionAlignment.engine
+                  ? ` · ${captionAlignment.engine}`
+                  : ''}{captionAlignment.fallbackUsed
+                  ? ' · ASR fallback used'
+                  : ''}.
+                {captionAlignment.reliable
+                  ? ' The timing is stored with the caption transcript; rebuild an existing edit timeline to consume it.'
+                  : ' Original caption timing was retained for rejected cues; those word times are excluded from cut refinement.'}
+              </p>
             </div>
-            <p class="muted mt-1 text-xs leading-relaxed">
-              {captionAlignment.methodLabel} · {Math.round(
-                captionAlignment.coverage * 100
-              )}% of all caption words aligned · {Math.round(
-                captionAlignment.eligibleCoverage * 100
-              )}% of in-media words · {Math.round(
-                captionAlignment.quality * 100
-              )}% {captionAlignment.qualityLabel}{captionAlignment.wordCount
-                ? ` · ${captionAlignment.wordCount.toLocaleString()} timed words`
-                : ''}{captionAlignment.cueCount
-                ? ` · ${captionAlignment.acceptedCues.toLocaleString()}/${captionAlignment.cueCount.toLocaleString()} cues accepted`
-                : ''}{captionAlignment.batchCount
-                ? ` · ${captionAlignment.batchCount.toLocaleString()} CTC batches`
-                : ''}{captionAlignment.retryCount
-                ? ` · ${captionAlignment.retryCount.toLocaleString()} isolated retries`
-                : ''}{captionAlignment.outsideMediaCount
-                ? ` · ${captionAlignment.outsideMediaCount.toLocaleString()} cues outside the recording`
-                : ''}{captionAlignment.oversizedCueCount
-                ? ` · ${captionAlignment.oversizedCueCount.toLocaleString()} oversized cues retained without CTC timing`
-                : ''}{captionAlignment.engine
-                ? ` · ${captionAlignment.engine}`
-                : ''}{captionAlignment.fallbackUsed
-                ? ' · ASR fallback used'
-                : ''}.
-              {captionAlignment.reliable
-                ? ' The timing is stored with the caption transcript; rebuild an existing edit timeline to consume it.'
-                : ' Original caption timing was retained for rejected cues; those word times are excluded from cut refinement.'}
-            </p>
-          </div>
+          </details>
         {/if}
 
         {#if stage.key === 'generate_audio' && stage.resolved_input}
           <div
-            class="mt-3 max-w-2xl rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] px-3.5 py-3 text-sm"
+            class="mt-3 max-w-3xl rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] px-3.5 py-3 text-sm"
             aria-label={`Generation input: ${stage.resolved_input.label}${stage.resolved_input.version ? ` v${stage.resolved_input.version}` : ''}`}
           >
             <strong
@@ -440,7 +470,7 @@
       </div>
     </div>
 
-    <div class="flex flex-wrap items-center gap-2 lg:justify-end">
+    <div class="flex flex-wrap items-center gap-2 sm:ml-[3.75rem]">
       {#if stage.toggle}
         <button
           onclick={onsettings}
@@ -588,5 +618,14 @@
   .alignment-result.alignment-warning {
     border-color: color-mix(in srgb, var(--warning) 45%, var(--line));
     background: color-mix(in srgb, var(--warning) 10%, transparent);
+  }
+  .alignment-summary::-webkit-details-marker {
+    display: none;
+  }
+  .alignment-chevron {
+    transition: transform 160ms ease;
+  }
+  details[open] .alignment-chevron {
+    transform: rotate(180deg);
   }
 </style>

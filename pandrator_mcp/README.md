@@ -151,9 +151,11 @@ load a whole-recording ASR model. Source files remain limited to
 operator-approved named roots.
 
 The model-hosted passive dispatcher proposes whole-recording cuts. Its result
-is always an unreviewed edit revision: the planner exposes the exact approval
-action but first returns `pandrator_get_media_edit`, and rendering remains
-blocked until that revision is explicitly reviewed. Optional materialization
+is always an unreviewed edit revision: list bounded cuts with
+`pandrator_list_media_edit_cuts`, inspect relevant boundaries, and refine one
+edge at a time with `pandrator_refine_media_edit_boundary` before re-planning
+and approving. Rendering remains blocked until that revision is explicitly
+reviewed. Optional materialization
 downloads the sole current render, or lists candidates when selection is
 ambiguous.
 
@@ -260,7 +262,7 @@ by both modern and maintained legacy hosts.
 
 ## Install
 
-The current release is 0.3.3 and can target Pandrator 0.8.16 or newer. The
+The current release is 0.3.4 and can target Pandrator 0.8.16 or newer. The
 source-cleaning, speech-optimization, and end-to-end workflow tools require
 Pandrator 0.8.17. With Python 3.11 or 3.12, install it as an isolated
 command-line tool:

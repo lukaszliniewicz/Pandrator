@@ -13,7 +13,14 @@ from pandrator.web.media_edit import (
     MediaEditRevisionConflict,
     MediaEditService,
 )
-from pandrator.web.models import Artifact, SessionRecord, SessionSource, SourceAsset
+from pandrator.web.models import (
+    Artifact,
+    MediaEditPlan,
+    MediaEditPlanRevision,
+    SessionRecord,
+    SessionSource,
+    SourceAsset,
+)
 
 
 class MediaEditServiceTests(unittest.TestCase):
@@ -299,7 +306,9 @@ class MediaEditServiceTests(unittest.TestCase):
 
         with patch(
             "pandrator.web.media_edit.align_cues_to_words",
-            side_effect=AssertionError("pre-aligned artifacts must not be projected again"),
+            side_effect=AssertionError(
+                "pre-aligned artifacts must not be projected again"
+            ),
         ):
             state = self._service().prepare(self.session_id)
 
@@ -307,9 +316,7 @@ class MediaEditServiceTests(unittest.TestCase):
         self.assertEqual(
             [cue["start_ms"] for cue in state["plan"]["cues"]], [1900, 2900]
         )
-        self.assertEqual(
-            [cue["end_ms"] for cue in state["plan"]["cues"]], [3000, 3900]
-        )
+        self.assertEqual([cue["end_ms"] for cue in state["plan"]["cues"]], [3000, 3900])
         self.assertEqual(
             [cue["speaker"] for cue in state["plan"]["cues"]], ["Alice", "Bob"]
         )
@@ -567,6 +574,269 @@ class MediaEditServiceTests(unittest.TestCase):
         )
 
         self.assertFalse(changed["plan"]["reviewed"])
+
+    def test_cut_listing_maps_internal_edges_to_their_actual_keep_ranges(self):
+        self._seed_external()
+        service = self._service()
+        service.prepare(self.session_id)
+        service.update(
+            self.session_id,
+            1,
+            keep_ranges=[
+                {"start_ms": 0, "end_ms": 2_000},
+                {"start_ms": 3_000, "end_ms": 4_000},
+                {"start_ms": 4_500, "end_ms": 5_000},
+            ],
+        )
+
+        result = service.list_cuts(self.session_id)
+
+        self.assertEqual(
+            [(2_000, 3_000), (4_000, 4_500)],
+            [(item["start_ms"], item["end_ms"]) for item in result["cuts"]],
+        )
+        self.assertEqual(
+            "keep-000001", result["cuts"][0]["start"]["adjacent_keep_range_id"]
+        )
+        self.assertEqual(
+            "keep-000002", result["cuts"][0]["end"]["adjacent_keep_range_id"]
+        )
+        self.assertTrue(result["cuts"][0]["start"]["editable"])
+        self.assertTrue(result["cuts"][0]["end"]["editable"])
+
+        inspection = service.list_cuts(
+            self.session_id,
+            cut_index=1,
+            edge="start",
+            context_ms=1_000,
+            cue_limit=1,
+        )
+        self.assertEqual(2_000, inspection["boundary_ms"])
+        self.assertEqual(1, len(inspection["cues"]))
+        self.assertNotIn("plan", inspection)
+
+    def test_boundary_inspection_caps_words_gaps_and_text(self):
+        self._seed_external()
+        service = self._service()
+        service.prepare(self.session_id)
+        service.update(
+            self.session_id,
+            1,
+            keep_ranges=[
+                {"start_ms": 0, "end_ms": 2_500},
+                {"start_ms": 3_000, "end_ms": 5_000},
+            ],
+        )
+        with self.database.session() as session:
+            plan = (
+                session.query(MediaEditPlan).filter_by(session_id=self.session_id).one()
+            )
+            revision = session.get(MediaEditPlanRevision, plan.active_revision_id)
+            revision.cues_json = [
+                {
+                    "id": "dense-cue",
+                    "start_ms": 1_000,
+                    "end_ms": 4_000,
+                    "text": "x" * 5_000,
+                    "speaker": "s" * 600,
+                    "timing_source": "ctc_alignment",
+                    "timing_confidence": 0.9,
+                    "words": [
+                        {
+                            "text": "w" * 300,
+                            "start_ms": 1_500 + index * 2,
+                            "end_ms": 1_501 + index * 2,
+                            "confidence": 0.9,
+                        }
+                        for index in range(600)
+                    ],
+                }
+            ]
+
+        inspection = service.list_cuts(
+            self.session_id,
+            cut_index=1,
+            edge="start",
+            context_ms=2_000,
+            cue_limit=1,
+        )
+
+        words = inspection["cues"][0]["words"]
+        self.assertEqual(400, len(words))
+        self.assertTrue(all(len(item["text"]) <= 256 for item in words))
+        self.assertEqual(200, len(inspection["speech_gaps"]))
+        self.assertEqual(4_000, len(inspection["cues"][0]["text"]))
+        self.assertEqual(500, len(inspection["cues"][0]["speaker"]))
+        self.assertEqual(
+            {
+                "cues": False,
+                "cue_words": True,
+                "cue_text": True,
+                "speech_gaps": True,
+            },
+            inspection["truncated"],
+        )
+
+    def test_boundary_refinement_is_immutable_and_revision_guarded(self):
+        self._seed_external()
+        service = self._service()
+        service.prepare(self.session_id)
+        edited = service.update(
+            self.session_id,
+            1,
+            keep_ranges=[
+                {"start_ms": 0, "end_ms": 1_000, "label": "Opening"},
+                {"start_ms": 2_000, "end_ms": 3_000, "label": "Middle"},
+                {"start_ms": 4_000, "end_ms": 5_000, "label": "Closing"},
+            ],
+            reviewed=True,
+        )
+
+        result = service.refine_boundary(
+            self.session_id,
+            edited["plan"]["revision"],
+            cut_index=1,
+            edge="start",
+            delta_ms=-100,
+        )
+
+        self.assertEqual(3, result["current_revision"]["revision"])
+        self.assertFalse(result["current_revision"]["reviewed"])
+        self.assertEqual(
+            (1_000, 900), (result["change"]["from_ms"], result["change"]["to_ms"])
+        )
+        self.assertEqual(
+            (900, 2_000),
+            (result["affected_cut"]["start_ms"], result["affected_cut"]["end_ms"]),
+        )
+        self.assertEqual(
+            ["Opening", "Middle", "Closing"],
+            [
+                item["label"]
+                for item in service.revision(self.session_id, 3)["keep_ranges"]
+            ],
+        )
+        self.assertEqual(2, service.revision(self.session_id, 2)["revision"])
+        with self.assertRaises(MediaEditRevisionConflict):
+            service.refine_boundary(
+                self.session_id,
+                2,
+                cut_index=1,
+                edge="end",
+                delta_ms=100,
+            )
+
+    def test_boundary_refinement_can_collapse_a_keep_island(self):
+        self._seed_external()
+        service = self._service()
+        service.prepare(self.session_id)
+        service.update(
+            self.session_id,
+            1,
+            keep_ranges=[
+                {"start_ms": 1_000, "end_ms": 2_000},
+                {"start_ms": 3_000, "end_ms": 5_000},
+            ],
+        )
+
+        result = service.refine_boundary(
+            self.session_id,
+            2,
+            cut_index=2,
+            edge="start",
+            position_ms=1_000,
+        )
+
+        self.assertEqual(3, result["current_revision"]["revision"])
+        self.assertEqual(1, result["affected_cut"]["index"])
+        self.assertEqual(
+            (0, 3_000),
+            (result["affected_cut"]["start_ms"], result["affected_cut"]["end_ms"]),
+        )
+        self.assertEqual(1, len(service.list_cuts(self.session_id)["cuts"]))
+
+    def test_outer_boundary_is_fixed_and_noop_reuses_revision(self):
+        self._seed_external()
+        service = self._service()
+        service.prepare(self.session_id)
+        service.update(
+            self.session_id,
+            1,
+            keep_ranges=[{"start_ms": 1_000, "end_ms": 5_000}],
+        )
+
+        current = service.list_cuts(self.session_id)
+        self.assertFalse(current["cuts"][0]["start"]["editable"])
+        with self.assertRaisesRegex(ValueError, "fixed"):
+            service.refine_boundary(
+                self.session_id,
+                2,
+                cut_index=1,
+                edge="start",
+                delta_ms=100,
+            )
+        noop = service.refine_boundary(
+            self.session_id,
+            2,
+            cut_index=1,
+            edge="end",
+            position_ms=1_000,
+        )
+        self.assertTrue(noop["change"]["no_op"])
+        self.assertEqual(2, noop["current_revision"]["revision"])
+
+    def test_proposal_can_target_captionless_media_extents(self):
+        media = self._register("media.mp4", "upload", b"media", "video")
+        self._attach(media, "primary", "video")
+        captions = self._register(
+            "captions.vtt",
+            "captions",
+            (
+                "WEBVTT\n\n"
+                "00:00:01.000 --> 00:00:01.500\nAlice: opening\n\n"
+                "00:00:03.500 --> 00:00:04.000\nBob: closing\n"
+            ),
+            "vtt",
+        )
+        self._attach(captions, "transcript", "vtt")
+        service = self._service()
+        service.prepare(self.session_id)
+
+        result = service.apply_proposal(
+            self.session_id,
+            1,
+            [
+                {
+                    "start_at_media_start": True,
+                    "end_cue_id": "cue-000001",
+                    "reason": "Remove captionless setup.",
+                },
+                {
+                    "start_cue_id": "cue-000002",
+                    "end_at_media_end": True,
+                    "reason": "Remove captionless tail.",
+                },
+            ],
+        )
+
+        cuts = result["plan"]["operation"]["cuts"]
+        self.assertEqual((0, 1_500), (cuts[0]["start_ms"], cuts[0]["end_ms"]))
+        self.assertEqual((3_500, 5_000), (cuts[1]["start_ms"], cuts[1]["end_ms"]))
+        self.assertEqual("media_start", cuts[0]["start"]["method"])
+        self.assertEqual("media_end", cuts[1]["end"]["method"])
+        with self.assertRaisesRegex(ValueError, "Exactly one of start_cue_id"):
+            service.apply_proposal(
+                self.session_id,
+                2,
+                [
+                    {
+                        "start_cue_id": "cue-000001",
+                        "start_at_media_start": True,
+                        "end_cue_id": "cue-000002",
+                        "reason": "Ambiguous start.",
+                    }
+                ],
+            )
 
     def test_new_revision_invalidates_rendered_outputs_and_descendants(self):
         self._seed_external()

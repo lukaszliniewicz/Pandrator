@@ -117,6 +117,7 @@
   } | null>(null);
   let historyLoading = $state<Record<string, boolean>>({});
   let settingsStage = $state<Stage | null>(null);
+  let settingsLoading = $state(false);
   let stageMessage = $state('');
   let fullSettingsSection = $state('');
   let fullSettingsDraft = $state<Record<string, unknown> | null>(null);
@@ -665,6 +666,9 @@
       await openFullSettings('output');
       return;
     }
+    settingsStage = stage;
+    settingsLoading = true;
+    stageMessage = '';
     const dependencies: Promise<void>[] = [];
     if (stage.key === 'transcribe')
       dependencies.push(loadCapabilities(), loadSttCatalogue());
@@ -682,9 +686,13 @@
     if (stage.key === 'translate') dependencies.push(loadSubtitleCatalog());
     if (stage.key === 'generate_audio')
       dependencies.push(loadSpeechCatalogues());
-    await Promise.all(dependencies);
-    settingsStage = stage;
-    stageMessage = '';
+    try {
+      await Promise.all(dependencies);
+    } catch (caught) {
+      settingsLoading = false;
+      error = errorMessage(caught);
+      return;
+    }
     let saved = stageSettings[stage.key] ?? {};
     let storedSettings: SettingsPayload | null = null;
     try {
@@ -989,6 +997,7 @@
         }
       }
     }
+    settingsLoading = false;
   }
 
   async function cancel(stage: Stage) {
@@ -2603,6 +2612,7 @@
       role="dialog"
       aria-modal="true"
       aria-labelledby="settings-title"
+      aria-busy={settingsLoading}
     >
       <div class="flex justify-between gap-5">
         <div>
@@ -2617,6 +2627,13 @@
           class="rounded-lg p-2"><X size={19} /></button
         >
       </div>
+      {#if settingsLoading}<div
+          role="status"
+          class="mt-5 flex items-center gap-2 rounded-xl bg-[var(--accent-soft)] px-4 py-3 text-sm"
+        >
+          <LoaderCircle class="animate-spin" size={16} /> Loading available
+          models and saved settings…
+        </div>{/if}
       <div class="mt-6 grid gap-5">
         {#if settingsStage.key === 'correct' || (settingsStage.key === 'translate' && backend === 'llm') || ['optimize_tts', 'optimize_document', 'clean_source'].includes(settingsStage.key)}<label
             class="text-sm font-semibold"
@@ -4685,15 +4702,18 @@
       <div class="mt-7 flex flex-wrap justify-end gap-3">
         <button
           onclick={openFullSettingsFromStage}
+          disabled={settingsLoading}
           class="mr-auto rounded-xl border border-[var(--line)] px-4 py-2.5 text-sm font-semibold"
           >All {sectionDisplay(stageSection(settingsStage.key))} settings</button
         ><button
           onclick={revertStageToDefaults}
+          disabled={settingsLoading}
           class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-4 py-2.5 text-sm font-semibold"
           ><RotateCcw size={15} /> Revert to defaults</button
         ><button
           onclick={() => saveSettings('defaults')}
-          disabled={Boolean(publishingLibraryVoiceId) ||
+          disabled={settingsLoading ||
+            Boolean(publishingLibraryVoiceId) ||
             (settingsStage.key === 'generate_audio' &&
               !selectedTtsServiceAvailable)}
           class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-4 py-2.5 text-sm font-semibold disabled:opacity-40"
@@ -4710,7 +4730,8 @@
                 settingsStage?.key === 'transcribe' &&
                 settingsStage.status !== 'running'
             )}
-          disabled={Boolean(publishingLibraryVoiceId) ||
+          disabled={settingsLoading ||
+            Boolean(publishingLibraryVoiceId) ||
             (settingsStage.key === 'translate' &&
               !translationSourceArtifactId) ||
             (settingsStage.key === 'generate_audio' &&

@@ -142,6 +142,8 @@ class MediaEditDispatchServiceTests(unittest.TestCase):
             )
         self.assertEqual(200, status)
         self.assertTrue(result["finalized"])
+        self.assertEqual(1, result["source_revision_number"])
+        self.assertEqual(2, result["result_revision"])
         with self.fixture.database.session() as session:
             run_record = session.get(MediaEditDispatchRun, run["id"])
             revision = session.get(MediaEditPlanRevision, result["result_revision_id"])
@@ -194,6 +196,41 @@ class MediaEditDispatchServiceTests(unittest.TestCase):
                 session.get(
                     MediaEditPlanRevision, run["source_revision_id"]
                 ).keep_ranges_json,
+            )
+
+    def test_passive_result_can_remove_captionless_leading_media(self):
+        _media_edit, dispatch = self._prepared()
+        run, claim = self._create_and_claim(dispatch, suffix="8")
+        cue_id = claim["batch"]["cues"][0]["id"]
+
+        with self.fixture.database.immediate_session() as session:
+            result, status = dispatch.submit_in_session(
+                session,
+                batch_id=claim["batch_id"],
+                lease_token=claim["lease_token"],
+                submission_key="submit-0008",
+                result={
+                    "kind": "media_edit",
+                    "cuts": [
+                        {
+                            "start_at_media_start": True,
+                            "end_cue_id": cue_id,
+                            "reason": "Remove captionless setup before the first cue.",
+                        }
+                    ],
+                },
+            )
+
+        self.assertEqual(200, status)
+        with self.fixture.database.session() as session:
+            revision = session.get(MediaEditPlanRevision, result["result_revision_id"])
+            cut = revision.operation_json["cuts"][0]
+            self.assertEqual(0, cut["start_ms"])
+            self.assertTrue(cut["start_at_media_start"])
+            self.assertEqual("media_start", cut["start"]["method"])
+            self.assertEqual(
+                run["id"],
+                revision.evidence_json["passive_dispatch"]["dispatch_run_id"],
             )
 
     def test_revision_conflict_fails_without_rebase(self):

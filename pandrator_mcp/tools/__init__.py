@@ -38,8 +38,11 @@ from .manager import (
 )
 from .media_edit import (
     get_media_edit,
+    inspect_media_edit_boundary,
+    list_media_edit_cuts,
     prepare_media_edit,
     propose_media_edit,
+    refine_media_edit_boundary,
     render_media_edit,
     update_media_edit,
 )
@@ -126,6 +129,8 @@ __all__ = [
     "execute_component_plan",
     "get_session",
     "get_media_edit",
+    "list_media_edit_cuts",
+    "inspect_media_edit_boundary",
     "plan_media_edit_workflow",
     "get_subtitle_evidence",
     "get_dispatch_run",
@@ -161,6 +166,7 @@ __all__ = [
     "preview_subtitles",
     "provider_status",
     "propose_media_edit",
+    "refine_media_edit_boundary",
     "recommend_next_steps",
     "request_subtitle_evidence",
     "resolve_subtitle_evidence",

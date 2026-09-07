@@ -53,7 +53,7 @@
   const savedCount = $derived(total ?? artifacts.length);
 </script>
 
-<div class="mt-3 max-w-3xl">
+<div class="mt-3 w-full">
   <div class="version-row flex flex-wrap items-center gap-2">
     <History class="muted" size={14} />
     <label class="version-picker min-w-0 text-xs font-semibold">

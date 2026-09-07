@@ -6,17 +6,21 @@
     durationMs,
     currentMs,
     keepRanges,
+    cutRanges = [],
     peaks,
     detailPeaks = [],
     detailPeaksStartMs = 0,
     detailPeaksEndMs = 0,
     detailLoading = false,
     windowMs = 60_000,
-    onseek
+    onseek,
+    onboundaryinput = () => {},
+    onboundarycommit = () => {}
   }: {
     durationMs: number;
     currentMs: number;
     keepRanges: MediaEditRange[];
+    cutRanges?: MediaEditRange[];
     peaks: number[];
     detailPeaks?: number[];
     detailPeaksStartMs?: number;
@@ -24,11 +28,36 @@
     detailLoading?: boolean;
     windowMs?: number;
     onseek: (timeMs: number) => void;
+    onboundaryinput?: (
+      rangeId: string,
+      edge: 'start_ms' | 'end_ms',
+      timeMs: number
+    ) => void;
+    onboundarycommit?: (
+      rangeId: string,
+      edge: 'start_ms' | 'end_ms',
+      timeMs: number
+    ) => void;
   } = $props();
 
   let overview = $state<HTMLCanvasElement>();
   let detail = $state<HTMLCanvasElement>();
   let observer: ResizeObserver | undefined;
+  let activeBoundary = $state('');
+  const boundaryEdges: ('start_ms' | 'end_ms')[] = ['start_ms', 'end_ms'];
+  let drag:
+    | {
+        pointerId: number;
+        rangeId: string;
+        edge: 'start_ms' | 'end_ms';
+        canvas: HTMLCanvasElement;
+        startMs: number;
+        endMs: number;
+        originClientX: number;
+        originTimeMs: number;
+        timeMs: number;
+      }
+    | undefined;
 
   function isKept(timeMs: number) {
     return keepRanges.some(
@@ -159,10 +188,86 @@
     onseek(Math.round(startMs + fraction * (endMs - startMs)));
   }
 
+  function positionPercent(timeMs: number, startMs: number, endMs: number) {
+    return Math.max(
+      0,
+      Math.min(100, ((timeMs - startMs) / Math.max(1, endMs - startMs)) * 100)
+    );
+  }
+
+  function boundaryKey(rangeId: string, edge: 'start_ms' | 'end_ms') {
+    return `${rangeId}:${edge}`;
+  }
+
+  function beginBoundaryDrag(
+    event: PointerEvent,
+    rangeId: string,
+    edge: 'start_ms' | 'end_ms',
+    initialTimeMs: number,
+    canvas: HTMLCanvasElement,
+    startMs: number,
+    endMs: number
+  ) {
+    event.preventDefault();
+    event.stopPropagation();
+    const button = event.currentTarget as HTMLButtonElement;
+    button.setPointerCapture(event.pointerId);
+    drag = {
+      pointerId: event.pointerId,
+      rangeId,
+      edge,
+      canvas,
+      startMs,
+      endMs,
+      originClientX: event.clientX,
+      originTimeMs: initialTimeMs,
+      timeMs: initialTimeMs
+    };
+    activeBoundary = boundaryKey(rangeId, edge);
+    onboundaryinput(rangeId, edge, initialTimeMs);
+  }
+
+  function moveBoundary(event: PointerEvent) {
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    event.preventDefault();
+    const bounds = drag.canvas.getBoundingClientRect();
+    const timeMs = Math.round(
+      drag.originTimeMs +
+        ((event.clientX - drag.originClientX) / Math.max(1, bounds.width)) *
+          (drag.endMs - drag.startMs)
+    );
+    drag.timeMs = timeMs;
+    onboundaryinput(drag.rangeId, drag.edge, timeMs);
+  }
+
+  function finishBoundaryDrag(event: PointerEvent) {
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    event.preventDefault();
+    const completed = drag;
+    drag = undefined;
+    onboundarycommit(completed.rangeId, completed.edge, completed.timeMs);
+  }
+
+  function nudgeBoundary(
+    event: KeyboardEvent,
+    range: MediaEditRange,
+    edge: 'start_ms' | 'end_ms'
+  ) {
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+    event.preventDefault();
+    const amount =
+      (event.shiftKey ? 100 : 20) * (event.key === 'ArrowLeft' ? -1 : 1);
+    const timeMs = range[edge] + amount;
+    activeBoundary = boundaryKey(range.id, edge);
+    onboundaryinput(range.id, edge, timeMs);
+    onboundarycommit(range.id, edge, timeMs);
+  }
+
   $effect(() => {
     void durationMs;
     void currentMs;
     void keepRanges;
+    void cutRanges;
     void peaks;
     void detailPeaks;
     void detailPeaksStartMs;
@@ -188,12 +293,42 @@
     >
       <span>Whole recording</span><span>red = removed</span>
     </div>
-    <canvas
-      bind:this={overview}
-      class="block h-20 w-full cursor-crosshair rounded-xl border border-[var(--line)]"
-      aria-label="Whole-recording waveform; click to seek"
-      onclick={(event) => seekFromPointer(event, overview!, 0, durationMs)}
-    ></canvas>
+    <div class="relative">
+      <canvas
+        bind:this={overview}
+        class="block h-20 w-full cursor-crosshair rounded-xl border border-[var(--line)]"
+        aria-label="Whole-recording waveform; click to seek"
+        onclick={(event) => seekFromPointer(event, overview!, 0, durationMs)}
+      ></canvas>
+      {#each cutRanges as range, index (range.id)}
+        {#each boundaryEdges as edge}
+          <button
+            type="button"
+            class:active={activeBoundary === boundaryKey(range.id, edge)}
+            class="boundary-handle"
+            style={`--boundary-position:${positionPercent(range[edge], 0, durationMs)}%`}
+            aria-label={`Adjust removal ${index + 1} ${edge === 'start_ms' ? 'start' : 'end'} at ${formatAxis(range[edge])}. Drag, or use arrow keys; hold Shift for 100 milliseconds.`}
+            title={`Drag the removal ${edge === 'start_ms' ? 'start' : 'end'} edge · arrows 20 ms · Shift + arrows 100 ms`}
+            onfocus={() => (activeBoundary = boundaryKey(range.id, edge))}
+            onblur={() => !drag && (activeBoundary = '')}
+            onkeydown={(event) => nudgeBoundary(event, range, edge)}
+            onpointerdown={(event) =>
+              beginBoundaryDrag(
+                event,
+                range.id,
+                edge,
+                range[edge],
+                overview!,
+                0,
+                durationMs
+              )}
+            onpointermove={moveBoundary}
+            onpointerup={finishBoundaryDrag}
+            onpointercancel={finishBoundaryDrag}
+          ></button>
+        {/each}
+      {/each}
+    </div>
     <div
       class="mt-1 flex justify-between text-[.6rem] tabular-nums text-[var(--muted)]"
     >
@@ -219,6 +354,36 @@
         onclick={(event) =>
           seekFromPointer(event, detail!, detailStart, detailEnd)}
       ></canvas>
+      {#each cutRanges as range, index (range.id)}
+        {#each boundaryEdges as edge}
+          {#if range[edge] >= detailStart && range[edge] <= detailEnd}
+            <button
+              type="button"
+              class:active={activeBoundary === boundaryKey(range.id, edge)}
+              class="boundary-handle boundary-handle-detail"
+              style={`--boundary-position:${positionPercent(range[edge], detailStart, detailEnd)}%`}
+              aria-label={`Adjust removal ${index + 1} ${edge === 'start_ms' ? 'start' : 'end'} at ${formatAxis(range[edge])}. Drag, or use arrow keys; hold Shift for 100 milliseconds.`}
+              title={`Drag the removal ${edge === 'start_ms' ? 'start' : 'end'} edge · arrows 20 ms · Shift + arrows 100 ms`}
+              onfocus={() => (activeBoundary = boundaryKey(range.id, edge))}
+              onblur={() => !drag && (activeBoundary = '')}
+              onkeydown={(event) => nudgeBoundary(event, range, edge)}
+              onpointerdown={(event) =>
+                beginBoundaryDrag(
+                  event,
+                  range.id,
+                  edge,
+                  range[edge],
+                  detail!,
+                  detailStart,
+                  detailEnd
+                )}
+              onpointermove={moveBoundary}
+              onpointerup={finishBoundaryDrag}
+              onpointercancel={finishBoundaryDrag}
+            ></button>
+          {/if}
+        {/each}
+      {/each}
       {#if detailLoading}<div
           class="pointer-events-none absolute inset-x-3 top-3 flex justify-end"
           role="status"
@@ -250,3 +415,62 @@
     class="w-full accent-[var(--accent)]"
   />
 </div>
+
+<style>
+  .boundary-handle {
+    --handle-color: color-mix(in srgb, #dc4b4b 82%, var(--ink));
+    position: absolute;
+    z-index: 2;
+    top: 0;
+    bottom: 0;
+    left: clamp(0.4rem, var(--boundary-position), calc(100% - 0.4rem));
+    width: 0.8rem;
+    touch-action: none;
+    transform: translateX(-50%);
+    cursor: ew-resize;
+  }
+
+  .boundary-handle::before {
+    position: absolute;
+    inset-block: 0;
+    left: 50%;
+    width: 2px;
+    transform: translateX(-50%);
+    border-radius: 999px;
+    background: var(--handle-color);
+    content: '';
+    opacity: 0.72;
+  }
+
+  .boundary-handle::after {
+    position: absolute;
+    top: 0.3rem;
+    left: 50%;
+    width: 0.62rem;
+    height: 1.05rem;
+    transform: translateX(-50%);
+    border: 2px solid var(--paper-strong);
+    border-radius: 999px;
+    background: var(--handle-color);
+    box-shadow: 0 1px 4px rgb(0 0 0 / 0.24);
+    content: '';
+  }
+
+  .boundary-handle:hover::before,
+  .boundary-handle:focus-visible::before,
+  .boundary-handle.active::before {
+    width: 3px;
+    opacity: 1;
+  }
+
+  .boundary-handle:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  .boundary-handle-detail::after {
+    top: 0.45rem;
+    width: 0.72rem;
+    height: 1.2rem;
+  }
+</style>
