@@ -52,6 +52,7 @@ from .media_edit_dispatch import (
     renew_media_edit_dispatch_batch,
     submit_media_edit_dispatch_batch,
 )
+from .media_edit_workflow import plan_media_edit_workflow
 from .recommendations import recommend_next_steps
 from .sessions import (
     attach_existing_source,
@@ -125,6 +126,7 @@ __all__ = [
     "execute_component_plan",
     "get_session",
     "get_media_edit",
+    "plan_media_edit_workflow",
     "get_subtitle_evidence",
     "get_dispatch_run",
     "get_source_cleaning_dispatch_run",

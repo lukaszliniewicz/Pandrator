@@ -149,6 +149,17 @@ ACTION_CATALOG = ActionCatalog(
             True,
         ),
         ActionSpec(
+            "pandrator_plan_media_edit_workflow",
+            "Plan a live media-edit workflow procedure",
+            "PlanMediaEditWorkflowInput",
+            RiskClass.READ,
+            "app.read",
+            None,
+            None,
+            None,
+            True,
+        ),
+        ActionSpec(
             "pandrator_prepare_media_edit",
             "Prepare a media-edit plan",
             "PrepareMediaEditArguments",

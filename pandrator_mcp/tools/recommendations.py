@@ -2,33 +2,35 @@
 
 from __future__ import annotations
 
-import hashlib
 from typing import Any
 
 from ..context import McpRuntime
 from ..schemas import RecommendNextStepsInput
 
 
-def _media_edit_key(
-    action: str,
-    session_id: str,
-    *,
-    revision: int | None = None,
-    goal: str = "",
-) -> str:
-    goal_hash = hashlib.sha256(goal.encode("utf-8")).hexdigest()[:12]
-    revision_part = str(revision) if revision is not None else "prepare"
-    return f"media-edit-{action}:{session_id}:{revision_part}:{goal_hash}"[:200]
-
-
 def recommend_next_steps(
     runtime: McpRuntime,
     arguments: RecommendNextStepsInput,
 ) -> dict[str, Any]:
-    goal = str(arguments.goal or "").casefold()
+    raw_goal = str(arguments.goal or "").strip()
+    goal = raw_goal.casefold()
     if not arguments.session_id:
         workflow_topic = (
-            "voiceover-and-dubbing"
+            "workflows"
+            if any(
+                word in goal
+                for word in (
+                    "media edit",
+                    "edit video",
+                    "edit recording",
+                    "cut video",
+                    "cut recording",
+                    "trim video",
+                    "trim recording",
+                    "social clip",
+                )
+            )
+            else "voiceover-and-dubbing"
             if any(word in goal for word in ("voiceover", "dub", "dubbing"))
             else "subtitles"
             if any(word in goal for word in ("subtitle", "transcrib", "caption"))
@@ -92,7 +94,8 @@ def recommend_next_steps(
             "reason": "Review current stages, selections, and prerequisites.",
         }
     ]
-    if "correct" in goal or "proofread" in goal:
+    media_edit_session = (session.get("workflow_kind") or session.get("kind")) == "media_edit"
+    if not media_edit_session and ("correct" in goal or "proofread" in goal):
         steps.append(
             {
                 "tool": "pandrator_create_dispatch_run",
@@ -103,7 +106,7 @@ def recommend_next_steps(
                 "reason": "Create a passive correction run for this model to process.",
             }
         )
-    if "translat" in goal:
+    if not media_edit_session and "translat" in goal:
         steps.append(
             {
                 "tool": "pandrator_create_dispatch_run",
@@ -114,7 +117,9 @@ def recommend_next_steps(
                 "reason": "Create a passive translation run after correction is selected.",
             }
         )
-    if any(word in goal for word in ("speech optim", "tts optim", "speakable")):
+    if not media_edit_session and any(
+        word in goal for word in ("speech optim", "tts optim", "speakable")
+    ):
         steps.append(
             {
                 "tool": "pandrator_create_speech_optimization_dispatch_run",
@@ -122,59 +127,33 @@ def recommend_next_steps(
                 "reason": "Create a passive speech-optimization run for this model.",
             }
         )
-    if session.get("workflow_kind") == "media_edit" and any(
-        word in goal for word in ("media edit", "cut video", "remove scene", "trim video")
-    ):
-        media_edit = application.get_media_edit(arguments.session_id)
-        active_plan = media_edit.get("plan")
-        revision_value = active_plan.get("revision") if isinstance(active_plan, dict) else None
-        if isinstance(revision_value, int) and revision_value >= 1:
-            instructions = arguments.goal.strip()
-            steps.append(
-                {
-                    "tool": "pandrator_create_media_edit_dispatch_run",
-                    "arguments": {
-                        "session_id": arguments.session_id,
-                        "revision": revision_value,
-                        "instructions": instructions,
-                        "idempotency_key": _media_edit_key(
-                            "create",
-                            arguments.session_id,
-                            revision=revision_value,
-                            goal=instructions,
-                        ),
-                    },
-                    "reason": (
-                        "Create a passive whole-recording media-edit run pinned to "
-                        "the active plan so the model can reason globally over "
-                        "cue-level evidence without a provider."
-                    ),
-                }
-            )
-        else:
-            steps.extend(
-                [
-                    {
-                        "tool": "pandrator_prepare_media_edit",
-                        "arguments": {
-                            "session_id": arguments.session_id,
-                            "force": False,
-                            "idempotency_key": _media_edit_key(
-                                "prepare",
-                                arguments.session_id,
-                                goal=arguments.goal,
-                            ),
-                        },
-                        "reason": "Prepare the cue timeline before pinning a passive edit run.",
-                    },
-                    {
-                        "tool": "pandrator_get_media_edit",
-                        "arguments": {"session_id": arguments.session_id},
-                        "reason": "Read the prepared active revision before creating the passive run.",
-                    },
-                ]
-            )
-    if any(word in goal for word in ("tts", "voice", "narrat", "audio")):
+    if media_edit_session and raw_goal:
+        instructions = raw_goal
+        steps.append(
+            {
+                "tool": "pandrator_plan_media_edit_workflow",
+                "arguments": {
+                    "session_id": arguments.session_id,
+                    "instructions": instructions,
+                },
+                "reason": (
+                    "Plan the complete live media-edit procedure, including source "
+                    "setup, caption/ASR timing, passive proposal, review, and render."
+                ),
+            }
+        )
+    elif media_edit_session:
+        steps.append(
+            {
+                "tool": "pandrator_get_media_edit",
+                "arguments": {"session_id": arguments.session_id},
+                "reason": (
+                    "Inspect the current edit plan, then supply a nonblank editorial "
+                    "goal to plan the complete media-edit procedure."
+                ),
+            }
+        )
+    if not media_edit_session and any(word in goal for word in ("tts", "voice", "narrat", "audio")):
         steps.extend(
             [
                 {
@@ -191,21 +170,36 @@ def recommend_next_steps(
                 },
             ]
         )
-    final_tool = (
-        "pandrator_plan_export_variant"
-        if any(word in goal for word in ("export", "burn", "deliver", "final product"))
-        else "pandrator_plan_workflow"
-    )
-    final_arguments: dict[str, Any] = {"session_id": arguments.session_id}
-    if final_tool == "pandrator_plan_workflow":
-        final_arguments["target_stage"] = incomplete[-1] if incomplete else "generate_audio"
-    steps.append(
-        {
-            "tool": final_tool,
-            "arguments": final_arguments,
-            "reason": "Preview exact work and provider disclosures before execution.",
-        }
-    )
+    if not media_edit_session:
+        final_tool = (
+            "pandrator_plan_export_variant"
+            if any(word in goal for word in ("export", "burn", "deliver", "final product"))
+            else "pandrator_plan_workflow"
+        )
+        final_arguments: dict[str, Any] = {"session_id": arguments.session_id}
+        if final_tool == "pandrator_plan_workflow":
+            supported_stages = {
+                "transcribe",
+                "correct",
+                "translate",
+                "clean_source",
+                "prepare_text",
+                "optimize_document",
+                "optimize_tts",
+                "generate_audio",
+                "export",
+            }
+            final_arguments["target_stage"] = next(
+                (stage for stage in reversed(incomplete) if stage in supported_stages),
+                "generate_audio",
+            )
+        steps.append(
+            {
+                "tool": final_tool,
+                "arguments": final_arguments,
+                "reason": "Preview exact work and provider disclosures before execution.",
+            }
+        )
     return {
         "schema_version": "1",
         "goal": arguments.goal,

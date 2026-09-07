@@ -105,6 +105,7 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                         "pandrator_patch_subtitle_cues",
                         "pandrator_plan_component_change",
                         "pandrator_plan_export_variant",
+                        "pandrator_plan_media_edit_workflow",
                         "pandrator_plan_orchestrated_workflow",
                         "pandrator_plan_workflow",
                         "pandrator_prepare_media_edit",
@@ -161,6 +162,56 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                         tool.annotations.read_only_hint,
                     )
                 tools_by_name = {tool.name: tool for tool in listed.tools}
+                for source_tool in (
+                    "pandrator_create_text_source",
+                    "pandrator_import_local_source",
+                    "pandrator_attach_existing_source",
+                ):
+                    self.assertEqual(
+                        ["primary", "reference", "transcript"],
+                        tools_by_name[source_tool].input_schema["properties"]["role"][
+                            "enum"
+                        ],
+                    )
+                self.assertIn(
+                    "edit_media",
+                    tools_by_name["pandrator_create_session"].input_schema[
+                        "properties"
+                    ]["included_stages"]["items"]["enum"],
+                )
+                update_stages_schema = tools_by_name[
+                    "pandrator_update_session"
+                ].input_schema["properties"]["included_stages"]
+                update_stages_array = next(
+                    item
+                    for item in update_stages_schema["anyOf"]
+                    if item.get("type") == "array"
+                )
+                self.assertIn("edit_media", update_stages_array["items"]["enum"])
+                media_edit_schema = tools_by_name[
+                    "pandrator_plan_media_edit_workflow"
+                ].input_schema
+                self.assertTrue(
+                    tools_by_name[
+                        "pandrator_plan_media_edit_workflow"
+                    ].annotations.read_only_hint
+                )
+                self.assertIn("recording_source", media_edit_schema["properties"])
+                self.assertIn("transcript_source", media_edit_schema["properties"])
+                self.assertEqual(
+                    ["ctc", "ctc_asr_fallback", "asr"],
+                    media_edit_schema["properties"]["caption_alignment_method"]["enum"],
+                )
+                self.assertEqual(
+                    [
+                        "auto",
+                        "canary-ctc-aligner",
+                        "canary-ctc-aligner-q4_k.gguf",
+                    ],
+                    media_edit_schema["properties"]["caption_alignment_ctc_model"][
+                        "enum"
+                    ],
+                )
                 topology_schema = tools_by_name[
                     "pandrator_revise_speech_block_plan"
                 ].input_schema

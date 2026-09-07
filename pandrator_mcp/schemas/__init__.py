@@ -61,6 +61,7 @@ from .media_edit_dispatch import (
     RenewMediaEditDispatchBatchInput,
     SubmitMediaEditDispatchBatchInput,
 )
+from .media_edit_workflow import MediaEditSourceReference, PlanMediaEditWorkflowInput
 from .recommendations import RecommendNextStepsInput
 from .sessions import (
     AttachExistingSourceInput,
@@ -208,6 +209,7 @@ TOOL_INPUT_MODELS = (
     ProposeMediaEditArguments,
     RenderMediaEditArguments,
     UpdateMediaEditArguments,
+    PlanMediaEditWorkflowInput,
 )
 
 __all__ = [
@@ -242,6 +244,8 @@ __all__ = [
     "ExecuteWorkflowPlanInput",
     "GetSessionInput",
     "GetMediaEditArguments",
+    "MediaEditSourceReference",
+    "PlanMediaEditWorkflowInput",
     "GetSubtitleEvidenceInput",
     "GetDispatchRunInput",
     "GetSourceCleaningDispatchRunInput",

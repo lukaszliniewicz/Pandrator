@@ -199,10 +199,11 @@
     {
       "topic": "workflows",
       "title": "Pandrator workflows",
-      "summary": "How audiobook, subtitle, and voiceover sessions move through inspect, plan, execute, and review.",
+      "summary": "How audiobook, subtitle, voiceover, and media-edit sessions move through inspect, plan, execute, and review.",
       "audiences": ["new_user", "operator", "developer"],
       "related_tools": [
         "pandrator_recommend_next_steps",
+        "pandrator_plan_media_edit_workflow",
         "pandrator_get_target_status",
         "pandrator_browse_local_sources",
         "pandrator_import_local_source",
@@ -214,7 +215,7 @@
         "pandrator_download_artifact"
       ],
       "minimum_application_version": "0.8.17",
-      "revision": 2,
+      "revision": 3,
       "file": "workflows.md"
     }
   ]

@@ -33,6 +33,9 @@ The current tool surface supports:
   variants and generation-run selection;
 - one-turn model-orchestrated workflow procedures that sequence passive stages
   before creating the immutable native workflow plan;
+- live media-edit procedures that attach recordings or Zoom captions, select
+  CTC/ASR timing, drive passive cut proposals through review, render, and
+  optionally materialize the result;
 - filtered parameter-definition discovery for exact setting names, sections, and
   workflow kinds;
 - immutable workflow planning followed by explicit execution;
@@ -128,6 +131,31 @@ sequential claim. If validation rejects a result, repair and resubmit it while
 the lease remains valid. Renew slow work or release abandoned work. The final
 accepted batch automatically finalizes the run; retry the same final submission
 and idempotency key if transient materialization leaves it `finalizing`.
+
+### Media-edit orchestration
+
+For a `media_edit` session, `pandrator_plan_media_edit_workflow` inspects live
+source, workflow, timing, edit-revision, passive-dispatch, render, and artifact
+state and returns exactly one safe next action. Call it again after every
+action; it is a read-only procedure planner, not an atomic execution snapshot.
+Create the session first with `workflow_kind=media_edit`; the model can then
+provide approved recording and transcript source references to the planner.
+
+`transcript_mode=auto` prefers an attached transcript and otherwise uses a
+generated ASR transcript. Local source imports and reusable-source attachment
+accept `role=transcript`, so Zoom SRT/VTT captions can be attached through MCP
+without treating them as primary media. Caption mode can configure bounded CTC,
+CTC-with-ASR-fallback, or ASR lexical alignment, while `stt_overrides` selects
+the normal ASR/VAD settings. The default managed Canary CTC aligner does not
+load a whole-recording ASR model. Source files remain limited to
+operator-approved named roots.
+
+The model-hosted passive dispatcher proposes whole-recording cuts. Its result
+is always an unreviewed edit revision: the planner exposes the exact approval
+action but first returns `pandrator_get_media_edit`, and rendering remains
+blocked until that revision is explicitly reviewed. Optional materialization
+downloads the sole current render, or lists candidates when selection is
+ambiguous.
 
 ### PDF and EPUB source-cleaning dispatch
 
@@ -232,7 +260,7 @@ by both modern and maintained legacy hosts.
 
 ## Install
 
-The current release is 0.3.2 and can target Pandrator 0.8.16 or newer. The
+The current release is 0.3.3 and can target Pandrator 0.8.16 or newer. The
 source-cleaning, speech-optimization, and end-to-end workflow tools require
 Pandrator 0.8.17. With Python 3.11 or 3.12, install it as an isolated
 command-line tool:

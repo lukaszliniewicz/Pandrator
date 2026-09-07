@@ -69,9 +69,11 @@ from .schemas import (
     ManagerDesiredComponentInput,
     MediaEditDispatchResultInput,
     MediaEditKeepRange,
+    MediaEditSourceReference,
     PatchSubtitleCuesInput,
     PlanComponentChangeInput,
     PlanExportVariantInput,
+    PlanMediaEditWorkflowInput,
     PlanOrchestratedWorkflowInput,
     PlanWorkflowInput,
     PrepareMediaEditArguments,
@@ -163,6 +165,7 @@ from .tools import (
     patch_subtitle_cues,
     plan_component_change,
     plan_export_variant,
+    plan_media_edit_workflow,
     plan_orchestrated_workflow,
     plan_workflow,
     prepare_media_edit,
@@ -524,6 +527,109 @@ def build_server(runtime: McpRuntime):
             runtime,
             GetMediaEditArguments,
             {"session_id": session_id},
+        )
+
+    @server.tool(
+        name="pandrator_plan_media_edit_workflow",
+        title="Plan a media-edit workflow procedure",
+        annotations=read_only,
+    )
+    def media_edit_workflow_plan_tool(
+        session_id: Annotated[
+            str,
+            Field(
+                min_length=1,
+                max_length=80,
+                description="Existing media_edit session to inspect and advance.",
+            ),
+        ],
+        instructions: Annotated[
+            str,
+            Field(
+                min_length=1,
+                max_length=10_000,
+                description="Whole-recording editorial instructions for the passive cut proposal.",
+            ),
+        ],
+        transcript_mode: Annotated[
+            Literal["auto", "captions", "asr"],
+            Field(
+                description="Prefer attached captions automatically, require captions, or require generated ASR."
+            ),
+        ] = "auto",
+        recording_source: Annotated[
+            MediaEditSourceReference | None,
+            Field(description="Optional primary recording to attach when none is current."),
+        ] = None,
+        transcript_source: Annotated[
+            MediaEditSourceReference | None,
+            Field(description="Optional authoritative Zoom/SRT/VTT transcript source."),
+        ] = None,
+        caption_alignment_method: Annotated[
+            Literal["ctc", "ctc_asr_fallback", "asr"],
+            Field(description="Timing method used only when authoritative captions are present."),
+        ] = "ctc",
+        caption_alignment_ctc_model: Annotated[
+            Literal[
+                "auto",
+                "canary-ctc-aligner",
+                "canary-ctc-aligner-q4_k.gguf",
+            ],
+            Field(
+                description="Managed CrispASR align-only CTC model selector; auto is recommended.",
+            ),
+        ] = "auto",
+        caption_alignment_padding_ms: Annotated[int, Field(ge=250, le=5_000)] = 2_000,
+        caption_alignment_batch_seconds: Annotated[int, Field(ge=5, le=60)] = 30,
+        caption_alignment_min_confidence: Annotated[float, Field(ge=0.5, le=1.0)] = 0.5,
+        caption_alignment_fallback_coverage: Annotated[float, Field(ge=0.0, le=1.0)] = 0.9,
+        stt_overrides: Annotated[
+            dict[str, Any] | None,
+            Field(
+                description="Safe STT/VAD setting overrides merged into the current STT section."
+            ),
+        ] = None,
+        wait_seconds: Annotated[int, Field(ge=0, le=3_600)] = 0,
+        expires_in_minutes: Annotated[int, Field(ge=1, le=60)] = 30,
+        materialize: Annotated[
+            bool,
+            Field(
+                description="After a successful render, download it to the approved output root."
+            ),
+        ] = False,
+        filename: Annotated[
+            str | None,
+            Field(
+                max_length=255,
+                description="Optional plain output filename; requires materialize=true.",
+            ),
+        ] = None,
+    ) -> dict[str, Any]:
+        """Inspect live state and return a review-first media-edit procedure."""
+
+        values: dict[str, Any] = {
+            "session_id": session_id,
+            "instructions": instructions,
+            "transcript_mode": transcript_mode,
+            "recording_source": recording_source,
+            "transcript_source": transcript_source,
+            "caption_alignment_method": caption_alignment_method,
+            "caption_alignment_ctc_model": caption_alignment_ctc_model,
+            "caption_alignment_padding_ms": caption_alignment_padding_ms,
+            "caption_alignment_batch_seconds": caption_alignment_batch_seconds,
+            "caption_alignment_min_confidence": caption_alignment_min_confidence,
+            "caption_alignment_fallback_coverage": caption_alignment_fallback_coverage,
+            "stt_overrides": stt_overrides or {},
+            "wait_seconds": wait_seconds,
+            "expires_in_minutes": expires_in_minutes,
+            "materialize": materialize,
+            "filename": filename,
+        }
+        return _call_with_validated_input(
+            plan_media_edit_workflow,
+            runtime,
+            PlanMediaEditWorkflowInput,
+            values,
         )
 
     @server.tool(
@@ -915,7 +1021,7 @@ def build_server(runtime: McpRuntime):
             ),
         ],
         filename: Annotated[str, Field(min_length=1, max_length=255)] = "inline.txt",
-        role: Literal["primary", "reference"] = "primary",
+        role: Literal["primary", "reference", "transcript"] = "primary",
     ) -> dict[str, Any]:
         """Store supplied UTF-8 text as a managed source and attach it once."""
 
@@ -950,7 +1056,7 @@ def build_server(runtime: McpRuntime):
                 pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$",
             ),
         ],
-        role: Literal["primary", "reference"] = "primary",
+        role: Literal["primary", "reference", "transcript"] = "primary",
     ) -> dict[str, Any]:
         """Stream one approved local file via resumable upload and attach it once."""
 
@@ -1974,6 +2080,7 @@ def build_server(runtime: McpRuntime):
                 "optimize_tts",
                 "generate_audio",
                 "export",
+                "edit_media",
             ],
             ...,
         ] = (),
@@ -2041,6 +2148,7 @@ def build_server(runtime: McpRuntime):
                 "optimize_tts",
                 "generate_audio",
                 "export",
+                "edit_media",
             ],
             ...,
         ]
@@ -2078,7 +2186,7 @@ def build_server(runtime: McpRuntime):
         source_asset_id: str,
         expected_session_revision: Annotated[int, Field(ge=1)],
         idempotency_key: str,
-        role: Literal["primary", "reference"] = "primary",
+        role: Literal["primary", "reference", "transcript"] = "primary",
     ) -> dict[str, Any]:
         """Attach one existing source when the session revision still matches."""
 

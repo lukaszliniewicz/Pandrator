@@ -10,6 +10,7 @@ from typing import Any
 from pandrator_mcp.compatibility import (
     REQUIRED_DISPATCH_OPERATION_IDS,
     REQUIRED_MANAGER_OPERATION_IDS,
+    REQUIRED_MEDIA_EDIT_DISPATCH_OPERATION_IDS,
     REQUIRED_READ_OPERATION_IDS,
 )
 from pandrator_mcp.credentials import (
@@ -61,6 +62,7 @@ class DoctorTests(unittest.TestCase):
                         operations = sorted(
                             REQUIRED_READ_OPERATION_IDS
                             | REQUIRED_DISPATCH_OPERATION_IDS
+                            | REQUIRED_MEDIA_EDIT_DISPATCH_OPERATION_IDS
                             | REQUIRED_MANAGER_OPERATION_IDS
                         )
                         self._send(

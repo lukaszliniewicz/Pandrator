@@ -14,6 +14,8 @@ The supported workflow kinds are:
 - **Voiceover** for the subtitle pipeline plus generated speech, assembly or
   mixing, and media export. The underlying application also calls this the
   dubbing pipeline.
+- **Media edit** for transcript-guided video cuts, reviewable timing evidence,
+  reversible edit revisions, and rendering.
 
 For an unfamiliar request, start with `pandrator_recommend_next_steps`, then
 read this guide and the workflow-specific guide it identifies. Use this
@@ -49,3 +51,39 @@ The model never chooses a filesystem root, connection origin, upload chunk
 size, credential, or download transport. Those are sidecar/operator policy.
 Expected tool failures are typed `isError` results; inspect their code and
 retryability instead of guessing from prose.
+
+## Media editing
+
+For a media-edit session, `pandrator_plan_media_edit_workflow` returns a live,
+read-only procedure. It inspects the session, workflow, media-edit readiness,
+and STT settings before suggesting exactly one next action. The procedure is
+ordered as source setup, STT settings, transcript or caption timing, media-edit
+preparation, passive whole-recording proposal, human/model review, and render;
+it can optionally finish by downloading the sole current `media_edit_media`
+artifact, or by listing candidates when selection is ambiguous.
+
+If no suitable session exists, create one with `workflow_kind=media_edit`;
+`edit_media` is a supported included-stage value. Then either attach sources
+yourself with `role=primary` and `role=transcript`, or pass approved source
+references to the procedure planner so it returns the appropriate attachment
+as its next action.
+
+Use `transcript_mode=auto` to prefer an attached transcript (or a supplied
+transcript source) and otherwise use ASR. In caption mode, the planner applies
+the selected CTC, CTC-with-ASR-fallback, or ASR alignment settings. An attached
+transcript remains authoritative: explicitly requesting ASR while captions are
+attached is a blocking state, not permission to overwrite those captions.
+The default `caption_alignment_ctc_model=auto` uses Pandrator's managed Canary
+CTC aligner and does not load a whole-recording ASR model.
+
+The passive proposal is never auto-approved. Inspect `pandrator_get_media_edit`
+and review its exact `keep_ranges` before executing the planner's gated
+`pandrator_update_media_edit(reviewed=true)` action. Only a reviewed revision
+may be rendered. The planner is a live procedure rather than an atomic
+snapshot; re-inspect after every action and monitor workflow plans or durable
+work with their returned actions.
+
+Recording and transcript files may be imported only from a named,
+operator-approved local source root returned by
+`pandrator_browse_local_sources`. Relative paths must be selected from that
+browse result and may not escape the approved root.

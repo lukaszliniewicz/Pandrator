@@ -26,14 +26,14 @@ class _Application:
 
 
 class RecommendMediaEditTests(unittest.TestCase):
-    def _recommend(self, plan):
+    def _recommend(self, plan, goal="Trim video setup chatter"):
         application = _Application(plan)
         runtime = SimpleNamespace(require_application=lambda: application)
         return recommend_next_steps(
             runtime,
             RecommendNextStepsInput(
                 session_id="session-1",
-                goal="Trim video setup chatter",
+                goal=goal,
             ),
         )
 
@@ -42,19 +42,46 @@ class RecommendMediaEditTests(unittest.TestCase):
         step = next(
             item
             for item in result["steps"]
-            if item["tool"] == "pandrator_create_media_edit_dispatch_run"
+            if item["tool"] == "pandrator_plan_media_edit_workflow"
         )
-        self.assertEqual(4, step["arguments"]["revision"])
+        self.assertEqual("session-1", step["arguments"]["session_id"])
         self.assertEqual("Trim video setup chatter", step["arguments"]["instructions"])
-        self.assertGreaterEqual(len(step["arguments"]["idempotency_key"]), 8)
+        self.assertNotIn(
+            "pandrator_plan_workflow", [item["tool"] for item in result["steps"]]
+        )
 
     def test_unprepared_plan_recommends_prepare_then_inspect(self):
         result = self._recommend(None)
         tools = [item["tool"] for item in result["steps"]]
-        prepare_index = tools.index("pandrator_prepare_media_edit")
-        inspect_index = tools.index("pandrator_get_media_edit")
-        self.assertLess(prepare_index, inspect_index)
+        self.assertIn("pandrator_plan_media_edit_workflow", tools)
+        self.assertNotIn("pandrator_prepare_media_edit", tools)
         self.assertNotIn("pandrator_create_media_edit_dispatch_run", tools)
+
+    def test_every_media_edit_goal_uses_the_media_edit_planner(self):
+        result = self._recommend(None, goal="Remove the guest introduction")
+        tools = [item["tool"] for item in result["steps"]]
+        self.assertIn("pandrator_plan_media_edit_workflow", tools)
+        self.assertNotIn("pandrator_plan_workflow", tools)
+        self.assertNotIn("pandrator_create_dispatch_run", tools)
+
+    def test_blank_media_edit_goal_stays_in_the_media_edit_surface(self):
+        result = self._recommend(None, goal=None)
+        tools = [item["tool"] for item in result["steps"]]
+        self.assertIn("pandrator_get_media_edit", tools)
+        self.assertNotIn("pandrator_plan_workflow", tools)
+
+    def test_sessionless_media_edit_goal_routes_to_workflow_guide(self):
+        runtime = SimpleNamespace(require_application=lambda: None)
+        result = recommend_next_steps(
+            runtime,
+            RecommendNextStepsInput(goal="Cut video using the Zoom captions"),
+        )
+        explain = next(
+            item
+            for item in result["steps"]
+            if item["tool"] == "pandrator_explain_system"
+        )
+        self.assertEqual("workflows", explain["arguments"]["topic"])
 
 
 if __name__ == "__main__":
