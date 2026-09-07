@@ -168,6 +168,35 @@ class CrispASRTranscriptionTests(unittest.TestCase):
             self.assertEqual(path, Path(cache_dir) / "canary-ctc-aligner-q4_k.gguf")
             self.assertEqual(path.read_bytes(), b"aligner")
 
+    def test_caption_ctc_uses_existing_cache_path_without_auto_download(self):
+        commands = []
+
+        def fake_run(command, **_kwargs):
+            commands.append(command)
+            output = Path(command[command.index("--align-output") + 1])
+            output.write_text("[]", encoding="utf-8")
+            return SimpleNamespace(stdout=b"", stderr=b"")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache_dir = Path(temp_dir) / "cache"
+            cache_dir.mkdir()
+            aligner = cache_dir / "canary-ctc-aligner-q4_k.gguf"
+            aligner.write_bytes(b"cached-aligner")
+            output = Path(temp_dir) / "alignment.json"
+
+            crispasr.run_ctc_alignment(
+                Path(temp_dir) / "cue.wav",
+                Path(temp_dir) / "cue.txt",
+                output,
+                {"crispasr_cache_dir": str(cache_dir)},
+                executable="crispasr-test",
+                run_func=fake_run,
+            )
+
+        self.assertEqual(len(commands), 1)
+        self.assertEqual(commands[0][commands[0].index("-am") + 1], str(aligner))
+        self.assertNotIn("--auto-download", commands[0])
+
     def test_transcribe_uses_prefetched_model_without_forcing_a_second_download(self):
         commands = []
 

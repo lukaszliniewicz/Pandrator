@@ -223,6 +223,21 @@ def _cache_dir(settings: dict[str, Any]) -> str:
     ).strip()
 
 
+def _cached_artifact_path(
+    settings: dict[str, Any], artifact: CrispASRArtifact
+) -> Path | None:
+    """Return an already downloaded CrispASR companion without network I/O."""
+
+    configured_cache = _cache_dir(settings)
+    cache_dir = (
+        Path(configured_cache).expanduser()
+        if configured_cache
+        else Path.home() / ".cache" / "crispasr"
+    )
+    candidate = cache_dir / artifact.filename
+    return candidate if candidate.is_file() and candidate.stat().st_size > 0 else None
+
+
 def _model_download_url(model: CrispASRModel, filename: str) -> str:
     return f"https://huggingface.co/{model.repository}/resolve/main/{quote(filename)}"
 
@@ -369,6 +384,9 @@ def _prefetch_windows_moss_aligner(
         "canary-ctc-aligner",
         DEFAULT_CTC_ALIGNER_ARTIFACT.filename,
     }:
+        cached = _cached_artifact_path(settings, DEFAULT_CTC_ALIGNER_ARTIFACT)
+        if cached is not None:
+            return cached
         return _prefetch_windows_artifact(
             settings,
             DEFAULT_CTC_ALIGNER_ARTIFACT,
@@ -384,7 +402,7 @@ def _prefetch_windows_ctc_aligner(
     *,
     opener: Callable[..., Any] = urlopen,
 ) -> Path | None:
-    """Atomically cache the standalone caption CTC model on Windows."""
+    """Resolve cached caption CTC, downloading it on Windows when absent."""
 
     configured = str(_setting(settings, "caption_alignment_ctc_model", "auto")).strip() or "auto"
     if configured.lower() in {
@@ -392,6 +410,9 @@ def _prefetch_windows_ctc_aligner(
         "canary-ctc-aligner",
         DEFAULT_CTC_ALIGNER_ARTIFACT.filename,
     }:
+        cached = _cached_artifact_path(settings, DEFAULT_CTC_ALIGNER_ARTIFACT)
+        if cached is not None:
+            return cached
         return _prefetch_windows_artifact(
             settings,
             DEFAULT_CTC_ALIGNER_ARTIFACT,

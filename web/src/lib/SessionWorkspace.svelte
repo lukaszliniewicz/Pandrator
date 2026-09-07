@@ -2915,9 +2915,10 @@
               >
                 <div class="text-sm font-semibold">Cue-local Canary CTC</div>
                 <p class="muted mt-1 text-xs leading-relaxed">
-                  Short chronological batches reduce model reloads. Every cue
-                  must still fit its own padded Zoom interval and VAD speech
-                  evidence; failed overlap groups are retried separately.
+                  Each cleaned cue is aligned independently inside its own
+                  padded interval, so one bad cue cannot shift its neighbours.
+                  VAD checks that returned word times land on speech; rejected
+                  cues retain their caption timing.
                 </p>
                 <div class="mt-3 grid gap-3 sm:grid-cols-2">
                   <label class="text-xs font-semibold"
@@ -2951,7 +2952,7 @@
                     ><ParameterLabel
                       section="stt"
                       name="caption_alignment_batch_seconds"
-                      label="Maximum batch window (s)"
+                      label="Maximum cue window (s)"
                       compact
                     /><input
                       type="number"

@@ -60,7 +60,7 @@ def test_overlap_clusters_are_strict_and_keep_original_order_and_outside_cues():
     assert [cue.id for cue in outside] == ["outside"]
 
 
-def test_first_pass_batches_bound_duration_tokens_and_indivisible_clusters():
+def test_first_pass_requests_isolate_every_cue_and_enforce_bounds():
     overlap = (
         _cue("a", 1000, 3000, "a"),
         _cue("b", 2000, 4000, "b"),
@@ -77,7 +77,9 @@ def test_first_pass_batches_bound_duration_tokens_and_indivisible_clusters():
     )
 
     assert [[cue.id for cue in batch.cues] for batch in batches] == [
-        ["a", "b", "c"],
+        ["a"],
+        ["b"],
+        ["c"],
         ["d"],
     ]
     assert all(
@@ -87,11 +89,10 @@ def test_first_pass_batches_bound_duration_tokens_and_indivisible_clusters():
         batch.end_ms - batch.start_ms <= 10000 and batch.token_count <= 160
         for batch in batches
     )
-    assert batches[0].end_ms - batches[0].start_ms <= 10000
-    assert batches[0].token_count <= 160
+    assert all(len(batch.cues) == 1 for batch in batches)
 
 
-def test_oversized_cluster_retries_only_bounded_individual_cues(tmp_path):
+def test_large_overlap_cluster_still_aligns_each_bounded_cue_once(tmp_path):
     normalized = _normalized_wav(tmp_path / "normalized.wav")
     first_tokens = " ".join(f"a{i}" for i in range(81))
     second_tokens = " ".join(f"b{i}" for i in range(81))
@@ -111,10 +112,13 @@ def test_oversized_cluster_retries_only_bounded_individual_cues(tmp_path):
 
     result = align_caption_cues(normalized, cues, ctc_runner=runner)
 
-    assert result.diagnostics.first_pass_batch_count == 0
-    assert result.diagnostics.oversized_cluster_count == 1
+    assert result.metrics["alignment_request_strategy"] == "independent_per_cue"
+    assert result.diagnostics.first_pass_batch_count == 2
+    assert result.diagnostics.ctc_request_count == 2
+    assert result.diagnostics.oversized_cluster_count == 0
+    assert result.diagnostics.oversized_cue_count == 0
     assert result.diagnostics.cluster_retries == 0
-    assert result.diagnostics.individual_retries == 2
+    assert result.diagnostics.individual_retries == 0
     assert len(calls) == 2
     assert all(len(tokens) == 81 for tokens in calls)
     assert result.diagnostics.accepted_cue_count == 2
@@ -252,29 +256,23 @@ def test_ctc_parser_requires_the_crispasr_word_contract():
         parse_ctc_words([{"text": "hello", "start": 0.0, "end": 0.2}])
 
 
-def test_align_caption_cues_recovers_poisoned_batch_by_cluster_and_cue_retry(tmp_path):
+def test_align_caption_cues_keeps_one_bad_cue_from_poisoning_neighbours(tmp_path):
     normalized = _normalized_wav(tmp_path / "normalized.wav")
     cues = (
-        _cue("alpha", 1000, 2000, "Alpha"),
+        _cue("alpha", 1000, 2000, "Alpha", speaker="Pascal Schilling"),
         _cue("beta", 1500, 2500, "Beta"),
         _cue("gamma", 8000, 9000, "Gamma"),
     )
     calls = []
 
     def runner(_clip, text_path, _output, _settings, _event):
-        calls.append(text_path.read_text(encoding="utf-8"))
-        if len(calls) == 1:
-            return [
-                {"word": "poison", "start": 1.1, "end": 1.3},
-                {"word": "Beta", "start": 1.5, "end": 1.7},
-                {"word": "Gamma", "start": 8.1, "end": 8.3},
-            ]
-        if len(calls) == 2:
-            return [
-                {"word": "poison", "start": 1.1, "end": 1.3},
-                {"word": "Beta", "start": 1.5, "end": 1.7},
-            ]
-        return [{"word": "Alpha", "start": 1.1, "end": 1.3}]
+        text = text_path.read_text(encoding="utf-8")
+        calls.append(text)
+        if text == "Alpha":
+            return [{"word": "poison", "start": 1.1, "end": 1.3}]
+        if text == "Beta":
+            return [{"word": "Beta", "start": 1.5, "end": 1.7}]
+        return [{"word": "Gamma", "start": 2.1, "end": 2.3}]
 
     result = align_caption_cues(
         normalized,
@@ -283,18 +281,23 @@ def test_align_caption_cues_recovers_poisoned_batch_by_cluster_and_cue_retry(tmp
         ctc_runner=runner,
     )
 
-    assert calls == ["Alpha Beta Gamma", "Alpha Beta", "Alpha"]
-    assert result.diagnostics.first_pass_batch_count == 1
+    assert calls == ["Alpha", "Beta", "Gamma"]
+    assert result.diagnostics.first_pass_batch_count == 3
+    assert result.diagnostics.ctc_request_count == 3
     assert result.diagnostics.overlap_cluster_count == 2
-    assert result.diagnostics.cluster_retries == 1
-    assert result.diagnostics.individual_retries == 1
-    assert result.diagnostics.accepted_cue_count == 3
-    assert result.diagnostics.accepted_token_count == 3
-    assert result.diagnostics.alignment_coverage == 1.0
-    assert result.diagnostics.failed_cue_ids == {}
-    assert all(cue.timing_source == "ctc_alignment" for cue in result.cues)
+    assert result.diagnostics.cluster_retries == 0
+    assert result.diagnostics.individual_retries == 0
+    assert result.diagnostics.accepted_cue_count == 2
+    assert result.diagnostics.accepted_token_count == 2
+    assert result.diagnostics.alignment_coverage == 2 / 3
+    assert result.diagnostics.failed_cue_ids == {"alpha": ["wrong_surface"]}
+    assert result.cues[0].speaker == "Pascal Schilling"
+    assert [cue.timing_source for cue in result.cues] == [
+        "caption",
+        "ctc_alignment",
+        "ctc_alignment",
+    ]
     assert [word.text for cue in result.cues for word in cue.words] == [
-        "Alpha",
         "Beta",
         "Gamma",
     ]

@@ -767,6 +767,9 @@ class MediaEditService:
                     "timing_quality_basis": timing_metadata.get(
                         "timing_quality_basis", ""
                     ),
+                    "alignment_request_strategy": timing_metadata.get(
+                        "alignment_request_strategy", ""
+                    ),
                     "alignment_artifact_reused": reused_alignment,
                 }
             )
@@ -799,6 +802,7 @@ class MediaEditService:
                                 "overlap_cluster_count",
                                 "oversized_cluster_count",
                                 "oversized_cue_count",
+                                "ctc_request_count",
                                 "first_pass_batch_count",
                                 "cluster_retries",
                                 "individual_retries",
