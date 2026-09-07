@@ -7,9 +7,11 @@ were run plus known limits rather than claiming broad project cleanliness.
 
 ## Graphify policy
 
-Graphify is opt-in only. For routine code questions, use source inspection,
-`rg`, CI configuration, and Git history first; do not run Graphify commands,
-watchers, hooks, global or database pushes, or URL ingestion.
+Graphify is fully optional and is never required for codebase questions,
+implementation, review, or verification. Use it only when the user explicitly
+requests it. Otherwise, use source inspection, `rg`, CI configuration, and Git
+history; do not run Graphify commands, watchers, hooks, global or database
+pushes, or URL ingestion.
 
 When Graphify is explicitly requested, respect `.graphifyignore`, write output
 outside the repository or under the relevant component only, and verify any
