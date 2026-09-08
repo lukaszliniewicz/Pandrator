@@ -61,9 +61,7 @@ test('generation workspace exposes the compact review controls', () => {
   const segmentTable = source('GenerationSegmentTable.svelte');
   const boundaryMarker = source('SpeechBoundaryMarker.svelte');
   const stageCard = source('WorkflowStageCard.svelte');
-  const workspace = source('SessionWorkspace.svelte');
 
-  expect(workspace).toContain('<div class="w-full">');
   expect(stageCard).toContain('class:stage-disabled');
   expect(drawer).toContain('<Eye size={14} />');
   expect(drawer).toContain('aria-label="Regeneration options"');

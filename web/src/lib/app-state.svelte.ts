@@ -1,3 +1,4 @@
+import { isJobStatus } from './job-status';
 import { errorMessage } from './errors';
 import { exchangeBootstrapToken, setCsrfToken } from './api';
 import { appApi } from './domain-api';
@@ -218,7 +219,7 @@ class AppState {
       ...(existing ?? {
         id: jobId,
         kind: String(event.job_kind ?? 'background'),
-        status: String(event.status ?? 'queued'),
+        status: isJobStatus(event.status) ? event.status : 'queued',
         progress: Number(event.progress ?? 0),
         created_at: String(event.created_at ?? new Date().toISOString())
       }),
@@ -226,7 +227,7 @@ class AppState {
       ...(event.session_id !== undefined
         ? { session_id: event.session_id }
         : {}),
-      ...(event.status ? { status: String(event.status) } : {}),
+      ...(isJobStatus(event.status) ? { status: event.status } : {}),
       ...(event.progress !== undefined
         ? { progress: Number(event.progress) }
         : {}),

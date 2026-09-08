@@ -11,6 +11,7 @@ from pandrator.logic.dubbing.subtitle_finalization import (
     SubtitleFinalizationConfig,
     compose_from_crispasr_json,
     compose_transcript_segments,
+    compose_transcript_segments_with_ownership,
     finalize_srt_content,
     wrap_subtitle_text,
 )
@@ -225,6 +226,182 @@ This cue contains forty readable characters.
             all(left.end_ms <= right.start_ms for left, right in pairwise(segments))
         )
 
+    def test_word_ownership_preserves_overlapping_speaker_cues(self):
+        payload = {
+            "schema": "pandrator.transcript.v1",
+            "segments": [
+                {
+                    "id": "alice",
+                    "start_ms": 0,
+                    "end_ms": 3000,
+                    "speaker": "Alice",
+                    "text": "alpha",
+                    "words": [{"text": "alpha", "start_ms": 0, "end_ms": 3000}],
+                },
+                {
+                    "id": "bob",
+                    "start_ms": 1000,
+                    "end_ms": 1300,
+                    "speaker": "Bob",
+                    "text": "beta",
+                    "words": [{"text": "beta", "start_ms": 1000, "end_ms": 1300}],
+                },
+            ],
+        }
+
+        result = compose_transcript_segments_with_ownership(payload)
+
+        self.assertEqual(["alpha", "beta"], [item.text for item in result.segments])
+        self.assertEqual(["Alice", "Bob"], [item.speaker for item in result.segments])
+        self.assertEqual({0: 0, 1: 1}, result.word_segment_ordinals)
+
+    def test_word_ownership_is_deterministic_for_same_speaker_overlap(self):
+        payload = {
+            "schema": "pandrator.transcript.v1",
+            "segments": [
+                {
+                    "id": "first",
+                    "start_ms": 0,
+                    "end_ms": 1000,
+                    "speaker": "Speaker",
+                    "text": "echo",
+                    "words": [{"text": "echo", "start_ms": 0, "end_ms": 1000}],
+                },
+                {
+                    "id": "second",
+                    "start_ms": 500,
+                    "end_ms": 700,
+                    "speaker": "Speaker",
+                    "text": "echo",
+                    "words": [{"text": "echo", "start_ms": 500, "end_ms": 700}],
+                },
+            ],
+        }
+
+        first = compose_transcript_segments_with_ownership(payload)
+        second = compose_transcript_segments_with_ownership(payload)
+
+        self.assertEqual(first, second)
+        self.assertEqual({0: 0, 1: 0}, first.word_segment_ordinals)
+
+    def test_word_ownership_tracks_sorted_words_across_split_coalesce_and_wordless_runs(
+        self,
+    ):
+        payload = {
+            "schema": "pandrator.transcript.v1",
+            "segments": [
+                {
+                    "id": "before",
+                    "start_ms": 0,
+                    "end_ms": 400,
+                    "speaker": "Speaker",
+                    "text": "first part.",
+                    "words": [
+                        {"text": "first", "start_ms": 0, "end_ms": 180},
+                        {"text": "part.", "start_ms": 200, "end_ms": 400},
+                    ],
+                },
+                {
+                    "id": "wordless",
+                    "start_ms": 600,
+                    "end_ms": 900,
+                    "speaker": "Speaker",
+                    "text": "A wordless cue.",
+                },
+                {
+                    "id": "after",
+                    "start_ms": 1000,
+                    "end_ms": 1800,
+                    "speaker": "Speaker",
+                    "text": "early late",
+                    "words": [
+                        {"text": "late", "start_ms": 1500, "end_ms": 1600},
+                        {"text": "early", "start_ms": 1100, "end_ms": 1200},
+                    ],
+                },
+            ],
+        }
+
+        result = compose_transcript_segments_with_ownership(payload)
+
+        self.assertEqual(
+            ["first part.", "A wordless cue.", "early late"],
+            [item.text for item in result.segments],
+        )
+        self.assertEqual({0: 0, 1: 0, 2: 2, 3: 2}, result.word_segment_ordinals)
+
+    def test_word_ownership_uses_global_time_order_across_wordless_boundaries(self):
+        result = compose_transcript_segments_with_ownership(
+            {
+                "schema": "pandrator.transcript.v1",
+                "segments": [
+                    {
+                        "text": "late",
+                        "start_ms": 3000,
+                        "end_ms": 3400,
+                        "words": [{"text": "late", "start_ms": 3000, "end_ms": 3400}],
+                    },
+                    {"text": "Wordless.", "start_ms": 1500, "end_ms": 2000},
+                    {
+                        "text": "early",
+                        "start_ms": 0,
+                        "end_ms": 400,
+                        "words": [{"text": "early", "start_ms": 0, "end_ms": 400}],
+                    },
+                ],
+            }
+        )
+        self.assertEqual(
+            ["early", "Wordless.", "late"], [cue.text for cue in result.segments]
+        )
+        self.assertEqual({0: 0, 1: 2}, result.word_segment_ordinals)
+
+    def test_word_ownership_omits_deduplicated_moss_words(self):
+        def word(text, start, speaker, segment_id):
+            return {
+                "text": text,
+                "start_ms": start,
+                "end_ms": start + 220,
+                "speaker": speaker,
+                "metadata": {"moss_segment_id": segment_id},
+            }
+
+        payload = {
+            "schema": "pandrator.transcript.v1",
+            "segments": [
+                {
+                    "id": "moss-a",
+                    "start_ms": 0,
+                    "end_ms": 1700,
+                    "speaker": "S1",
+                    "text": "asleep when you're under",
+                    "words": [
+                        word("asleep", 0, "S1", "moss-a"),
+                        word("when", 400, "S1", "moss-a"),
+                        word("you're", 800, "S1", "moss-a"),
+                        word("under", 1200, "S1", "moss-a"),
+                    ],
+                },
+                {
+                    "id": "moss-b",
+                    "start_ms": 420,
+                    "end_ms": 2300,
+                    "speaker": "S2",
+                    "text": "when you're under anesthesia",
+                    "words": [
+                        word("when", 420, "S2", "moss-b"),
+                        word("you're", 820, "S2", "moss-b"),
+                        word("under", 1220, "S2", "moss-b"),
+                        word("anesthesia", 1700, "S2", "moss-b"),
+                    ],
+                },
+            ],
+        }
+
+        result = compose_transcript_segments_with_ownership(payload)
+
+        self.assertEqual({0: 0, 2: 0, 4: 0, 6: 0, 7: 0}, result.word_segment_ordinals)
+
     def test_zero_minimum_gap_is_a_valid_explicit_setting(self):
         config = SubtitleFinalizationConfig.from_settings({"subtitle_min_gap_ms": 0})
         self.assertEqual(config.min_gap_ms, 0)
@@ -293,7 +470,7 @@ This cue contains forty readable characters.
         self.assertEqual(len(segments), 1)
 
     def test_capacity_split_does_not_leave_a_dangling_final_word(self):
-        tokens = "This carefully constructed sentence has an unavoidable final word too.".split()
+        tokens = ["This", "carefully", "constructed", "sentence", "has", "an", "unavoidable", "final", "word", "too."]
         payload = {"transcription": [{"words": [
             {"text": token, "offsets": {"from": index * 320, "to": index * 320 + 280}}
             for index, token in enumerate(tokens)
@@ -422,7 +599,7 @@ This cue contains forty readable characters.
         )
 
     def test_sat_probability_can_select_an_unpunctuated_semantic_boundary(self):
-        tokens = "We carefully reviewed the report today everyone approved the final version.".split()
+        tokens = ["We", "carefully", "reviewed", "the", "report", "today", "everyone", "approved", "the", "final", "version."]
         payload = {"transcription": [{"words": [
             {"text": token, "offsets": {"from": index * 330, "to": index * 330 + 290}}
             for index, token in enumerate(tokens)
@@ -446,7 +623,7 @@ This cue contains forty readable characters.
         self.assertTrue(segments[1].text.startswith("everyone"))
 
     def test_sentence_boundary_threshold_actually_gates_sat_evidence(self):
-        tokens = "We carefully reviewed the report today everyone approved the final version".split()
+        tokens = ["We", "carefully", "reviewed", "the", "report", "today", "everyone", "approved", "the", "final", "version"]
         payload = {"transcription": [{"words": [
             {"text": token, "offsets": {"from": index * 330, "to": index * 330 + 290}}
             for index, token in enumerate(tokens)
@@ -521,7 +698,7 @@ This cue contains forty readable characters.
                             "speaker": "S1",
                             "metadata": {"moss_segment_id": "moss-a"},
                         }
-                        for index, token in enumerate("A lot of the other things".split())
+                        for index, token in enumerate(["A", "lot", "of", "the", "other", "things"])
                     ],
                 },
                 {
@@ -539,7 +716,7 @@ This cue contains forty readable characters.
                             "metadata": {"moss_segment_id": "moss-b"},
                         }
                         for index, token in enumerate(
-                            "A lot of the other things remain".split()
+                            ["A", "lot", "of", "the", "other", "things", "remain"]
                         )
                     ],
                 },

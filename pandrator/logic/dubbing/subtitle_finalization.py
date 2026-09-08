@@ -11,6 +11,7 @@ import logging
 import re
 from dataclasses import dataclass, replace
 from difflib import SequenceMatcher
+from itertools import pairwise
 from math import ceil
 from pathlib import Path
 from statistics import median
@@ -98,6 +99,18 @@ class SubtitleFinalizationConfig:
 
 
 @dataclass(frozen=True)
+class TranscriptCompositionResult:
+    """Display cues and zero-based canonical-word → stored-segment ordinals.
+
+    Words removed during normalization/deduplication have no owner. Keys follow
+    ``NormalizedTranscript.words`` ordering, including stable timestamp ties.
+    """
+
+    segments: list[SubtitleSegment]
+    word_segment_ordinals: dict[int, int]
+
+
+@dataclass(frozen=True)
 class _TimedWord:
     index: int
     text: str
@@ -107,6 +120,13 @@ class _TimedWord:
     source_segment_id: str = ""
     char_start: int = 0
     char_end: int = 0
+    canonical_ordinal: int = -1
+
+
+@dataclass(frozen=True)
+class _ComposedCue:
+    cue: SubtitleSegment
+    word_ordinals: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -293,7 +313,7 @@ def _split_words_to_capacity(
     boundaries = (0, *solution[2])
     return [
         " ".join(words[start:end])
-        for start, end in zip(boundaries, boundaries[1:])
+        for start, end in pairwise(boundaries)
     ]
 
 
@@ -531,6 +551,7 @@ def _sanitize_timed_words(words: list[_TimedWord]) -> list[_TimedWord]:
                 end_ms=end,
                 speaker=word.speaker,
                 source_segment_id=word.source_segment_id,
+                canonical_ordinal=word.canonical_ordinal,
             )
         )
         previous_start = start
@@ -659,11 +680,35 @@ def _deduplicate_moss_overlap_words(words: list[_TimedWord]) -> list[_TimedWord]
     ]
 
 
-def _timed_words(payload: NormalizedTranscript | Any) -> list[_TimedWord]:
+def _timed_words(
+    payload: NormalizedTranscript | Any,
+    *,
+    canonical_ordinals: tuple[int, ...] | None = None,
+) -> list[_TimedWord]:
     transcript = normalize_transcript(payload)
+    occurrences = [
+        (segment_index, word_index, word)
+        for segment_index, segment in enumerate(transcript.segments)
+        for word_index, word in enumerate(segment.words)
+    ]
+    canonical_order_by_occurrence = {
+        (segment_index, word_index): ordinal
+        for ordinal, (segment_index, word_index, _word) in enumerate(
+            sorted(occurrences, key=lambda item: (item[2].start_ms, item[2].end_ms))
+        )
+    }
+    if canonical_ordinals is not None and len(canonical_ordinals) != len(occurrences):
+        raise ValueError("Canonical word ordinals must cover every input occurrence.")
     result: list[_TimedWord] = []
-    for segment in transcript.segments:
-        for word in segment.words:
+    flat_index = 0
+    for segment_index, segment in enumerate(transcript.segments):
+        for word_index, word in enumerate(segment.words):
+            if canonical_ordinals is not None:
+                canonical_ordinal = canonical_ordinals[flat_index]
+            else:
+                canonical_ordinal = canonical_order_by_occurrence[
+                    (segment_index, word_index)
+                ]
             result.append(
                 _TimedWord(
                     index=len(result),
@@ -672,8 +717,10 @@ def _timed_words(payload: NormalizedTranscript | Any) -> list[_TimedWord]:
                     end_ms=word.end_ms,
                     speaker=word.speaker or segment.speaker,
                     source_segment_id=str(word.metadata.get("moss_segment_id") or ""),
+                    canonical_ordinal=canonical_ordinal,
                 )
             )
+            flat_index += 1
     result.sort(key=lambda word: (word.start_ms, word.end_ms, word.index))
     result = [replace(word, index=index) for index, word in enumerate(result)]
     return _sanitize_timed_words(_deduplicate_moss_overlap_words(result))
@@ -707,6 +754,7 @@ def _source_text_and_spans(words: list[_TimedWord]) -> tuple[str, list[_TimedWor
                 source_segment_id=word.source_segment_id,
                 char_start=start,
                 char_end=len(text),
+                canonical_ordinal=word.canonical_ordinal,
             )
         )
     return text, output
@@ -743,7 +791,7 @@ def _sat_boundary_probabilities(
             source_text,
             threshold=threshold,
         )
-    except Exception as exc:  # pragma: no cover - defensive around optional model runtimes
+    except Exception as exc:  # noqa: BLE001 - optional model failures must retain the deterministic fallback
         logger.warning("SaT boundary prediction failed; using deterministic boundary evidence: %s", exc)
         prediction = None
     if not prediction:
@@ -767,7 +815,7 @@ def _sat_boundary_probabilities(
         min(0.99, predicted_threshold),
     )
     output: list[float] = []
-    for current, following in zip(words, words[1:]):
+    for current, following in pairwise(words):
         left = max(0, current.char_end - 1)
         right = min(len(probabilities), max(left + 1, following.char_start + 1))
         probability = max((float(value) for value in probabilities[left:right]), default=0.0)
@@ -795,7 +843,7 @@ def _boundary_evidence(
     config: SubtitleFinalizationConfig,
 ) -> list[_BoundaryEvidence]:
     output: list[_BoundaryEvidence] = []
-    for index, (current, following) in enumerate(zip(words, words[1:])):
+    for index, (current, following) in enumerate(pairwise(words)):
         last_char = _last_syntactic_char(current.text)
         following_lexeme = _normalized_lexeme(following.text)
         current_lexeme = _normalized_lexeme(current.text)
@@ -911,7 +959,7 @@ def _compose_semantic_cues(
     words: list[_TimedWord],
     source_text: str,
     config: SubtitleFinalizationConfig,
-) -> list[SubtitleSegment]:
+) -> list[_ComposedCue]:
     if not words:
         return []
     probabilities = _sat_boundary_probabilities(
@@ -954,15 +1002,20 @@ def _compose_semantic_cues(
                 previous[end] = start
 
     if previous[word_count] is None:
-        logger.warning("Global subtitle composition found no valid path; using capacity finalization")
-        fallback = SubtitleSegment(
-            0,
-            words[0].start_ms,
-            words[-1].end_ms,
-            _cue_plain_text(words),
-            words[0].speaker,
-        )
-        return finalize_segments([fallback], config)
+        logger.warning("Global subtitle composition found no valid path; using individual word cues")
+        return [
+            _ComposedCue(
+                SubtitleSegment(
+                    0,
+                    word.start_ms,
+                    word.end_ms,
+                    _cue_plain_text([word]),
+                    word.speaker,
+                ),
+                (word.canonical_ordinal,) if word.canonical_ordinal >= 0 else (),
+            )
+            for word in words
+        ]
 
     ranges: list[tuple[int, int]] = []
     cursor = word_count
@@ -974,21 +1027,28 @@ def _compose_semantic_cues(
         cursor = range_start
     ranges.reverse()
     return [
-        SubtitleSegment(
-            index=index,
-            start_ms=words[start].start_ms,
-            end_ms=min(words[end - 1].end_ms, words[start].start_ms + config.max_duration_ms),
-            text=_cue_plain_text(words[start:end]),
-            speaker=words[start].speaker,
+        _ComposedCue(
+            SubtitleSegment(
+                index=index,
+                start_ms=words[start].start_ms,
+                end_ms=min(words[end - 1].end_ms, words[start].start_ms + config.max_duration_ms),
+                text=_cue_plain_text(words[start:end]),
+                speaker=words[start].speaker,
+            ),
+            tuple(
+                word.canonical_ordinal
+                for word in words[start:end]
+                if word.canonical_ordinal >= 0
+            ),
         )
         for index, (start, end) in enumerate(ranges, start=1)
     ]
 
 
 def _coalesce_semantic_cues(
-    cues: list[SubtitleSegment],
+    cues: list[_ComposedCue],
     config: SubtitleFinalizationConfig,
-) -> list[SubtitleSegment]:
+) -> list[_ComposedCue]:
     """Join compact same-speaker fragments left by source cue punctuation.
 
     The DP uses punctuation as useful boundary evidence.  A source cue can
@@ -997,20 +1057,20 @@ def _coalesce_semantic_cues(
     reading-speed invariants still hold.
     """
 
-    coalesced: list[SubtitleSegment] = []
+    coalesced: list[_ComposedCue] = []
     for cue in cues:
         if not coalesced:
             coalesced.append(cue)
             continue
         previous = coalesced[-1]
-        gap_ms = cue.start_ms - previous.end_ms
-        combined_text = _join_tokens([previous.text, cue.text])
-        combined_duration = cue.end_ms - previous.start_ms
+        gap_ms = cue.cue.start_ms - previous.cue.end_ms
+        combined_text = _join_tokens([previous.cue.text, cue.cue.text])
+        combined_duration = cue.cue.end_ms - previous.cue.start_ms
         combined_cps = len(_clean_text(combined_text)) / max(
             0.1, combined_duration / 1000.0
         )
         can_merge = (
-            previous.speaker == cue.speaker
+            previous.cue.speaker == cue.cue.speaker
             and gap_ms >= 0
             and gap_ms < config.phrase_gap_ms
             and gap_ms < config.hard_gap_ms
@@ -1020,22 +1080,25 @@ def _coalesce_semantic_cues(
             and combined_cps <= config.max_chars_per_second
         )
         if can_merge:
-            coalesced[-1] = SubtitleSegment(
-                index=0,
-                start_ms=previous.start_ms,
-                end_ms=cue.end_ms,
-                text=combined_text,
-                speaker=previous.speaker,
+            coalesced[-1] = _ComposedCue(
+                cue=SubtitleSegment(
+                    index=0,
+                    start_ms=previous.cue.start_ms,
+                    end_ms=cue.cue.end_ms,
+                    text=combined_text,
+                    speaker=previous.cue.speaker,
+                ),
+                word_ordinals=(*previous.word_ordinals, *cue.word_ordinals),
             )
         else:
             coalesced.append(cue)
     return coalesced
 
 
-def compose_transcript_segments(
+def compose_transcript_segments_with_ownership(
     metadata_path_or_normalized_transcript: str | Path | NormalizedTranscript | Any,
     settings: dict[str, Any] | None = None,
-) -> list[SubtitleSegment]:
+) -> TranscriptCompositionResult:
     """Compose a normalized transcript into deterministic display cues.
 
     Word-timed runs are composed semantically across their original cue
@@ -1050,33 +1113,57 @@ def compose_transcript_segments(
         else normalize_transcript(metadata_path_or_normalized_transcript)
     )
     config = SubtitleFinalizationConfig.from_settings(settings)
-    output: list[SubtitleSegment] = []
-    timed_run: list[TimedSegment] = []
+    output: list[_ComposedCue] = []
+    timed_run: list[tuple[int, TimedSegment]] = []
+
+    canonical_occurrences = [
+        (segment_index, word_index, word)
+        for segment_index, segment in enumerate(transcript.segments)
+        for word_index, word in enumerate(segment.words)
+    ]
+    canonical_ordinals = {
+        (segment_index, word_index): ordinal
+        for ordinal, (segment_index, word_index, _word) in enumerate(
+            sorted(
+                canonical_occurrences,
+                key=lambda item: (item[2].start_ms, item[2].end_ms),
+            )
+        )
+    }
 
     def flush_timed_run() -> None:
         nonlocal timed_run
         if not timed_run:
             return
         run_transcript = NormalizedTranscript(
-            segments=tuple(timed_run),
+            segments=tuple(segment for _segment_index, segment in timed_run),
             source_format=transcript.source_format,
             language=transcript.language,
             metadata=transcript.metadata,
         )
-        words = _timed_words(run_transcript)
+        run_word_ordinals = tuple(
+            canonical_ordinals[(segment_index, word_index)]
+            for segment_index, segment in timed_run
+            for word_index, _word in enumerate(segment.words)
+        )
+        words = _timed_words(
+            run_transcript,
+            canonical_ordinals=run_word_ordinals,
+        )
         if words:
             source_text, words = _source_text_and_spans(words)
             semantic_cues = _compose_semantic_cues(words, source_text, config)
             output.extend(_coalesce_semantic_cues(semantic_cues, config))
         timed_run = []
 
-    for segment in transcript.segments:
+    for segment_index, segment in enumerate(transcript.segments):
         if segment.words:
-            timed_run.append(segment)
+            timed_run.append((segment_index, segment))
             continue
         flush_timed_run()
         output.extend(
-            _split_segment(
+            _ComposedCue(cue)
+            for cue in _split_segment(
                 SubtitleSegment(
                     0,
                     segment.start_ms,
@@ -1089,17 +1176,32 @@ def compose_transcript_segments(
         )
     flush_timed_run()
 
-    adjusted = _adjust_durations(output, config)
-    return [
-        SubtitleSegment(
+    ordered = sorted(output, key=lambda item: item.cue.start_ms)
+    adjusted = _adjust_durations([item.cue for item in ordered], config)
+    final_segments: list[SubtitleSegment] = []
+    word_segment_ordinals: dict[int, int] = {}
+    for index, (item, cue) in enumerate(zip(ordered, adjusted), start=1):
+        final_cue = SubtitleSegment(
             index=index,
             start_ms=cue.start_ms,
             end_ms=cue.end_ms,
             text=wrap_subtitle_text(cue.text, config),
             speaker=cue.speaker,
         )
-        for index, cue in enumerate(adjusted, start=1)
-    ]
+        final_segments.append(final_cue)
+        for word_ordinal in item.word_ordinals:
+            word_segment_ordinals[word_ordinal] = index - 1
+    return TranscriptCompositionResult(final_segments, word_segment_ordinals)
+
+
+def compose_transcript_segments(
+    metadata_path_or_normalized_transcript: str | Path | NormalizedTranscript | Any,
+    settings: dict[str, Any] | None = None,
+) -> list[SubtitleSegment]:
+    return compose_transcript_segments_with_ownership(
+        metadata_path_or_normalized_transcript,
+        settings,
+    ).segments
 
 
 def compose_from_transcript_json(

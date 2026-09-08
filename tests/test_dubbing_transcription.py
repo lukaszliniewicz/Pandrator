@@ -9,6 +9,7 @@ import unittest
 import wave
 from pathlib import Path
 from types import SimpleNamespace
+from typing import ClassVar
 from unittest.mock import Mock, patch
 
 from pandrator.logic import dubbing_handler
@@ -59,7 +60,7 @@ class CrispASRTranscriptionTests(unittest.TestCase):
         requested = {}
 
         class Download(io.BytesIO):
-            headers = {"Content-Length": "11"}
+            headers: ClassVar[dict[str, str]] = {"Content-Length": "11"}
 
         def opener(request, timeout):
             requested["url"] = request.full_url
@@ -122,7 +123,7 @@ class CrispASRTranscriptionTests(unittest.TestCase):
 
     def test_windows_prefetch_downloads_the_vad_companion(self):
         class Download(io.BytesIO):
-            headers = {"Content-Length": "9"}
+            headers: ClassVar[dict[str, str]] = {"Content-Length": "9"}
 
         with (
             tempfile.TemporaryDirectory() as cache_dir,
@@ -146,7 +147,7 @@ class CrispASRTranscriptionTests(unittest.TestCase):
 
     def test_windows_prefetch_downloads_the_default_moss_ctc_aligner(self):
         class Download(io.BytesIO):
-            headers = {"Content-Length": "7"}
+            headers: ClassVar[dict[str, str]] = {"Content-Length": "7"}
 
         with (
             tempfile.TemporaryDirectory() as cache_dir,
@@ -753,18 +754,17 @@ class CrispASRTranscriptionTests(unittest.TestCase):
             Path(f"{output_base}.srt").write_text(SAMPLE_SRT, encoding="utf-8")
             return SimpleNamespace(stdout=b"", stderr=b"")
 
-        with tempfile.TemporaryDirectory() as temp_dir:
-            with self.assertRaisesRegex(
-                crispasr.CrispASRError, "both SRT and full JSON"
-            ):
-                crispasr.transcribe(
-                    Path(temp_dir) / "audio.wav",
-                    session_dir=temp_dir,
-                    output_name="audio",
-                    settings={"stt_engine": "parakeet"},
-                    executable="crispasr-test",
-                    run_func=fake_run,
-                )
+        with tempfile.TemporaryDirectory() as temp_dir, self.assertRaisesRegex(
+            crispasr.CrispASRError, "both SRT and full JSON"
+        ):
+            crispasr.transcribe(
+                Path(temp_dir) / "audio.wav",
+                session_dir=temp_dir,
+                output_name="audio",
+                settings={"stt_engine": "parakeet"},
+                executable="crispasr-test",
+                run_func=fake_run,
+            )
 
     def test_dubbing_handler_transcription_remains_independent_from_correction(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -776,7 +776,7 @@ class CrispASRTranscriptionTests(unittest.TestCase):
                     return_value=transcribed_path,
                 ),
                 patch(
-                    "pandrator.logic.dubbing_handler.correct_srt_file_with_result",
+                    "pandrator.logic.dubbing.llm_correction.correct_srt_file_with_result",
                 ) as native_correction,
             ):
                 result = dubbing_handler.transcribe_video_with_metadata(

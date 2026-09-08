@@ -23,7 +23,11 @@ from pandrator.web.models import (
     UsageEvent,
 )
 from pandrator.web.tts_providers import KoboldQwenAdapter, TtsBatchItem
-from pandrator.web.workspace import BUILTIN_DEFAULTS, adapt_runtime_settings
+from pandrator.web.workspace import (
+    BUILTIN_DEFAULTS,
+    RUNTIME_SETTING_ALIASES,
+    adapt_runtime_settings,
+)
 from tests.web_test_support import prepare_web_test_data_root
 
 
@@ -981,13 +985,16 @@ class WebParityWorkspaceTests(unittest.TestCase):
                 "max_chars_per_line": 52,
                 "max_lines": 2,
                 "min_duration_ms": 800,
-                "merge_threshold_ms": 300,
+                "sentence_boundary_threshold": 0.3,
             },
         )
         self.assertEqual(52, subtitles["subtitle_max_chars_per_line"])
         self.assertEqual(2, subtitles["subtitle_max_lines"])
         self.assertEqual(800, subtitles["subtitle_min_duration_ms"])
-        self.assertEqual(300, subtitles["subtitle_merge_threshold"])
+        self.assertEqual(0.3, subtitles["subtitle_sentence_boundary_threshold"])
+        self.assertNotIn("subtitle_merge_threshold", subtitles)
+        self.assertNotIn("merge_threshold_ms", RUNTIME_SETTING_ALIASES["subtitles"])
+        self.assertNotIn("merge_threshold_ms", BUILTIN_DEFAULTS["subtitles"])
 
         rvc = adapt_runtime_settings("rvc", {"enabled": True, "model": "narrator"})
         self.assertTrue(rvc["enable_rvc"])

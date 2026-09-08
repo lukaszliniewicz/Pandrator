@@ -664,6 +664,149 @@ class MediaEditTranscriptionHandlerTests(unittest.TestCase):
     def test_media_edit_resegments_without_encoding_or_replacing_video(self):
         self._assert_media_edit_render(subtitles_only=True)
 
+    def test_composed_overlapping_words_keep_their_cues_and_reviewed_speakers(self):
+        from pandrator.logic.dubbing.srt_utils import compose_srt
+        from pandrator.logic.dubbing.subtitle_finalization import (
+            compose_transcript_segments_with_ownership,
+        )
+
+        # Bob is deliberately first in source order; canonical words sort Alice
+        # first. Their actual speech overlaps, not just their cue envelopes.
+        metadata = self.paths.root / "overlapping-words.json"
+        metadata.write_text(
+            json.dumps(
+                {
+                    "schema": "pandrator.transcript.v1",
+                    "segments": [
+                        {
+                            "id": "bob",
+                            "text": "beta",
+                            "speaker": "Bob",
+                            "start_ms": 1000,
+                            "end_ms": 1300,
+                            "words": [
+                                {
+                                    "text": "beta",
+                                    "start_ms": 1000,
+                                    "end_ms": 1300,
+                                    "metadata": {"source_cue_id": "bob"},
+                                }
+                            ],
+                        },
+                        {
+                            "id": "alice",
+                            "text": "alpha",
+                            "speaker": "Alice",
+                            "start_ms": 0,
+                            "end_ms": 3000,
+                            "words": [
+                                {
+                                    "text": "alpha",
+                                    "start_ms": 0,
+                                    "end_ms": 3000,
+                                    "metadata": {"source_cue_id": "alice"},
+                                }
+                            ],
+                        },
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        composition = compose_transcript_segments_with_ownership(metadata)
+        self.assertEqual({0: 0, 1: 1}, composition.word_segment_ordinals)
+        for mapping in ("word", "source"):
+            for reviewed in (False, True):
+                with self.subTest(mapping=mapping, reviewed=reviewed):
+                    artifact = self._artifact(
+                        f"overlap-{mapping}-{reviewed}.srt",
+                        "media_edit_subtitles",
+                        compose_srt(composition.segments),
+                        "srt",
+                    )
+                    speakers = (
+                        ["Reviewed Alice", "Reviewed Bob"]
+                        if reviewed
+                        else ["Alice", "Bob"]
+                    )
+                    _, revision_id = self.handlers._store_srt_document(
+                        self.session.id,
+                        artifact,
+                        "media_edit_subtitles",
+                        speaker_overrides={1: speakers[0], 2: speakers[1]}
+                        if reviewed
+                        else None,
+                    )
+                    ownership = (
+                        {"segment_by_word_ordinal": composition.word_segment_ordinals}
+                        if mapping == "word"
+                        else {"segment_by_source_cue_id": {"alice": 0, "bob": 1}}
+                    )
+                    self.handlers._store_timed_words(revision_id, metadata, **ownership)
+                    with self.database.session() as session:
+                        segments = list(
+                            session.scalars(
+                                select(Segment)
+                                .where(Segment.revision_id == revision_id)
+                                .order_by(Segment.ordinal)
+                            )
+                        )
+                        words = list(
+                            session.scalars(
+                                select(TimedWord)
+                                .where(TimedWord.revision_id == revision_id)
+                                .order_by(TimedWord.ordinal)
+                            )
+                        )
+                        self.assertEqual(
+                            speakers, [segment.speaker for segment in segments]
+                        )
+                        self.assertEqual(
+                            ["alpha", "beta"], [word.text for word in words]
+                        )
+                        self.assertEqual(
+                            [segment.id for segment in segments],
+                            [word.segment_id for word in words],
+                        )
+
+    def test_authoritative_word_ownership_does_not_guess_omitted_words(self):
+        artifact = self._artifact(
+            "unowned.srt",
+            "media_edit_subtitles",
+            "1\n00:00:00,000 --> 00:00:02,000\nKept word.\n",
+            "srt",
+        )
+        _, revision_id = self.handlers._store_srt_document(
+            self.session.id, artifact, "media_edit_subtitles"
+        )
+        metadata = self.paths.root / "unowned.json"
+        metadata.write_text(
+            json.dumps(
+                {
+                    "schema": "pandrator.transcript.v1",
+                    "segments": [
+                        {
+                            "text": "duplicate",
+                            "start_ms": 0,
+                            "end_ms": 500,
+                            "words": [
+                                {"text": "duplicate", "start_ms": 0, "end_ms": 500}
+                            ],
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.handlers._store_timed_words(
+            revision_id, metadata, segment_by_word_ordinal={}
+        )
+        with self.database.session() as session:
+            word = session.scalar(
+                select(TimedWord).where(TimedWord.revision_id == revision_id)
+            )
+            self.assertIsNone(word.segment_id)
+
     def _assert_media_edit_render(self, *, subtitles_only):
         source = self._artifact("render-source.mp4", "upload", "media", "video")
         existing_media = (
@@ -687,7 +830,7 @@ class MediaEditTranscriptionHandlerTests(unittest.TestCase):
                     "speaker": "Alice",
                     "words": [
                         {"text": "Hello", "start_ms": 1100, "end_ms": 1300},
-                        {"text": "world", "start_ms": 1400, "end_ms": 1600},
+                        {"text": "world", "start_ms": 1400, "end_ms": 2600},
                     ],
                 },
                 {
@@ -826,6 +969,7 @@ class MediaEditTranscriptionHandlerTests(unittest.TestCase):
                 )
             )
 
+        self.assertGreater(timed_words[1].end_ms, timed_words[2].start_ms)
         self.assertEqual(4, result["word_count"])
         self.assertEqual("media_edit_word_timestamps", word_artifact.role)
         self.assertEqual(
@@ -854,6 +998,7 @@ class MediaEditTranscriptionHandlerTests(unittest.TestCase):
         self.assertEqual([segments[0].id, segments[0].id, segments[1].id, segments[1].id], [
             word.segment_id for word in timed_words
         ])
+        self.assertEqual(["Alice", "Bob"], [segment.speaker for segment in segments])
         payload = json.loads(
             self.artifacts.resolve(word_artifact.id)[1].read_text(encoding="utf-8")
         )

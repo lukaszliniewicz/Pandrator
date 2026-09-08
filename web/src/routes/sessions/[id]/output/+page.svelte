@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { isJobStatus } from '$lib/job-status';
   import { errorMessage } from '$lib/errors';
   import { page } from '$app/state';
   import { onDestroy, onMount } from 'svelte';
@@ -359,11 +360,11 @@
           id: String(event.job_id),
           kind: 'export.create',
           session_id: sessionId,
-          status: String(event.status ?? 'queued'),
+          status: isJobStatus(event.status) ? event.status : 'queued',
           progress: Number(event.progress ?? 0),
           created_at: String(event.created_at ?? new Date().toISOString())
         }),
-        ...(event.status ? { status: String(event.status) } : {}),
+        ...(isJobStatus(event.status) ? { status: event.status } : {}),
         ...(event.progress !== undefined
           ? { progress: Number(event.progress) }
           : {}),

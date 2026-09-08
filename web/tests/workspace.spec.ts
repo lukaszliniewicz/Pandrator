@@ -578,6 +578,10 @@ test('workflow history and subtitle review load exact revisions on demand', asyn
   await review.getByRole('button', { name: 'Delete' }).last().focus();
   await page.keyboard.press('Tab');
   await expect(
+    review.getByRole('button', { name: 'Recheck audio' }).last()
+  ).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(
     review.getByRole('button', { name: 'Next', exact: true })
   ).toBeFocused();
   await page.keyboard.press('Tab');
@@ -752,6 +756,8 @@ test('sessions page launches creation and workspace source picker exposes every 
 
   await page.getByRole('button', { name: 'Add source' }).click();
   await expect(page.getByRole('button', { name: 'Upload' })).toBeVisible();
+  await expect(page.getByLabel('Source file', { exact: true })).toBeVisible();
+  await expect(page.getByLabel('Video file', { exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Paste text' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Public URL' })).toBeVisible();
   await expect(

@@ -2569,8 +2569,10 @@ class WorkflowHandlers:
         metadata_path: Path,
         *,
         segment_by_source_cue_id: dict[str, int] | None = None,
+        segment_by_word_ordinal: dict[int, int] | None = None,
     ) -> int:
         transcript = load_transcript(metadata_path)
+        canonical_words = transcript.words
         words = [
             {
                 "text": word.text,
@@ -2580,7 +2582,7 @@ class WorkflowHandlers:
                 "confidence": word.confidence,
                 "metadata": dict(word.metadata),
             }
-            for word in transcript.words
+            for word in canonical_words
         ]
         with self.database.session() as session:
             segments = list(
@@ -2590,12 +2592,23 @@ class WorkflowHandlers:
                     .order_by(Segment.ordinal)
                 ).all()
             )
+            segments_by_ordinal = {segment.ordinal: segment for segment in segments}
+            if segment_by_word_ordinal is not None and any(
+                target not in segments_by_ordinal
+                for target in segment_by_word_ordinal.values()
+            ):
+                raise ValueError("Timed-word ownership references an unknown segment ordinal.")
+            assigned_speakers: dict[str, list[Any]] = {}
             for ordinal, word in enumerate(words):
                 source_cue_id = str(
                     word["metadata"].get("source_cue_id") or ""
                 )
                 owner = None
-                if segment_by_source_cue_id and source_cue_id:
+                if segment_by_word_ordinal is not None:
+                    owner_ordinal = segment_by_word_ordinal.get(ordinal)
+                    if owner_ordinal is not None:
+                        owner = segments_by_ordinal[owner_ordinal]
+                elif segment_by_source_cue_id and source_cue_id:
                     owner_ordinal = segment_by_source_cue_id.get(source_cue_id)
                     owner = next(
                         (
@@ -2605,7 +2618,7 @@ class WorkflowHandlers:
                         ),
                         None,
                     )
-                if owner is None:
+                if owner is None and segment_by_word_ordinal is None:
                     owner = next(
                         (
                             segment
@@ -2617,6 +2630,8 @@ class WorkflowHandlers:
                         ),
                         None,
                     )
+                if owner is not None and word["speaker"]:
+                    assigned_speakers.setdefault(owner.id, []).append(canonical_words[ordinal])
                 session.add(
                     TimedWord(
                         revision_id=revision_id,
@@ -2635,11 +2650,20 @@ class WorkflowHandlers:
                     )
                 )
 
-            speaker_candidates: list[Any] = [
-                word for word in transcript.words if word.speaker
-            ] or [item for item in transcript.segments if item.speaker]
+            segment_speaker_candidates = [
+                item for item in transcript.segments if item.speaker
+            ]
             for segment in segments:
                 if segment.start_ms is None or segment.end_ms is None:
+                    continue
+                if str((segment.metadata_json or {}).get("speaker_source") or "") == "model_reviewed":
+                    continue
+                speaker_candidates = (
+                    assigned_speakers.get(segment.id, [])
+                    if words
+                    else segment_speaker_candidates
+                )
+                if not speaker_candidates:
                     continue
                 speaker = _dominant_speaker(
                     segment.start_ms,
@@ -4524,17 +4548,20 @@ class WorkflowHandlers:
         )
         if word_count:
             from pandrator.logic.dubbing.subtitle_finalization import (
-                compose_transcript_segments,
+                compose_transcript_segments_with_ownership,
             )
 
-            published_cues = compose_transcript_segments(
+            composition = compose_transcript_segments_with_ownership(
                 word_timestamps_path,
                 settings,
             )
+            published_cues = composition.segments
+            word_segment_ordinals = composition.word_segment_ordinals
             subtitle_path.write_text(compose_srt(published_cues), encoding="utf-8")
             composition_mode = "word_timed_semantic"
         else:
             published_cues = list(retimed_cues)
+            word_segment_ordinals = None
             subtitle_path.write_text(caption_to_srt(retimed_cues), encoding="utf-8")
             composition_mode = "source_cues"
         composition_metadata = {
@@ -4608,6 +4635,7 @@ class WorkflowHandlers:
         stored_word_count = self._store_timed_words(
             document_revision_id,
             word_timestamps_path,
+            segment_by_word_ordinal=word_segment_ordinals,
         )
         duration_ms = sum(item.end_ms - item.start_ms for item in keep_ranges)
         result = {

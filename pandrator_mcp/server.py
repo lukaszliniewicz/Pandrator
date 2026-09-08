@@ -2782,7 +2782,7 @@ def build_server(runtime: McpRuntime):
         annotations=read_only,
     )
     def generation_runs_tool(
-        session_id: str,
+        session_id: Annotated[str, Field(min_length=1, max_length=80)],
         limit: Annotated[int, Field(ge=1, le=100)] = 20,
     ) -> dict[str, Any]:
         """List generation run summaries for review or export selection."""
@@ -2799,10 +2799,10 @@ def build_server(runtime: McpRuntime):
         annotations=read_only,
     )
     def generation_segments_tool(
-        session_id: str,
+        session_id: Annotated[str, Field(min_length=1, max_length=80)],
         cursor: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=100)] = 50,
-        generation_run_id: str | None = None,
+        generation_run_id: Annotated[str | None, Field(max_length=80)] = None,
     ) -> dict[str, Any]:
         """List generation segments, assigned voices, takes, and text."""
 
@@ -2823,8 +2823,8 @@ def build_server(runtime: McpRuntime):
         annotations=write_action,
     )
     def generation_topology_revision_tool(
-        session_id: str,
-        expected_revision_id: str,
+        session_id: Annotated[str, Field(min_length=1, max_length=80)],
+        expected_revision_id: Annotated[str, Field(min_length=1, max_length=80)],
         action: Literal["split", "merge", "restore"],
         idempotency_key: Annotated[
             str,
@@ -2834,12 +2834,20 @@ def build_server(runtime: McpRuntime):
                 pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$",
             ),
         ],
-        segment_id: str | None = None,
+        segment_id: Annotated[
+            str | None, Field(min_length=1, max_length=80)
+        ] = None,
         cursor: Annotated[int | None, Field(strict=True)] = None,
         text_layer: Literal["display", "speech"] | None = None,
-        left_segment_id: str | None = None,
-        right_segment_id: str | None = None,
-        target_revision_id: str | None = None,
+        left_segment_id: Annotated[
+            str | None, Field(min_length=1, max_length=80)
+        ] = None,
+        right_segment_id: Annotated[
+            str | None, Field(min_length=1, max_length=80)
+        ] = None,
+        target_revision_id: Annotated[
+            str | None, Field(min_length=1, max_length=80)
+        ] = None,
     ) -> dict[str, Any]:
         """Create a typed immutable split, merge, or restore plan revision."""
 
@@ -2867,8 +2875,8 @@ def build_server(runtime: McpRuntime):
         annotations=write_action,
     )
     def generation_segment_update_tool(
-        session_id: str,
-        segment_id: str,
+        session_id: Annotated[str, Field(min_length=1, max_length=80)],
+        segment_id: Annotated[str, Field(min_length=1, max_length=80)],
         expected_revision: Annotated[int, Field(ge=0)],
         idempotency_key: Annotated[str, Field(min_length=1, max_length=120)],
         optimized_text: Annotated[str | None, Field(max_length=2000)] = None,
@@ -2899,8 +2907,8 @@ def build_server(runtime: McpRuntime):
         annotations=write_action,
     )
     def generation_select_take_tool(
-        segment_id: str,
-        take_id: str,
+        segment_id: Annotated[str, Field(min_length=1, max_length=80)],
+        take_id: Annotated[str, Field(min_length=1, max_length=80)],
         expected_revision: Annotated[int, Field(ge=0)],
         idempotency_key: Annotated[str, Field(min_length=1, max_length=120)],
     ) -> dict[str, Any]:
@@ -2923,8 +2931,8 @@ def build_server(runtime: McpRuntime):
         annotations=execute_action,
     )
     def generation_regenerate_segments_tool(
-        session_id: str,
-        segment_ids: list[str],
+        session_id: Annotated[str, Field(min_length=1, max_length=80)],
+        segment_ids: Annotated[list[str], Field(min_length=1, max_length=100)],
         idempotency_key: Annotated[str, Field(min_length=1, max_length=120)],
     ) -> dict[str, Any]:
         """Trigger targeted synthesis for a specific list of segment IDs."""
@@ -2945,9 +2953,9 @@ def build_server(runtime: McpRuntime):
         annotations=execute_action,
     )
     def generation_assemble_tool(
-        session_id: str,
+        session_id: Annotated[str, Field(min_length=1, max_length=80)],
         idempotency_key: Annotated[str, Field(min_length=1, max_length=120)],
-        generation_run_id: str | None = None,
+        generation_run_id: Annotated[str | None, Field(max_length=80)] = None,
     ) -> dict[str, Any]:
         """Assemble the whole session, using the selected/current takes at that run. For a single review clip, download the generation take artifact exposed by pandrator_list_generation_segments instead."""
 

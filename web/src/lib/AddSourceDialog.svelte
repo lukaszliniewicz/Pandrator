@@ -273,7 +273,11 @@
     <div class="mt-5 rounded-2xl border border-[var(--line)] p-5">
       {#if mode === 'upload'}
         <label class="text-sm font-semibold"
-          >{role === 'transcript' ? 'Caption file' : 'Video file'}<input
+          >{allowTranscriptRole
+            ? role === 'transcript'
+              ? 'Caption file'
+              : 'Video file'
+            : 'Source file'}<input
             type="file"
             accept={allowTranscriptRole
               ? role === 'transcript'

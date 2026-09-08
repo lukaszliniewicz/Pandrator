@@ -1,5 +1,7 @@
 import tempfile
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 
 from sqlalchemy import select
 
@@ -8,6 +10,7 @@ from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.models import (
     Artifact,
     AudioTake,
+    GenerationPlan,
     GenerationPlanRevision,
     GenerationRun,
     GenerationSegment,
@@ -232,6 +235,67 @@ class GenerationTopologyTests(unittest.TestCase):
         self.assertEqual(
             "idempotency_key_required", response.get_json()["error"]["code"]
         )
+
+    def _concurrent_plan_creates(self, session_id):
+        generation = self.app.extensions["pandrator"]["generation"]
+        barrier = threading.Barrier(2)
+
+        def create(index):
+            barrier.wait(timeout=30)
+            return generation.create_plan(
+                session_id,
+                source_revision_id=None,
+                segments=[{"text": f"Concurrent plan {index}."}],
+                settings={"caller": index},
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            return list(executor.map(create, range(2)))
+
+    def test_concurrent_initial_plan_creates_serialize_plan_allocation(self):
+        session = self.app.extensions["pandrator"]["sessions"].create(
+            "Concurrent initial plan",
+            workflow_kind="voiceover",
+        )
+
+        results = self._concurrent_plan_creates(session.id)
+
+        self.assertEqual(2, len({result["active_revision_id"] for result in results}))
+        with self.database.session() as database_session:
+            plan_rows = list(
+                database_session.scalars(
+                    select(GenerationPlan).where(GenerationPlan.session_id == session.id)
+                ).all()
+            )
+            self.assertEqual(1, len(plan_rows))
+            revisions = list(
+                database_session.scalars(
+                    select(GenerationPlanRevision)
+                    .where(GenerationPlanRevision.plan_id == plan_rows[0].id)
+                    .order_by(GenerationPlanRevision.revision_number)
+                ).all()
+            )
+            self.assertEqual([1, 2], [revision.revision_number for revision in revisions])
+            self.assertEqual(plan_rows[0].active_revision_id, revisions[-1].id)
+
+    def test_concurrent_revision_creates_serialize_existing_plan_allocation(self):
+        results = self._concurrent_plan_creates(self.session_id)
+
+        self.assertEqual(2, len({result["active_revision_id"] for result in results}))
+        with self.database.session() as database_session:
+            plan = database_session.scalar(
+                select(GenerationPlan).where(GenerationPlan.session_id == self.session_id)
+            )
+            self.assertIsNotNone(plan)
+            revisions = list(
+                database_session.scalars(
+                    select(GenerationPlanRevision)
+                    .where(GenerationPlanRevision.plan_id == plan.id)
+                    .order_by(GenerationPlanRevision.revision_number)
+                ).all()
+            )
+            self.assertEqual([1, 2, 3], [revision.revision_number for revision in revisions])
+            self.assertEqual(plan.active_revision_id, revisions[-1].id)
 
     def test_split_merge_restore_preserve_immutable_lineage(self):
         split = self._topology(

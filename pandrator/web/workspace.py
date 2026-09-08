@@ -1889,7 +1889,7 @@ class GenerationService:
             "segments": clean_segments,
             "settings": settings or {},
         }
-        with self.database.session() as session:
+        with self.database.immediate_session() as session:
             if session.get(SessionRecord, session_id) is None:
                 raise KeyError(session_id)
             if (

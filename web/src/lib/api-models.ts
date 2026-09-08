@@ -1,3 +1,5 @@
+import type { JobStatus } from './job-status';
+
 export type LoadState =
   'idle' | 'loading' | 'ready' | 'empty' | 'stale' | 'failed';
 
@@ -133,7 +135,7 @@ export type JobRecord = {
   workflow_run_id?: string | null;
   payload_json?: Record<string, unknown>;
   result_json?: Record<string, unknown> | null;
-  status: string;
+  status: JobStatus;
   progress: number;
   progress_detail?: string | null;
   error_code?: string | null;

@@ -604,7 +604,7 @@
           pollTimer = window.setTimeout(poll, 900);
           return;
         }
-        if (current.status === 'completed') {
+        if (current.status === 'succeeded') {
           await load();
           message = successMessage;
         } else {
@@ -613,7 +613,10 @@
       } catch (caught) {
         error = errorMessage(caught);
       } finally {
-        if (activeJob && !['queued', 'running'].includes(activeJob.status))
+        if (
+          activeJob &&
+          !['queued', 'running', 'cancel_requested'].includes(activeJob.status)
+        )
           busy = '';
       }
     };
@@ -1438,7 +1441,7 @@
           </div>
         </section>
 
-        {#if activeJob?.status === 'completed' && activeJob.result_json?.media_artifact_id}<section
+        {#if activeJob?.status === 'succeeded' && activeJob.result_json?.media_artifact_id}<section
             class="surface rounded-2xl p-5"
           >
             <h3 class="font-semibold">Latest rendered edit</h3>

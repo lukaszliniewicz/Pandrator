@@ -17,6 +17,15 @@ except ImportError:
 from pandrator_mcp import __version__
 from pandrator_mcp.catalog import ACTION_CATALOG, RiskClass
 from pandrator_mcp.context import build_runtime
+from pandrator_mcp.schemas.e2e import ListGenerationRunsInput
+from pandrator_mcp.schemas.generation import (
+    AssembleGenerationRunInput,
+    ListGenerationSegmentsInput,
+    RegenerateSegmentsInput,
+    ReviseSpeechBlockPlanInput,
+    SelectTakeInput,
+    UpdateGenerationSegmentInput,
+)
 from pandrator_mcp.server import build_server
 from pandrator_mcp.settings import McpSettings
 
@@ -496,6 +505,112 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("pandrator_browse_local_sources", prompt_text)
                 self.assertIn("pandrator_get_tts_catalog", prompt_text)
                 self.assertIn("download", prompt_text.casefold())
+
+    async def test_generation_tool_schemas_match_runtime_model_bounds(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = build_runtime(
+                McpSettings(
+                    target_name="unconfigured",
+                    configuration_path=Path(directory) / "missing-targets.json",
+                )
+            )
+            server = build_server(runtime)
+            async with Client(server, mode="auto", raise_exceptions=True) as client:
+                listed = await client.list_tools()
+
+            tools_by_name = {tool.name: tool for tool in listed.tools}
+            model_fields = {
+                "pandrator_list_generation_runs": (
+                    ListGenerationRunsInput,
+                    ("session_id", "limit"),
+                ),
+                "pandrator_list_generation_segments": (
+                    ListGenerationSegmentsInput,
+                    ("session_id", "cursor", "limit", "generation_run_id"),
+                ),
+                "pandrator_revise_speech_block_plan": (
+                    ReviseSpeechBlockPlanInput,
+                    (
+                        "session_id",
+                        "expected_revision_id",
+                        "idempotency_key",
+                        "segment_id",
+                        "cursor",
+                        "left_segment_id",
+                        "right_segment_id",
+                        "target_revision_id",
+                    ),
+                ),
+                "pandrator_update_generation_segment": (
+                    UpdateGenerationSegmentInput,
+                    (
+                        "session_id",
+                        "segment_id",
+                        "expected_revision",
+                        "idempotency_key",
+                        "optimized_text",
+                        "voice_id",
+                        "voice",
+                        "language",
+                    ),
+                ),
+                "pandrator_select_take": (
+                    SelectTakeInput,
+                    ("segment_id", "take_id", "expected_revision", "idempotency_key"),
+                ),
+                "pandrator_regenerate_segments": (
+                    RegenerateSegmentsInput,
+                    ("session_id", "segment_ids", "idempotency_key"),
+                ),
+                "pandrator_assemble_generation_run": (
+                    AssembleGenerationRunInput,
+                    ("session_id", "idempotency_key", "generation_run_id"),
+                ),
+            }
+
+            def typed_branch(property_schema, type_name):
+                if property_schema.get("type") == type_name:
+                    return property_schema
+                return next(
+                    branch
+                    for branch in property_schema["anyOf"]
+                    if branch.get("type") == type_name
+                )
+
+            for tool_name, (model, fields) in model_fields.items():
+                advertised = tools_by_name[tool_name].input_schema
+                model_schema = model.model_json_schema()
+                self.assertEqual(
+                    set(model_schema["properties"]),
+                    set(advertised["properties"]),
+                    tool_name,
+                )
+                for field_name in fields:
+                    expected = model_schema["properties"][field_name]
+                    type_name = expected.get("type")
+                    if type_name is None:
+                        type_name = next(
+                            branch["type"]
+                            for branch in expected["anyOf"]
+                            if branch.get("type") != "null"
+                        )
+                    expected = typed_branch(expected, type_name)
+                    actual = typed_branch(
+                        advertised["properties"][field_name], type_name
+                    )
+                    for keyword in (
+                        "minLength",
+                        "maxLength",
+                        "minItems",
+                        "maxItems",
+                        "minimum",
+                        "maximum",
+                    ):
+                        self.assertEqual(
+                            expected.get(keyword),
+                            actual.get(keyword),
+                            f"{tool_name}.{field_name}.{keyword}",
+                        )
 
     async def test_maintained_legacy_protocol_mode_negotiates(self):
         with tempfile.TemporaryDirectory() as directory:

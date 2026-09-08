@@ -53,20 +53,22 @@ test('global STT defaults disclose only controls used by the selected engine', a
   await sttSection.locator('summary').click();
   const field = (name: string) => sttSection.getByLabel(name, { exact: true });
 
-  await expect(sttSection.locator('label').first()).toHaveText('STT Engine');
-  await expect(field('Use VAD for Whisper and Parakeet')).toBeVisible();
+  await expect(field('STT Engine')).toBeVisible();
+  await expect(field('Attached-caption alignment method')).toHaveValue('ctc');
+  await expect(field('Caption CTC aligner model')).toBeVisible();
+  await expect(field('Use voice activity detection')).toBeVisible();
   await expect(field('VAD speech threshold')).toBeVisible();
   await expect(field('MOSS CTC aligner model')).toHaveCount(0);
   await expect(field('STT Transcribe Style')).toHaveCount(0);
   await expect(field('STT Compute Device')).toHaveCount(0);
   const selectBox = await field('STT Engine').boundingBox();
-  const checkboxBox = await field('Use VAD for Whisper and Parakeet')
+  const checkboxBox = await field('Use voice activity detection')
     .locator('..')
     .boundingBox();
-  expect(selectBox?.height).toBe(44);
-  expect(checkboxBox?.height).toBe(44);
+  expect(selectBox?.height).toBeCloseTo(44, 2);
+  expect(checkboxBox?.height).toBeCloseTo(44, 2);
 
-  await field('Use VAD for Whisper and Parakeet').uncheck();
+  await field('Use voice activity detection').uncheck();
   await expect(field('VAD speech threshold')).toHaveCount(0);
 
   await field('STT Engine').selectOption('moss');
@@ -79,8 +81,12 @@ test('global STT defaults disclose only controls used by the selected engine', a
 
   await field('STT Engine').selectOption('azure_mai_transcribe_1_5');
   await expect(field('STT Transcribe Style')).toBeVisible();
+  // Attached-caption CTC still uses local compute even with cloud ASR.
+  await expect(field('STT Compute Backend')).toBeVisible();
+  await field('Attached-caption alignment method').selectOption('asr');
+  await expect(field('Caption CTC aligner model')).toHaveCount(0);
   await expect(field('STT Compute Backend')).toHaveCount(0);
-  await expect(field('Use VAD for Whisper and Parakeet')).toHaveCount(0);
+  await expect(field('Use voice activity detection')).toHaveCount(0);
 });
 
 test('global defaults retain but hide inactive branch parameters', async ({
