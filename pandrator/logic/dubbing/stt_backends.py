@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ...constants import LANGUAGE_DISPLAY_NAMES, WHISPER_LANGUAGES
+from ...constants import LANGUAGE_DISPLAY_NAMES
 from .crispasr import (
     MODELS,
     STT_ENGINE_MOSS,
@@ -20,11 +20,17 @@ from .crispasr import (
     normalize_engine,
     resolve_executable,
 )
-from .languages import normalize_language_code
+from .stt_languages import (
+    PARAKEET_V3_LANGUAGE_CODES,
+    WHISPER_LARGE_V3_LANGUAGE_CODES,
+    normalize_stt_language,
+)
 from .stt_provider_profiles import (
     AZURE_MAI_TRANSCRIBE_1_5_LOCALES,
+    AZURE_MAI_TRANSCRIBE_2_LOCALES,
     CLOUD_STT_ENGINE_IDS,
     STT_ENGINE_AZURE_MAI_TRANSCRIBE_1_5,
+    STT_ENGINE_AZURE_MAI_TRANSCRIBE_2,
     list_stt_provider_profiles,
 )
 
@@ -39,35 +45,6 @@ STT_BACKEND_LABELS.update(
         for profile in list_stt_provider_profiles()
     }
 )
-
-PARAKEET_V3_LANGUAGE_CODES = (
-    "bg",
-    "hr",
-    "cs",
-    "da",
-    "nl",
-    "en",
-    "et",
-    "fi",
-    "fr",
-    "de",
-    "el",
-    "hu",
-    "it",
-    "lv",
-    "lt",
-    "mt",
-    "pl",
-    "pt",
-    "ro",
-    "sk",
-    "sl",
-    "es",
-    "sv",
-    "ru",
-    "uk",
-)
-
 
 def normalize_stt_backend(raw_value: str | None) -> str:
     normalized = (
@@ -225,14 +202,18 @@ def select_available_stt_backend(preferred_backend: str, statuses=None) -> str:
 
 def language_options_for_backend(backend: str) -> tuple[STTLanguageOption, ...]:
     normalized = normalize_stt_backend(backend)
-    if normalized == STT_ENGINE_AZURE_MAI_TRANSCRIBE_1_5:
+    cloud_locales = {
+        STT_ENGINE_AZURE_MAI_TRANSCRIBE_1_5: AZURE_MAI_TRANSCRIBE_1_5_LOCALES,
+        STT_ENGINE_AZURE_MAI_TRANSCRIBE_2: AZURE_MAI_TRANSCRIBE_2_LOCALES,
+    }.get(normalized)
+    if cloud_locales is not None:
         options = [STTLanguageOption("Automatic", "auto")]
         options.extend(
             STTLanguageOption(
                 LANGUAGE_DISPLAY_NAMES.get(locale.split("-", 1)[0], locale),
                 locale,
             )
-            for locale in AZURE_MAI_TRANSCRIBE_1_5_LOCALES
+            for locale in cloud_locales
         )
         return tuple(options)
     if normalized == STT_ENGINE_PARAKEET:
@@ -245,8 +226,8 @@ def language_options_for_backend(backend: str) -> tuple[STTLanguageOption, ...]:
         # no useful forced-language choice to expose here.
         return (STTLanguageOption("Automatic", "auto"),)
     return tuple(
-        STTLanguageOption(language, normalize_language_code(language, default=""))
-        for language in WHISPER_LANGUAGES
+        STTLanguageOption(LANGUAGE_DISPLAY_NAMES.get(code, code.upper()), code)
+        for code in WHISPER_LARGE_V3_LANGUAGE_CODES
     )
 
 
@@ -255,8 +236,11 @@ def normalize_stt_language_for_backend(
 ) -> STTLanguageOption:
     options = language_options_for_backend(backend)
     requested_name = str(language or "").strip().lower()
-    requested_code = normalize_language_code(requested_name, default="").lower()
-    if normalize_stt_backend(backend) == STT_ENGINE_AZURE_MAI_TRANSCRIBE_1_5:
+    requested_code = normalize_stt_language(requested_name)
+    if normalize_stt_backend(backend) in {
+        STT_ENGINE_AZURE_MAI_TRANSCRIBE_1_5,
+        STT_ENGINE_AZURE_MAI_TRANSCRIBE_2,
+    }:
         requested_locale = requested_name.replace("_", "-")
         return next(
             (

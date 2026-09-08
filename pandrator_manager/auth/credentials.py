@@ -343,9 +343,10 @@ class RecoverySessionManager:
             record = self._record(token_digest)
             if record is None:
                 return None
+            if record["security_context"] != self.security_context:
+                return None
             if (
-                record["security_context"] != self.security_context
-                or float(record["idle_expires_at"]) <= now
+                float(record["idle_expires_at"]) <= now
                 or float(record["absolute_expires_at"]) <= now
             ):
                 self._delete_record(token_digest)

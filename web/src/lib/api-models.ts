@@ -185,6 +185,7 @@ export type RuntimeCapabilities = {
         default?: boolean;
         installed?: boolean;
         precision?: string;
+        supported_languages?: string[] | null;
         [key: string]: unknown;
       }
     >;
@@ -720,7 +721,7 @@ export type TtsService = {
   voice_reference_text?: 'required' | 'optional' | 'ignored';
   model_voice_modes?: Record<
     string,
-    'prebuilt' | 'cloning' | 'hybrid' | 'optional_cloning'
+    'prebuilt' | 'cloning' | 'hybrid' | 'optional_cloning' | 'design'
   >;
   supports_batch_synthesis?: boolean;
   batch_synthesis?: {

@@ -1,4 +1,6 @@
 <script lang="ts">
+  import type { RuntimeCapabilities } from './api-models';
+  import { sttLanguageProblem } from './stt-language-policy';
   import { Plus, Trash2 } from '@lucide/svelte';
   import {
     isMultiline,
@@ -15,13 +17,17 @@
     keyName,
     value,
     onchange,
-    compact = false
+    compact = false,
+    sttCapabilities,
+    sourceLanguage
   }: {
     section: string;
     keyName: string;
     value: SettingValue;
     onchange: (value: SettingValue) => void;
     compact?: boolean;
+    sttCapabilities?: RuntimeCapabilities;
+    sourceLanguage?: unknown;
   } = $props();
   let newKey = $state('');
   const componentId = $props.id();
@@ -95,7 +101,24 @@
       {#if value && !choices.some((item) => String(item.value) === String(value))}<option
           {value}>{value}</option
         >{/if}
-      {#each choices as item}<option value={item.value}>{item.label}</option
+      {#each choices as item}<option
+          value={item.value}
+          disabled={keyName === 'stt_engine' &&
+            Boolean(
+              sttLanguageProblem(
+                sttCapabilities,
+                String(item.value),
+                sourceLanguage
+              )
+            )}
+          >{item.label}{keyName === 'stt_engine' &&
+          sttLanguageProblem(
+            sttCapabilities,
+            String(item.value),
+            sourceLanguage
+          )
+            ? ' · unsupported language'
+            : ''}</option
         >{/each}
     </select>
   {:else if typeof value === 'number' && numberMeta.range}

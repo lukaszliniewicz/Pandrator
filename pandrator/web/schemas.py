@@ -732,7 +732,7 @@ class TtsVoicePreviewRequest(StrictModel):
     voice: str = Field(default="", max_length=300)
     language: str = Field(default="", max_length=40)
     generation_prompt: str | None = Field(default=None, max_length=4000)
-    seed: int | None = Field(default=None, ge=0, le=2_147_483_647)
+    seed: int | None = Field(default=None, ge=0, le=4_294_967_295)
 
 
 class ManagerDesiredComponentState(StrictModel):

@@ -1,4 +1,7 @@
 <script lang="ts">
+  import { diagnosticsApi } from './admin-api';
+  import { sttLanguageProblem } from './stt-language-policy';
+  import type { RuntimeCapabilities } from './api-models';
   import { errorMessage } from './errors';
   import { ExternalLink, RotateCcw, Save } from '@lucide/svelte';
   import { sessionApi } from './domain-api';
@@ -12,8 +15,19 @@
   } from './settings-fields';
 
   let { section }: { section: string } = $props();
+  let sttCapabilities = $state<RuntimeCapabilities>({});
   let payload = $state<GlobalDefaultsPayload | null>(null);
   let value = $state<Record<string, unknown>>({});
+  const sttEffective = $derived({ ...payload?.effective, ...value });
+  const languageProblem = $derived(
+    section === 'stt'
+      ? sttLanguageProblem(
+          sttCapabilities,
+          String(sttEffective.stt_engine || ''),
+          sttEffective.stt_language
+        )
+      : ''
+  );
   let saving = $state(false);
   let message = $state('');
 
@@ -43,11 +57,22 @@
     (value = { ...value, [key]: next });
 
   async function load() {
+    if (section === 'stt')
+      void diagnosticsApi
+        .capabilities()
+        .then((result) => {
+          sttCapabilities = result;
+        })
+        .catch(() => {});
     payload = await sessionApi.defaults(section);
     value = { ...(payload.value ?? {}) };
   }
 
   async function save() {
+    if (languageProblem) {
+      message = languageProblem;
+      return;
+    }
     saving = true;
     message = '';
     try {
@@ -135,19 +160,27 @@
           />{:else}<SettingField
             {section}
             keyName={key}
+            {sttCapabilities}
+            sourceLanguage={sttEffective.stt_language}
             value={current(key, fallback)}
             onchange={(next) => set(key, next)}
             compact
           />{/if}
       {/each}
     </div>
+    {#if languageProblem}<p class="mt-3 text-sm text-red-600" role="alert">
+        {languageProblem}
+      </p>{/if}
     <div class="mt-4 flex flex-wrap items-center gap-3">
       <button
         onclick={restoreBuiltins}
         disabled={saving || !Object.keys(value).length}
         class="btn btn-sm btn-secondary"
         ><RotateCcw size={13} /> Restore built-in defaults</button
-      ><button onclick={save} disabled={saving} class="btn btn-sm btn-primary"
+      ><button
+        onclick={save}
+        disabled={saving || Boolean(languageProblem)}
+        class="btn btn-sm btn-primary"
         ><Save size={13} />{saving ? 'Saving…' : 'Save global defaults'}</button
       >{#if message}<span class="muted text-xs">{message}</span>{/if}
     </div>

@@ -34,6 +34,47 @@ from pandrator_manager.tls import select_ca_bundle
 
 
 class AudioCppManagerTests(unittest.TestCase):
+    def test_qwen_voicedesign_package_is_pinned_as_vdes(self):
+        package = MODEL_PACKAGES["qwen3_tts_1_7b_voicedesign_q8_0"]
+        presentation = PRESENTATIONS["audio_cpp"]
+        voicedesign = next(
+            item
+            for item in presentation.models
+            if item.id == "qwen3_tts_1_7b_voicedesign_q8_0"
+        )
+
+        self.assertIn(package.id, SUPPORTED_MODEL_IDS)
+        self.assertEqual("qwen3_tts", package.family)
+        self.assertEqual(
+            "Qwen3-TTS-12Hz-1.7B-VoiceDesign-GGUF", package.target_directory
+        )
+        self.assertEqual(
+            ("qwen3-tts-12hz-1.7b-voicedesign-q8_0.gguf",), package.files
+        )
+        self.assertEqual("vdes", package.task)
+        self.assertEqual(
+            "1bcef9a8c021072fca40e00498e00af9091fbe6d3ae4f87567cfee885d6c7554",
+            package.sha256[0],
+        )
+        self.assertEqual(2_816_988_960, voicedesign.estimated_download_bytes)
+        self.assertEqual("Apache-2.0", voicedesign.license_name)
+        self.assertIn("Qwen3-TTS-12Hz-1.7B-VoiceDesign", voicedesign.license_url)
+
+        config = server_config(ComputeVariant.CPU, [package.id])
+        self.assertEqual(
+            {
+                "id": package.id,
+                "family": "qwen3_tts",
+                "path": (
+                    "models/Qwen3-TTS-12Hz-1.7B-VoiceDesign-GGUF/"
+                    "qwen3-tts-12hz-1.7b-voicedesign-q8_0.gguf"
+                ),
+                "task": "vdes",
+                "mode": "offline",
+            },
+            config["models"][0],
+        )
+
     def test_breeze_package_is_pinned_and_discloses_noncommercial_terms(self):
         package = MODEL_PACKAGES["breeze_tts_2_q8_0"]
         presentation = PRESENTATIONS["audio_cpp"]

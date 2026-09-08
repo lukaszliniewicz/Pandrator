@@ -145,3 +145,51 @@ people unfamiliar with model names before expanding the catalogue further.
 - The updated Manager label and the rebuilt application's provider help were
   checked in the browser. The help and select share one grid cell so the
   explanation stays beneath its control.
+
+
+## Implementation follow-up
+
+The next pass implements the guided narration, cloning, transcription, and
+manual routes. Ready-made narration selects Qwen CustomVoice, cloning selects
+Qwen Base, and transcription starts with Parakeet. A visible language-coverage
+choice offers Whisper for other languages or uncertainty. Existing configured
+choices are retained. The full catalogue remains available.
+
+The review now names the exact planned model and compute choice, separates
+first-use transcription-model downloads from runtime installation estimates,
+and collapses technical steps and remote-access choices. audio.cpp package
+rows show their purpose, selected download size, and installation evidence from
+the active package configuration and files. Changed selections have an explicit
+review action. Activity has an empty state and collapsed diagnostics.
+
+The multi-workspace cookie defect is fixed with security-context-specific
+cookie names and migration of valid legacy sessions. A foreign session no
+longer deletes another context's session record or cookie. Authorization
+failures replace loading placeholders and disable stale controls.
+
+Additional changes add Qwen3 VoiceDesign, model-specific transcription language
+guards, and a CPU-safe capability inventory. Capability refresh no longer runs
+a one-frame VA-API encode. Browser test servers mock GPU discovery.
+
+Validation included actual browser walkthroughs in disposable workspaces:
+guided selection and the Whisper installation review; Quick Transcribe with
+Japanese; STT defaults with Norwegian and Parakeet; and a simulated installed
+Qwen/Breeze catalogue showing their different language restrictions. No
+installation was confirmed and no model inference or GPU encoding was run.
+The simulated catalogue validates UI behavior, not generated speech quality.
+
+Focused automated checks passed for Manager control-plane and installed-model
+metadata (52 passed, one existing skip), capability/language regression tests
+(15 passed), Qwen model/payload/profile/voice-library contracts (104 passed),
+and final preview API checks including the unsigned 32-bit seed maximum
+(28 passed). These groups overlap and should not be added together.
+Svelte checking reported zero errors and warnings; the frontend build, ESLint,
+Knip, Ruff, documentation check, and test-lane validation passed. Mypy, Vulture,
+and a Pydeps cycle check passed for the new language-policy module. Broader
+Python typing and platform installation testing were not performed.
+
+The dependency assessment is in
+[the dependency review](2026-09-08-dependency-review.md). Runtime and package
+pins are unchanged. A new packaged build is required before the installed app
+receives these changes. Live Qwen quality, Windows installation, and actual
+GPU export compatibility remain unverified.

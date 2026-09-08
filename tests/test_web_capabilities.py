@@ -93,27 +93,24 @@ GPU1:
         render_node = Path("/dev/dri/renderD128")
         with mock.patch.object(capabilities, "ffmpeg_video_encoder_ids", return_value=supported), mock.patch.object(
             capabilities.sys, "platform", "linux"
-        ), mock.patch.object(capabilities.Path, "glob", return_value=iter([render_node])), mock.patch.object(
-            capabilities, "ffmpeg_vaapi_encoder_usable", return_value=True
-        ):
+        ), mock.patch.object(capabilities.Path, "glob", return_value=iter([render_node])):
             profiles = capabilities.probe_burn_video_encoders("ffmpeg", gpu)
 
         self.assertEqual(["libx264", "libx265", "h264_vaapi"], [item["id"] for item in profiles])
 
-    def test_burn_encoder_profiles_exclude_vaapi_that_cannot_open(self):
+    def test_burn_encoder_discovery_never_initializes_hardware(self):
         gpu = {"devices": [{"vendor": "AMD"}]}
-        supported = {"libx264", "h264_vaapi", "hevc_vaapi"}
-        render_node = Path("/dev/dri/renderD128")
-        with mock.patch.object(capabilities, "ffmpeg_video_encoder_ids", return_value=supported), mock.patch.object(
-            capabilities.sys, "platform", "linux"
-        ), mock.patch.object(capabilities.Path, "glob", return_value=iter([render_node])), mock.patch.object(
-            capabilities,
-            "ffmpeg_vaapi_encoder_usable",
-            side_effect=lambda _executable, encoder, _device: encoder == "hevc_vaapi",
-        ):
+        completed = mock.Mock(stdout=" V..... libx264 Software H.264\n V..... h264_vaapi VA-API H.264\n V..... hevc_vaapi VA-API HEVC\n")
+        with mock.patch.object(capabilities.sys, "platform", "linux"), mock.patch.object(
+            capabilities.Path, "glob", return_value=iter([Path("/dev/dri/renderD128")])
+        ), mock.patch.object(capabilities.subprocess, "run", return_value=completed) as run:
             profiles = capabilities.probe_burn_video_encoders("ffmpeg", gpu)
 
-        self.assertEqual(["libx264", "hevc_vaapi"], [item["id"] for item in profiles])
+        self.assertEqual(["libx264", "h264_vaapi", "hevc_vaapi"], [item["id"] for item in profiles])
+        run.assert_called_once_with(
+            ["ffmpeg", "-hide_banner", "-encoders"],
+            capture_output=True, text=True, timeout=8, check=True,
+        )
 
     def test_windows_probe_ignores_virtual_display_adapters(self):
         payload = (

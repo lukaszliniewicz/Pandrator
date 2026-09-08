@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
+from pathlib import Path
 from urllib.error import URLError
 from urllib.request import urlopen
 
@@ -23,6 +25,7 @@ from ..provider_policy import provider_metadata_for
 from .audiocpp import (
     AUDIO_CPP_PORT,
     AUDIO_CPP_VERSION,
+    MODEL_PACKAGES,
     SUPPORTED_MODEL_IDS,
     resolve_assets,
     source_markers_for,
@@ -477,6 +480,36 @@ class AudioCppComponentDriver(MarkerComponentDriver):
     """Install the pinned audio.cpp runtime and selected model packages."""
 
     driver_id = "audio_cpp"
+
+    def inspect(
+        self,
+        context: ManagerContext,
+        definition: ComponentDefinition,
+        desired: DesiredComponentState | None,
+    ) -> ComponentInspection:
+        inspection = super().inspect(context, definition, desired)
+        active = active_component_path(context.layout, definition.id)
+        models = self.installed_model_ids(active) if active else None
+        return inspection.model_copy(update={"installed_model_ids": models})
+
+    @staticmethod
+    def installed_model_ids(active: Path) -> tuple[str, ...] | None:
+        """Read active package evidence rather than treating desired state as installed."""
+        try:
+            config = json.loads((active / "server.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        if not isinstance(config, dict) or not isinstance(config.get("models"), list):
+            return None
+        configured = {
+            item.get("id") for item in config["models"]
+            if isinstance(item, dict) and isinstance(item.get("id"), str)
+        }
+        return tuple(
+            package.id for package in MODEL_PACKAGES.values()
+            if package.id in configured
+            and all(path.is_file() for path in package.required_paths(active / "models"))
+        )
 
     @staticmethod
     def inspection_source_markers(

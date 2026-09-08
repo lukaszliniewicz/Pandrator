@@ -137,6 +137,97 @@ class VoiceLibraryApiTests(unittest.TestCase):
             self.assertEqual([f"voice:{voice['id']}"], job.resource_keys_json)
             self.assertEqual("current", artifact.state)
 
+    def test_qwen_voicedesign_preview_promotion_retains_reviewed_transcript_digest_and_provenance(
+        self,
+    ):
+        voice = self.client.post(
+            "/api/v1/voices",
+            json={"name": "Qwen designed narrator", "language": "fr"},
+            headers={"X-CSRF-Token": self.csrf},
+        ).get_json()
+        extension = self.app.extensions["pandrator"]
+        preview_path = extension["paths"].artifacts / "tts-previews" / "qwen-design.wav"
+        preview_path.parent.mkdir(parents=True, exist_ok=True)
+        preview_path.write_bytes(silent_wav())
+        preview = extension["artifacts"].register(
+            preview_path,
+            kind="audio",
+            role="tts_voice_preview",
+            metadata={
+                "service_id": "audio_cpp",
+                "model": "qwen3_tts_1_7b_voicedesign_q8_0",
+                "voice": "",
+                "language": "fr",
+                "generation_prompt": "Warm, intimate delivery.",
+                "seed": 2**32 - 1,
+                "preview_text": "Bonjour, voix conçue.",
+                "generation_settings": {"model": "qwen3_tts_1_7b_voicedesign_q8_0"},
+            },
+        )
+
+        response = self.client.post(
+            f"/api/v1/voices/{voice['id']}/samples/from-preview",
+            json={
+                "artifact_id": preview.id,
+                "transcript": "Bonjour, voix conçue.",
+                "language": " fr ",
+                "expected_voice_revision": voice["revision"],
+            },
+            headers={"X-CSRF-Token": self.csrf},
+        )
+
+        self.assertEqual(202, response.status_code, response.get_json())
+        queued = response.get_json()["payload_json"]
+        self.assertEqual("Bonjour, voix conçue.", queued["reviewed_transcript"])
+        self.assertEqual("fr", queued["transcript_language"])
+        self.assertEqual(sha256_file(preview_path), queued["source_artifact_sha256"])
+        provenance = queued["sample_provenance"]
+        self.assertEqual("qwen3_tts", provenance["model_family"])
+        self.assertEqual("generated_voice_design", provenance["source_kind"])
+        self.assertEqual(2**32 - 1, provenance["seed"])
+        self.assertEqual("Bonjour, voix conçue.", provenance["transcript"])
+
+    def test_qwen_voicedesign_preview_accepts_blank_voice_and_rejects_missing_prompt_before_job(
+        self,
+    ):
+        extension = self.app.extensions["pandrator"]
+        with extension["database"].session() as session:
+            before = len(session.scalars(select(Job)).all())
+
+        accepted = self.client.post(
+            "/api/v1/services/tts/audio_cpp/preview",
+            json={
+                "text": "A Qwen design preview.",
+                "model": "qwen3_tts_1_7b_voicedesign_q8_0",
+                "voice": "",
+                "language": "fr",
+                "generation_prompt": "Warm, intimate delivery.",
+                "seed": 2**32 - 1,
+            },
+            headers={"X-CSRF-Token": self.csrf},
+        )
+        self.assertEqual(202, accepted.status_code, accepted.get_json())
+        accepted_settings = accepted.get_json()["payload_json"]["settings"]
+        self.assertEqual("", accepted_settings["voice"])
+        self.assertEqual("", accepted_settings["speaker"])
+        self.assertEqual(2**32 - 1, accepted_settings["audio_cpp_seed"])
+
+        rejected = self.client.post(
+            "/api/v1/services/tts/audio_cpp/preview",
+            json={
+                "text": "A Qwen design preview.",
+                "model": "qwen3_tts_1_7b_voicedesign_q8_0",
+                "voice": "",
+                "language": "fr",
+            },
+            headers={"X-CSRF-Token": self.csrf},
+        )
+        self.assertEqual(422, rejected.status_code, rejected.get_json())
+        self.assertEqual("validation_error", rejected.get_json()["error"]["code"])
+        with extension["database"].session() as session:
+            after = len(session.scalars(select(Job)).all())
+        self.assertEqual(before + 1, after)
+
     def test_breeze_preview_promotion_rejects_unapproved_artifacts_and_stale_revision(
         self,
     ):
@@ -174,6 +265,13 @@ class VoiceLibraryApiTests(unittest.TestCase):
             ),
             (
                 {"service_id": "audio_cpp", "model": "kokoro"},
+                "unsupported_preview_model",
+            ),
+            (
+                {
+                    "service_id": "audio_cpp",
+                    "model": "qwen3_tts_1_7b_base_q8_0",
+                },
                 "unsupported_preview_model",
             ),
         )

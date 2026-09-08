@@ -22,9 +22,16 @@ import requests
 
 from pandrator_manager import __version__
 from pandrator_manager.api import create_api
-from pandrator_manager.api.app import RECOVERY_COOKIE, _browser_handoff_url
+from pandrator_manager.api.app import (
+    RECOVERY_COOKIE,
+    _browser_handoff_url,
+    _scoped_recovery_cookie_name,
+)
 from pandrator_manager.application import create_application
-from pandrator_manager.auth import RecoverySessionManager
+from pandrator_manager.auth import (
+    RecoverySessionManager,
+    derive_browser_session_keys,
+)
 from pandrator_manager.autostart import LinuxSystemdAutostart, WindowsAutostart
 from pandrator_manager.client import ManagerClient
 from pandrator_manager.daemon import ManagerAlreadyRunning, ManagerInstanceLock
@@ -635,6 +642,24 @@ class RecoverySessionManagerTests(unittest.TestCase):
         now[0] = 2_301
         self.assertFalse(sessions.validate(remembered.session_id))
 
+    def test_foreign_security_context_does_not_delete_session(self):
+        with tempfile.TemporaryDirectory() as directory:
+            application = create_application(directory)
+            source = RecoverySessionManager(
+                store=application.store,
+                security_context="source",
+            )
+            foreign = RecoverySessionManager(
+                store=application.store,
+                security_context="foreign",
+            )
+            session = source.exchange(source.mint_launch_token())
+            self.assertIsNotNone(session)
+
+            with mock.patch.object(foreign, "_prune"):
+                self.assertIsNone(foreign.authenticate(session.session_id))
+            self.assertIsNotNone(source.authenticate(session.session_id))
+
 
 class ApiContractTests(unittest.TestCase):
     def setUp(self):
@@ -908,7 +933,7 @@ class ApiContractTests(unittest.TestCase):
         self.assertEqual(script.status_code, 200)
         source = script.get_data(as_text=True)
         self.assertIn("Detected components", source)
-        self.assertIn("Browser authorization expired", source)
+        self.assertIn("Authorization required", source)
         self.assertIn('fetch("/v1/session"', source)
         self.assertIn("Browser remembered", source)
         self.assertIn('typeof crypto.randomUUID === "function"', source)
@@ -1119,6 +1144,14 @@ class ApiContractTests(unittest.TestCase):
 class DurableBrowserSessionTests(unittest.TestCase):
     secret = "d" * 43
 
+    @classmethod
+    def _cookie_name(cls, *, secret=None, exposure=None):
+        security_context, _csrf_secret = derive_browser_session_keys(
+            secret or cls.secret,
+            (exposure or EndpointExposure(port=0)).model_dump(mode="json"),
+        )
+        return _scoped_recovery_cookie_name(security_context)
+
     @staticmethod
     def _api(directory, *, secret=None, exposure=None):
         application = create_application(directory)
@@ -1166,7 +1199,7 @@ class DurableBrowserSessionTests(unittest.TestCase):
                 first_api,
                 key="durable-first",
             )
-            cookie = first_client.get_cookie(RECOVERY_COOKIE)
+            cookie = first_client.get_cookie(self._cookie_name())
             self.assertIsNotNone(cookie)
             raw_cookie = cookie.value
 
@@ -1188,7 +1221,7 @@ class DurableBrowserSessionTests(unittest.TestCase):
 
             second_api, _second_application = self._api(directory)
             second_client = second_api.test_client()
-            second_client.set_cookie(RECOVERY_COOKIE, raw_cookie)
+            second_client.set_cookie(self._cookie_name(), raw_cookie)
             resumed = second_client.get("/v1/session")
             self.assertEqual(200, resumed.status_code)
             self.assertEqual(exchanged["csrf_token"], resumed.get_json()["csrf_token"])
@@ -1224,7 +1257,7 @@ class DurableBrowserSessionTests(unittest.TestCase):
                 headers={"X-CSRF-Token": first_payload["csrf_token"]},
             )
             self.assertEqual(200, signed_out.status_code)
-            self.assertIsNone(first.get_cookie(RECOVERY_COOKIE))
+            self.assertIsNone(first.get_cookie(self._cookie_name()))
             self.assertEqual(401, first.get("/v1/status").status_code)
             self.assertEqual(200, second.get("/v1/status").status_code)
 
@@ -1234,14 +1267,14 @@ class DurableBrowserSessionTests(unittest.TestCase):
             )
             self.assertEqual(200, forgotten.status_code)
             self.assertEqual(1, forgotten.get_json()["revoked"])
-            self.assertIsNone(second.get_cookie(RECOVERY_COOKIE))
+            self.assertIsNone(second.get_cookie(self._cookie_name()))
             self.assertEqual(401, second.get("/v1/status").status_code)
 
     def test_fresh_launch_link_rotates_an_existing_browser_session(self):
         with tempfile.TemporaryDirectory() as directory:
             api, _application = self._api(directory)
             client, _payload = self._authorize(api, key="rotation-first")
-            previous_cookie = client.get_cookie(RECOVERY_COOKIE).value
+            previous_cookie = client.get_cookie(self._cookie_name()).value
             issued = client.post(
                 "/v1/recovery-sessions",
                 headers={
@@ -1262,10 +1295,10 @@ class DurableBrowserSessionTests(unittest.TestCase):
             self.assertEqual(1, exchanged.get_json()["active_session_count"])
             self.assertNotEqual(
                 previous_cookie,
-                client.get_cookie(RECOVERY_COOKIE).value,
+                client.get_cookie(self._cookie_name()).value,
             )
             stale_client = api.test_client()
-            stale_client.set_cookie(RECOVERY_COOKIE, previous_cookie)
+            stale_client.set_cookie(self._cookie_name(), previous_cookie)
             self.assertEqual(401, stale_client.get("/v1/session").status_code)
 
     def test_secret_or_network_boundary_change_invalidates_authorization(self):
@@ -1275,14 +1308,18 @@ class DurableBrowserSessionTests(unittest.TestCase):
                 first_api,
                 key="boundary-first",
             )
-            raw_cookie = first_client.get_cookie(RECOVERY_COOKIE).value
+            raw_cookie = first_client.get_cookie(self._cookie_name()).value
 
             changed_api, _application = self._api(
                 directory,
                 exposure=EndpointExposure(port=18098),
             )
             changed_client = changed_api.test_client()
-            changed_client.set_cookie(RECOVERY_COOKIE, raw_cookie)
+            changed_exposure = EndpointExposure(port=18098)
+            changed_client.set_cookie(
+                self._cookie_name(exposure=changed_exposure),
+                raw_cookie,
+            )
             self.assertEqual(401, changed_client.get("/v1/session").status_code)
 
             original_api, _application = self._api(directory)
@@ -1290,14 +1327,106 @@ class DurableBrowserSessionTests(unittest.TestCase):
                 original_api,
                 key="boundary-second",
             )
-            raw_cookie = original_client.get_cookie(RECOVERY_COOKIE).value
+            raw_cookie = original_client.get_cookie(self._cookie_name()).value
             rotated_api, _application = self._api(
                 directory,
                 secret="r" * 43,
             )
             rotated_client = rotated_api.test_client()
-            rotated_client.set_cookie(RECOVERY_COOKIE, raw_cookie)
+            rotated_client.set_cookie(
+                self._cookie_name(secret="r" * 43),
+                raw_cookie,
+            )
             self.assertEqual(401, rotated_client.get("/v1/session").status_code)
+
+    def test_scoped_cookies_isolate_managers_sharing_a_browser_jar(self):
+        exposure_a = EndpointExposure(port=18101)
+        exposure_b = EndpointExposure(port=18102)
+        with tempfile.TemporaryDirectory() as directory:
+            api_a, _application_a = self._api(directory, exposure=exposure_a)
+            api_b, _application_b = self._api(directory, exposure=exposure_b)
+            client_a, payload_a = self._authorize(api_a, key="isolated-a")
+            client_b, _payload_b = self._authorize(api_b, key="isolated-b")
+            cookie_a = self._cookie_name(exposure=exposure_a)
+            cookie_b = self._cookie_name(exposure=exposure_b)
+            self.assertNotEqual(cookie_a, cookie_b)
+
+            # Simulate one browser retaining cookies for both Manager ports.
+            client_a.set_cookie(cookie_b, client_b.get_cookie(cookie_b).value)
+            client_b.set_cookie(cookie_a, client_a.get_cookie(cookie_a).value)
+            self.assertEqual(200, client_a.get("/v1/session").status_code)
+            self.assertEqual(200, client_b.get("/v1/session").status_code)
+
+            signed_out = client_a.delete(
+                "/v1/session",
+                headers={"X-CSRF-Token": payload_a["csrf_token"]},
+            )
+            self.assertEqual(200, signed_out.status_code)
+            self.assertEqual(401, client_a.get("/v1/session").status_code)
+            self.assertEqual(200, client_b.get("/v1/session").status_code)
+            self.assertIsNotNone(client_b.get_cookie(cookie_b))
+
+    def test_valid_legacy_cookie_migrates_without_deleting_legacy_cookie(self):
+        with tempfile.TemporaryDirectory() as directory:
+            api, _application = self._api(directory)
+            authorized, _payload = self._authorize(api, key="legacy-source")
+            scoped_cookie = self._cookie_name()
+            raw_cookie = authorized.get_cookie(scoped_cookie).value
+
+            migrated = api.test_client()
+            migrated.set_cookie(RECOVERY_COOKIE, raw_cookie)
+            resumed = migrated.get("/v1/session")
+
+            self.assertEqual(200, resumed.status_code)
+            self.assertIsNotNone(migrated.get_cookie(RECOVERY_COOKIE))
+            self.assertEqual(raw_cookie, migrated.get_cookie(scoped_cookie).value)
+            self.assertNotIn(
+                f"{RECOVERY_COOKIE}=;",
+                resumed.headers.get("Set-Cookie", ""),
+            )
+
+    def test_invalid_foreign_legacy_cookie_is_not_deleted_or_revoked(self):
+        exposure_a = EndpointExposure(port=18111)
+        exposure_b = EndpointExposure(port=18112)
+        with tempfile.TemporaryDirectory() as directory:
+            api_a, _application_a = self._api(directory, exposure=exposure_a)
+            api_b, _application_b = self._api(directory, exposure=exposure_b)
+            client_a, _payload = self._authorize(api_a, key="foreign-source")
+            raw_cookie = client_a.get_cookie(
+                self._cookie_name(exposure=exposure_a)
+            ).value
+
+            foreign = api_b.test_client()
+            foreign.set_cookie(RECOVERY_COOKIE, raw_cookie)
+            rejected = foreign.get("/v1/session")
+
+            self.assertEqual(401, rejected.status_code)
+            self.assertIsNotNone(foreign.get_cookie(RECOVERY_COOKIE))
+            self.assertEqual(200, client_a.get("/v1/session").status_code)
+
+    def test_invalid_scoped_cookie_does_not_fall_back_to_legacy_cookie(self):
+        with tempfile.TemporaryDirectory() as directory:
+            api, _application = self._api(directory)
+            authorized, _payload = self._authorize(api, key="scoped-source")
+            scoped_cookie = self._cookie_name()
+            raw_cookie = authorized.get_cookie(scoped_cookie).value
+
+            mixed = api.test_client()
+            mixed.set_cookie(RECOVERY_COOKIE, raw_cookie)
+            mixed.set_cookie(scoped_cookie, "x" * 32)
+            rejected = mixed.get("/v1/session")
+
+            self.assertEqual(401, rejected.status_code)
+            self.assertIsNone(mixed.get_cookie(scoped_cookie))
+            self.assertIsNotNone(mixed.get_cookie(RECOVERY_COOKIE))
+            self.assertIn(
+                f"{scoped_cookie}=;",
+                rejected.headers.get("Set-Cookie", ""),
+            )
+            self.assertNotIn(
+                f"{RECOVERY_COOKIE}=;",
+                rejected.headers.get("Set-Cookie", ""),
+            )
 
 
 class ManagerLockTests(unittest.TestCase):

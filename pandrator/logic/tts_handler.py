@@ -37,6 +37,7 @@ from .tts_provider_profiles import (
     AUDIO_CPP_MODEL_CATALOG,
     AUDIO_CPP_MODEL_VOICE_MODES,
     AUDIO_CPP_PREBUILT_VOICES,
+    AUDIO_CPP_VOICE_DESIGN_MODELS,
     AZURE_SPEECH_ADAPTER,
     AZURE_SPEECH_MODELS,
     AZURE_SPEECH_OUTPUT_FORMAT,
@@ -892,7 +893,7 @@ def _default_service_configs() -> list[dict[str, object]]:
                     "voice_reference_text": "optional",
                     "model_catalog": copy.deepcopy(AUDIO_CPP_MODEL_CATALOG),
                     "model_voice_modes": copy.deepcopy(AUDIO_CPP_MODEL_VOICE_MODES),
-                    GENERATION_PROMPT_MODELS_FIELD: ["breeze_tts_2_q8_0"],
+                    GENERATION_PROMPT_MODELS_FIELD: list(AUDIO_CPP_VOICE_DESIGN_MODELS),
                     "voice_catalogues": {
                         "qwen3_tts_1_7b_customvoice_q8_0": list(KOBOLD_QWEN_TTS_VOICES),
                         "magpie_tts_q8_0": magpie_voice_catalog(),
@@ -5715,6 +5716,7 @@ _AUDIO_CPP_QWEN_LANGUAGE_NAMES = {
     "es": "Spanish",
     "it": "Italian",
 }
+_AUDIO_CPP_QWEN_SUPPORTED_LANGUAGES = frozenset(_AUDIO_CPP_QWEN_LANGUAGE_NAMES)
 
 
 def _audio_cpp_model_metadata(model: str, endpoint: dict) -> dict[str, object]:
@@ -5753,7 +5755,9 @@ def _audio_cpp_model_metadata(model: str, endpoint: dict) -> dict[str, object]:
             if mode:
                 result["voice_mode"] = mode
             return result
-    if "customvoice" in normalized or "magpie" in normalized:
+    if "voicedesign" in normalized:
+        inferred_mode = "design"
+    elif "customvoice" in normalized or "magpie" in normalized:
         inferred_mode = "prebuilt"
     elif "pocket" in normalized:
         inferred_mode = "hybrid"
@@ -5827,18 +5831,39 @@ def _build_audio_cpp_audio_payload(
             "Select one of the model IDs configured in the audio.cpp server."
         )
 
+    metadata = _audio_cpp_model_metadata(model, endpoint)
+    voice_mode = str(metadata.get("voice_mode") or "cloning").lower()
+    is_design = voice_mode == "design"
+    is_prebuilt = voice_mode == "prebuilt"
+    family = str(metadata.get("family") or "").lower()
+
     payload: dict[str, Any] = {
         "model": model,
         "input": text,
         "response_format": "wav",
     }
     voice = str(tts_settings.get("speaker") or tts_settings.get("voice") or "").strip()
-    if voice:
+    if voice and not is_design:
         payload["voice"] = voice
 
+    raw_language = str(
+        tts_settings.get("language") or tts_settings.get("target_language") or ""
+    ).strip()
+    normalized_language = raw_language.lower().replace("_", "-")
+    language_iso = normalized_language.split("-", 1)[0]
+    if (
+        is_design
+        and family == "qwen3_tts"
+        and normalized_language
+        and normalized_language not in {"auto", "unknown", "und"}
+        and language_iso not in _AUDIO_CPP_QWEN_SUPPORTED_LANGUAGES
+    ):
+        raise ValueError(
+            "Qwen3 VoiceDesign supports only zh, en, ja, ko, de, fr, ru, pt, es, and it."
+        )
     language = _audio_cpp_language(
         model,
-        tts_settings.get("language") or tts_settings.get("target_language") or "",
+        raw_language,
     )
     if language:
         payload["language"] = language
@@ -5848,17 +5873,16 @@ def _build_audio_cpp_audio_payload(
         or tts_settings.get("openai_audio_instructions")
         or ""
     ).strip()
+    if is_design and not instructions:
+        raise ValueError("audio.cpp VoiceDesign models require instructions.")
     if instructions:
         payload["instructions"] = instructions
 
-    metadata = _audio_cpp_model_metadata(model, endpoint)
-    voice_mode = str(metadata.get("voice_mode") or "cloning").lower()
-    is_prebuilt = voice_mode == "prebuilt"
     reference_text = str(tts_settings.get("audio_cpp_reference_text") or "").strip()
-    if reference_text and not is_prebuilt:
+    if reference_text and not is_prebuilt and not is_design:
         payload["reference_text"] = reference_text
     voice_ref = tts_settings.get("audio_cpp_voice_ref")
-    if not is_prebuilt and isinstance(voice_ref, dict) and voice_ref:
+    if not is_prebuilt and not is_design and isinstance(voice_ref, dict) and voice_ref:
         payload["voice_ref"] = dict(voice_ref)
 
     for key in (
@@ -5874,9 +5898,27 @@ def _build_audio_cpp_audio_payload(
         "num_inference_steps",
     ):
         value = tts_settings.get(f"audio_cpp_{key}")
+        if value in (None, "") and key == "seed":
+            value = tts_settings.get("seed")
         if value in (None, "") and key == "speed":
             value = tts_settings.get("speed")
         if value not in (None, ""):
+            if is_design and key == "seed":
+                if isinstance(value, bool):
+                    raise ValueError("audio.cpp VoiceDesign seed must be an integer.")
+                try:
+                    parsed_seed = int(value)
+                except (TypeError, ValueError) as error:
+                    raise ValueError(
+                        "audio.cpp VoiceDesign seed must be an integer."
+                    ) from error
+                if isinstance(value, float) and not value.is_integer():
+                    raise ValueError("audio.cpp VoiceDesign seed must be an integer.")
+                if not 0 <= parsed_seed <= 0xFFFFFFFF:
+                    raise ValueError(
+                        "audio.cpp VoiceDesign seed must be between 0 and 4294967295."
+                    )
+                value = parsed_seed
             payload[key] = (
                 str(value)
                 if key == "seed"
@@ -5890,13 +5932,30 @@ def _build_audio_cpp_audio_payload(
     if raw_options is None:
         raw_options = tts_settings.get("options")
     options = dict(raw_options) if isinstance(raw_options, dict) else {}
-    family = str(metadata.get("family") or "").lower()
+    if is_design:
+        cloning_only_options = {
+            "audio_sample",
+            "clone",
+            "cloning",
+            "prompt_text",
+            "ref_audio",
+            "reference_audio",
+            "reference_text",
+            "speaker_wav",
+            "voice_ref",
+            "x_vector_only_mode",
+        }
+        options = {
+            key: value
+            for key, value in options.items()
+            if str(key).strip().casefold() not in cloning_only_options
+        }
     linked_reference = isinstance(voice_ref, dict)
-    if linked_reference and family == "omnivoice" and not reference_text:
+    if linked_reference and family == "omnivoice" and not reference_text and not is_design:
         raise ValueError(
             "OmniVoice linked voice references require a reviewed transcript."
         )
-    if linked_reference and family == "qwen3_tts":
+    if linked_reference and family == "qwen3_tts" and not is_design:
         options["x_vector_only_mode"] = not bool(reference_text)
     if options:
         payload["options"] = options

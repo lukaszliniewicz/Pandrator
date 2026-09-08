@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { sttLanguageProblem } from './stt-language-policy';
   import { selectableTtsServices } from './tts-provider-policy';
   import { errorMessage } from './errors';
   import { createAudioRecorder, openMicrophone } from './audio-recorder';
@@ -204,6 +205,10 @@
   );
   const transcribingCount = $derived(
     Object.values(transcribing).filter(Boolean).length
+  );
+  const sampleLanguage = $derived(selected?.language || 'auto');
+  const sampleLanguageProblem = $derived(
+    sttLanguageProblem(capabilities, engine, sampleLanguage)
   );
   const sttModelInfo = $derived(capabilities?.stt?.models?.[engine] ?? {});
 
@@ -656,6 +661,10 @@
 
   async function transcribe(sample: Sample) {
     if (!selected || transcribing[sample.id]) return;
+    if (sampleLanguageProblem) {
+      error = sampleLanguageProblem;
+      return;
+    }
     error = '';
     transcribing = { ...transcribing, [sample.id]: true };
     notice = `Transcribing sample with ${sttEngineName()}${sttModelInfo.download_on_demand ? ' (the model will download first)' : ''}…`;
@@ -665,7 +674,7 @@
         stt_backend: engine,
         stt_compute_backend: computeBackend,
         stt_model_quantization: modelQuantization,
-        stt_language: language,
+        stt_language: sampleLanguage,
         moss_max_chunk_seconds: 120,
         moss_vad_enabled: engine === 'moss' ? vadEnabled : false,
         moss_ctc_alignment_enabled: true,
@@ -1066,6 +1075,16 @@
               />{/if}
           </section>
 
+          <p class="muted mb-2 text-xs">
+            Transcription language: {sampleLanguage}. Edit the voice to change
+            its language.
+          </p>
+          {#if sampleLanguageProblem}<p
+              class="mb-3 text-sm text-red-600"
+              role="alert"
+            >
+              {sampleLanguageProblem}
+            </p>{/if}
           <div class="mb-5 flex flex-wrap items-center justify-end gap-3">
             <div class="stt-toolbar">
               <select
@@ -1073,12 +1092,21 @@
                 onchange={chooseSttEngine}
                 disabled={!canTranscribe || transcribingCount > 0}
                 aria-label="Transcription model"
-                ><option value="whisper"
-                  >{sttModelLabel('whisper', 'Whisper large-v3')}</option
-                ><option value="parakeet"
-                  >{sttModelLabel('parakeet', 'Parakeet 0.6B v3')}</option
-                ><option value="moss"
-                  >{sttModelLabel('moss', 'MOSS Diarize 0.9B')}</option
+                ><option
+                  value="whisper"
+                  disabled={Boolean(
+                    sttLanguageProblem(capabilities, 'whisper', sampleLanguage)
+                  )}>{sttModelLabel('whisper', 'Whisper large-v3')}</option
+                ><option
+                  value="parakeet"
+                  disabled={Boolean(
+                    sttLanguageProblem(capabilities, 'parakeet', sampleLanguage)
+                  )}>{sttModelLabel('parakeet', 'Parakeet 0.6B v3')}</option
+                ><option
+                  value="moss"
+                  disabled={Boolean(
+                    sttLanguageProblem(capabilities, 'moss', sampleLanguage)
+                  )}>{sttModelLabel('moss', 'MOSS Diarize 0.9B')}</option
                 ></select
               ><select
                 bind:value={modelQuantization}

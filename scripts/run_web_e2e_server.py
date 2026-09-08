@@ -7,6 +7,7 @@ import shutil
 import tempfile
 import threading
 from pathlib import Path
+from unittest.mock import patch
 
 from waitress import serve
 
@@ -17,6 +18,14 @@ from pandrator.web.workflow_handlers import WorkflowHandlers
 
 root = Path(tempfile.mkdtemp(prefix="pandrator-playwright-"))
 atexit.register(lambda: shutil.rmtree(root, ignore_errors=True))
+# Browser tests must not initialize GPU drivers on the host desktop. Tests
+# that need a hardware-specific UI state supply their own capability fixture.
+gpu_probe = patch(
+    "pandrator.web.capabilities.probe_gpu",
+    return_value={"available": False, "devices": [], "guidance": "CPU-only browser test workspace."},
+)
+gpu_probe.start()
+atexit.register(gpu_probe.stop)
 app = create_app(data_root=root, testing=False)
 AuthService(app.extensions["pandrator"]["database"]).initialize_owner("pandrator-e2e")
 database = app.extensions["pandrator"]["database"]

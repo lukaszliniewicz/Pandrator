@@ -69,6 +69,7 @@ class AudioCppModelPackage:
 SUPPORTED_MODEL_IDS = (
     "qwen3_tts_1_7b_base_q8_0",
     "qwen3_tts_1_7b_customvoice_q8_0",
+    "qwen3_tts_1_7b_voicedesign_q8_0",
     "fish_audio_s2_pro_q8_0",
     "voxcpm2_q8_0",
     "magpie_tts_q8_0",
@@ -96,6 +97,14 @@ MODEL_PACKAGES: dict[str, AudioCppModelPackage] = {
         files=("qwen3-tts-12hz-1.7b-customvoice-q8_0.gguf",),
         sha256=("3cfaac8e9f13554f6daea3c5e0c53fede71ef5500cbaae7445e5fc3a5bb12e72",),
         task="tts",
+    ),
+    "qwen3_tts_1_7b_voicedesign_q8_0": AudioCppModelPackage(
+        id="qwen3_tts_1_7b_voicedesign_q8_0",
+        family="qwen3_tts",
+        target_directory="Qwen3-TTS-12Hz-1.7B-VoiceDesign-GGUF",
+        files=("qwen3-tts-12hz-1.7b-voicedesign-q8_0.gguf",),
+        sha256=("1bcef9a8c021072fca40e00498e00af9091fbe6d3ae4f87567cfee885d6c7554",),
+        task="vdes",
     ),
     "fish_audio_s2_pro_q8_0": AudioCppModelPackage(
         id="fish_audio_s2_pro_q8_0",

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { sttLanguageProblem } from './stt-language-policy';
   import {
     selectableTtsServices,
     preferredTtsService
@@ -411,6 +412,9 @@
       (service) =>
         service.id.replaceAll('-', '_') === engine.replaceAll('-', '_')
     );
+  const sttLanguageIssue = $derived(
+    sttLanguageProblem(capabilities, sttEngine, originalLanguage)
+  );
   const sttOptionLabel = (engineId: string, label: string, timing: string) => {
     const info = capabilities?.stt?.models?.[engineId] ?? {};
     const readiness = info.default
@@ -418,7 +422,7 @@
       : info.installed
         ? 'ready'
         : 'downloads on first use';
-    return `${label} · ${timing} · ${readiness}`;
+    return `${label} · ${timing} · ${readiness}${sttLanguageProblem(capabilities, engineId, originalLanguage) ? ' · unsupported language' : ''}`;
   };
 
   async function generationServiceProblem() {
@@ -1607,7 +1611,7 @@
     selectedTtsService?.model_voice_modes?.[ttsModel] ?? ''
   );
   const selectedModelAllowsReferenceFree = $derived(
-    selectedModelVoiceMode === 'optional_cloning'
+    ['optional_cloning', 'design'].includes(selectedModelVoiceMode)
   );
   const selectedModelUsesReferences = $derived(
     ['cloning', 'hybrid', 'optional_cloning'].includes(
@@ -1617,7 +1621,9 @@
         ttsModel.toLowerCase() === 'voice cloning')
   );
   const selectedModelHasNoPrebuiltVoices = $derived(
-    ['cloning', 'optional_cloning'].includes(selectedModelVoiceMode) ||
+    ['cloning', 'optional_cloning', 'design'].includes(
+      selectedModelVoiceMode
+    ) ||
       (selectedTtsServiceId === 'kobold_qwen' &&
         ttsModel.toLowerCase() === 'voice cloning')
   );
@@ -1804,6 +1810,7 @@
   const showClonedVoices = $derived(
     Boolean(
       supportsCloningVoices &&
+      selectedModelVoiceMode !== 'design' &&
       (!selectedTtsService?.supports_prebuilt_voices ||
         selectedModelUsesReferences)
     )
@@ -2149,8 +2156,8 @@
         stt_model_quantization: sttQuantization,
         stt_compute_backend: sttComputeBackend,
         stt_compute_device: sttDevice,
-        stt_language: sttEngine === 'moss' ? 'auto' : originalLanguage,
-        original_language: sttEngine === 'moss' ? 'auto' : originalLanguage,
+        stt_language: originalLanguage,
+        original_language: originalLanguage,
         stt_threads: sttThreads,
         stt_chunk_seconds: sttEngine === 'moss' ? 0 : sttChunkSeconds,
         stt_chunk_overlap_seconds: sttChunkOverlap,
@@ -2355,12 +2362,29 @@
     const stage = settingsStage;
     const key = settingsStage.key;
     if (
+      key === 'transcribe' &&
+      (!hasAttachedCaptions || captionAlignmentMethod !== 'ctc') &&
+      sttLanguageIssue
+    ) {
+      error = sttLanguageIssue;
+      return;
+    }
+    if (
       key === 'generate_audio' &&
       ttsSwitchSource &&
       (!ttsSwitchReviewed || !ttsModels.includes(ttsModel))
     ) {
       error =
         'Choose an audio.cpp model and voice, then review the provider switch before saving.';
+      return;
+    }
+    if (
+      key === 'generate_audio' &&
+      selectedModelVoiceMode === 'design' &&
+      !generationPrompt.trim()
+    ) {
+      error =
+        'Describe the voice in Speech direction before generating with Qwen3 VoiceDesign.';
       return;
     }
     if (key === 'generate_audio' && publishingLibraryVoiceId) {
@@ -3227,19 +3251,39 @@
                     capabilities?.stt?.models?.[sttEngine]?.precision ?? 'f16'
                   ))}
                 class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
-                ><option value="whisper"
+                ><option
+                  value="whisper"
+                  disabled={Boolean(
+                    sttLanguageProblem(
+                      capabilities,
+                      'whisper',
+                      originalLanguage
+                    )
+                  )}
                   >{sttOptionLabel(
                     'whisper',
                     'Whisper large-v3',
                     'DTW timestamps'
                   )}</option
-                ><option value="parakeet"
+                ><option
+                  value="parakeet"
+                  disabled={Boolean(
+                    sttLanguageProblem(
+                      capabilities,
+                      'parakeet',
+                      originalLanguage
+                    )
+                  )}
                   >{sttOptionLabel(
                     'parakeet',
                     'Parakeet TDT 0.6B v3',
                     'native timestamps'
                   )}</option
-                ><option value="moss"
+                ><option
+                  value="moss"
+                  disabled={Boolean(
+                    sttLanguageProblem(capabilities, 'moss', originalLanguage)
+                  )}
                   >{sttOptionLabel(
                     'moss',
                     'MOSS Transcribe-Diarize 0.9B',
@@ -3256,6 +3300,9 @@
                   : 'CrispASR downloads a model the first time you use it; the installer-selected model is the default.'}</span
               ></label
             >
+            {#if sttLanguageIssue}<p class="text-sm text-red-600" role="alert">
+                {sttLanguageIssue}
+              </p>{/if}
             {#if ttsModelAcquisitionHint}
               <p class="muted -mt-2 text-xs leading-relaxed">
                 {ttsModelAcquisitionHint}

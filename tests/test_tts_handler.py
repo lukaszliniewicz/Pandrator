@@ -394,7 +394,7 @@ class TTSHandlerTests(unittest.TestCase):
             services["kobold_qwen"][tts_handler.GENERATION_PROMPT_MODELS_FIELD],
         )
         self.assertEqual(
-            ["breeze_tts_2_q8_0"],
+            list(tts_provider_profiles.AUDIO_CPP_VOICE_DESIGN_MODELS),
             services["audio_cpp"][tts_handler.GENERATION_PROMPT_MODELS_FIELD],
         )
 
@@ -747,6 +747,75 @@ class TTSHandlerTests(unittest.TestCase):
                 "voice_mode"
             ],
         )
+
+    def test_audio_cpp_qwen_voicedesign_validates_prompt_language_seed_and_references(
+        self,
+    ):
+        endpoint = {
+            "default_model": "qwen3_tts_1_7b_voicedesign_q8_0",
+            "model_catalog": tts_provider_profiles.AUDIO_CPP_MODEL_CATALOG,
+        }
+        designed = tts_handler._build_audio_cpp_audio_payload(
+            "Bonjour",
+            {
+                "generation_prompt": "Warm, intimate delivery.",
+                "language": "fr-FR",
+                "speaker": "stale-voice",
+                "audio_cpp_voice_ref": {"type": "base64", "data": "stale"},
+                "audio_cpp_reference_text": "stale transcript",
+                "audio_cpp_options": {
+                    "x_vector_only_mode": True,
+                    "reference_text": "stale transcript",
+                    "temperature": 0.8,
+                },
+                "audio_cpp_seed": 2**32 - 1,
+            },
+            endpoint,
+        )
+
+        self.assertEqual("French", designed["language"])
+        self.assertEqual("Warm, intimate delivery.", designed["instructions"])
+        self.assertEqual(2**32 - 1, designed["seed"])
+        for field in ("voice", "voice_ref", "reference_text"):
+            self.assertNotIn(field, designed)
+        self.assertEqual({"temperature": 0.8}, designed["options"])
+
+        with self.assertRaisesRegex(ValueError, "require instructions"):
+            tts_handler._build_audio_cpp_audio_payload(
+                "Bonjour",
+                {"language": "fr"},
+                endpoint,
+            )
+        with self.assertRaisesRegex(ValueError, "supports only"):
+            tts_handler._build_audio_cpp_audio_payload(
+                "Bonjour",
+                {"generation_prompt": "Warm", "language": "pl"},
+                endpoint,
+            )
+        for seed in (-1, 2**32):
+            with self.subTest(seed=seed), self.assertRaisesRegex(
+                ValueError, "between 0 and 4294967295"
+            ):
+                tts_handler._build_audio_cpp_audio_payload(
+                    "Bonjour",
+                    {"generation_prompt": "Warm", "audio_cpp_seed": seed},
+                    endpoint,
+                )
+
+    def test_audio_cpp_qwen_voicedesign_accepts_all_published_languages(self):
+        endpoint = {
+            "default_model": "qwen3_tts_1_7b_voicedesign_q8_0",
+            "model_catalog": tts_provider_profiles.AUDIO_CPP_MODEL_CATALOG,
+        }
+        languages = ("zh", "en", "ja", "ko", "de", "fr", "ru", "pt", "es", "it")
+        for language in languages:
+            with self.subTest(language=language):
+                payload = tts_handler._build_audio_cpp_audio_payload(
+                    "Voice design text",
+                    {"generation_prompt": "Warm", "language": language},
+                    endpoint,
+                )
+                self.assertIn("language", payload)
 
     def test_audio_cpp_catalog_filters_non_speech_models_and_server_paths(self):
         model_response = Mock()

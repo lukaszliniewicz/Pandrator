@@ -153,7 +153,7 @@ settings. You can switch models or add more later. Available families include:
 
 | audio.cpp model family | Voice options |
 | --- | --- |
-| **Qwen3 TTS 1.7B** | Base for reference-voice cloning; CustomVoice for built-in speakers. |
+| **Qwen3 TTS 1.7B** | Base for reference-voice cloning; CustomVoice for built-in speakers; VoiceDesign to describe a new voice in any of ten supported languages. |
 | **Fish Audio S2 Pro** | Expressive reference-voice cloning. |
 | **VoxCPM2** | Multilingual reference-voice cloning. |
 | **Chatterbox** | Reference-voice cloning. |
@@ -161,7 +161,7 @@ settings. You can switch models or add more later. Available families include:
 | **OmniVoice** | Multilingual reference-voice cloning. |
 | **PocketTTS English** | English speech generation. |
 | **FireRedTTS3 Base** | Experimental multilingual reference-voice cloning. |
-| **BreezeTTS 2** | Instruction-based voice design and optional reference cloning. |
+| **BreezeTTS 2** | Instruction-based voice design and optional reference cloning in English and Mandarin Chinese. |
 
 The Manager supplies selectable Q8_0 model packages. CPU, Vulkan, and CUDA
 builds are available; the Linux CUDA build is currently best-effort and has not

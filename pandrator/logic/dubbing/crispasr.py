@@ -19,7 +19,7 @@ from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 from ..cancellable_process import ProcessCancelled, run_cancellable
-from .languages import normalize_language_code
+from .stt_languages import validate_stt_language
 
 CRISPASR_VERSION = "0.8.32"
 CRISPASR_EXECUTABLE_ENV = "CRISPASR_EXECUTABLE"
@@ -311,6 +311,10 @@ def _prefetch_windows_model(
 ) -> Path | None:
     """Cache the selected transcription model on Windows."""
     engine = normalize_engine(settings.get("stt_engine") or settings.get("stt_backend"))
+    validate_stt_language(
+        engine,
+        settings.get("stt_language") or settings.get("whisper_language"),
+    )
     model = MODELS[engine]
     quantization = normalize_model_quantization(
         settings.get("stt_model_quantization")
@@ -480,6 +484,10 @@ def build_command(
     vad_model_path: str | os.PathLike[str] | None = None,
 ) -> list[str]:
     engine = normalize_engine(settings.get("stt_engine") or settings.get("stt_backend"))
+    language = validate_stt_language(
+        engine,
+        settings.get("stt_language") or settings.get("whisper_language"),
+    )
     model = MODELS[engine]
     quantization = normalize_model_quantization(
         settings.get("stt_model_quantization")
@@ -488,10 +496,6 @@ def build_command(
         engine,
     )
     model_filename = model.filename_for(quantization)
-    language = normalize_language_code(
-        str(settings.get("stt_language") or settings.get("whisper_language") or "auto"),
-        default="auto",
-    )
     backend = "moss-diarize" if engine == STT_ENGINE_MOSS else engine
 
     command = [
@@ -1006,10 +1010,14 @@ def transcribe(
     run_func: Callable[..., Any] = subprocess.run,
     cancel_event: threading.Event | None = None,
 ) -> CrispASRTranscriptionResult:
+    engine = normalize_engine(settings.get("stt_engine") or settings.get("stt_backend"))
+    validate_stt_language(
+        engine,
+        settings.get("stt_language") or settings.get("whisper_language"),
+    )
     session_path = Path(session_dir)
     session_path.mkdir(parents=True, exist_ok=True)
     temporary_base = session_path / f"{output_name}_crispasr"
-    engine = normalize_engine(settings.get("stt_engine") or settings.get("stt_backend"))
     prefetched_model: Path | None = None
     prefetched_vad_model: Path | None = None
     prefetched_aligner: Path | None = None

@@ -30,6 +30,7 @@ from flask import (
 from sqlalchemy import func, select
 from werkzeug.utils import secure_filename
 
+from pandrator.logic.tts_provider_profiles import AUDIO_CPP_VOICE_DESIGN_MODELS
 from pandrator.logic.tts_provider_switch import prepare_tts_provider_switch
 from pandrator.runtime import DataPaths
 from pandrator.version import PANDRATOR_VERSION
@@ -1511,17 +1512,20 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         payload = TtsVoicePreviewRequest.model_validate(
             request.get_json(silent=True) or {}
         )
-        settings = tts_catalogue.preview_settings(
-            service_id,
-            model=payload.model,
-            voice=payload.voice,
-            language=payload.language,
-            generation_prompt=payload.generation_prompt,
-            seed=payload.seed,
-            preserve_blank_voice=(
-                "voice" in payload.model_fields_set and not payload.voice.strip()
-            ),
-        )
+        try:
+            settings = tts_catalogue.preview_settings(
+                service_id,
+                model=payload.model,
+                voice=payload.voice,
+                language=payload.language,
+                generation_prompt=payload.generation_prompt,
+                seed=payload.seed,
+                preserve_blank_voice=(
+                    "voice" in payload.model_fields_set and not payload.voice.strip()
+                ),
+            )
+        except ValueError as error:
+            return error_response("validation_error", str(error), 422)
         if settings is None:
             return error_response("not_found", "TTS service not found.", 404)
         job = jobs.enqueue(
@@ -6117,10 +6121,12 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                     "Only audio.cpp voice-design previews can become voice samples.",
                     422,
                 )
-            if preview_model != "breeze_tts_2_q8_0":
+            if preview_model not in {
+                model.casefold() for model in AUDIO_CPP_VOICE_DESIGN_MODELS
+            }:
                 return error_response(
                     "unsupported_preview_model",
-                    "Only Breeze TTS 2 voice-design previews can become voice samples.",
+                    "Only supported audio.cpp VoiceDesign previews can become voice samples.",
                     422,
                 )
             try:
@@ -6163,7 +6169,11 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                     "model": metadata.get("model"),
                     "model_family": metadata.get("model_family")
                     or metadata.get("family")
-                    or "breeze_tts",
+                    or (
+                        "qwen3_tts"
+                        if preview_model == "qwen3_tts_1_7b_voicedesign_q8_0"
+                        else "breeze_tts"
+                    ),
                     "generation_prompt": str(
                         metadata.get("generation_prompt") or ""
                     ).strip(),

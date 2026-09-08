@@ -240,6 +240,7 @@ class ComponentInspection(StrictModel):
     resolved: ResolvedComponentState | None = None
     installed_version: str | None = None
     installed_revision: str | None = None
+    installed_model_ids: tuple[str, ...] | None = None
     evidence: tuple[str, ...] = ()
     problems: tuple[str, ...] = ()
     inspected_at: datetime = Field(default_factory=utc_now)

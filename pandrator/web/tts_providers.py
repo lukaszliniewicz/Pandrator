@@ -20,6 +20,7 @@ from pandrator.logic.tts_provider_policy import (
 )
 from pandrator.logic.tts_provider_profiles import (
     AUDIO_CPP_MODEL_CATALOG,
+    AUDIO_CPP_VOICE_DESIGN_MODELS,
     list_tts_provider_profiles,
 )
 from pandrator.runtime import DataPaths
@@ -1730,6 +1731,26 @@ class TtsCatalogueService:
             "audio_cpp_experimental",
         }
         resolved_model = model or str(service.get("default_model") or "")
+        model_voice_mode = str(
+            tts_handler._audio_cpp_model_metadata(resolved_model, service).get(
+                "voice_mode"
+            )
+            or ""
+        ).strip().lower()
+        if is_audio_cpp and model_voice_mode == "design":
+            # Use the same validation as generation, including inferred model
+            # metadata for custom audio.cpp model IDs. This constructs a payload
+            # only; no provider request or inference is started.
+            tts_handler._build_audio_cpp_audio_payload(
+                "",
+                {
+                    "model": resolved_model,
+                    "language": language or str(default_value.get("language") or "en"),
+                    "generation_prompt": generation_prompt,
+                    "audio_cpp_seed": seed,
+                },
+                service,
+            )
         default_voices = (
             service.get("default_voices")
             if isinstance(service.get("default_voices"), dict)
@@ -1738,7 +1759,8 @@ class TtsCatalogueService:
         if (
             preserve_blank_voice
             and is_audio_cpp
-            and resolved_model.strip().casefold() == "breeze_tts_2_q8_0"
+            and resolved_model.strip().casefold()
+            in {item.casefold() for item in AUDIO_CPP_VOICE_DESIGN_MODELS}
             and not str(voice or "").strip()
         ):
             resolved_voice = ""

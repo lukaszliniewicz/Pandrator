@@ -20,6 +20,7 @@ let refreshTimer = null;
 let pollingStopped = false;
 let catalogueSignature = "";
 let selectionInitialized = false;
+let setupGoal = "";
 let applicationBusy = false;
 let managerUpdateBusy = false;
 let networkBusy = false;
@@ -61,7 +62,8 @@ const sectionPresentation = {
   },
   compatibility: {
     title: "Compatibility backends",
-    description: "Legacy standalone Python speech engines superseded by audio.cpp.",
+    description:
+      "Legacy standalone Python speech engines superseded by audio.cpp.",
   },
   training: {
     title: "Training tools",
@@ -82,6 +84,34 @@ function text(tag, value, className = "") {
   return node;
 }
 
+function blockManagerAccess(message) {
+  pollingStopped = true;
+  if (refreshTimer !== null) window.clearTimeout(refreshTimer);
+  csrf = "";
+  setManagerHealth("error", "Authorization required");
+  setApplicationState("Authorization required", "degraded");
+  byId("application-detail").textContent =
+    "Reopen the Manager from Pandrator, the tray icon, or the launcher to authorize this browser.";
+  byId("application-primary").textContent = "Authorization required";
+  byId("application-maintenance-detail").textContent =
+    "Authorize this browser to view installation details.";
+  byId("status").textContent = "Authorization required.";
+  clear(byId("components"));
+  byId("components").append(
+    text("p", "Authorize this browser to view providers and models.", "muted"),
+  );
+  byId("guided-setup").classList.add("hidden");
+  byId("selection-bar").classList.add("hidden");
+  byId("application-more").classList.add("hidden");
+  for (const control of document.querySelectorAll(
+    "main button, main input, main select",
+  )) {
+    if (!control.classList.contains("manager-tab")) control.disabled = true;
+  }
+  if (byId("plan-dialog").open) closePlan();
+  showMessage(message, true);
+}
+
 function setManagerHealth(state, label) {
   const health = byId("manager-health");
   health.dataset.state = state;
@@ -91,9 +121,7 @@ function setManagerHealth(state, label) {
 }
 
 function activateManagerTab(name, { focus = false } = {}) {
-  const selected = document.querySelector(
-    `.manager-tab[data-tab="${name}"]`,
-  );
+  const selected = document.querySelector(`.manager-tab[data-tab="${name}"]`);
   if (!selected) return;
   activeManagerTab = name;
   for (const tab of document.querySelectorAll(".manager-tab")) {
@@ -111,7 +139,7 @@ function handleManagerTabKeydown(event) {
   const tabs = [...document.querySelectorAll(".manager-tab")];
   const current = tabs.indexOf(event.currentTarget);
   if (current < 0) return;
-  let next = current;
+  let next;
   if (event.key === "ArrowRight") next = (current + 1) % tabs.length;
   else if (event.key === "ArrowLeft") {
     next = (current - 1 + tabs.length) % tabs.length;
@@ -220,7 +248,9 @@ function chooseRememberedBrowser() {
 
 function sessionDate(value) {
   const date = new Date(Number(value) * 1000);
-  return Number.isNaN(date.getTime()) ? "an unknown time" : date.toLocaleString();
+  return Number.isNaN(date.getTime())
+    ? "an unknown time"
+    : date.toLocaleString();
 }
 
 function renderBrowserSession(payload) {
@@ -232,9 +262,7 @@ function renderBrowserSession(payload) {
   const session = payload.session;
   const count = Number(payload.active_session_count || 1);
   const remembered = Boolean(session.remembered);
-  const summaryLabel = remembered
-    ? "Browser remembered"
-    : "Browser authorized";
+  const summaryLabel = remembered ? "Browser remembered" : "Browser authorized";
   const summary = byId("session-summary");
   summary.setAttribute("aria-label", summaryLabel);
   summary.title = summaryLabel;
@@ -517,14 +545,15 @@ function controlsFor(component) {
       options[option.key] = option.default;
     }
   }
-  if ((component.definition.models || []).length > 0) {
+  if (component.definition.id === "audio_cpp") {
     const supported = new Set(component.definition.models.map((m) => m.id));
-    const raw = options.models ?? component.inspection.resolved?.options?.models;
+    const raw =
+      options.models ?? component.inspection.resolved?.options?.models;
     let configured = Array.isArray(raw)
       ? raw.map(String).filter((item) => supported.has(item))
       : [];
     if (!configured.length) {
-      const preferred = "qwen3_tts_1_7b_base_q8_0";
+      const preferred = "qwen3_tts_1_7b_customvoice_q8_0";
       configured = supported.has(preferred)
         ? [preferred]
         : [component.definition.models[0].id];
@@ -610,6 +639,7 @@ function refreshOptionAvailability(component) {
 }
 
 function selectionChanged(component, selected) {
+  setupGoal = "manual";
   const state = controlsFor(component);
   const pandrator = snapshot.components.find(
     (item) => item.definition.id === "pandrator",
@@ -673,16 +703,211 @@ function makeCapabilityLine(definition) {
   );
 }
 
+const setupChoices = {
+  narrate: { component: "audio_cpp", model: "qwen3_tts_1_7b_customvoice_q8_0" },
+  clone: { component: "audio_cpp", model: "qwen3_tts_1_7b_base_q8_0" },
+  transcribe: { component: "crispasr", model: "parakeet-tdt-0.6b-v3" },
+};
+
+function modelPurpose(model) {
+  const capabilities = new Set(model.capabilities || []);
+  if (capabilities.has("voice_design"))
+    return capabilities.has("voice_cloning")
+      ? "Voice design or cloning · recording optional"
+      : "Voice design · describe a voice, no recording needed";
+  if (capabilities.has("prebuilt_voices")) {
+    return capabilities.has("voice_cloning")
+      ? "Ready-made voices or a reference recording"
+      : "Ready-made voices · no recording needed";
+  }
+  if (capabilities.has("voice_cloning"))
+    return "Voice cloning · reference recording needed";
+  if (capabilities.has("speaker_diarization"))
+    return "Transcription with speaker identification";
+  if (capabilities.has("transcription"))
+    return "Transcription · turn recordings into text";
+  return "";
+}
+
+function selectedModelPackages(component, options) {
+  const models = component.definition.models || [];
+  if (component.definition.id === "audio_cpp") {
+    return models.filter((model) => (options.models || []).includes(model.id));
+  }
+  if (component.definition.id === "crispasr") {
+    return models.filter((model) => model.id === options.engine);
+  }
+  return [];
+}
+
+function chooseSetup(goal) {
+  if (activeOperation) return;
+  const choice = setupChoices[goal] ? { ...setupChoices[goal] } : null;
+  if (goal === "transcribe")
+    choice.model = byId("setup-transcription-model").value;
+  const target = snapshot.components.find(
+    (item) => item.definition.id === choice?.component,
+  );
+  if (
+    choice &&
+    (!target ||
+      !selectable(target) ||
+      !(target.definition.models || []).some(
+        (item) => item.id === choice.model,
+      ))
+  )
+    return;
+  setupGoal = goal;
+  if (choice) {
+    for (const component of snapshot.components) {
+      if (selectable(component))
+        controlsFor(component).selected =
+          component.definition.id === "pandrator" || component === target;
+    }
+    const state = controlsFor(target);
+    if (choice.component === "audio_cpp") state.options.models = [choice.model];
+    else {
+      state.options.engine = choice.model;
+      state.quantization = choice.model === "whisper-large-v3" ? "f16" : "q8_0";
+    }
+    if (
+      target.compute_choices.some(
+        (item) => item.value === "auto" && item.available,
+      )
+    )
+      state.compute = "auto";
+    const nodes = componentNodes.get(choice.component);
+    if (nodes?.detailsBuilt) {
+      for (const option of target.definition.install_options || []) {
+        const select = nodes.optionSelects.get(option.key);
+        if (select) select.value = selectedOptionValue(state, option);
+      }
+      const compute = nodes.card.querySelector('[data-role="compute"]');
+      if (compute) compute.value = state.compute;
+      refreshOptionAvailability(target);
+    }
+  } else {
+    byId("provider-catalogue").open = true;
+  }
+  for (const component of snapshot.components) updateComponentCard(component);
+  updateSelectionSummary();
+  renderApplication();
+}
+
+function renderGuidedSetup() {
+  const visible = snapshot.application && !snapshot.application.installed;
+  byId("guided-setup").classList.toggle("hidden", !visible);
+  for (const button of byId("setup-goals").querySelectorAll("button")) {
+    const choice = setupChoices[button.dataset.goal];
+    const target = snapshot.components.find(
+      (item) => item.definition.id === choice?.component,
+    );
+    button.disabled =
+      Boolean(activeOperation) ||
+      Boolean(
+        choice &&
+        (!target ||
+          !selectable(target) ||
+          !(target.definition.models || []).some(
+            (item) => item.id === choice.model,
+          )),
+      );
+    button.setAttribute(
+      "aria-pressed",
+      String(button.dataset.goal === setupGoal),
+    );
+  }
+  byId("setup-transcription").classList.toggle(
+    "hidden",
+    setupGoal !== "transcribe",
+  );
+  byId("setup-transcription-model").disabled = Boolean(activeOperation);
+  const summary = byId("setup-selection");
+  clear(summary);
+  summary.classList.toggle("hidden", !setupGoal);
+  if (!setupGoal) return;
+  summary.append(
+    text(
+      "strong",
+      setupGoal === "manual" ? "Your selection" : "Selected for you",
+    ),
+  );
+  const selected = snapshot.components.filter(
+    (item) => selectable(item) && controlsFor(item).selected,
+  );
+  for (const component of selected) {
+    const models = selectedModelPackages(
+      component,
+      controlsFor(component).options,
+    );
+    summary.append(text("p", component.definition.label));
+    for (const model of models) {
+      summary.append(
+        text("p", `${model.label}. ${modelPurpose(model)}.`, "meta"),
+      );
+      if (model.estimated_download_bytes)
+        summary.append(
+          text(
+            "p",
+            `${component.definition.id === "crispasr" ? "Model downloaded on first use" : "Model package"}: about ${bytes(model.estimated_download_bytes)}.`,
+            "meta",
+          ),
+        );
+    }
+  }
+  if (!selected.some((item) => item.definition.id !== "pandrator")) {
+    summary.append(
+      text(
+        "p",
+        "App only. Add a local model later or connect a remote provider in Pandrator.",
+        "meta",
+      ),
+    );
+  } else
+    summary.append(
+      text(
+        "p",
+        "The review includes the app and runtime download sizes. You can change these choices in the full catalogue below.",
+        "meta",
+      ),
+    );
+}
+
+function installedModels(component) {
+  return component.inspection.installed_model_ids || [];
+}
+
+function modelSelectionChanged(component) {
+  if (
+    component.definition.id !== "audio_cpp" ||
+    component.inspection.state !== "present"
+  )
+    return false;
+  const current = new Set(
+    component.inspection.installed_model_ids ??
+      component.desired?.options?.models ??
+      [],
+  );
+  const selected = controlsFor(component).options.models || [];
+  return (
+    current.size !== selected.length || selected.some((id) => !current.has(id))
+  );
+}
+
 function makeModelList(definition, component, state, nodes) {
   const root = document.createElement("div");
   root.className = "model-list";
   const modelCheckboxes = new Map();
-  if (nodes) nodes.modelCheckboxes = modelCheckboxes;
+  if (nodes) {
+    nodes.modelCheckboxes = modelCheckboxes;
+    nodes.modelStatuses = new Map();
+  }
   const selectedModels = new Set(state?.options?.models || []);
 
   for (const item of definition.models || []) {
-    const row = document.createElement("label");
-    row.className = "model-row model-choice";
+    const packages = definition.id === "audio_cpp";
+    const row = document.createElement(packages ? "label" : "div");
+    row.className = `model-row${packages ? " model-choice" : ""}`;
 
     const checkbox = document.createElement("input");
     checkbox.type = "checkbox";
@@ -690,6 +915,7 @@ function makeModelList(definition, component, state, nodes) {
     checkbox.checked = selectedModels.has(item.id);
     checkbox.disabled = Boolean(activeOperation);
     checkbox.addEventListener("change", () => {
+      setupGoal = "manual";
       const current = new Set(state.options?.models || []);
       if (checkbox.checked) {
         current.add(item.id);
@@ -706,7 +932,14 @@ function makeModelList(definition, component, state, nodes) {
 
     const content = document.createElement("div");
     content.className = "model-info";
-    content.append(text("strong", item.label));
+    if (modelPurpose(item))
+      content.append(text("strong", modelPurpose(item), "model-purpose"));
+    content.append(text("span", item.label, "model-name"));
+    if (packages && nodes) {
+      const status = text("span", "", "model-install-state");
+      nodes.modelStatuses.set(item.id, status);
+      content.append(status);
+    }
     if (item.description) content.append(text("p", item.description));
     if (item.estimated_download_bytes) {
       content.append(
@@ -731,7 +964,8 @@ function makeModelList(definition, component, state, nodes) {
     }
     if (item.usage_note) content.append(text("p", item.usage_note));
 
-    row.append(checkbox, content);
+    if (packages) row.append(checkbox);
+    row.append(content);
     root.append(row);
   }
   return root;
@@ -745,11 +979,7 @@ function buildComponentDetails(component, nodes) {
   details.className = "engine-details";
   if (definition.guidance || definition.description) {
     details.append(
-      text(
-        "p",
-        definition.guidance || definition.description,
-        "guidance",
-      ),
+      text("p", definition.guidance || definition.description, "guidance"),
     );
   }
 
@@ -767,7 +997,12 @@ function buildComponentDetails(component, nodes) {
     const modelSection = document.createElement("section");
     modelSection.className = "engine-detail-section";
     modelSection.append(
-      text("h4", "Models and licences"),
+      text(
+        "h4",
+        definition.id === "audio_cpp"
+          ? "Choose model packages"
+          : "Available models and licences",
+      ),
       makeModelList(definition, component, state, nodes),
     );
     details.append(modelSection);
@@ -799,6 +1034,8 @@ function buildComponentDetails(component, nodes) {
     }
     select.addEventListener("change", () => {
       state.compute = select.value;
+      setupGoal = "manual";
+      updateSelectionSummary();
     });
     label.append(
       select,
@@ -825,7 +1062,9 @@ function buildComponentDetails(component, nodes) {
     }
     select.addEventListener("change", () => {
       setSelectedOptionValue(state, optionDefinition, select.value);
+      setupGoal = "manual";
       refreshOptionAvailability(component);
+      updateSelectionSummary();
     });
     label.append(select);
     if (optionDefinition.description) {
@@ -843,19 +1082,19 @@ function buildComponentDetails(component, nodes) {
   installMeta.append(
     text(
       "span",
-      `${estimatePrefix}: ${bytes(
+      `${definition.id === "audio_cpp" ? "All model packages, not your selection" : estimatePrefix}: ${bytes(
         definition.estimated_download_bytes,
       )} download`,
     ),
-    text(
-      "span",
-      `${bytes(definition.estimated_installed_bytes)} installed`,
-    ),
+    text("span", `${bytes(definition.estimated_installed_bytes)} installed`),
   );
   if (definition.size_note) {
     installMeta.append(text("p", definition.size_note, "size-note"));
   }
   details.append(installMeta);
+  const selectionEstimate = text("p", "", "guidance");
+  details.append(selectionEstimate);
+  nodes.selectionEstimate = selectionEstimate;
 
   const problem = text("div", "", "problem hidden");
   const unsupported = text(
@@ -1020,6 +1259,8 @@ function renderCatalogue() {
       controlsFor(pandrator).selected = true;
     }
     selectionInitialized = true;
+    if (!snapshot.application?.installed)
+      byId("provider-catalogue").open = false;
   }
 
   for (const [section, components] of groups.entries()) {
@@ -1030,8 +1271,7 @@ function renderCatalogue() {
     const sectionNode = document.createElement("details");
     sectionNode.className = "component-section";
     sectionNode.dataset.section = section;
-    sectionNode.open =
-      sectionState.get(section) ?? (section !== "compatibility");
+    sectionNode.open = sectionState.get(section) ?? section !== "compatibility";
     sectionNode.addEventListener("toggle", () => {
       sectionState.set(section, sectionNode.open);
     });
@@ -1080,7 +1320,10 @@ function updateComponentCard(component) {
   nodes.card.classList.toggle("selected", state.selected && canSelect);
   nodes.checkbox.checked = state.selected && canSelect;
   nodes.checkbox.disabled = !canSelect;
-  nodes.checkbox.parentElement.classList.toggle("hidden", !selectable(component));
+  nodes.checkbox.parentElement.classList.toggle(
+    "hidden",
+    !selectable(component),
+  );
   const runtimeState = componentRuntimeState(component);
   nodes.status.textContent = runtimeState.label;
   nodes.status.className = `engine-state ${runtimeState.state}`;
@@ -1103,17 +1346,46 @@ function updateComponentCard(component) {
       : `${definition.label}: ${runtimeState.label}`,
   );
   if (!nodes.detailsBuilt) return;
+  const packages = definition.id === "audio_cpp";
+  nodes.selectionEstimate.classList.toggle("hidden", !packages);
+  if (packages) {
+    const selectedPackages = selectedModelPackages(component, state.options);
+    const size = selectedPackages.reduce(
+      (total, item) => total + (item.estimated_download_bytes || 0),
+      0,
+    );
+    nodes.selectionEstimate.textContent = selectedPackages.length
+      ? `Selected model packages: about ${bytes(size)}. The review adds runtime space and download estimates.`
+      : "No model packages selected.";
+  }
   if (nodes.modelCheckboxes) {
     const selected = new Set(state.options?.models || []);
     for (const [modelId, cb] of nodes.modelCheckboxes.entries()) {
       cb.checked = selected.has(modelId);
       cb.disabled = Boolean(activeOperation);
+      const installed = installedModels(component).includes(modelId);
+      const unknown =
+        component.inspection.state === "present" &&
+        component.inspection.installed_model_ids == null;
+      const status = nodes.modelStatuses?.get(modelId);
+      if (status)
+        status.textContent = unknown
+          ? "Installation status unavailable"
+          : installed
+            ? cb.checked
+              ? "Installed"
+              : "Removal proposed"
+            : cb.checked
+              ? state.selected || inspection.state === "present"
+                ? "Selected for download"
+                : "Select this provider to install"
+              : "Not installed";
     }
   }
   const problems = [...(inspection.problems || [])];
   if (
-    (definition.models || []).length > 0 &&
-    state.selected &&
+    definition.id === "audio_cpp" &&
+    (state.selected || inspection.state === "present") &&
     !(state.options?.models || []).length
   ) {
     problems.push("Select at least one model package.");
@@ -1147,7 +1419,12 @@ function updateComponentCard(component) {
   }
   if (inspection.state === "present" && supported.has("update")) {
     nodes.actions.append(
-      makeButton("Review update", () => planComponent(component, "update")),
+      makeButton(
+        modelSelectionChanged(component)
+          ? "Review model changes"
+          : "Review update",
+        () => planComponent(component, "update"),
+      ),
     );
   }
   if (inspection.state === "present" && supported.has("repair")) {
@@ -1171,6 +1448,13 @@ function updateComponentCard(component) {
   for (const control of nodes.card.querySelectorAll("select")) {
     control.disabled = Boolean(activeOperation);
   }
+  for (const button of nodes.actions.querySelectorAll("button")) {
+    button.disabled =
+      Boolean(activeOperation) ||
+      (packages &&
+        !(state.options.models || []).length &&
+        !button.classList.contains("danger"));
+  }
 }
 
 function updateSelectionSummary() {
@@ -1189,7 +1473,7 @@ function updateSelectionSummary() {
       engineCount === 1 ? "" : "s"
     }`;
   } else if (includesPandrator) {
-    summary = "Pandrator will be installed";
+    summary = "App only · add a local model later or connect a remote provider";
   } else if (engineCount) {
     summary = `${engineCount} optional engine${
       engineCount === 1 ? "" : "s"
@@ -1198,13 +1482,14 @@ function updateSelectionSummary() {
   byId("selection-count").textContent = summary;
   const anyMissingModels = selected.some(
     (component) =>
-      (component.definition.models || []).length > 0 &&
+      component.definition.id === "audio_cpp" &&
       !(controlsFor(component).options?.models || []).length,
   );
   const review = byId("review-selection");
   review.disabled =
     !selected.length || Boolean(activeOperation) || anyMissingModels;
   review.textContent = "Review installation";
+  renderGuidedSetup();
 }
 
 function pandratorComponent() {
@@ -1289,9 +1574,7 @@ function renderMcpAccess() {
   const endpoint = byId("mcp-endpoint");
   const actionButton = byId("mcp-action");
   const current = snapshot.application;
-  const service = snapshot.services.find(
-    (item) => item.id === "pandrator.mcp",
-  );
+  const service = snapshot.services.find((item) => item.id === "pandrator.mcp");
 
   row.classList.toggle("hidden", !current?.installed);
   endpoint.textContent = "";
@@ -1316,10 +1599,7 @@ function renderMcpAccess() {
   actionButton.classList.remove("hidden");
   const busy = runtimeBusy.has(service.id);
   actionButton.disabled =
-    !control.action ||
-    Boolean(activeOperation) ||
-    applicationBusy ||
-    busy;
+    !control.action || Boolean(activeOperation) || applicationBusy || busy;
   actionButton.classList.toggle("busy", busy);
 }
 
@@ -1346,8 +1626,10 @@ function renderApplication() {
   if (!current.installed) {
     setApplicationState("Not installed", "absent");
     byId("application-detail").textContent =
-      "Required for optional speech engines · approximately 650 MB to download.";
-    primary.textContent = "Review installation";
+      "The app is your workspace. Local speech models are installed separately, or you can connect a remote provider later.";
+    primary.textContent = setupGoal
+      ? "Review installation"
+      : "Choose your setup";
     primary.dataset.action = "install";
     more.classList.add("hidden");
     return;
@@ -1365,8 +1647,7 @@ function renderApplication() {
   }
   if (current.running && current.healthy) {
     setApplicationState("Installed and running", "present");
-    byId("application-detail").textContent =
-      "Your browser workspace is ready.";
+    byId("application-detail").textContent = "Your browser workspace is ready.";
     primary.textContent = applicationBusy ? "Opening…" : "Open Pandrator";
     primary.dataset.action = "launch";
     more.classList.remove("hidden");
@@ -1382,8 +1663,7 @@ function renderApplication() {
     return;
   }
   setApplicationState("Installed", "present");
-  byId("application-detail").textContent =
-    "The application is stopped.";
+  byId("application-detail").textContent = "The application is stopped.";
   primary.textContent = applicationBusy ? "Starting…" : "Start Pandrator";
   primary.dataset.action = "launch";
   more.classList.add("hidden");
@@ -1448,9 +1728,7 @@ function updateNetworkFields() {
   const installed = Boolean(snapshot.application?.installed);
   const save = byId("save-network");
   save.disabled =
-    networkBusy ||
-    Boolean(activeOperation) ||
-    (remote && !installed);
+    networkBusy || Boolean(activeOperation) || (remote && !installed);
   save.classList.toggle("busy", networkBusy);
   save.textContent = networkBusy ? "Saving…" : "Save access settings";
 }
@@ -1507,7 +1785,10 @@ async function saveNetwork() {
     return;
   }
   if (password && password.length < 10) {
-    showMessage("The owner password must contain at least 10 characters.", true);
+    showMessage(
+      "The owner password must contain at least 10 characters.",
+      true,
+    );
     return;
   }
   const publicUrl = byId("network-public-url").value.trim().replace(/\/+$/, "");
@@ -1534,9 +1815,7 @@ async function saveNetwork() {
       body: JSON.stringify({
         exposure: {
           mode,
-          bind_host: remote
-            ? byId("network-bind-host").value
-            : "127.0.0.1",
+          bind_host: remote ? byId("network-bind-host").value : "127.0.0.1",
           port,
           public_url: remote ? publicUrl : null,
           trusted_hosts: byId("network-trusted-hosts")
@@ -1551,7 +1830,8 @@ async function saveNetwork() {
         },
         owner_password: password || null,
         replace_owner_password: Boolean(
-          password && snapshot.network?.application?.owner_authentication_initialized,
+          password &&
+          snapshot.network?.application?.owner_authentication_initialized,
         ),
         restart_if_running: true,
       }),
@@ -1601,11 +1881,7 @@ function renderServices() {
     const copy = document.createElement("div");
     copy.append(
       text("strong", label),
-      text(
-        "span",
-        runtimeState.label,
-        `engine-state ${runtimeState.state}`,
-      ),
+      text("span", runtimeState.label, `engine-state ${runtimeState.state}`),
       text(
         "div",
         `${service.id}${service.process?.pid ? ` · PID ${service.process.pid}` : ""}`,
@@ -1620,16 +1896,11 @@ function renderServices() {
     if (runtimeControl?.action) {
       const button = makeButton(
         runtimeControl.actionLabel,
-        () =>
-          runtime(
-            runtimeControl.serviceId,
-            runtimeControl.action,
-          ),
+        () => runtime(runtimeControl.serviceId, runtimeControl.action),
         "button secondary service-runtime-action",
       );
       button.disabled =
-        Boolean(activeOperation) ||
-        runtimeBusy.has(runtimeControl.serviceId);
+        Boolean(activeOperation) || runtimeBusy.has(runtimeControl.serviceId);
       button.classList.toggle(
         "busy",
         runtimeBusy.has(runtimeControl.serviceId),
@@ -1706,7 +1977,13 @@ function renderActivity() {
     root.append(row);
   }
   if (!combined.length) {
-    root.append(text("p", "No activity yet.", "muted"));
+    root.append(
+      text(
+        "p",
+        "No installations or service actions yet. Choose a setup under Install & launch; progress and completed actions will appear here.",
+        "muted",
+      ),
+    );
   }
 }
 
@@ -1745,10 +2022,7 @@ function failedTask() {
 
 function renderOperationFailure() {
   const panel = byId("operation-failure");
-  if (
-    !failedOperation ||
-    failedOperation.id === dismissedFailureOperationId
-  ) {
+  if (!failedOperation || failedOperation.id === dismissedFailureOperationId) {
     panel.classList.add("hidden");
     return;
   }
@@ -1789,7 +2063,7 @@ async function updateFailureContext() {
       `/v1/operations/${encodeURIComponent(selected.id)}/tasks`,
     );
     failedOperationTasks = payload.items || [];
-  } catch (_error) {
+  } catch {
     // The operation-level error is still useful if task detail is unavailable.
   }
 }
@@ -1838,7 +2112,10 @@ async function copyIssueSummary() {
     }
     showMessage("Issue summary copied. Attach the diagnostic bundle as well.");
   } catch (error) {
-    showMessage(`The issue summary could not be copied: ${error.message}`, true);
+    showMessage(
+      `The issue summary could not be copied: ${error.message}`,
+      true,
+    );
   }
 }
 
@@ -1855,8 +2132,7 @@ async function downloadDiagnostics(event) {
     if (!response.ok) {
       const payload = await response.json().catch(() => ({}));
       throw new Error(
-        payload.error?.message ||
-          `Manager returned HTTP ${response.status}.`,
+        payload.error?.message || `Manager returned HTTP ${response.status}.`,
       );
     }
     const disposition = response.headers.get("Content-Disposition") || "";
@@ -1892,13 +2168,8 @@ async function finishPendingInstall() {
   if (operation.state !== "succeeded") {
     pendingInstallOperationId = "";
     pendingPostInstallAccess = null;
-    const detail = operation.error_message
-      ? ` ${operation.error_message}`
-      : "";
-    showMessage(
-      `Installation ${stateLabel(operation.state)}.${detail}`,
-      true,
-    );
+    const detail = operation.error_message ? ` ${operation.error_message}` : "";
+    showMessage(`Installation ${stateLabel(operation.state)}.${detail}`, true);
     focusOperationFailure();
     return;
   }
@@ -2014,7 +2285,7 @@ async function refresh() {
       if (error.code === "authentication_required") {
         pollingStopped = true;
         if (refreshTimer) window.clearTimeout(refreshTimer);
-        setManagerHealth("error", "Browser authorization expired");
+        blockManagerAccess(error.message);
       } else {
         setManagerHealth("error", "Manager unavailable");
       }
@@ -2113,14 +2384,8 @@ function updatePlanAccessFields() {
     "hidden",
     mode !== "private_network",
   );
-  byId("plan-https-fields").classList.toggle(
-    "hidden",
-    mode !== "https_proxy",
-  );
-  byId("plan-password-fields").classList.toggle(
-    "hidden",
-    mode === "local",
-  );
+  byId("plan-https-fields").classList.toggle("hidden", mode !== "https_proxy");
+  byId("plan-password-fields").classList.toggle("hidden", mode === "local");
 }
 
 function preparePlanAccess() {
@@ -2139,6 +2404,7 @@ function preparePlanAccess() {
     ) ||
     document.querySelector('input[name="plan-access-mode"][value="local"]');
   selected.checked = true;
+  byId("plan-remote-access").open = currentMode !== "local";
 
   const candidates = application.private_network_candidates || [];
   const candidateSelect = byId("plan-lan-candidate");
@@ -2201,7 +2467,9 @@ function collectPlanAccess() {
   } else if (mode === "https_proxy") {
     publicUrl = byId("plan-https-url").value.trim().replace(/\/+$/, "");
     if (!publicUrl.toLowerCase().startsWith("https://")) {
-      throw new Error("Enter the HTTPS address provided by your proxy or ingress.");
+      throw new Error(
+        "Enter the HTTPS address provided by your proxy or ingress.",
+      );
     }
   }
   return {
@@ -2227,10 +2495,103 @@ function collectPlanAccess() {
   };
 }
 
+function renderPlanItems(plan) {
+  const root = byId("plan-items");
+  clear(root);
+  for (const [id, desired] of Object.entries(plan.desired || {})) {
+    const component = snapshot.components.find(
+      (item) => item.definition.id === id,
+    );
+    if (!component || id === "pixi") continue;
+    const tasks = (plan.tasks || []).filter((task) => task.component_id === id);
+    const item = document.createElement("section");
+    item.className = "plan-item";
+    item.append(text("h3", component.definition.label));
+    item.append(
+      text(
+        "p",
+        !desired.present
+          ? "Remove installation"
+          : tasks.length
+            ? "Included in this operation"
+            : "Already available · no installation changes",
+        "meta",
+      ),
+    );
+    if (desired.present) {
+      // Read the immutable plan, never the controls behind the dialog.
+      const options = desired.options || {};
+      for (const model of selectedModelPackages(component, options)) {
+        item.append(text("strong", model.label, "model-name"));
+        if (modelPurpose(model))
+          item.append(text("p", modelPurpose(model), "meta"));
+        if (id === "crispasr")
+          item.append(
+            text(
+              "p",
+              `Downloaded on first use${model.estimated_download_bytes ? ` · model estimate ${bytes(model.estimated_download_bytes)}` : ""}. This is separate from the installation download below.`,
+              "meta",
+            ),
+          );
+      }
+      if (id === "audio_cpp") {
+        const removed = installedModels(component).filter(
+          (model) => !(options.models || []).includes(model),
+        );
+        for (const modelId of removed) {
+          const model = component.definition.models.find(
+            (entry) => entry.id === modelId,
+          );
+          item.append(
+            text(
+              "p",
+              `Removed from the active installation: ${model?.label || modelId}`,
+              "meta",
+            ),
+          );
+        }
+      }
+      for (const option of component.definition.install_options || []) {
+        const value =
+          option.state_field === "quantization"
+            ? desired.quantization || option.default
+            : options[option.key] || option.default;
+        const choice = option.choices.find((entry) => entry.value === value);
+        item.append(
+          text("p", `${option.label}: ${choice?.label || value}`, "meta"),
+        );
+      }
+      if (id !== "pandrator") {
+        const compute = component.compute_choices.find(
+          (entry) => entry.value === desired.compute,
+        );
+        const effective = tasks.find((task) => task.inputs?.effective_compute)
+          ?.inputs.effective_compute;
+        item.append(
+          text(
+            "p",
+            `Compute: ${compute?.label || desired.compute || "Automatic"}${effective ? ` · planned runtime: ${stateLabel(effective)}` : ""}`,
+            "meta",
+          ),
+        );
+      }
+    }
+    root.append(item);
+  }
+}
+
+function showPlanError(message) {
+  byId("plan-error").textContent = message;
+  byId("plan-error").classList.toggle("hidden", !message);
+}
+
 function showPlan(plan, title = "") {
   selectedPlan = plan;
   selectedPlanTitle = title || stateLabel(plan.kind);
   byId("plan-title").textContent = selectedPlanTitle;
+  showPlanError("");
+  byId("plan-technical").open = false;
+  renderPlanItems(plan);
   preparePlanAccess();
   const summary = byId("plan-summary");
   clear(summary);
@@ -2239,7 +2600,10 @@ function showPlan(plan, title = "") {
       "div",
       `Download: about ${bytes(selectedPlan.estimated_download_bytes)}`,
     ),
-    text("div", `Disk: about ${bytes(selectedPlan.estimated_disk_bytes)}`),
+    text(
+      "div",
+      `Installation space: about ${bytes(selectedPlan.estimated_disk_bytes)}`,
+    ),
   );
   const impacts = selectedPlan.impacts || {};
   if (impacts.release) {
@@ -2320,19 +2684,30 @@ function showPlan(plan, title = "") {
     group.append(list);
     confirmations.append(group);
   }
-  byId("confirm-plan").disabled = !(selectedPlan.tasks || []).length;
+  byId("confirm-plan").textContent =
+    {
+      install: "Install selected items",
+      update: "Apply reviewed update",
+      repair: "Repair selected items",
+      remove: "Remove selected items",
+      uninstall: "Uninstall Pandrator",
+    }[plan.kind] || "Apply reviewed changes";
+  byId("confirm-plan").disabled =
+    !(selectedPlan.tasks || []).length ||
+    (selectedPlan.preflight || []).some((check) => check.status === "error");
   byId("plan-dialog").showModal();
 }
 
 async function executePlan() {
   if (!selectedPlan) return;
-  let postInstallAccess = null;
+  let postInstallAccess;
   try {
     postInstallAccess = collectPlanAccess();
   } catch (error) {
-    showMessage(error.message, true);
+    showPlanError(error.message);
     return;
   }
+  showPlanError("");
   const confirm = byId("confirm-plan");
   confirm.disabled = true;
   confirm.classList.add("busy");
@@ -2367,7 +2742,7 @@ async function executePlan() {
         : "Plan accepted. You may close this page; the manager records progress durably.",
     );
   } catch (error) {
-    showMessage(error.message, true);
+    showPlanError(error.message);
   } finally {
     confirm.classList.remove("busy");
     confirm.disabled = false;
@@ -2385,6 +2760,22 @@ function closePlan() {
 async function applicationPrimary() {
   const action = byId("application-primary").dataset.action;
   if (action === "install") {
+    if (
+      !setupGoal &&
+      !snapshot.components.some(
+        (item) =>
+          item.definition.id !== "pandrator" && controlsFor(item).selected,
+      )
+    ) {
+      byId("guided-setup").scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+      byId("setup-goals")
+        .querySelector("button:not(:disabled)")
+        ?.focus({ preventScroll: true });
+      return;
+    }
     const component = pandratorComponent();
     if (component) {
       controlsFor(component).selected = true;
@@ -2465,9 +2856,7 @@ async function runtime(serviceId, action) {
       component?.definition.label ||
       serviceId;
     showMessage(
-      action === "stop"
-        ? `${label} stopped.`
-        : `${label} is starting.`,
+      action === "stop" ? `${label} stopped.` : `${label} is starting.`,
     );
   } catch (error) {
     showMessage(error.message, true);
@@ -2569,7 +2958,9 @@ function renderLegacy(payload) {
   clear(root);
   const report = payload?.report;
   if (!payload?.available || !report) {
-    root.append(text("p", "No existing installer configuration was found.", "muted"));
+    root.append(
+      text("p", "No existing installer configuration was found.", "muted"),
+    );
     return;
   }
   root.append(
@@ -2603,23 +2994,27 @@ function renderLegacy(payload) {
       );
       const desired = report.desired?.[componentId] || {};
       const details = [];
-      if (desired.compute) details.push(stateLabel(desired.compute).toUpperCase());
-      if (desired.quantization) details.push(String(desired.quantization).toUpperCase());
+      if (desired.compute)
+        details.push(stateLabel(desired.compute).toUpperCase());
+      if (desired.quantization)
+        details.push(String(desired.quantization).toUpperCase());
       if (desired.options?.model_size) {
         details.push(String(desired.options.model_size).toUpperCase());
       }
-      if (Array.isArray(desired.options?.models) && desired.options.models.length) {
+      if (
+        Array.isArray(desired.options?.models) &&
+        desired.options.models.length
+      ) {
         details.push(desired.options.models.join(", "));
       }
-      if (desired.options?.engine) details.push(stateLabel(desired.options.engine));
+      if (desired.options?.engine)
+        details.push(stateLabel(desired.options.engine));
       const item = document.createElement("li");
       item.append(
-        text(
-          "strong",
-          component?.definition?.label || stateLabel(componentId),
-        ),
+        text("strong", component?.definition?.label || stateLabel(componentId)),
       );
-      if (details.length) item.append(text("span", details.join(" · "), "meta"));
+      if (details.length)
+        item.append(text("span", details.join(" · "), "meta"));
       list.append(item);
     }
     review.append(list);
@@ -2643,7 +3038,9 @@ function renderLegacy(payload) {
     root.append(details);
   }
   if (report.already_imported) {
-    root.append(text("p", "This exact configuration was already imported.", "meta"));
+    root.append(
+      text("p", "This exact configuration was already imported.", "meta"),
+    );
     return;
   }
   root.append(
@@ -2737,8 +3134,7 @@ async function checkManagerUpdate() {
       status.textContent = `Pandrator Manager ${update.current_version} is current.`;
       return;
     }
-    status.textContent =
-      `Pandrator Manager ${update.version} is available. Review the exact signed update before installing it.`;
+    status.textContent = `Pandrator Manager ${update.version} is available. Review the exact signed update before installing it.`;
     const operationPlan = await requestJson("/v1/releases/plans", {
       method: "POST",
       body: JSON.stringify({
@@ -2802,20 +3198,21 @@ async function forgetAuthorizedBrowsers() {
 
 document.addEventListener("DOMContentLoaded", async () => {
   for (const tab of document.querySelectorAll(".manager-tab")) {
-    tab.addEventListener("click", () =>
-      activateManagerTab(tab.dataset.tab),
-    );
+    tab.addEventListener("click", () => activateManagerTab(tab.dataset.tab));
     tab.addEventListener("keydown", handleManagerTabKeydown);
   }
   activateManagerTab(activeManagerTab);
+  for (const button of byId("setup-goals").querySelectorAll("button")) {
+    button.addEventListener("click", () => chooseSetup(button.dataset.goal));
+  }
   byId("refresh").addEventListener("click", refresh);
-  byId("open-network-settings").addEventListener(
-    "click",
-    openNetworkSettings,
-  );
+  byId("open-network-settings").addEventListener("click", openNetworkSettings);
   byId("open-software-maintenance").addEventListener(
     "click",
     openSoftwareMaintenance,
+  );
+  byId("setup-transcription-model").addEventListener("change", () =>
+    chooseSetup("transcribe"),
   );
   byId("review-selection").addEventListener("click", planSelection);
   byId("application-primary").addEventListener("click", applicationPrimary);
@@ -2872,28 +3269,19 @@ document.addEventListener("DOMContentLoaded", async () => {
   byId("cancel-plan").addEventListener("click", closePlan);
   byId("cancel-operation").addEventListener("click", cancelOperation);
   byId("run-doctor").addEventListener("click", runDoctor);
-  byId("download-diagnostics").addEventListener(
-    "click",
-    downloadDiagnostics,
-  );
+  byId("download-diagnostics").addEventListener("click", downloadDiagnostics);
   byId("download-failure-diagnostics").addEventListener(
     "click",
     downloadDiagnostics,
   );
-  byId("copy-failure-summary").addEventListener(
-    "click",
-    copyIssueSummary,
-  );
+  byId("copy-failure-summary").addEventListener("click", copyIssueSummary);
   byId("dismiss-failure").addEventListener("click", () => {
     dismissedFailureOperationId = failedOperation?.id || "";
     renderOperationFailure();
   });
   byId("inspect-legacy").addEventListener("click", inspectLegacy);
   byId("review-release").addEventListener("click", reviewRelease);
-  byId("check-manager-update").addEventListener(
-    "click",
-    checkManagerUpdate,
-  );
+  byId("check-manager-update").addEventListener("click", checkManagerUpdate);
   byId("review-uninstall").addEventListener("click", reviewUninstall);
   byId("sign-out-session").addEventListener("click", signOutBrowser);
   byId("forget-browser-sessions").addEventListener(
@@ -2906,7 +3294,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     refreshTimer = window.setTimeout(poll, 2500);
   } catch (error) {
     showMessage(error.message, true);
-    setManagerHealth("error", "Authorization required");
+    blockManagerAccess(error.message);
   }
 });
 

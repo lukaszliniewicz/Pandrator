@@ -103,6 +103,38 @@ class TTSProviderProfileTests(unittest.TestCase):
         self.assertFalse(profile["credential_required"])
         self.assertTrue(profile["direct_http"])
 
+    def test_audio_cpp_qwen_voicedesign_metadata_is_reference_free_and_multilingual(
+        self,
+    ):
+        profile = tts_provider_profiles.get_tts_provider_profile(
+            "audio-cpp-experimental"
+        )
+        model = next(
+            item
+            for item in profile["model_catalog"]
+            if item["id"] == "qwen3_tts_1_7b_voicedesign_q8_0"
+        )
+
+        self.assertEqual("qwen3_tts", model["family"])
+        self.assertEqual("design", model["voice_mode"])
+        self.assertEqual(300, model["recommended_chunk_characters"])
+        self.assertEqual(
+            ["zh", "en", "ja", "ko", "de", "fr", "ru", "pt", "es", "it"],
+            model["supported_languages"],
+        )
+        self.assertEqual("Apache-2.0", model["license"]["name"])
+        self.assertEqual(
+            "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
+            model["license"]["url"],
+        )
+        self.assertEqual(
+            list(tts_provider_profiles.AUDIO_CPP_VOICE_DESIGN_MODELS),
+            profile["generation_prompt_models"],
+        )
+        self.assertNotIn(
+            "qwen3_tts_1_7b_voicedesign_q8_0", profile["voice_catalogues"]
+        )
+
     def test_azure_speech_profile_has_static_models_voices_and_safe_pricing(self):
         profile = tts_provider_profiles.get_tts_provider_profile(
             "azure-speech-mai-voice-2"

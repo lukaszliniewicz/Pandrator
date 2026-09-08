@@ -132,7 +132,8 @@ PRESENTATIONS: dict[str, ComponentPresentation] = {
             "Select the model packages you want to download below. Then choose "
             "an installed model in Pandrator's Generate audio settings; you can "
             "switch models there or add more packages later. CustomVoice and "
-            "Magpie offer ready-made voices. Base and cloning models need a "
+            "Magpie offer ready-made voices. VoiceDesign creates a voice from a "
+            "description. Base and cloning models need a "
             "voice reference recording. Leave the compute choice on Automatic "
             "unless you need a specific backend. CPU, Vulkan, and CUDA are "
             "available on Windows and Linux x86_64. The best-effort Linux CUDA "
@@ -177,6 +178,16 @@ PRESENTATIONS: dict[str, ComponentPresentation] = {
                 usage_note=COMMERCIAL_APACHE,
                 capabilities=("prebuilt_voices",),
                 estimated_download_bytes=2_817_044_064,
+            ),
+            model(
+                "qwen3_tts_1_7b_voicedesign_q8_0",
+                "Qwen3 TTS 1.7B VoiceDesign Q8_0",
+                description="Describe a new voice in words; no reference recording is needed. Supports ten languages.",
+                license_name="Apache-2.0",
+                license_url="https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
+                usage_note=COMMERCIAL_APACHE,
+                capabilities=("voice_design", "multilingual"),
+                estimated_download_bytes=2_816_988_960,
             ),
             model(
                 "fish_audio_s2_pro_q8_0",
@@ -275,12 +286,12 @@ PRESENTATIONS: dict[str, ComponentPresentation] = {
                 estimated_download_bytes=5_079_668_352,
             ),
         ),
-        estimated_download_bytes=28 * GiB,
-        estimated_installed_bytes=35 * GiB,
+        estimated_download_bytes=31 * GiB,
+        estimated_installed_bytes=38 * GiB,
         size_note=(
-            "Estimate includes the pinned native runtime and all ten selectable "
+            "Estimate includes the pinned native runtime and all eleven selectable "
             "Q8_0 model packages. Per-model sizes were sampled from the upstream "
-            "package repository on 2026-09-06. Model files are fetched from an "
+            "package repository on 2026-09-08. Model files are fetched from an "
             "immutable repository revision and verified with Pandrator-pinned "
             "SHA-256 digests."
         ),
@@ -400,8 +411,8 @@ PRESENTATIONS: dict[str, ComponentPresentation] = {
                 description="Which Qwen model family should be prepared first.",
                 default="base",
                 choices=(
-                    choice("base", "Base — clone a reference voice"),
-                    choice("customvoice", "CustomVoice — named speakers"),
+                    choice("base", "Base · clone a reference voice"),
+                    choice("customvoice", "CustomVoice · named speakers"),
                 ),
             ),
             ComponentInstallOption(
@@ -412,10 +423,10 @@ PRESENTATIONS: dict[str, ComponentPresentation] = {
                 choices=(
                     choice(
                         "0.6b",
-                        "0.6B — smaller",
+                        "0.6B · smaller",
                         requires={"initial_model": ("base",)},
                     ),
-                    choice("1.7b", "1.7B — higher capacity"),
+                    choice("1.7b", "1.7B · higher capacity"),
                 ),
             ),
             ComponentInstallOption(
@@ -425,8 +436,8 @@ PRESENTATIONS: dict[str, ComponentPresentation] = {
                 state_field="quantization",
                 default="q8_0",
                 choices=(
-                    choice("q8_0", "Q8_0 — smaller download"),
-                    choice("f16", "FP16 — full precision"),
+                    choice("q8_0", "Q8_0 · smaller download"),
+                    choice("f16", "FP16 · full precision"),
                 ),
             ),
         ),
@@ -587,13 +598,13 @@ PRESENTATIONS: dict[str, ComponentPresentation] = {
                 choices=tuple(
                     choice(value, label)
                     for value, label in (
-                        ("f16", "F16 — largest"),
+                        ("f16", "F16 · largest"),
                         ("q8_0", "Q8_0"),
-                        ("q6_k", "Q6_K — recommended"),
+                        ("q6_k", "Q6_K · recommended"),
                         ("q5_k_m", "Q5_K_M"),
                         ("q4_k_m", "Q4_K_M"),
                         ("q3_k", "Q3_K"),
-                        ("q2_k", "Q2_K — smallest"),
+                        ("q2_k", "Q2_K · smallest"),
                     )
                 ),
             ),
@@ -859,11 +870,11 @@ PRESENTATIONS: dict[str, ComponentPresentation] = {
                 key="engine",
                 label="Default transcription model",
                 description="The model is downloaded only when first used.",
-                default="moss-transcribe-diarize-0.9b",
+                default="parakeet-tdt-0.6b-v3",
                 choices=(
-                    choice("whisper-large-v3", "Whisper large-v3 — broadest coverage"),
-                    choice("parakeet-tdt-0.6b-v3", "Parakeet 0.6B — fast"),
-                    choice("moss-transcribe-diarize-0.9b", "MOSS 0.9B — speaker diarization"),
+                    choice("whisper-large-v3", "Whisper large-v3 · broadest coverage"),
+                    choice("parakeet-tdt-0.6b-v3", "Parakeet 0.6B · fast"),
+                    choice("moss-transcribe-diarize-0.9b", "MOSS 0.9B · speaker diarization"),
                 ),
             ),
             ComponentInstallOption(
@@ -873,7 +884,7 @@ PRESENTATIONS: dict[str, ComponentPresentation] = {
                 state_field="quantization",
                 default="q8_0",
                 choices=(
-                    choice("f16", "FP16 — full precision"),
+                    choice("f16", "FP16 · full precision"),
                     choice(
                         "q8_0",
                         "Q8_0",

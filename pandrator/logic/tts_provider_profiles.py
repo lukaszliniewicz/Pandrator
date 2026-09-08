@@ -8,6 +8,11 @@ GENERIC_JSON_ADAPTER = "generic_json"
 ELEVENLABS_NATIVE_ADAPTER = "elevenlabs_native"
 AZURE_SPEECH_ADAPTER = "azure_speech"
 
+AUDIO_CPP_VOICE_DESIGN_MODELS = (
+    "qwen3_tts_1_7b_voicedesign_q8_0",
+    "breeze_tts_2_q8_0",
+)
+
 # audio.cpp v0.7.2 ships these model families.  The server remains the source
 # of truth when it advertises a live catalogue; these entries keep a fresh or
 # offline first-class service useful before its catalogue has been refreshed.
@@ -23,6 +28,28 @@ AUDIO_CPP_MODEL_CATALOG = [
         "family": "qwen3_tts",
         "voice_mode": "prebuilt",
         "recommended_chunk_characters": 300,
+    },
+    {
+        "id": "qwen3_tts_1_7b_voicedesign_q8_0",
+        "family": "qwen3_tts",
+        "voice_mode": "design",
+        "recommended_chunk_characters": 300,
+        "supported_languages": [
+            "zh",
+            "en",
+            "ja",
+            "ko",
+            "de",
+            "fr",
+            "ru",
+            "pt",
+            "es",
+            "it",
+        ],
+        "license": {
+            "name": "Apache-2.0",
+            "url": "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
+        },
     },
     {
         "id": "fish_audio_s2_pro_q8_0",
@@ -1186,7 +1213,7 @@ def _audio_cpp_profile() -> dict:
         "models": model_ids,
         "model_catalog": model_catalog,
         "model_voice_modes": copy.deepcopy(AUDIO_CPP_MODEL_VOICE_MODES),
-        "generation_prompt_models": ["breeze_tts_2_q8_0"],
+        "generation_prompt_models": list(AUDIO_CPP_VOICE_DESIGN_MODELS),
         # audio.cpp voice names are model-specific. Keep the provider-wide
         # fallback empty so Qwen, Magpie, and Pocket presets never leak into
         # cloning-only models when the live catalogue is unavailable.

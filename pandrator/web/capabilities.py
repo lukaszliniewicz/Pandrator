@@ -22,6 +22,7 @@ from pandrator.logic.dubbing.crispasr import (
     normalize_model_quantization,
 )
 from pandrator.logic.dubbing.stt_backends import probe_crispasr_runtime
+from pandrator.logic.dubbing.stt_languages import supported_stt_languages
 from pandrator.runtime import DataPaths
 
 from .database import Database
@@ -416,49 +417,13 @@ def ffmpeg_video_encoder_ids(executable: str | None) -> set[str]:
     }
 
 
-def ffmpeg_vaapi_encoder_usable(
-    executable: str | None,
-    encoder: str,
-    render_device: Path | None,
-) -> bool:
-    """Verify that FFmpeg can open one VA-API encoder on the selected device."""
-
-    if not executable or render_device is None:
-        return False
-    try:
-        subprocess.run(
-            [
-                executable,
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-vaapi_device",
-                str(render_device),
-                "-f",
-                "lavfi",
-                "-i",
-                "color=c=black:s=320x240:r=1",
-                "-frames:v",
-                "1",
-                "-vf",
-                "format=nv12,hwupload",
-                "-an",
-                "-c:v",
-                encoder,
-                "-f",
-                "null",
-                "-",
-            ],
-            capture_output=True,
-            timeout=8,
-            check=True,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return True
-
-
 def probe_burn_video_encoders(executable: str | None, gpu: dict[str, Any]) -> list[dict[str, Any]]:
+    """List potential encoders without opening a GPU or encoding test frames.
+
+    Initializing VA-API for a capability refresh can reset unstable GPU drivers.
+    Hardware entries reflect FFmpeg support and device presence, not a successful
+    encode. Only an explicitly requested export should initialize an encoder.
+    """
     supported = ffmpeg_video_encoder_ids(executable)
     vendors = {str(item.get("vendor") or "") for item in gpu.get("devices", [])}
     render_device = (
@@ -476,12 +441,6 @@ def probe_burn_video_encoders(executable: str | None, gpu: dict[str, Any]) -> li
         if source.get("platform") == "linux" and render_device is None:
             continue
         if source.get("platform") == "windows" and not sys.platform.startswith("win"):
-            continue
-        if str(source["id"]).endswith("_vaapi") and not ffmpeg_vaapi_encoder_usable(
-            executable,
-            str(source["id"]),
-            render_device,
-        ):
             continue
         profiles.append({key: value for key, value in source.items() if key not in {"vendors", "platform"}})
     return profiles
@@ -576,6 +535,12 @@ def probe_stable_capabilities(paths: DataPaths) -> dict[str, Any]:
             "precision": preferred_quantization,
             "word_timing": model.word_timing,
             "diarization": "native" if engine == "moss" else "optional-external",
+            "supported_languages": (
+                list(supported_stt_languages(engine))
+                if supported_stt_languages(engine) is not None
+                else None
+            ),
+            "language_detection": True,
         }
     stt = {
         "crispasr": crispasr.installed,

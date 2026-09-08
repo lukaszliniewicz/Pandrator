@@ -107,11 +107,7 @@
             <h2 id="operation-title">Working…</h2>
             <p id="operation-detail" class="muted"></p>
           </div>
-          <button
-            id="cancel-operation"
-            class="button secondary"
-            type="button"
-          >
+          <button id="cancel-operation" class="button secondary" type="button">
             Cancel safely
           </button>
         </div>
@@ -136,11 +132,7 @@
             <h2 id="failure-title">Installation did not complete</h2>
             <p id="failure-message"></p>
           </div>
-          <button
-            id="dismiss-failure"
-            class="button secondary"
-            type="button"
-          >
+          <button id="dismiss-failure" class="button secondary" type="button">
             Dismiss
           </button>
         </div>
@@ -228,6 +220,98 @@
         aria-labelledby="tab-install"
         data-panel="install"
       >
+        <section
+          id="guided-setup"
+          class="panel guided-setup hidden"
+          aria-labelledby="setup-title"
+        >
+          <p class="eyebrow">Your first setup</p>
+          <h2 id="setup-title">What would you like to do?</h2>
+          <p class="muted">
+            Choose a starting point. We will select the app and a local model
+            for you. Nothing downloads until you review and confirm.
+          </p>
+          <div
+            id="setup-goals"
+            class="setup-goals"
+            aria-label="Setup starting point"
+          >
+            <button
+              type="button"
+              class="setup-goal"
+              data-goal="narrate"
+              aria-pressed="false"
+            >
+              <strong>Narrate with ready-made voices</strong>
+              <span>Type text and choose a voice. No recording needed.</span>
+              <small>Qwen3 CustomVoice · audio.cpp</small>
+            </button>
+            <button
+              type="button"
+              class="setup-goal"
+              data-goal="clone"
+              aria-pressed="false"
+            >
+              <strong>Clone a voice</strong>
+              <span
+                >Use a reference recording to create speech in that voice.</span
+              >
+              <small>Qwen3 Base · audio.cpp</small>
+            </button>
+            <button
+              type="button"
+              class="setup-goal"
+              data-goal="transcribe"
+              aria-pressed="false"
+            >
+              <strong>Transcribe a recording</strong>
+              <span
+                >Turn audio into text or subtitles in 25 supported
+                languages.</span
+              >
+              <small>Parakeet 0.6B v3 · CrispASR</small>
+            </button>
+            <button
+              type="button"
+              class="setup-goal"
+              data-goal="manual"
+              aria-pressed="false"
+            >
+              <strong>Choose everything myself</strong>
+              <span
+                >Browse all providers, use a remote provider, or install just
+                the app.</span
+              >
+              <small>Full catalogue and advanced choices</small>
+            </button>
+          </div>
+          <div id="setup-transcription" class="setup-selection hidden">
+            <label
+              >Recording language coverage
+              <select id="setup-transcription-model">
+                <option value="parakeet-tdt-0.6b-v3">
+                  Parakeet · 25 supported languages
+                </option>
+                <option value="whisper-large-v3">
+                  Whisper · other languages or unsure
+                </option>
+              </select>
+            </label>
+            <p class="meta">
+              Parakeet supports Bulgarian, Croatian, Czech, Danish, Dutch,
+              English, Estonian, Finnish, French, German, Greek, Hungarian,
+              Italian, Latvian, Lithuanian, Maltese, Polish, Portuguese,
+              Romanian, Russian, Slovak, Slovenian, Spanish, Swedish, and
+              Ukrainian. Choose Whisper for broader coverage.
+            </p>
+          </div>
+          <div
+            id="setup-selection"
+            class="setup-selection hidden"
+            aria-live="polite"
+          ></div>
+        </section>
+
         <section id="application-panel" class="panel application-panel">
           <div class="application-copy">
             <div class="application-heading">
@@ -286,11 +370,7 @@
             <strong id="network-summary">This device only</strong>
             <span id="network-browser-url" class="meta"></span>
           </div>
-          <button
-            id="open-network-settings"
-            class="text-button"
-            type="button"
-          >
+          <button id="open-network-settings" class="text-button" type="button">
             Change
           </button>
         </div>
@@ -301,12 +381,7 @@
             <strong id="mcp-summary">MCP server status unavailable</strong>
             <span id="mcp-endpoint" class="meta"></span>
           </div>
-          <button
-            id="mcp-action"
-            class="text-button"
-            type="button"
-            disabled
-          >
+          <button id="mcp-action" class="text-button" type="button" disabled>
             Start MCP
           </button>
         </div>
@@ -317,21 +392,20 @@
             <h2>Add only what you need</h2>
             <p class="muted">
               Expand a provider to see its models, voices, languages, and
-              download sizes. Select only what you want to install; you can
-              add more later. audio.cpp offers several local speech models
-              through one provider.
+              download sizes. Select only what you want to install; you can add
+              more later. audio.cpp offers several local speech models through
+              one provider.
             </p>
           </div>
-          <div id="components" class="component-sections" aria-live="polite">
-            <p class="muted">Loading the engine catalogue…</p>
-          </div>
+          <details id="provider-catalogue" open>
+            <summary>Browse all providers and models</summary>
+            <div id="components" class="component-sections" aria-live="polite">
+              <p class="muted">Loading the engine catalogue…</p>
+            </div>
+          </details>
         </section>
 
-        <div
-          id="selection-bar"
-          class="selection-bar hidden"
-          aria-live="polite"
-        >
+        <div id="selection-bar" class="selection-bar hidden" aria-live="polite">
           <span id="selection-count">Nothing selected</span>
           <button
             id="review-selection"
@@ -386,8 +460,8 @@
             >
               <h3 id="manager-maintenance-title">Pandrator Manager</h3>
               <p id="manager-update-status" class="muted">
-                Check the signed release channel for a newer setup and
-                recovery manager.
+                Check the signed release channel for a newer setup and recovery
+                manager.
               </p>
               <div class="actions maintenance-product-actions">
                 <button
@@ -495,8 +569,8 @@
                     placeholder="At least 10 characters"
                   />
                   <small id="network-password-help">
-                    Required before first network exposure; it is never saved
-                    by the manager.
+                    Required before first network exposure; it is never saved by
+                    the manager.
                   </small>
                 </label>
                 <label class="network-password-field">
@@ -659,16 +733,20 @@
               <div id="activity"></div>
             </div>
             <div>
-              <h3>Advanced service details</h3>
-              <p class="muted">
-                See which local engines are running and start or stop them.
-                Pandrator's API and worker are also shown for troubleshooting.
-              </p>
-              <div id="services" class="service-list"></div>
+              <details>
+                <summary>Advanced service details</summary>
+                <p class="muted">
+                  See which local engines are running and start or stop them.
+                  Pandrator's API and worker are also shown for troubleshooting.
+                </p>
+                <div id="services" class="service-list"></div>
+              </details>
             </div>
             <div>
-              <h3>Manager status</h3>
-              <pre id="status">Connecting…</pre>
+              <details>
+                <summary>Manager status</summary>
+                <pre id="status">Connecting…</pre>
+              </details>
             </div>
           </div>
         </section>
@@ -719,7 +797,7 @@
       <div class="dialog-shell">
         <div class="row">
           <div>
-            <p class="eyebrow">Review exact plan</p>
+            <p class="eyebrow">Review before continuing</p>
             <h2 id="plan-title">Installation plan</h2>
           </div>
           <button
@@ -731,7 +809,9 @@
             ×
           </button>
         </div>
+        <div id="plan-items" class="plan-items"></div>
         <div id="plan-summary" class="plan-summary"></div>
+        <p id="plan-error" class="problem hidden" role="alert"></p>
         <section id="plan-access" class="plan-access hidden">
           <p class="eyebrow">Access after installation</p>
           <h3>Where should Pandrator be available?</h3>
@@ -745,31 +825,42 @@
               />
               <span>
                 <strong>This device</strong>
-                <small>Safest default. Open Pandrator only on this computer.</small>
+                <small
+                  >Safest default. Open Pandrator only on this computer.</small
+                >
               </span>
             </label>
-            <label class="plan-access-option">
-              <input
-                type="radio"
-                name="plan-access-mode"
-                value="private_network"
-              />
-              <span>
-                <strong>Trusted home or office network</strong>
-                <small>Use Pandrator from another device on the same LAN or VPN.</small>
-              </span>
-            </label>
-            <label class="plan-access-option">
-              <input
-                type="radio"
-                name="plan-access-mode"
-                value="https_proxy"
-              />
-              <span>
-                <strong>HTTPS proxy or ingress</strong>
-                <small>For a server, pod, or other internet-facing deployment.</small>
-              </span>
-            </label>
+            <details id="plan-remote-access">
+              <summary>Use Pandrator from another device</summary>
+              <label class="plan-access-option">
+                <input
+                  type="radio"
+                  name="plan-access-mode"
+                  value="private_network"
+                />
+                <span>
+                  <strong>Trusted home or office network</strong>
+                  <small
+                    >Use Pandrator from another device on the same LAN or
+                    VPN.</small
+                  >
+                </span>
+              </label>
+              <label class="plan-access-option">
+                <input
+                  type="radio"
+                  name="plan-access-mode"
+                  value="https_proxy"
+                />
+                <span>
+                  <strong>HTTPS proxy or ingress</strong>
+                  <small
+                    >For a server, pod, or other internet-facing
+                    deployment.</small
+                  >
+                </span>
+              </label>
+            </details>
           </div>
           <div id="plan-lan-fields" class="plan-access-fields hidden">
             <label>
@@ -789,8 +880,8 @@
               </label>
             </details>
             <p class="problem">
-              LAN access uses unencrypted HTTP. Choose it only for a network
-              you trust.
+              LAN access uses unencrypted HTTP. Choose it only for a network you
+              trust.
             </p>
           </div>
           <div id="plan-https-fields" class="plan-access-fields hidden">
@@ -830,15 +921,17 @@
             </small>
           </div>
         </section>
-        <h3>What the manager will do</h3>
-        <ol id="plan-tasks"></ol>
+        <details id="plan-technical">
+          <summary>Technical installation steps</summary>
+          <ol id="plan-tasks"></ol>
+        </details>
         <div id="plan-confirmations"></div>
         <div class="dialog-actions">
           <button id="cancel-plan" class="button secondary" type="button">
             Go back
           </button>
           <button id="confirm-plan" class="button primary" type="button">
-            Confirm exact plan
+            Install selected items
           </button>
         </div>
       </div>

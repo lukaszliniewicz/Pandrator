@@ -15,10 +15,15 @@
     type QuickTranscription,
     type TranscriptFormat
   } from '$lib/quick-transcription-api';
-  import { speechRecognitionApi } from '$lib/admin-api';
-  import type { SttService } from '$lib/api-models';
+  import { speechRecognitionApi, diagnosticsApi } from '$lib/admin-api';
+  import type { SttService, RuntimeCapabilities } from '$lib/api-models';
   import { errorMessage } from '$lib/errors';
 
+  import { sessionApi } from '$lib/domain-api';
+  import { sttLanguageProblem } from '$lib/stt-language-policy';
+
+  let configuredEngine = $state('');
+  let capabilities = $state<RuntimeCapabilities>({});
   let mode = $state<'upload' | 'record'>('upload');
   let file = $state<File | null>(null);
   let previewUrl = $state('');
@@ -26,6 +31,9 @@
   let format = $state<TranscriptFormat>('txt');
   let language = $state('auto');
   let engine = $state('');
+  const languageProblem = $derived(
+    sttLanguageProblem(capabilities, engine || configuredEngine, language)
+  );
   let services = $state<SttService[]>([]);
   let job = $state<QuickTranscription | null>(null);
   let uploading = $state(false);
@@ -113,7 +121,7 @@
   }
 
   async function transcribe() {
-    if (!file || busy || recording) return;
+    if (!file || busy || recording || languageProblem) return;
     error = '';
     notice = '';
     uploading = true;
@@ -186,6 +194,18 @@
   }
 
   onMount(() => {
+    void sessionApi
+      .defaults('stt')
+      .then((payload) => {
+        configuredEngine = String(payload.effective?.stt_engine || '');
+      })
+      .catch(() => {});
+    void diagnosticsApi
+      .capabilities()
+      .then((value) => {
+        capabilities = value;
+      })
+      .catch(() => {});
     void speechRecognitionApi
       .catalogue()
       .then((catalogue) => {
@@ -344,17 +364,41 @@
           disabled={busy}
           onchange={() => (retryKey = '')}
         >
-          <option value="">Configured default</option>
-          {#each services as service}<option value={service.id}
-              >{service.name || service.id}</option
+          <option
+            value=""
+            disabled={Boolean(
+              sttLanguageProblem(capabilities, configuredEngine, language)
+            )}
+            >Configured default{configuredEngine ||
+            capabilities.stt?.default_engine
+              ? ` (${configuredEngine || capabilities.stt?.default_engine})`
+              : ''}</option
+          >
+          {#each [['parakeet', 'Parakeet 0.6B v3'], ['whisper', 'Whisper large-v3'], ['moss', 'MOSS Diarize 0.9B']] as [id, label]}
+            <option
+              value={id}
+              disabled={Boolean(sttLanguageProblem(capabilities, id, language))}
+              >{label}{sttLanguageProblem(capabilities, id, language)
+                ? ' · unsupported language'
+                : ''}</option
+            >
+          {/each}
+          {#each services as service}<option
+              value={service.id}
+              disabled={Boolean(
+                sttLanguageProblem(capabilities, service.id, language)
+              )}>{service.name || service.id}</option
             >{/each}
         </select>
       </label>
     </div>
+    {#if languageProblem}<p class="mt-3 text-sm text-red-600" role="alert">
+        {languageProblem}
+      </p>{/if}
     <div class="mt-6 flex flex-wrap items-center gap-4">
       <button
         class="action inline-flex items-center gap-2"
-        disabled={!file || busy || recording}
+        disabled={!file || busy || recording || Boolean(languageProblem)}
         onclick={transcribe}
       >
         {#if uploading}<LoaderCircle size={17} class="animate-spin" /> Uploading…

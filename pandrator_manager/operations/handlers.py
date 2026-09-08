@@ -470,7 +470,7 @@ class FilesystemTaskHandler:
                 "default_model": (
                     (task.inputs.get("resolved") or {})
                     .get("options", {})
-                    .get("engine", "moss-transcribe-diarize-0.9b")
+                    .get("engine", "parakeet-tdt-0.6b-v3")
                 ),
                 "default_quantization": (
                     (task.inputs.get("resolved") or {}).get("quantization") or "q8_0"

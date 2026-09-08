@@ -50,27 +50,58 @@
       (service) => service.id === 'audio_cpp' || service.adapter === 'audio_cpp'
     )
   );
-  const breezeModel = $derived(
-    (audioCpp?.models ?? []).find(
-      (model) => model.toLowerCase() === 'breeze_tts_2_q8_0'
-    ) ?? ''
+  const designModelNames: Record<string, string> = {
+    qwen3_tts_1_7b_voicedesign_q8_0: 'Qwen3 VoiceDesign',
+    breeze_tts_2_q8_0: 'BreezeTTS 2'
+  };
+  const designLanguageNames: Record<string, string> = {
+    en: 'English',
+    zh: 'Mandarin Chinese',
+    ja: 'Japanese',
+    ko: 'Korean',
+    de: 'German',
+    fr: 'French',
+    ru: 'Russian',
+    pt: 'Portuguese',
+    es: 'Spanish',
+    it: 'Italian'
+  };
+  const designModels = $derived(
+    (audioCpp?.models ?? []).filter((model) => model in designModelNames)
   );
-  const breezeInfo = $derived(
-    (audioCpp?.model_catalog ?? []).find((model) => model.id === breezeModel)
+  let designModel = $state('');
+  const designInfo = $derived(
+    (audioCpp?.model_catalog ?? []).find((model) => model.id === designModel)
+  );
+  const designLanguages = $derived(
+    designModel === 'breeze_tts_2_q8_0'
+      ? ['en', 'zh']
+      : Object.keys(designLanguageNames)
+  );
+  $effect(() => {
+    if (!designModels.includes(designModel)) {
+      designModel = designModels.includes('qwen3_tts_1_7b_voicedesign_q8_0')
+        ? 'qwen3_tts_1_7b_voicedesign_q8_0'
+        : designModels[0] || '';
+    }
+  });
+
+  let targetVoiceId = $state('');
+  let targetInitialized = false;
+  let voiceName = $state('');
+  let language = $state('en');
+  const designLanguageProblem = $derived(
+    Boolean(designModel && !designLanguages.includes(language))
   );
   const canGenerate = $derived(
     Boolean(
       !catalogueLoading &&
       audioCpp &&
-      breezeModel &&
-      audioCpp.available !== false
+      designModels.includes(designModel) &&
+      audioCpp.available !== false &&
+      !designLanguageProblem
     )
   );
-
-  let targetVoiceId = $state('');
-  let targetInitialized = false;
-  let voiceName = $state('');
-  let language = $state<'en' | 'zh'>('en');
   let prompt = $state('');
   let sampleText = $state(
     'At the edge of the quiet harbor, morning light moved across the water while the city slowly woke.'
@@ -85,7 +116,7 @@
   let progressDetail = $state('');
   let alive = true;
   const validSeed = $derived(
-    Number.isInteger(seed) && seed >= 0 && seed <= 2_147_483_647
+    Number.isInteger(seed) && seed >= 0 && seed <= 4_294_967_295
   );
 
   $effect(() => {
@@ -98,7 +129,7 @@
   });
 
   function randomSeed() {
-    return Math.floor(Math.random() * 2_147_483_647);
+    return Math.floor(Math.random() * 4_294_967_295);
   }
 
   function invalidatePreview() {
@@ -110,8 +141,9 @@
   function chooseTarget() {
     const target = availableVoices.find((voice) => voice.id === targetVoiceId);
     const targetLanguage = String(target?.language ?? '').toLowerCase();
-    if (targetLanguage.startsWith('zh')) language = 'zh';
-    else if (targetLanguage.startsWith('en')) language = 'en';
+    if (targetLanguage)
+      language = targetLanguage.replaceAll('_', '-').split('-')[0];
+    invalidatePreview();
   }
 
   function chooseAnotherSeed() {
@@ -151,16 +183,16 @@
   async function generatePreview() {
     const cleanPrompt = prompt.trim();
     const cleanText = sampleText.trim();
-    if (!cleanPrompt || !cleanText || !audioCpp || !breezeModel || !validSeed)
+    if (!cleanPrompt || !cleanText || !audioCpp || !canGenerate || !validSeed)
       return;
     generating = true;
     error = '';
     preview = null;
-    progressDetail = 'Starting Breeze voice design…';
+    progressDetail = `Starting ${designModelNames[designModel]} voice design…`;
     try {
       const queued = await speechServiceApi.preview(audioCpp.id, {
         text: cleanText,
-        model: breezeModel,
+        model: designModel,
         voice: '',
         language,
         generation_prompt: cleanPrompt,
@@ -171,7 +203,7 @@
       const artifactId = String(complete.result_json?.artifact_id ?? '');
       if (!artifactId)
         throw new Error(
-          'Breeze finished without returning a playable preview artifact.'
+          'The model finished without returning a playable preview artifact.'
         );
       preview = {
         artifactId,
@@ -312,7 +344,7 @@
   >
     <header class="flex items-start justify-between gap-4">
       <div>
-        <div class="eyebrow">Breeze voice design</div>
+        <div class="eyebrow">Local voice design</div>
         <h2 id="voice-design-title" class="mt-1 text-2xl font-semibold">
           Design a reusable voice
         </h2>
@@ -355,10 +387,11 @@
           onclick={refreshCatalogue}
           class="btn btn-sm btn-secondary"><RefreshCw size={14} /> Retry</button
         >
-      </div>{:else if !breezeModel}<div
+      </div>{:else if !designModel}<div
         class="mt-5 rounded-xl border border-[var(--warning)]/40 bg-[var(--warning)]/10 px-4 py-3 text-sm"
       >
-        Install the Breeze TTS 2 model for audio.cpp before designing a voice.
+        Install Qwen3 VoiceDesign or BreezeTTS 2 under audio.cpp in the Manager
+        before designing a voice.
         <a
           href="/providers?tab=speech&speech=local#component-audio_cpp"
           class="ml-1 font-semibold text-[var(--accent)] underline"
@@ -376,6 +409,25 @@
       </div>{/if}
 
     <div class="mt-6 grid gap-4 sm:grid-cols-2">
+      <label class="text-sm font-semibold sm:col-span-2"
+        >Design model
+        <select
+          bind:value={designModel}
+          onchange={invalidatePreview}
+          disabled={generating || saving || !designModels.length}
+          class="mt-1 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2.5 font-normal"
+        >
+          {#if !designModels.length}<option value=""
+              >Install a voice-design model</option
+            >{/if}
+          {#each designModels as model}<option value={model}
+              >{designModelNames[model]}{model === 'breeze_tts_2_q8_0'
+                ? ' · English and Mandarin Chinese'
+                : ' · 10 languages'}</option
+            >{/each}
+        </select>
+      </label>
+
       <label class="text-sm font-semibold"
         >Save to<select
           bind:value={targetVoiceId}
@@ -411,10 +463,19 @@
           oninput={invalidatePreview}
           disabled={generating || saving}
           class="mt-1 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2.5 font-normal"
-          ><option value="en">English</option><option value="zh"
-            >Mandarin Chinese</option
-          ></select
-        ></label
+        >
+          {#if !(language in designLanguageNames)}<option
+              value={language}
+              disabled>{language} · unsupported language</option
+            >{/if}
+          {#each Object.entries(designLanguageNames) as [code, name]}<option
+              value={code}
+              disabled={!designLanguages.includes(code)}
+              >{name}{!designLanguages.includes(code)
+                ? ' · unsupported by this model'
+                : ''}</option
+            >{/each}
+        </select></label
       >
       <label class="text-sm font-semibold"
         >Variation seed
@@ -424,7 +485,7 @@
             oninput={invalidatePreview}
             type="number"
             min="0"
-            max="2147483647"
+            max="4294967295"
             aria-invalid={!validSeed}
             disabled={generating || saving}
             class="min-w-0 flex-1 rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2.5 font-mono font-normal"
@@ -440,7 +501,7 @@
         </div>
         {#if !validSeed}<span
             class="mt-1 block text-xs font-normal text-red-600"
-            >Use a whole number from 0 to 2,147,483,647.</span
+            >Use a whole number from 0 to 4,294,967,295.</span
           >{/if}</label
       >
     </div>
@@ -469,12 +530,19 @@
         disabled={generating || saving}
         class="mt-1 w-full resize-y rounded-xl border border-[var(--line)] bg-[var(--paper)] p-3 font-normal leading-relaxed"
       ></textarea><span class="muted mt-1 block text-xs font-normal"
-        >These exact words are sent to Breeze and saved as the sample's
-        transcript. A varied, natural 10–20 second passage usually makes a
-        better cloning reference.</span
+        >These exact words are sent to the selected model and saved as the
+        sample's transcript. A varied, natural 10–20 second passage usually
+        makes a better cloning reference.</span
       ></label
     >
 
+    {#if designLanguageProblem}<p
+        class="mt-3 text-sm text-red-600"
+        role="alert"
+      >
+        {designModelNames[designModel]} does not support {language}. Choose a
+        supported language or another model.
+      </p>{/if}
     <div class="mt-5 rounded-2xl border border-[var(--line)] p-4">
       <div class="flex flex-wrap items-center justify-between gap-3">
         <div>
@@ -508,7 +576,7 @@
       {#if preview}<div class="mt-4">
           <AudioPlayer
             src={`/api/v1/artifacts/${preview.artifactId}/content`}
-            label="Designed Breeze voice preview"
+            label="Designed voice preview"
           />
         </div>{/if}
     </div>
@@ -523,7 +591,8 @@
         ><strong>Link the saved reference to audio.cpp</strong><span
           class="muted mt-0.5 block text-xs"
           >Recommended: this makes the new library voice immediately available
-          for Breeze cloning.</span
+          for compatible audio.cpp cloning models. Qwen3 VoiceDesign itself
+          creates voices from descriptions.</span
         ></span
       ></label
     >
@@ -532,8 +601,11 @@
       class="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-[var(--line)] pt-5"
     >
       <p class="muted max-w-lg text-xs leading-relaxed">
-        Breeze TTS 2 is licensed for research and non-commercial use. {#if breezeInfo?.license?.url}<a
-            href={breezeInfo.license.url}
+        {designModel === 'breeze_tts_2_q8_0'
+          ? 'BreezeTTS 2 is licensed for research and non-commercial use.'
+          : 'Qwen3 VoiceDesign is licensed under Apache-2.0.'}
+        {#if designInfo?.license?.url}<a
+            href={designInfo.license.url}
             target="_blank"
             rel="noreferrer"
             class="font-semibold text-[var(--accent)] underline"

@@ -17,6 +17,9 @@ from sqlalchemy import select
 
 from pandrator.logic.cancellable_process import ProcessCancelled, run_cancellable
 from pandrator.logic.dubbing.transcript_normalization import load_transcript
+from pandrator.logic.dubbing.stt_backends import normalize_stt_backend
+from pandrator.logic.dubbing.stt_languages import validate_stt_language
+from pandrator.logic.dubbing.stt_provider_profiles import CLOUD_STT_ENGINE_IDS
 from pandrator.logic.dubbing.transcription import transcribe_source_file_with_metadata
 from pandrator.runtime import DataPaths
 
@@ -140,6 +143,20 @@ class QuickTranscriptionService:
                 value = getattr(payload, field)
                 if value is not None:
                     settings[setting] = value
+            canonical_engine = normalize_stt_backend(
+                settings.get("stt_engine") or settings.get("stt_backend")
+            )
+            if canonical_engine not in CLOUD_STT_ENGINE_IDS:
+                try:
+                    settings["stt_language"] = validate_stt_language(
+                        canonical_engine,
+                        settings.get("stt_language")
+                        or settings.get("whisper_language"),
+                    )
+                except ValueError as error:
+                    raise TranscriptionError(
+                        "unsupported_language", str(error), 400
+                    ) from error
             settings = self.idempotency.redactor.redact_value(settings)
             record = QuickTranscription(
                 id=new_id(),

@@ -75,6 +75,12 @@ from .schemas import (
 RECOVERY_COOKIE = "pandrator_manager_session"
 
 
+def _scoped_recovery_cookie_name(
+    security_context: str,
+) -> str:
+    return f"{RECOVERY_COOKIE}_{security_context}"
+
+
 def _is_loopback(value: str | None) -> bool:
     candidate = str(value or "").split("%", 1)[0]
     try:
@@ -169,11 +175,12 @@ def create_api(
             x_host=selected_manager_exposure.proxy_hops,
             x_port=selected_manager_exposure.proxy_hops,
         )
+    security_context, csrf_secret = derive_browser_session_keys(
+        client_secret,
+        selected_manager_exposure.model_dump(mode="json"),
+    )
+    session_cookie_name = _scoped_recovery_cookie_name(security_context)
     if recovery_sessions is None:
-        security_context, csrf_secret = derive_browser_session_keys(
-            client_secret,
-            selected_manager_exposure.model_dump(mode="json"),
-        )
         private_http = (
             selected_manager_exposure.mode.value == "private_network"
         )
@@ -299,7 +306,7 @@ def create_api(
                 int(selected.absolute_expires_at - time.time()),
             )
         response.set_cookie(
-            RECOVERY_COOKIE,
+            session_cookie_name,
             selected.session_id,
             httponly=True,
             secure=selected_manager_exposure.secure_cookies,
@@ -310,11 +317,27 @@ def create_api(
 
     def clear_session_cookie(response) -> None:
         response.delete_cookie(
-            RECOVERY_COOKIE,
+            session_cookie_name,
             secure=selected_manager_exposure.secure_cookies,
             httponly=True,
             samesite="Strict",
             path="/",
+        )
+        g.recovery_session_cookie_cleared = True
+
+    def request_session():
+        scoped_session_id = request.cookies.get(session_cookie_name)
+        if scoped_session_id is not None:
+            return (
+                sessions.authenticate(scoped_session_id),
+                False,
+                True,
+            )
+        legacy_session_id = request.cookies.get(RECOVERY_COOKIE)
+        return (
+            sessions.authenticate(legacy_session_id),
+            legacy_session_id is not None,
+            False,
         )
 
     @api.after_request
@@ -345,6 +368,12 @@ def create_api(
             "/v1/diagnostics/bundle",
         } or request.path.startswith("/v1/automation/"):
             response.headers["Cache-Control"] = "no-store"
+        if (
+            getattr(g, "recovery_session_cookie_migration", False)
+            and response.status_code < 400
+            and not getattr(g, "recovery_session_cookie_cleared", False)
+        ):
+            set_session_cookie(response, g.recovery_session)
         principal = getattr(
             g,
             "manager_automation_principal",
@@ -486,8 +515,11 @@ def create_api(
             if bearer_valid or not bearer
             else automation.authenticate(bearer)
         )
-        session_id = request.cookies.get(RECOVERY_COOKIE)
-        selected_session = sessions.authenticate(session_id)
+        (
+            selected_session,
+            using_legacy_cookie,
+            scoped_cookie_present,
+        ) = request_session()
         requires_csrf = request.method not in {"GET", "HEAD", "OPTIONS"}
         supplied_csrf = request.headers.get("X-CSRF-Token", "")
         if (
@@ -505,6 +537,11 @@ def create_api(
             )
         )
         g.recovery_session = selected_session if session_valid else None
+        g.recovery_session_cookie_migration = (
+            using_legacy_cookie
+            and selected_session is not None
+            and session_valid
+        )
         g.manager_bearer_authenticated = bearer_valid
         g.manager_automation_principal = automation_principal
         if automation_principal is not None:
@@ -556,7 +593,7 @@ def create_api(
             return None
         if not bearer_valid and not session_valid:
             response = jsonify(error={"code": "authentication_required"})
-            if session_id and selected_session is None:
+            if scoped_cookie_present and selected_session is None:
                 clear_session_cookie(response)
             return response, 401
         return None
@@ -1911,9 +1948,7 @@ def create_api(
         payload = RecoveryExchangeRequest.model_validate(
             request.get_json(silent=False) or {}
         )
-        previous_session = sessions.authenticate(
-            request.cookies.get(RECOVERY_COOKIE)
-        )
+        previous_session, _using_legacy, _scoped = request_session()
         session = sessions.exchange(
             payload.token,
             remember=payload.remember,

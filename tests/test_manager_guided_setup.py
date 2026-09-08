@@ -73,7 +73,7 @@ class GuidedCatalogueTests(unittest.TestCase):
             for option in crisp["definition"]["install_options"]
         }
         self.assertEqual(
-            "moss-transcribe-diarize-0.9b",
+            "parakeet-tdt-0.6b-v3",
             crisp_options["engine"]["default"],
         )
         self.assertEqual("q8_0", crisp_options["quantization"]["default"])
