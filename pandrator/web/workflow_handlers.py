@@ -4543,6 +4543,7 @@ class WorkflowHandlers:
         parent_ids = [item for item in parent_ids if item]
         metadata = {
             "plan_id": plan_id,
+            "media_edit_revision_id": revision_id,
             "revision_id": revision_id,
             "revision": revision_number,
             "content_hash": revision.get("content_hash"),

@@ -508,9 +508,29 @@ class WorkflowService:
         metadata = (
             artifact.metadata_json if isinstance(artifact.metadata_json, dict) else {}
         )
+        content_matches = bool(
+            str(metadata.get("content_hash") or "") == active_revision.content_hash
+        )
+        explicit_revision_id = str(
+            metadata.get("media_edit_revision_id") or ""
+        )
+        if explicit_revision_id:
+            return bool(explicit_revision_id == active_revision.id and content_matches)
+        if str(metadata.get("revision_id") or "") == active_revision.id:
+            # Compatibility with render artifacts created before the dedicated
+            # media-edit identity field existed.
+            return content_matches
+        # Subtitle materialization assigns the generic revision_id to its
+        # DocumentRevision. Older in-flight artifacts still carry enough
+        # immutable plan identity to recognize the exact edit revision.
+        try:
+            revision_number = int(metadata.get("revision"))
+        except (TypeError, ValueError):
+            return False
         return bool(
-            str(metadata.get("revision_id") or "") == active_revision.id
-            and str(metadata.get("content_hash") or "") == active_revision.content_hash
+            str(metadata.get("plan_id") or "") == active_revision.plan_id
+            and revision_number == active_revision.revision_number
+            and content_matches
         )
 
     @staticmethod

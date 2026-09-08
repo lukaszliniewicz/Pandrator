@@ -815,6 +815,14 @@ class MediaEditTranscriptionHandlerTests(unittest.TestCase):
 
         self.assertEqual(4, result["word_count"])
         self.assertEqual("media_edit_word_timestamps", word_artifact.role)
+        self.assertEqual(
+            "revision-1",
+            subtitle.metadata_json["media_edit_revision_id"],
+        )
+        self.assertEqual(
+            result["document_revision_id"],
+            subtitle.metadata_json["revision_id"],
+        )
         self.assertIn((subtitle.id, word_artifact.id), edges)
         self.assertNotIn((word_artifact.id, subtitle.id), edges)
         self.assertNotIn(

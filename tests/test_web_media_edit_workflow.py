@@ -166,6 +166,27 @@ class MediaEditWorkflowTests(unittest.TestCase):
         self.assertEqual(edited_subtitles.id, generation.source_artifact_id)
         self.assertEqual("workflow.continue", generation.job_kind)
 
+    def test_inflight_materialized_subtitle_document_keeps_media_edit_identity(self):
+        edited_subtitles = self._artifact(
+            "materialized-edited.srt",
+            role="media_edit_subtitles",
+            kind="srt",
+            content=b"1\n00:00:00,000 --> 00:00:01,000\nHello\n",
+            metadata={
+                "revision_id": "document-revision-id",
+                "plan_id": self.plan["plan_id"],
+                "revision": self.plan["revision"],
+                "content_hash": self.plan["content_hash"],
+            },
+        )
+
+        snapshot = self.workflow.snapshot(self.record.id)
+        stages = {stage["key"]: stage for stage in snapshot["stages"]}
+
+        self.assertEqual("completed", stages["edit_media"]["status"])
+        self.assertEqual(edited_subtitles.id, stages["edit_media"]["artifact"]["id"])
+        self.assertEqual("ready", stages["correct"]["status"])
+
     def test_export_contract_pins_rendered_media_not_original(self):
         self._artifact(
             "edited.srt",

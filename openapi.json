@@ -30,7 +30,7 @@
             "type": "string"
           },
           "application_version": {
-            "default": "0.8.21",
+            "default": "0.8.22",
             "title": "Application Version",
             "type": "string"
           },
