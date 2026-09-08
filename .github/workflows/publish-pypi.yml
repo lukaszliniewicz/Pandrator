@@ -25,7 +25,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install packaging tools
-        run: python -m pip install --disable-pip-version-check "build>=1.6,<2" "twine>=6,<7"
+        run: python -m pip install --disable-pip-version-check "build>=1.6,<2" "twine==7.0.0"
 
       - name: Build Pandrator
         run: python -m build --sdist --wheel --outdir package-dist/pandrator .
@@ -81,7 +81,7 @@ jobs:
           path: dist
 
       - name: Publish Pandrator
-        uses: pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247 # release/v1
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           packages-dir: dist/pandrator
 
@@ -105,7 +105,7 @@ jobs:
           path: dist
 
       - name: Publish Pandrator Manager
-        uses: pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247 # release/v1
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           packages-dir: dist/pandrator-manager
 
@@ -129,6 +129,6 @@ jobs:
           path: dist
 
       - name: Publish Pandrator MCP
-        uses: pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247 # release/v1
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           packages-dir: dist/pandrator-mcp

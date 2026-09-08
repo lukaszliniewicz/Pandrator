@@ -107,6 +107,7 @@ Selected updates:
 | PyInstaller | 6.22.2 |
 | Hatchling | 1.32.0 |
 | build | 1.6.0 |
+| Twine | 7.0.0 |
 | packaging | 26.3 |
 | Ruff | 0.16.6 |
 | SQLAlchemy | 2.0.52 |
@@ -160,3 +161,12 @@ a Luna/xhigh verifier performed the focused dependency and loopback tests.
 The parent selected updates, audited changes, and owns release validation.
 No GPU encoding, local model inference, external media downloads, or paid
 provider calls were used for this qualification.
+
+
+The first publication attempt stopped before upload: Twine 6 rejected
+Hatchling 1.32's metadata version 2.5. Twine 7.0.0 validates all six built
+archives. The PyPI publishing action was updated to the immutable commit for
+v1.14.2, whose pinned container also uses Twine 7, so validation and upload
+share support for the new metadata. This follow-up changes only the
+publishing workflow and this qualification note; the qualified native
+Manager artifacts are unchanged.
