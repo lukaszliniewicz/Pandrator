@@ -12,6 +12,7 @@ from sqlalchemy import select
 from pandrator.web.artifact_selection import selected_artifacts
 from pandrator.web.artifacts import ArtifactService
 from pandrator.web.database import Database
+from pandrator.web.media_process import MediaProcessError
 from pandrator.web.models import (
     Artifact,
     ArtifactEdge,
@@ -695,6 +696,47 @@ class MediaEditTranscriptionHandlerTests(unittest.TestCase):
 
         def fake_run(command, *, cancel_event):
             del cancel_event
+            with self.database.session() as session:
+                subtitle_artifact = session.scalar(
+                    select(Artifact).where(
+                        Artifact.session_id == self.session.id,
+                        Artifact.role == "media_edit_subtitles",
+                    )
+                )
+                word_artifact = session.scalar(
+                    select(Artifact).where(
+                        Artifact.session_id == self.session.id,
+                        Artifact.role == "media_edit_word_timestamps",
+                    )
+                )
+                self.assertIsNotNone(subtitle_artifact)
+                self.assertIsNotNone(word_artifact)
+                self.assertIsNone(
+                    session.scalar(
+                        select(Artifact).where(
+                            Artifact.session_id == self.session.id,
+                            Artifact.role == "media_edit_media",
+                            Artifact.state == "current",
+                        )
+                    )
+                )
+                document_revision = session.get(
+                    DocumentRevision,
+                    subtitle_artifact.metadata_json.get("revision_id"),
+                )
+                self.assertIsNotNone(document_revision)
+                self.assertEqual(
+                    4,
+                    len(
+                        list(
+                            session.scalars(
+                                select(TimedWord).where(
+                                    TimedWord.revision_id == document_revision.id
+                                )
+                            )
+                        )
+                    ),
+                )
             Path(command[-1]).write_bytes(b"rendered video")
 
         def fake_build(source_path, output_path, *_args, **_kwargs):
@@ -774,6 +816,14 @@ class MediaEditTranscriptionHandlerTests(unittest.TestCase):
         self.assertEqual(4, result["word_count"])
         self.assertEqual("media_edit_word_timestamps", word_artifact.role)
         self.assertIn((subtitle.id, word_artifact.id), edges)
+        self.assertNotIn((word_artifact.id, subtitle.id), edges)
+        self.assertNotIn(
+            (
+                result["media_artifact_id"],
+                subtitle.id,
+            ),
+            edges,
+        )
         self.assertEqual(["Alice", "Alice", "Bob", "Bob"], [
             word.speaker for word in timed_words
         ])
@@ -788,6 +838,127 @@ class MediaEditTranscriptionHandlerTests(unittest.TestCase):
         )
         self.assertEqual("plan-1", payload["metadata"]["plan_id"])
         self.assertEqual(4, payload["metadata"]["word_count"])
+
+    def test_media_edit_render_failure_keeps_materialized_subtitles_and_words(self):
+        source = self._artifact("failed-render-source.mp4", "upload", "media", "video")
+        revision = {
+            "reviewed": True,
+            "plan_id": "plan-failed",
+            "revision_id": "revision-failed",
+            "source_media_artifact": {"id": source.id},
+            "keep_ranges": [{"id": "keep", "start_ms": 500, "end_ms": 3500}],
+            "cues": [
+                {
+                    "id": "cue-failed",
+                    "start_ms": 1000,
+                    "end_ms": 2200,
+                    "text": "Hello world",
+                    "speaker": "Alice",
+                    "words": [
+                        {"text": "Hello", "start_ms": 1100, "end_ms": 1300},
+                        {"text": "world", "start_ms": 1400, "end_ms": 1600},
+                    ],
+                }
+            ],
+        }
+        partial_output = []
+
+        def fake_run(command, *, cancel_event):
+            del cancel_event
+            partial_output.append(Path(command[-1]))
+            partial_output[0].write_bytes(b"partial video")
+            raise MediaProcessError("ffmpeg failed")
+
+        def fake_build(source_path, output_path, *_args, **_kwargs):
+            del source_path
+            return ["ffmpeg", output_path]
+
+        with (
+            patch.object(self.handlers.media_edit, "revision", return_value=revision),
+            patch(
+                "pandrator.logic.dubbing.audio_sync.media_has_audio_stream",
+                return_value=True,
+            ),
+            patch(
+                "pandrator.logic.dubbing.video_muxing.build_removal_only_video_command",
+                side_effect=fake_build,
+            ),
+            patch(
+                "pandrator.logic.dubbing.video_muxing.normalize_video_resolution",
+                return_value="source",
+            ),
+            patch(
+                "pandrator.web.capabilities.ffmpeg_video_encoder_ids",
+                return_value={"libx264"},
+            ),
+            patch(
+                "pandrator.web.media_process.resolve_ffmpeg_executable",
+                return_value="ffmpeg",
+            ),
+            patch(
+                "pandrator.web.media_process.resolve_ffprobe_executable",
+                return_value="ffprobe",
+            ),
+            patch(
+                "pandrator.web.media_process.run_media_process",
+                side_effect=fake_run,
+            ),
+            self.assertRaisesRegex(
+                ValueError,
+                "FFmpeg could not produce the MP4",
+            ),
+        ):
+            self.handlers.media_edit_render(
+                {
+                    "session_id": self.session.id,
+                    "revision": 1,
+                    "settings": {"burn_video_encoder": "libx264"},
+                },
+                self.progress,
+                threading.Event(),
+            )
+
+        self.assertEqual(1, len(partial_output))
+        self.assertFalse(partial_output[0].exists())
+        with self.database.session() as session:
+            subtitle = session.scalar(
+                select(Artifact).where(
+                    Artifact.session_id == self.session.id,
+                    Artifact.role == "media_edit_subtitles",
+                )
+            )
+            words = session.scalar(
+                select(Artifact).where(
+                    Artifact.session_id == self.session.id,
+                    Artifact.role == "media_edit_word_timestamps",
+                )
+            )
+            self.assertIsNotNone(subtitle)
+            self.assertIsNotNone(words)
+            self.assertEqual("current", subtitle.state)
+            self.assertEqual("current", words.state)
+            document_revision = session.get(
+                DocumentRevision,
+                subtitle.metadata_json["revision_id"],
+            )
+            self.assertIsNotNone(document_revision)
+            timed_words = list(
+                session.scalars(
+                    select(TimedWord).where(
+                        TimedWord.revision_id == document_revision.id
+                    )
+                )
+            )
+            self.assertEqual(2, len(timed_words))
+            self.assertIsNone(
+                session.scalar(
+                    select(Artifact).where(
+                        Artifact.session_id == self.session.id,
+                        Artifact.role == "media_edit_media",
+                        Artifact.state == "current",
+                    )
+                )
+            )
 
 
 if __name__ == "__main__":

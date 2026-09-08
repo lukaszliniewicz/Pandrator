@@ -290,10 +290,11 @@ class DispatchRunService:
         source_artifact_id: str | None,
     ) -> tuple[Artifact, DocumentRevision, list[Segment], Path]:
         allowed_roles = (
-            ("transcription", "translation")
+            ("media_edit_subtitles", "transcription", "translation")
             if kind == "correction"
             else (
                 "correction",
+                "media_edit_subtitles",
                 "transcription",
             )
         )
@@ -323,7 +324,17 @@ class DispatchRunService:
                 )
                 .order_by(
                     case(
-                        {"correction": 0, "transcription": 1},
+                        {
+                            "correction": 0,
+                            "media_edit_subtitles": 1,
+                            "transcription": 2,
+                        }
+                        if kind == "translation"
+                        else {
+                            "media_edit_subtitles": 0,
+                            "transcription": 1,
+                            "translation": 2,
+                        },
                         value=Artifact.role,
                         else_=2,
                     ),

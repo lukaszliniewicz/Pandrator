@@ -4535,23 +4535,6 @@ class WorkflowHandlers:
             ),
             video_resolution=resolution,
         )
-        progress(0.2, "Rendering edited media")
-        try:
-            run_media_process(command, cancel_event=cancel_event)
-        except MediaProcessCancelled:
-            for path in (output_path, subtitle_path, word_timestamps_path):
-                path.unlink(missing_ok=True)
-            return {}
-        except MediaProcessError as error:
-            for path in (output_path, subtitle_path, word_timestamps_path):
-                path.unlink(missing_ok=True)
-            raise ValueError(
-                "Media-edit rendering requires a video source and FFmpeg could not produce the MP4."
-            ) from error
-        if cancel_event.is_set():
-            for path in (output_path, subtitle_path, word_timestamps_path):
-                path.unlink(missing_ok=True)
-            return {}
         parent_ids = [
             source_id,
             str((revision.get("editorial_transcript_artifact") or {}).get("id") or ""),
@@ -4570,21 +4553,15 @@ class WorkflowHandlers:
             "video_encoder": encoder,
             "word_count": word_count,
         }
-        media_artifact = self.artifacts.register(
-            output_path,
-            kind="video",
-            role="media_edit_media",
-            session_id=session_id,
-            parent_ids=parent_ids,
-            settings=settings,
-            metadata=metadata,
-        )
+        # Subtitle and timed-word artifacts are intentionally published before
+        # the potentially long video encode so correction can consume the
+        # immutable subtitle revision while FFmpeg is still running.
         subtitle_artifact = self.artifacts.register(
             subtitle_path,
             kind="srt",
             role="media_edit_subtitles",
             session_id=session_id,
-            parent_ids=[*parent_ids, media_artifact.id],
+            parent_ids=parent_ids,
             settings=settings,
             metadata=metadata,
         )
@@ -4624,6 +4601,29 @@ class WorkflowHandlers:
             segment_by_source_cue_id={
                 cue.id: index for index, cue in enumerate(retimed_cues)
             },
+        )
+        progress(0.2, "Subtitle revision and timed words ready; rendering edited media")
+        try:
+            run_media_process(command, cancel_event=cancel_event)
+        except MediaProcessCancelled:
+            output_path.unlink(missing_ok=True)
+            return {}
+        except MediaProcessError as error:
+            output_path.unlink(missing_ok=True)
+            raise ValueError(
+                "Media-edit rendering requires a video source and FFmpeg could not produce the MP4."
+            ) from error
+        if cancel_event.is_set():
+            output_path.unlink(missing_ok=True)
+            return {}
+        media_artifact = self.artifacts.register(
+            output_path,
+            kind="video",
+            role="media_edit_media",
+            session_id=session_id,
+            parent_ids=parent_ids,
+            settings=settings,
+            metadata=metadata,
         )
         duration_ms = sum(item.end_ms - item.start_ms for item in keep_ranges)
         progress(1.0, "Edited media ready")

@@ -136,6 +136,64 @@ class DispatchWebTests(unittest.TestCase):
         self.assertEqual(201, response.status_code, response.get_json())
         return response.get_json()
 
+    def test_default_correction_prefers_media_edit_subtitles_over_transcription(self):
+        session_id, transcription_id = self._source()
+        media_edit_id = self._stage_artifact(
+            session_id,
+            name="media-edit.srt",
+            role="media_edit_subtitles",
+            text="Edited source.",
+            parent_id=transcription_id,
+        )
+
+        run = self._create(session_id)
+
+        self.assertEqual(media_edit_id, run["source_artifact_id"])
+
+    def test_default_translation_prefers_correction_then_media_edit_then_transcription(self):
+        session_id, transcription_id = self._source(target_language="pl")
+        media_edit_id = self._stage_artifact(
+            session_id,
+            name="media-edit-translation-priority.srt",
+            role="media_edit_subtitles",
+            text="Edited source.",
+            parent_id=transcription_id,
+        )
+        correction_id = self._stage_artifact(
+            session_id,
+            name="correction.srt",
+            role="correction",
+            text="Corrected source.",
+            parent_id=media_edit_id,
+        )
+
+        run = self._create(session_id, kind="translation")
+
+        self.assertEqual(correction_id, run["source_artifact_id"])
+
+    def test_media_edit_subtitles_is_valid_explicit_source_for_correction_and_translation(self):
+        session_id, transcription_id = self._source(target_language="pl")
+        media_edit_id = self._stage_artifact(
+            session_id,
+            name="media-edit-explicit.srt",
+            role="media_edit_subtitles",
+            text="Edited source.",
+            parent_id=transcription_id,
+        )
+
+        correction = self._create(
+            session_id,
+            source_artifact_id=media_edit_id,
+        )
+        translation = self._create(
+            session_id,
+            kind="translation",
+            source_artifact_id=media_edit_id,
+        )
+
+        self.assertEqual(media_edit_id, correction["source_artifact_id"])
+        self.assertEqual(media_edit_id, translation["source_artifact_id"])
+
     def _claim(self, run_id, key="claim-key-123"):
         response = self.client.post(
             f"/api/v1/dispatch-runs/{run_id}/claim",

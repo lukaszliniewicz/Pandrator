@@ -16,9 +16,13 @@ from typing import Any
 
 from sqlalchemy import delete, select
 
-from pandrator.runtime import DataPaths
-from pandrator.logic.dubbing.crispasr import MODELS, normalize_engine, normalize_model_quantization
+from pandrator.logic.dubbing.crispasr import (
+    MODELS,
+    normalize_engine,
+    normalize_model_quantization,
+)
 from pandrator.logic.dubbing.stt_backends import probe_crispasr_runtime
+from pandrator.runtime import DataPaths
 
 from .database import Database
 from .models import CapabilitySnapshot, utcnow
@@ -412,10 +416,56 @@ def ffmpeg_video_encoder_ids(executable: str | None) -> set[str]:
     }
 
 
+def ffmpeg_vaapi_encoder_usable(
+    executable: str | None,
+    encoder: str,
+    render_device: Path | None,
+) -> bool:
+    """Verify that FFmpeg can open one VA-API encoder on the selected device."""
+
+    if not executable or render_device is None:
+        return False
+    try:
+        subprocess.run(
+            [
+                executable,
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-vaapi_device",
+                str(render_device),
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=black:s=320x240:r=1",
+                "-frames:v",
+                "1",
+                "-vf",
+                "format=nv12,hwupload",
+                "-an",
+                "-c:v",
+                encoder,
+                "-f",
+                "null",
+                "-",
+            ],
+            capture_output=True,
+            timeout=8,
+            check=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return True
+
+
 def probe_burn_video_encoders(executable: str | None, gpu: dict[str, Any]) -> list[dict[str, Any]]:
     supported = ffmpeg_video_encoder_ids(executable)
     vendors = {str(item.get("vendor") or "") for item in gpu.get("devices", [])}
-    vaapi_ready = sys.platform.startswith("linux") and any(Path("/dev/dri").glob("renderD*"))
+    render_device = (
+        next(iter(sorted(Path("/dev/dri").glob("renderD*"))), None)
+        if sys.platform.startswith("linux")
+        else None
+    )
     profiles: list[dict[str, Any]] = []
     for source in BURN_VIDEO_ENCODER_PROFILES:
         if source["id"] not in supported:
@@ -423,9 +473,15 @@ def probe_burn_video_encoders(executable: str | None, gpu: dict[str, Any]) -> li
         required_vendors = set(source.get("vendors") or set())
         if required_vendors and not (required_vendors & vendors):
             continue
-        if source.get("platform") == "linux" and not vaapi_ready:
+        if source.get("platform") == "linux" and render_device is None:
             continue
         if source.get("platform") == "windows" and not sys.platform.startswith("win"):
+            continue
+        if str(source["id"]).endswith("_vaapi") and not ffmpeg_vaapi_encoder_usable(
+            executable,
+            str(source["id"]),
+            render_device,
+        ):
             continue
         profiles.append({key: value for key, value in source.items() if key not in {"vendors", "platform"}})
     return profiles

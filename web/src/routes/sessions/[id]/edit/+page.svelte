@@ -25,6 +25,7 @@
   } from '@lucide/svelte';
   import { onDestroy, onMount } from 'svelte';
   import {
+    appApi,
     artifactApi,
     jobApi,
     mediaEditApi,
@@ -35,7 +36,9 @@
     MediaEditDispatchRun,
     MediaEditPlan,
     MediaEditRange,
-    MediaEditState
+    MediaEditState,
+    RuntimeCapabilities,
+    SettingsPayload
   } from '$lib/api-models';
   import { errorMessage } from '$lib/errors';
   import MediaTimeline from '$lib/MediaTimeline.svelte';
@@ -83,10 +86,31 @@
   let proposalModelsError = $state('');
   let passiveRun = $state<MediaEditDispatchRun | null>(null);
   let passivePollTimer: number | undefined;
+  let renderOpen = $state(false);
+  let renderSettings = $state<SettingsPayload | null>(null);
+  let renderCapabilities = $state<RuntimeCapabilities>({});
+  let renderSettingsLoading = $state(false);
+  let renderSettingsError = $state('');
+  let renderDraft = $state<Record<string, unknown>>({});
 
   const passiveActive = $derived(
     passiveRun != null &&
       ['ready', 'running', 'finalizing'].includes(passiveRun.status)
+  );
+  const renderEncoderOptions = $derived(
+    renderCapabilities.ffmpeg?.burn_video_encoders?.length
+      ? renderCapabilities.ffmpeg.burn_video_encoders
+      : [
+          {
+            id: 'libx264',
+            label: 'H.264 software (most compatible)',
+            hardware: false,
+            codec: 'h264'
+          }
+        ]
+  );
+  const verifiedHardwareEncoderAvailable = $derived(
+    renderEncoderOptions.some((item) => item.hardware)
   );
 
   const activeCue = $derived(
@@ -684,18 +708,73 @@
     }
   }
 
+  function renderSetting(key: string, fallback: unknown) {
+    if (Object.prototype.hasOwnProperty.call(renderDraft, key))
+      return renderDraft[key];
+    return renderSettings?.effective?.[key] ?? fallback;
+  }
+
+  function setRenderSetting(key: string, value: unknown) {
+    renderDraft = { ...renderDraft, [key]: value };
+  }
+
+  async function openRender() {
+    renderOpen = true;
+    renderSettingsLoading = true;
+    renderSettingsError = '';
+    try {
+      [renderSettings, renderCapabilities] = await Promise.all([
+        sessionApi.settings(sessionId, 'output'),
+        appApi.capabilities(true)
+      ]);
+      const availableIds = new Set(
+        renderCapabilities.ffmpeg?.burn_video_encoders?.map(
+          (item) => item.id
+        ) ?? ['libx264']
+      );
+      const currentEncoder = String(
+        renderSettings.effective?.burn_video_encoder ?? 'libx264'
+      );
+      renderDraft = {
+        burn_video_encoder: availableIds.has(currentEncoder)
+          ? currentEncoder
+          : 'libx264',
+        burn_video_resolution: String(
+          renderSettings.effective?.burn_video_resolution ?? 'source'
+        ),
+        burn_video_quality: Number(
+          renderSettings.effective?.burn_video_quality ?? 18
+        ),
+        burn_video_speed: String(
+          renderSettings.effective?.burn_video_speed ?? 'balanced'
+        )
+      };
+    } catch (caught) {
+      renderSettingsError = errorMessage(caught);
+    } finally {
+      renderSettingsLoading = false;
+    }
+  }
+
   async function render() {
-    if (!plan) return;
+    if (!plan || !renderSettings) return;
     busy = 'render';
     error = '';
     message = '';
     try {
+      renderSettings = await sessionApi.saveSettings(
+        sessionId,
+        'output',
+        renderSettings.revision,
+        { ...(renderSettings.override ?? {}), ...renderDraft }
+      );
+      renderOpen = false;
       const saved = await save(true);
       if (!saved) return;
       busy = 'render';
       await watchJob(
         await mediaEditApi.render(sessionId, saved.revision),
-        'Rendered media and retimed subtitles are ready. The edited media is now the session output source.'
+        'Rendered media is ready. Retimed subtitles were published as soon as their document revision was available.'
       );
     } catch (caught) {
       error = errorMessage(caught);
@@ -854,9 +933,9 @@
           title="Create a provider-free task for a connected MCP agent, or run the proposal with a configured LLM. Nothing is rendered automatically."
           class="secondary"><Sparkles size={15} /> Process</button
         ><button
-          onclick={render}
+          onclick={openRender}
           disabled={Boolean(busy)}
-          title="Mark this exact plan reviewed and create edited media plus retimed subtitles."
+          title="Review the encoder, resolution, quality, and speed before rendering this exact edit revision."
           class="primary"
           >{#if busy === 'render'}<LoaderCircle
               class="animate-spin"
@@ -1532,6 +1611,145 @@
               ? 'Agent task already active'
               : 'Create agent task'
             : 'Generate proposal'}</button
+        >
+      </div>
+    </div>
+  </div>
+{/if}
+
+{#if renderOpen}
+  <div
+    class="fixed inset-0 z-50 grid place-items-center bg-black/40 p-4 backdrop-blur-sm sm:p-6"
+    role="presentation"
+    onclick={(event) =>
+      event.target === event.currentTarget && (renderOpen = false)}
+  >
+    <div
+      use:modalFocus={{
+        onclose: () => (renderOpen = false),
+        initialFocus: '#media-edit-render-encoder'
+      }}
+      class="surface max-h-[92vh] w-full max-w-2xl overflow-y-auto rounded-[1.7rem] p-5 sm:p-7"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="render-title"
+    >
+      <div class="flex items-start justify-between gap-5">
+        <div class="min-w-0">
+          <div class="eyebrow">Reviewed edit</div>
+          <h2 id="render-title" class="mt-1 text-2xl font-semibold">
+            Render the recording
+          </h2>
+          <p class="muted mt-2 text-sm leading-relaxed">
+            Retimed subtitles become available to correction and translation
+            before the longer video encode finishes.
+          </p>
+        </div>
+        <button
+          onclick={() => (renderOpen = false)}
+          aria-label="Close render settings"
+          class="rounded-lg p-2"><X size={19} /></button
+        >
+      </div>
+
+      {#if renderSettingsLoading}<div
+          class="mt-6 flex items-center gap-3 rounded-xl border border-[var(--line)] p-4 text-sm"
+        >
+          <LoaderCircle class="animate-spin text-[var(--accent)]" size={17} />
+          Checking FFmpeg and available encoders…
+        </div>{:else if renderSettingsError}<div
+          role="alert"
+          class="alert error mt-6"
+        >
+          <CircleAlert size={18} /> <span>{renderSettingsError}</span>
+        </div>{:else}<div class="mt-6 grid gap-5 sm:grid-cols-2">
+          <label class="text-sm font-semibold" for="media-edit-render-encoder"
+            >Video encoder<select
+              id="media-edit-render-encoder"
+              value={String(renderSetting('burn_video_encoder', 'libx264'))}
+              onchange={(event) =>
+                setRenderSetting(
+                  'burn_video_encoder',
+                  event.currentTarget.value
+                )}
+              class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
+              >{#each renderEncoderOptions as item}<option value={item.id}
+                  >{item.label}{item.hardware ? ' · verified' : ''}</option
+                >{/each}</select
+            ></label
+          >
+          <label class="text-sm font-semibold"
+            >Encoding speed<select
+              value={String(renderSetting('burn_video_speed', 'balanced'))}
+              onchange={(event) =>
+                setRenderSetting('burn_video_speed', event.currentTarget.value)}
+              class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
+              ><option value="fast">Fast</option><option value="balanced"
+                >Balanced</option
+              ><option value="quality">Quality</option></select
+            ></label
+          >
+          <label class="text-sm font-semibold"
+            >Resolution<select
+              value={String(renderSetting('burn_video_resolution', 'source'))}
+              onchange={(event) =>
+                setRenderSetting(
+                  'burn_video_resolution',
+                  event.currentTarget.value
+                )}
+              class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
+              ><option value="source">Source resolution</option><option
+                value="2160p">2160p</option
+              ><option value="1440p">1440p</option><option value="1080p"
+                >1080p</option
+              ><option value="720p">720p</option><option value="480p"
+                >480p</option
+              ></select
+            ></label
+          >
+          <label class="text-sm font-semibold"
+            >Quality <span class="muted font-normal">(lower is better)</span>
+            <div class="mt-2 flex items-center gap-3">
+              <input
+                type="range"
+                min="0"
+                max="51"
+                value={Number(renderSetting('burn_video_quality', 18))}
+                oninput={(event) =>
+                  setRenderSetting(
+                    'burn_video_quality',
+                    Number(event.currentTarget.value)
+                  )}
+                class="min-w-0 flex-1"
+              />
+              <span class="w-8 text-right tabular-nums"
+                >{Number(renderSetting('burn_video_quality', 18))}</span
+              >
+            </div></label
+          >
+          {#if !verifiedHardwareEncoderAvailable}<div
+              class="rounded-xl bg-amber-500/10 p-4 text-sm leading-relaxed text-amber-700 sm:col-span-2"
+            >
+              No hardware encoder passed a real FFmpeg encode probe. Software
+              encoding is available; Fast trades a larger file for less waiting.
+            </div>{/if}
+        </div>{/if}
+
+      <div class="mt-7 flex flex-wrap justify-end gap-3">
+        <button onclick={() => (renderOpen = false)} class="secondary"
+          >Cancel</button
+        ><button
+          onclick={render}
+          disabled={Boolean(busy) ||
+            renderSettingsLoading ||
+            Boolean(renderSettingsError) ||
+            !renderSettings}
+          class="primary disabled:opacity-40"
+          >{#if busy === 'render'}<LoaderCircle
+              class="animate-spin"
+              size={16}
+            />{:else}<Scissors size={16} />{/if}
+          Start render</button
         >
       </div>
     </div>

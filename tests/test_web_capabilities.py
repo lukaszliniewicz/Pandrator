@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from typing import ClassVar
 from unittest import mock
 
 from pandrator.web import capabilities
@@ -92,10 +93,27 @@ GPU1:
         render_node = Path("/dev/dri/renderD128")
         with mock.patch.object(capabilities, "ffmpeg_video_encoder_ids", return_value=supported), mock.patch.object(
             capabilities.sys, "platform", "linux"
-        ), mock.patch.object(capabilities.Path, "glob", return_value=iter([render_node])):
+        ), mock.patch.object(capabilities.Path, "glob", return_value=iter([render_node])), mock.patch.object(
+            capabilities, "ffmpeg_vaapi_encoder_usable", return_value=True
+        ):
             profiles = capabilities.probe_burn_video_encoders("ffmpeg", gpu)
 
         self.assertEqual(["libx264", "libx265", "h264_vaapi"], [item["id"] for item in profiles])
+
+    def test_burn_encoder_profiles_exclude_vaapi_that_cannot_open(self):
+        gpu = {"devices": [{"vendor": "AMD"}]}
+        supported = {"libx264", "h264_vaapi", "hevc_vaapi"}
+        render_node = Path("/dev/dri/renderD128")
+        with mock.patch.object(capabilities, "ffmpeg_video_encoder_ids", return_value=supported), mock.patch.object(
+            capabilities.sys, "platform", "linux"
+        ), mock.patch.object(capabilities.Path, "glob", return_value=iter([render_node])), mock.patch.object(
+            capabilities,
+            "ffmpeg_vaapi_encoder_usable",
+            side_effect=lambda _executable, encoder, _device: encoder == "hevc_vaapi",
+        ):
+            profiles = capabilities.probe_burn_video_encoders("ffmpeg", gpu)
+
+        self.assertEqual(["libx264", "hevc_vaapi"], [item["id"] for item in profiles])
 
     def test_windows_probe_ignores_virtual_display_adapters(self):
         payload = (
@@ -116,7 +134,7 @@ GPU1:
 
 
 class CapabilityCacheTests(unittest.TestCase):
-    STABLE_CAPABILITIES = {
+    STABLE_CAPABILITIES: ClassVar[dict[str, object]] = {
         "ffmpeg": {
             "available": True,
             "path": "ffmpeg",
