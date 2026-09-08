@@ -6,12 +6,18 @@ on:
   pull_request:
     branches: [codex/webui-migration, main]
   workflow_dispatch:
+    inputs:
+      skip_python:
+        description: 'UI/package checks only; qualify unchanged backend separately'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 jobs:
   python-lanes:
+    if: ${{ !inputs.skip_python }}
     name: Python tests (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 35

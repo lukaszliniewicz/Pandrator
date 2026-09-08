@@ -232,14 +232,20 @@ test('correction and translation cards expose independent reasoning levels', asy
     .locator('xpath=ancestor::article');
   await correctionCard.getByRole('button', { name: 'Settings' }).click();
   let dialog = page.getByRole('dialog');
-  await expect(dialog.getByLabel('Reasoning level')).toHaveValue('');
-  await dialog.getByLabel('Reasoning level').selectOption('high');
+  await expect(
+    dialog.getByRole('combobox', { name: 'Reasoning level' })
+  ).toHaveValue('');
+  await dialog
+    .getByRole('combobox', { name: 'Reasoning level' })
+    .selectOption('high');
   await dialog
     .getByLabel('Correction guidance')
     .fill('Keep the acronym IARF unchanged.');
   await dialog.getByRole('button', { name: 'All correction settings' }).click();
   dialog = page.getByRole('dialog');
-  await expect(dialog.getByLabel('Reasoning level')).toHaveValue('high');
+  await expect(
+    dialog.getByRole('combobox', { name: 'Reasoning level' })
+  ).toHaveValue('high');
   await expect(
     dialog.getByRole('textbox', { name: 'Instructions' })
   ).toHaveValue('Keep the acronym IARF unchanged.');
@@ -256,7 +262,9 @@ test('correction and translation cards expose independent reasoning levels', asy
   await expect(dialog.getByText('Saved for this session.')).toBeVisible();
   await dialog.getByRole('button', { name: 'Close settings' }).click();
   dialog = page.getByRole('dialog');
-  await expect(dialog.getByLabel('Reasoning level')).toHaveValue('high');
+  await expect(
+    dialog.getByRole('combobox', { name: 'Reasoning level' })
+  ).toHaveValue('high');
   await expect(dialog.getByLabel('Correction guidance')).toHaveValue(
     'Keep the acronym IARF unchanged.'
   );
@@ -278,8 +286,12 @@ test('correction and translation cards expose independent reasoning levels', asy
     .locator('xpath=ancestor::article');
   await translationCard.getByRole('button', { name: 'Settings' }).click();
   dialog = page.getByRole('dialog');
-  await expect(dialog.getByLabel('Reasoning level')).toHaveValue('');
-  await dialog.getByLabel('Reasoning level').selectOption('low');
+  await expect(
+    dialog.getByRole('combobox', { name: 'Reasoning level' })
+  ).toHaveValue('');
+  await dialog
+    .getByRole('combobox', { name: 'Reasoning level' })
+    .selectOption('low');
   await dialog
     .getByLabel('Translate from')
     .selectOption(translationSource.artifact_id);
@@ -296,9 +308,13 @@ test('correction and translation cards expose independent reasoning levels', asy
 
   await translationCard.getByRole('button', { name: 'Settings' }).click();
   dialog = page.getByRole('dialog');
-  await expect(dialog.getByLabel('Reasoning level')).toHaveValue('low');
+  await expect(
+    dialog.getByRole('combobox', { name: 'Reasoning level' })
+  ).toHaveValue('low');
   await dialog.getByLabel('Translation backend').selectOption('deepl');
-  await expect(dialog.getByLabel('Reasoning level')).toHaveCount(0);
+  await expect(
+    dialog.getByRole('combobox', { name: 'Reasoning level' })
+  ).toHaveCount(0);
 });
 
 test('workflow history and subtitle review load exact revisions on demand', async ({
@@ -1819,9 +1835,31 @@ test('alternate regeneration sends one selected-only setting set and returns to 
   await page.goto(`/sessions/${sessionId}`);
   await page.getByRole('button', { name: 'Generation', exact: true }).click();
   const picker = page.locator('label.run-picker select');
+  const regenerationOptions = page.getByRole('button', {
+    name: 'Regeneration options'
+  });
   await page.getByRole('checkbox', { name: 'Mark segment 1' }).check();
-  await page.getByRole('checkbox', { name: 'Mark segment 2' }).check();
-  await page.getByRole('button', { name: 'Regeneration options' }).click();
+  await expect(regenerationOptions).toBeEnabled();
+
+  let releaseMarkSave!: () => void;
+  const markSaveGate = new Promise<void>((resolve) => {
+    releaseMarkSave = resolve;
+  });
+  await page.route(
+    `**/api/v1/generation-segments/${segments[1].id}`,
+    async (route) => {
+      const response = await route.fetch();
+      await markSaveGate;
+      await route.fulfill({ response });
+    }
+  );
+  try {
+    await page.getByRole('checkbox', { name: 'Mark segment 2' }).check();
+    await expect(regenerationOptions).toBeDisabled();
+  } finally {
+    releaseMarkSave();
+  }
+  await regenerationOptions.click();
   await page
     .getByRole('button', {
       name: 'Different settings / provider…'

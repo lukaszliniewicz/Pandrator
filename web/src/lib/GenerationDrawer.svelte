@@ -101,6 +101,7 @@
   let ttsCatalogue = $state<TtsCatalogue>({ services: [] });
   let libraryVoices = $state<VoiceRecord[]>([]);
   let alternateOpen = $state(false);
+  let pendingSegmentUpdates = $state(0);
   let alternateSegmentIds = $state<string[]>([]);
   let alternateTts = $state<Record<string, unknown>>({});
   let alternateRvc = $state<Record<string, unknown>>({ enabled: false });
@@ -700,6 +701,8 @@
     item: GenerationSegment,
     changes: GenerationSegmentChanges
   ) {
+    pendingSegmentUpdates += 1;
+    regenerateMenuOpen = false;
     try {
       const updated = await generationStore.updateSegment(item, changes);
       if (
@@ -711,6 +714,8 @@
       return updated;
     } catch (caught) {
       error = errorMessage(caught);
+    } finally {
+      pendingSegmentUpdates -= 1;
     }
   }
 
@@ -1703,7 +1708,8 @@
                 displayMenuOpen = false;
                 settingsMenuOpen = false;
               }}
-              disabled={!selectedSegmentIds.length && !marked.length}
+              disabled={pendingSegmentUpdates > 0 ||
+                (!selectedSegmentIds.length && !marked.length)}
               class="action icon-action"
               class:active={regenerateMenuOpen}
               title="Regenerate selected or marked takes"

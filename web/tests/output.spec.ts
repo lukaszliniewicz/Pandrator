@@ -86,9 +86,56 @@ test('completed subtitle exports can be removed from Output', async ({
   await expect(page.getByText('Export Mode').first()).toBeVisible();
   const remove = page.getByRole('button', { name: /Remove export/ }).first();
   await expect(remove).toBeVisible();
-  page.once('dialog', (dialog) => dialog.accept());
-  await remove.click();
-  await expect(page.getByText('Export removed.')).toBeVisible();
+
+  // Hold an old artifact snapshot across deletion, as an in-flight refresh can.
+  let releaseSnapshot!: () => void;
+  let snapshotCaptured!: () => void;
+  const snapshotGate = new Promise<void>((resolve) => {
+    releaseSnapshot = resolve;
+  });
+  const captured = new Promise<void>((resolve) => {
+    snapshotCaptured = resolve;
+  });
+  await page.route(
+    `**/api/v1/artifacts?session_id=${session.id}&limit=300`,
+    async (route) => {
+      const response = await route.fetch();
+      snapshotCaptured();
+      await snapshotGate;
+      await route.fulfill({ response });
+    }
+  );
+  await page.route(
+    `**/api/v1/sessions/${session.id}/stages/export/run`,
+    (route) =>
+      route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          id: 'refresh-test-job',
+          kind: 'export.create',
+          session_id: session.id,
+          status: 'queued',
+          progress: 0,
+          created_at: new Date().toISOString()
+        })
+      })
+  );
+  const createExport = page.getByRole('button', {
+    name: 'Create subtitle export'
+  });
+  try {
+    await createExport.click();
+    await captured;
+    page.once('dialog', (dialog) => dialog.accept());
+    await remove.click();
+    await expect(page.getByText('Export removed.')).toBeVisible();
+    await expect(
+      page.getByRole('button', { name: /Remove export/ })
+    ).toHaveCount(0);
+  } finally {
+    releaseSnapshot();
+  }
+  await expect(createExport).toBeEnabled();
   await expect(page.getByRole('button', { name: /Remove export/ })).toHaveCount(
     0
   );

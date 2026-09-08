@@ -58,6 +58,7 @@
   let deleting = $state<Record<string, boolean>>({});
   let copiedPath = $state('');
   let assemblyController: AbortController | undefined;
+  let loadRevision = 0;
   const outputContext = $derived(
     outputProfile?.context && typeof outputProfile.context === 'object'
       ? (outputProfile.context as Record<string, unknown>)
@@ -85,6 +86,7 @@
   }>;
   let saveOutputProfile = $state<SaveOutputProfile | null>(null);
   async function load() {
+    const revision = ++loadRevision;
     const [
       artifactPayload,
       runPayload,
@@ -98,6 +100,7 @@
       sessionApi.settings(sessionId, 'output'),
       jobApi.list(500)
     ]);
+    if (revision !== loadRevision) return;
     artifacts = artifactPayload.items
       .filter(
         (item) =>
@@ -313,6 +316,8 @@
     error = '';
     try {
       await sessionApi.removeOutput(sessionId, artifact.id);
+      // A refresh started before removal may still contain the deleted export.
+      loadRevision += 1;
       artifacts = artifacts.filter((item) => item.id !== artifact.id);
       if (preview?.id === artifact.id) preview = null;
       message = 'Export removed.';
