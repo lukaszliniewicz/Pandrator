@@ -146,9 +146,10 @@ to your host.
 
 ### Local speech generation
 
-**audio.cpp is the main local speech provider and the default for new
-workspaces.** Install it through the Manager, then choose the models you want.
-One runtime gives you access to these model families:
+**audio.cpp is a local speech provider with several models to choose from,
+and the default for new workspaces.** Select the model packages you want to
+install in the Manager, then choose an installed model in **Generate audio**
+settings. You can switch models or add more later. Available families include:
 
 | audio.cpp model family | Voice options |
 | --- | --- |

@@ -125,15 +125,19 @@ PRESENTATIONS: dict[str, ComponentPresentation] = {
         section=ComponentSection.TEXT_TO_SPEECH,
         order=5,
         summary=(
-            "A pinned native audio.cpp runtime with selectable local GGUF "
-            "models for voice design, cloning, and pre-built voices."
+            "One local speech provider with multiple models to choose from, "
+            "including Qwen3 TTS, Fish Audio S2 Pro, VoxCPM2, and more."
         ),
         guidance=(
-            "The manager installs audio.cpp v0.7.2 and the selected models into "
-            "one versioned service slot. Choose at least one model package. CPU, "
-            "Vulkan, and CUDA are available on Windows and Linux x86_64. The "
-            "best-effort Linux CUDA build has not yet been tested on NVIDIA "
-            "hardware. FireRedTTS3 Base is experimental."
+            "Select the model packages you want to download below. Then choose "
+            "an installed model in Pandrator's Generate audio settings; you can "
+            "switch models there or add more packages later. CustomVoice and "
+            "Magpie offer ready-made voices. Base and cloning models need a "
+            "voice reference recording. Leave the compute choice on Automatic "
+            "unless you need a specific backend. CPU, Vulkan, and CUDA are "
+            "available on Windows and Linux x86_64. The best-effort Linux CUDA "
+            "build has not yet been tested on NVIDIA hardware. FireRedTTS3 Base "
+            "is experimental."
         ),
         languages=(
             "Qwen3: Chinese, English, French, German, Italian, Japanese, Korean, "

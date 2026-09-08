@@ -675,7 +675,7 @@ BUILTIN_COMPONENTS: tuple[ComponentDefinition, ...] = (
     ),
     _component(
         "audio_cpp",
-        "audio.cpp",
+        "Local speech models (audio.cpp)",
         path="services/audio_cpp",
         markers=(),
         source_markers=("audiocpp_server", "tools/model_manager_v2.py", "server.json"),

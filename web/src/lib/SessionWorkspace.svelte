@@ -4163,6 +4163,13 @@
               can be available without a local process.</span
             >
           </div>
+          {#if selectedTtsServiceId === 'audio_cpp'}
+            <p class="muted text-xs">
+              audio.cpp runs several local speech models through one provider.
+              Choose the model below. You can install more model packages under
+              Providers &amp; services.
+            </p>
+          {/if}
           <div class="flex flex-wrap items-center justify-between gap-3">
             <p class="muted text-xs">
               The preferred available service is selected automatically. Your
