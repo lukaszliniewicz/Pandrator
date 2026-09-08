@@ -12,6 +12,7 @@
   import { sessionApi } from './domain-api';
   import type { SettingsPayload } from './api-models';
   import SettingField from './SettingField.svelte';
+  import TtsServiceSelect from './TtsServiceSelect.svelte';
   import { settingApplies } from './settings-fields';
 
   let {
@@ -794,13 +795,27 @@
       <div class="mt-5 grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
         {#each visible as [key, fallback]}
           <div>
-            <SettingField
-              {section}
-              keyName={key}
-              value={value(key, fallback)}
-              onchange={(next) => set(key, next)}
-              compact
-            />
+            {#if section === 'tts' && key === 'service'}<TtsServiceSelect
+                value={String(value(key, fallback) ?? '')}
+                onchange={(next, resetSelection) => {
+                  set(key, next);
+                  if (resetSelection) {
+                    for (const field of [
+                      'model',
+                      'xtts_model',
+                      'voice',
+                      'speaker'
+                    ])
+                      set(field, '');
+                  }
+                }}
+              />{:else}<SettingField
+                {section}
+                keyName={key}
+                value={value(key, fallback)}
+                onchange={(next) => set(key, next)}
+                compact
+              />{/if}
             {#if Object.prototype.hasOwnProperty.call(override, key)}<span
                 class="mt-1 block text-[.65rem] text-[var(--accent)]"
                 >Session override</span

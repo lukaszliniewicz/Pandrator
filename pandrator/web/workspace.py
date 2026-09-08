@@ -12,6 +12,9 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from pandrator.logic.tts_provider_policy import DEFAULT_TTS_SERVICE_ID
+from pandrator.logic.tts_provider_switch import prepare_tts_provider_switch
+
 from .artifact_selection import select_source_path
 from .database import Database
 from .jobs import JobQueue
@@ -202,7 +205,7 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "web_research_result_chars": 10000,
     },
     "tts": {
-        "service": "XTTS",
+        "service": DEFAULT_TTS_SERVICE_ID,
         "use_external_server": False,
         "external_server_url": "",
         "model": "",
@@ -948,6 +951,9 @@ class WorkspaceSettingsService:
         if session_record is None:
             raise KeyError(session_id)
         value = dict(value)
+        if section == "tts":
+            previous = self.get_in_session(session, session_id, section)["effective"]
+            value = prepare_tts_provider_switch(previous, value)
         if section == "output" and session_record.workflow_kind != "audiobook":
             for key in (
                 "title",

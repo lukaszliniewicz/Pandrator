@@ -509,6 +509,9 @@ def _safe_tts_service(
         "id",
         "name",
         "kind",
+        "catalogue_role",
+        "replacement_service_id",
+        "replacement_model_family",
         "available",
         "online",
         "availability_reason",
@@ -523,11 +526,15 @@ def _safe_tts_service(
         "batch_synthesis",
     )
     result = {key: service.get(key) for key in compact_keys if key in service}
+    if "catalogue_role" not in result:
+        result["catalogue_role"] = "external"
     raw_voices = service.get("voices")
     voices: list[Any] = raw_voices if isinstance(raw_voices, list) else []
     result["voice_count"] = len(voices)
     if detail == "full":
         for key in (
+            "model_catalog",
+            "model_voice_modes",
             "voices",
             "default_voices",
             "default_voices_by_language",
@@ -551,9 +558,16 @@ def tts_catalog(runtime: McpRuntime, arguments: TtsCatalogInput) -> dict[str, An
     for item in payload.get("services") or []:
         if not isinstance(item, dict):
             continue
+        requested_item_id = _normalized_id(item.get("id") or item.get("name"))
         if (
             requested_service
-            and _normalized_id(item.get("id") or item.get("name")) != requested_service
+            and requested_item_id != requested_service
+        ):
+            continue
+        if (
+            str(item.get("catalogue_role") or "external").casefold() == "compatibility"
+            and not arguments.include_compatibility
+            and requested_service is None
         ):
             continue
         if arguments.available_only and item.get("available") is not True:
@@ -599,6 +613,7 @@ def tts_catalog(runtime: McpRuntime, arguments: TtsCatalogInput) -> dict[str, An
     return {
         "schema_version": "1",
         "default_service": payload.get("default_service"),
+        "recommended_service": payload.get("recommended_service", "audio_cpp"),
         "revision": payload.get("revision"),
         "services": services,
         "managed_voices": voices,
@@ -660,6 +675,12 @@ def configure_tts(runtime: McpRuntime, arguments: ConfigureTtsInput) -> ToolOutc
                     for item in catalog["managed_voices"]
                     if str(item.get("id") or "").casefold() == arguments.voice.casefold()
                     or str(item.get("name") or "").casefold() == arguments.voice.casefold()
+                    or any(
+                        _normalized_id(key) == _normalized_id(service_id)
+                        and str(registration.get("voice_id") or "").casefold() == arguments.voice.casefold()
+                        for key, registration in (item.get("registrations") or {}).items()
+                        if isinstance(registration, dict)
+                    )
                 ),
                 None,
             )
@@ -715,6 +736,33 @@ def configure_tts(runtime: McpRuntime, arguments: ConfigureTtsInput) -> ToolOutc
     application = runtime.require_application()
     current = application.get_session_settings(arguments.session_id, "tts")
     override = dict(current.get("override") or {})
+    if service_id == "audio_cpp":
+        voice_mode = (service.get("model_voice_modes") or {}).get(model)
+        linked_voice = any(
+            _normalized_id(key) == "audio_cpp"
+            and registration.get("status") == "ready"
+            and str(registration.get("voice_id") or "").casefold() == voice.casefold()
+            for managed in catalog["managed_voices"]
+            for key, registration in (managed.get("registrations") or {}).items()
+            if isinstance(registration, dict) and voice
+        )
+        needs_reference = voice_mode == "cloning" or (
+            voice_mode == "optional_cloning" and bool(voice)
+        )
+        if needs_reference and not linked_voice:
+            raise PandratorMcpError(
+                "validation_error",
+                "Choose a ready audio.cpp reference link for this cloning model before switching.",
+            )
+        override.update(
+            service=service_id,
+            tts_service=service_id,
+            model=model,
+            xtts_model=model,
+            voice=voice,
+            speaker=voice,
+            provider_switch_reviewed=True,
+        )
     override.update({"service": service_id})
     if model:
         override["model"] = model

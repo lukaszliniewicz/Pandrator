@@ -19,6 +19,15 @@ an operation is unfamiliar or the server differs from this reference.
 - Inspect provider, TTS, and voice catalogues only when those choices matter.
   Use actual service/model/voice IDs, not labels guessed from user examples.
 
+For new local speech work, the catalogue recommends `audio_cpp`; XTTS,
+Silero, Kokoro, and Voxtral remain dedicated providers. Compatibility entries
+are hidden by default. Retrieve a saved provider with `service_id`, or use
+`include_compatibility=true` when needed. Preserve an existing selection unless
+the task calls for a switch. For an explicit switch, inspect the target model
+and voice IDs and use `pandrator_configure_tts`; do not copy old provider
+options or assume that an uploaded voice is available in audio.cpp. Cloning
+there needs a ready managed reference link.
+
 Application read, write, run, and cancel scopes are distinct. Passive work
 normally needs read and run; importing a source also needs write. Inspect
 missing-scope errors rather than broadening permissions automatically.

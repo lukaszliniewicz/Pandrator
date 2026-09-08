@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { selectableTtsServices } from './tts-provider-policy';
   import { errorMessage } from './errors';
   import {
     ChevronDown,
@@ -2137,7 +2138,7 @@
             }}
           >
             <option value="">Choose a service</option>
-            {#each ttsCatalogue.services as service}
+            {#each selectableTtsServices(ttsCatalogue.services, alternateTts.service) as service}
               <option value={service.id} disabled={service.online === false}
                 >{service.name ?? service.id}{service.online === false
                   ? ' · unavailable'

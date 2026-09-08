@@ -46,14 +46,6 @@ const terminalStates = new Set([
   "recovery_required",
 ]);
 
-const compatibilityComponentIds = new Set([
-  "qwen_tts",
-  "fish_speech",
-  "voxcpm",
-  "chatterbox",
-  "magpie",
-]);
-
 const sectionPresentation = {
   text_to_speech: {
     title: "Text to speech",
@@ -922,7 +914,7 @@ function buildComponentCard(component) {
     `engine-state ${component.inspection.state}`,
   );
   titleLine.append(text("span", definition.label, "engine-title"));
-  if (compatibilityComponentIds.has(definition.id)) {
+  if (definition.catalogue_role === "compatibility") {
     titleLine.append(text("span", "Compatibility", "compatibility-badge"));
   }
   titleLine.append(status);
@@ -1010,7 +1002,7 @@ function renderCatalogue() {
   const groups = new Map();
   for (const component of catalogueComponents) {
     const isCompatibility =
-      compatibilityComponentIds.has(component.definition.id) &&
+      component.definition.catalogue_role === "compatibility" &&
       !["present", "degraded"].includes(component.inspection.state);
     const section = isCompatibility
       ? "compatibility"

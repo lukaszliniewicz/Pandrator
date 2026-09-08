@@ -173,6 +173,8 @@ class ResolvedComponentState(StrictModel):
 class ComponentDefinition(StrictModel):
     id: str = Field(pattern=r"^[a-z][a-z0-9_-]*$")
     label: str = Field(min_length=1)
+    catalogue_role: Literal["primary", "compatibility"] = "primary"
+    replacement_component_id: str | None = None
     description: str = ""
     guidance: str = ""
     section: ComponentSection = ComponentSection.CORE

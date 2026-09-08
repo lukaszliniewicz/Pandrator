@@ -30,6 +30,7 @@ from flask import (
 from sqlalchemy import func, select
 from werkzeug.utils import secure_filename
 
+from pandrator.logic.tts_provider_switch import prepare_tts_provider_switch
 from pandrator.runtime import DataPaths
 from pandrator.version import PANDRATOR_VERSION
 
@@ -106,6 +107,7 @@ from .models import (
 from .openapi import build_openapi_document
 from .parameter_definitions import describe_parameters
 from .parity_registry import build_registry
+from .quick_transcription_routes import register_quick_transcription_routes
 from .route_context import RouteContext
 from .schemas import (
     AgentRunCreateRequest,
@@ -166,6 +168,7 @@ from .source_resolution import resolve_primary_source
 from .speech_optimization_dispatch_routes import (
     register_speech_optimization_dispatch_routes,
 )
+from .stt_resources import stt_resource_keys
 from .voice_library import (
     ensure_bundled_voice,
     is_bundled_voice,
@@ -178,8 +181,6 @@ from .voice_library import (
     voice_sample_payload,
 )
 from .workflow_plan_routes import register_workflow_plan_routes
-from .quick_transcription_routes import register_quick_transcription_routes
-from .stt_resources import stt_resource_keys
 from .workspace import BUILTIN_DEFAULTS, SETTING_SECTIONS
 from .workspace import RevisionConflict as WorkspaceRevisionConflict
 
@@ -1643,6 +1644,12 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                     if setting_key == "services.stt"
                     else payload.value
                 )
+                if setting_key == "defaults.tts":
+                    previous = {
+                        **BUILTIN_DEFAULTS["tts"],
+                        **(record.value_json if record is not None else {}),
+                    }
+                    prepared_value = prepare_tts_provider_switch(previous, prepared_value)
                 if setting_key not in {
                     "services.tts",
                     "services.stt",

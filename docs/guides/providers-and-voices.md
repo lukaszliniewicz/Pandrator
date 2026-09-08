@@ -25,25 +25,51 @@ credential value.
 The Manager shows available compute variants, model licences, and downloads
 before changing the installation.
 
+**audio.cpp** is the main local TTS provider and the default in a fresh
+workspace. Its model packages cover Qwen3 TTS, Fish Audio S2 Pro, VoxCPM2,
+Chatterbox, MagpieTTS, OmniVoice, PocketTTS, FireRedTTS3, and BreezeTTS 2.
+Select packages in the Manager and select an installed model in generation
+settings. XTTS, Silero, Kokoro, and Voxtral retain their dedicated providers.
+
 | Component | Best suited to | Typical compute |
 | --- | --- | --- |
+| audio.cpp | Multiple speech model families in one runtime | CPU, Vulkan, or CUDA; model requirements vary |
 | Kokoro 82M | Lightweight built-in voices | CPU, CUDA, and supported modern AMD GPUs |
-| Qwen3 TTS | Built-in voices and multilingual cloning | CPU, CUDA, Vulkan, or Metal |
-| XTTS v2 | Mature multilingual voice cloning | CPU or CUDA |
-| VoxCPM2 | Large multilingual voice cloning | CUDA |
-| Fish S2 Pro | Broad-language voice cloning | Backend-dependent |
+| XTTS v2 | Multilingual voice cloning and fine-tuned models | CPU or CUDA |
 | Voxtral 4B | Preset voices | WGPU-compatible accelerator |
 | Silero | Efficient regional language packs | CPU |
-| Chatterbox | English and multilingual cloning | CPU or CUDA |
-| Magpie 357M | Preset multilingual voices | CPU or CUDA |
 | CrispASR | Transcription, timestamps, and diarization | CPU, CUDA, Vulkan, or Apple Silicon |
 | RVC | Speech-to-speech voice conversion | CPU or CUDA |
 
 Hardware needs vary with model size, quantization, input length, and compute
-backend. A GPU improves many workloads, but useful Kokoro, Silero, XTTS,
-Qwen3, and transcription configurations can run on a CPU. Start with the
-smallest engine that meets the task instead of installing the entire catalogue
-and hoping your SSD develops a sense of purpose.
+backend. Start with the smallest model that meets the task instead of
+installing the entire catalogue and hoping your SSD develops a sense of purpose.
+The Linux audio.cpp CUDA build remains best-effort without NVIDIA hardware
+verification.
+
+## Switching from a compatibility provider
+
+Standalone Qwen3 TTS, Fish S2 Pro, VoxCPM2, Chatterbox, and Magpie are
+compatibility providers. Existing installations remain manageable and saved
+sessions keep their provider, model, voice, and takes. An upgrade also preserves
+an existing workspace's inherited TTS default. Uninstalled compatibility
+components are grouped under **Compatibility backends**; ordinary speech
+pickers show a compatibility provider when it is the saved selection.
+
+To move a session, start audio.cpp with the desired model package installed,
+open **Generate audio** settings, and choose **Switch to audio.cpp**. Pandrator
+proposes an installed model from the matching family. Review its model and
+voice, preview a representative sample, then save. If the family is not
+installed, choose and install the package first.
+
+A voice is reused only if audio.cpp already advertises that native voice or
+the managed voice has a ready audio.cpp reference link. Otherwise, choose or
+link the reference in the Voice Library. Old provider options and reference
+settings are cleared on the switch; model IDs, quantizations, and voice uploads
+are not treated as equivalent. The original component and generated takes
+remain available. Changing a global or generic session service setting also
+clears stale selections, so choose a valid target model and voice before
+starting generation.
 
 ## Language and capability checks
 

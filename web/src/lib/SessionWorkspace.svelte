@@ -1,4 +1,8 @@
 <script lang="ts">
+  import {
+    selectableTtsServices,
+    preferredTtsService
+  } from './tts-provider-policy';
   import { errorMessage } from './errors';
   import {
     ArrowLeft,
@@ -89,6 +93,15 @@
   let outcome = $derived(initialOutcome);
   let capabilities = $state<RuntimeCapabilities>({});
   let ttsCatalogue = $state<TtsCatalogue>({ services: [] });
+  let ttsSwitchSource = $state<TtsService | null>(null);
+  let ttsSwitchReviewed = $state(false);
+  $effect(() => {
+    // A changed target needs a fresh review before applying the switch.
+    void ttsService;
+    void ttsModel;
+    void voiceName;
+    ttsSwitchReviewed = false;
+  });
   let sttCatalogue = $state<SttCatalogue>({
     services: [],
     profiles: [],
@@ -663,6 +676,8 @@
     })[key] ?? 'text';
 
   async function openSettings(stage: Stage) {
+    ttsSwitchSource = null;
+    ttsSwitchReviewed = false;
     if (stage.key === 'export' && session.workflow_kind === 'audiobook') {
       await openFullSettings('output');
       return;
@@ -917,7 +932,7 @@
       (explicitlySelectedServiceId ? configuredService : null) ??
       (configuredService?.available
         ? configuredService
-        : ttsCatalogue.services.find((item) => item.available)) ??
+        : preferredTtsService(ttsCatalogue.services)) ??
       configuredService;
     ttsService = String(activeService?.id ?? configuredServiceId);
     ttsModel =
@@ -1047,6 +1062,15 @@
     const stored = await sessionApi.settings(session.id, section);
     const cleaned = { ...(stored.override ?? {}) };
     for (const key of Object.keys(value)) delete cleaned[key];
+    if (section === 'tts' && ttsSwitchSource) {
+      for (const key of Object.keys(cleaned)) {
+        if (
+          key.startsWith(`${ttsSwitchSource.id}_`) ||
+          ['reference_audio', 'reference_text'].includes(key)
+        )
+          delete cleaned[key];
+      }
+    }
     await sessionApi.saveSettings(
       session.id,
       section,
@@ -1098,9 +1122,7 @@
       );
       const active =
         (preserveSelection ? preserved : null) ??
-        (configured?.available
-          ? configured
-          : catalogue.find((item) => item.available)) ??
+        (configured?.available ? configured : preferredTtsService(catalogue)) ??
         configured ??
         catalogue[0];
       if (active) {
@@ -1374,12 +1396,49 @@
   }
 
   async function chooseTtsService(value: string) {
+    const previous = selectedTtsService;
+    const previousModel = ttsModel;
+    const previousVoice = voiceName;
+    const switching =
+      previous?.catalogue_role === 'compatibility' &&
+      value === previous.replacement_service_id;
+    ttsSwitchSource = switching ? previous : null;
+    ttsSwitchReviewed = false;
     ttsService = value;
     const service = ttsCatalogue.services.find(
       (item) => String(item.id) === value
     );
     ttsModel = String(service?.default_model ?? service?.models?.[0] ?? '');
     await discoverTtsService(service);
+    if (switching && previous) {
+      const live =
+        ttsCatalogue.services.find((item) => item.id === value) ?? service;
+      const candidates = (live?.model_catalog ?? []).filter(
+        (item) =>
+          item.family === previous.replacement_model_family &&
+          live?.models?.includes(item.id)
+      );
+      const preferredMode = /prebuilt|customvoice/i.test(previousModel)
+        ? 'prebuilt'
+        : 'cloning';
+      const candidate =
+        candidates.find((item) => item.voice_mode === preferredMode) ??
+        candidates[0];
+      ttsModel = candidate?.id ?? '';
+      // Reuse only a voice already advertised by the target or linked there.
+      const native = live?.voice_catalogues?.[ttsModel] ?? [];
+      const linked = libraryVoices.find(
+        (voice) =>
+          voice.metadata_json?.providers?.[previous.id]?.voice_id ===
+          previousVoice
+      )?.metadata_json?.providers?.[value];
+      voiceName =
+        native.find(
+          (voice) => voice.toLowerCase() === previousVoice.toLowerCase()
+        ) ?? (linked?.status === 'ready' ? String(linked.voice_id ?? '') : '');
+      generationPrompt = '';
+      return;
+    }
     if (String(service?.id ?? '').toLowerCase() === 'xtts')
       await loadXttsModels();
     voiceName =
@@ -1474,12 +1533,12 @@
     compareLabels(serviceLabel(left), serviceLabel(right)) ||
     compareLabels(left.id, right.id);
   const availableTtsServices = $derived(
-    [...ttsCatalogue.services]
+    selectableTtsServices(ttsCatalogue.services, ttsService)
       .filter((service) => service.available === true)
       .sort(compareServices)
   );
   const unavailableTtsServices = $derived(
-    [...ttsCatalogue.services]
+    selectableTtsServices(ttsCatalogue.services, ttsService)
       .filter((service) => service.available !== true)
       .sort(compareServices)
   );
@@ -2221,6 +2280,15 @@
         service: ttsService,
         model: ttsModel,
         xtts_model: ttsModel,
+        ...(ttsSwitchSource
+          ? {
+              provider_switch_reviewed: ttsSwitchReviewed,
+              speaker: voiceName,
+              audio_cpp_voice_ref: {},
+              audio_cpp_reference_text: '',
+              options: {}
+            }
+          : {}),
         voice: voiceName,
         generation_prompt: generationPrompt,
         tts_batch_size: ttsBatchSize,
@@ -2286,6 +2354,15 @@
     if (!settingsStage) return;
     const stage = settingsStage;
     const key = settingsStage.key;
+    if (
+      key === 'generate_audio' &&
+      ttsSwitchSource &&
+      (!ttsSwitchReviewed || !ttsModels.includes(ttsModel))
+    ) {
+      error =
+        'Choose an audio.cpp model and voice, then review the provider switch before saving.';
+      return;
+    }
     if (key === 'generate_audio' && publishingLibraryVoiceId) {
       error = `Wait for the selected library voice to finish ${audioCppLinkedReferences ? 'linking' : 'uploading'}.`;
       return;
@@ -3997,6 +4074,54 @@
             </div>
           </details>{/if}
         {#if settingsStage.key === 'generate_audio'}
+          {#if selectedTtsService?.catalogue_role === 'compatibility'}
+            <div class="rounded-xl border border-[var(--line)] p-4 text-sm">
+              <strong>Compatibility provider</strong>
+              <p class="muted mt-1">
+                This session keeps its existing engine. For new generation, you
+                can switch to the matching audio.cpp model and review its voice
+                and settings.
+              </p>
+              <button
+                type="button"
+                class="btn btn-secondary mt-3"
+                onclick={() =>
+                  chooseTtsService(
+                    String(selectedTtsService?.replacement_service_id)
+                  )}
+                disabled={!ttsCatalogue.services.some(
+                  (item) =>
+                    item.id === selectedTtsService?.replacement_service_id &&
+                    item.available
+                )}>Switch to audio.cpp</button
+              >
+            </div>
+          {/if}
+          {#if ttsSwitchSource}
+            <div
+              class="rounded-xl border border-[var(--accent)] p-4 text-sm"
+              role="status"
+            >
+              <strong>Review switch from {ttsSwitchSource.name}</strong>
+              <p class="muted mt-1">
+                Check the model and voice below. Only an existing target voice
+                or ready reference link is reused. Old engine options and
+                reference settings will be cleared when you save. Existing takes
+                and the original engine remain available.
+              </p>
+              <p class="muted mt-2">
+                Preview the selected voice in the Voice Library before starting
+                a long generation.
+              </p>
+              <label class="mt-3 flex items-start gap-2"
+                ><input
+                  type="checkbox"
+                  bind:checked={ttsSwitchReviewed}
+                  class="mt-1"
+                /> I reviewed the target model, voice, and settings reset.</label
+              >
+            </div>
+          {/if}
           <div class="grid gap-2">
             <div class="flex items-center justify-between gap-3">
               <span class="text-sm font-semibold">TTS service</span><button
@@ -4750,7 +4875,9 @@
           disabled={settingsLoading ||
             Boolean(publishingLibraryVoiceId) ||
             (settingsStage.key === 'generate_audio' &&
-              !selectedTtsServiceAvailable)}
+              (!selectedTtsServiceAvailable ||
+                (Boolean(ttsSwitchSource) &&
+                  (!ttsSwitchReviewed || !ttsModels.includes(ttsModel)))))}
           class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-4 py-2.5 text-sm font-semibold disabled:opacity-40"
           ><Save size={15} /> Save as defaults</button
         ><button
@@ -4770,7 +4897,9 @@
             (settingsStage.key === 'translate' &&
               !translationSourceArtifactId) ||
             (settingsStage.key === 'generate_audio' &&
-              !selectedTtsServiceAvailable)}
+              (!selectedTtsServiceAvailable ||
+                (Boolean(ttsSwitchSource) &&
+                  (!ttsSwitchReviewed || !ttsModels.includes(ttsModel)))))}
           class="rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40"
           >{session.workflow_kind === 'media_edit' &&
           settingsStage.key === 'transcribe' &&

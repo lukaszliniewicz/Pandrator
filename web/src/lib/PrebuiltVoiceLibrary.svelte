@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { selectableTtsServices } from './tts-provider-policy';
   import { errorMessage } from './errors';
   import {
     Check,
@@ -56,7 +57,7 @@
   const isString = (value: string | undefined): value is string =>
     Boolean(value);
   const services = $derived(
-    (payload.services ?? []).filter(
+    selectableTtsServices(payload.services ?? [], serviceId).filter(
       (service) => service.supports_prebuilt_voices
     )
   );

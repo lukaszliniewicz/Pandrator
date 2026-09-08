@@ -57,6 +57,8 @@
       estimated_download_bytes?: number | null;
     }>;
     supported_actions: string[];
+    catalogue_role?: 'primary' | 'compatibility';
+    replacement_component_id?: string | null;
     default_port?: number | null;
   };
   type Inspection = {
@@ -160,13 +162,6 @@
   let uninstallBusy = $state(false);
   let pollTimer: ReturnType<typeof setTimeout> | null = null;
   let pollStopped = false;
-  const compatibilityComponentIds = new Set([
-    'qwen_tts',
-    'fish_speech',
-    'voxcpm',
-    'chatterbox',
-    'magpie'
-  ]);
   const componentGroups = $derived([
     {
       label: 'Installed',
@@ -183,7 +178,7 @@
       items: components.filter(
         (component) =>
           !['present', 'degraded'].includes(component.inspection.state) &&
-          !compatibilityComponentIds.has(component.definition.id)
+          !(component.definition.catalogue_role === 'compatibility')
       )
     },
     {
@@ -193,7 +188,7 @@
       items: components.filter(
         (component) =>
           !['present', 'degraded'].includes(component.inspection.state) &&
-          compatibilityComponentIds.has(component.definition.id)
+          component.definition.catalogue_role === 'compatibility'
       )
     }
   ]);
@@ -978,6 +973,10 @@
                       <div>
                         <div class="font-semibold">
                           {component.definition.label}
+                          {#if component.definition.catalogue_role === 'compatibility'}<span
+                              class="muted ml-2 text-xs font-normal"
+                              >Compatibility</span
+                            >{/if}
                         </div>
                         <div class="muted mt-1 text-xs">
                           {runtimeState.label}

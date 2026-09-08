@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "default_service_id": "audio_cpp",
+  "providers": [
+    {"service_id": "audio_cpp", "component_id": "audio_cpp", "catalogue_role": "primary"},
+    {"service_id": "xtts", "component_id": "xtts", "catalogue_role": "primary"},
+    {"service_id": "silero", "component_id": "silero", "catalogue_role": "primary"},
+    {"service_id": "kokoro", "component_id": "kokoro", "catalogue_role": "primary"},
+    {"service_id": "voxtral", "component_id": "voxtral", "catalogue_role": "primary"},
+    {"service_id": "kobold_qwen", "component_id": "qwen_tts", "catalogue_role": "compatibility", "replacement_service_id": "audio_cpp", "replacement_model_family": "qwen3_tts"},
+    {"service_id": "fishs2", "component_id": "fish_speech", "catalogue_role": "compatibility", "replacement_service_id": "audio_cpp", "replacement_model_family": "fish_audio_s2"},
+    {"service_id": "voxcpm", "component_id": "voxcpm", "catalogue_role": "compatibility", "replacement_service_id": "audio_cpp", "replacement_model_family": "voxcpm2"},
+    {"service_id": "chatterbox", "component_id": "chatterbox", "catalogue_role": "compatibility", "replacement_service_id": "audio_cpp", "replacement_model_family": "chatterbox"},
+    {"service_id": "magpie", "component_id": "magpie", "catalogue_role": "compatibility", "replacement_service_id": "audio_cpp", "replacement_model_family": "magpie_tts"}
+  ]
+}

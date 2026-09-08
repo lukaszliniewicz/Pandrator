@@ -30,6 +30,7 @@ type ManagerComponent = {
     guidance: string;
     section: string;
     service_key: string | null;
+    catalogue_role?: 'primary' | 'compatibility';
     supported_actions: string[];
     compute_variants: string[];
     install_options: InstallOption[];
@@ -529,6 +530,7 @@ test('Pandrator installs selected audio.cpp models and mutes absent compatibilit
     }
   ];
   const legacyQwen = component('qwen_tts', 'Legacy Qwen backend', 'tts.qwen');
+  legacyQwen.definition.catalogue_role = 'compatibility';
   legacyQwen.desired.present = false;
   legacyQwen.inspection.state = 'absent';
 

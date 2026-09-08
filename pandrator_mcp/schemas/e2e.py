@@ -88,6 +88,10 @@ class CreateTextSourceInput(ToolInput):
 
 class TtsCatalogInput(ToolInput):
     service_id: str | None = Field(default=None, max_length=160)
+    include_compatibility: bool = Field(
+        default=False,
+        description="Include services retained for compatibility with older configurations.",
+    )
     model: str | None = Field(
         default=None,
         max_length=300,

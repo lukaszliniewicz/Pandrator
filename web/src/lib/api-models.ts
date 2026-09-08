@@ -663,6 +663,9 @@ type TtsModel = {
 };
 
 export type TtsService = {
+  catalogue_role?: 'primary' | 'compatibility' | 'external';
+  replacement_service_id?: string | null;
+  replacement_model_family?: string | null;
   id: string;
   name: string;
   description?: string;

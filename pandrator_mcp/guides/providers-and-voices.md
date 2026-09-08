@@ -30,6 +30,24 @@ registration for the chosen service is `ready`; send the provider's registered
 voice ID, not Pandrator's display name. Ask the user when a materially different
 substitution would be required.
 
+## Primary and compatibility providers
+
+The TTS catalogue recommends `audio_cpp` for new local work. XTTS, Silero,
+Kokoro, and Voxtral remain dedicated local providers. The default catalogue
+omits standalone Qwen3 TTS, Fish S2 Pro, VoxCPM2, Chatterbox, and Magpie
+compatibility entries. Use `include_compatibility=true` to inspect them all,
+or supply a saved `service_id` to retrieve that provider directly.
+
+Inspect `catalogue_role`, `replacement_service_id`, and
+`replacement_model_family` instead of maintaining your own retirement list.
+An existing session may deliberately use a compatibility provider; inspect its
+settings before selecting a replacement. To switch, inspect the target's live
+models and voices, then call `pandrator_configure_tts` with their exact IDs.
+For audio.cpp cloning models, supply a voice with a ready managed reference
+link. Changing provider clears stale aliases, reference settings, and old
+engine options; it does not convert old model IDs or uploaded voices. Existing
+takes and installed engines are retained.
+
 Credentials belong in Pandrator's credential store or an approved MCP
 credential backend. Never paste a provider key into a tool argument, target
 profile, prompt, log, or source artifact.

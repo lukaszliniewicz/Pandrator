@@ -146,28 +146,43 @@ to your host.
 
 ### Local speech generation
 
-These engines are available through the Manager. Install only the ones you
-want; voices and language coverage depend on the selected model.
+**audio.cpp is the main local speech provider and the default for new
+workspaces.** Install it through the Manager, then choose the models you want.
+One runtime gives you access to these model families:
 
-| Engine / model family | Voice options and capabilities |
+| audio.cpp model family | Voice options |
+| --- | --- |
+| **Qwen3 TTS 1.7B** | Base for reference-voice cloning; CustomVoice for built-in speakers. |
+| **Fish Audio S2 Pro** | Expressive reference-voice cloning. |
+| **VoxCPM2** | Multilingual reference-voice cloning. |
+| **Chatterbox** | Reference-voice cloning. |
+| **MagpieTTS** | Preset multilingual voices. |
+| **OmniVoice** | Multilingual reference-voice cloning. |
+| **PocketTTS English** | English speech generation. |
+| **FireRedTTS3 Base** | Experimental multilingual reference-voice cloning. |
+| **BreezeTTS 2** | Instruction-based voice design and optional reference cloning. |
+
+The Manager supplies selectable Q8_0 model packages. CPU, Vulkan, and CUDA
+builds are available; the Linux CUDA build is currently best-effort and has not
+been verified on NVIDIA hardware. Available voices and languages depend on the
+selected model.
+
+These dedicated providers also remain available:
+
+| Provider | Voice options and capabilities |
 | --- | --- |
 | **Kokoro-82M v1.0** | Lightweight, CPU-friendly preset voices; a useful first narration engine. |
 | **Silero** | CPU-friendly language-specific voice packs; licence terms differ by pack. |
 | **XTTS v2** | Multilingual and cross-language voice cloning; import fine-tuned model bundles or use the optional XTTS training component. |
-| **Qwen3 TTS** | 0.6B/1.7B **Base** for reference-voice cloning; 1.7B **CustomVoice** for built-in speakers. |
-| **VoxCPM2** | Multilingual reference-voice cloning; CUDA strongly recommended. |
-| **Fish Audio S2 Pro** | Expressive reference-voice cloning with selectable quantization. |
-| **Chatterbox** | English, Multilingual, and Turbo English variants with reference-voice cloning. |
-| **MagpieTTS Multilingual 357M** | Five preset speakers across nine languages. |
 | **Voxtral** | Preset voices; requires a supported GPU/WGPU backend. |
-| **audio.cpp** | Native GGUF runtime with selectable Q8_0 model packages; see below. |
 
-The **audio.cpp** catalogue includes Qwen3 TTS 1.7B Base and CustomVoice,
-Fish Audio S2 Pro, VoxCPM2, MagpieTTS, Chatterbox, **OmniVoice**,
-**PocketTTS English**, **FireRedTTS3 Base** (experimental), and **BreezeTTS 2**.
-BreezeTTS 2 supports instruction-based voice design and optional reference
-cloning. CPU, Vulkan, and CUDA builds are available; the Linux CUDA build is
-currently best-effort and has not been verified on NVIDIA hardware.
+Existing workspaces keep their saved defaults and provider selections.
+Standalone Qwen3 TTS, Fish S2 Pro, VoxCPM2, Chatterbox, and Magpie providers
+remain supported for compatibility. Installed components stay manageable;
+uninstalled ones appear under **Compatibility backends**. In a saved session,
+**Switch to audio.cpp** proposes a matching model family for review. Voices and
+engine settings are not assumed interchangeable, and existing takes remain
+intact. See [switching providers](docs/guides/providers-and-voices.md#switching-from-a-compatibility-provider).
 
 Optional **RVC** converts the voice of generated audio, keeping the original
 and converted takes available. It is a separate post-processing step.

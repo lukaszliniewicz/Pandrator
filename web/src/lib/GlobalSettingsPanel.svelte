@@ -4,6 +4,7 @@
   import { sessionApi } from './domain-api';
   import type { GlobalDefaultsPayload } from './api-models';
   import SettingField from './SettingField.svelte';
+  import TtsServiceSelect from './TtsServiceSelect.svelte';
   import {
     compareSettingOrder,
     GLOBAL_TTS_KEYS,
@@ -122,13 +123,22 @@
   {#if payload}
     <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
       {#each entries as [key, fallback]}
-        <SettingField
-          {section}
-          keyName={key}
-          value={current(key, fallback)}
-          onchange={(next) => set(key, next)}
-          compact
-        />
+        {#if section === 'tts' && key === 'service'}<TtsServiceSelect
+            value={String(current(key, fallback) ?? '')}
+            onchange={(next, resetSelection) => {
+              set(key, next);
+              if (resetSelection) {
+                for (const field of ['model', 'xtts_model', 'voice', 'speaker'])
+                  set(field, '');
+              }
+            }}
+          />{:else}<SettingField
+            {section}
+            keyName={key}
+            value={current(key, fallback)}
+            onchange={(next) => set(key, next)}
+            compact
+          />{/if}
       {/each}
     </div>
     <div class="mt-4 flex flex-wrap items-center gap-3">

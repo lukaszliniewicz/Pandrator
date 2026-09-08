@@ -2693,6 +2693,7 @@ def build_server(runtime: McpRuntime):
     )
     def tts_catalog_tool(
         service_id: Annotated[str | None, Field(max_length=160)] = None,
+        include_compatibility: bool = False,
         model: Annotated[str | None, Field(max_length=300)] = None,
         query: Annotated[str | None, Field(max_length=160)] = None,
         available_only: bool = False,
@@ -2706,6 +2707,7 @@ def build_server(runtime: McpRuntime):
             runtime,
             TtsCatalogInput(
                 service_id=service_id,
+                include_compatibility=include_compatibility,
                 model=model,
                 query=query,
                 available_only=available_only,

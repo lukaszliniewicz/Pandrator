@@ -19,6 +19,7 @@ from ..models import (
     ResolvedComponentState,
     TaskSpec,
 )
+from ..provider_policy import provider_metadata_for
 from .audiocpp import (
     AUDIO_CPP_PORT,
     AUDIO_CPP_VERSION,
@@ -624,9 +625,12 @@ def _component(
     ),
 ) -> ComponentDefinition:
     presentation = presentation_for(component_id)
+    provider_metadata = provider_metadata_for(component_id)
     return ComponentDefinition(
         id=component_id,
         label=label,
+        catalogue_role=provider_metadata.catalogue_role,
+        replacement_component_id=provider_metadata.replacement_component_id,
         description=presentation.summary,
         guidance=presentation.guidance,
         section=presentation.section,

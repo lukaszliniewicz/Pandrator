@@ -82,6 +82,9 @@ pandrator_manager = "."
 "pandrator_manager.tray" = "tray"
 
 [tool.setuptools.package-data]
+"pandrator_manager" = [
+  "provider_policy.json",
+]
 "pandrator_manager.recovery_ui" = [
   "static/**",
 ]

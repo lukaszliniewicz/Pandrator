@@ -245,20 +245,7 @@ const CHOICES: Record<string, SettingOption[]> = {
     option(8000, '8 kHz'),
     option(24000, '24 kHz'),
     option(48000, '48 kHz')
-  ],
-  service: [
-    'XTTS',
-    'VoxCPM',
-    'FishS2',
-    'Voxtral',
-    'Kokoro',
-    'Magpie',
-    'Silero',
-    'Chatterbox',
-    'Qwen3 TTS',
-    'OpenAI',
-    'Google Gemini'
-  ].map((value) => option(value))
+  ]
 };
 
 const LANGUAGE_KEYS = new Set([

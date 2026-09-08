@@ -14,6 +14,10 @@ import requests
 from sqlalchemy import select
 
 from pandrator.logic import tts_handler
+from pandrator.logic.tts_provider_policy import (
+    DEFAULT_TTS_SERVICE_ID,
+    provider_policy,
+)
 from pandrator.logic.tts_provider_profiles import (
     AUDIO_CPP_MODEL_CATALOG,
     list_tts_provider_profiles,
@@ -1655,10 +1659,17 @@ class TtsCatalogueService:
                     resolved.resolved_value() for resolved in resolved_credentials
                 ],
             )
+        for service in services:
+            service.update(
+                provider_policy(
+                    normalize_service_id(service.get("id") or service.get("name"))
+                )
+            )
         payload = {
             "value": redact_inline_secrets(connection_value),
             "revision": revision,
             "default_value": redact_inline_secrets(default_value),
+            "recommended_service": DEFAULT_TTS_SERVICE_ID,
             "default_service": str(
                 default_value.get("service") or BUILTIN_DEFAULTS["tts"]["service"]
             ),

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { selectableTtsServices } from './tts-provider-policy';
   import { errorMessage } from './errors';
   import { createAudioRecorder, openMicrophone } from './audio-recorder';
   import { page } from '$app/state';
@@ -149,7 +150,10 @@
     )
   );
   const cloningProviders = $derived(
-    ttsServices.filter((service) => service.supports_voice_cloning === true)
+    selectableTtsServices(
+      ttsServices,
+      explicitService || selectedProviderService
+    ).filter((service) => service.supports_voice_cloning === true)
   );
   const requestedService = $derived(
     explicitService ||

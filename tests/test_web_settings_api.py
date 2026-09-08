@@ -403,6 +403,7 @@ class SettingsApiTests(unittest.TestCase):
             self.assertEqual("", runtime["api_key"])
 
     def test_managed_tts_binding_is_typed_and_does_not_change_the_default(self):
+        default_before = self.client.get("/api/v1/services/tts").get_json()["default_service"]
         saved = self.client.put(
             "/api/v1/settings/services.tts",
             json={
@@ -425,7 +426,7 @@ class SettingsApiTests(unittest.TestCase):
         self.assertEqual("managed_local", stored["connection_mode"])
         self.assertEqual("tts.xtts", stored["managed_service_id"])
         self.assertEqual(
-            "XTTS",
+            default_before,
             self.client.get("/api/v1/services/tts").get_json()["default_service"],
         )
 
