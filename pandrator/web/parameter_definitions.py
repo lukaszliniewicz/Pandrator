@@ -71,7 +71,7 @@ _TRANSFORMATION_DESCRIPTIONS = {
     "max_segments_per_batch": "Limits subtitle segments placed in one model batch, independently of the character target.",
     "llm_concurrent_calls": "Limits transformation model requests that may run concurrently; higher values improve throughput but reduce sequential cross-batch continuity.",
     "timing_context_mode": "Controls timing disclosed to the model: full includes cue timing and substantial gaps, overlap_only exposes only overlap relationships, and none omits timing context.",
-    "substantial_gap_ms": "Defines the millisecond gap considered substantial when full timing context is included in model packets.",
+    "substantial_gap_ms": "Defines the millisecond pause described to the correction or translation model as substantial when full timing context is enabled; it does not merge or split cues in Pandrator's deterministic composer.",
     "no_remove_subtitles": "Forbids the model from deleting subtitle segments during correction or translation, while still allowing text edits.",
     "context_before": "Includes up to this many accepted segments from the preceding batch as read-only continuity context.",
     "context_after": "Includes up to this many source segments from the following batch as read-only look-ahead context.",
@@ -203,14 +203,14 @@ _DESCRIPTIONS: dict[str, dict[str, str]] = {
         "min_duration_ms": "Sets the shortest display duration for a finalized subtitle cue in milliseconds, subject to available neighboring timing; the compositor bounds it to 250 through 3000 milliseconds.",
         "max_duration_ms": "Sets the longest display duration for a finalized subtitle cue in milliseconds before text is split or timing is capped; the compositor bounds it to 1000 through 15000 milliseconds.",
         "min_gap_ms": "Requests a minimum silent gap between finalized subtitle cues in milliseconds; when source timing is too tight, the compositor preserves ordering rather than inventing room.",
-        "phrase_gap_ms": "Marks a phrase-level timing gap in milliseconds for subtitle boundary scoring; it is used by finalization as a softer break than hard silence.",
-        "hard_gap_ms": "Marks a hard subtitle boundary after a silence gap in milliseconds; the finalizer will not make a cue cross that long pause.",
+        "phrase_gap_ms": "Sets Pandrator's deterministic subtitle-grouping gap. Adjacent same-speaker word-timed cues separated by less than this are regrouped when their combined text fits the display, duration, and reading-rate limits; this value is not sent to a model.",
+        "hard_gap_ms": "Sets a hard pause boundary for Pandrator's deterministic word-timed subtitle composer. It will never create a cue across a gap this long; this value is not sent to a model.",
         "sentence_boundary_threshold": "Sets the sentence-boundary probability threshold used by subtitle finalization when scoring semantic cue breaks; the compositor bounds it to 0.01 through 0.99.",
         "boundary_correction_enabled": "Would enable a boundary-correction pass for subtitle timings, but this setting currently has no consumer in the finalization or workflow runtime.",
-        "merge_threshold_ms": "Provides the legacy subtitle-level fallback merge gap in milliseconds for local speech-block packing when no dedicated TTS merge threshold is supplied; current TTS defaults provide that dedicated value.",
     },
     "correction": {
         **_TRANSFORMATION_DESCRIPTIONS,
+        "correction_style": "Chooses the editorial contract sent to the correction model. Publication-ready correction removes incidental disfluencies and repairs broken utterances; transcript-faithful correction preserves meaningful hesitation and delivery. Deterministic cue composition remains separate.",
         **_WEB_RESEARCH_DESCRIPTIONS,
     },
     "translation": {
@@ -301,7 +301,7 @@ _DESCRIPTIONS: dict[str, dict[str, str]] = {
         "generation_prompt": "Provides speaking directions for adapters that support guided speech, such as Gemini, Qwen, and compatible TTS services; it is distinct from transcript text and may be ignored by other providers.",
         "speech_block_min_chars": "Sets the preferred minimum characters for local Pandrator speech-block segmentation before TTS; it does not change the visible subtitle cues.",
         "speech_block_max_chars": "Sets the maximum characters in a local Pandrator speech block sent toward TTS; it does not impose a display-subtitle line limit.",
-        "speech_block_merge_threshold": "Sets the maximum local timing gap, in milliseconds, for packing complete speech blocks together; this affects TTS segmentation only, not subtitle finalization.",
+        "speech_block_merge_threshold": "Sets the largest source pause across which Pandrator's deterministic speech planner may pack compatible same-speaker utterances when their combined display and speech text fits the character cap. It is not sent to a model and does not change subtitle cues.",
         "speech_block_continuation_threshold_ms": "Sets how many milliseconds of pause a local speech-block builder may bridge when an utterance appears to continue; it affects segmentation only, not displayed subtitle boundaries.",
         "speech_block_max_internal_gap_ms": "Sets the maximum internal silent gap, in milliseconds, permitted inside one local TTS speech block; it prevents a block from spanning a long pause.",
     },
@@ -542,14 +542,13 @@ _METADATA: dict[str, dict[str, dict[str, object]]] = {
         "boundary_correction_enabled": {
             "caveat": "No current consumer is wired for this setting; changing it does not currently run boundary correction."
         },
-        "merge_threshold_ms": {
-            "minimum": 0,
-            "unit": "milliseconds",
-            "caveat": "Used only as a legacy speech-block fallback when the dedicated TTS merge threshold is absent.",
-        },
     },
     "correction": {
         **_TRANSFORMATION_METADATA,
+        "correction_style": {
+            "choices": ["publishable", "faithful"],
+            "applicability": "Correction-model instructions only; deterministic subtitle composition is configured separately.",
+        },
         **_WEB_RESEARCH_METADATA,
     },
     "translation": {

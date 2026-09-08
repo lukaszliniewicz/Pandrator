@@ -1,14 +1,16 @@
 import json
 import tempfile
 import unittest
+from itertools import pairwise
 from pathlib import Path
 from unittest.mock import patch
 
-from pandrator.logic.dubbing.srt_utils import parse_srt
 from pandrator.logic.dubbing import subtitle_finalization
+from pandrator.logic.dubbing.srt_utils import parse_srt
 from pandrator.logic.dubbing.subtitle_finalization import (
     SubtitleFinalizationConfig,
     compose_from_crispasr_json,
+    compose_transcript_segments,
     finalize_srt_content,
     wrap_subtitle_text,
 )
@@ -67,7 +69,12 @@ This is a deliberately long meeting subtitle containing enough words to require 
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "words.json"
             path.write_text(json.dumps(payload), encoding="utf-8")
-            segments = parse_srt(compose_from_crispasr_json(path))
+            segments = parse_srt(
+                compose_from_crispasr_json(
+                    path,
+                    {"subtitle_phrase_gap_ms": 500},
+                )
+            )
         self.assertEqual([segment.text for segment in segments], ["Hello everyone.", "Next topic now."])
         self.assertTrue(all(segment.end_ms - segment.start_ms >= 833 for segment in segments))
 
@@ -79,6 +86,84 @@ This cue contains forty readable characters.
         segments = parse_srt(finalize_srt_content(content, {"subtitle_max_cps": 10}))
 
         self.assertGreaterEqual(segments[0].end_ms - segments[0].start_ms, 4000)
+
+    def test_word_timed_composer_coalesces_compact_cross_cue_thought(self):
+        payload = {
+            "schema": "pandrator.transcript.v1",
+            "segments": [
+                {
+                    "id": "cue-a",
+                    "start_ms": 0,
+                    "end_ms": 500,
+                    "speaker": "P",
+                    "text": "...one single.",
+                    "words": [
+                        {"text": "...one", "start_ms": 0, "end_ms": 200},
+                        {"text": "single.", "start_ms": 220, "end_ms": 500},
+                    ],
+                },
+                {
+                    "id": "cue-b",
+                    "start_ms": 980,
+                    "end_ms": 1500,
+                    "speaker": "P",
+                    "text": "Kanon, Kanon.",
+                    "words": [
+                        {"text": "Kanon,", "start_ms": 980, "end_ms": 1200},
+                        {"text": "Kanon.", "start_ms": 1220, "end_ms": 1500},
+                    ],
+                },
+            ],
+        }
+        with patch(
+            "pandrator.logic.dubbing.subtitle_finalization.sentence_segmenter.predict_boundaries",
+            return_value=None,
+        ):
+            segments = compose_transcript_segments(payload)
+
+        self.assertEqual(1, len(segments))
+        self.assertEqual("...one single. Kanon, Kanon.", segments[0].text)
+        self.assertEqual("P", segments[0].speaker)
+
+    def test_word_timed_composer_preserves_untimed_source_cue(self):
+        payload = {
+            "schema": "pandrator.transcript.v1",
+            "segments": [
+                {
+                    "id": "timed-a",
+                    "start_ms": 0,
+                    "end_ms": 500,
+                    "speaker": "P",
+                    "text": "Timed before.",
+                    "words": [{"text": "Timed", "start_ms": 0, "end_ms": 250}, {"text": "before.", "start_ms": 280, "end_ms": 500}],
+                },
+                {
+                    "id": "untimed",
+                    "start_ms": 600,
+                    "end_ms": 900,
+                    "speaker": "P",
+                    "text": "Untimed cue.",
+                },
+                {
+                    "id": "timed-b",
+                    "start_ms": 980,
+                    "end_ms": 1400,
+                    "speaker": "P",
+                    "text": "Timed after.",
+                    "words": [{"text": "Timed", "start_ms": 980, "end_ms": 1150}, {"text": "after.", "start_ms": 1180, "end_ms": 1400}],
+                },
+            ],
+        }
+        with patch(
+            "pandrator.logic.dubbing.subtitle_finalization.sentence_segmenter.predict_boundaries",
+            return_value=None,
+        ):
+            segments = compose_transcript_segments(payload)
+
+        self.assertEqual(["Timed before.", "Untimed cue.", "Timed after."], [item.text for item in segments])
+        self.assertTrue(
+            all(left.end_ms <= right.start_ms for left, right in pairwise(segments))
+        )
 
     def test_zero_minimum_gap_is_a_valid_explicit_setting(self):
         config = SubtitleFinalizationConfig.from_settings({"subtitle_min_gap_ms": 0})

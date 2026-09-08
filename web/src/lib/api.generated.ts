@@ -3293,6 +3293,12 @@ export interface components {
             context_before?: number;
             context_capsule?: components["schemas"]["DispatchContextCapsule"];
             /**
+             * Correction Style
+             * @default publishable
+             * @enum {string}
+             */
+            correction_style?: "publishable" | "faithful";
+            /**
              * Execution Mode
              * @default serial
              * @enum {string}
@@ -3372,6 +3378,11 @@ export interface components {
         });
         /** DispatchTaskContract */
         DispatchTaskContract: {
+            /**
+             * Correction Style
+             * @enum {string}
+             */
+            correction_style: "publishable" | "faithful";
             /** Glossary */
             glossary: {
                 [key: string]: string;

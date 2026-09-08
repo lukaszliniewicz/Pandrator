@@ -20,6 +20,7 @@ from .models import SubtitleSegment
 from .srt_utils import compose_srt, parse_srt
 from .transcript_normalization import (
     NormalizedTranscript,
+    TimedSegment,
     load_transcript,
     normalize_transcript,
 )
@@ -59,12 +60,12 @@ class SubtitleFinalizationConfig:
     max_duration_ms: int = 7000
     max_chars_per_second: float = 20.0
     min_gap_ms: int = 80
-    phrase_gap_ms: int = 600
+    phrase_gap_ms: int = 900
     hard_gap_ms: int = 1500
     sentence_boundary_threshold: float = 0.25
 
     @classmethod
-    def from_settings(cls, settings: dict[str, Any] | None) -> "SubtitleFinalizationConfig":
+    def from_settings(cls, settings: dict[str, Any] | None) -> SubtitleFinalizationConfig:
         values = dict(settings or {})
         def value(name: str, default: Any) -> Any:
             configured = values.get(name)
@@ -77,7 +78,7 @@ class SubtitleFinalizationConfig:
             max_duration_ms=max(1000, min(15000, int(value("subtitle_max_duration_ms", 7000)))),
             max_chars_per_second=max(5.0, min(40.0, float(value("subtitle_max_cps", 20.0)))),
             min_gap_ms=max(0, min(500, int(value("subtitle_min_gap_ms", 80)))),
-            phrase_gap_ms=max(100, min(3000, int(value("subtitle_phrase_gap_ms", 600)))),
+            phrase_gap_ms=max(100, min(3000, int(value("subtitle_phrase_gap_ms", 900)))),
             hard_gap_ms=max(250, min(5000, int(value("subtitle_hard_gap_ms", 1500)))),
             sentence_boundary_threshold=max(
                 0.01,
@@ -140,7 +141,7 @@ def _join_tokens(tokens: list[str]) -> str:
 def _line_break_score(words: list[str], index: int) -> tuple[float, int]:
     first = " ".join(words[:index])
     second = " ".join(words[index:])
-    score = abs(len(first) - len(second))
+    score = float(abs(len(first) - len(second)))
     if len(first) > len(second):
         score += 4.0  # prefer a modest bottom-heavy pyramid
     if first.endswith(tuple(".!?,;:")):
@@ -266,11 +267,18 @@ def _adjust_durations(
                 # the requested presentation gap, while still preventing an
                 # overlap with the next cue.
                 desired_end = min(base_end, next_start)
+        end = max(cue.start_ms + 100, desired_end)
+        if next_start is not None and next_start > cue.start_ms:
+            # A following source cue, especially an untimed cue, is a hard
+            # presentation boundary. Apply the clamp after the minimum
+            # duration floor so a very short interval cannot reintroduce an
+            # overlap.
+            end = min(end, next_start)
         adjusted.append(
             SubtitleSegment(
                 index=index + 1,
                 start_ms=cue.start_ms,
-                end_ms=max(cue.start_ms + 100, desired_end),
+                end_ms=end,
                 text=cue.text,
                 speaker=cue.speaker,
             )
@@ -475,17 +483,21 @@ def _deduplicate_moss_overlap_words(words: list[_TimedWord]) -> list[_TimedWord]
 
 def _timed_words(payload: NormalizedTranscript | Any) -> list[_TimedWord]:
     transcript = normalize_transcript(payload)
-    result = [
-        _TimedWord(
-            index=index,
-            text=word.text,
-            start_ms=word.start_ms,
-            end_ms=word.end_ms,
-            speaker=word.speaker,
-            source_segment_id=str(word.metadata.get("moss_segment_id") or ""),
-        )
-        for index, word in enumerate(transcript.words)
-    ]
+    result: list[_TimedWord] = []
+    for segment in transcript.segments:
+        for word in segment.words:
+            result.append(
+                _TimedWord(
+                    index=len(result),
+                    text=word.text,
+                    start_ms=word.start_ms,
+                    end_ms=word.end_ms,
+                    speaker=word.speaker or segment.speaker,
+                    source_segment_id=str(word.metadata.get("moss_segment_id") or ""),
+                )
+            )
+    result.sort(key=lambda word: (word.start_ms, word.end_ms, word.index))
+    result = [replace(word, index=index) for index, word in enumerate(result)]
     return _sanitize_timed_words(_deduplicate_moss_overlap_words(result))
 
 
@@ -563,13 +575,18 @@ def _sat_boundary_probabilities(
     probabilities = list(raw_probabilities) if isinstance(raw_probabilities, (list, tuple)) else []
     raw_boundaries = prediction.get("boundaries")
     explicit: set[int] = set()
-    for value in raw_boundaries or []:
+    boundary_values = raw_boundaries if isinstance(raw_boundaries, (list, tuple)) else []
+    for value in boundary_values:
         boundary_index = value.get("index") if isinstance(value, dict) else value
         if isinstance(boundary_index, (int, float)):
             explicit.add(int(boundary_index))
+    raw_threshold = prediction.get("threshold")
+    predicted_threshold = (
+        float(raw_threshold) if isinstance(raw_threshold, (int, float)) else threshold
+    )
     effective_threshold = max(
         0.01,
-        min(0.99, float(prediction.get("threshold") or threshold)),
+        min(0.99, predicted_threshold),
     )
     output: list[float] = []
     for current, following in zip(words, words[1:]):
@@ -772,11 +789,11 @@ def _compose_semantic_cues(
     ranges: list[tuple[int, int]] = []
     cursor = word_count
     while cursor > 0:
-        start = previous[cursor]
-        if start is None:  # pragma: no cover - guarded by the valid final path above
+        range_start = previous[cursor]
+        if range_start is None:  # pragma: no cover - guarded by the valid final path above
             break
-        ranges.append((start, cursor))
-        cursor = start
+        ranges.append((range_start, cursor))
+        cursor = range_start
     ranges.reverse()
     return [
         SubtitleSegment(
@@ -790,29 +807,114 @@ def _compose_semantic_cues(
     ]
 
 
-def compose_from_transcript_json(
-    metadata_path: str | Path,
-    settings: dict[str, Any] | None = None,
-) -> str:
-    transcript = load_transcript(metadata_path)
-    config = SubtitleFinalizationConfig.from_settings(settings)
-    words = _timed_words(transcript)
-    if not words:
-        fallback = [
-            SubtitleSegment(
-                index,
-                segment.start_ms,
-                segment.end_ms,
-                segment.text,
-                segment.speaker,
-            )
-            for index, segment in enumerate(transcript.segments, start=1)
-        ]
-        return compose_srt(finalize_segments(fallback, config))
+def _coalesce_semantic_cues(
+    cues: list[SubtitleSegment],
+    config: SubtitleFinalizationConfig,
+) -> list[SubtitleSegment]:
+    """Join compact same-speaker fragments left by source cue punctuation.
 
-    source_text, words = _source_text_and_spans(words)
-    cues = _adjust_durations(_compose_semantic_cues(words, source_text, config), config)
-    display_cues = [
+    The DP uses punctuation as useful boundary evidence.  A source cue can
+    nevertheless carry a misleading period, so this final semantic pass
+    removes a short dangling fragment when all timing, speaker, capacity, and
+    reading-speed invariants still hold.
+    """
+
+    coalesced: list[SubtitleSegment] = []
+    for cue in cues:
+        if not coalesced:
+            coalesced.append(cue)
+            continue
+        previous = coalesced[-1]
+        gap_ms = cue.start_ms - previous.end_ms
+        combined_text = _join_tokens([previous.text, cue.text])
+        combined_duration = cue.end_ms - previous.start_ms
+        combined_cps = len(_clean_text(combined_text)) / max(
+            0.1, combined_duration / 1000.0
+        )
+        can_merge = (
+            previous.speaker == cue.speaker
+            and gap_ms >= 0
+            and gap_ms < config.phrase_gap_ms
+            and gap_ms < config.hard_gap_ms
+            and combined_duration <= config.max_duration_ms
+            and len(combined_text) <= config.max_event_chars
+            and _fits_layout(combined_text, config)
+            and combined_cps <= config.max_chars_per_second
+        )
+        if can_merge:
+            coalesced[-1] = SubtitleSegment(
+                index=0,
+                start_ms=previous.start_ms,
+                end_ms=cue.end_ms,
+                text=combined_text,
+                speaker=previous.speaker,
+            )
+        else:
+            coalesced.append(cue)
+    return coalesced
+
+
+def compose_transcript_segments(
+    metadata_path_or_normalized_transcript: str | Path | NormalizedTranscript | Any,
+    settings: dict[str, Any] | None = None,
+) -> list[SubtitleSegment]:
+    """Compose a normalized transcript into deterministic display cues.
+
+    Word-timed runs are composed semantically across their original cue
+    boundaries.  A source segment without words is a hard run boundary, but is
+    retained as an ordinary finalized cue instead of disappearing from the
+    published transcript.
+    """
+
+    transcript = (
+        load_transcript(metadata_path_or_normalized_transcript)
+        if isinstance(metadata_path_or_normalized_transcript, (str, Path))
+        else normalize_transcript(metadata_path_or_normalized_transcript)
+    )
+    config = SubtitleFinalizationConfig.from_settings(settings)
+    output: list[SubtitleSegment] = []
+    timed_run: list[TimedSegment] = []
+
+    def flush_timed_run() -> None:
+        nonlocal timed_run
+        if not timed_run:
+            return
+        run_transcript = NormalizedTranscript(
+            segments=tuple(timed_run),
+            source_format=transcript.source_format,
+            language=transcript.language,
+            metadata=transcript.metadata,
+        )
+        words = _timed_words(run_transcript)
+        if words:
+            source_text, words = _source_text_and_spans(words)
+            semantic_cues = _compose_semantic_cues(words, source_text, config)
+            output.extend(_coalesce_semantic_cues(semantic_cues, config))
+        timed_run = []
+
+    for segment in transcript.segments:
+        if segment.words:
+            timed_run.append(segment)
+            continue
+        flush_timed_run()
+        output.extend(
+            finalize_segments(
+                [
+                    SubtitleSegment(
+                        0,
+                        segment.start_ms,
+                        segment.end_ms,
+                        segment.text,
+                        segment.speaker,
+                    )
+                ],
+                config,
+            )
+        )
+    flush_timed_run()
+
+    adjusted = _adjust_durations(output, config)
+    return [
         SubtitleSegment(
             index=index,
             start_ms=cue.start_ms,
@@ -820,9 +922,15 @@ def compose_from_transcript_json(
             text=wrap_subtitle_text(cue.text, config),
             speaker=cue.speaker,
         )
-        for index, cue in enumerate(cues, start=1)
+        for index, cue in enumerate(adjusted, start=1)
     ]
-    return compose_srt(display_cues)
+
+
+def compose_from_transcript_json(
+    metadata_path: str | Path,
+    settings: dict[str, Any] | None = None,
+) -> str:
+    return compose_srt(compose_transcript_segments(metadata_path, settings))
 
 
 def compose_from_crispasr_json(

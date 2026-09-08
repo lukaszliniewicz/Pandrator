@@ -210,6 +210,7 @@ class OrchestrationToolTests(unittest.TestCase):
                 "correction": {
                     "effective": {
                         "instructions": "persisted correction",
+                        "correction_style": "faithful",
                         "char_limit": 4_000,
                         "max_segments_per_batch": 12,
                         "context_before": 5,
@@ -254,6 +255,7 @@ class OrchestrationToolTests(unittest.TestCase):
         phases = {phase["stage"]: phase for phase in outcome.result["phases"]}
         correction = phases["correction"]["create_arguments"]
         self.assertEqual(5_000, correction["char_limit"])
+        self.assertEqual("faithful", correction["correction_style"])
         self.assertEqual("a1", correction["source_artifact_id"])
         self.assertIsNone(correction["target_language"])
         self.assertEqual({}, correction["glossary"])
@@ -261,6 +263,7 @@ class OrchestrationToolTests(unittest.TestCase):
         self.assertEqual("de", translation["source_language"])
         self.assertEqual("fr", translation["target_language"])
         self.assertEqual({"World": "Monde"}, translation["glossary"])
+        self.assertNotIn("correction_style", translation)
         speech = phases["speech_optimization"]["create_arguments"]
         self.assertEqual("explicit speech", speech["instructions"])
         self.assertEqual("en", speech["voice_language"])

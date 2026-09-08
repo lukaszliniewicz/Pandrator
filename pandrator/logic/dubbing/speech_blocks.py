@@ -620,6 +620,7 @@ def _should_merge_parts(
     current: _SpeechPart,
     max_chars: int,
     merge_threshold: int,
+    max_internal_gap_ms: int,
 ) -> bool:
     if not (
         _sentence_is_complete(previous.text) and _sentence_is_complete(current.text)
@@ -638,7 +639,11 @@ def _should_merge_parts(
     # punctuation must not silently override it. Punctuation remains in the
     # combined text for TTS prosody; speaker, gap, and capacity are the hard
     # block boundaries.
-    return not (gap_ms < -SAME_SPEAKER_OVERLAP_TOLERANCE_MS or gap_ms > merge_threshold)
+    return not (
+        gap_ms < -SAME_SPEAKER_OVERLAP_TOLERANCE_MS
+        or gap_ms > merge_threshold
+        or gap_ms > max_internal_gap_ms
+    )
 
 
 def _sentence_is_complete(text: str) -> bool:
@@ -1198,7 +1203,7 @@ def create_speech_blocks(
     target_language: str = "en",
     min_chars: int = 10,
     max_chars: int = 220,
-    merge_threshold: int = 250,
+    merge_threshold: int = 1500,
     *,
     continuation_threshold_ms: int | None = None,
     max_internal_gap_ms: int | None = None,
@@ -1374,6 +1379,7 @@ def create_speech_blocks(
             part,
             max_chars=max_chars,
             merge_threshold=merge_threshold,
+            max_internal_gap_ms=maximum_internal_gap,
         ):
             previous = merged_parts[-1]
             gap_ms = part.start_ms - previous.end_ms
@@ -1430,7 +1436,7 @@ def generate_speech_blocks_file(
     target_language: str = "en",
     min_chars: int = 10,
     max_chars: int = 220,
-    merge_threshold: int = 250,
+    merge_threshold: int = 1500,
     *,
     continuation_threshold_ms: int | None = None,
     max_internal_gap_ms: int | None = None,

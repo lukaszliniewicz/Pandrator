@@ -123,6 +123,10 @@ const CHOICES: Record<string, SettingOption[]> = {
     option('overlap_only', 'Overlap only · fewer tokens'),
     option('none', 'No timing context')
   ],
+  correction_style: [
+    option('publishable', 'Publication-ready · remove disfluencies'),
+    option('faithful', 'Transcript-faithful · preserve delivery')
+  ],
   speech_optimization_mode: [
     option('guarded', 'Guarded speech plan (recommended)'),
     option('flexible', 'Flexible contextual rewrite')
@@ -372,13 +376,13 @@ const SETTING_ORDER: Record<string, string[]> = {
     'min_gap_ms',
     'phrase_gap_ms',
     'hard_gap_ms',
-    'sentence_boundary_threshold',
-    'merge_threshold_ms'
+    'sentence_boundary_threshold'
   ],
   correction: [
     'enabled',
     'model_name',
     'reasoning_effort',
+    'correction_style',
     'instructions',
     'char_limit',
     'max_segments_per_batch',
@@ -670,7 +674,10 @@ export function settingApplies(
       return selected('pdf_ocr_mode', 'auto') !== 'off';
   }
 
-  if (section === 'subtitles' && key === 'boundary_correction_enabled')
+  if (
+    section === 'subtitles' &&
+    ['boundary_correction_enabled', 'merge_threshold_ms'].includes(key)
+  )
     return false;
 
   if (section === 'output') {
@@ -901,7 +908,8 @@ export function settingLabel(key: string): string {
     llm_multi_stage: 'Use divided prompts',
     llm_concurrent_calls: 'Concurrent LLM requests',
     timing_context_mode: 'Cue timing context',
-    substantial_gap_ms: 'Substantial audible pause (ms)',
+    substantial_gap_ms: 'Model context gap (ms)',
+    correction_style: 'Correction approach',
     char_limit: 'Maximum batch characters',
     max_segments_per_batch: 'Maximum cues per batch',
     context_before: 'Previous output cues for continuity',
@@ -946,13 +954,14 @@ export function settingLabel(key: string): string {
     crispasr_vad_speech_pad_ms: 'Speech-edge padding (ms)',
     subtitle_hard_gap_ms: 'Hard subtitle boundary after silence (ms)',
     subtitle_sentence_boundary_threshold: 'Sentence boundary sensitivity',
+    phrase_gap_ms: 'Subtitle grouping gap (ms)',
     hard_gap_ms: 'Hard subtitle boundary after silence (ms)',
     sentence_boundary_threshold: 'Sentence boundary sensitivity',
     speech_block_continuation_threshold_ms:
       'Unfinished-sentence pause tolerance (ms)',
     speech_block_min_chars: 'Preferred minimum split size',
     speech_block_max_chars: 'Maximum TTS chunk size',
-    speech_block_merge_threshold: 'Complete-utterance merge gap (ms)',
+    speech_block_merge_threshold: 'Speech-block merge gap (ms)',
     speech_block_max_internal_gap_ms:
       'Maximum silence inside one TTS chunk (ms)'
   };

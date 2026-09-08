@@ -37,6 +37,26 @@ def _settings(glossary_enabled=False):
 
 
 class DubbingLLMTranslationTests(unittest.TestCase):
+    def test_translation_prompt_is_display_first_and_does_not_reedit_disfluencies(self):
+        prompt = llm_translation.build_translation_task_instructions(
+            subtitle_count=2,
+            source_language="English",
+            target_language="German",
+        )
+        preservation_prompt = llm_translation.build_translation_task_instructions(
+            subtitle_count=2,
+            source_language="English",
+            target_language="German",
+            no_remove_subtitles=True,
+        )
+
+        self.assertIn("designed for on-screen reading", prompt)
+        self.assertIn("Do not delete fillers", prompt)
+        self.assertIn("separate correction stage", prompt)
+        self.assertIn('Use "[REMOVE]" only', prompt)
+        self.assertNotIn("MUST NOT remove any subtitles", prompt)
+        self.assertIn("MUST NOT remove any subtitles", preservation_prompt)
+
     def test_translation_prompt_marks_overlap_as_non_spoken_evidence(self):
         prompt = llm_translation.build_translation_prompt(
             [
@@ -577,6 +597,32 @@ Three.
         self.assertEqual(3, result.response_count)
         self.assertEqual(
             ["Translated Hello.", "Translated Remove this."],
+            [segment.text for segment in srt_utils.parse_srt(result.srt_content)],
+        )
+
+    def test_translate_srt_content_retries_removal_when_prevention_is_enabled(self):
+        responses = iter(
+            [
+                '[{"cue_id":1,"text":"Hallo."},{"cue_id":2,"text":"[REMOVE]"}]',
+                '[{"cue_id":1,"text":"Hallo."},{"cue_id":2,"text":"Behalte dies."}]',
+            ]
+        )
+
+        result = llm_translation.translate_srt_content(
+            SAMPLE_SRT,
+            {
+                **_settings(),
+                "no_remove_subtitles": True,
+                "translation_structured_max_attempts": 2,
+            },
+            completion_func=lambda **_kwargs: llm_handler.ChatCompletionResult(
+                content=next(responses)
+            ),
+        )
+
+        self.assertEqual(2, result.response_count)
+        self.assertEqual(
+            ["Hallo.", "Behalte dies."],
             [segment.text for segment in srt_utils.parse_srt(result.srt_content)],
         )
 

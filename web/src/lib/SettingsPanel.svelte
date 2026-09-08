@@ -88,13 +88,13 @@
       'phrase_gap_ms',
       'hard_gap_ms',
       'sentence_boundary_threshold',
-      'boundary_correction_enabled',
-      'merge_threshold_ms'
+      'boundary_correction_enabled'
     ],
     correction: [
       'enabled',
       'model_name',
       'reasoning_effort',
+      'correction_style',
       'llm_concurrent_calls',
       'timing_context_mode',
       'substantial_gap_ms',

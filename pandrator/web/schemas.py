@@ -896,6 +896,7 @@ class DispatchRunCreateRequest(DispatchExecutionMixin):
     char_limit: int = Field(default=6000, ge=1, le=100_000)
     max_segments_per_batch: int = Field(default=40, ge=1, le=500)
     no_remove_subtitles: bool = False
+    correction_style: Literal["publishable", "faithful"] = "publishable"
     context_before: int = Field(default=8, ge=0, le=20)
     context_after: int = Field(default=2, ge=0, le=20)
     timing_context_mode: Literal["full", "overlap_only", "none"] = "full"
@@ -1115,6 +1116,7 @@ class DispatchTaskContract(StrictModel):
     instructions: str
     result_contract: dict[str, Any]
     no_remove_subtitles: bool
+    correction_style: Literal["publishable", "faithful"]
     known_speakers: list[str]
     glossary: dict[str, str]
     timing_context_mode: Literal["full", "overlap_only", "none"]

@@ -106,11 +106,10 @@ starts/ends, duration, and reading speed all influence the chosen boundaries.
 | `min_duration_ms` | `833` | Desired minimum display duration when the following cue leaves room. |
 | `max_duration_ms` | `7000` | Maximum display duration and one limit on cue capacity. |
 | `min_gap_ms` | `80` | Desired presentation gap between adjacent cues. Source word timing wins when there is no room. |
-| `phrase_gap_ms` | `600` | A meaningful pause that rewards a boundary but does not force one. |
+| `phrase_gap_ms` | `900` | A meaningful pause that rewards a boundary and permits compact same-speaker cues to be regrouped when the display constraints still fit. |
 | `hard_gap_ms` | `1500` | Silence a display cue may never cross. This is deliberately lower than the LLM editorial pause default. |
 | `sentence_boundary_threshold` | `0.25` | Minimum SaT boundary probability allowed to affect the optimizer. |
 | `boundary_correction_enabled` | `false` | Reserved/compatibility setting; the current primary cue composer is already the deterministic optimizer above. |
-| `merge_threshold_ms` | `250` | Legacy compatibility alias. Speech blocks have their own explicit merge threshold. |
 
 If word timing is unavailable, Pandrator finalizes the engine's timed segments
 instead. Display cue numbers are regenerated in timeline order; immutable
@@ -225,7 +224,7 @@ utterances when safe.
 | --- | --- | --- |
 | `speech_block_min_chars` | `10` | Soft quality target used to avoid tiny fragments where possible. It is not a hard rejection rule. |
 | `speech_block_max_chars` | `220` | Hard maximum text sent to TTS. Long utterances are split using punctuation, conjunctions, whitespace, then a hard fallback. |
-| `speech_block_merge_threshold` | `250` | Maximum ordinary gap for packing nearby complete utterances, subject to same-speaker and size checks. |
+| `speech_block_merge_threshold` | `1500` | Maximum ordinary gap for packing nearby complete utterances, subject to same-speaker and size checks. Speech blocks remain reviewable before synthesis. |
 | `speech_block_continuation_threshold_ms` | `3000` | Maximum gap for reconstructing an unfinished same-speaker sentence before size splitting. |
 | `speech_block_max_internal_gap_ms` | `1800` | Independent hard guard: no speech block may span a larger internal silence, even if the sentence is unfinished. |
 | target language | session target | Selects language-aware sentence/conjunction splitting. |

@@ -19,6 +19,7 @@ from .. import llm_handler
 from .llm_config import DubbingLLMSettings
 from .llm_config import resolve_dubbing_llm_settings as _resolve_dubbing_llm_settings
 from .models import SubtitleSegment
+from .settings import normalize_correction_style
 from .srt_utils import (
     compose_srt,
     create_translation_blocks,
@@ -48,12 +49,12 @@ Review the array of {subtitle_count} subtitle cues below and return this JSON sh
 {response_shape}
 
 Instructions:
-1. Use your editorial judgment to fix punctuation, capitalization, spelling, and clear transcription errors. Remove isolated filler, accidental repetition, and fragments that carry no meaningful speech when appropriate.
+1. {correction_baseline_policy}
 2. Preserve each speaker's meaning, register, names, and terminology. Do not add speaker labels to replacement text. Preserve the supplied speaker by default, but correct a likely diarization mistake when the discourse clearly supports it. When changing a speaker or merging across different supplied speakers, include one `speakers` entry for every replacement text and use only a supplied speaker ID. Otherwise omit `speakers`.
 3. Return operations only for cues that need a change; return an empty `operations` array when no changes are needed. Do not silently preserve a cue whose wording is nonsensical in its surrounding sentence merely because no spelling-only correction is obvious.
 4. Available actions:
    - "edit": one `cue_id` and exactly one corrected text.
-   - "delete": one or more sequential `cue_id` values that contain no meaningful speech, with an empty `texts` array. Deletion is an ordinary editorial action when the audio contains no recoverable contribution; it is not a last resort.
+{deletion_policy}
    - "merge": two or more sequential `cue_id` values whose boundary breaks one thought, with one or more corrected replacement texts.
    - "split": one `cue_id` and two or more replacement texts, only when semantic correction genuinely requires separate cues.
 5. Cue timing, reading speed, visual wrapping, and line layout are handled by Pandrator after editing. Do not insert line breaks or split/merge merely to change visual layout.
@@ -61,7 +62,9 @@ Instructions:
 7. If prior corrected context is provided, use it only for continuity. Operate only on the `cue_id` values present in the current array; they identify cues in the pinned source revision and are not batch-local positions.
 8. {cue_context_policy}
 9. Overlapping cues from different speakers can be legitimate simultaneous speech. Preserve meaningful speech. You may delete a very short, inconsequential interjection only when it obscures a longer utterance, and remove one copy of clearly duplicated near-identical ASR text that occupies the same time span.
-10. {known_speakers_policy}
+10. Correction style policy ({correction_style}):
+{correction_style_policy}
+11. {known_speakers_policy}
 
 Additional context and instructions specific to your particular batch, if any:
 {correction_instructions}
@@ -457,6 +460,7 @@ def build_correction_task_instructions(
     timing_context_mode: str | None = None,
     include_timing_context: bool | None = None,
     substantial_gap_ms: int = 2000,
+    correction_style: str = "publishable",
     known_speakers: set[str] | None = None,
     dispatch_result: bool = False,
     structured_context: bool = False,
@@ -468,14 +472,22 @@ def build_correction_task_instructions(
         legacy_enabled=include_timing_context,
         default="none",
     )
-    prompt_template = CORRECTION_PROMPT_TEMPLATE
-    if no_remove_subtitles:
-        prompt_template = prompt_template.replace(
-            '   - "delete": one or more sequential `cue_id` values that contain no meaningful speech, with an empty `texts` array.',
-            '   - "delete": do not use this action; every input cue must be preserved.',
-        )
-
-    base_prompt = prompt_template.format(
+    normalized_style = normalize_correction_style(correction_style)
+    style_policy = (
+        "   - Produce publication-ready source-language subtitles. Remove incidental fillers (such as um/uh), false starts, stutters, and accidental word or phrase repetition while preserving meaningful or rhetorical repetition.\n"
+        "   - Treat source punctuation and cue boundaries as provisional. When adjacent same-speaker cues form one grammatical thought, use a merge operation.\n"
+        "   - Self-audit for stranded grammatical fragments and leftover incidental disfluencies before returning operations.\n"
+        "   - Preserve meaning, register, terms, and speakers."
+        if normalized_style == "publishable"
+        else "   - Fix transcription and punctuation while preserving meaningful delivery, hesitation, false starts, and repetition unless clearly an ASR artifact.\n"
+        "   - Preserve meaning, register, terms, and speakers."
+    )
+    baseline_policy = (
+        "Use editorial judgment to fix punctuation, capitalization, spelling, and clear transcription errors. Remove incidental fillers, accidental repetition, and fragments that carry no meaningful speech when appropriate."
+        if normalized_style == "publishable"
+        else "Fix punctuation, capitalization, spelling, and clear transcription errors while preserving meaningful delivery, hesitation, false starts, and repetition unless clearly an ASR artifact."
+    )
+    base_prompt = CORRECTION_PROMPT_TEMPLATE.format(
         correction_instructions=correction_instructions
         or "No additional instructions provided.",
         subtitle_count=int(subtitle_count),
@@ -504,6 +516,14 @@ def build_correction_task_instructions(
                 )
                 + ". Never invent another speaker ID."
             )
+        ),
+        correction_style=normalized_style,
+        correction_style_policy=style_policy,
+        correction_baseline_policy=baseline_policy,
+        deletion_policy=(
+            '   - "delete": do not use this action; every input cue must be preserved.'
+            if no_remove_subtitles
+            else '   - "delete": one or more sequential `cue_id` values that contain no meaningful speech, with an empty `texts` array. Deletion is an ordinary editorial action when the audio contains no recoverable contribution; it is not a last resort.'
         ),
         cue_context_policy=(
             "The optional `speaker` field is non-spoken evidence. Speaker IDs "
@@ -579,6 +599,7 @@ def build_correction_prompt(
     timing_context_mode: str | None = None,
     include_timing_context: bool | None = None,
     substantial_gap_ms: int = 2000,
+    correction_style: str = "publishable",
     known_speakers: set[str] | None = None,
     next_block: list[dict[str, Any]] | None = None,
     context_after: int = 2,
@@ -596,6 +617,7 @@ def build_correction_prompt(
         no_remove_subtitles=no_remove_subtitles,
         timing_context_mode=mode,
         substantial_gap_ms=substantial_gap_ms,
+        correction_style=correction_style,
         known_speakers=known_speakers,
     )
     # Retained in the signature for callers using the old helper contract.
@@ -755,6 +777,7 @@ def correct_srt_content(
     progress_callback: ProgressCallback | None = None,
     completed_units: Mapping[str, Mapping[str, Any]] | None = None,
     on_unit_completed: UnitCompletedCallback | None = None,
+    correction_style: str | None = None,
 ) -> CorrectionResult:
     """Correct SRT content with Pandrator's LLM provider layer."""
     char_limit = _coerce_int(
@@ -787,6 +810,9 @@ def correct_srt_content(
     )
     context_after = max(0, min(20, _coerce_int(settings.get("context_after"), 2)))
     no_remove_subtitles = bool(settings.get("no_remove_subtitles", False))
+    effective_correction_style = normalize_correction_style(
+        correction_style if correction_style is not None else settings.get("correction_style")
+    )
     timing_context_mode = timing_context_mode_from_settings(settings)
     substantial_gap_ms = max(
         0,
@@ -806,6 +832,7 @@ def correct_srt_content(
         source_language,
         max_subtitles_per_block=max_subtitles_per_call,
         speaker_by_subtitle=speaker_by_subtitle,
+        substantial_gap_ms=substantial_gap_ms,
     )
     if not blocks:
         _report_progress(progress_callback, 1.0, "No subtitles require correction")
@@ -859,6 +886,7 @@ def correct_srt_content(
             no_remove_subtitles=no_remove_subtitles,
             timing_context_mode=timing_context_mode,
             substantial_gap_ms=substantial_gap_ms,
+            correction_style=effective_correction_style,
             known_speakers=known_speakers,
             next_block=following_context if use_context else None,
             context_after=context_after,
@@ -1121,6 +1149,7 @@ def correct_srt_file_with_result(
     progress_callback: ProgressCallback | None = None,
     completed_units: Mapping[str, Mapping[str, Any]] | None = None,
     on_unit_completed: UnitCompletedCallback | None = None,
+    correction_style: str | None = None,
 ) -> CorrectionResult:
     """Correct an SRT file and return the corrected content plus file path."""
     srt_path = Path(srt_file)
@@ -1137,6 +1166,7 @@ def correct_srt_file_with_result(
         progress_callback=progress_callback,
         completed_units=completed_units,
         on_unit_completed=on_unit_completed,
+        correction_style=correction_style,
     )
     output_path = Path(session_dir) / f"{srt_path.stem}_corrected.srt"
     _write_text_atomic(output_path, result.srt_content)
@@ -1169,6 +1199,7 @@ def correct_srt_file(
     progress_callback: ProgressCallback | None = None,
     completed_units: Mapping[str, Mapping[str, Any]] | None = None,
     on_unit_completed: UnitCompletedCallback | None = None,
+    correction_style: str | None = None,
 ) -> str:
     """Correct an SRT file and return the corrected file path."""
     return correct_srt_file_with_result(
@@ -1181,4 +1212,5 @@ def correct_srt_file(
         progress_callback=progress_callback,
         completed_units=completed_units,
         on_unit_completed=on_unit_completed,
+        correction_style=correction_style,
     ).output_path

@@ -25,6 +25,7 @@ from pandrator.logic.dubbing.languages import (
     normalize_language_code,
     subtitle_language_title,
 )
+from pandrator.logic.dubbing.settings import normalize_correction_style
 from pandrator.logic.dubbing.srt_utils import (
     split_speaker_label,
     timing_context_mode_from_settings,
@@ -359,6 +360,9 @@ def _stage_settings_fingerprint(
         result = {
             "model": model,
             "instructions": _text("custom_correction_prompt", "instructions"),
+            "correction_style": normalize_correction_style(
+                settings.get("correction_style")
+            ),
         }
         reasoning_effort = _text("reasoning_effort")
         if reasoning_effort:
@@ -420,7 +424,7 @@ def _speech_block_settings(settings: dict[str, Any]) -> tuple[int, int, int, int
         int(
             settings.get("speech_block_merge_threshold")
             if settings.get("speech_block_merge_threshold") is not None
-            else settings.get("subtitle_merge_threshold", 250)
+            else settings.get("subtitle_merge_threshold", 1500)
         ),
     )
     # These are independent policies.  In particular, zero is meaningful and
@@ -4074,6 +4078,14 @@ class WorkflowHandlers:
         speaker_by_subtitle = self._subtitle_speaker_map(source_artifact, source_path)
         session_dir = self._operation_dir(session_id, "correct")
         requested_settings = dict(payload.get("settings") or {})
+        settings = self._with_database_llm_settings(requested_settings, "correction")
+        settings["correction_style"] = normalize_correction_style(
+            settings.get("correction_style")
+        )
+        requested_settings = {
+            **requested_settings,
+            "correction_style": settings["correction_style"],
+        }
         requested_settings_hash = hashlib.sha256(
             json.dumps(
                 requested_settings,
@@ -4083,7 +4095,6 @@ class WorkflowHandlers:
                 default=str,
             ).encode("utf-8")
         ).hexdigest()
-        settings = self._with_database_llm_settings(requested_settings, "correction")
         base_instructions = str(
             payload.get("instructions") or settings.get("instructions") or ""
         )
@@ -4401,6 +4412,7 @@ class WorkflowHandlers:
         """Render one reviewed immutable media-edit revision."""
 
         from pandrator.logic.dubbing.audio_sync import media_has_audio_stream
+        from pandrator.logic.dubbing.srt_utils import compose_srt
         from pandrator.logic.dubbing.video_muxing import (
             build_removal_only_video_command,
             normalize_video_resolution,
@@ -4473,7 +4485,6 @@ class WorkflowHandlers:
         subtitle_path = operation_dir / f"media-edit-{revision_tag}.srt"
         word_timestamps_path = operation_dir / f"media-edit-{revision_tag}.json"
         output_path = operation_dir / f"media-edit-{revision_tag}.mp4"
-        subtitle_path.write_text(caption_to_srt(retimed_cues), encoding="utf-8")
         word_count = sum(len(cue.words) for cue in retimed_cues)
         word_timestamps_path.write_text(
             json.dumps(
@@ -4493,6 +4504,26 @@ class WorkflowHandlers:
             ),
             encoding="utf-8",
         )
+        if word_count:
+            from pandrator.logic.dubbing.subtitle_finalization import (
+                compose_transcript_segments,
+            )
+
+            published_cues = compose_transcript_segments(
+                word_timestamps_path,
+                settings,
+            )
+            subtitle_path.write_text(compose_srt(published_cues), encoding="utf-8")
+            composition_mode = "word_timed_semantic"
+        else:
+            published_cues = list(retimed_cues)
+            subtitle_path.write_text(caption_to_srt(retimed_cues), encoding="utf-8")
+            composition_mode = "source_cues"
+        composition_metadata = {
+            "source_cue_count": len(retimed_cues),
+            "composed_cue_count": len(published_cues),
+            "composition_mode": composition_mode,
+        }
         ffmpeg_executable = resolve_ffmpeg_executable(
             str(settings.get("ffmpeg_executable") or "") or None
         )
@@ -4553,6 +4584,7 @@ class WorkflowHandlers:
             "effective_settings": settings,
             "video_encoder": encoder,
             "word_count": word_count,
+            **composition_metadata,
         }
         # Subtitle and timed-word artifacts are intentionally published before
         # the potentially long video encode so correction can consume the
@@ -4592,16 +4624,13 @@ class WorkflowHandlers:
             parent_artifact=editorial_artifact,
             speaker_overrides={
                 index: cue.speaker
-                for index, cue in enumerate(retimed_cues, start=1)
+                for index, cue in enumerate(published_cues, start=1)
                 if cue.speaker
             },
         )
         stored_word_count = self._store_timed_words(
             document_revision_id,
             word_timestamps_path,
-            segment_by_source_cue_id={
-                cue.id: index for index, cue in enumerate(retimed_cues)
-            },
         )
         progress(0.2, "Subtitle revision and timed words ready; rendering edited media")
         try:
@@ -4639,6 +4668,7 @@ class WorkflowHandlers:
             "word_timestamps_artifact_id": word_timestamps_artifact.id,
             "word_timestamps_path": word_timestamps_artifact.relative_path,
             "word_count": stored_word_count,
+            **composition_metadata,
             "document_id": document_id,
             "document_revision_id": document_revision_id,
         }

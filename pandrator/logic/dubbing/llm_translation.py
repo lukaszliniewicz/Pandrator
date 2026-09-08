@@ -98,11 +98,11 @@ Instructions:
 2. Translate the "text" of each subtitle.
 3. You MUST preserve each `cue_id` exactly.
 4. {response_structure}
-5. If a subtitle should be removed (e.g., it contains only filler words or you are confident it is a hallucination of the STT model), replace its text with "[REMOVE]".
-6. Spell out numbers, especially Roman numerals, dates, amounts etc.
+5. {removal_policy}
+6. Use normal target-language written conventions for numbers, dates, amounts, and Roman numerals; do not spell them out mechanically.
 7. It is ok for a subtitle to not end in punctuation if the following subtitle continues the sentence/thought. You don't have to add "..." - in fact, don't do it.
-8. Choose concise translations suitable for dubbing while maintaining accuracy, grammatical correctness in the target language and the tone of the source.
-9. Use correct punctuation that enhances a natural flow of speech for optimal speech generation.
+8. Choose fluent, idiomatic, concise translations designed for on-screen reading while maintaining accuracy, grammatical correctness in the target language, and the tone of the source.
+9. Speech and TTS optimization is a separate downstream, reviewable layer; do not optimize this display translation for speech generation.
 10. Do not add ANY comments, confirmations, explanations, or questions. {output_only_instruction}
 11. Before outputting your answer, validate its formatting. {validation_instruction}
 12. Do not add speaker names, speaker numbers, or bracketed speaker labels to translated text. Preserve each supplied `speaker` by default. {known_speakers_policy}
@@ -534,17 +534,15 @@ def build_translation_task_instructions(
         legacy_enabled=include_timing_context,
         default="none",
     )
-    prompt_template = TRANSLATION_PROMPT_TEMPLATE
-    if no_remove_subtitles:
-        prompt_template = prompt_template.replace(
-            '5. If a subtitle should be removed (e.g., it contains only filler words or you are confident it is a hallucination of the STT model), replace its text with "[REMOVE]".',
-            "5. You MUST NOT remove any subtitles. Translate every subtitle, even if it contains filler words.",
-        )
-
-    prompt = prompt_template.format(
+    prompt = TRANSLATION_PROMPT_TEMPLATE.format(
         source_lang=source_language,
         target_lang=target_language,
         subtitle_count=int(subtitle_count),
+        removal_policy=(
+            "You MUST NOT remove any subtitles. Translate every subtitle, even if it contains filler words."
+            if no_remove_subtitles
+            else 'Translate every meaningful source cue. Use "[REMOVE]" only for an explicit non-speech artifact or a clearly duplicated ASR hallucination. Do not delete fillers, hesitation, or repetition during translation; source-language editorial cleanup belongs to the separate correction stage.'
+        ),
         response_structure=(
             f"Return one typed result object with `kind` equal to `translation` "
             f"and a `translations` array containing exactly {int(subtitle_count)} "
@@ -971,6 +969,7 @@ def translate_srt_content(
         source_language,
         max_subtitles_per_block=max_subtitles_per_call,
         speaker_by_subtitle=speaker_by_subtitle,
+        substantial_gap_ms=substantial_gap_ms,
     )
     if not blocks:
         _report_progress(progress_callback, 1.0, "No subtitles require translation")
@@ -1216,6 +1215,13 @@ def translate_srt_content(
                             known_speakers=known_speakers,
                         )
                     )
+                    if no_remove_subtitles and any(
+                        str(text or "").strip().upper() == "[REMOVE]"
+                        for text in translated_texts
+                    ):
+                        raise ValueError(
+                            "subtitle removal is disabled for this translation"
+                        )
                 except ValueError as error:
                     last_error = error
                     if attempt < structured_attempts:
@@ -1523,12 +1529,24 @@ def translate_srt_content_deepl(
             or 40
         ),
     )
+    configured_gap = settings.get(
+        "substantial_gap_ms",
+        settings.get("timing_context_gap_ms"),
+    )
+    try:
+        substantial_gap_ms = max(
+            0,
+            int(2000 if configured_gap is None or configured_gap == "" else configured_gap),
+        )
+    except (TypeError, ValueError):
+        substantial_gap_ms = 2000
     translation_blocks = create_translation_blocks(
         srt_content,
         char_limit,
         source_language,
         max_subtitles_per_block=max_subtitles_per_call,
         speaker_by_subtitle=speaker_by_subtitle,
+        substantial_gap_ms=substantial_gap_ms,
     )
     translated_responses = translate_blocks_deepl(
         translation_blocks,

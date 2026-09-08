@@ -26,6 +26,7 @@ from pandrator.logic.dubbing.llm_translation import (
     parse_translation_response_details,
 )
 from pandrator.logic.dubbing.models import SubtitleSegment
+from pandrator.logic.dubbing.settings import normalize_correction_style
 from pandrator.logic.dubbing.srt_utils import (
     compose_srt,
     create_translation_blocks,
@@ -182,6 +183,9 @@ class DispatchRunService:
             "char_limit": int(settings.get("char_limit") or 6000),
             "max_segments_per_batch": int(settings.get("max_segments_per_batch") or 40),
             "no_remove_subtitles": bool(settings.get("no_remove_subtitles")),
+            "correction_style": normalize_correction_style(
+                settings.get("correction_style")
+            ),
             "context_before": DispatchRunService._context_count(
                 settings, "context_before", 8
             ),
@@ -459,6 +463,7 @@ class DispatchRunService:
         execution_mode: str = "serial",
         max_parallel_batches: int = 1,
         context_capsule: dict[str, Any] | None = None,
+        correction_style: str = "publishable",
     ) -> dict[str, Any]:
         kind = self._validate_kind(kind)
         record = session.get(SessionRecord, session_id)
@@ -531,6 +536,7 @@ class DispatchRunService:
             selected_source_language,
             max_subtitles_per_block=max_segments_per_batch,
             speaker_by_subtitle=speakers,
+            substantial_gap_ms=int(substantial_gap_ms),
         )
         if not blocks:
             raise DispatchError(
@@ -553,6 +559,7 @@ class DispatchRunService:
             "char_limit": int(char_limit),
             "max_segments_per_batch": int(max_segments_per_batch),
             "no_remove_subtitles": bool(no_remove_subtitles),
+            "correction_style": normalize_correction_style(correction_style),
             "context_before": int(context_before),
             "context_after": int(context_after),
             "timing_context_mode": normalize_timing_context_mode(
@@ -767,6 +774,7 @@ class DispatchRunService:
                 no_remove_subtitles=bool(settings.get("no_remove_subtitles")),
                 timing_context_mode=timing_context_mode,
                 substantial_gap_ms=substantial_gap_ms,
+                correction_style=str(settings.get("correction_style") or "publishable"),
                 known_speakers=known,
                 dispatch_result=True,
                 structured_context=True,
@@ -900,6 +908,9 @@ class DispatchRunService:
                 "instructions": instructions,
                 "result_contract": result_contract,
                 "no_remove_subtitles": bool(settings.get("no_remove_subtitles")),
+                "correction_style": normalize_correction_style(
+                    settings.get("correction_style")
+                ),
                 "known_speakers": sorted(known, key=str.casefold),
                 "glossary": (glossary_snapshot if run.kind == "translation" else {}),
                 "timing_context_mode": timing_context_mode,

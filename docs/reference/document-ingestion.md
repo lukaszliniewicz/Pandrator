@@ -351,7 +351,7 @@ Generation applies a second, provider-facing segmentation policy:
 | --- | --- | --- |
 | `speech_block_min_chars` | `10` | Preferred lower size for a synthesis block. |
 | `speech_block_max_chars` | `220` | Maximum provider-facing block size. |
-| `speech_block_merge_threshold` | `250` ms | Maximum short gap for merging complete neighboring utterances. |
+| `speech_block_merge_threshold` | `1500` ms | Maximum short gap for merging complete neighboring utterances; generated speech blocks remain reviewable before synthesis. |
 | `speech_block_continuation_threshold_ms` | `3000` ms | Pause tolerance when an unfinished sentence continues. |
 | `speech_block_max_internal_gap_ms` | `1800` ms | Maximum silence allowed inside one synthesis block. |
 | `sentence_silence_ms` | `250` ms | Default assembly pause after an ordinary sentence. |

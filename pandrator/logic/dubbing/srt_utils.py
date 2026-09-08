@@ -403,13 +403,16 @@ def create_translation_blocks(
     *,
     max_subtitles_per_block: int | None = None,
     speaker_by_subtitle: Mapping[int, str] | None = None,
+    substantial_gap_ms: int | None = None,
 ) -> list[list[dict[str, Any]]]:
     """Group subtitle segments without cutting avoidable semantic boundaries.
 
     Timing and speaker metadata are included as non-text evidence for LLM
     correction/translation.  In particular, an overlap marker lets the model
     distinguish ordinary consecutive cues from simultaneous speech or an ASR
-    chunk-boundary duplicate.
+    chunk-boundary duplicate.  When configured, a non-overlapping substantial
+    gap is also a preferred batch boundary; this does not alter cue timing or
+    subtitle composition.
     """
     normalized_language = str(source_language or "").strip().lower()
     if normalized_language in {"chinese", "japanese", "ja", "zh", "zh-cn", "zh-tw"}:
@@ -417,6 +420,8 @@ def create_translation_blocks(
 
     if max_subtitles_per_block is not None:
         max_subtitles_per_block = max(1, int(max_subtitles_per_block))
+    if substantial_gap_ms is not None:
+        substantial_gap_ms = max(0, int(substantial_gap_ms))
 
     endings: tuple[str, ...]
     if normalized_language in {"japanese", "ja"}:
@@ -472,6 +477,11 @@ def create_translation_blocks(
                 and str(right.get("speaker") or "")
                 and str(left.get("speaker")).casefold()
                 != str(right.get("speaker")).casefold()
+            )
+            or (
+                substantial_gap_ms is not None
+                and int(right.get("gap_from_previous_ms") or 0)
+                >= substantial_gap_ms
             )
         )
 

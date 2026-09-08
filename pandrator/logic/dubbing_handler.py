@@ -1,15 +1,14 @@
 import logging
 import os
-import re
 import shutil
 import subprocess
 from dataclasses import dataclass
 
-from .dubbing.equalization import equalize_srt_file
-from .dubbing.credentials import settings_use_deepl
-from .dubbing.llm_correction import correct_srt_file, correct_srt_file_with_result
-from .dubbing.llm_translation import translate_srt_file, translate_srt_file_deepl
 from .dubbing.audio_sync import AudioSyncResult, synchronize_audio_video_with_result
+from .dubbing.credentials import settings_use_deepl
+from .dubbing.equalization import equalize_srt_file
+from .dubbing.llm_correction import correct_srt_file
+from .dubbing.llm_translation import translate_srt_file, translate_srt_file_deepl
 from .dubbing.speech_blocks import generate_speech_blocks_file
 from .dubbing.transcription import transcribe_video_file
 from .dubbing.video_muxing import (
@@ -17,7 +16,6 @@ from .dubbing.video_muxing import (
     build_replace_video_audio_command,
     escape_ffmpeg_subtitles_filter_path,
 )
-
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 BUNDLED_FFMPEG_CANDIDATES = (
@@ -211,7 +209,7 @@ def generate_speech_blocks_with_result(
     *,
     min_chars: int = 10,
     max_chars: int = 220,
-    merge_threshold: int = 250,
+    merge_threshold: int = 1500,
 ) -> str:
     """Generates speech blocks from an SRT file and returns the JSON path."""
     try:

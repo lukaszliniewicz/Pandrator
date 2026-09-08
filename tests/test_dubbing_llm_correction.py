@@ -127,6 +127,31 @@ class DubbingLLMCorrectionTests(unittest.TestCase):
         self.assertNotIn('"char_count"', prompt)
         self.assertIn('"text": "hello there"', prompt)
 
+    def test_correction_prompt_exposes_distinct_editorial_styles(self):
+        publishable = llm_correction.build_correction_task_instructions(
+            subtitle_count=2,
+            correction_style="publishable",
+        )
+        faithful = llm_correction.build_correction_task_instructions(
+            subtitle_count=2,
+            correction_style="faithful",
+        )
+        preservation_prompt = llm_correction.build_correction_task_instructions(
+            subtitle_count=2,
+            no_remove_subtitles=True,
+        )
+
+        self.assertIn("Remove incidental fillers", publishable)
+        self.assertIn("use a merge operation", publishable)
+        self.assertIn("Deletion is an ordinary editorial action", publishable)
+        self.assertNotIn("do not use this action", publishable)
+        self.assertIn("preserving meaningful delivery", faithful)
+        self.assertNotIn("Remove incidental fillers", faithful)
+        self.assertIn("do not use this action", preservation_prompt)
+        self.assertNotIn(
+            "Deletion is an ordinary editorial action", preservation_prompt
+        )
+
     def test_correction_prompt_marks_overlap_as_non_spoken_evidence(self):
         prompt = llm_correction.build_correction_prompt(
             [

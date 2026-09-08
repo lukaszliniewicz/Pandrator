@@ -217,6 +217,34 @@ Second.
         self.assertEqual(1000, blocks[0][0]["end_ms"])
         self.assertEqual(2100, blocks[0][1]["gap_from_previous_ms"])
 
+    def test_create_translation_blocks_prefers_configured_model_context_gap(self):
+        blocks = srt_utils.create_translation_blocks(
+            """1
+00:00:00,000 --> 00:00:01,000
+First fragment
+
+2
+00:00:01,100 --> 00:00:02,000
+second fragment
+
+3
+00:00:04,500 --> 00:00:05,500
+third fragment
+
+4
+00:00:05,600 --> 00:00:06,500
+fourth fragment
+""",
+            char_limit=45,
+            source_language="English",
+            substantial_gap_ms=2000,
+        )
+
+        self.assertEqual(
+            [[item["index"] for item in block] for block in blocks],
+            [[1, 2], [3, 4]],
+        )
+
     def test_zoom_vtt_parse_group_and_chunk(self):
         vtt = io.StringIO(
             """WEBVTT

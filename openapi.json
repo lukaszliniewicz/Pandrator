@@ -1201,6 +1201,15 @@
           "context_capsule": {
             "$ref": "#/components/schemas/DispatchContextCapsule"
           },
+          "correction_style": {
+            "default": "publishable",
+            "enum": [
+              "publishable",
+              "faithful"
+            ],
+            "title": "Correction Style",
+            "type": "string"
+          },
           "execution_mode": {
             "default": "serial",
             "enum": [
@@ -1332,6 +1341,14 @@
       "DispatchTaskContract": {
         "additionalProperties": false,
         "properties": {
+          "correction_style": {
+            "enum": [
+              "publishable",
+              "faithful"
+            ],
+            "title": "Correction Style",
+            "type": "string"
+          },
           "glossary": {
             "additionalProperties": {
               "type": "string"
@@ -1445,6 +1462,7 @@
           "instructions",
           "result_contract",
           "no_remove_subtitles",
+          "correction_style",
           "known_speakers",
           "glossary",
           "timing_context_mode"

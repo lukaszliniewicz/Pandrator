@@ -137,6 +137,20 @@ def test_create_json_schema_advertises_only_valid_execution_policies(schema):
     )
 
 
+def test_dispatch_create_contract_propagates_correction_style():
+    default = DispatchRunCreateRequest.model_validate({"kind": "correction"})
+    faithful = DispatchRunCreateRequest.model_validate(
+        {"kind": "correction", "correction_style": "faithful"}
+    )
+
+    assert default.correction_style == "publishable"
+    assert faithful.model_dump(mode="json")["correction_style"] == "faithful"
+    with pytest.raises(ValidationError):
+        DispatchRunCreateRequest.model_validate(
+            {"kind": "correction", "correction_style": "unknown"}
+        )
+
+
 def test_context_contract_is_strict_and_bounded():
     with pytest.raises(ValidationError):
         DispatchContextCapsule.model_validate({"secret_blob": "not a supported field"})

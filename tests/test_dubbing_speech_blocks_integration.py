@@ -22,6 +22,32 @@ Later
 
 
 class DubbingSpeechBlocksIntegrationTests(unittest.TestCase):
+    def test_default_packs_complete_utterances_up_to_fifteen_hundred_ms(self):
+        content = """1
+00:00:00,000 --> 00:00:01,000
+First sentence.
+
+2
+00:00:02,400 --> 00:00:03,000
+Second sentence.
+
+3
+00:00:04,600 --> 00:00:05,200
+Third sentence.
+"""
+
+        blocks = speech_blocks.create_speech_blocks(
+            content,
+            target_language="en",
+            min_chars=10,
+            max_chars=100,
+        )
+
+        self.assertEqual(
+            ["First sentence. Second sentence.", "Third sentence."],
+            [block["text"] for block in blocks],
+        )
+
     def test_create_speech_blocks_uses_merge_threshold(self):
         merged = speech_blocks.create_speech_blocks(
             MERGE_SRT,
@@ -564,6 +590,30 @@ after a noticeable pause.
 
         self.assertEqual(1, len(merged))
         self.assertEqual(2, len(separated))
+
+    def test_maximum_internal_gap_also_limits_complete_utterance_packing(self):
+        content = """1
+00:00:00,000 --> 00:00:01,000
+First sentence.
+
+2
+00:00:01,700 --> 00:00:02,500
+Second sentence.
+"""
+
+        blocks = speech_blocks.create_speech_blocks(
+            content,
+            target_language="en",
+            min_chars=5,
+            max_chars=100,
+            merge_threshold=1000,
+            max_internal_gap_ms=600,
+        )
+
+        self.assertEqual(
+            ["First sentence.", "Second sentence."],
+            [block["text"] for block in blocks],
+        )
 
     def test_display_line_breaks_are_removed_from_speech_text(self):
         srt_content = """1

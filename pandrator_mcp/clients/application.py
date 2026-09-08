@@ -10,7 +10,7 @@ import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 from urllib.parse import quote
 
 import requests
@@ -706,6 +706,7 @@ class ApplicationClient:
         char_limit: int,
         max_segments_per_batch: int,
         no_remove_subtitles: bool,
+        correction_style: Literal["publishable", "faithful"] = "publishable",
         context_before: int = 8,
         context_after: int = 2,
         timing_context_mode: str | None = None,
@@ -732,6 +733,7 @@ class ApplicationClient:
                 "char_limit": int(char_limit),
                 "max_segments_per_batch": int(max_segments_per_batch),
                 "no_remove_subtitles": bool(no_remove_subtitles),
+                "correction_style": correction_style,
                 "context_before": int(context_before),
                 "context_after": int(context_after),
                 "timing_context_mode": resolved_timing_context_mode,

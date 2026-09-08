@@ -293,6 +293,10 @@ def _resolved_passive_packet(
             "substantial_gap_ms": settings.get("substantial_gap_ms", 2_000),
             "glossary": {},
         }
+        if stage == "correction":
+            packet["correction_style"] = settings.get(
+                "correction_style", "publishable"
+            )
         if "source_artifact_id" in settings:
             packet["source_artifact_id"] = settings["source_artifact_id"]
         if stage == "translation":

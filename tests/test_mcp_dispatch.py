@@ -26,7 +26,12 @@ class _Application:
 
     def create_dispatch_run(self, session_id, **kwargs):
         self.calls.append(("create", {"session_id": session_id, **kwargs}))
-        return {"run_id": "run-1", "status": "queued", "instructions": "private"}
+        return {
+            "run_id": "run-1",
+            "status": "queued",
+            "correction_style": "faithful",
+            "instructions": "private",
+        }
 
     def list_dispatch_runs(self, session_id, **kwargs):
         self.calls.append(("list", {"session_id": session_id, **kwargs}))
@@ -60,6 +65,7 @@ class _Application:
                 "instructions": "Translate exactly.",
                 "result_contract": {"kind": "translation"},
                 "no_remove_subtitles": False,
+                "correction_style": "faithful",
                 "known_speakers": [],
                 "glossary": {},
                 "timing_context_mode": "full",
@@ -197,6 +203,14 @@ class DispatchHandlerTests(unittest.TestCase):
                 idempotency_key="create:one",
             ).char_limit,
         )
+        self.assertEqual(
+            "publishable",
+            CreateDispatchRunInput(
+                session_id="session",
+                kind="correction",
+                idempotency_key="create:default-style",
+            ).correction_style,
+        )
 
     def test_create_and_submit_outcomes_point_to_next_loop_step(self):
         created = create_dispatch_run(
@@ -205,13 +219,16 @@ class DispatchHandlerTests(unittest.TestCase):
                 session_id="session",
                 kind="correction",
                 instructions="Keep cue boundaries.",
+                correction_style="faithful",
                 idempotency_key="create:one",
             ),
         )
         self.assertEqual("run-1", created.result["run_id"])
+        self.assertEqual("faithful", created.result["correction_style"])
         create_call = self.application.calls[0][1]
         self.assertEqual("serial", create_call["execution_mode"])
         self.assertEqual(1, create_call["max_parallel_batches"])
+        self.assertEqual("faithful", create_call["correction_style"])
         self.assertEqual(
             {
                 "overview": "",
@@ -288,6 +305,7 @@ class DispatchHandlerTests(unittest.TestCase):
             claimed.result["batch"]["context"]["previous_output"][0],
         )
         self.assertNotIn("unrelated", claimed.result["task"])
+        self.assertEqual("faithful", claimed.result["task"]["correction_style"])
         self.assertEqual(
             [{"text": "Earlier source"}],
             claimed.result["batch"]["context"]["previous_source"],

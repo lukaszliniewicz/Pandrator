@@ -10,6 +10,8 @@ from .stt_backends import normalize_stt_backend
 
 TRANSLATION_BACKEND_LLM = "llm"
 TRANSLATION_BACKEND_DEEPL = "deepl"
+CORRECTION_STYLE_PUBLISHABLE = "publishable"
+CORRECTION_STYLE_FAITHFUL = "faithful"
 
 LEGACY_DUBBING_MODEL_ALIASES: dict[str, str] = {
     "gpt 5.4": "openai/gpt-5.4",
@@ -41,6 +43,17 @@ def normalize_translation_backend(raw_value: str | None) -> str:
         TRANSLATION_BACKEND_DEEPL
         if normalized == TRANSLATION_BACKEND_DEEPL
         else TRANSLATION_BACKEND_LLM
+    )
+
+
+def normalize_correction_style(raw_value: str | None) -> str:
+    """Return the supported source-subtitle correction policy."""
+
+    normalized = str(raw_value or "").strip().lower().replace("-", "_")
+    return (
+        CORRECTION_STYLE_FAITHFUL
+        if normalized == CORRECTION_STYLE_FAITHFUL
+        else CORRECTION_STYLE_PUBLISHABLE
     )
 
 
@@ -237,8 +250,11 @@ def migrate_dubbing_payload(
             migrated[current_field] = migrated.get(legacy_field, default)
     if "speech_block_merge_threshold" not in migrated:
         migrated["speech_block_merge_threshold"] = migrated.get(
-            "subtitle_merge_threshold", 250
+            "subtitle_merge_threshold", 1500
         )
+    migrated["correction_style"] = normalize_correction_style(
+        migrated.get("correction_style")
+    )
     migrated.setdefault("speech_block_min_chars", 10)
     migrated.setdefault("speech_block_max_chars", 220)
     migrated.setdefault("speech_block_continuation_threshold_ms", 3000)
@@ -349,6 +365,7 @@ def normalize_dubbing_state(
         "timing_context_enabled",
         "timing_context_gap_ms",
         "correction_model",
+        "correction_style",
         "translation_backend",
         "translation_model",
     ):
