@@ -230,8 +230,39 @@ test('correction and translation cards expose independent reasoning levels', asy
   const correctionCard = page
     .getByRole('heading', { name: 'Correct', exact: true })
     .locator('xpath=ancestor::article');
+  let releaseSettings!: () => void;
+  let settingsCaptured!: () => void;
+  const settingsGate = new Promise<void>((resolve) => {
+    releaseSettings = resolve;
+  });
+  const captured = new Promise<void>((resolve) => {
+    settingsCaptured = resolve;
+  });
+  let heldInitialSettings = false;
+  await page.route(
+    `**/api/v1/sessions/${session.id}/settings/correction`,
+    async (route) => {
+      if (route.request().method() !== 'GET' || heldInitialSettings) {
+        await route.continue();
+        return;
+      }
+      heldInitialSettings = true;
+      const response = await route.fetch();
+      settingsCaptured();
+      await settingsGate;
+      await route.fulfill({ response });
+    }
+  );
   await correctionCard.getByRole('button', { name: 'Settings' }).click();
   let dialog = page.getByRole('dialog');
+  try {
+    await captured;
+    await expect(
+      dialog.getByRole('combobox', { name: 'Reasoning level' })
+    ).toBeDisabled();
+  } finally {
+    releaseSettings();
+  }
   await expect(
     dialog.getByRole('combobox', { name: 'Reasoning level' })
   ).toHaveValue('');
@@ -242,12 +273,16 @@ test('correction and translation cards expose independent reasoning levels', asy
     .getByLabel('Correction guidance')
     .fill('Keep the acronym IARF unchanged.');
   await dialog.getByRole('button', { name: 'All correction settings' }).click();
-  dialog = page.getByRole('dialog');
+  dialog = page.getByRole('dialog', {
+    name: 'correction settings',
+    exact: true
+  });
+  await expect(dialog).toBeVisible();
   await expect(
     dialog.getByRole('combobox', { name: 'Reasoning level' })
   ).toHaveValue('high');
   await expect(
-    dialog.getByRole('textbox', { name: 'Instructions' })
+    dialog.getByRole('textbox', { name: 'Instructions', exact: true })
   ).toHaveValue('Keep the acronym IARF unchanged.');
 
   const unsavedCorrectionSettings = await page.request.get(

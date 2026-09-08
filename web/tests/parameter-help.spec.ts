@@ -24,7 +24,7 @@ test('technical setting names expose pipeline help on hover and keyboard focus',
   await sttSection.locator('summary').click();
 
   const help = sttSection.getByRole('button', { name: 'About STT Engine' });
-  const tooltip = help.getByRole('tooltip');
+  const tooltip = help.getByRole('tooltip', { includeHidden: true });
   await expect(help).toBeVisible();
 
   await help.hover();

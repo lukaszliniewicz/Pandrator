@@ -539,18 +539,21 @@
       class="tool"><ExternalLink size={14} /> Speech services</a
     >{/if}<button
     onclick={reset}
-    disabled={saving || !Object.keys(override).length}
+    disabled={!payload || saving || !Object.keys(override).length}
     class="tool"><RotateCcw size={14} /> Revert to defaults</button
   ><button
     onclick={saveAsDefaults}
-    disabled={saving || deepLResearchConflict || !Object.keys(override).length}
+    disabled={!payload ||
+      saving ||
+      deepLResearchConflict ||
+      !Object.keys(override).length}
     title={deepLResearchConflict
       ? 'Resolve the translation backend and web research conflict first.'
       : ''}
     class="tool"><Save size={14} /> Save as defaults</button
   ><button
     onclick={save}
-    disabled={saving || deepLResearchConflict}
+    disabled={!payload || saving || deepLResearchConflict}
     title={deepLResearchConflict
       ? 'Resolve the translation backend and web research conflict first.'
       : ''}

@@ -2635,7 +2635,7 @@
           <LoaderCircle class="animate-spin" size={16} /> Loading available models
           and saved settings…
         </div>{/if}
-      <div class="mt-6 grid gap-5">
+      <fieldset disabled={settingsLoading} class="mt-6 grid min-w-0 gap-5">
         {#if settingsStage.key === 'correct' || (settingsStage.key === 'translate' && backend === 'llm') || ['optimize_tts', 'optimize_document', 'clean_source'].includes(settingsStage.key)}<label
             class="text-sm font-semibold"
             >LLM model<select
@@ -4727,7 +4727,7 @@
             </div>
           </div>
         {/if}
-      </div>
+      </fieldset>
       {#if stageMessage}<p
           role="status"
           class="mt-5 rounded-xl bg-[var(--accent-soft)] p-3 text-xs"
