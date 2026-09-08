@@ -36,16 +36,14 @@ The skill does not install or authorize the MCP connection. Complete the host
 connection setup below first; an agent can also use the MCP's packaged guides
 without installing this optional skill.
 
-The folder is included as package data in MCP builds made from this source.
-To locate it in such an installed package, run this with the Python interpreter
+The folder is bundled in MCP 0.4.1 and newer.
+To locate it in an installed package, run this with the Python interpreter
 from the environment containing `pandrator-mcp`:
 
 ```bash
 python -c "from importlib.resources import files; print(files('pandrator_mcp') / 'skills' / 'pandrator-workflows')"
 ```
 
-The published **0.4.0 package in the Pandrator 0.9.0 release predates this
-bundle**. For that release, copy the skill from this repository separately.
 Installing or upgrading the MCP package does not automatically install or
 update skills in your host.
 
@@ -292,7 +290,7 @@ by both modern and maintained legacy hosts.
 
 ## Install
 
-The current release is 0.4.0. Use Pandrator 0.9.0 for all current tools, including
+The current release is 0.4.1. Use Pandrator 0.9.1 for all current tools, including
 Quick Transcribe; existing workflows can target Pandrator 0.8.16 or newer. The
 source-cleaning, speech-optimization, and end-to-end workflow tools require
 Pandrator 0.8.17. With Python 3.11 or 3.12, install it as an isolated

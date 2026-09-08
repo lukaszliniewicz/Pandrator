@@ -2,7 +2,7 @@
 name = "pandrator"
 channels = ["conda-forge"]
 platforms = ["win-64", "linux-64"]
-requires-pixi = "==0.72.0"
+requires-pixi = "==0.80.0"
 
 [dependencies]
 python = "3.11.*"
@@ -30,7 +30,7 @@ test-profile = { cmd = "python -m pytest -q tests --durations=30 --durations-min
 smoke-dubbing-local = "python scripts/dubbing_live_smoke.py"
 
 [feature.dev.dependencies]
-packaging = ">=24,<26"
+packaging = ">=26.3,<27"
 
 [feature.dev.pypi-dependencies]
 pandrator-manager = { path = "./pandrator_manager", editable = true, extras = ["dev"] }

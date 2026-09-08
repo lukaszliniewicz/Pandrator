@@ -1,10 +1,10 @@
 [build-system]
-requires = ["hatchling>=1.27,<1.32"]
+requires = ["hatchling>=1.32,<1.33"]
 build-backend = "hatchling.build"
 
 [project]
 name = "pandrator"
-version = "0.9.0"
+version = "0.9.1"
 description = "Browser-based audiobook, subtitle, and voiceover production workspace"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
@@ -22,7 +22,7 @@ dependencies = [
   "EbookLib>=0.18,<1",
   "ffmpeg-python>=0.2,<1",
   "hasami>=0.0.1,<1",
-  "litellm>=1.60,<1.92",
+  "litellm>=1.100,<1.101",
   "mutagen>=1.47,<2",
   "numpy==1.26.4",
   "num2words>=0.5,<1",
@@ -33,7 +33,7 @@ dependencies = [
   "sentence-splitter>=1.4,<2",
   "Unidecode>=1.3,<2",
   "wtpsplit-lite==0.2.0",
-  "yt-dlp>=2025.1",
+  "yt-dlp>=2026.8.19",
   "pydantic>=2.10,<3",
   "psutil>=6,<8",
   "requests>=2.32,<3",
@@ -47,7 +47,7 @@ ocr = ["onnxruntime>=1.20,<2", "paddleocr==3.7.0"]
 text-normalization = ["nemo-text-processing==1.2.0; sys_platform != 'win32'"]
 credential-stores = ["keyring>=25,<26"]
 dev = [
-  "build>=1.2,<2",
+  "build>=1.6,<2",
   "pytest>=8.3,<9",
   "pytest-xdist==3.8.0",
 ]

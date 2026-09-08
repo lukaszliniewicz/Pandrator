@@ -2,7 +2,8 @@
 
 This inventory compares tracked manifests and locks with primary registry and
 release metadata. It does not claim that a newer version has passed Pandrator's
-compatibility checks. No dependency pins were changed by this review.
+compatibility checks. The initial inventory made no pin changes; the release
+qualification below records the subsequently authorized updates.
 
 ## Native runtimes
 
@@ -86,3 +87,76 @@ or certification of the proposed versions.
 No validation should run hardware-encoding smoke tests. The automatic VA-API
 test was removed from capability discovery after a GPU fault. Use mocked
 hardware metadata and CPU tests; actual GPU exports remain explicit user jobs.
+
+
+## Pandrator 0.9.1 dependency qualification
+
+The release keeps audio.cpp 0.7.2, CrispASR 0.8.32, Python 3.11.15,
+NumPy 1.26.4, ONNX Runtime 1.28.0, and the existing JavaScript lock.
+Native model-runtime and major JavaScript migrations remain separate work.
+Cryptography remains within the existing 43 through 45 range.
+
+Selected updates:
+
+| Dependency | Qualified version |
+| --- | --- |
+| LiteLLM | 1.100.0 |
+| yt-dlp | 2026.8.19 |
+| MCP SDK / mcp-types | 2.2.0 |
+| Pixi | 0.80.0 |
+| PyInstaller | 6.22.2 |
+| Hatchling | 1.32.0 |
+| build | 1.6.0 |
+| packaging | 26.3 |
+| Ruff | 0.16.6 |
+| SQLAlchemy | 2.0.52 |
+| Pydantic | 2.13.5 |
+| Alembic | 1.19.2 |
+| Authlib | 1.8.0 |
+| google-auth | 2.57.1 |
+| regex | 2026.9.3 |
+| DeepL | 1.32.0 |
+| PyMuPDF | 1.28.2 |
+
+Pixi 0.80.0 regenerated the version-7 lock for Windows and Linux across
+all four environments. The solve used an isolated source copy because
+editable Python packages require a solve environment; `--no-install` cannot
+resolve those source dependencies. The user's development environment and
+untracked `uv.lock` were preserved. Pixi bootstrap versions and verified
+archive digests were updated in the Manager, installer, workspace, and CI.
+[Official Pixi release](https://github.com/prefix-dev/pixi/releases/tag/v0.80.0).
+
+The existing SDK 2.1.1 already supports protocol `2026-07-28`; SDK 2.2.0
+adds transport and schema fixes. Modern discovery and maintained legacy
+initialization both remain supported. LiteLLM's base installation resolves
+with MCP 2.2.0; LiteLLM's optional proxy/MCP extras are not installed.
+[Official MCP SDK release](https://github.com/modelcontextprotocol/python-sdk/releases/tag/v2.2.0).
+
+Local qualification used a disposable Python 3.11.15 environment:
+
+- All 137 installed packages passed `uv pip check`.
+- Focused provider, storage, transcription, credential, settings, and manifest
+  tests: 147 passed.
+- Manager suite: 282 passed, 4 skipped. After the Pixi pin update, Manager core,
+  installer architecture, and test-lane checks: 132 passed.
+- Actual LiteLLM completion and usage parsing against a loopback-only fake
+  OpenAI endpoint passed. Actual yt-dlp download of a synthetic WAV from
+  loopback matched the source bytes.
+- MCP suite: 155 passed, including modern HTTP/stdio discovery and legacy
+  initialization.
+- The locked Linux runtime passed manifest tests, CLI startup, and both
+  loopback smoke tests.
+- Ruff, targeted mypy, high-confidence Vulture, and a bootstrap dependency
+  cycle check passed.
+- Svelte check passed with zero errors or warnings; production frontend
+  build passed. No JavaScript dependency updates were included.
+- PyInstaller 6.22.2 built the native Manager executable and its self-check
+  passed. This exposed and fixed a packaging defect: the consolidated
+  provider policy JSON must be copied from the validated wheel into the
+  frozen executable.
+
+Luna/xhigh researchers checked official MCP and Pixi/build-tool evidence;
+a Luna/xhigh verifier performed the focused dependency and loopback tests.
+The parent selected updates, audited changes, and owns release validation.
+No GPU encoding, local model inference, external media downloads, or paid
+provider calls were used for this qualification.

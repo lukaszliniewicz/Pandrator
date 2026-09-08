@@ -25,7 +25,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install packaging tools
-        run: python -m pip install --disable-pip-version-check "build>=1.2,<2" "twine>=6,<7"
+        run: python -m pip install --disable-pip-version-check "build>=1.6,<2" "twine>=6,<7"
 
       - name: Build Pandrator
         run: python -m build --sdist --wheel --outdir package-dist/pandrator .

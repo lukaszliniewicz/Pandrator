@@ -322,7 +322,7 @@ def build_server(runtime: McpRuntime):
         from mcp.types import ToolAnnotations
     except ImportError as error:
         raise RuntimeError(
-            "pandrator-mcp requires the pinned mcp==2.1.1 runtime dependency."
+            "pandrator-mcp requires the pinned mcp==2.2.0 runtime dependency."
         ) from error
 
     server = MCPServer(
@@ -3324,7 +3324,7 @@ def build_server(runtime: McpRuntime):
             "confirmation before any repair or runtime action."
         )
 
-    # MCP 2.1.1 derives a tool's schema from its flat Python signature and has
+    # MCP 2.2.0 derives a tool's schema from its flat Python signature and has
     # no public hook for a cross-field constraint. Keep the runtime validator
     # in the strict input models and augment the three exposed flat schemas so
     # clients cannot mistake serial/2 or parallel/1 for documented-valid input.

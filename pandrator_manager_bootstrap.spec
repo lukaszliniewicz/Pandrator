@@ -21,6 +21,9 @@ manager_package = package_root / "pandrator_manager"
 if not manager_package.is_dir() or manager_package.is_symlink():
     raise RuntimeError(f"Unsafe or missing wheel package root: {manager_package}")
 recovery_static = manager_package / "recovery_ui" / "static"
+provider_policy = manager_package / "provider_policy.json"
+if not provider_policy.is_file() or provider_policy.is_symlink():
+    raise RuntimeError(f"Unsafe or missing provider policy: {provider_policy}")
 tray_icon = manager_package / "tray" / "pandrator-tray.png"
 if not tray_icon.is_file() or tray_icon.is_symlink():
     raise RuntimeError(f"Unsafe or missing tray icon: {tray_icon}")
@@ -37,6 +40,7 @@ a = Analysis(
     pathex=[str(package_root)],
     binaries=[],
     datas=[
+        (str(provider_policy), "pandrator_manager"),
         (str(recovery_static), "pandrator_manager/recovery_ui/static"),
         (str(tray_icon), "pandrator_manager/tray"),
     ],

@@ -3,6 +3,6 @@
 certifi>=2024.8
 cryptography>=43,<46
 dulwich>=0.22,<1
-packaging>=24,<26
+packaging>=26.3,<27
 psutil>=6,<8
 requests>=2.32,<3

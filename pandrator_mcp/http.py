@@ -84,7 +84,7 @@ def build_http_app(
         from starlette.responses import JSONResponse
     except ImportError as error:
         raise RuntimeError(
-            "pandrator-mcp requires the pinned mcp==2.1.1 runtime dependency."
+            "pandrator-mcp requires the pinned mcp==2.2.0 runtime dependency."
         ) from error
 
     server = build_server(runtime)
@@ -144,7 +144,7 @@ def run_http_server(
         import uvicorn
     except ImportError as error:
         raise RuntimeError(
-            "pandrator-mcp requires the HTTP runtime bundled with mcp==2.1.1."
+            "pandrator-mcp requires the HTTP runtime bundled with mcp==2.2.0."
         ) from error
     uvicorn.run(
         app,

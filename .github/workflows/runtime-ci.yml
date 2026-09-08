@@ -37,7 +37,7 @@ jobs:
 
       - uses: prefix-dev/setup-pixi@v0.10.0
         with:
-          pixi-version: v0.72.0
+          pixi-version: v0.80.0
           locked: true
           cache: true
 

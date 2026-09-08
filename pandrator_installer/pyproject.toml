@@ -4,14 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pandrator-installer"
-version = "0.5.7"
+version = "0.5.8"
 description = "Headless lifecycle manager and source-preparation compatibility entry point for Pandrator"
 requires-python = ">=3.11,<3.13"
 dependencies = [
   "certifi>=2024.8",
   "cryptography>=43,<46",
   "dulwich>=0.22,<1",
-  "packaging>=24,<26",
+  "packaging>=26.3,<27",
   "psutil>=6,<8",
   "requests>=2.32,<3",
 ]

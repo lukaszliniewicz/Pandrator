@@ -101,7 +101,7 @@ class McpArchitectureTests(unittest.TestCase):
             (MCP_ROOT / "pyproject.toml").read_text(encoding="utf-8")
         )
         self.assertEqual(__version__, payload["project"]["version"])
-        self.assertIn("mcp==2.1.1", payload["project"]["dependencies"])
+        self.assertIn("mcp==2.2.0", payload["project"]["dependencies"])
         server_source = (MCP_ROOT / "server.py").read_text(encoding="utf-8")
         self.assertIn("from mcp.server import MCPServer", server_source)
         self.assertNotIn("FastMCP", server_source)

@@ -205,7 +205,7 @@ jobs:
             pyproject.toml
             pandrator_installer/pyproject.toml
       - name: Install build tool
-        run: python -m pip install --disable-pip-version-check build
+        run: python -m pip install --disable-pip-version-check "build>=1.6,<2"
       - name: Build Pandrator and headless installer wheels
         run: |
           python -m build --wheel --outdir wheel-dist/pandrator .

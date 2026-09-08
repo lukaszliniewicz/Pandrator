@@ -8,11 +8,12 @@ from pathlib import Path
 
 try:
     import httpx2
-    from mcp import ClientSession
+    from mcp import Client, ClientSession
     from mcp.client.streamable_http import streamable_http_client
     from starlette.testclient import TestClient
 except ImportError:
     httpx2 = None
+    Client = None
     ClientSession = None
     streamable_http_client = None
     TestClient = None
@@ -44,7 +45,7 @@ class McpHttpTransportTests(unittest.IsolatedAsyncioTestCase):
             )
         )
 
-    async def test_health_authentication_and_july_protocol_discovery(self):
+    async def test_health_authentication_and_legacy_protocol_initialize(self):
         with tempfile.TemporaryDirectory() as directory:
             app = build_http_app(self._runtime(Path(directory)), token=self.token)
 
@@ -76,8 +77,45 @@ class McpHttpTransportTests(unittest.IsolatedAsyncioTestCase):
                 ClientSession(*streams) as session,
             ):
                 initialized = await session.initialize()
+                self.assertEqual("2025-11-25", initialized.protocol_version)
                 self.assertEqual(__version__, initialized.server_info.version)
                 listed = await session.list_tools()
+                self.assertIn(
+                    "pandrator_create_dispatch_run",
+                    {tool.name for tool in listed.tools},
+                )
+
+    async def test_modern_protocol_discovery_over_asgi_http_transport(self):
+        with tempfile.TemporaryDirectory() as directory:
+            protocol_app = build_http_app(
+                self._runtime(Path(directory)),
+                token=self.token,
+            )
+            transport = httpx2.ASGITransport(app=protocol_app)
+            headers = {"Authorization": f"Bearer {self.token}"}
+            async with (
+                protocol_app.app.router.lifespan_context(protocol_app.app),
+                httpx2.AsyncClient(
+                    transport=transport,
+                    base_url="http://127.0.0.1:8099",
+                    headers=headers,
+                ) as http_client,
+                Client(
+                    streamable_http_client(
+                        "http://127.0.0.1:8099/mcp",
+                        http_client=http_client,
+                    ),
+                    mode="auto",
+                    raise_exceptions=True,
+                ) as client,
+            ):
+                self.assertEqual("2026-07-28", client.protocol_version)
+                self.assertEqual(__version__, client.server_info.version)
+                self.assertEqual(
+                    ["2026-07-28"],
+                    client.session.discover_result.supported_versions,
+                )
+                listed = await client.list_tools()
                 self.assertIn(
                     "pandrator_create_dispatch_run",
                     {tool.name for tool in listed.tools},

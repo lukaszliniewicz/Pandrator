@@ -58,7 +58,7 @@ class TestLaneManifestTests(unittest.TestCase):
             (test_lanes.REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
         )
         dev_dependencies = project["project"]["optional-dependencies"]["dev"]
-        self.assertIn("build>=1.2,<2", dev_dependencies)
+        self.assertIn("build>=1.6,<2", dev_dependencies)
         self.assertIn("pytest-xdist==3.8.0", dev_dependencies)
         pytest_options = project["tool"]["pytest"]["ini_options"]
         self.assertIn("--strict-markers", pytest_options["addopts"])
