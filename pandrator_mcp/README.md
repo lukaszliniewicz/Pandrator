@@ -19,6 +19,36 @@ This component guide remains the canonical source for exact MCP installation,
 target, scope, enrollment, host-configuration, diagnostic, and protocol
 behavior.
 
+## Optional workflow skill
+
+The repository includes the portable
+[`pandrator-workflows` skill](skills/pandrator-workflows/SKILL.md), with guidance
+for quick transcription, passive document/subtitle/speech processing,
+recording edits, generation, recovery, and verified output delivery.
+
+Copy the **whole** `skills/pandrator-workflows` directory, including its
+`references` folder, into your MCP host's skill directory. For Codex, the
+usual destination is `~/.codex/skills/pandrator-workflows`; use your configured
+location if different. Reload the host's skills as needed. Other hosts should
+use their documented `SKILL.md` installation mechanism.
+
+The skill does not install or authorize the MCP connection. Complete the host
+connection setup below first; an agent can also use the MCP's packaged guides
+without installing this optional skill.
+
+The folder is included as package data in MCP builds made from this source.
+To locate it in such an installed package, run this with the Python interpreter
+from the environment containing `pandrator-mcp`:
+
+```bash
+python -c "from importlib.resources import files; print(files('pandrator_mcp') / 'skills' / 'pandrator-workflows')"
+```
+
+The published **0.4.0 package in the Pandrator 0.9.0 release predates this
+bundle**. For that release, copy the skill from this repository separately.
+Installing or upgrading the MCP package does not automatically install or
+update skills in your host.
+
 ## What agents can do
 
 The current tool surface supports:
@@ -40,8 +70,8 @@ The current tool surface supports:
   workflow kinds;
 - immutable workflow planning followed by explicit execution;
 - passive subtitle correction/translation, PDF/EPUB source-cleaning, and
-  speech-text optimization runs with sequential pull, short-lived batch
-  leases, and typed submissions;
+  speech-text optimization runs with serial or supported bounded-parallel
+  dispatch, short-lived leases, and typed submissions;
 - durable-work cancellation;
 - Manager status and diagnostics;
 - immutable Manager component plans, runtime control, and plan execution; and
@@ -211,8 +241,8 @@ SRT, prepared-narration JSON, or TXT artifacts; PDF/EPUB and media inputs must
 first pass through extraction or transcription.
 
 Claim batches sequentially. The claim's `batch.units` are the only actionable
-items and carry stable `unit_id` values, language, optional speaker, and—when
-requested—one timing object per SRT unit. Boundary context is read-only and
+items and carry stable `unit_id` values, language, optional speaker, and, when
+requested, one timing object per SRT unit. Boundary context is read-only and
 never repeats timing. Submit `kind: speech_optimization` with every `unit_id`
 exactly once, in order, leaving text unchanged when no improvement is needed.
 
@@ -227,7 +257,7 @@ Guidance remains available even when no target can be reached.
 
 ### MCP protocol compatibility
 
-The 0.3.x line pins the official Python SDK 2.1.1 and supports the final
+The current sidecar pins the official Python SDK 2.1.1 and supports the final
 [MCP 2026-07-28 specification](https://modelcontextprotocol.io/specification/2026-07-28).
 Modern hosts connect through `server/discover` and attach the negotiated
 protocol metadata to requests; maintained older hosts can still use the legacy
@@ -345,7 +375,7 @@ references.
 
 ### Approved local files and outputs
 
-The operator—not the model—chooses which sidecar-host directories are visible.
+The operator chooses which sidecar-host directories are visible.
 Expose each source directory under an opaque name and configure one output
 directory:
 

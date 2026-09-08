@@ -41,7 +41,9 @@ inspect-first sequence:
    revisions.
 5. Use a passive dispatcher when the MCP host model should perform correction,
    translation, document cleanup, or speech optimization. Claim one packet,
-   submit every required ID exactly once, and continue sequentially.
+   submit the matching typed result, and continue until complete. Subtitle
+   and speech runs may use bounded parallel waves; source-cleaning phases
+   remain sequential.
 6. Before speech generation, inspect the live TTS catalog and apply exact
    service, model, and voice IDs to the current TTS settings revision. User
    examples are not guaranteed catalog identifiers.

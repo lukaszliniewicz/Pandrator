@@ -19,7 +19,7 @@ host's normal agent supervision and tool permissions around every batch.
 
 Pandrator is the durable dispatcher, filesystem owner, and validator. It pins
 the source and relevant output state, prepares deterministic evidence, leases
-one packet at a time, validates typed results, records an audit trail, and
+bounded packets, validates typed results, records an audit trail, and
 materializes the final artifact only after every packet is accepted.
 
 Pandrator does **not** choose or call a model in this mode. Provider keys,
@@ -27,7 +27,14 @@ provider model settings, token budgets, request timeouts, and model-iteration
 limits are not part of a passive run. The MCP host decides which model works on
 the claimed content.
 
-The general loop is:
+Subtitle and speech-text runs default to serial processing and can also use
+bounded parallel waves (`execution_mode=parallel`, `max_parallel_batches=2..8`).
+Each wave shares the same context capsule; all its batches finish before the
+next wave begins. PDF/EPUB source-cleaning phases remain sequential. The
+separate [recording-edit workflow](../../pandrator_mcp/guides/workflows.md#media-editing)
+uses one whole-recording batch followed by cut review.
+
+The serial loop is:
 
 ```text
 create run
@@ -234,7 +241,8 @@ those paths and their batching settings.
 - Release it when stopping so the run does not wait for expiry.
 - Retry the same logical mutation with the same idempotency key.
 - A stale or mismatched token cannot submit.
-- Another active lease makes the run busy; phases remain sequential.
+- Serial runs allow one active lease. Parallel subtitle/speech runs permit
+  the configured bounded wave; source-cleaning phases remain sequential.
 - Source, revision, selected-stage, or output-head changes fail closed rather
   than silently applying work to different content.
 - `finalizing` means all batches were accepted but durable materialization did
@@ -264,9 +272,9 @@ generated secret-free stdio fragment to the host you actually use. If an agent
 should start from Downloads, a mounted library, or another host directory, the
 operator must first expose that directory by an opaque root name. Then ask the
 agent to inspect or create the session, browse and import the relative source,
-create the appropriate passive run, claim and submit sequentially, renew or
-release deliberately, and inspect the finalized artifact before continuing
-downstream.
+create the appropriate passive run, process its batches in the selected mode,
+renew or release deliberately, and inspect the finalized artifact before
+continuing downstream.
 
 Exact target, scope, host-configuration, and tool behavior belongs to the
 [Pandrator MCP guide](../../pandrator_mcp/README.md). The

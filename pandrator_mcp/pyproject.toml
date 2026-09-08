@@ -60,6 +60,7 @@ pandrator_mcp = "."
 pandrator_mcp = [
   "contracts/**",
   "guides/**",
+  "skills/**",
 ]
 
 [tool.setuptools.exclude-package-data]
