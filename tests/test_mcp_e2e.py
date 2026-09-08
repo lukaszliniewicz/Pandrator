@@ -2,8 +2,8 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest import mock
 from types import SimpleNamespace
+from unittest import mock
 
 from pandrator_mcp.errors import PandratorMcpError
 from pandrator_mcp.network_policy import TargetMode
@@ -243,7 +243,7 @@ class McpEndToEndToolTests(unittest.TestCase):
 
     def test_local_import_has_a_windows_safe_open_path(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory).resolve(strict=True)
             source = root / "windows-test.txt"
             source.write_text("hello", encoding="utf-8")
 
@@ -347,7 +347,9 @@ class McpEndToEndToolTests(unittest.TestCase):
                     filename="../course-final.mp4",
                 ),
             )
-            self.assertEqual(output / "course-final.mp4", Path(downloaded["path"]))
+            self.assertEqual(
+                (output / "course-final.mp4").resolve(), Path(downloaded["path"])
+            )
             self.assertEqual(b"data", Path(downloaded["path"]).read_bytes())
 
     def test_download_artifact_defaults_to_workspace_exports_for_local_managed(self):
@@ -373,7 +375,7 @@ class McpEndToEndToolTests(unittest.TestCase):
                 ),
             )
             expected_path = workspace / "exports" / "output.mp4"
-            self.assertEqual(expected_path, Path(downloaded["path"]))
+            self.assertEqual(expected_path.resolve(), Path(downloaded["path"]))
             self.assertEqual(b"data", expected_path.read_bytes())
 
 

@@ -59,8 +59,12 @@ class TargetStoreTests(unittest.TestCase):
             )
             self.assertEqual("downloads", updated.local_source_roots[0].name)
             loaded = store.load(missing_ok=False)[0]
-            self.assertEqual(str(base / "inputs"), loaded.local_source_roots[0].path)
-            self.assertEqual(str(base / "outputs"), loaded.local_output_root)
+            self.assertEqual(
+                str((base / "inputs").resolve()), loaded.local_source_roots[0].path
+            )
+            self.assertEqual(
+                str((base / "outputs").resolve()), loaded.local_output_root
+            )
 
     def test_atomic_store_round_trip_update_and_remove(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -228,7 +232,10 @@ class TargetCliTests(unittest.TestCase):
                 str(base / "outputs"),
             )
             self.assertEqual(0, result, error)
-            self.assertIn(str(base / "outputs"), output)
+            self.assertEqual(
+                str((base / "outputs").resolve()),
+                json.loads(output)["local_output_root"],
+            )
             result, output, error = self.invoke(
                 "target",
                 "--config",

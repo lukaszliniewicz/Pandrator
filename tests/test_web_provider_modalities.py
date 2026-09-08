@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from contextlib import ExitStack
 from pathlib import Path
 from unittest import mock
 
@@ -150,9 +151,10 @@ class ProviderModelModalitiesApiTests(unittest.TestCase):
 
 class ProviderModelModalitiesMigrationTests(unittest.TestCase):
     def test_upgrade_backfills_existing_rows_and_downgrade_is_guarded(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as cleanup:
             database_path = Path(directory) / "migration.sqlite3"
             engine = create_engine(f"sqlite:///{database_path}")
+            cleanup.callback(engine.dispose)
             with engine.begin() as connection:
                 connection.execute(
                     text(

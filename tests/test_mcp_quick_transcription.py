@@ -385,7 +385,7 @@ class QuickTranscriptionToolTests(unittest.TestCase):
 
         with self.assertRaises(PandratorMcpError) as error:
             _transcribe_handle(
-                _runtime(Path("/tmp"), application),
+                _runtime(Path(tempfile.gettempdir()), application),
                 arguments,
                 handle=reader,
                 filename="clip.wav",

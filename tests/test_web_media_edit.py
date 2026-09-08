@@ -2,7 +2,7 @@ import json
 import sqlite3
 import tempfile
 import unittest
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from unittest.mock import patch
 
 from pandrator.runtime import DataPaths
@@ -130,7 +130,7 @@ class MediaEditServiceTests(unittest.TestCase):
         return media, captions, timing
 
     def test_schema_head_and_media_edit_foreign_keys(self):
-        with sqlite3.connect(self.paths.database) as connection:
+        with closing(sqlite3.connect(self.paths.database)) as connection:
             self.assertEqual(
                 SCHEMA_HEAD,
                 connection.execute(

@@ -52,9 +52,12 @@ class StartupMaintenanceTests(unittest.TestCase):
     def test_application_starts_background_maintenance_only_when_enabled(self):
         with tempfile.TemporaryDirectory() as enabled_directory:
             prepare_web_test_data_root(enabled_directory)
-            with mock.patch(
-                "pandrator.web.startup.StartupMaintenance.start"
-            ) as start:
+            with (
+                mock.patch("pandrator.web.startup.StartupMaintenance.start") as start,
+                mock.patch(
+                    "pandrator.web.quick_transcription.QuickTranscriptionService.start_maintenance"
+                ) as quick_start,
+            ):
                 app = create_app(
                     data_root=enabled_directory,
                     testing=True,
@@ -62,20 +65,25 @@ class StartupMaintenanceTests(unittest.TestCase):
                 )
             try:
                 start.assert_called_once_with()
+                quick_start.assert_called_once_with()
             finally:
                 app.extensions["pandrator"]["database"].dispose()
 
         with tempfile.TemporaryDirectory() as testing_directory:
             prepare_web_test_data_root(testing_directory)
-            with mock.patch(
-                "pandrator.web.startup.StartupMaintenance.start"
-            ) as start:
+            with (
+                mock.patch("pandrator.web.startup.StartupMaintenance.start") as start,
+                mock.patch(
+                    "pandrator.web.quick_transcription.QuickTranscriptionService.start_maintenance"
+                ) as quick_start,
+            ):
                 app = create_app(
                     data_root=testing_directory,
                     testing=True,
                 )
             try:
                 start.assert_not_called()
+                quick_start.assert_not_called()
             finally:
                 app.extensions["pandrator"]["database"].dispose()
 
