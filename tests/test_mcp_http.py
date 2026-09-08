@@ -17,6 +17,7 @@ except ImportError:
     streamable_http_client = None
     TestClient = None
 
+from pandrator_mcp import __version__
 from pandrator_mcp.__main__ import main
 from pandrator_mcp.context import (
     MANAGED_TARGET_NAME,
@@ -75,7 +76,7 @@ class McpHttpTransportTests(unittest.IsolatedAsyncioTestCase):
                 ClientSession(*streams) as session,
             ):
                 initialized = await session.initialize()
-                self.assertEqual("0.3.4", initialized.server_info.version)
+                self.assertEqual(__version__, initialized.server_info.version)
                 listed = await session.list_tools()
                 self.assertIn(
                     "pandrator_create_dispatch_run",

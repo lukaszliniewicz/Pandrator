@@ -262,7 +262,8 @@ by both modern and maintained legacy hosts.
 
 ## Install
 
-The current release is 0.3.4 and can target Pandrator 0.8.16 or newer. The
+The current release is 0.4.0. Use Pandrator 0.9.0 for all current tools, including
+Quick Transcribe; existing workflows can target Pandrator 0.8.16 or newer. The
 source-cleaning, speech-optimization, and end-to-end workflow tools require
 Pandrator 0.8.17. With Python 3.11 or 3.12, install it as an isolated
 command-line tool:

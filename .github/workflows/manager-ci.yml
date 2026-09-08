@@ -70,7 +70,7 @@ jobs:
 
       - name: Run manager tests
         shell: bash
-        run: python -m pytest -q tests/test_manager_*.py
+        run: python -m pytest -q --durations=10 tests/test_manager_*.py
 
   package:
     name: Package and lifecycle (${{ matrix.os }})

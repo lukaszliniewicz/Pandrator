@@ -1,3 +1,4 @@
+import faulthandler
 import shutil
 import sqlite3
 import sys
@@ -73,14 +74,20 @@ def _registry(
     return ComponentRegistry((definition,), (MarkerComponentDriver(),))
 
 
-def _wait(application, operation_id: str, timeout: float = 10):
+# These operations clone and activate files on disk. Windows CI can take more
+# than ten seconds even for the local fixture; this is not a cancellation SLA.
+def _wait(application, operation_id: str, timeout: float = 30):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         operation = application.store.get_operation(operation_id)
         if operation.state in TERMINAL_OPERATION_STATES:
             return operation
         time.sleep(0.02)
-    raise AssertionError(f"Operation {operation_id} did not finish.")
+    faulthandler.dump_traceback()
+    raise AssertionError(
+        f"Operation {operation_id} did not finish within {timeout}s: "
+        f"state={operation.state}, current_task={operation.current_task_id}."
+    )
 
 
 class OperationEngineTests(unittest.TestCase):
@@ -102,7 +109,7 @@ class OperationEngineTests(unittest.TestCase):
         cancellation = _StoreCancellation(store, "operation-one")
 
         with self.assertRaisesRegex(sqlite3.OperationalError, "disk I/O"):
-            cancellation.requested
+            _ = cancellation.requested
 
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -761,7 +768,7 @@ class OperationEngineTests(unittest.TestCase):
             self.application.registry,
         )
         engine.start()
-        self.addCleanup(engine.shutdown)
+        self.addCleanup(engine.shutdown, timeout=30)
         completed = _wait(self.application, submitted.id)
 
         self.assertEqual(completed.state, OperationState.SUCCEEDED)
