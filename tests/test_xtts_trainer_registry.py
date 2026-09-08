@@ -50,8 +50,8 @@ class XttsTrainerRegistryTests(unittest.TestCase):
         self.assertTrue((published / "config.json").is_file())
         self.assertTrue((published / "model.pth").is_file())
         staging, target = (Path(value) for value in promote.call_args.args)
-        self.assertEqual(self.models / ".downloads", staging.parent)
-        self.assertEqual(published, target)
+        self.assertEqual((self.models / ".downloads").resolve(), staging.parent)
+        self.assertEqual(published.resolve(), target)
         self.assertFalse(any((self.models / ".downloads").iterdir()))
 
     def test_promotion_copies_only_exact_wrapper_bundle(self):
