@@ -178,6 +178,8 @@ from .voice_library import (
     voice_sample_payload,
 )
 from .workflow_plan_routes import register_workflow_plan_routes
+from .quick_transcription_routes import register_quick_transcription_routes
+from .stt_resources import stt_resource_keys
 from .workspace import BUILTIN_DEFAULTS, SETTING_SECTIONS
 from .workspace import RevisionConflict as WorkspaceRevisionConflict
 
@@ -765,6 +767,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     register_dispatch_routes(app, context)
     register_source_cleaning_dispatch_routes(app, context)
     register_speech_optimization_dispatch_routes(app, context)
+    register_quick_transcription_routes(app, context)
 
     @app.get("/api/v1/health")
     def health():
@@ -3667,13 +3670,18 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     @app.get("/api/v1/jobs")
     @require_auth
     def job_list():
+        items = work.diagnostic_list(request.args.get("limit", 100, type=int))
+        principal = context.guards.principal()
+        assert principal is not None
+        hidden = services.quick_transcriptions.hidden_job_ids(
+            principal.subject, (item.id for item in items)
+        )
         return jsonify(
             {
                 "items": [
                     _job_payload(item)
-                    for item in work.diagnostic_list(
-                        request.args.get("limit", 100, type=int)
-                    )
+                    for item in items
+                    if item.id not in hidden
                 ]
             }
         )
@@ -3744,10 +3752,19 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             states=_query_values("state"),
             limit=request.args.get("limit", 50, type=int) or 50,
         )
+        principal = context.guards.principal()
+        assert principal is not None
+        hidden = services.quick_transcriptions.hidden_job_ids(
+            principal.subject, (item.id for item in items)
+        )
         return jsonify(
             {
                 "schema_version": "1",
-                "items": [item.model_dump(mode="json") for item in items],
+                "items": [
+                    item.model_dump(mode="json")
+                    for item in items
+                    if item.id not in hidden
+                ],
             }
         )
 
@@ -4227,6 +4244,12 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         local_mode = _is_loopback_address(request.remote_addr)
         capability_payload = capability_service.get(local_mode=local_mode)
         capability_payload["application"] = {"version": PANDRATOR_VERSION}
+        items = work.diagnostic_list(40)
+        principal = context.guards.principal()
+        assert principal is not None
+        hidden = services.quick_transcriptions.hidden_job_ids(
+            principal.subject, (item.id for item in items)
+        )
         return jsonify(
             {
                 "cursor": bounds.latest,
@@ -4235,7 +4258,9 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                     "items": [_session_payload(item) for item in sessions.list()]
                 },
                 "jobs": {
-                    "items": [_job_payload(item) for item in work.diagnostic_list(40)]
+                    "items": [
+                        _job_payload(item) for item in items if item.id not in hidden
+                    ]
                 },
                 "capabilities": capability_payload,
             }
@@ -4244,6 +4269,9 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     @app.get("/api/v1/events")
     @require_auth
     def events():
+        principal = context.guards.principal()
+        assert principal is not None
+        subject = principal.subject
         bounds = work.event_bounds()
         supplied_cursor = request.headers.get("Last-Event-ID")
         if supplied_cursor is None:
@@ -4288,10 +4316,13 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                     continue
                 new_events = work.events_after(cursor).items
                 if new_events:
+                    hidden = services.quick_transcriptions.hidden_job_ids(
+                        subject, (event.work_id for event in new_events)
+                    )
                     last_visible_id = cursor
                     for event in new_events:
                         cursor = event.id
-                        if event.event_type == "job.log":
+                        if event.event_type == "job.log" or event.work_id in hidden:
                             continue
                         last_visible_id = event.id
                         payload = _sse_event_payload(event)
@@ -6516,13 +6547,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 "sample_artifact_id": artifact_id,
                 "settings": settings,
             },
-            resource_keys=[f"stt:{settings.get('stt_compute_backend') or 'auto'!s}"]
-            + (
-                [f"gpu:{settings.get('stt_compute_backend')!s}"]
-                if str(settings.get("stt_compute_backend") or "").lower()
-                in {"cuda", "vulkan", "metal"}
-                else []
-            ),
+            resource_keys=stt_resource_keys(settings),
         )
         return jsonify(_job_payload(job)), 202
 

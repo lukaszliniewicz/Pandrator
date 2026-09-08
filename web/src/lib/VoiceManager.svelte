@@ -1,5 +1,6 @@
 <script lang="ts">
   import { errorMessage } from './errors';
+  import { createAudioRecorder, openMicrophone } from './audio-recorder';
   import { page } from '$app/state';
   import {
     ArrowLeft,
@@ -458,33 +459,10 @@
     stopPlayback();
     clearRecording();
     try {
-      const requestedAudio: MediaTrackConstraints | boolean = deviceId
-        ? { deviceId: { exact: deviceId } }
-        : true;
-      try {
-        activeStream = await navigator.mediaDevices.getUserMedia({
-          audio: requestedAudio
-        });
-      } catch (caught) {
-        // Device IDs can change after reconnecting a microphone. Retry with the
-        // browser default instead of leaving the Record button mysteriously dead.
-        if (!deviceId) throw caught;
-        activeStream = await navigator.mediaDevices.getUserMedia({
-          audio: true
-        });
-      }
+      activeStream = await openMicrophone(deviceId);
       microphoneReady = true;
       await refreshMicrophones(false);
-      const preferred = [
-        'audio/webm;codecs=opus',
-        'audio/ogg;codecs=opus',
-        'audio/mp4',
-        'audio/webm'
-      ].find((type) => MediaRecorder.isTypeSupported(type));
-      const next = new MediaRecorder(
-        activeStream,
-        preferred ? { mimeType: preferred } : undefined
-      );
+      const next = createAudioRecorder(activeStream);
       chunks = [];
       next.ondataavailable = (event) => {
         if (event.data.size) chunks.push(event.data);

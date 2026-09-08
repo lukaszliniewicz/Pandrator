@@ -6,6 +6,7 @@ import hashlib
 import json
 import secrets
 from datetime import UTC, datetime, timedelta
+from math import ceil
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +35,11 @@ from pandrator.logic.dubbing.srt_utils import (
     subtitle_boundary_cue,
     subtitle_task_cue,
 )
+from pandrator.logic.dubbing.subtitle_finalization import (
+    SubtitleFinalizationConfig,
+    finalize_segments,
+)
+from pandrator.logic.dubbing.subtitle_rebalancing import rebalance_display_cues
 
 from .artifact_selection import ROLE_TO_STAGE
 from .artifacts import ArtifactService, sha256_file
@@ -48,6 +54,7 @@ from .dispatch_context import (
 )
 from .models import (
     Artifact,
+    ArtifactEdge,
     DispatchBatch,
     DispatchRun,
     Document,
@@ -59,8 +66,10 @@ from .models import (
     SessionRecord,
     SessionStageSelection,
     SubtitleEvidence,
+    TimedWord,
     utcnow,
 )
+from .workspace import WorkspaceSettingsService, adapt_runtime_settings
 
 
 class DispatchError(RuntimeError):
@@ -118,9 +127,116 @@ def _segment_hash(items: list[dict[str, Any]]) -> str:
                 "review_state": item.get("review_state") or "clear",
                 "review_note": item.get("review_note") or "",
                 "evidence_ids": list(item.get("evidence_ids") or []),
+                "uncertain_source_cue_ids": list(item.get("uncertain_source_cue_ids") or []),
             }
             for item in items
         ]
+    )
+
+
+def _finalize_dispatch_values(
+    values: list[dict[str, Any]], settings: dict[str, Any],
+    *, timing_words: list[dict[str, Any]] | None = None,
+    match_source_words: bool = False,
+) -> list[dict[str, Any]]:
+    """Fit display text, with bounded local reflow for inherited cue fragments.
+
+    An English display boundary is not a reliable German phrase boundary.
+    Reflow at most three adjacent intervals, within three maximum cue durations,
+    only when needed for readability or contradictory same-speaker overlaps.
+    Speaker changes, substantial pauses and review metadata remain boundaries.
+    """
+    config = SubtitleFinalizationConfig.from_settings(settings)
+    if not values:
+        return []
+    groups = [(dict(item), 1) for item in sorted(values, key=lambda v: int(v["start_ms"]))]
+    timeline_end = max(int(item["end_ms"]) for item in values)
+
+    def render(item: dict[str, Any]) -> list[dict[str, Any]]:
+        source_start, source_end = int(item["start_ms"]), int(item["end_ms"])
+        cues = finalize_segments(
+            [SubtitleSegment(0, source_start, source_end, str(item["text"]),
+                             str(item.get("speaker") or ""))],
+            config,
+        )
+        result = []
+        for cue in cues:
+            end_ms = min(cue.end_ms, source_end)
+            if end_ms <= cue.start_ms:
+                raise DispatchError(
+                    "subtitle_timing_capacity",
+                    "Edited text cannot fit within its subtitle interval.",
+                    422,
+                )
+            result.append({**item, "start_ms": cue.start_ms,
+                           "end_ms": end_ms, "text": cue.text})
+        return result
+
+    def quality(items: list[dict[str, Any]]) -> tuple[int, float, int]:
+        deficits = []
+        speeds = []
+        for item in items:
+            duration = int(item["end_ms"]) - int(item["start_ms"])
+            chars = len(" ".join(str(item["text"]).split()))
+            needed = max(config.min_duration_ms,
+                         ceil(chars * 1000 / config.max_chars_per_second))
+            deficits.append(max(0, needed - duration))
+            speeds.append(chars * 1000 / duration)
+        return sum(d > 1 for d in deficits), max(speeds, default=0), sum(deficits)
+
+    def signature(item: dict[str, Any]) -> tuple[Any, ...]:
+        return (item.get("speaker"), item.get("review_state") or "clear",
+                item.get("review_note") or "", tuple(item.get("evidence_ids") or []),
+                tuple(item.get("uncertain_source_cue_ids") or []))
+
+    index = 0
+    while index < len(groups):
+        item, count = groups[index]
+        current = render(item)
+        # Reading time may use a little genuinely empty trailing space, but
+        # never a following cue's speech, or time beyond the source timeline.
+        deficit = quality(current)[2]
+        next_start = int(groups[index + 1][0]["start_ms"]) if index + 1 < len(groups) else timeline_end + config.min_gap_ms
+        available_end = min(timeline_end, next_start - config.min_gap_ms,
+                            int(item["end_ms"]) + config.phrase_gap_ms)
+        if deficit and available_end > int(item["end_ms"]):
+            candidate = {**item, "end_ms": min(available_end, int(item["end_ms"]) + deficit)}
+            if quality(render(candidate)) < quality(current):
+                item = candidate
+                groups[index] = (item, count)
+                current = render(item)
+
+        candidates = []
+        for left in (index - 1, index):
+            if left < 0 or left + 1 >= len(groups):
+                continue
+            a, ac = groups[left]
+            b, bc = groups[left + 1]
+            gap = int(b["start_ms"]) - int(a["end_ms"])
+            span = max(int(a["end_ms"]), int(b["end_ms"])) - int(a["start_ms"])
+            if (not a.get("speaker") or signature(a) != signature(b)
+                    or gap > config.phrase_gap_ms or ac + bc > 3
+                    or span > config.max_duration_ms * 3):
+                continue
+            before = quality(render(a) + render(b))
+            if gap >= 0 and not before[0]:
+                continue
+            joined = {**a, "end_ms": max(int(a["end_ms"]), int(b["end_ms"])),
+                      "text": " ".join((str(a["text"]), str(b["text"]))).strip()}
+            after = quality(render(joined))
+            if gap < 0 or after < before:
+                candidates.append((after, left, joined, ac + bc))
+        if candidates:
+            _score, left, joined, members = min(candidates, key=lambda x: (x[0], x[1]))
+            groups[left:left + 2] = [(joined, members)]
+            index = max(0, left - 1)
+        else:
+            index += 1
+
+    output = [cue for item, _count in groups for cue in render(item)]
+    return rebalance_display_cues(
+        sorted(output, key=lambda item: int(item["start_ms"])), config,
+        timing_words=timing_words, match_source_words=match_source_words,
     )
 
 
@@ -303,6 +419,10 @@ class DispatchRunService:
             )
         )
         if source_artifact_id:
+            # A deliberate follow-up pass may refine an already corrected
+            # artifact. Keep automatic source selection on its existing path.
+            if kind == "correction":
+                allowed_roles = (*allowed_roles, "correction")
             artifact = session.get(Artifact, source_artifact_id)
             if artifact is None:
                 raise DispatchError("not_found", "Source artifact not found.", 404)
@@ -442,6 +562,27 @@ class DispatchRunService:
             if str(segment.speaker or "").strip()
         }
 
+    @staticmethod
+    def _review_metadata(item: Any) -> dict[str, Any]:
+        metadata = item if isinstance(item, dict) else {}
+        return {
+            "review_state": str(metadata.get("review_state") or "clear"),
+            "review_note": str(metadata.get("review_note") or ""),
+            "evidence_ids": list(metadata.get("evidence_ids") or []),
+            "uncertain_source_cue_ids": list(
+                metadata.get("uncertain_source_cue_ids") or []
+            ),
+        }
+
+    @classmethod
+    def _source_review_metadata(
+        cls, segments: list[Segment]
+    ) -> dict[int, dict[str, Any]]:
+        return {
+            segment.ordinal + 1: cls._review_metadata(segment.metadata_json)
+            for segment in segments
+        }
+
     def create_in_session(
         self,
         session: Session,
@@ -537,7 +678,24 @@ class DispatchRunService:
             max_subtitles_per_block=max_segments_per_batch,
             speaker_by_subtitle=speakers,
             substantial_gap_ms=int(substantial_gap_ms),
+            # Materialized subtitles already have authoritative speaker fields.
+            # Import heuristics can mistake ordinary "Heading: text" for a name.
+            infer_speakers=False,
         )
+        if kind in {"translation", "correction"}:
+            review_metadata = self._source_review_metadata(segments)
+            blocks = [
+                [
+                    {
+                        **item,
+                        **review_metadata.get(
+                            int(item["index"]), self._review_metadata(None)
+                        ),
+                    }
+                    for item in block
+                ]
+                for block in blocks
+            ]
         if not blocks:
             raise DispatchError(
                 "source_segments_invalid",
@@ -554,7 +712,13 @@ class DispatchRunService:
         # remain safe for older/direct callers too.
         execution_mode, max_parallel_batches = execution_policy(execution_settings)
         normalized_capsule = normalize_context_capsule(context_capsule)
+        subtitle_settings = WorkspaceSettingsService(self.database).get_in_session(
+            session, session_id, "subtitles"
+        )["effective"]
         settings = {
+            "subtitle_finalization": adapt_runtime_settings(
+                "subtitles", subtitle_settings
+            ),
             "instructions": str(instructions or ""),
             "char_limit": int(char_limit),
             "max_segments_per_batch": int(max_segments_per_batch),
@@ -1258,6 +1422,7 @@ class DispatchRunService:
                         "end_ms": end_ms,
                         "text": text,
                         "speaker": str(item.get("speaker") or "").strip() or None,
+                        **self._review_metadata(item),
                         **(
                             {
                                 "review_state": "uncertain",
@@ -1329,6 +1494,7 @@ class DispatchRunService:
                         returned_speaker or item.get("speaker") or ""
                     ).strip()
                     or None,
+                    **self._review_metadata(item),
                 }
             )
         return values, merge_glossaries(glossary)
@@ -1661,6 +1827,77 @@ class DispatchRunService:
             run, batch
         ), 200 if run.status == "completed" else 202
 
+    @staticmethod
+    def _timing_reference(
+        session: Session, source: Artifact,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+        """Read the nearest unambiguous word revision on the pinned source path.
+
+        This is publication-only evidence, never model input. Stop at a cut
+        boundary even when its words are missing: pre-cut times are unsafe.
+        """
+        frontier = {source.id}
+        seen: set[str] = set()
+        while frontier and len(seen) < 32:
+            if len(frontier | seen) > 32:
+                return [], None
+            next_frontier: set[str] = set()
+            candidates: dict[str, tuple[list[dict[str, Any]], dict[str, Any]]] = {}
+            cut_boundary = False
+            for artifact_id in sorted(frontier):
+                if artifact_id in seen:
+                    continue
+                seen.add(artifact_id)
+                artifact = session.get(Artifact, artifact_id)
+                if (artifact is None or artifact.state == "deleted"
+                        or artifact.session_id != source.session_id):
+                    continue
+                metadata = artifact.metadata_json or {}
+                revision_id = str(metadata.get("revision_id") or "")
+                revision = session.get(DocumentRevision, revision_id) if revision_id else None
+                document = session.get(Document, revision.document_id) if revision else None
+                if (document is not None and document.session_id == source.session_id
+                        and document.stage == artifact.role):
+                    words = list(session.scalars(select(TimedWord).where(
+                        TimedWord.revision_id == revision_id,
+                    ).order_by(TimedWord.ordinal)))
+                    if words:
+                        record = session.get(SessionRecord, source.session_id)
+                        language = document.language or (record.source_language if record else None)
+                        candidates[revision_id] = ([{
+                            "text": word.text, "start_ms": word.start_ms,
+                            "end_ms": word.end_ms, "speaker": word.speaker or "",
+                        } for word in words], {"revision_id": revision_id, "language": language})
+                if artifact.role == "media_edit_subtitles":
+                    cut_boundary = True
+                    continue
+                parent_ids = set(session.scalars(select(ArtifactEdge.parent_artifact_id).where(
+                    ArtifactEdge.child_artifact_id == artifact.id,
+                )))
+                if metadata.get("source_artifact_id"):
+                    parent_id = str(metadata["source_artifact_id"])
+                    parent = session.get(Artifact, parent_id)
+                    expected_revision = metadata.get("source_revision_id")
+                    if (expected_revision and (parent is None or
+                            (parent.metadata_json or {}).get("revision_id") != expected_revision)):
+                        return [], None
+                    parent_ids.add(parent_id)
+                next_frontier.update(parent_ids - seen)
+            if candidates:
+                return next(iter(candidates.values())) if len(candidates) == 1 else ([], None)
+            if cut_boundary:
+                return [], None
+            frontier = next_frontier
+        return [], None
+
+    @staticmethod
+    def _same_timing_language(left: str | None, right: str | None) -> bool:
+        aliases = {"english": "en", "german": "de", "polish": "pl"}
+        def key(value: str | None) -> str:
+            normalized = str(value or "").strip().casefold().replace("_", "-")
+            return aliases.get(normalized, normalized.split("-")[0])
+        return key(left) not in {"", "auto"} and key(left) == key(right)
+
     def _materialize(self, session: Session, run: DispatchRun) -> None:
         expected_selections = dict(run.selection_snapshot_json or {})
         current_selections = self._selection_snapshot(
@@ -1759,6 +1996,21 @@ class DispatchRunService:
                 "A dispatch run cannot remove every subtitle.",
                 422,
             )
+        finalization_settings = (run.settings_json or {}).get("subtitle_finalization")
+        timing_reference: dict[str, Any] | None = None
+        # Existing durable runs keep their original publication contract.
+        if isinstance(finalization_settings, dict):
+            timing_words, timing_reference = self._timing_reference(session, source)
+            output_language = run.target_language if run.kind == "translation" else run.source_language
+            match_words = self._same_timing_language(
+                output_language, (timing_reference or {}).get("language"),
+            )
+            values = _finalize_dispatch_values(
+                values, finalization_settings, timing_words=timing_words,
+                match_source_words=match_words,
+            )
+            if timing_reference:
+                timing_reference = {**timing_reference, "word_matching_enabled": match_words}
         srt = compose_srt(
             [
                 SubtitleSegment(
@@ -1889,6 +2141,8 @@ class DispatchRunService:
                 "stage": run.output_role,
                 "dispatch_kind": run.kind,
                 "language": document.language,
+                "subtitle_finalization": finalization_settings,
+                "subtitle_boundary_timing_reference": timing_reference,
                 "uncertain_segment_count": sum(
                     1
                     for item in values

@@ -118,7 +118,7 @@ def format_vtt_timestamp(milliseconds: int) -> str:
     return format_srt_timestamp(milliseconds).replace(",", ".")
 
 
-def parse_srt(srt_content: str) -> list[SubtitleSegment]:
+def parse_srt(srt_content: str, *, infer_speakers: bool = True) -> list[SubtitleSegment]:
     """Parse SRT content into subtitle segments.
 
     Invalid blocks are skipped, which mirrors the forgiving behavior Pandrator
@@ -180,7 +180,7 @@ def parse_srt(srt_content: str) -> list[SubtitleSegment]:
     segments: list[SubtitleSegment] = []
     for index, start_ms, end_ms, speaker, text in parsed_segments:
         normalized_speaker, normalized_text = speaker, text
-        if speaker is None:
+        if speaker is None and infer_speakers:
             normalized_speaker, normalized_text = normalize_speaker_label(
                 text, repeated_speakers
             )
@@ -404,6 +404,7 @@ def create_translation_blocks(
     max_subtitles_per_block: int | None = None,
     speaker_by_subtitle: Mapping[int, str] | None = None,
     substantial_gap_ms: int | None = None,
+    infer_speakers: bool = True,
 ) -> list[list[dict[str, Any]]]:
     """Group subtitle segments without cutting avoidable semantic boundaries.
 
@@ -436,7 +437,7 @@ def create_translation_blocks(
 
     records: list[dict[str, Any]] = []
     previous_segment: SubtitleSegment | None = None
-    for segment in parse_srt(srt_content):
+    for segment in parse_srt(srt_content, infer_speakers=infer_speakers):
         gap_ms = (
             max(0, segment.start_ms - previous_segment.end_ms)
             if previous_segment is not None

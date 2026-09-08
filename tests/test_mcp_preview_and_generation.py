@@ -76,6 +76,10 @@ class _FakeApplication:
                             "end_ms": 2500,
                             "speaker": "SPEAKER_1",
                             "text": "Dzień dobry wszystkim.",
+                            "review_state": "uncertain",
+                            "review_note": "Source name unclear",
+                            "evidence_ids": ["original-evidence"],
+                            "uncertain_source_cue_ids": [143],
                         },
                         {
                             "ordinal": 1,
@@ -83,6 +87,10 @@ class _FakeApplication:
                             "end_ms": 5000,
                             "speaker": "SPEAKER_1",
                             "text": "Dzisiaj omówimy filozofię Pascala.",
+                            "review_state": "clear",
+                            "review_note": "",
+                            "evidence_ids": [],
+                            "uncertain_source_cue_ids": [],
                         },
                     ],
                 },
@@ -672,6 +680,51 @@ class PreviewAndGenerationTests(unittest.TestCase):
         self.assertEqual("Profesor", change["after"]["speaker"])
         self.assertEqual(
             "Zupełnie nowy tekst odcinka drugiego.", change["after"]["text"]
+        )
+
+    def test_patch_subtitle_cues_preserves_source_review_metadata(self):
+        outcome = patch_subtitle_cues(
+            self.runtime,
+            PatchSubtitleCuesInput(
+                session_id="session-1",
+                stage="transcribe",
+                expected_revision=1,
+                cues=[CuePatchInput(ordinal=2, start_ms=2600)],
+                idempotency_key="patch:metadata",
+            ),
+        )
+
+        self.assertEqual(2, outcome.result["revision"])
+        save_calls = [
+            call
+            for call in self.application.calls
+            if call[0] == "save_subtitle_review"
+        ]
+        self.assertEqual(1, len(save_calls))
+        self.assertEqual(
+            [
+                {
+                    "start_ms": 0,
+                    "end_ms": 2500,
+                    "text": "Dzień dobry wszystkim.",
+                    "speaker": "SPEAKER_1",
+                    "review_state": "uncertain",
+                    "review_note": "Source name unclear",
+                    "evidence_ids": ["original-evidence"],
+                    "uncertain_source_cue_ids": [143],
+                },
+                {
+                    "start_ms": 2600,
+                    "end_ms": 5000,
+                    "text": "Dzisiaj omówimy filozofię Pascala.",
+                    "speaker": "SPEAKER_1",
+                    "review_state": "clear",
+                    "review_note": "",
+                    "evidence_ids": [],
+                    "uncertain_source_cue_ids": [],
+                },
+            ],
+            save_calls[0][1]["segments"],
         )
 
     def test_import_subtitles_can_create_first_revision(self):

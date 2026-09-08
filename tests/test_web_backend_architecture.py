@@ -45,9 +45,9 @@ class BackendArchitectureTests(unittest.TestCase):
 
     def test_route_contract_is_partitioned_without_losing_rules(self):
         rules = list(self.app.url_map.iter_rules())
-        self.assertEqual(222, len(rules))
+        self.assertEqual(229, len(rules))
         self.assertEqual(
-            215,
+            222,
             sum(rule.rule.startswith("/api/") for rule in rules),
         )
         self.assertEqual(set(DOMAIN_ORDER), set(self.app.blueprints))
@@ -91,7 +91,7 @@ class BackendArchitectureTests(unittest.TestCase):
     def test_workflow_job_registry_has_domain_ownership_and_late_binding(self):
         handlers = self.app.extensions["pandrator"]["workflow_handlers"]
         registry = handlers.handler_registry
-        self.assertEqual(33, len(registry))
+        self.assertEqual(34, len(registry))
         self.assertEqual(
             {
                 "delivery",
@@ -99,6 +99,7 @@ class BackendArchitectureTests(unittest.TestCase):
                 "media_edit",
                 "source",
                 "text",
+                "transcription",
                 "voice",
                 "workflow",
             },

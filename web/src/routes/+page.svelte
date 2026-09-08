@@ -91,6 +91,20 @@
       </p></button
     >
   </section>
+  <a
+    href="/transcribe"
+    class="surface mt-5 flex items-center gap-4 rounded-xl p-5 hover:bg-[var(--accent-soft)]"
+  >
+    <AudioLines size={24} />
+    <span
+      ><strong class="block">Quick Transcribe</strong><span
+        class="muted text-sm"
+        >Upload or record audio. Get text or subtitles without creating a
+        session.</span
+      ></span
+    >
+    <ChevronRight size={18} class="ml-auto shrink-0" />
+  </a>
   <div class="mt-10 grid gap-7 xl:grid-cols-[1.4fr_.8fr]">
     <section>
       <div class="mb-3 flex items-center justify-between">

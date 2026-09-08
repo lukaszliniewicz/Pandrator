@@ -2518,6 +2518,107 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/transcriptions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Create a resumable temporary upload with JSON metadata, or submit file + JSON options in one multipart request. No permanent session or source is created. Media is limited to 256 MiB and two hours. Results expire one hour after completion. Idempotency retries reuse the same operation. */
+        post: operations["createQuickTranscription"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/transcriptions/{transcriptionId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getQuickTranscription"];
+        put?: never;
+        post?: never;
+        /** @description Delete temporary data. Running work is canceled first; deletion completes after the worker releases it. */
+        delete: operations["deleteQuickTranscription"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/transcriptions/{transcriptionId}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["cancelQuickTranscription"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/transcriptions/{transcriptionId}/chunks/{index}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** @description Upload the next 8 MiB chunk (or final remainder). Repeating an index with identical bytes is safe; different bytes conflict. */
+        put: operations["uploadQuickTranscriptionChunk"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/transcriptions/{transcriptionId}/result": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Download the full selected format, or supply offset/limit to get a JSON envelope containing a page of UTF-8-decoded text. Concatenate pages; JSON pages contain serialized JSON text. */
+        get: operations["getQuickTranscriptionResult"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/transcriptions/{transcriptionId}/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Verify the source checksum and enqueue once. Repeated starts return the same job. */
+        post: operations["startQuickTranscription"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/uploads": {
         parameters: {
             query?: never;
@@ -4076,6 +4177,11 @@ export interface components {
         MediaEditRenderRequest: {
             /** Revision */
             revision: number;
+            /**
+             * Subtitles Only
+             * @default false
+             */
+            subtitles_only?: boolean;
         };
         /** MediaEditUpdateRequest */
         MediaEditUpdateRequest: {
@@ -5378,6 +5484,8 @@ export interface components {
             start_ms: number;
             /** Text */
             text: string;
+            /** Uncertain Source Cue Ids */
+            uncertain_source_cue_ids?: number[];
         };
         /** TokenCreateRequest */
         TokenCreateRequest: {
@@ -5414,6 +5522,124 @@ export interface components {
              * @default null
              */
             voice_id?: string | null;
+        };
+        /** TranscriptionCreate */
+        TranscriptionCreate: {
+            /**
+             * Compute Backend
+             * @default null
+             */
+            compute_backend?: ("auto" | "cpu" | "cuda" | "vulkan" | "metal") | null;
+            /**
+             * Engine
+             * @default null
+             */
+            engine?: string | null;
+            /** Filename */
+            filename: string;
+            /**
+             * Format
+             * @default txt
+             * @enum {string}
+             */
+            format?: "txt" | "srt" | "json";
+            /**
+             * Language
+             * @default null
+             */
+            language?: string | null;
+            /**
+             * Model Quantization
+             * @default null
+             */
+            model_quantization?: string | null;
+            /** Sha256 */
+            sha256: string;
+            /** Size Bytes */
+            size_bytes: number;
+        };
+        /** TranscriptionResult */
+        TranscriptionResult: {
+            /** Content */
+            content: string | {
+                [key: string]: unknown;
+            };
+            /**
+             * Format
+             * @enum {string}
+             */
+            format: "txt" | "srt" | "json";
+            /** Mime Type */
+            mime_type: string;
+            /** Size Bytes */
+            size_bytes: number;
+        };
+        /** TranscriptionResultPage */
+        TranscriptionResultPage: {
+            /** Content */
+            content: string;
+            /**
+             * Format
+             * @enum {string}
+             */
+            format: "txt" | "srt" | "json";
+            /** Next Offset */
+            next_offset: number | null;
+            /** Offset */
+            offset: number;
+            /** Total Chars */
+            total_chars: number;
+        };
+        /** TranscriptionSnapshot */
+        TranscriptionSnapshot: {
+            /** Chunk Size */
+            chunk_size: number;
+            /**
+             * Error
+             * @default null
+             */
+            error?: {
+                [key: string]: string;
+            } | null;
+            /** Expires At */
+            expires_at: string;
+            /**
+             * Format
+             * @enum {string}
+             */
+            format: "txt" | "srt" | "json";
+            /** Id */
+            id: string;
+            /** Inline Result */
+            inline_result: boolean;
+            /** Job Id */
+            job_id: string | null;
+            /** Next Chunk Index */
+            next_chunk_index: number;
+            /** Progress */
+            progress: number;
+            /** Progress Detail */
+            progress_detail: string | null;
+            /** @default null */
+            result?: components["schemas"]["TranscriptionResult"] | null;
+            /** Result Available */
+            result_available: boolean;
+            /** Result Url */
+            result_url: string;
+            /** Size Bytes */
+            size_bytes: number;
+            /** Status */
+            status: string;
+            /** Uploaded Bytes */
+            uploaded_bytes: number;
+        };
+        /** TranscriptionWait */
+        TranscriptionWait: {
+            /**
+             * Wait Seconds
+             * @default 0
+             */
+            wait_seconds?: number;
         };
         /** TtsEndpointDiscoveryRequest */
         TtsEndpointDiscoveryRequest: {
@@ -10096,6 +10322,354 @@ export interface operations {
         responses: {
             /** @description Retry queued */
             202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createQuickTranscription: {
+        parameters: {
+            query?: {
+                wait_seconds?: number;
+                response?: "json" | "raw";
+            };
+            header: {
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TranscriptionCreate"];
+                "multipart/form-data": {
+                    /** Format: binary */
+                    file: string;
+                    /** @description JSON object with format, language, engine, model_quantization, compute_backend overrides. */
+                    options?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Completed transcript (raw mode) or status envelope */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                    "application/x-subrip": string;
+                    "text/plain": string;
+                };
+            };
+            /** @description Temporary transcription status and a bounded inline result when complete */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TranscriptionSnapshot"];
+                };
+            };
+            /** @description Temporary transcription status and a bounded inline result when complete */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TranscriptionSnapshot"];
+                };
+            };
+            /** @description Not found or owned by another principal */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Temporary data expired or was deleted */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getQuickTranscription: {
+        parameters: {
+            query?: {
+                wait_seconds?: number;
+                format?: "txt" | "srt" | "json";
+            };
+            header?: never;
+            path: {
+                transcriptionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Temporary transcription status and a bounded inline result when complete */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TranscriptionSnapshot"];
+                };
+            };
+            /** @description Temporary transcription status and a bounded inline result when complete */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TranscriptionSnapshot"];
+                };
+            };
+            /** @description Not found or owned by another principal */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Temporary data expired or was deleted */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    deleteQuickTranscription: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                transcriptionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Temporary transcription status and a bounded inline result when complete */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TranscriptionSnapshot"];
+                };
+            };
+            /** @description Temporary transcription status and a bounded inline result when complete */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TranscriptionSnapshot"];
+                };
+            };
+            /** @description Not found or owned by another principal */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Temporary data expired or was deleted */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    cancelQuickTranscription: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                transcriptionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Temporary transcription status and a bounded inline result when complete */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TranscriptionSnapshot"];
+                };
+            };
+            /** @description Temporary transcription status and a bounded inline result when complete */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TranscriptionSnapshot"];
+                };
+            };
+            /** @description Not found or owned by another principal */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Temporary data expired or was deleted */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    uploadQuickTranscriptionChunk: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                transcriptionId: string;
+                index: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/octet-stream": string;
+            };
+        };
+        responses: {
+            /** @description Temporary transcription status and a bounded inline result when complete */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TranscriptionSnapshot"];
+                };
+            };
+            /** @description Temporary transcription status and a bounded inline result when complete */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TranscriptionSnapshot"];
+                };
+            };
+            /** @description Not found or owned by another principal */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Temporary data expired or was deleted */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getQuickTranscriptionResult: {
+        parameters: {
+            query?: {
+                format?: "txt" | "srt" | "json";
+                offset?: number;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                transcriptionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Complete transcript or paginated result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TranscriptionResultPage"] | Record<string, never>;
+                    "application/x-subrip": string;
+                    "text/plain": string;
+                };
+            };
+            /** @description Result not ready */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Result expired */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    startQuickTranscription: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                transcriptionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["TranscriptionWait"];
+            };
+        };
+        responses: {
+            /** @description Temporary transcription status and a bounded inline result when complete */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TranscriptionSnapshot"];
+                };
+            };
+            /** @description Temporary transcription status and a bounded inline result when complete */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TranscriptionSnapshot"];
+                };
+            };
+            /** @description Not found or owned by another principal */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Temporary data expired or was deleted */
+            410: {
                 headers: {
                     [name: string]: unknown;
                 };

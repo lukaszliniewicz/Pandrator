@@ -87,6 +87,66 @@ This cue contains forty readable characters.
 
         self.assertGreaterEqual(segments[0].end_ms - segments[0].start_ms, 4000)
 
+    def test_duration_adjustment_preserves_actual_overlapping_speech(self):
+        from pandrator.logic.dubbing.models import SubtitleSegment
+
+        cues = [
+            SubtitleSegment(1, 11320, 12760, "Co-chair.", "A"),
+            SubtitleSegment(2, 11360, 15000, "Thank you for joining us.", "B"),
+        ]
+        result = subtitle_finalization._adjust_durations(cues, SubtitleFinalizationConfig())
+
+        self.assertEqual(result[0], cues[0])
+        self.assertEqual([cue.speaker for cue in result], ["A", "B"])
+
+    def test_word_cleanup_preserves_an_overlapping_speaker_interjection(self):
+        payload = {"segments": [
+            {"start_ms": 11320, "end_ms": 12760, "text": "Co-chair.", "speaker": "A",
+             "words": [{"text": "Co-chair.", "start_ms": 11320, "end_ms": 12760}]},
+            {"start_ms": 11360, "end_ms": 13000, "text": "Yes, welcome.", "speaker": "B",
+             "words": [{"text": "Yes,", "start_ms": 11360, "end_ms": 12000},
+                       {"text": "welcome.", "start_ms": 12100, "end_ms": 13000}]},
+        ]}
+        with patch("pandrator.logic.dubbing.subtitle_finalization.sentence_segmenter.predict_boundaries", return_value=None):
+            result = compose_transcript_segments(payload)
+
+        self.assertEqual((result[0].start_ms, result[0].end_ms), (11320, 12760))
+        self.assertEqual(result[0].text, "Co-chair.")
+        self.assertEqual(result[0].speaker, "A")
+
+    def test_word_cleanup_does_not_cap_plausible_sustained_words_to_fast_speech_median(self):
+        word = subtitle_finalization._TimedWord
+        words = [word(i, "short", i * 200, i * 200 + 80, "B") for i in range(10)]
+        words.extend([
+            word(10, "Co-chair.", 11320, 12760, "A"),
+            word(11, "Yes.", 11360, 12080, "B"),
+        ])
+        result = subtitle_finalization._sanitize_timed_words(words)
+
+        self.assertEqual(result[10].end_ms, 12760)
+
+    def test_duration_adjustment_sorts_cues_without_erasing_their_intervals(self):
+        from pandrator.logic.dubbing.models import SubtitleSegment
+
+        cues = [
+            SubtitleSegment(1, 2000, 6000, "A longer overlapping contribution.", "A"),
+            SubtitleSegment(2, 1000, 3500, "A second speaker.", "B"),
+        ]
+        result = subtitle_finalization._adjust_durations(cues, SubtitleFinalizationConfig())
+
+        self.assertEqual([(cue.start_ms, cue.end_ms) for cue in result], [(1000, 3500), (2000, 6000)])
+        self.assertEqual([cue.speaker for cue in result], ["B", "A"])
+
+    def test_composer_does_not_treat_untimed_display_extension_as_source_overlap(self):
+        payload = {"segments": [
+            {"start_ms": 0, "end_ms": 500, "text": "First reply.", "speaker": "A"},
+            {"start_ms": 600, "end_ms": 1200, "text": "Second reply.", "speaker": "B"},
+        ]}
+        result = compose_transcript_segments(payload)
+
+        self.assertEqual(result[0].end_ms, 520)
+        self.assertGreaterEqual(result[1].end_ms, 1200)
+
     def test_word_timed_composer_coalesces_compact_cross_cue_thought(self):
         payload = {
             "schema": "pandrator.transcript.v1",
@@ -247,6 +307,119 @@ This cue contains forty readable characters.
         self.assertGreater(len(segments), 1)
         self.assertGreaterEqual(len(segments[-1].text.replace("\n", " ")), 20)
         self.assertFalse(any(segment.text.replace("\n", " ") == "too." for segment in segments))
+
+    def test_capacity_partition_balances_a_just_over_two_line_event(self):
+        text = (
+            "This is a deliberately balanced subtitle sentence that contains "
+            "enough words to produce a properly sized final event today."
+        )
+        config = SubtitleFinalizationConfig(max_chars_per_line=60, max_lines=2)
+        chunks = subtitle_finalization._split_words_to_capacity(text, config)
+
+        self.assertGreater(len(text), config.max_event_chars)
+        self.assertEqual(2, len(chunks))
+        self.assertEqual(text.split(), " ".join(chunks).split())
+        self.assertLessEqual(max(map(len, chunks)) - min(map(len, chunks)), 10)
+
+        segments = subtitle_finalization._split_segment(
+            subtitle_finalization.SubtitleSegment(0, 0, 10_000, text, "A"),
+            config,
+        )
+        self.assertTrue(all(segment.end_ms - segment.start_ms >= 833 for segment in segments))
+
+    def test_capacity_partition_keeps_exact_nonfirst_range_lengths(self):
+        left = " ".join(["alpha"] * 9 + ["planet"])
+        right = " ".join(["bravo"] * 9 + ["rocket"])
+        text = f"{left} {right}"
+        config = SubtitleFinalizationConfig(max_chars_per_line=60, max_lines=2)
+
+        chunks = subtitle_finalization._split_words_to_capacity(text, config)
+
+        self.assertEqual([60, 60], [len(chunk) for chunk in chunks])
+        self.assertEqual(text.split(), " ".join(chunks).split())
+
+    def test_capacity_partition_isolates_one_overlong_token_without_word_explosion(self):
+        overlong = "x" * 80
+        text = f"one two three four five {overlong} six seven eight nine ten"
+        config = SubtitleFinalizationConfig(max_chars_per_line=60, max_lines=2)
+
+        chunks = subtitle_finalization._split_words_to_capacity(text, config)
+
+        self.assertEqual(3, len(chunks))
+        self.assertEqual(overlong, chunks[1])
+        self.assertEqual(text.split(), " ".join(chunks).split())
+
+    def test_split_segment_covers_long_interval_with_duration_chunks_and_gaps(self):
+        config = SubtitleFinalizationConfig(max_duration_ms=12_000, min_gap_ms=80)
+        segments = subtitle_finalization._split_segment(
+            subtitle_finalization.SubtitleSegment(
+                0,
+                0,
+                20_000,
+                "One moderate sentence is enough for two timed cues.",
+                "A",
+            ),
+            config,
+        )
+
+        self.assertGreaterEqual(len(segments), 2)
+        self.assertEqual(0, segments[0].start_ms)
+        self.assertEqual(20_000, segments[-1].end_ms)
+        self.assertTrue(
+            all(segment.end_ms - segment.start_ms <= 12_000 for segment in segments)
+        )
+        self.assertTrue(
+            all(
+                right.start_ms - left.end_ms == 80
+                for left, right in pairwise(segments)
+            )
+        )
+
+    def test_split_segment_keeps_infeasible_short_interval_bounded(self):
+        segments = subtitle_finalization._split_segment(
+            subtitle_finalization.SubtitleSegment(0, 0, 240, "Yes.", "A"),
+            SubtitleFinalizationConfig(),
+        )
+
+        self.assertTrue(all(segment.end_ms > segment.start_ms for segment in segments))
+        self.assertTrue(all(segment.start_ms >= 0 and segment.end_ms <= 240 for segment in segments))
+        self.assertEqual(["Yes."], [segment.text for segment in segments])
+
+    def test_split_segment_keeps_layout_and_reading_limits_when_interval_allows(self):
+        text = (
+            "Every readable subtitle cue should preserve the entire sentence while "
+            "respecting line limits and duration floors for this test."
+        )
+        config = SubtitleFinalizationConfig(
+            max_chars_per_line=40,
+            max_lines=2,
+            max_chars_per_second=20,
+            min_duration_ms=833,
+            max_duration_ms=7_000,
+        )
+        segments = subtitle_finalization._split_segment(
+            subtitle_finalization.SubtitleSegment(0, 0, 15_000, text, "A"),
+            config,
+        )
+
+        self.assertEqual(text.split(), " ".join(segment.text for segment in segments).split())
+        self.assertTrue(
+            all(
+                len(line) <= 40
+                for segment in segments
+                for line in segment.text.splitlines()
+            )
+        )
+        self.assertTrue(
+            all(
+                segment.end_ms - segment.start_ms
+                >= max(
+                    833,
+                    (len(segment.text.replace("\n", " ")) * 1000 + 19) // 20,
+                )
+                for segment in segments
+            )
+        )
 
     def test_sat_probability_can_select_an_unpunctuated_semantic_boundary(self):
         tokens = "We carefully reviewed the report today everyone approved the final version.".split()

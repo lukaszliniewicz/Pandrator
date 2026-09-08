@@ -113,6 +113,16 @@ from .subtitle_evidence import (
     ResolveSubtitleEvidenceInput,
 )
 from .system import CapabilitiesInput, SystemStatusInput, TargetStatusInput
+from .transcription import (
+    Base64TranscriptionSource,
+    CancelTranscriptionInput,
+    DeleteTranscriptionInput,
+    GetTranscriptionInput,
+    GetTranscriptionResultInput,
+    LocalFileTranscriptionSource,
+    TranscribeInput,
+    TranscriptionSource,
+)
 from .work import (
     CancelWorkInput,
     GetWorkInput,
@@ -164,6 +174,11 @@ TOOL_INPUT_MODELS = (
     CreateTextSourceInput,
     DownloadArtifactInput,
     ImportLocalSourceInput,
+    TranscribeInput,
+    GetTranscriptionInput,
+    GetTranscriptionResultInput,
+    CancelTranscriptionInput,
+    DeleteTranscriptionInput,
     ListGenerationRunsInput,
     PlanExportVariantInput,
     TtsCatalogInput,
@@ -323,6 +338,14 @@ __all__ = [
     "MediaEditDispatchResultInput",
     "TargetStatusInput",
     "TtsCatalogInput",
+    "Base64TranscriptionSource",
+    "CancelTranscriptionInput",
+    "DeleteTranscriptionInput",
+    "GetTranscriptionInput",
+    "GetTranscriptionResultInput",
+    "LocalFileTranscriptionSource",
+    "TranscriptionSource",
+    "TranscribeInput",
     "TOOL_INPUT_MODELS",
     "ToolEnvelope",
     "ToolInput",

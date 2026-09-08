@@ -11,6 +11,7 @@ import logging
 import re
 from dataclasses import dataclass, replace
 from difflib import SequenceMatcher
+from math import ceil
 from pathlib import Path
 from statistics import median
 from typing import Any
@@ -195,43 +196,214 @@ def _fits_layout(text: str, config: SubtitleFinalizationConfig) -> bool:
     )
 
 
-def _split_words_to_capacity(text: str, config: SubtitleFinalizationConfig) -> list[str]:
+def _split_words_to_capacity(
+    text: str,
+    config: SubtitleFinalizationConfig,
+    *,
+    min_chunks: int = 1,
+) -> list[str]:
     words = _clean_text(text).split()
-    chunks: list[str] = []
-    current: list[str] = []
-    for word in words:
-        candidate = " ".join((*current, word))
-        if current and (
-            len(candidate) > config.max_event_chars
-            or not _fits_layout(candidate, config)
-        ):
-            chunks.append(" ".join(current))
-            current = [word]
-        else:
-            current.append(word)
-    if current:
-        chunks.append(" ".join(current))
-    return chunks
+    if not words:
+        return []
+
+    word_count = len(words)
+    minimum_requested = max(1, min(int(min_chunks), word_count))
+    prefix_lengths = [0]
+    for index, word in enumerate(words):
+        prefix_lengths.append(
+            prefix_lengths[-1] + len(word) + (1 if index else 0)
+        )
+
+    def range_length(start: int, end: int) -> int:
+        return prefix_lengths[end] - prefix_lengths[start] - (1 if start else 0)
+
+    # Store only feasible contiguous ranges.  Ranges are bounded by the
+    # event capacity, so this stays tractable even for large batches.
+    feasible_starts: list[list[int]] = [[] for _ in range(word_count + 1)]
+    for start in range(word_count):
+        for end in range(start + 1, word_count + 1):
+            length = range_length(start, end)
+            candidate = " ".join(words[start:end])
+            if end == start + 1 and (
+                length > config.max_event_chars or not _fits_layout(candidate, config)
+            ):
+                # A single overlong token is irreducible.  Retain it as a
+                # bounded no-text-loss fallback rather than dropping it.
+                feasible_starts[end].append(start)
+                continue
+            if length > config.max_event_chars:
+                break
+            if _fits_layout(candidate, config):
+                feasible_starts[end].append(start)
+
+    minimum_counts = [word_count + 1] * (word_count + 1)
+    minimum_counts[0] = 0
+    for end in range(1, word_count + 1):
+        minimum_counts[end] = min(
+            (
+                minimum_counts[start] + 1
+                for start in feasible_starts[end]
+            ),
+            default=word_count + 1,
+        )
+    minimum_count = minimum_counts[word_count]
+    target_count = max(minimum_requested, min(minimum_count, word_count))
+
+    def punctuation_preference(boundary: int) -> int:
+        if boundary >= word_count:
+            return 0
+        word = words[boundary - 1]
+        if word.endswith(tuple(_SENTENCE_END_CHARS)):
+            return 3
+        if word.endswith(tuple(_CLAUSE_PUNCTUATION)):
+            return 1
+        return 0
+
+    total_length = prefix_lengths[-1] - (target_count - 1)
+    dynamic: list[dict[int, tuple[int, int, tuple[int, ...]]]] = [
+        {} for _ in range(target_count + 1)
+    ]
+    dynamic[0][0] = (0, 0, ())
+    for count in range(1, target_count + 1):
+        for end in range(1, word_count + 1):
+            best: tuple[int, int, tuple[int, ...]] | None = None
+            for start in feasible_starts[end]:
+                previous = dynamic[count - 1].get(start)
+                if previous is None:
+                    continue
+                length = range_length(start, end)
+                deviation = length * target_count - total_length
+                candidate = (
+                    previous[0] + deviation * deviation,
+                    previous[1] + punctuation_preference(end),
+                    (*previous[2], end),
+                )
+                if best is None or (
+                    candidate[0], -candidate[1], candidate[2]
+                ) < (best[0], -best[1], best[2]):
+                    best = candidate
+            if best is not None:
+                dynamic[count][end] = best
+
+    solution = dynamic[target_count].get(word_count)
+    if solution is None:
+        # Every individual token is feasible through the fallback above, so
+        # this is defensive only for malformed configuration values.
+        return words
+    boundaries = (0, *solution[2])
+    return [
+        " ".join(words[start:end])
+        for start, end in zip(boundaries, boundaries[1:])
+    ]
 
 
 def _split_segment(segment: SubtitleSegment, config: SubtitleFinalizationConfig) -> list[SubtitleSegment]:
     text = _clean_text(segment.text)
-    chunks = _split_words_to_capacity(text, config)
+    if not text:
+        return []
+    start_ms = int(segment.start_ms)
+    source_end_ms = int(segment.end_ms)
+    span_ms = max(1, source_end_ms - start_ms)
+    max_duration_ms = max(1, int(config.max_duration_ms))
+    duration_chunks = min(
+        max(1, ceil(span_ms / max_duration_ms)),
+        len(text.split()),
+    )
+    chunks = _split_words_to_capacity(
+        text,
+        config,
+        min_chunks=duration_chunks,
+    )
     if not chunks:
         return []
-    duration = min(max(1, segment.end_ms - segment.start_ms), config.max_duration_ms * len(chunks))
-    weights = [max(1, len(chunk)) for chunk in chunks]
-    total_weight = sum(weights)
-    cursor = segment.start_ms
-    output: list[SubtitleSegment] = []
-    for index, (chunk, weight) in enumerate(zip(chunks, weights)):
-        if index == len(chunks) - 1:
-            end = min(segment.end_ms, segment.start_ms + duration)
+
+    chunk_count = len(chunks)
+    max_gap_ms = max(0, int(config.min_gap_ms))
+    min_duration_ms = max(1, int(config.min_duration_ms))
+    reading_durations = [
+        ceil(
+            len(_clean_text(chunk))
+            / max(float(config.max_chars_per_second), 0.001)
+            * 1000
+        )
+        for chunk in chunks
+    ]
+    minimum_durations = [
+        min(max_duration_ms, max(1, min_duration_ms, reading_duration))
+        for reading_duration in reading_durations
+    ]
+    minimum_floor_durations = [
+        min(max_duration_ms, min_duration_ms) for _ in chunks
+    ]
+
+    if chunk_count > 1:
+        max_gap_for_minimums = max(
+            0,
+            (span_ms - sum(minimum_durations)) // (chunk_count - 1),
+        )
+        gap_ms = min(max_gap_ms, max_gap_for_minimums)
+    else:
+        gap_ms = 0
+    available_ms = span_ms - gap_ms * max(0, chunk_count - 1)
+
+    def allocate_durations(
+        total_ms: int,
+        floors: list[int],
+    ) -> list[int]:
+        if total_ms < chunk_count:
+            return [1] * chunk_count
+        durations = [1] * chunk_count
+        floor_total = sum(floors)
+        if total_ms >= floor_total:
+            durations = list(floors)
+        remaining = max(0, total_ms - sum(durations))
+        capacities = [max(0, max_duration_ms - duration) for duration in durations]
+        weights = [max(1, len(_clean_text(chunk))) for chunk in chunks]
+        while remaining and any(capacities):
+            active = [index for index, capacity in enumerate(capacities) if capacity]
+            weight_total = sum(weights[index] for index in active)
+            allocations = {
+                index: min(
+                    capacities[index],
+                    (remaining * weights[index]) // weight_total,
+                )
+                for index in active
+            }
+            allocated = sum(allocations.values())
+            if not allocated:
+                index = max(active, key=lambda value: (weights[value], -value))
+                allocations[index] = 1
+                allocated = 1
+            for index, amount in allocations.items():
+                durations[index] += amount
+                capacities[index] -= amount
+            remaining -= allocated
+        return durations
+
+    if available_ms >= chunk_count:
+        if available_ms >= sum(minimum_durations):
+            durations = allocate_durations(available_ms, minimum_durations)
+        elif available_ms >= sum(minimum_floor_durations):
+            durations = allocate_durations(available_ms, minimum_floor_durations)
         else:
-            share = max(1, round(duration * weight / total_weight))
-            end = min(segment.end_ms, cursor + share)
-        if end <= cursor:
-            end = cursor + 100
+            durations = allocate_durations(available_ms, [1] * chunk_count)
+        sequential = True
+    else:
+        # There is no way to fit one positive millisecond per cue with the
+        # requested gap inside this interval.  Keep each cue positive and
+        # bounded, allowing overlap as the irreducible fallback.
+        durations = [min(max_duration_ms, span_ms)] * chunk_count
+        gap_ms = 0
+        sequential = False
+
+    cursor = start_ms
+    output: list[SubtitleSegment] = []
+    for index, (chunk, duration_ms) in enumerate(zip(chunks, durations)):
+        if sequential:
+            end = min(source_end_ms, cursor + duration_ms)
+        else:
+            end = min(source_end_ms, start_ms + duration_ms)
+        end = max(cursor + 1, end)
         output.append(
             SubtitleSegment(
                 index=0,
@@ -241,7 +413,8 @@ def _split_segment(segment: SubtitleSegment, config: SubtitleFinalizationConfig)
                 speaker=segment.speaker,
             )
         )
-        cursor = end
+        if sequential:
+            cursor = end + gap_ms
     return output
 
 
@@ -249,6 +422,9 @@ def _adjust_durations(
     segments: list[SubtitleSegment],
     config: SubtitleFinalizationConfig,
 ) -> list[SubtitleSegment]:
+    # Source order can contain overlapping turns with backwards start times.
+    # Order presentation events before considering available trailing space.
+    segments = sorted(segments, key=lambda cue: cue.start_ms)
     adjusted: list[SubtitleSegment] = []
     for index, cue in enumerate(segments):
         next_start = segments[index + 1].start_ms if index + 1 < len(segments) else None
@@ -256,24 +432,17 @@ def _adjust_durations(
         reading_duration = round((visible_chars / config.max_chars_per_second) * 1000)
         desired_duration = max(config.min_duration_ms, reading_duration)
         maximum_end = cue.start_ms + config.max_duration_ms
-        base_end = min(max(cue.start_ms + 100, cue.end_ms), maximum_end)
+        base_end = min(max(cue.start_ms + 1, cue.end_ms), maximum_end)
         desired_end = min(max(base_end, cue.start_ms + desired_duration), maximum_end)
         if next_start is not None:
             gap_limited_end = next_start - config.min_gap_ms
             if gap_limited_end >= base_end:
                 desired_end = min(desired_end, gap_limited_end)
             else:
-                # Preserve word timing when the source does not leave room for
-                # the requested presentation gap, while still preventing an
-                # overlap with the next cue.
-                desired_end = min(base_end, next_start)
-        end = max(cue.start_ms + 100, desired_end)
-        if next_start is not None and next_start > cue.start_ms:
-            # A following source cue, especially an untimed cue, is a hard
-            # presentation boundary. Apply the clamp after the minimum
-            # duration floor so a very short interval cannot reintroduce an
-            # overlap.
-            end = min(end, next_start)
+                # Only added reading time is expendable. A following speaker
+                # must not truncate speech already present in this interval.
+                desired_end = base_end
+        end = desired_end
         adjusted.append(
             SubtitleSegment(
                 index=index + 1,
@@ -328,7 +497,8 @@ def _sanitize_timed_words(words: list[_TimedWord]) -> list[_TimedWord]:
     Some ASR backends attach the whole following silence to the preceding word.
     Keeping such a span (we have observed 16-second single words) defeats both
     maximum cue duration and silence detection.  The median-based cap is
-    deliberately conservative and the next word's start remains authoritative.
+    deliberately conservative. A following word from the same speaker may
+    bound the span; a different speaker can legitimately talk over it.
     """
 
     if not words:
@@ -341,8 +511,16 @@ def _sanitize_timed_words(words: list[_TimedWord]) -> list[_TimedWord]:
     for index, word in enumerate(words):
         start = max(word.start_ms, previous_start)
         next_start = words[index + 1].start_ms if index + 1 < len(words) else None
-        end = min(word.end_ms, start + word_duration_cap)
-        if next_start is not None and next_start > start:
+        # Durations within the same range used to estimate normal speech are
+        # already plausible. Only cap outliers, not ordinary sustained words.
+        end = word.end_ms
+        if end - start > 2000:
+            end = start + word_duration_cap
+        if (
+            next_start is not None
+            and next_start > start
+            and words[index + 1].speaker == word.speaker
+        ):
             end = min(end, next_start)
         end = max(start + 20, end)
         output.append(
@@ -898,16 +1076,14 @@ def compose_transcript_segments(
             continue
         flush_timed_run()
         output.extend(
-            finalize_segments(
-                [
-                    SubtitleSegment(
-                        0,
-                        segment.start_ms,
-                        segment.end_ms,
-                        segment.text,
-                        segment.speaker,
-                    )
-                ],
+            _split_segment(
+                SubtitleSegment(
+                    0,
+                    segment.start_ms,
+                    segment.end_ms,
+                    segment.text,
+                    segment.speaker,
+                ),
                 config,
             )
         )

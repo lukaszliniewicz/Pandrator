@@ -241,6 +241,7 @@ def render_media_edit(
             arguments.session_id,
             revision=arguments.revision,
             idempotency_key=arguments.idempotency_key,
+            **({"subtitles_only": True} if arguments.subtitles_only else {}),
         ),
         tool_name="media-edit render",
     )

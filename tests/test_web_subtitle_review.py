@@ -6,7 +6,14 @@ from sqlalchemy import delete, event, select
 
 from pandrator.web.artifacts import ArtifactService
 from pandrator.web.database import Database
-from pandrator.web.models import Artifact, ArtifactEdge, SegmentLineage
+from pandrator.web.models import (
+    Artifact,
+    ArtifactEdge,
+    DocumentRevision,
+    Segment,
+    SegmentLineage,
+    SubtitleEvidence,
+)
 from pandrator.web.schemas import SubtitleReviewRequest
 from pandrator.web.sessions import SessionService
 from pandrator.web.subtitle_review import SubtitleReviewService
@@ -43,11 +50,144 @@ class SubtitleReviewTests(unittest.TestCase):
                         "end_ms": 2000,
                         "text": "Initial imported cue.",
                         "speaker": None,
+                        "uncertain_source_cue_ids": [1],
                     }
                 ],
             }
         )
         self.assertEqual(0, payload.expected_revision)
+        self.assertEqual([1], payload.segments[0].uncertain_source_cue_ids)
+
+    def test_review_metadata_roundtrips_and_contributes_to_revision_hash(self):
+        source = self._artifact(
+            "metadata-source.srt",
+            "transcription",
+            "1\n00:00:00,000 --> 00:00:01,500\nUnclear.\n\n"
+            "2\n00:00:02,000 --> 00:00:03,500\nClean.\n",
+        )
+        with self.database.session() as session:
+            artifact = session.get(Artifact, source.id)
+            revision_id = artifact.metadata_json["revision_id"]
+            first_segment = session.scalar(
+                select(Segment).where(
+                    Segment.revision_id == revision_id,
+                    Segment.ordinal == 0,
+                )
+            )
+            session.add(
+                SubtitleEvidence(
+                    id="metadata-evidence",
+                    session_id=self.session.id,
+                    source_artifact_id=source.id,
+                    source_revision_id=revision_id,
+                    source_segment_id=first_segment.id,
+                    cue_id=1,
+                    start_ms=0,
+                    end_ms=1500,
+                    clip_start_ms=0,
+                    clip_end_ms=3500,
+                    reason="Confirm the source cue.",
+                    routes_json=["whisper"],
+                    audio_model_ids_json=[],
+                    status="completed",
+                    candidates_json=[],
+                    resolution_json={},
+                )
+            )
+
+        current = self.service.documents(self.session.id)["stages"]["transcription"]
+        first = self.service.save_review(
+            self.session.id,
+            "transcription",
+            current["revision"],
+            [
+                {
+                    "start_ms": 0,
+                    "end_ms": 1500,
+                    "text": "Unclear.",
+                    "speaker": None,
+                    "review_state": "uncertain",
+                    "review_note": "Source name unclear",
+                    "evidence_ids": ["metadata-evidence"],
+                    "uncertain_source_cue_ids": [143],
+                },
+                {
+                    "start_ms": 2000,
+                    "end_ms": 3500,
+                    "text": "Clean.",
+                    "speaker": None,
+                    "review_state": "clear",
+                    "review_note": "",
+                    "evidence_ids": [],
+                    "uncertain_source_cue_ids": [],
+                },
+            ],
+        )
+
+        reviewed = self.service.documents(self.session.id)["stages"]["transcription"]
+        self.assertEqual(
+            [
+                {
+                    "review_state": "uncertain",
+                    "review_note": "Source name unclear",
+                    "evidence_ids": ["metadata-evidence"],
+                    "uncertain_source_cue_ids": [143],
+                },
+                {
+                    "review_state": "clear",
+                    "review_note": "",
+                    "evidence_ids": [],
+                    "uncertain_source_cue_ids": [],
+                },
+            ],
+            [
+                {
+                    key: segment[key]
+                    for key in (
+                        "review_state",
+                        "review_note",
+                        "evidence_ids",
+                        "uncertain_source_cue_ids",
+                    )
+                }
+                for segment in reviewed["segments"]
+            ],
+        )
+        with self.database.session() as session:
+            first_revision = session.get(DocumentRevision, first["revision_id"])
+            self.assertEqual(first["revision_id"], first_revision.id)
+            first_hash = first_revision.content_hash
+
+        second = self.service.save_review(
+            self.session.id,
+            "transcription",
+            first["revision"],
+            [
+                {
+                    "start_ms": 0,
+                    "end_ms": 1500,
+                    "text": "Unclear.",
+                    "speaker": None,
+                    "review_state": "uncertain",
+                    "review_note": "Source name unclear",
+                    "evidence_ids": ["metadata-evidence"],
+                    "uncertain_source_cue_ids": [144],
+                },
+                {
+                    "start_ms": 2000,
+                    "end_ms": 3500,
+                    "text": "Clean.",
+                    "speaker": None,
+                    "review_state": "clear",
+                    "review_note": "",
+                    "evidence_ids": [],
+                    "uncertain_source_cue_ids": [],
+                },
+            ],
+        )
+        with self.database.session() as session:
+            second_revision = session.get(DocumentRevision, second["revision_id"])
+            self.assertNotEqual(first_hash, second_revision.content_hash)
 
     def _artifact(self, name, role, content, parent=None):
         path = self.session_dir / name

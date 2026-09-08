@@ -46,6 +46,7 @@ class ReviewedSubtitleSegment(TypedDict):
     review_state: str
     review_note: str
     evidence_ids: list[str]
+    uncertain_source_cue_ids: list[int]
 
 
 def _speaker_and_text(segment: Segment) -> tuple[str, str]:
@@ -63,6 +64,9 @@ def _segments_hash(segments: Sequence[Mapping[str, Any]]) -> str:
             "review_state": item.get("review_state") or "clear",
             "review_note": item.get("review_note") or "",
             "evidence_ids": list(item.get("evidence_ids") or []),
+            "uncertain_source_cue_ids": list(
+                item.get("uncertain_source_cue_ids") or []
+            ),
         }
         for item in segments
     ]
@@ -97,6 +101,9 @@ class SubtitleReviewService:
                 for value in metadata.get("evidence_ids") or []
                 if str(value).strip()
             ][:20],
+            "uncertain_source_cue_ids": list(
+                metadata.get("uncertain_source_cue_ids") or []
+            )[:20],
         }
 
     def documents(self, session_id: str) -> dict[str, Any]:
@@ -514,6 +521,12 @@ class SubtitleReviewService:
                             if str(value).strip()
                         )
                     )[:20],
+                    "uncertain_source_cue_ids": list(
+                        dict.fromkeys(
+                            int(value)
+                            for value in item.get("uncertain_source_cue_ids") or []
+                        )
+                    )[:20],
                 }
             )
         if not normalized:
@@ -685,6 +698,9 @@ class SubtitleReviewService:
                         "review_state": reviewed["review_state"],
                         "review_note": reviewed["review_note"],
                         "evidence_ids": reviewed["evidence_ids"],
+                        "uncertain_source_cue_ids": reviewed[
+                            "uncertain_source_cue_ids"
+                        ],
                     },
                 )
                 session.add(child)

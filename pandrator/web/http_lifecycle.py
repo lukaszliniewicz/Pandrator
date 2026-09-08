@@ -296,6 +296,9 @@ class ApiGuards:
                         403,
                         {"required_scopes": missing},
                     )
+                denied = self._private_job_access(principal, kwargs)
+                if denied is not None:
+                    return denied
                 return function(*args, **kwargs)
 
             return wrapped  # type: ignore[return-value]
@@ -320,9 +323,31 @@ class ApiGuards:
                     403,
                     {"required_scopes": [scope]},
                 )
+            denied = self._private_job_access(principal, kwargs)
+            if denied is not None:
+                return denied
             return function(*args, **kwargs)
 
         return wrapped  # type: ignore[return-value]
+
+    def _private_job_access(self, principal: Principal, arguments: dict):
+        """Generic job/work routes must not bypass temporary-job ownership."""
+        identifier = arguments.get("job_id")
+        if not identifier:
+            return None
+        from sqlalchemy import select
+
+        from .models import QuickTranscription
+
+        with self.services.database.session() as db_session:
+            record = db_session.scalar(
+                select(QuickTranscription).where(
+                    QuickTranscription.job_id == identifier
+                )
+            )
+            if record is not None and record.owner_subject != principal.subject:
+                return self.error_response("not_found", "Work item not found.", 404)
+        return None
 
     def register(self) -> None:
         """Install lifecycle hooks and error handlers on the Flask app."""

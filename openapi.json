@@ -3037,6 +3037,11 @@
             "minimum": 1,
             "title": "Revision",
             "type": "integer"
+          },
+          "subtitles_only": {
+            "default": false,
+            "title": "Subtitles Only",
+            "type": "boolean"
           }
         },
         "required": [
@@ -6252,6 +6257,16 @@
             "minLength": 1,
             "title": "Text",
             "type": "string"
+          },
+          "uncertain_source_cue_ids": {
+            "items": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "maxItems": 20,
+            "minItems": 0,
+            "title": "Uncertain Source Cue Ids",
+            "type": "array"
           }
         },
         "required": [
@@ -6360,6 +6375,329 @@
           "source_artifact_id"
         ],
         "title": "TrainingCreateRequest",
+        "type": "object"
+      },
+      "TranscriptionCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "compute_backend": {
+            "anyOf": [
+              {
+                "enum": [
+                  "auto",
+                  "cpu",
+                  "cuda",
+                  "vulkan",
+                  "metal"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Compute Backend"
+          },
+          "engine": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "pattern": "^[A-Za-z0-9_-]+$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Engine"
+          },
+          "filename": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Filename",
+            "type": "string"
+          },
+          "format": {
+            "default": "txt",
+            "enum": [
+              "txt",
+              "srt",
+              "json"
+            ],
+            "title": "Format",
+            "type": "string"
+          },
+          "language": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "pattern": "^[A-Za-z0-9_-]+$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Language"
+          },
+          "model_quantization": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "pattern": "^[A-Za-z0-9_.-]+$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Model Quantization"
+          },
+          "sha256": {
+            "pattern": "^[a-fA-F0-9]{64}$",
+            "title": "Sha256",
+            "type": "string"
+          },
+          "size_bytes": {
+            "exclusiveMinimum": 0,
+            "maximum": 268435456,
+            "title": "Size Bytes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "filename",
+          "size_bytes",
+          "sha256"
+        ],
+        "title": "TranscriptionCreate",
+        "type": "object"
+      },
+      "TranscriptionResult": {
+        "properties": {
+          "content": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            ],
+            "title": "Content"
+          },
+          "format": {
+            "enum": [
+              "txt",
+              "srt",
+              "json"
+            ],
+            "title": "Format",
+            "type": "string"
+          },
+          "mime_type": {
+            "title": "Mime Type",
+            "type": "string"
+          },
+          "size_bytes": {
+            "title": "Size Bytes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "format",
+          "mime_type",
+          "content",
+          "size_bytes"
+        ],
+        "title": "TranscriptionResult",
+        "type": "object"
+      },
+      "TranscriptionResultPage": {
+        "properties": {
+          "content": {
+            "title": "Content",
+            "type": "string"
+          },
+          "format": {
+            "enum": [
+              "txt",
+              "srt",
+              "json"
+            ],
+            "title": "Format",
+            "type": "string"
+          },
+          "next_offset": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Offset"
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          },
+          "total_chars": {
+            "title": "Total Chars",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "format",
+          "content",
+          "offset",
+          "total_chars",
+          "next_offset"
+        ],
+        "title": "TranscriptionResultPage",
+        "type": "object"
+      },
+      "TranscriptionSnapshot": {
+        "properties": {
+          "chunk_size": {
+            "title": "Chunk Size",
+            "type": "integer"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error"
+          },
+          "expires_at": {
+            "title": "Expires At",
+            "type": "string"
+          },
+          "format": {
+            "enum": [
+              "txt",
+              "srt",
+              "json"
+            ],
+            "title": "Format",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "inline_result": {
+            "title": "Inline Result",
+            "type": "boolean"
+          },
+          "job_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Job Id"
+          },
+          "next_chunk_index": {
+            "title": "Next Chunk Index",
+            "type": "integer"
+          },
+          "progress": {
+            "title": "Progress",
+            "type": "number"
+          },
+          "progress_detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Progress Detail"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TranscriptionResult"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "result_available": {
+            "title": "Result Available",
+            "type": "boolean"
+          },
+          "result_url": {
+            "title": "Result Url",
+            "type": "string"
+          },
+          "size_bytes": {
+            "title": "Size Bytes",
+            "type": "integer"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "uploaded_bytes": {
+            "title": "Uploaded Bytes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "job_id",
+          "status",
+          "progress",
+          "progress_detail",
+          "expires_at",
+          "format",
+          "chunk_size",
+          "next_chunk_index",
+          "uploaded_bytes",
+          "size_bytes",
+          "result_available",
+          "inline_result",
+          "result_url"
+        ],
+        "title": "TranscriptionSnapshot",
+        "type": "object"
+      },
+      "TranscriptionWait": {
+        "additionalProperties": false,
+        "properties": {
+          "wait_seconds": {
+            "default": 0,
+            "maximum": 30,
+            "minimum": 0,
+            "title": "Wait Seconds",
+            "type": "number"
+          }
+        },
+        "title": "TranscriptionWait",
         "type": "object"
       },
       "TtsEndpointDiscoveryRequest": {
@@ -13104,6 +13442,562 @@
             "description": "Retry queued"
           }
         }
+      }
+    },
+    "/api/v1/transcriptions": {
+      "post": {
+        "description": "Create a resumable temporary upload with JSON metadata, or submit file + JSON options in one multipart request. No permanent session or source is created. Media is limited to 256 MiB and two hours. Results expire one hour after completion. Idempotency retries reuse the same operation.",
+        "operationId": "createQuickTranscription",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "wait_seconds",
+            "schema": {
+              "default": 0,
+              "maximum": 30,
+              "minimum": 0,
+              "type": "number"
+            }
+          },
+          {
+            "in": "query",
+            "name": "response",
+            "schema": {
+              "default": "json",
+              "enum": [
+                "json",
+                "raw"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TranscriptionCreate"
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "properties": {
+                  "file": {
+                    "format": "binary",
+                    "type": "string"
+                  },
+                  "options": {
+                    "description": "JSON object with format, language, engine, model_quantization, compute_backend overrides.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "file"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              },
+              "application/x-subrip": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Completed transcript (raw mode) or status envelope"
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TranscriptionSnapshot"
+                }
+              }
+            },
+            "description": "Temporary transcription status and a bounded inline result when complete"
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TranscriptionSnapshot"
+                }
+              }
+            },
+            "description": "Temporary transcription status and a bounded inline result when complete"
+          },
+          "404": {
+            "description": "Not found or owned by another principal"
+          },
+          "410": {
+            "description": "Temporary data expired or was deleted"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.run"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/transcriptions/{transcriptionId}": {
+      "delete": {
+        "description": "Delete temporary data. Running work is canceled first; deletion completes after the worker releases it.",
+        "operationId": "deleteQuickTranscription",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "transcriptionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TranscriptionSnapshot"
+                }
+              }
+            },
+            "description": "Temporary transcription status and a bounded inline result when complete"
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TranscriptionSnapshot"
+                }
+              }
+            },
+            "description": "Temporary transcription status and a bounded inline result when complete"
+          },
+          "404": {
+            "description": "Not found or owned by another principal"
+          },
+          "410": {
+            "description": "Temporary data expired or was deleted"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.run"
+            ]
+          }
+        ]
+      },
+      "get": {
+        "operationId": "getQuickTranscription",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "wait_seconds",
+            "schema": {
+              "default": 0,
+              "maximum": 30,
+              "minimum": 0,
+              "type": "number"
+            }
+          },
+          {
+            "in": "query",
+            "name": "format",
+            "schema": {
+              "enum": [
+                "txt",
+                "srt",
+                "json"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "transcriptionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TranscriptionSnapshot"
+                }
+              }
+            },
+            "description": "Temporary transcription status and a bounded inline result when complete"
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TranscriptionSnapshot"
+                }
+              }
+            },
+            "description": "Temporary transcription status and a bounded inline result when complete"
+          },
+          "404": {
+            "description": "Not found or owned by another principal"
+          },
+          "410": {
+            "description": "Temporary data expired or was deleted"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/transcriptions/{transcriptionId}/cancel": {
+      "post": {
+        "operationId": "cancelQuickTranscription",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "transcriptionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TranscriptionSnapshot"
+                }
+              }
+            },
+            "description": "Temporary transcription status and a bounded inline result when complete"
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TranscriptionSnapshot"
+                }
+              }
+            },
+            "description": "Temporary transcription status and a bounded inline result when complete"
+          },
+          "404": {
+            "description": "Not found or owned by another principal"
+          },
+          "410": {
+            "description": "Temporary data expired or was deleted"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.run"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/transcriptions/{transcriptionId}/chunks/{index}": {
+      "put": {
+        "description": "Upload the next 8 MiB chunk (or final remainder). Repeating an index with identical bytes is safe; different bytes conflict.",
+        "operationId": "uploadQuickTranscriptionChunk",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "transcriptionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "index",
+            "required": true,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TranscriptionSnapshot"
+                }
+              }
+            },
+            "description": "Temporary transcription status and a bounded inline result when complete"
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TranscriptionSnapshot"
+                }
+              }
+            },
+            "description": "Temporary transcription status and a bounded inline result when complete"
+          },
+          "404": {
+            "description": "Not found or owned by another principal"
+          },
+          "410": {
+            "description": "Temporary data expired or was deleted"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.run"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/transcriptions/{transcriptionId}/result": {
+      "get": {
+        "description": "Download the full selected format, or supply offset/limit to get a JSON envelope containing a page of UTF-8-decoded text. Concatenate pages; JSON pages contain serialized JSON text.",
+        "operationId": "getQuickTranscriptionResult",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "format",
+            "schema": {
+              "enum": [
+                "txt",
+                "srt",
+                "json"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 16000,
+              "maximum": 32768,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "path",
+            "name": "transcriptionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/TranscriptionResultPage"
+                    },
+                    {
+                      "description": "Canonical pandrator.transcript.v1 with engine, compute_backend, text and timed segments",
+                      "type": "object"
+                    }
+                  ]
+                }
+              },
+              "application/x-subrip": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Complete transcript or paginated result"
+          },
+          "409": {
+            "description": "Result not ready"
+          },
+          "410": {
+            "description": "Result expired"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/transcriptions/{transcriptionId}/start": {
+      "post": {
+        "description": "Verify the source checksum and enqueue once. Repeated starts return the same job.",
+        "operationId": "startQuickTranscription",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "transcriptionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TranscriptionWait"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TranscriptionSnapshot"
+                }
+              }
+            },
+            "description": "Temporary transcription status and a bounded inline result when complete"
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TranscriptionSnapshot"
+                }
+              }
+            },
+            "description": "Temporary transcription status and a bounded inline result when complete"
+          },
+          "404": {
+            "description": "Not found or owned by another principal"
+          },
+          "410": {
+            "description": "Temporary data expired or was deleted"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.run"
+            ]
+          }
+        ]
       }
     },
     "/api/v1/uploads": {

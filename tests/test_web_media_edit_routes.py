@@ -11,6 +11,33 @@ from pandrator.web.workspace import stable_hash
 
 
 class MediaEditProposalRouteTests(unittest.TestCase):
+    def test_render_snapshots_subtitle_settings_and_separates_video_jobs(self):
+        self.extension["workspace_settings"].update(
+            self.session.id, "subtitles", 0,
+            {"max_chars_per_line": 60, "max_duration_ms": 12000,
+             "sentence_boundary_threshold": 0.4},
+        )
+        job_ids = []
+        with patch.object(self.extension["media_edit"], "state", return_value={
+            "plan": {"revision": 1, "reviewed": True}
+        }):
+            for subtitles_only in (True, False):
+                response = self.client.post(
+                    f"/api/v1/sessions/{self.session.id}/media-edit/render",
+                    json={"revision": 1, "subtitles_only": subtitles_only},
+                    headers={"X-CSRF-Token": self.csrf},
+                )
+                self.assertEqual(202, response.status_code, response.get_json())
+                job_ids.append(response.get_json()["id"])
+                with self.extension["database"].session() as db:
+                    payload = db.get(Job, job_ids[-1]).payload_json
+                    self.assertEqual(subtitles_only, payload["subtitles_only"])
+                    self.assertEqual(60, payload["settings"]["subtitle_max_chars_per_line"])
+                    self.assertEqual(12000, payload["settings"]["subtitle_max_duration_ms"])
+                    self.assertEqual(0.4, payload["settings"]["subtitle_sentence_boundary_threshold"])
+                    self.assertEqual(stable_hash(payload["settings"]), payload["settings_hash"])
+        self.assertNotEqual(*job_ids)
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         bootstrap = BootstrapTokenStore()

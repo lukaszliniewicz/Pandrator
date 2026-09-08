@@ -1,3 +1,4 @@
+import json
 import subprocess
 import tempfile
 import threading
@@ -15,12 +16,21 @@ from pandrator.logic.dubbing.transcription import (
 )
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
-from pandrator.web.models import Document, DocumentRevision, Segment, SubtitleEvidence
+from pandrator.web.models import (
+    Artifact,
+    Document,
+    DocumentRevision,
+    Segment,
+    SessionSource,
+    SourceAsset,
+    SubtitleEvidence,
+)
 from pandrator.web.schemas import (
     SubtitleEvidenceCreateRequest,
     SubtitleEvidenceResolveRequest,
 )
 from pandrator.web.source_resolution import resolve_primary_source
+from pandrator.web.workflow_handlers import WorkflowHandlers
 from tests.web_test_support import prepare_web_test_data_root
 
 
@@ -96,6 +106,47 @@ class SubtitleEvidenceBackendTests(unittest.TestCase):
             stored.metadata_json = {"revision_id": revision.id}
 
         self.revision_id = revision.id
+
+    def _cut_subtitle(
+        self,
+        *,
+        edit_revision="edit-1",
+        content_hash="edit-hash",
+        filename=None,
+        parent_ids=None,
+    ):
+        path = (
+            self.services.paths.sessions
+            / self.session.storage_key
+            / (filename or f"cut-{edit_revision}.srt")
+        )
+        path.write_text("1\n00:00:10,000 --> 00:00:12,000\nhello\n")
+        return self.services.artifacts.register(
+            path,
+            kind="srt",
+            role="media_edit_subtitles",
+            session_id=self.session.id,
+            parent_ids=parent_ids or [self.media.id],
+            metadata={
+                "revision_id": self.revision_id,
+                "media_edit_revision_id": edit_revision,
+                "content_hash": content_hash,
+            },
+        )
+
+    def _rendered_media(self, *, edit_revision, content_hash, name):
+        path = self.services.paths.sessions / self.session.storage_key / name
+        path.write_bytes(f"rendered-{edit_revision}".encode())
+        return self.services.artifacts.register(
+            path,
+            kind="mp4",
+            role="media_edit_media",
+            session_id=self.session.id,
+            metadata={
+                "media_edit_revision_id": edit_revision,
+                "content_hash": content_hash,
+            },
+        )
 
     def tearDown(self):
         self.services.database.dispose()
@@ -173,6 +224,478 @@ class SubtitleEvidenceBackendTests(unittest.TestCase):
             pinned = self.services.subtitle_evidence._pinned_media(session, evidence)
 
         self.assertEqual(self.media.id, pinned.id)
+
+    def test_cut_lineage_pins_matching_rendered_media_for_descendants(self):
+        cut = self._cut_subtitle(edit_revision="edit-1", content_hash="cut-hash")
+        matching = self._rendered_media(
+            edit_revision="edit-1", content_hash="cut-hash", name="edit-1.mp4"
+        )
+        self._rendered_media(
+            edit_revision="edit-2", content_hash="new-hash", name="edit-2.mp4"
+        )
+        replacement_path = (
+            self.services.paths.sessions / self.session.storage_key / "new-primary.mp4"
+        )
+        replacement_path.write_bytes(b"new-primary")
+        self.services.artifacts.register(
+            replacement_path,
+            kind="mp4",
+            role="upload",
+            session_id=self.session.id,
+        )
+
+        correction_path = (
+            self.services.paths.sessions / self.session.storage_key / "correction.srt"
+        )
+        correction_path.write_text("1\n00:00:10,000 --> 00:00:12,000\nhello\n")
+        correction = self.services.artifacts.register(
+            correction_path,
+            kind="srt",
+            role="correction",
+            session_id=self.session.id,
+            parent_ids=[cut.id],
+            metadata={
+                "revision_id": self.revision_id,
+                "source_artifact_id": cut.id,
+            },
+        )
+        translation_path = (
+            self.services.paths.sessions / self.session.storage_key / "translation.srt"
+        )
+        translation_path.write_text(
+            "1\n00:00:10,000 --> 00:00:12,000\nhello translated\n"
+        )
+        translation = self.services.artifacts.register(
+            translation_path,
+            kind="srt",
+            role="translation",
+            session_id=self.session.id,
+            parent_ids=[correction.id],
+            metadata={
+                "revision_id": self.revision_id,
+                "source_artifact_id": correction.id,
+            },
+        )
+
+        for source in (cut, translation):
+            created = self.services.subtitle_evidence.request(
+                self.session.id,
+                {
+                    "source_artifact_id": source.id,
+                    "cue_id": 1,
+                    "reason": "Use the exact rendered cut.",
+                    "routes": ["whisper"],
+                },
+            )
+            self.assertEqual(matching.id, created["record"]["source_media_artifact_id"])
+
+    def test_cut_lineage_allows_multiple_ancestors_with_same_identity(self):
+        first_cut = self._cut_subtitle(
+            edit_revision="edit-1", content_hash="cut-hash", filename="cut-first.srt"
+        )
+        second_cut = self._cut_subtitle(
+            edit_revision="edit-1", content_hash="cut-hash", filename="cut-second.srt"
+        )
+        matching = self._rendered_media(
+            edit_revision="edit-1", content_hash="cut-hash", name="edit-1.mp4"
+        )
+        correction_path = (
+            self.services.paths.sessions / self.session.storage_key / "same-cut.srt"
+        )
+        correction_path.write_text("1\n00:00:10,000 --> 00:00:12,000\nhello\n")
+        correction = self.services.artifacts.register(
+            correction_path,
+            kind="srt",
+            role="correction",
+            session_id=self.session.id,
+            parent_ids=[first_cut.id, second_cut.id],
+            metadata={
+                "revision_id": self.revision_id,
+                "source_artifact_id": first_cut.id,
+            },
+        )
+
+        created = self.services.subtitle_evidence.request(
+            self.session.id,
+            {
+                "source_artifact_id": correction.id,
+                "cue_id": 1,
+                "reason": "Both parents describe the same cut.",
+                "routes": ["whisper"],
+            },
+        )
+        self.assertEqual(matching.id, created["record"]["source_media_artifact_id"])
+
+    def test_cut_lineage_rejects_conflicting_ancestor_identities(self):
+        first_cut = self._cut_subtitle(
+            edit_revision="edit-1", content_hash="cut-hash", filename="cut-first.srt"
+        )
+        second_cut = self._cut_subtitle(
+            edit_revision="edit-2", content_hash="new-hash", filename="cut-second.srt"
+        )
+        correction_path = (
+            self.services.paths.sessions / self.session.storage_key / "conflict.srt"
+        )
+        correction_path.write_text("1\n00:00:10,000 --> 00:00:12,000\nhello\n")
+        correction = self.services.artifacts.register(
+            correction_path,
+            kind="srt",
+            role="correction",
+            session_id=self.session.id,
+            parent_ids=[first_cut.id, second_cut.id],
+            metadata={
+                "revision_id": self.revision_id,
+                "source_artifact_id": first_cut.id,
+            },
+        )
+
+        with self.assertRaisesRegex(ValueError, "identity is ambiguous"):
+            self.services.subtitle_evidence.request(
+                self.session.id,
+                {
+                    "source_artifact_id": correction.id,
+                    "cue_id": 1,
+                    "reason": "Reject conflicting cut identities.",
+                    "routes": ["whisper"],
+                },
+            )
+
+    def test_cut_lineage_rejects_missing_deleted_or_foreign_rendered_media(self):
+        cut = self._cut_subtitle(edit_revision="edit-1", content_hash="cut-hash")
+        values = {
+            "source_artifact_id": cut.id,
+            "cue_id": 1,
+            "reason": "Require the matching rendered cut.",
+            "routes": ["whisper"],
+        }
+        with self.assertRaisesRegex(ValueError, "matching rendered edit"):
+            self.services.subtitle_evidence.request(self.session.id, values)
+
+        foreign_session = self.services.sessions.create(
+            "Foreign", workflow_kind="media_edit"
+        )
+        foreign_path = (
+            self.services.paths.sessions / foreign_session.storage_key / "foreign.mp4"
+        )
+        foreign_path.parent.mkdir(parents=True, exist_ok=True)
+        foreign_path.write_bytes(b"foreign")
+        self.services.artifacts.register(
+            foreign_path,
+            kind="mp4",
+            role="media_edit_media",
+            session_id=foreign_session.id,
+            metadata={
+                "media_edit_revision_id": "edit-1",
+                "content_hash": "cut-hash",
+            },
+        )
+        with self.assertRaisesRegex(ValueError, "matching rendered edit"):
+            self.services.subtitle_evidence.request(self.session.id, values)
+
+        matching = self._rendered_media(
+            edit_revision="edit-1", content_hash="cut-hash", name="edit-1.mp4"
+        )
+        with self.services.database.session() as session:
+            session.get(Artifact, matching.id).state = "deleted"
+        with self.assertRaisesRegex(ValueError, "matching rendered edit"):
+            self.services.subtitle_evidence.request(self.session.id, values)
+
+    def test_cut_descendant_rejects_deleted_cut_parent_provenance(self):
+        cut = self._cut_subtitle(edit_revision="edit-1", content_hash="cut-hash")
+        correction_path = (
+            self.services.paths.sessions / self.session.storage_key / "deleted-cut.srt"
+        )
+        correction_path.write_text("1\n00:00:10,000 --> 00:00:12,000\nhello\n")
+        correction = self.services.artifacts.register(
+            correction_path,
+            kind="srt",
+            role="correction",
+            session_id=self.session.id,
+            parent_ids=[cut.id],
+            metadata={
+                "revision_id": self.revision_id,
+                "source_artifact_id": cut.id,
+            },
+        )
+        with self.services.database.session() as session:
+            session.get(Artifact, cut.id).state = "deleted"
+
+        with self.assertRaisesRegex(ValueError, "Subtitle provenance is unavailable"):
+            self.services.subtitle_evidence.request(
+                self.session.id,
+                {
+                    "source_artifact_id": correction.id,
+                    "cue_id": 1,
+                    "reason": "Deleted cut ancestry must fail closed.",
+                    "routes": ["whisper"],
+                },
+            )
+
+    def test_cut_descendant_rejects_foreign_metadata_parent(self):
+        foreign_session = self.services.sessions.create(
+            "Foreign", workflow_kind="media_edit"
+        )
+        foreign_path = (
+            self.services.paths.sessions / foreign_session.storage_key / "foreign-cut.srt"
+        )
+        foreign_path.parent.mkdir(parents=True, exist_ok=True)
+        foreign_path.write_text("1\n00:00:10,000 --> 00:00:12,000\nhello\n")
+        foreign_cut = self.services.artifacts.register(
+            foreign_path,
+            kind="srt",
+            role="media_edit_subtitles",
+            session_id=foreign_session.id,
+            metadata={"media_edit_revision_id": "edit-foreign", "content_hash": "hash"},
+        )
+        correction_path = (
+            self.services.paths.sessions / self.session.storage_key / "foreign-parent.srt"
+        )
+        correction_path.write_text("1\n00:00:10,000 --> 00:00:12,000\nhello\n")
+        correction = self.services.artifacts.register(
+            correction_path,
+            kind="srt",
+            role="correction",
+            session_id=self.session.id,
+            parent_ids=[foreign_cut.id],
+            metadata={
+                "revision_id": self.revision_id,
+                "source_artifact_id": foreign_cut.id,
+            },
+        )
+
+        with self.assertRaisesRegex(ValueError, "Subtitle provenance is unavailable"):
+            self.services.subtitle_evidence.request(
+                self.session.id,
+                {
+                    "source_artifact_id": correction.id,
+                    "cue_id": 1,
+                    "reason": "Foreign cut ancestry must fail closed.",
+                    "routes": ["whisper"],
+                },
+            )
+
+    def test_cut_lineage_allows_current_attached_foreign_sources_then_fails_detached(self):
+        foreign_session = self.services.sessions.create(
+            "Foreign", workflow_kind="media_edit"
+        )
+        foreign_media_path = (
+            self.services.paths.sessions / foreign_session.storage_key / "foreign.mp4"
+        )
+        foreign_media_path.parent.mkdir(parents=True, exist_ok=True)
+        foreign_media_path.write_bytes(b"foreign-media")
+        foreign_media = self.services.artifacts.register(
+            foreign_media_path,
+            kind="mp4",
+            role="upload",
+            session_id=foreign_session.id,
+        )
+        foreign_transcript_path = (
+            self.services.paths.sessions / foreign_session.storage_key / "foreign.srt"
+        )
+        foreign_transcript_path.write_text(
+            "1\n00:00:10,000 --> 00:00:12,000\nhello\n"
+        )
+        foreign_transcript = self.services.artifacts.register(
+            foreign_transcript_path,
+            kind="srt",
+            role="transcription",
+            session_id=foreign_session.id,
+        )
+        with self.services.database.session() as session:
+            media_asset = SourceAsset(
+                artifact_id=foreign_media.id,
+                display_name="Attached foreign media",
+                kind="mp4",
+                mime_type="video/mp4",
+            )
+            transcript_asset = SourceAsset(
+                artifact_id=foreign_transcript.id,
+                display_name="Attached foreign transcript",
+                kind="srt",
+                mime_type="application/x-subrip",
+            )
+            session.add_all([media_asset, transcript_asset])
+            session.flush()
+            session.add_all(
+                [
+                    SessionSource(
+                        session_id=self.session.id,
+                        source_asset_id=media_asset.id,
+                        role="primary",
+                        is_current=True,
+                    ),
+                    SessionSource(
+                        session_id=self.session.id,
+                        source_asset_id=transcript_asset.id,
+                        role="transcript",
+                        is_current=True,
+                    ),
+                ]
+            )
+
+        cut = self._cut_subtitle(
+            edit_revision="edit-attached",
+            content_hash="attached-hash",
+            parent_ids=[foreign_media.id, foreign_transcript.id],
+        )
+        matching = self._rendered_media(
+            edit_revision="edit-attached",
+            content_hash="attached-hash",
+            name="edit-attached.mp4",
+        )
+        values = {
+            "source_artifact_id": cut.id,
+            "cue_id": 1,
+            "reason": "Use current attached foreign ancestry.",
+            "routes": ["whisper"],
+        }
+        created = self.services.subtitle_evidence.request(self.session.id, values)
+        self.assertEqual(matching.id, created["record"]["source_media_artifact_id"])
+
+        with self.services.database.session() as session:
+            links = session.scalars(
+                select(SessionSource).where(
+                    SessionSource.session_id == self.session.id,
+                    SessionSource.source_asset_id.in_(
+                        [media_asset.id, transcript_asset.id]
+                    ),
+                )
+            ).all()
+            for link in links:
+                link.is_current = False
+        with self.assertRaisesRegex(ValueError, "Subtitle provenance is unavailable"):
+            self.services.subtitle_evidence.request(self.session.id, values)
+
+    def test_pinned_attached_foreign_media_fails_after_detach_without_repinning(self):
+        foreign_session = self.services.sessions.create(
+            "Foreign", workflow_kind="subtitles"
+        )
+        foreign_media_path = (
+            self.services.paths.sessions / foreign_session.storage_key / "foreign.mp4"
+        )
+        foreign_media_path.parent.mkdir(parents=True, exist_ok=True)
+        foreign_media_path.write_bytes(b"foreign-media")
+        foreign_media = self.services.artifacts.register(
+            foreign_media_path,
+            kind="mp4",
+            role="upload",
+            session_id=foreign_session.id,
+        )
+        with self.services.database.session() as session:
+            media_asset = SourceAsset(
+                artifact_id=foreign_media.id,
+                display_name="Attached foreign media",
+                kind="mp4",
+                mime_type="video/mp4",
+            )
+            session.add(media_asset)
+            session.flush()
+            link = SessionSource(
+                session_id=self.session.id,
+                source_asset_id=media_asset.id,
+                role="primary",
+                is_current=True,
+            )
+            session.add(link)
+            session.flush()
+            link_id = link.id
+
+        created = self.services.subtitle_evidence.request(
+            self.session.id,
+            {
+                "source_artifact_id": self.subtitle.id,
+                "cue_id": 1,
+                "reason": "Pin attached foreign media.",
+                "routes": ["whisper"],
+            },
+        )
+        self.assertEqual(foreign_media.id, created["record"]["source_media_artifact_id"])
+        with self.services.database.session() as session:
+            evidence = session.get(SubtitleEvidence, created["record"]["id"])
+            self.assertEqual(foreign_media.id, self.services.subtitle_evidence._pinned_media(
+                session, evidence
+            ).id)
+            session.get(SessionSource, link_id).is_current = False
+
+        with self.services.database.session() as session:
+            evidence = session.get(SubtitleEvidence, created["record"]["id"])
+            with self.assertRaisesRegex(ValueError, "source media pinned"):
+                self.services.subtitle_evidence._pinned_media(session, evidence)
+
+    def test_default_workflow_handler_executes_queued_evidence_request(self):
+        created = self.services.subtitle_evidence.request(
+            self.session.id,
+            {
+                "source_artifact_id": self.subtitle.id,
+                "cue_id": 1,
+                "reason": "Run through the default worker adapter.",
+                "routes": ["whisper"],
+            },
+        )
+        handler = WorkflowHandlers(
+            self.services.database,
+            self.services.paths,
+            jobs=self.services.jobs,
+        )
+
+        def fake_extract(_source_path, output_dir, basename, *_args, **_kwargs):
+            output = Path(output_dir) / f"{basename}.wav"
+            output.write_bytes(b"RIFF-audio")
+            return str(output)
+
+        def fake_transcribe(output_dir, *_args, **_kwargs):
+            output = Path(output_dir) / "transcript.json"
+            output.write_text(
+                json.dumps(
+                    {
+                        "schema": "pandrator.transcript.v1",
+                        "segments": [
+                            {
+                                "id": "witness",
+                                "start_ms": 2_000,
+                                "end_ms": 4_000,
+                                "text": "hello",
+                                "words": [
+                                    {"text": "hello", "start_ms": 2_000, "end_ms": 4_000}
+                                ],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            return SimpleNamespace(
+                word_timestamps_path=str(output),
+                engine="test-asr",
+                compute_backend="cpu",
+            )
+
+        with (
+            patch(
+                "pandrator.web.subtitle_evidence.extract_audio_excerpt",
+                side_effect=fake_extract,
+            ),
+            patch(
+                "pandrator.web.subtitle_evidence.transcribe_source_file_with_metadata",
+                side_effect=fake_transcribe,
+            ),
+            patch.object(
+                handler.subtitle_evidence.workspace_settings,
+                "resolve",
+                return_value=({"stt": {"stt_engine": "whisper"}}, "settings-hash"),
+            ),
+            patch(
+                "pandrator.web.subtitle_evidence.hydrate_stt_settings",
+                return_value={"stt_engine": "whisper"},
+            ),
+        ):
+            result = handler.run_subtitle_evidence(
+                {"evidence_id": created["record"]["id"]},
+                lambda *_args: None,
+                threading.Event(),
+            )
+
+        self.assertEqual("completed", result["status"])
 
     def test_failure_persists_candidates_completed_before_cancellation(self):
         created = self.services.subtitle_evidence.request(

@@ -17,6 +17,16 @@ The supported workflow kinds are:
 - **Media edit** for transcript-guided video cuts, reviewable timing evidence,
   reversible edit revisions, and rendering.
 
+For transcription alone, use `pandrator_transcribe` without creating a session.
+Supply a file relative to an approved MCP-host source root, or a base64 clip
+up to 8 MiB, a stable idempotency key, and `format=txt|srt|json`. The tool
+uploads the source and waits up to 30 seconds; pending work returns a temporary
+transcription ID. Retrieve it with `pandrator_transcription_get` and page large
+results with `pandrator_transcription_result`. Results expire one hour after
+completion. `pandrator_transcription_cancel` stops work and
+`pandrator_transcription_delete` removes temporary data. Recognition uses the
+configured STT defaults, including the configured local/cloud service.
+
 For an unfamiliar request, start with `pandrator_recommend_next_steps`, then
 read this guide and the workflow-specific guide it identifies. Use this
 inspect-first sequence:

@@ -8,6 +8,7 @@ from sqlalchemy import select
 from pandrator.web.api import create_app
 from pandrator.web.artifact_selection import choose_artifact
 from pandrator.web.auth import BootstrapTokenStore
+from pandrator.web.dispatch import DispatchRunService, _finalize_dispatch_values
 from pandrator.web.models import (
     Artifact,
     ArtifactEdge,
@@ -19,16 +20,220 @@ from pandrator.web.models import (
     SegmentLineage,
     SessionStageSelection,
     SubtitleEvidence,
+    TimedWord,
     utcnow,
 )
 from pandrator.web.schemas import (
     DispatchBatchClaimResponse,
     DispatchBatchSubmitResponse,
 )
+from pandrator.web.workspace import WorkspaceSettingsService
 from tests.web_test_support import prepare_web_test_data_root
 
 
 class DispatchWebTests(unittest.TestCase):
+    def test_publication_reads_cut_words_without_disclosing_them_to_model(self):
+        session_id, source_id = self._source(texts=("Cut text.",))
+        cut_id = self._stage_artifact(session_id, name="cut-words.srt",
+            role="media_edit_subtitles", text="Cut text.", parent_id=source_id)
+        corrected_id = self._stage_artifact(session_id, name="corrected-words.srt",
+            role="correction", text="Cut text.", parent_id=cut_id)
+        with self.extension["database"].session() as session:
+            original = session.get(Artifact, source_id)
+            cut = session.get(Artifact, cut_id)
+            corrected = session.get(Artifact, corrected_id)
+            session.add(TimedWord(revision_id=original.metadata_json["revision_id"],
+                ordinal=0, text="pre-cut", start_ms=9000, end_ms=9500))
+            session.flush()
+            self.assertEqual(([], None), DispatchRunService._timing_reference(session, corrected))
+            cut_revision_id = cut.metadata_json["revision_id"]
+            session.add(TimedWord(revision_id=cut_revision_id, ordinal=0,
+                text="TIMING_ONLY_SENTINEL", start_ms=0, end_ms=900, speaker="A"))
+            session.flush()
+            words, reference = DispatchRunService._timing_reference(session, corrected)
+            self.assertEqual(0, words[0]["start_ms"])
+            self.assertEqual(cut_revision_id, reference["revision_id"])
+        run = self._create(session_id, source_artifact_id=corrected_id)
+        claim = self._claim(run["id"], "internal-word-claim")
+        self.assertNotIn("TIMING_ONLY_SENTINEL", json.dumps(claim))
+        response = self.client.post(
+            f"/api/v1/dispatch-batches/{claim['batch_id']}/submit",
+            json={"lease_token": claim["lease_token"],
+                "result": {"kind": "correction", "operations": []}},
+            headers=self._headers("internal-word-submit"))
+        self.assertEqual(200, response.status_code, response.get_json())
+        with self.extension["database"].session() as session:
+            artifact = session.get(Artifact, response.get_json()["result_artifact_id"])
+            reference = artifact.metadata_json["subtitle_boundary_timing_reference"]
+        self.assertEqual(cut_revision_id, reference["revision_id"])
+        self.assertTrue(reference["word_matching_enabled"])
+        self.assertFalse(DispatchRunService._same_timing_language("de", "en"))
+        self.assertTrue(DispatchRunService._same_timing_language("English", "en-US"))
+
+    def test_timing_reference_refuses_foreign_or_mismatched_parent_revision(self):
+        session_id, source_id = self._source(texts=("Local.",))
+        other_session_id, other_id = self._source(texts=("Foreign.",))
+        with self.extension["database"].session() as session:
+            other = session.get(Artifact, other_id)
+            source = session.get(Artifact, source_id)
+            session.add(TimedWord(revision_id=other.metadata_json["revision_id"],
+                ordinal=0, text="foreign-secret", start_ms=0, end_ms=900))
+            session.add(ArtifactEdge(parent_artifact_id=other_id, child_artifact_id=source_id))
+            session.flush()
+            self.assertNotEqual(session_id, other_session_id)
+            self.assertEqual(([], None), DispatchRunService._timing_reference(session, source))
+            source.metadata_json = {**source.metadata_json,
+                "source_artifact_id":other_id, "source_revision_id":"mismatched-revision"}
+            self.assertEqual(([], None), DispatchRunService._timing_reference(session, source))
+
+    def test_display_reflow_repairs_inherited_tail_and_same_speaker_overlap(self):
+        values = [
+            {"start_ms": 0, "end_ms": 6000,
+             "text": "Hopefully we have a future together, but we must work for", "speaker": "A"},
+            {"start_ms": 6080, "end_ms": 6439, "text": "it.", "speaker": "A"},
+            {"start_ms": 6200, "end_ms": 9400, "text": "That is our shared task.", "speaker": "A"},
+        ]
+        result = _finalize_dispatch_values(values, {
+            "subtitle_max_chars_per_line": 60, "subtitle_max_lines": 2,
+            "subtitle_max_duration_ms": 12000,
+        })
+        self.assertEqual(" ".join(v["text"] for v in values).split(),
+                         " ".join(v["text"] for v in result).split())
+        self.assertTrue(all(v["end_ms"] - v["start_ms"] >= 833 for v in result))
+        self.assertTrue(all(a["end_ms"] <= b["start_ms"]
+                            for a, b in zip(result, result[1:])))
+        self.assertEqual(0, result[0]["start_ms"])
+        self.assertEqual(9400, result[-1]["end_ms"])
+
+    def test_display_reflow_respects_speakers_pauses_and_review_boundaries(self):
+        values = [
+            {"start_ms": 0, "end_ms": 240, "text": "Yes.", "speaker": "A"},
+            {"start_ms": 320, "end_ms": 560, "text": "No.", "speaker": "B"},
+            {"start_ms": 640, "end_ms": 900, "text": "Name?", "speaker": "B",
+             "review_state": "uncertain", "review_note": "Check it",
+             "evidence_ids": ["e1"], "uncertain_source_cue_ids": [3]},
+            {"start_ms": 3000, "end_ms": 4000, "text": "Later.", "speaker": "B"},
+        ]
+        result = _finalize_dispatch_values(values, {})
+        self.assertEqual(["Yes.", "No.", "Name?", "Later."], [v["text"] for v in result])
+        self.assertEqual([0, 320, 640, 3000], [v["start_ms"] for v in result])
+        self.assertEqual(["e1"], result[2]["evidence_ids"])
+        self.assertNotIn("evidence_ids", result[1])
+        self.assertLessEqual(result[2]["end_ms"], 1800)
+
+    def test_no_edit_correction_preserves_source_review_metadata(self):
+        session_id, source_id = self._source(texts=("Unclear.", "Bewegung: Eduard Baltzer."))
+        metadata = {"review_state": "uncertain", "review_note": "Source name unclear",
+                    "evidence_ids": ["original-evidence"], "uncertain_source_cue_ids": [143]}
+        with self.extension["database"].session() as session:
+            artifact = session.get(Artifact, source_id)
+            segment = session.scalar(select(Segment).where(
+                Segment.revision_id == artifact.metadata_json["revision_id"],
+                Segment.ordinal == 0,
+            ))
+            segment.metadata_json = metadata
+            # A translated/materialized cue has canonical text and a separate
+            # speaker field; unlike raw SRT import it needs no label inference.
+            canonical = session.scalar(select(Segment).where(
+                Segment.revision_id == artifact.metadata_json["revision_id"],
+                Segment.ordinal == 1,
+            ))
+            canonical.text = "Bewegung: Eduard Baltzer."
+            canonical.speaker = "Pascal Schilling"
+        run = self._create(session_id, source_artifact_id=source_id)
+        claim = self._claim(run["id"], "review-retention-claim")
+        response = self.client.post(
+            f"/api/v1/dispatch-batches/{claim['batch_id']}/submit",
+            json={"lease_token": claim["lease_token"],
+                  "result": {"kind": "correction", "operations": []}},
+            headers=self._headers("review-retention-submit"),
+        )
+        self.assertEqual(200, response.status_code, response.get_json())
+        with self.extension["database"].session() as session:
+            persisted = session.get(DispatchRun, run["id"])
+            segments = list(session.scalars(select(Segment).where(
+                Segment.revision_id == persisted.result_revision_id,
+            ).order_by(Segment.ordinal)))
+        self.assertEqual(metadata, segments[0].metadata_json)
+        self.assertEqual("clear", segments[1].metadata_json["review_state"])
+        self.assertEqual("Bewegung: Eduard Baltzer.", segments[1].text)
+
+        followup = self._create(session_id, source_artifact_id=persisted.result_artifact_id)
+        followup_claim = self._claim(followup["id"], "review-retention-followup-claim")
+        response = self.client.post(
+            f"/api/v1/dispatch-batches/{followup_claim['batch_id']}/submit",
+            json={"lease_token": followup_claim["lease_token"],
+                  "result": {"kind": "correction", "operations": []}},
+            headers=self._headers("review-retention-followup-submit"),
+        )
+        self.assertEqual(200, response.status_code, response.get_json())
+        with self.extension["database"].session() as session:
+            rerun = session.get(DispatchRun, followup["id"])
+            refined = list(session.scalars(select(Segment).where(
+                Segment.revision_id == rerun.result_revision_id,
+            ).order_by(Segment.ordinal)))
+            self.assertEqual("correction", rerun.output_role)
+            self.assertEqual(persisted.result_artifact_id, rerun.source_artifact_id)
+        self.assertEqual([s.text for s in segments], [s.text for s in refined])
+        self.assertEqual(metadata, refined[0].metadata_json)
+        self.assertEqual("clear", refined[1].metadata_json["review_state"])
+
+    def test_finalization_preserves_text_overlap_and_uncertainty(self):
+        text = "This is a longer contribution that must become several readable cues. " * 3
+        values = [
+            {"start_ms": 0, "end_ms": 12000, "text": text,
+             "speaker": "A", "review_state": "uncertain",
+             "review_note": "Check the name", "evidence_ids": ["evidence-1"],
+             "uncertain_source_cue_ids": [1]},
+            {"start_ms": 1000, "end_ms": 2200, "text": "Yes.", "speaker": "B"},
+        ]
+        result = _finalize_dispatch_values(values, {
+            "subtitle_max_chars_per_line": 30, "subtitle_max_lines": 2,
+        })
+        speaker_a = [item for item in result if item["speaker"] == "A"]
+        self.assertGreater(len(speaker_a), 1)
+        self.assertEqual(text.split(), " ".join(item["text"] for item in speaker_a).split())
+        self.assertEqual([0, 1000], [item["start_ms"] for item in result[:2]])
+        self.assertGreater(speaker_a[0]["end_ms"], 1000)
+        for item in speaker_a:
+            self.assertLessEqual(item["end_ms"], 12000)
+            self.assertLessEqual(len(item["text"].splitlines()), 2)
+            self.assertTrue(all(len(line) <= 30 for line in item["text"].splitlines()))
+            self.assertEqual("uncertain", item["review_state"])
+            self.assertEqual(["evidence-1"], item["evidence_ids"])
+            self.assertEqual([1], item["uncertain_source_cue_ids"])
+
+    def test_new_dispatch_publishes_using_frozen_subtitle_settings(self):
+        text = "A carefully translated sentence needs enough room for its complete meaning. " * 2
+        for kind in ("correction", "translation"):
+            with self.subTest(kind=kind):
+                session_id, source_id = self._source(target_language="de", texts=("Source.",))
+                settings = WorkspaceSettingsService(self.extension["database"])
+                settings.update(session_id, "subtitles", 0, {"max_chars_per_line": 30, "max_lines": 2})
+                run = self._create(session_id, kind=kind, source_artifact_id=source_id)
+                settings.update(session_id, "subtitles", 1, {"max_chars_per_line": 100, "max_lines": 3})
+                claim = self._claim(run["id"], f"finalization-claim-{kind}")
+                result = ({"kind": kind, "operations": [{"action": "edit", "cue_ids": [1], "texts": [text]}]}
+                          if kind == "correction" else
+                          {"kind": kind, "translations": [{"cue_id": 1, "text": text}]})
+                response = self.client.post(
+                    f"/api/v1/dispatch-batches/{claim['batch_id']}/submit",
+                    json={"lease_token": claim["lease_token"], "result": result},
+                    headers=self._headers(f"finalization-submit-{kind}"),
+                )
+                self.assertEqual(200, response.status_code, response.get_json())
+                with self.extension["database"].session() as db:
+                    saved_run = db.get(DispatchRun, run["id"])
+                    artifact = db.get(Artifact, saved_run.result_artifact_id)
+                    cues = list(db.scalars(select(Segment).where(
+                        Segment.revision_id == saved_run.result_revision_id
+                    ).order_by(Segment.ordinal)))
+                    self.assertGreater(len(cues), 1)
+                    self.assertEqual(text.split(), " ".join(cue.text for cue in cues).split())
+                    self.assertEqual(30, artifact.metadata_json["subtitle_finalization"]["subtitle_max_chars_per_line"])
+                    self.assertTrue(all(cue.end_ms <= 1000 for cue in cues))
+                    self.assertTrue(all(len(line) <= 30 for cue in cues for line in cue.text.splitlines()))
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         prepare_web_test_data_root(self.temporary.name)
@@ -404,6 +609,129 @@ class DispatchWebTests(unittest.TestCase):
             headers=self._headers("delete-uncertain-submit"),
         )
         self.assertEqual(422, invalid.status_code, invalid.get_json())
+
+    def test_translation_preserves_correction_review_metadata_when_finalizer_splits(self):
+        session_id, source_id = self._source(
+            target_language="de",
+            texts=("Culture. Yes.", "We elected two co-chairs."),
+        )
+        with self.extension["database"].session() as session:
+            source = session.get(Artifact, source_id)
+            revision_id = str(source.metadata_json["revision_id"])
+            segment = session.scalar(
+                select(Segment).where(
+                    Segment.revision_id == revision_id,
+                    Segment.ordinal == 0,
+                )
+            )
+            session.add(
+                SubtitleEvidence(
+                    id="evidence-translation-propagation",
+                    session_id=session_id,
+                    source_artifact_id=source_id,
+                    source_revision_id=revision_id,
+                    source_segment_id=segment.id,
+                    cue_id=1,
+                    start_ms=int(segment.start_ms),
+                    end_ms=int(segment.end_ms),
+                    clip_start_ms=0,
+                    clip_end_ms=int(segment.end_ms) + 2_000,
+                    reason="Confirm the title.",
+                    routes_json=["whisper", "moss"],
+                    audio_model_ids_json=[],
+                    status="completed",
+                    candidates_json=[],
+                    resolution_json={},
+                )
+            )
+
+        correction_run = self._create(session_id, source_artifact_id=source_id)
+        correction_claim = self._claim(
+            correction_run["id"], "translation-propagation-correction-claim"
+        )
+        correction_submit = self.client.post(
+            f"/api/v1/dispatch-batches/{correction_claim['batch_id']}/submit",
+            json={
+                "lease_token": correction_claim["lease_token"],
+                "result": {
+                    "kind": "correction",
+                    "operations": [],
+                    "uncertainties": [
+                        {
+                            "cue_id": 1,
+                            "reason": "Whisper and MOSS disagree on the title.",
+                            "evidence_ids": ["evidence-translation-propagation"],
+                        }
+                    ],
+                },
+            },
+            headers=self._headers("translation-propagation-correction-submit"),
+        )
+        self.assertEqual(200, correction_submit.status_code, correction_submit.get_json())
+        correction_artifact_id = correction_submit.get_json()["result_artifact_id"]
+
+        WorkspaceSettingsService(self.extension["database"]).update(
+            session_id,
+            "subtitles",
+            0,
+            {"max_chars_per_line": 20, "max_lines": 1},
+        )
+        translation_run = self._create(
+            session_id,
+            kind="translation",
+            source_artifact_id=correction_artifact_id,
+        )
+        translation_claim = self._claim(
+            translation_run["id"], "translation-propagation-translation-claim"
+        )
+        translation_text = (
+            "This deliberately long translation must be split into several final cues."
+        )
+        translation_submit = self.client.post(
+            f"/api/v1/dispatch-batches/{translation_claim['batch_id']}/submit",
+            json={
+                "lease_token": translation_claim["lease_token"],
+                "result": {
+                    "kind": "translation",
+                    "translations": [
+                        {"cue_id": 1, "text": translation_text},
+                        {"cue_id": 2, "text": "Fine."},
+                    ],
+                },
+            },
+            headers=self._headers("translation-propagation-translation-submit"),
+        )
+        self.assertEqual(200, translation_submit.status_code, translation_submit.get_json())
+
+        with self.extension["database"].session() as session:
+            run = session.get(DispatchRun, translation_run["id"])
+            segments = list(
+                session.scalars(
+                    select(Segment)
+                    .where(Segment.revision_id == run.result_revision_id)
+                    .order_by(Segment.ordinal)
+                ).all()
+            )
+        flagged = [segment for segment in segments if segment.start_ms < 1000]
+        clean = [segment for segment in segments if segment.start_ms >= 1000]
+        self.assertGreater(len(flagged), 1)
+        self.assertEqual(translation_text.split(), " ".join(segment.text for segment in flagged).split())
+        self.assertEqual("uncertain", flagged[0].metadata_json["review_state"])
+        for segment in flagged:
+            self.assertEqual(
+                "Whisper and MOSS disagree on the title.",
+                segment.metadata_json["review_note"],
+            )
+            self.assertEqual(
+                ["evidence-translation-propagation"],
+                segment.metadata_json["evidence_ids"],
+            )
+            self.assertEqual([1], segment.metadata_json["uncertain_source_cue_ids"])
+        self.assertEqual(["Fine."], [segment.text for segment in clean])
+        self.assertEqual("clear", clean[0].metadata_json["review_state"])
+        self.assertEqual("", clean[0].metadata_json["review_note"])
+        self.assertEqual([], clean[0].metadata_json["evidence_ids"])
+        self.assertEqual([], clean[0].metadata_json["uncertain_source_cue_ids"])
 
     def test_correction_of_translation_appends_a_translation_revision(self):
         session_id, transcription_id = self._source(target_language="de")

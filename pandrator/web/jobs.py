@@ -1121,6 +1121,10 @@ class Worker:
             self.worker_id,
             lease_generation,
         )
+        if job.kind == "transcription.quick":
+            # ASR diagnostics can contain recognized speech. Temporary work
+            # must not copy those diagnostics into durable job logs.
+            log_handler.addFilter(lambda _record: False)
         root_logger = logging.getLogger()
         previous_log_level = root_logger.level
         logging.basicConfig(level=logging.INFO)

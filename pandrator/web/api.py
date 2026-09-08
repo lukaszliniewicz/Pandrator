@@ -88,4 +88,5 @@ def create_app(
     )
     if maintenance_enabled:
         services.startup_maintenance.start()
+        services.quick_transcriptions.start_maintenance()
     return app

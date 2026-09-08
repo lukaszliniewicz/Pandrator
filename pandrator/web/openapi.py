@@ -7,6 +7,8 @@ import re
 from .identity import ApplicationIdentityDocument
 from .schemas import SCHEMA_MODELS
 from .work import EventBounds, WorkError, WorkEvent, WorkEventPage, WorkView
+from .quick_transcription_schemas import TranscriptionCreate, TranscriptionWait, TranscriptionSnapshot, TranscriptionResultPage
+from .quick_transcription_openapi import transcription_paths
 
 
 def build_openapi_document() -> dict:
@@ -19,6 +21,10 @@ def build_openapi_document() -> dict:
         "WorkEvent": WorkEvent,
         "WorkEventPage": WorkEventPage,
         "WorkView": WorkView,
+        "TranscriptionCreate": TranscriptionCreate,
+        "TranscriptionWait": TranscriptionWait,
+        "TranscriptionSnapshot": TranscriptionSnapshot,
+        "TranscriptionResultPage": TranscriptionResultPage,
     }
     for name, model in contract_models.items():
         schema = model.model_json_schema(ref_template="#/components/schemas/{model}")
@@ -3169,6 +3175,7 @@ def build_openapi_document() -> dict:
             {"nativeOAuth": [scope]},
         ]
 
+    paths.update(transcription_paths())
     # Every templated route must expose its parameters to generated clients.
     # Most operations use the same UUID-like string identifiers, while chunk
     # indices are the one numeric route component.

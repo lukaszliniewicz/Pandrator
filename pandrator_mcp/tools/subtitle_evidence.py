@@ -63,6 +63,14 @@ def _record(payload: dict[str, Any]) -> dict[str, Any]:
     if isinstance(job, dict):
         projected.setdefault("job_id", job.get("id"))
         projected.setdefault("job_status", job.get("status"))
+        if projected.get("status") in {"queued", "running"} and job.get("status") in {
+            "failed", "cancelled", "canceled",
+        }:
+            projected["status"] = "failed"
+            projected["error_message"] = (
+                projected.get("error_message") or job.get("error_message")
+                or "The subtitle evidence job did not complete."
+            )
     projected["schema_version"] = "1"
     return projected
 

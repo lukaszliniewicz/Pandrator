@@ -569,11 +569,15 @@ def register_media_edit_routes(app: DomainBlueprints, context: RouteContext) -> 
                     "The media-edit revision must be reviewed before rendering."
                 )
             settings, settings_hash = _settings_snapshot(session_id, "output")
+            subtitle_settings, _ = _settings_snapshot(session_id, "subtitles")
+            settings.update(subtitle_settings)
+            settings_hash = stable_hash(settings)
             job_payload = {
                 "session_id": session_id,
                 "revision": payload.revision,
                 "settings": settings,
                 "settings_hash": settings_hash,
+                "subtitles_only": payload.subtitles_only,
             }
             with media_edit.database.immediate_session() as db_session:
                 reservation = None
@@ -599,7 +603,9 @@ def register_media_edit_routes(app: DomainBlueprints, context: RouteContext) -> 
                     "media_edit.render",
                     job_payload,
                     session_id=session_id,
-                    resource_keys=[f"session:{session_id}", "service:ffmpeg"],
+                    resource_keys=[f"session:{session_id}"] + (
+                        [] if payload.subtitles_only else ["service:ffmpeg"]
+                    ),
                 )
                 result = _safe_job_payload(job)
                 if reservation is not None:

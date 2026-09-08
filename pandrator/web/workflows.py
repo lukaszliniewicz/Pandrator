@@ -2017,7 +2017,9 @@ class WorkflowService:
             service = str(settings.get("service") or "tts").lower().replace(" ", "_")
             keys.append(f"service:tts:{service}")
         if stage_key == "transcribe":
-            keys.append("service:stt")
+            from .stt_resources import stt_resource_keys
+
+            return keys + stt_resource_keys(settings)
         compute = str(
             settings.get("compute_backend") or settings.get("device") or "auto"
         ).lower()

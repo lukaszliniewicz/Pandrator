@@ -861,6 +861,12 @@ def patch_subtitle_cues(
                     "end_ms": new_end,
                     "text": new_text,
                     "speaker": new_speaker,
+                    "review_state": seg.get("review_state") or "clear",
+                    "review_note": seg.get("review_note") or "",
+                    "evidence_ids": list(seg.get("evidence_ids") or []),
+                    "uncertain_source_cue_ids": list(
+                        seg.get("uncertain_source_cue_ids") or []
+                    ),
                 }
             )
         else:
@@ -870,6 +876,12 @@ def patch_subtitle_cues(
                     "end_ms": orig_end,
                     "text": orig_text,
                     "speaker": orig_speaker,
+                    "review_state": seg.get("review_state") or "clear",
+                    "review_note": seg.get("review_note") or "",
+                    "evidence_ids": list(seg.get("evidence_ids") or []),
+                    "uncertain_source_cue_ids": list(
+                        seg.get("uncertain_source_cue_ids") or []
+                    ),
                 }
             )
 

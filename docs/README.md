@@ -11,6 +11,7 @@ read it in order.
 | Install or update Pandrator | [Installation](getting-started/installation.md) |
 | Make an audiobook | [Your first audiobook](getting-started/first-audiobook.md) |
 | Transcribe, correct, or translate subtitles | [Your first subtitles](getting-started/first-subtitles.md) |
+| Transcribe a file or microphone recording without a session | [Quick transcription](reference/quick-transcription.md) |
 | Create a synchronized voiceover | [Your first voiceover](getting-started/first-voiceover.md) |
 | Choose a model, provider, or voice | [Providers and voices](guides/providers-and-voices.md) |
 | Decide how correction or translation should run | [Correction and translation](guides/correction-and-translation.md) |

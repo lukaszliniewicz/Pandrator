@@ -406,6 +406,28 @@ class Job(Base):
     )
 
 
+class QuickTranscription(Base):
+    """Private, expiring transcription workspace; never a session/library asset."""
+
+    __tablename__ = "quick_transcriptions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    owner_subject: Mapped[str] = mapped_column(String(255), index=True)
+    job_id: Mapped[str | None] = mapped_column(
+        ForeignKey("jobs.id", ondelete="SET NULL"), unique=True
+    )
+    source_suffix: Mapped[str] = mapped_column(String(16))
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    sha256: Mapped[str] = mapped_column(String(64))
+    uploaded_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    next_chunk_index: Mapped[int] = mapped_column(Integer, default=0)
+    format: Mapped[str] = mapped_column(String(8), default="txt")
+    settings_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    state: Mapped[str] = mapped_column(String(24), default="uploading")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
 class JobEvent(Base):
     __tablename__ = "job_events"
 

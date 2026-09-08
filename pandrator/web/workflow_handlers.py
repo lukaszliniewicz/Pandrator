@@ -626,12 +626,30 @@ class WorkflowHandlers:
         self.tts_providers = tts_providers
         self.manager_bridge = manager_bridge
         self.jobs = jobs or JobQueue(database)
+        from .quick_transcription import QuickTranscriptionService
+
+        self.quick_transcriptions = QuickTranscriptionService(database, paths, self.jobs)
+        if subtitle_evidence is None:
+            from .subtitle_evidence import SubtitleEvidenceService
+            from .workspace import WorkspaceSettingsService
+
+            subtitle_evidence = SubtitleEvidenceService(
+                database,
+                self.artifacts,
+                self.jobs,
+                WorkspaceSettingsService(database),
+                self._session_dir,
+                paths,
+            )
         self.subtitle_evidence = subtitle_evidence
         self._audio_cpp_voice_ref_cache: OrderedDict[str, str] = OrderedDict()
         self._audio_cpp_voice_ref_cache_lock = threading.Lock()
         from .job_handler_domains import build_workflow_handler_registry
 
         self.handler_registry = build_workflow_handler_registry(self)
+        self.handler_registry.register(
+            "transcription.quick", self.quick_transcriptions.run, domain="transcription"
+        )
 
     def run_subtitle_evidence(self, payload, progress, cancel_event):
         """Delegate the durable subtitle-evidence job to its service."""
@@ -4524,48 +4542,7 @@ class WorkflowHandlers:
             "composed_cue_count": len(published_cues),
             "composition_mode": composition_mode,
         }
-        ffmpeg_executable = resolve_ffmpeg_executable(
-            str(settings.get("ffmpeg_executable") or "") or None
-        )
         encoder = str(settings.get("burn_video_encoder") or "libx264").strip().lower()
-        if encoder not in ffmpeg_video_encoder_ids(ffmpeg_executable):
-            raise ValueError(
-                f"The selected FFmpeg build does not provide the {encoder} video encoder."
-            )
-        resolution = normalize_video_resolution(
-            settings.get("burn_video_resolution", "source")
-        )
-        try:
-            has_audio = media_has_audio_stream(
-                source_path,
-                ffprobe_executable=resolve_ffprobe_executable(
-                    str(settings.get("ffprobe_executable") or "") or None
-                ),
-            )
-        except (OSError, subprocess.SubprocessError) as error:
-            raise ValueError(
-                "The pinned source media could not be inspected for audio."
-            ) from error
-        command = build_removal_only_video_command(
-            str(source_path),
-            str(output_path),
-            tuple((item.start_ms, item.end_ms) for item in keep_ranges),
-            has_audio=has_audio,
-            ffmpeg_executable=ffmpeg_executable,
-            video_encoder=encoder,
-            video_quality=settings.get("burn_video_quality", 18),
-            video_speed=str(settings.get("burn_video_speed") or "balanced"),
-            audio_bitrate=str(settings.get("burn_audio_bitrate") or "192k"),
-            hardware_device=(
-                str(
-                    settings.get("burn_video_hardware_device")
-                    or settings.get("hardware_device")
-                    or ""
-                ).strip()
-                or None
-            ),
-            video_resolution=resolution,
-        )
         parent_ids = [
             source_id,
             str((revision.get("editorial_transcript_artifact") or {}).get("id") or ""),
@@ -4632,6 +4609,68 @@ class WorkflowHandlers:
             document_revision_id,
             word_timestamps_path,
         )
+        duration_ms = sum(item.end_ms - item.start_ms for item in keep_ranges)
+        result = {
+            "subtitle_artifact_id": subtitle_artifact.id,
+            "plan_id": plan_id,
+            "revision_id": revision_id,
+            "revision": revision_number,
+            "duration_ms": duration_ms,
+            "media_edit_word_timestamps_artifact_id": word_timestamps_artifact.id,
+            "word_timestamps_artifact_id": word_timestamps_artifact.id,
+            "word_timestamps_path": word_timestamps_artifact.relative_path,
+            "word_count": stored_word_count,
+            **composition_metadata,
+            "document_id": document_id,
+            "document_revision_id": document_revision_id,
+        }
+
+        if payload.get("subtitles_only") is True:
+            progress(1.0, "Resegmented subtitles and timed words ready")
+            return {**result, "subtitles_only": True}
+
+        ffmpeg_executable = resolve_ffmpeg_executable(
+            str(settings.get("ffmpeg_executable") or "") or None
+        )
+        encoder = str(settings.get("burn_video_encoder") or "libx264").strip().lower()
+        if encoder not in ffmpeg_video_encoder_ids(ffmpeg_executable):
+            raise ValueError(
+                f"The selected FFmpeg build does not provide the {encoder} video encoder."
+            )
+        resolution = normalize_video_resolution(
+            settings.get("burn_video_resolution", "source")
+        )
+        try:
+            has_audio = media_has_audio_stream(
+                source_path,
+                ffprobe_executable=resolve_ffprobe_executable(
+                    str(settings.get("ffprobe_executable") or "") or None
+                ),
+            )
+        except (OSError, subprocess.SubprocessError) as error:
+            raise ValueError(
+                "The pinned source media could not be inspected for audio."
+            ) from error
+        command = build_removal_only_video_command(
+            str(source_path),
+            str(output_path),
+            tuple((item.start_ms, item.end_ms) for item in keep_ranges),
+            has_audio=has_audio,
+            ffmpeg_executable=ffmpeg_executable,
+            video_encoder=encoder,
+            video_quality=settings.get("burn_video_quality", 18),
+            video_speed=str(settings.get("burn_video_speed") or "balanced"),
+            audio_bitrate=str(settings.get("burn_audio_bitrate") or "192k"),
+            hardware_device=(
+                str(
+                    settings.get("burn_video_hardware_device")
+                    or settings.get("hardware_device")
+                    or ""
+                ).strip()
+                or None
+            ),
+            video_resolution=resolution,
+        )
         progress(0.2, "Subtitle revision and timed words ready; rendering edited media")
         try:
             run_media_process(command, cancel_event=cancel_event)
@@ -4655,23 +4694,8 @@ class WorkflowHandlers:
             settings=settings,
             metadata=metadata,
         )
-        duration_ms = sum(item.end_ms - item.start_ms for item in keep_ranges)
         progress(1.0, "Edited media ready")
-        return {
-            "media_artifact_id": media_artifact.id,
-            "subtitle_artifact_id": subtitle_artifact.id,
-            "plan_id": plan_id,
-            "revision_id": revision_id,
-            "revision": revision_number,
-            "duration_ms": duration_ms,
-            "media_edit_word_timestamps_artifact_id": word_timestamps_artifact.id,
-            "word_timestamps_artifact_id": word_timestamps_artifact.id,
-            "word_timestamps_path": word_timestamps_artifact.relative_path,
-            "word_count": stored_word_count,
-            **composition_metadata,
-            "document_id": document_id,
-            "document_revision_id": document_revision_id,
-        }
+        return {**result, "media_artifact_id": media_artifact.id}
 
     def translate(self, payload, progress, cancel_event):
         from pandrator.logic.dubbing.llm_translation import (

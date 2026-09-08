@@ -82,8 +82,9 @@ class _Application:
         )
         return {"id": "job-propose", "status": "queued", "progress": 0.0}
 
-    def render_media_edit(self, session_id, *, revision, idempotency_key):
+    def render_media_edit(self, session_id, *, revision, idempotency_key, subtitles_only=False):
         self.calls.append(("render", (session_id, revision, idempotency_key)))
+        self.subtitles_only = subtitles_only
         return {"id": "job-render", "status": "queued", "progress": 0.0}
 
     def wait_for_job(self, work_id, *, timeout_seconds):
@@ -303,6 +304,7 @@ class MediaEditClientTests(unittest.TestCase):
                 FakeResponse(200, {"session_id": "session-1", "plan": {"revision": 2}}),
                 FakeResponse(202, {"id": "job-propose", "status": "queued"}),
                 FakeResponse(202, {"id": "job-render", "status": "queued"}),
+                FakeResponse(202, {"id": "job-subtitles", "status": "queued"}),
             ]
         )
         client = ApplicationClient(
@@ -371,6 +373,10 @@ class MediaEditClientTests(unittest.TestCase):
         self.assertTrue(calls[4]["url"].endswith("/media-edit/render"))
         self.assertEqual("media:render:1", calls[4]["headers"]["Idempotency-Key"])
         self.assertEqual({"revision": 2}, json.loads(calls[4]["data"]))
+        client.render_media_edit(
+            "session-1", revision=2, idempotency_key="media:subtitles:1", subtitles_only=True
+        )
+        self.assertEqual({"revision": 2, "subtitles_only": True}, json.loads(session.calls[-1]["data"]))
 
     def test_client_boundary_methods_use_bounded_query_and_atomic_patch(self):
         session = FakeSession(
@@ -516,6 +522,11 @@ class MediaEditToolTests(unittest.TestCase):
         self.assertEqual("succeeded", completed.work.state)
         self.assertEqual(("wait", ("job-render", 17)), self.application.calls[-1])
         self.assertEqual({"artifact_id": "artifact-1"}, completed.result["result"])
+        render_media_edit(self.runtime, RenderMediaEditArguments(
+            session_id="session-1", revision=1, wait=False,
+            subtitles_only=True, idempotency_key="media:subtitles:2",
+        ))
+        self.assertTrue(self.application.subtitles_only)
 
     def test_boundary_tools_return_concise_reinspection_actions(self):
         listed = list_media_edit_cuts(

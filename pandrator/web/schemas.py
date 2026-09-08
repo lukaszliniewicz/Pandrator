@@ -8,6 +8,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    StrictBool,
     StrictInt,
     StrictStr,
     field_validator,
@@ -334,6 +335,11 @@ class SubtitleSegmentInput(StrictModel):
         min_length=0,
         max_length=20,
     )
+    uncertain_source_cue_ids: list[Annotated[int, Field(ge=1)]] = Field(
+        default_factory=list,
+        min_length=0,
+        max_length=20,
+    )
 
     @field_validator("evidence_ids")
     @classmethod
@@ -523,6 +529,7 @@ class MediaEditProposeRequest(StrictModel):
 
 class MediaEditRenderRequest(StrictModel):
     revision: StrictInt = Field(ge=1)
+    subtitles_only: StrictBool = False
 
 
 class MediaEditKeepRange(StrictModel):

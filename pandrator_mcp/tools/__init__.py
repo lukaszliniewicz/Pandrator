@@ -97,6 +97,13 @@ from .subtitle_evidence import (
     resolve_subtitle_evidence,
 )
 from .system import capabilities, system_status, target_status
+from .transcription import (
+    cancel_transcription,
+    delete_transcription,
+    get_transcription,
+    get_transcription_result,
+    transcribe,
+)
 from .work import cancel_work, get_work, get_work_log, list_work
 from .workflow import (
     execute_workflow_plan,
@@ -114,6 +121,7 @@ __all__ = [
     "claim_speech_optimization_dispatch_batch",
     "claim_media_edit_dispatch_batch",
     "cancel_work",
+    "cancel_transcription",
     "control_runtime",
     "configure_tts",
     "create_text_source",
@@ -124,6 +132,7 @@ __all__ = [
     "create_media_edit_dispatch_run",
     "explain_system",
     "download_artifact",
+    "delete_transcription",
     "describe_parameters",
     "execute_workflow_plan",
     "execute_component_plan",
@@ -133,6 +142,8 @@ __all__ = [
     "inspect_media_edit_boundary",
     "plan_media_edit_workflow",
     "get_subtitle_evidence",
+    "get_transcription",
+    "get_transcription_result",
     "get_dispatch_run",
     "get_source_cleaning_dispatch_run",
     "get_speech_optimization_dispatch_run",
@@ -188,6 +199,7 @@ __all__ = [
     "submit_speech_optimization_dispatch_batch",
     "submit_media_edit_dispatch_batch",
     "target_status",
+    "transcribe",
     "tts_catalog",
     "update_generation_segment",
     "update_media_edit",

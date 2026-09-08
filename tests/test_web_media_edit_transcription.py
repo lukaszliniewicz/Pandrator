@@ -659,7 +659,17 @@ class MediaEditTranscriptionHandlerTests(unittest.TestCase):
         self.assertEqual(2, result["word_count"])
 
     def test_media_edit_render_registers_canonical_words_and_cue_owners(self):
+        self._assert_media_edit_render(subtitles_only=False)
+
+    def test_media_edit_resegments_without_encoding_or_replacing_video(self):
+        self._assert_media_edit_render(subtitles_only=True)
+
+    def _assert_media_edit_render(self, *, subtitles_only):
         source = self._artifact("render-source.mp4", "upload", "media", "video")
+        existing_media = (
+            self._artifact("already-rendered.mp4", "media_edit_media", "media", "video")
+            if subtitles_only else None
+        )
         revision = {
             "reviewed": True,
             "plan_id": "plan-1",
@@ -695,6 +705,7 @@ class MediaEditTranscriptionHandlerTests(unittest.TestCase):
         }
 
         def fake_run(command, *, cancel_event):
+            self.assertFalse(subtitles_only, "Subtitle-only work must not encode video")
             del cancel_event
             with self.database.session() as session:
                 subtitle_artifact = session.scalar(
@@ -740,6 +751,7 @@ class MediaEditTranscriptionHandlerTests(unittest.TestCase):
             Path(command[-1]).write_bytes(b"rendered video")
 
         def fake_build(source_path, output_path, *_args, **_kwargs):
+            self.assertFalse(subtitles_only, "Subtitle-only work must not build an encode")
             del source_path
             return ["ffmpeg", output_path]
 
@@ -778,6 +790,7 @@ class MediaEditTranscriptionHandlerTests(unittest.TestCase):
                 {
                     "session_id": self.session.id,
                     "revision": 1,
+                    "subtitles_only": subtitles_only,
                     "settings": {"burn_video_encoder": "libx264"},
                     "settings_hash": "settings-hash",
                 },
@@ -827,7 +840,7 @@ class MediaEditTranscriptionHandlerTests(unittest.TestCase):
         self.assertNotIn((word_artifact.id, subtitle.id), edges)
         self.assertNotIn(
             (
-                result["media_artifact_id"],
+                result.get("media_artifact_id"),
                 subtitle.id,
             ),
             edges,
@@ -846,6 +859,14 @@ class MediaEditTranscriptionHandlerTests(unittest.TestCase):
         )
         self.assertEqual("plan-1", payload["metadata"]["plan_id"])
         self.assertEqual(4, payload["metadata"]["word_count"])
+        if subtitles_only:
+            self.assertTrue(result["subtitles_only"])
+            self.assertNotIn("media_artifact_id", result)
+            with self.database.session() as session:
+                self.assertEqual("current", session.get(Artifact, existing_media.id).state)
+                self.assertEqual([existing_media.id], list(session.scalars(
+                    select(Artifact.id).where(Artifact.role == "media_edit_media")
+                )))
 
     def test_media_edit_render_failure_keeps_materialized_subtitles_and_words(self):
         source = self._artifact("failed-render-source.mp4", "upload", "media", "video")

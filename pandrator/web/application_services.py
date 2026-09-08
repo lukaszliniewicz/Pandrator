@@ -27,6 +27,7 @@ from .media_edit import MediaEditService
 from .media_edit_dispatch import MediaEditDispatchRunService
 from .models import AppSetting, SessionRecord
 from .pronunciations import PronunciationLibrary
+from .quick_transcription import QuickTranscriptionService
 from .session_forks import SessionForkService
 from .sessions import SessionService
 from .source_cleaning_dispatch import SourceCleaningDispatchRunService
@@ -63,6 +64,7 @@ class ApplicationServices:
     audit: AuditService
     idempotency: IdempotencyService
     jobs: JobQueue
+    quick_transcriptions: QuickTranscriptionService
     work: WorkService
     identity: ApplicationIdentityService
     sessions: SessionService
@@ -134,6 +136,7 @@ class ApplicationServices:
         audit = AuditService(database, redactor)
         idempotency = IdempotencyService(database, redactor)
         jobs = JobQueue(database, secret_redactor=redactor)
+        quick_transcriptions = QuickTranscriptionService(database, paths, jobs)
         work = WorkService(jobs, redactor)
         identity = ApplicationIdentityService(
             database,
@@ -245,6 +248,7 @@ class ApplicationServices:
             idempotency=idempotency,
             jobs=jobs,
             work=work,
+            quick_transcriptions=quick_transcriptions,
             identity=identity,
             sessions=sessions,
             session_forks=session_forks,
@@ -287,6 +291,7 @@ class ApplicationServices:
             "audit": self.audit,
             "idempotency": self.idempotency,
             "jobs": self.jobs,
+            "quick_transcriptions": self.quick_transcriptions,
             "work": self.work,
             "identity": self.identity,
             "sessions": self.sessions,

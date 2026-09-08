@@ -369,13 +369,21 @@ class McpArchitectureTests(unittest.TestCase):
                 "pandrator_update_media_edit",
                 "pandrator_update_session",
                 "pandrator_update_session_settings",
+                "pandrator_transcribe",
+                "pandrator_transcription_cancel",
+                "pandrator_transcription_delete",
             },
             {action.name for action in mutating if action.enabled},
         )
         self.assertTrue(
             all(
                 action.requires_idempotency
-                or action.name == "pandrator_download_artifact"
+                or action.name in {
+                    "pandrator_download_artifact",
+                    # These operations are naturally idempotent by resource ID.
+                    "pandrator_transcription_cancel",
+                    "pandrator_transcription_delete",
+                }
                 for action in mutating
             )
         )

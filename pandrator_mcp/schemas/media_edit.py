@@ -118,6 +118,7 @@ class ProposeMediaEditArguments(ToolInput):
 class RenderMediaEditArguments(ToolInput):
     session_id: str = Field(min_length=1, max_length=80)
     revision: int = Field(ge=1)
+    subtitles_only: bool = False
     wait: bool = True
     timeout_seconds: int = Field(
         default=_DEFAULT_JOB_WAIT_SECONDS,

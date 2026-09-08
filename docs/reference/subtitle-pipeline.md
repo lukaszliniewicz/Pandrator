@@ -164,6 +164,56 @@ Cross-speaker merges require an explicit valid speaker decision. Line wrapping
 is never an LLM responsibility; deterministic subtitle finalization runs after
 editing.
 
+New passive runs snapshot the effective subtitle settings at creation. At
+publication, correction and translation results are wrapped and split to that
+snapshot's display capacity. Word partitions are balanced rather than leaving
+one-word tails. Timing reserves reading time, minimum duration and internal gaps
+when the available interval permits it. Publication may locally reflow up to
+three adjacent intervals of the same known speaker, spanning at most three
+maximum cue durations, to repair inherited short fragments, excessive reading
+speed or contradictory same-speaker overlaps. It does not cross a phrase-sized
+pause, a speaker change or a change in review metadata. Added reading time uses
+only empty trailing space, at most one phrase-gap duration, and stays inside the
+source timeline. Genuine brief replies may remain below the minimum duration
+when another speaker leaves no room. This is bounded editorial timing, not a new
+acoustic alignment. Already-published artifacts remain immutable.
+
+A subsequent deterministic boundary pass considers two or three neighboring
+display cues when a boundary strands a short fragment or ends on a function
+word. It retains existing breaks or introduces new ones at sentence/clause
+punctuation, subject to layout, reading-speed and duration limits. Numeric
+ordinals and date separators are not treated as new sentence breaks. If no
+strictly better partition fits, the original cues stay. The backend can consult timed
+words from the exact source ancestry; these words are not added to correction
+or translation model packets. Same-language lexical matches provide timing
+anchors, with interpolation for edited words. Translated text uses estimated
+timing instead of matching target words against foreign-language audio. Real
+long pauses, speaker changes, review boundaries and existing cross-speaker
+overlaps remain protected. A generated SRT gap may be repaired only when source
+speech provides evidence that it is artificial. This is a bounded presentation
+repair, not forced acoustic alignment or another language-model pass.
+
+Translation and unchanged correction cues retain the source review state, note,
+evidence IDs and uncertain source cue IDs. Reflow preserves these fields on every
+resulting display cue; it never merges uncertain and clear passages together.
+
+Cue finalization sorts events by start time and limits added reading time to
+available space. It does not shorten an existing speech interval merely because
+another speaker overlaps it. Untimed source cues receive duration adjustment only
+once, after their neighbours are known. Source overlap is preserved for editorial
+review; it is not automatic permission to combine different speakers into one
+semantic cue. A two-speaker display cue requires separate attribution for both
+contributions and cannot be represented by assigning both texts to one speaker.
+
+Changing settings does not rewrite existing subtitle artifacts. For a media edit,
+render the reviewed edit revision with `subtitles_only: true` to recompose the cut
+source captions from their word timestamps before creating a new passive correction
+run. This option is available on the media-edit render REST endpoint and
+`pandrator_render_media_edit` MCP tool. It publishes subtitles and timed words without
+encoding or replacing video. Omit the option for the existing full render. Translation
+still submits exactly one item per input cue; display finalization can create more
+cues in the resulting artifact.
+
 LLM translation returns exactly one translation for every actionable `cue_id`
 and may return only new `glossary_updates`. Manual glossary entries remain
 authoritative. DeepL translation starts from the same deterministic cue mapping,

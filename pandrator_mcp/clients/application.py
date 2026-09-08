@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import threading
@@ -85,6 +86,20 @@ _PASSTHROUGH_ERROR_CODES = frozenset(
         "source_session_mismatch",
         "source_unavailable",
         "source_unmaterialized",
+        "transcription_expired",
+        "transcription_limit",
+        "invalid_chunk",
+        "upload_closed",
+        "chunk_conflict",
+        "chunk_out_of_order",
+        "invalid_chunk_size",
+        "upload_incomplete",
+        "source_hash_mismatch",
+        "invalid_format",
+        "invalid_page",
+        "result_not_ready",
+        "result_unavailable",
+        "source_too_large",
         "index_changed",
         "index_unavailable",
         "target_identity_mismatch",
@@ -146,6 +161,7 @@ class ApplicationClient:
         idempotency_key: str | None = None,
         if_match_revision: int | str | None = None,
         maximum_body_bytes: int = 512 * 1024,
+        request_timeout_seconds: float | None = None,
         _allow_local_retry: bool = True,
     ) -> dict[str, Any]:
         method = str(method or "GET").upper()
@@ -172,6 +188,15 @@ class ApplicationClient:
                 raise ValueError("The application request exceeds the bounded body limit.")
         if idempotency_key is not None and not _IDEMPOTENCY_KEY.fullmatch(idempotency_key):
             raise ValueError("Idempotency keys must contain 8-200 safe ASCII characters.")
+        request_timeout = self.timeout_seconds
+        if request_timeout_seconds is not None:
+            try:
+                request_timeout = float(request_timeout_seconds)
+            except (TypeError, ValueError) as error:
+                raise ValueError("Application request timeouts must be finite numbers.") from error
+            if not math.isfinite(request_timeout):
+                raise ValueError("Application request timeouts must be finite numbers.")
+            request_timeout = max(1.0, min(request_timeout, 120.0))
         if if_match_revision is not None:
             if isinstance(if_match_revision, bool):
                 raise ValueError("If-Match revisions must be non-negative integers.")
@@ -255,7 +280,7 @@ class ApplicationClient:
                     request_arguments = {
                         "headers": headers,
                         "params": parameters,
-                        "timeout": self.timeout_seconds,
+                        "timeout": request_timeout,
                         "allow_redirects": False,
                         "stream": True,
                         "verify": verify,
@@ -341,6 +366,7 @@ class ApplicationClient:
                     idempotency_key=idempotency_key,
                     if_match_revision=if_match_revision,
                     maximum_body_bytes=maximum_body_bytes,
+                    request_timeout_seconds=request_timeout_seconds,
                     _allow_local_retry=False,
                 )
             raise PandratorMcpError(
@@ -544,6 +570,21 @@ class ApplicationClient:
                 "authentication_required",
                 "The Pandrator application credential was rejected.",
             )
+        downstream = payload.get("error") if isinstance(payload, dict) else None
+        downstream = downstream if isinstance(downstream, dict) else {}
+        code = str(downstream.get("code") or "").strip()
+        if (
+            path.startswith("/api/v1/transcriptions/")
+            and code in _PASSTHROUGH_ERROR_CODES
+        ):
+            details = downstream.get("details")
+            details = details if isinstance(details, dict) else {}
+            raise PandratorMcpError(
+                cast(FailureCode, code),
+                str(downstream.get("message") or "Pandrator rejected the request.")[:2_000],
+                details={**details, "status": status_code},
+                retryable=bool(details.get("retryable")),
+            )
         if status_code == 403:
             raise PandratorMcpError(
                 "scope_denied",
@@ -564,18 +605,6 @@ class ApplicationClient:
                 details={"status": status_code},
             )
         if status_code >= 400:
-            downstream = payload.get("error") if isinstance(payload, dict) else None
-            downstream = downstream if isinstance(downstream, dict) else {}
-            code = str(downstream.get("code") or "")
-            if code in _PASSTHROUGH_ERROR_CODES:
-                details = downstream.get("details")
-                details = details if isinstance(details, dict) else {}
-                raise PandratorMcpError(
-                    cast(FailureCode, code),
-                    str(downstream.get("message") or "Pandrator rejected the request.")[:2_000],
-                    details={**details, "status": status_code},
-                    retryable=bool(details.get("retryable")),
-                )
             raise PandratorMcpError(
                 "downstream_unavailable",
                 "Pandrator rejected the binary request.",
@@ -1375,11 +1404,12 @@ class ApplicationClient:
         *,
         revision: int,
         idempotency_key: str,
+        subtitles_only: bool = False,
     ) -> dict[str, Any]:
         return self._request_json(
             f"/api/v1/sessions/{quote(session_id, safe='')}/media-edit/render",
             method="POST",
-            body={"revision": int(revision)},
+            body={"revision": int(revision), **({"subtitles_only": True} if subtitles_only else {})},
             idempotency_key=idempotency_key,
         )
 
@@ -1606,6 +1636,115 @@ class ApplicationClient:
             f"/api/v1/uploads/{quote(upload_id, safe='')}/complete",
             method="POST",
             body={},
+        )
+
+    def initialize_transcription(
+        self,
+        *,
+        filename: str,
+        size_bytes: int,
+        sha256: str,
+        format: str,
+        language: str | None,
+        engine: str | None,
+        model_quantization: str | None,
+        compute_backend: str | None,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "filename": filename,
+            "size_bytes": int(size_bytes),
+            "sha256": sha256,
+            "format": format,
+        }
+        optional = {
+            "language": language,
+            "engine": engine,
+            "model_quantization": model_quantization,
+            "compute_backend": compute_backend,
+        }
+        body.update({key: value for key, value in optional.items() if value is not None})
+        return self._request_json(
+            "/api/v1/transcriptions",
+            method="POST",
+            body=body,
+            idempotency_key=idempotency_key,
+        )
+
+    def upload_transcription_chunk(
+        self,
+        transcription_id: str,
+        index: int,
+        body: bytes,
+    ) -> dict[str, Any]:
+        if len(body) > 8 * 1024 * 1024:
+            raise ValueError("Transcription chunks may not exceed 8 MiB.")
+        return self._request_binary_json(
+            f"/api/v1/transcriptions/{quote(transcription_id, safe='')}/chunks/{int(index)}",
+            method="PUT",
+            body=body,
+            content_type="application/octet-stream",
+        )
+
+    def start_transcription(
+        self,
+        transcription_id: str,
+        *,
+        wait_seconds: int = 0,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/transcriptions/{quote(transcription_id, safe='')}/start",
+            method="POST",
+            body={"wait_seconds": max(0, min(int(wait_seconds), 30))},
+            request_timeout_seconds=max(self.timeout_seconds, min(int(wait_seconds), 30) + 5.0),
+        )
+
+    def get_transcription(
+        self,
+        transcription_id: str,
+        *,
+        format: str | None = None,
+        wait_seconds: int = 0,
+    ) -> dict[str, Any]:
+        parameters: dict[str, Any] = {
+            "wait_seconds": max(0, min(int(wait_seconds), 30)),
+        }
+        if format is not None:
+            parameters["format"] = format
+        return self._request_json(
+            f"/api/v1/transcriptions/{quote(transcription_id, safe='')}",
+            parameters=parameters,
+            request_timeout_seconds=max(self.timeout_seconds, min(int(wait_seconds), 30) + 5.0),
+        )
+
+    def get_transcription_result(
+        self,
+        transcription_id: str,
+        *,
+        format: str = "txt",
+        offset: int = 0,
+        limit: int = 16_000,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/transcriptions/{quote(transcription_id, safe='')}/result",
+            parameters={
+                "format": format,
+                "offset": max(0, int(offset)),
+                "limit": max(1, min(int(limit), 32_768)),
+            },
+        )
+
+    def cancel_transcription(self, transcription_id: str) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/transcriptions/{quote(transcription_id, safe='')}/cancel",
+            method="POST",
+            body={},
+        )
+
+    def delete_transcription(self, transcription_id: str) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/transcriptions/{quote(transcription_id, safe='')}",
+            method="DELETE",
         )
 
     def tts_catalog(self, *, refresh: bool = False) -> dict[str, Any]:

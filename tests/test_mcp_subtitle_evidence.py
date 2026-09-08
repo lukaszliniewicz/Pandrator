@@ -1,5 +1,6 @@
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from pydantic import ValidationError
 
@@ -72,6 +73,18 @@ class _Application:
 
 
 class SubtitleEvidenceMcpTests(unittest.TestCase):
+    def test_failed_job_does_not_keep_polling_a_queued_record(self):
+        with patch.object(self.application, "get_subtitle_evidence", return_value={
+            "record": {"id": "evidence-1", "status": "queued", "error_message": None},
+            "job": {"id": "job-1", "status": "failed", "error_message": "Service unavailable"},
+        }):
+            outcome = get_subtitle_evidence(
+                self.runtime, GetSubtitleEvidenceInput(evidence_id="evidence-1")
+            )
+        self.assertEqual("failed", outcome.result["status"])
+        self.assertEqual("Service unavailable", outcome.result["error_message"])
+        self.assertEqual([], outcome.next_actions)
+
     def setUp(self):
         self.application = _Application()
         self.runtime = SimpleNamespace(require_application=lambda: self.application)
