@@ -9,7 +9,7 @@
     History,
     SlidersHorizontal
   } from '@lucide/svelte';
-  import { artifactApi, sessionApi } from '$lib/domain-api';
+  import { sessionApi } from '$lib/domain-api';
   import type { ArtifactRecord, DocumentRecord } from '$lib/api-models';
   import ArtifactPreview from '$lib/ArtifactPreview.svelte';
   import SettingsPanel from '$lib/SettingsPanel.svelte';
@@ -19,15 +19,11 @@
   const sessionId = String(page.params.id);
   let documents = $state<DocumentRecord[]>([]);
   let reviewArtifactId = $state('');
-  let sourceArtifact = $state('');
   let activeTab = $state<'settings' | 'history'>('settings');
   let preview = $state<ArtifactRecord | null>(null);
 
   async function load() {
     documents = (await sessionApi.documents(sessionId)).items;
-    const artifacts = await artifactApi.list({ sessionId, limit: 100 });
-    sourceArtifact =
-      artifacts.items.find((item) => item.role === 'upload')?.id ?? '';
   }
 
   function duration(value: number) {
@@ -238,7 +234,6 @@
 {#if reviewArtifactId}<SubtitleReview
     {sessionId}
     primaryArtifactId={reviewArtifactId}
-    sourceMediaArtifactId={sourceArtifact}
     onclose={() => (reviewArtifactId = '')}
     onsaved={load}
   />{/if}

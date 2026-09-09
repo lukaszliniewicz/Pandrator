@@ -4976,7 +4976,6 @@
 {#if reviewArtifactId && SubtitleReviewComponent}<SubtitleReviewComponent
     sessionId={session.id}
     primaryArtifactId={reviewArtifactId}
-    sourceMediaArtifactId={snapshot?.sources[0]?.id}
     onclose={() => (reviewArtifactId = '')}
     onsaved={load}
   />{/if}

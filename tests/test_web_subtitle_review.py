@@ -204,6 +204,158 @@ class SubtitleReviewTests(unittest.TestCase):
         )
         return artifact
 
+    def _media(self, name, *, role="upload", metadata=None, parent=None):
+        path = self.session_dir / name
+        path.write_bytes(name.encode("utf-8"))
+        return self.artifacts.register(
+            path,
+            kind="wav" if path.suffix == ".wav" else "mp4",
+            role=role,
+            session_id=self.session.id,
+            parent_ids=[parent.id] if parent else [],
+            metadata=metadata,
+        )
+
+    def _cut_subtitle(self, *, edit_revision, content_hash, name="cut.srt"):
+        path = self.session_dir / name
+        path.write_text(
+            "1\n00:00:00,000 --> 00:00:02,000\nCut source.\n",
+            encoding="utf-8",
+        )
+        return self.artifacts.register(
+            path,
+            kind="srt",
+            role="media_edit_subtitles",
+            session_id=self.session.id,
+            metadata={
+                "media_edit_revision_id": edit_revision,
+                "content_hash": content_hash,
+            },
+        )
+
+    def test_review_resolves_the_legacy_primary_audio(self):
+        media = self._media("primary.wav")
+        source = self._artifact(
+            "primary-source.srt",
+            "transcription",
+            "1\n00:00:00,000 --> 00:00:02,000\nSource.\n",
+        )
+
+        column = self.service.review(self.session.id, [source.id])["columns"][0]
+
+        self.assertEqual(media.id, column["source_media_artifact_id"])
+        self.assertIsNone(column["source_media_error"])
+
+    def test_review_uses_the_exact_cut_media_for_a_descendant(self):
+        cut = self._cut_subtitle(edit_revision="edit-1", content_hash="cut-hash")
+        matching = self._media(
+            "cut-edit.mp4",
+            role="media_edit_media",
+            metadata={
+                "media_edit_revision_id": "edit-1",
+                "content_hash": "cut-hash",
+            },
+        )
+        self._media(
+            "newer-edit.mp4",
+            role="media_edit_media",
+            metadata={
+                "media_edit_revision_id": "edit-2",
+                "content_hash": "newer-hash",
+            },
+        )
+        descendant = self._artifact(
+            "cut-correction.srt",
+            "correction",
+            "1\n00:00:00,000 --> 00:00:02,000\nCorrected cut.\n",
+            parent=cut,
+        )
+
+        column = self.service.review(self.session.id, [descendant.id])["columns"][0]
+
+        self.assertEqual(matching.id, column["source_media_artifact_id"])
+        self.assertIsNone(column["source_media_error"])
+
+    def test_review_resolves_each_column_from_its_exact_audio_ancestry(self):
+        first_media = self._media("first.wav")
+        second_media = self._media("second.wav")
+        first = self._artifact(
+            "first-audio-source.srt",
+            "transcription",
+            "1\n00:00:00,000 --> 00:00:02,000\nFirst.\n",
+            parent=first_media,
+        )
+        second = self._artifact(
+            "second-audio-source.srt",
+            "transcription",
+            "1\n00:00:00,000 --> 00:00:02,000\nSecond.\n",
+            parent=second_media,
+        )
+
+        columns = self.service.review(self.session.id, [first.id, second.id])["columns"]
+
+        self.assertEqual(
+            [first_media.id, second_media.id],
+            [column["source_media_artifact_id"] for column in columns],
+        )
+        self.assertEqual([None, None], [column["source_media_error"] for column in columns])
+
+    def test_saving_a_cut_descendant_preserves_its_media_resolution(self):
+        cut = self._cut_subtitle(edit_revision="edit-1", content_hash="cut-hash")
+        matching = self._media(
+            "saved-cut-edit.mp4",
+            role="media_edit_media",
+            metadata={
+                "media_edit_revision_id": "edit-1",
+                "content_hash": "cut-hash",
+            },
+        )
+        correction = self._artifact(
+            "saved-cut-correction.srt",
+            "correction",
+            "1\n00:00:00,000 --> 00:00:02,000\nCorrection.\n",
+            parent=cut,
+        )
+        selected = self.service.review(self.session.id, [correction.id])["columns"][0]
+
+        saved = self.service.save_review(
+            self.session.id,
+            "correction",
+            selected["revision"],
+            [
+                {
+                    "start_ms": 0,
+                    "end_ms": 2000,
+                    "text": "Saved correction.",
+                    "speaker": None,
+                }
+            ],
+            source_artifact_id=correction.id,
+        )
+        saved_column = self.service.review(self.session.id, [saved["artifact_id"]])["columns"][0]
+
+        self.assertEqual(matching.id, saved_column["source_media_artifact_id"])
+        self.assertIsNone(saved_column["source_media_error"])
+
+    def test_review_keeps_subtitles_usable_when_cut_media_is_missing(self):
+        cut = self._cut_subtitle(edit_revision="missing-edit", content_hash="missing-hash")
+        descendant = self._artifact(
+            "missing-cut-correction.srt",
+            "correction",
+            "1\n00:00:00,000 --> 00:00:02,000\nStill reviewable.\n",
+            parent=cut,
+        )
+
+        column = self.service.review(self.session.id, [descendant.id])["columns"][0]
+
+        self.assertIsNone(column["source_media_artifact_id"])
+        self.assertEqual(
+            "A cut-derived subtitle requires a matching rendered edit; "
+            "no available media matches its immutable identity.",
+            column["source_media_error"],
+        )
+        self.assertEqual("Still reviewable.", column["segments"][0]["text"])
+
     def test_first_import_can_create_a_subtitle_document_at_revision_zero(self):
         result = self.service.save_review(
             self.session.id,
@@ -612,7 +764,9 @@ class SubtitleReviewTests(unittest.TestCase):
             event.remove(self.database.engine, "before_cursor_execute", count_selects)
 
         self.assertEqual("Version 0.", payload["columns"][0]["segments"][0]["text"])
-        self.assertLessEqual(select_count, 4)
+        # Exact source-media provenance adds fixed lineage and primary-source
+        # reads while remaining independent of subtitle history length.
+        self.assertLessEqual(select_count, 6)
 
 
 if __name__ == "__main__":

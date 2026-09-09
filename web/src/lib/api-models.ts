@@ -483,6 +483,8 @@ export type SubtitleEvidenceRecord = {
 
 export type SubtitleReviewColumn = {
   artifact_id: string;
+  source_media_artifact_id?: string | null;
+  source_media_error?: string | null;
   role: string;
   stage: string;
   document_id: string;

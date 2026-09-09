@@ -494,6 +494,38 @@ test('workflow history and subtitle review load exact revisions on demand', asyn
     created_at: `2026-01-${version}T12:00:00Z`
   }));
   const reviewRequests: string[][] = [];
+  const audioPreviewRequests: string[] = [];
+  await page.route(
+    /\/api\/v1\/artifacts\/(edited-media|original-media)\/audio-preview$/,
+    async (route) => {
+      const mediaId = new URL(route.request().url()).pathname.split('/')[4];
+      audioPreviewRequests.push(mediaId);
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          status: 'ready',
+          content_url: `/api/v1/artifacts/${mediaId}/content`
+        })
+      });
+    }
+  );
+  const silence = Buffer.alloc(44 + 8000);
+  silence.write('RIFF');
+  silence.writeUInt32LE(silence.length - 8, 4);
+  silence.write('WAVEfmt ', 8);
+  silence.writeUInt32LE(16, 16);
+  silence.writeUInt16LE(1, 20);
+  silence.writeUInt16LE(1, 22);
+  silence.writeUInt32LE(4000, 24);
+  silence.writeUInt32LE(8000, 28);
+  silence.writeUInt16LE(2, 32);
+  silence.writeUInt16LE(16, 34);
+  silence.write('data', 36);
+  silence.writeUInt32LE(8000, 40);
+  await page.route(
+    /\/api\/v1\/artifacts\/(edited-media|original-media)\/content$/,
+    (route) => route.fulfill({ contentType: 'audio/wav', body: silence })
+  );
   await page.route(
     `**/api/v1/sessions/${session.id}/subtitles/catalog`,
     async (route) => {
@@ -534,6 +566,11 @@ test('workflow history and subtitle review load exact revisions on demand', asyn
             )!;
             return {
               artifact_id: artifactId,
+              source_media_artifact_id:
+                artifactId === 'artifact-15'
+                  ? 'edited-media'
+                  : 'original-media',
+              source_media_error: null,
               role: 'transcription',
               stage: 'transcription',
               document_id: item.document_id,
@@ -586,6 +623,11 @@ test('workflow history and subtitle review load exact revisions on demand', asyn
   await page.getByRole('button', { name: 'Preview selected' }).click();
   const review = page.getByRole('dialog', { name: 'Compare and refine' });
   await expect(review).toBeVisible();
+  await expect(review.locator('audio')).toHaveAttribute(
+    'src',
+    '/api/v1/artifacts/edited-media/content'
+  );
+  expect(audioPreviewRequests).toEqual(['edited-media']);
   await expect(review.getByText('Showing 1–50 of 75 rows')).toBeVisible();
   await expect(review.locator('tbody tr')).toHaveCount(50);
   await review.getByRole('button', { name: 'Maximize workspace' }).click();
@@ -618,6 +660,25 @@ test('workflow history and subtitle review load exact revisions on demand', asyn
     review.getByRole('columnheader').filter({ hasText: 'transcription v14' })
   ).toBeVisible();
   await expect(review.getByText('The alternate transcription.')).toBeVisible();
+  await review
+    .getByLabel('Subtitle artifact to edit')
+    .selectOption('artifact-14');
+  await expect(review.locator('audio')).toHaveAttribute(
+    'src',
+    '/api/v1/artifacts/original-media/content'
+  );
+  await review
+    .getByLabel('Subtitle artifact to edit')
+    .selectOption('artifact-15');
+  await expect(review.locator('audio')).toHaveAttribute(
+    'src',
+    '/api/v1/artifacts/edited-media/content'
+  );
+  expect(audioPreviewRequests).toEqual([
+    'edited-media',
+    'original-media',
+    'edited-media'
+  ]);
 
   await review.getByRole('button', { name: 'Next', exact: true }).click();
   await expect(review.getByText('Showing 51–75 of 75 rows')).toBeVisible();

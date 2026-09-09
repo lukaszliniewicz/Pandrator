@@ -28,7 +28,7 @@
     SubtitleEvidenceRecord,
     SubtitleSegment as Segment
   } from './api-models';
-  import { onDestroy, onMount, tick } from 'svelte';
+  import { onDestroy, onMount, tick, untrack } from 'svelte';
   import GuidedTour from './GuidedTour.svelte';
   import AudioPlayer from './AudioPlayer.svelte';
   import SubtitleEvidencePanel from './SubtitleEvidencePanel.svelte';
@@ -43,13 +43,11 @@
   let {
     sessionId,
     primaryArtifactId,
-    sourceMediaArtifactId,
     onclose,
     onsaved
   }: {
     sessionId: string;
     primaryArtifactId: string;
-    sourceMediaArtifactId?: string;
     onclose: () => void;
     onsaved: () => void;
   } = $props();
@@ -102,6 +100,10 @@
     columns.find((column) => column.artifact_id === editArtifactId)
   );
   const editStage = $derived(editColumn?.stage ?? '');
+  const sourceMediaArtifactId = $derived(
+    editColumn?.source_media_artifact_id ?? ''
+  );
+  const sourceMediaError = $derived(editColumn?.source_media_error ?? '');
   const selectedArtifactIds = $derived(
     columns.map((column) => column.artifact_id)
   );
@@ -554,9 +556,11 @@
     });
   }
 
-  async function prepareSourceAudio() {
-    if (!sourceMediaArtifactId) return;
+  async function prepareSourceAudio(artifactId: string) {
+    if (!artifactId) return;
     sourceAudioController?.abort();
+    stopCuePreview(true);
+    sourceAudioUrl = '';
     const controller = new AbortController();
     sourceAudioController = controller;
     sourceAudioPreparing = true;
@@ -564,9 +568,10 @@
     cuePlaybackError = '';
     try {
       let preparation = await artifactApi.audioPreview(
-        sourceMediaArtifactId,
+        artifactId,
         controller.signal
       );
+      if (controller.signal.aborted) return;
       if (preparation.status === 'ready' && preparation.content_url) {
         sourceAudioUrl = preparation.content_url;
         return;
@@ -576,11 +581,13 @@
       for (let attempt = 0; attempt < 800; attempt += 1) {
         await waitForPreviewPoll(controller.signal);
         const job = await jobApi.get(jobId, controller.signal);
+        if (controller.signal.aborted) return;
         if (job.status === 'succeeded') {
           preparation = await artifactApi.audioPreview(
-            sourceMediaArtifactId,
+            artifactId,
             controller.signal
           );
+          if (controller.signal.aborted) return;
           if (preparation.status === 'ready' && preparation.content_url) {
             sourceAudioUrl = preparation.content_url;
             return;
@@ -662,7 +669,19 @@
     reviewPrimaryArtifactId = primaryArtifactId;
     editArtifactId = primaryArtifactId;
     void load([primaryArtifactId], true);
-    void prepareSourceAudio();
+  });
+
+  $effect(() => {
+    const artifactId = sourceMediaArtifactId;
+    untrack(() => {
+      sourceAudioController?.abort();
+      stopCuePreview(true);
+      sourceAudioUrl = '';
+      sourceAudioError = '';
+      cuePlaybackError = '';
+      sourceAudioPreparing = false;
+      if (artifactId) void prepareSourceAudio(artifactId);
+    });
   });
 
   $effect(() => {
@@ -851,10 +870,12 @@
           />{/if}
       </div>
     </details>
-    {#if sourceMediaArtifactId}<div
+    {#if sourceMediaArtifactId || sourceMediaError}<div
         class="border-b border-[var(--line)] px-5 py-3 sm:px-7"
       >
-        {#if sourceAudioUrl}<AudioPlayer
+        {#if sourceMediaError}<p class="text-xs text-red-500" role="alert">
+            {sourceMediaError}
+          </p>{:else if sourceAudioUrl}<AudioPlayer
             bind:element={audioPreview}
             src={sourceAudioUrl}
             label="Source audio preview"
@@ -870,7 +891,7 @@
                 'Source audio is not ready for playback.'}</span
             ><button
               type="button"
-              onclick={prepareSourceAudio}
+              onclick={() => prepareSourceAudio(sourceMediaArtifactId)}
               class="flex items-center gap-1 rounded-lg border border-[var(--line)] px-2 py-1 font-semibold"
               ><RefreshCw size={13} /> Retry</button
             >

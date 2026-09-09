@@ -27,6 +27,7 @@ from .models import (
     SessionRecord,
     SubtitleEvidence,
 )
+from .subtitle_media import resolve_subtitle_media
 
 STAGE_ORDER = ("transcription", "correction", "translation", "tts_optimization")
 ARTIFACT_ROLE_TO_STAGE = {
@@ -324,6 +325,14 @@ class SubtitleReviewService:
                     )
                 records = segments_by_revision[revision_id]
                 segment_sets[artifact_id] = records
+                source_media_artifact_id: str | None = None
+                source_media_error: str | None = None
+                try:
+                    source_media_artifact_id = resolve_subtitle_media(
+                        session, session_id, artifact
+                    ).id
+                except ValueError as error:
+                    source_media_error = str(error)
                 columns.append(
                     {
                         "artifact_id": artifact_id,
@@ -334,6 +343,8 @@ class SubtitleReviewService:
                         "revision": revision.revision_number,
                         "reviewed": revision.reviewed,
                         "language": document.language,
+                        "source_media_artifact_id": source_media_artifact_id,
+                        "source_media_error": source_media_error,
                         "segments": [self._payload(item) for item in records],
                     }
                 )

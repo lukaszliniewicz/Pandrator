@@ -624,6 +624,14 @@ class FilesystemTaskHandler:
         if len({package.id for package in packages}) != len(packages):
             raise UnsupportedTask("The audio.cpp model package contract contains duplicates.")
 
+        effective = str(task.inputs.get("effective_compute") or "cpu")
+        # Model selections and repairs can change a slot without changing the
+        # runtime version. Only retries of this operation may reuse its slot.
+        revision = (
+            f"audio-cpp-{task.inputs.get('version') or AUDIO_CPP_VERSION}-"
+            f"{effective}-{execution.operation.id}"
+        )
+
         target = self._staging_source(execution, definition.id)
         markers = self._source_markers(execution, definition)
         if target.is_dir() and self._markers_present(target, markers):
@@ -641,10 +649,7 @@ class FilesystemTaskHandler:
             ):
                 return {
                     "staged_path": str(target),
-                    "revision": (
-                        f"audio-cpp-{task.inputs.get('version') or AUDIO_CPP_VERSION}-"
-                        f"{task.inputs.get('effective_compute') or 'cpu'}"
-                    ),
+                    "revision": revision,
                     "models": [package.id for package in packages],
                     "reused": True,
                 }
@@ -770,7 +775,6 @@ class FilesystemTaskHandler:
                 package,
             )
 
-        effective = str(task.inputs.get("effective_compute") or "cpu")
         _atomic_json(
             target / "server.json", server_config(effective, [package.id for package in packages])
         )
@@ -791,9 +795,7 @@ class FilesystemTaskHandler:
         execution.check_cancelled()
         return {
             "staged_path": str(target),
-            "revision": (
-                f"audio-cpp-{task.inputs.get('version') or AUDIO_CPP_VERSION}-{effective}"
-            ),
+            "revision": revision,
             "models": [package.id for package in packages],
             "assets": selected_assets,
             "model_manager": invocations,
