@@ -295,6 +295,12 @@ test('Create export keeps the selected audio version when saved effective defaul
         body: JSON.stringify({
           items: [
             {
+              id: 'internal-regeneration-task',
+              output_generation_run_id: 'selected-completed-run',
+              status: 'completed',
+              label: 'Run 1: Selected voice'
+            },
+            {
               id: 'selected-completed-run',
               status: 'completed',
               label: 'Run 1: Selected voice',
@@ -358,6 +364,9 @@ test('Create export keeps the selected audio version when saved effective defaul
   );
 
   await page.goto(`/sessions/${session.id}/output`);
+  await expect(page.getByLabel('Audio version').locator('option')).toHaveCount(
+    2
+  );
   await expect(page.getByLabel('Audio version')).toHaveValue(
     'selected-completed-run'
   );

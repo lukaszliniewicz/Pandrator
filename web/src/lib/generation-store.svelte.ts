@@ -299,20 +299,10 @@ export class GenerationStore {
   }
 
   removeRun(runId: string) {
-    this.runs = this.runs.filter((item) => item.id !== runId);
-    if (this.activeRun?.id === runId) {
-      this.activeRun =
-        this.runs.find((item) =>
-          [
-            'queued',
-            'running',
-            'pausing',
-            'pause_requested',
-            'cancel_requested',
-            'paused'
-          ].includes(item.status)
-        ) ?? null;
-    }
+    this.runs = this.runs.filter(
+      (item) => item.id !== runId && item.output_generation_run_id !== runId
+    );
+    this.activeRun = preferredActiveRun(this.runs);
   }
 
   connect(

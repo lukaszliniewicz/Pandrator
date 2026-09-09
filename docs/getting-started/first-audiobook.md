@@ -75,6 +75,27 @@ separately generated passages. Edit speech text or pronunciation rules and
 regenerate only the affected segments. Keep a previous take when it is better;
 generation does not force selection of the newest result.
 
+Click a segment's regenerate button to choose **Regenerate** or **Regenerate
+with different settings…**. Replacement takes stay in the selected output run
+(or the latest run for the current plan when using Active mix). The run picker
+keeps one entry for that output; each redo retains its own job record and
+settings. Earlier takes remain available in the take selector. Alternate
+settings apply only to the selected segments and leave the run's defaults intact.
+
+A redo during generation temporarily pauses that run. On completion, generation
+continues with segments missing a completed take from that same run, even if an
+older run has already generated them.
+
+To remove an experiment, choose its run in **Audio view** and select **Delete
+run**. Confirmation removes that run's audio takes, assembled audio, and redo
+history. Other runs remain available. Stop an active run before deleting it.
+
+If Pandrator asks about changed preparation settings, **Generate with selected
+text** uses the text you already selected and the current speech settings.
+The prompt explains known settings changes, source changes, or missing settings
+history. Choose **Refresh text first** to rerun the listed preparation steps.
+Automatic mode keeps selected text and only prepares missing steps.
+
 Closing the browser does not stop an active durable job. Reopen Pandrator from
 Manager and inspect the job rather than starting a duplicate run.
 

@@ -117,7 +117,9 @@
       .sort((left, right) =>
         String(right.created_at).localeCompare(String(left.created_at))
       );
-    runs = runPayload.items ?? [];
+    runs = (runPayload.items ?? []).filter(
+      (item) => !item.output_generation_run_id
+    );
     exportJobs = (jobPayload.items ?? [])
       .filter(
         (item) => item.session_id === sessionId && item.kind === 'export.create'
@@ -150,7 +152,9 @@
     for (let attempt = 0; attempt < 300; attempt += 1) {
       await waitForAssemblyPoll(signal);
       const result = await generationApi.runs(sessionId, signal);
-      runs = result.items ?? [];
+      runs = (result.items ?? []).filter(
+        (item) => !item.output_generation_run_id
+      );
       const assembly = runs.find((item) => item.id === runId)?.assembly;
       if (assembly?.status === 'completed') return assembly;
       if (['failed', 'canceled'].includes(assembly?.status ?? ''))

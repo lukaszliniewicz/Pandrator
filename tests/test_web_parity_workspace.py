@@ -1887,6 +1887,8 @@ class WebParityWorkspaceTests(unittest.TestCase):
         with database.session() as session:
             session.get(GenerationRun, first["id"]).status = "completed"
             session.get(GenerationRun, second["id"]).status = "completed"
+            session.get(Job, first["job_id"]).status = "succeeded"
+            session.get(Job, second["job_id"]).status = "succeeded"
             segment = session.query(GenerationSegment).one()
             session.add(
                 AudioTake(

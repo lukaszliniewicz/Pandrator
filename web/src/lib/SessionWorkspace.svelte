@@ -462,7 +462,7 @@
   async function run(
     stage: Stage,
     confirmed = false,
-    reuseStages: string[] = []
+    reuseStages: string[] | null = null
   ) {
     if (stage.key === 'edit_media') {
       location.href = `/sessions/${session.id}/edit`;
@@ -493,7 +493,7 @@
       }
       return;
     }
-    if (!confirmed && stage.key === 'generate_audio') {
+    if (stage.key === 'generate_audio' && reuseStages === null) {
       try {
         const preflight = await sessionApi.stageSettingsMismatches(
           session.id,
@@ -518,7 +518,7 @@
           ? {
               ...(stageSettings[stage.key] ?? {}),
               stage_settings: stageSettings,
-              ...(reuseStages.length ? { reuse_stages: reuseStages } : {})
+              ...(reuseStages?.length ? { reuse_stages: reuseStages } : {})
             }
           : (stageSettings[stage.key] ?? {});
       await sessionApi.runStage(session.id, routeKey, body);
@@ -2478,8 +2478,12 @@
         const names = mismatches
           .map((item) => item.stage.replaceAll('_', ' '))
           .join(' and ');
-        sourceMessage = `Rerunning stale ${names} before audio generation. Use Review mode if you want to keep selected prerequisite outputs instead.`;
-        await run(stage, true);
+        sourceMessage = `Generating with the selected text. Keeping the selected ${names} results; their settings or source history differ from the current setup. Use Review mode to inspect the differences or refresh the text first.`;
+        await run(
+          stage,
+          true,
+          mismatches.map((item) => item.stage)
+        );
         return;
       }
     } catch {
@@ -2583,9 +2587,10 @@
       <div class="min-w-0 flex-1">
         <h2 class="font-semibold">Generate reviewable audio segments</h2>
         <p class="muted mt-1 text-sm leading-relaxed">
-          Pandrator runs the enabled missing or stale prerequisites in order,
-          then generates segment takes. It stops there: reviewing takes, RVC
-          conversion, assembly, export, and video synchronization remain manual.
+          Pandrator keeps your selected text, prepares any missing steps, and
+          generates segment takes with the current speech settings. It stops
+          there: reviewing takes, RVC conversion, assembly, export, and video
+          synchronization remain manual.
         </p>
       </div>
       <button
@@ -2697,7 +2702,7 @@
   }}
   onrefresh={async (pending) => {
     pendingSettingsMismatch = null;
-    await run(pending.stage, true);
+    await run(pending.stage, true, []);
   }}
 />
 

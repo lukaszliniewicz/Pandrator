@@ -67,7 +67,42 @@
   let mode = $state<'collapsed' | 'half' | 'full'>('collapsed');
   const payload = $derived(generationStore.payload);
   const run = $derived(generationStore.activeRun);
-  const runs = $derived(generationStore.runs);
+  const runs = $derived(
+    generationStore.runs.filter((item) => !item.output_generation_run_id)
+  );
+  const takeNumbers = $derived.by(() => {
+    const numbers = new Map<string, number>();
+    for (const item of payload.items) {
+      [...item.takes]
+        .sort((left, right) =>
+          String(left.created_at ?? '').localeCompare(
+            String(right.created_at ?? '')
+          )
+        )
+        .forEach((take, index) => numbers.set(take.id, index + 1));
+    }
+    return numbers;
+  });
+  const latestFailure = $derived.by(() => {
+    const latest = generationStore.runs[0];
+    if (
+      latest?.status !== 'failed' ||
+      ['queued', 'running', 'pausing', 'cancel_requested'].includes(
+        run?.status ?? ''
+      )
+    )
+      return null;
+    const owner = runs.find(
+      (item) => item.id === latest.output_generation_run_id
+    );
+    if (
+      owner?.updated_at &&
+      latest.updated_at &&
+      owner.updated_at > latest.updated_at
+    )
+      return null;
+    return latest;
+  });
   let selectedRunId = $state('');
   const assembly = $derived(generationStore.assembly);
   let filter = $state<SegmentFilter>('all');
@@ -1113,9 +1148,31 @@
 
   function takeLabel(take: AudioTake) {
     const owner = runs.find((item) => item.id === take.generation_run_id);
-    return owner
-      ? `${owner.label} · ${String(take.kind || 'audio').toUpperCase()}`
-      : `Legacy take · ${String(take.kind || 'audio').toUpperCase()}`;
+    const task = generationStore.runs.find(
+      (item) => item.id === take.generation_task_run_id
+    );
+    const tts = task?.settings_snapshot?.tts as
+      Record<string, unknown> | undefined;
+    const alternate = tts
+      ? [...new Set([tts.service, tts.model, tts.voice].filter(Boolean))].join(
+          ' · '
+        )
+      : '';
+    const label =
+      alternate && owner
+        ? `${owner.label.split(':')[0]}: ${alternate}`
+        : (owner?.label ?? 'Legacy');
+    return `${label} · Take ${takeNumbers.get(take.id) ?? 1} · ${String(take.kind || 'audio').toUpperCase()}`;
+  }
+
+  function outputRunBusy(runId: string) {
+    return generationStore.runs.some(
+      (item) =>
+        (item.id === runId || item.output_generation_run_id === runId) &&
+        ['queued', 'running', 'pausing', 'cancel_requested'].includes(
+          item.status
+        )
+    );
   }
 
   function verificationTitle(take: AudioTake) {
@@ -1142,16 +1199,10 @@
   }
 
   async function deleteSelectedRun() {
-    if (
-      !selectedRun ||
-      ['queued', 'running', 'pausing', 'cancel_requested'].includes(
-        selectedRun.status
-      )
-    )
-      return;
+    if (!selectedRun || outputRunBusy(selectedRun.id)) return;
     if (
       !window.confirm(
-        `Delete ${selectedRun.label} and all audio takes created by it?`
+        `Delete ${selectedRun.label}, including its audio takes, assembled audio, and regeneration history? This cannot be undone.`
       )
     )
       return;
@@ -1680,13 +1731,12 @@
               onclick={deleteSelectedRun}
               disabled={loading ||
                 !selectedRun ||
-                ['queued', 'running', 'pausing', 'cancel_requested'].includes(
-                  selectedRun.status
-                )}
-              class="action icon-action text-red-500"
-              title="Delete the selected run and its generated takes"
-              aria-label="Delete selected generation run"
-              ><Trash2 size={14} /></button
+                outputRunBusy(selectedRun.id)}
+              class="action text-red-500"
+              title={selectedRun
+                ? 'Delete this run and its generated audio'
+                : 'Choose a run from Audio view to delete it'}
+              ><Trash2 size={14} /> Delete run</button
             >
             <span class="h-6 w-px bg-[var(--line)]"></span>
           {/if}
@@ -1896,11 +1946,13 @@
           </div>
         {/if}
 
-        {#if run?.status === 'failed'}
+        {#if run?.status === 'failed' || latestFailure}
           <div
             class="border-b border-red-400/30 bg-red-500/10 px-4 py-2 text-xs text-red-600"
           >
-            Generation failed: {run.error_message ||
+            Generation failed: {(run?.status === 'failed'
+              ? run.error_message
+              : latestFailure?.error_message) ||
               'Open Activity & logs for details, then retry.'}
           </div>
         {/if}
@@ -2094,7 +2146,8 @@
             Uses {selectedRun
               ? `History · ${selectedRun.label}`
               : 'the current session settings'} as the source, then saves these choices
-            only in the new run. Segment defaults stay untouched.
+            with the replacement takes in the same output run. Previous takes remain
+            available.
           </p>
         </div>
         <button

@@ -1363,6 +1363,29 @@ test('generation drawer layout survives segment regeneration refreshes', async (
     'tr[data-segment-id="synthetic-segment"] textarea'
   );
   await regenerate.click();
+  const regenerateAction = page.getByRole('menuitem', {
+    name: 'Regenerate',
+    exact: true
+  });
+  const alternateAction = page.getByRole('menuitem', {
+    name: 'Regenerate with different settings…',
+    exact: true
+  });
+  await expect(regenerateAction).toBeFocused();
+  await expect(alternateAction).toBeVisible();
+  expect(revision).toBe(0);
+  await page.screenshot({ path: '/tmp/pandrator-regeneration-table.png' });
+  await page.keyboard.press('ArrowDown');
+  await expect(alternateAction).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(regenerateAction).toBeHidden();
+  await expect(regenerate).toBeFocused();
+  await regenerate.click();
+  await page.getByRole('button', { name: 'Use half height' }).click();
+  await expect(regenerateAction).toBeHidden();
+  await page.getByRole('button', { name: 'Use full height' }).click();
+  await regenerate.click();
+  await page.getByRole('menuitem', { name: 'Regenerate', exact: true }).click();
   await expect(drawer).toHaveAttribute('data-generation-layout', 'full');
   await expect(segmentText).toHaveValue(
     'Synthetic generation segment revision 1.',
@@ -1373,6 +1396,7 @@ test('generation drawer layout survives segment regeneration refreshes', async (
   await page.getByRole('button', { name: 'Use half height' }).click();
   await expect(drawer).toHaveAttribute('data-generation-layout', 'half');
   await regenerate.click();
+  await page.getByRole('menuitem', { name: 'Regenerate', exact: true }).click();
   await expect(drawer).toHaveAttribute('data-generation-layout', 'half');
   await expect(segmentText).toHaveValue(
     'Synthetic generation segment revision 2.',
@@ -1383,8 +1407,40 @@ test('generation drawer layout survives segment regeneration refreshes', async (
   await page.getByRole('button', { name: 'Use full height' }).click();
   failNextRegeneration = true;
   await regenerate.click();
+  await page.getByRole('menuitem', { name: 'Regenerate', exact: true }).click();
   expect(failNextRegeneration).toBeFalsy();
   await expect(drawer).toHaveAttribute('data-generation-layout', 'full');
+
+  await page
+    .getByRole('button', { name: 'Display options', exact: true })
+    .click();
+  await page.getByRole('button', { name: 'Reading view', exact: true }).click();
+  await page.locator('.reading-sentence').hover();
+  await regenerate.click();
+  await expect(alternateAction).toBeVisible();
+  const menu = page.getByRole('menu', {
+    name: 'Regeneration options for segment 1'
+  });
+  const menuBounds = await menu.boundingBox();
+  expect(menuBounds).not.toBeNull();
+  expect(menuBounds!.y).toBeGreaterThanOrEqual(0);
+  expect(menuBounds!.y + menuBounds!.height).toBeLessThanOrEqual(
+    page.viewportSize()!.height
+  );
+  await page.screenshot({ path: '/tmp/pandrator-regeneration-reading.png' });
+  await alternateAction.click();
+  await expect(
+    page.getByRole('heading', { name: 'Regenerate 1 selected segment with…' })
+  ).toBeVisible();
+  await page
+    .getByRole('button', { name: 'Close alternate regeneration' })
+    .click();
+  await page.locator('.reading-sentence').hover();
+  await regenerate.click();
+  await regenerateAction.click();
+  await expect(page.locator('.reading-sentence')).toHaveText(
+    'Synthetic generation segment revision 3.'
+  );
 
   const unrelatedSessionId = await createGenerationPlan(page, [
     { text: 'Unrelated synthetic segment.' }
@@ -1407,6 +1463,34 @@ test('selecting a take from history returns to Active mix without changing anoth
   const firstRunId = 'history-run-one';
   const secondRunId = 'history-run-two';
   const runs = [
+    {
+      id: 'failed-redo-task',
+      output_generation_run_id: secondRunId,
+      source_generation_run_id: secondRunId,
+      session_id: sessionId,
+      plan_revision_id: 'history-plan',
+      sequence_number: 4,
+      operation: 'regenerate',
+      label: 'Run 2: newer preset',
+      status: 'failed',
+      error_message: 'Reference audio is unavailable.',
+      progress: 0
+    },
+    {
+      id: 'alternate-redo-task',
+      output_generation_run_id: secondRunId,
+      source_generation_run_id: secondRunId,
+      session_id: sessionId,
+      plan_revision_id: 'history-plan',
+      sequence_number: 3,
+      operation: 'regenerate',
+      label: 'Run 2: newer preset',
+      status: 'completed',
+      progress: 1,
+      settings_snapshot: {
+        tts: { service: 'audio.cpp', model: 'VoxCPM', voice: 'alternate-voice' }
+      }
+    },
     {
       id: secondRunId,
       session_id: sessionId,
@@ -1433,6 +1517,7 @@ test('selecting a take from history returns to Active mix without changing anoth
   const take = (id: string, generationRunId: string, isActive: boolean) => ({
     id,
     generation_run_id: generationRunId,
+    generation_task_run_id: id === 'take-1-new' ? 'alternate-redo-task' : null,
     artifact_id: `artifact-${id}`,
     kind: 'tts',
     status: 'completed',
@@ -1487,7 +1572,9 @@ test('selecting a take from history returns to Active mix without changing anoth
                   secondRunId,
                   activeFirstTakeId === 'take-1-new'
                 )
-              ]
+              ].filter((item) =>
+                runs.some((run) => run.id === item.generation_run_id)
+              )
             },
             {
               id: 'history-segment-two',
@@ -1522,16 +1609,41 @@ test('selecting a take from history returns to Active mix without changing anoth
     }
   );
 
+  const deletedRuns: string[] = [];
+  await page.route(
+    `**/api/v1/generation-runs/${secondRunId}`,
+    async (route) => {
+      expect(route.request().method()).toBe('DELETE');
+      deletedRuns.push(secondRunId);
+      for (let index = runs.length - 1; index >= 0; index -= 1) {
+        if (
+          runs[index].id === secondRunId ||
+          runs[index].output_generation_run_id === secondRunId
+        )
+          runs.splice(index, 1);
+      }
+      activeFirstTakeId = 'take-1-old';
+      await route.fulfill({ status: 204 });
+    }
+  );
+
   await page.goto(`/sessions/${sessionId}`);
   await page.getByRole('button', { name: 'Generation', exact: true }).click();
   const picker = page.locator('label.run-picker select');
   await expect(picker).toHaveValue('');
+  await expect(picker.locator('option')).toHaveCount(3);
+  await expect(
+    page.getByText('Generation failed: Reference audio is unavailable.')
+  ).toBeVisible();
   await picker.selectOption(firstRunId);
   await expect(picker).toHaveValue(firstRunId);
 
   const rows = page.locator('tbody tr[data-segment-id]');
   const firstAudioTake = rows.nth(0).locator('td').nth(3).locator('select');
   const secondAudioTake = rows.nth(1).locator('td').nth(3).locator('select');
+  await expect(
+    firstAudioTake.locator('option[value="take-1-new"]')
+  ).toContainText('VoxCPM · alternate-voice · Take 2');
   await expect(firstAudioTake).toHaveValue('take-1-old');
   await expect(secondAudioTake).toHaveValue('take-2-old');
 
@@ -1540,6 +1652,31 @@ test('selecting a take from history returns to Active mix without changing anoth
   await expect(firstAudioTake).toHaveValue('take-1-new');
   await expect(secondAudioTake).toHaveValue('take-2-old');
   expect(selectedTakeRequests).toEqual(['take-1-new']);
+  const deleteRun = page.getByRole('button', {
+    name: 'Delete run',
+    exact: true
+  });
+  await expect(deleteRun).toBeDisabled();
+  await picker.selectOption(secondRunId);
+  await expect(deleteRun).toBeEnabled();
+  page.once('dialog', async (dialog) => {
+    expect(dialog.message()).toContain(
+      'audio takes, assembled audio, and regeneration history'
+    );
+    await dialog.dismiss();
+  });
+  await deleteRun.click();
+  expect(deletedRuns).toEqual([]);
+  page.once('dialog', (dialog) => dialog.accept());
+  await deleteRun.click();
+  await expect.poll(() => deletedRuns).toEqual([secondRunId]);
+  await expect(picker).toHaveValue('');
+  await expect(picker.locator('option')).toHaveCount(2);
+  await expect(firstAudioTake).toHaveValue('take-1-old');
+  await expect(secondAudioTake).toHaveValue('take-2-old');
+  await expect(
+    page.getByText('Generation failed: Reference audio is unavailable.')
+  ).toBeHidden();
 });
 
 test('generated segments return to the current filtered page after repeated regeneration', async ({
@@ -1689,6 +1826,7 @@ test('generated segments return to the current filtered page after repeated rege
     regeneratedRow.getByRole('button', { name: 'Play' })
   ).toHaveCount(0);
   await regenerateSegment101.click();
+  await page.getByRole('menuitem', { name: 'Regenerate', exact: true }).click();
   await waitForRegeneratedSegment();
   await expect(filter).toHaveValue('all');
   regeneratedRevision += 1;
@@ -1717,6 +1855,9 @@ test('generated segments return to the current filtered page after repeated rege
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
     await regenerateSegment101.click();
+    await page
+      .getByRole('menuitem', { name: 'Regenerate', exact: true })
+      .click();
     await expect.poll(() => generatedRunningRefreshes).toBeGreaterThan(attempt);
     regeneratedRevision += 1;
     const completedRefreshesBeforeReconciliation = generatedRefreshes;
@@ -1934,6 +2075,22 @@ test('alternate regeneration sends one selected-only setting set and returns to 
   const regenerationOptions = page.getByRole('button', {
     name: 'Regeneration options'
   });
+  await page
+    .getByRole('button', { name: 'Regenerate segment 1', exact: true })
+    .click();
+  await page
+    .getByRole('menuitem', {
+      name: 'Regenerate with different settings…',
+      exact: true
+    })
+    .click();
+  await expect(
+    page.getByRole('heading', { name: 'Regenerate 1 selected segment with…' })
+  ).toBeVisible();
+  expect(posted).toHaveLength(0);
+  await page
+    .getByRole('button', { name: 'Close alternate regeneration' })
+    .click();
   await page.getByRole('checkbox', { name: 'Mark segment 1' }).check();
   await expect(regenerationOptions).toBeEnabled();
 

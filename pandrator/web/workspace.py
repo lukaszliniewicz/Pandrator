@@ -545,12 +545,15 @@ def mark_output_assemblies_stale(
     session_id: str,
     *,
     generation_run_id: str | None = None,
+    include_later_runs: bool = False,
     cancel_active: bool = False,
     jobs: JobQueue | None = None,
 ) -> None:
     """Invalidate assemblies and their exports after audio-plan changes.
 
     Assemblies are scoped to the run whose takes were produced or replaced.
+    ``include_later_runs`` additionally invalidates same-plan run-scoped
+    assemblies whose chronological fallback can inherit a changed output run.
     ``cancel_active`` additionally stops queued/running current-selection work:
     historical assemblies of other completed runs remain previewable.  When no
     run is given (segment edits, take selection), only current-selection
@@ -571,10 +574,18 @@ def mark_output_assemblies_stale(
     if generation_run_id is None:
         filters.append(OutputAssembly.generation_run_id.is_(None))
     else:
-        filters.append(
-            (OutputAssembly.generation_run_id.is_(None))
-            | (OutputAssembly.generation_run_id == generation_run_id)
-        )
+        run_filter = OutputAssembly.generation_run_id == generation_run_id
+        if include_later_runs:
+            selected_run = session.get(GenerationRun, generation_run_id)
+            if selected_run is None or selected_run.session_id != session_id:
+                raise KeyError(generation_run_id)
+            later_run_ids = select(GenerationRun.id).where(
+                GenerationRun.session_id == session_id,
+                GenerationRun.plan_revision_id == selected_run.plan_revision_id,
+                GenerationRun.sequence_number >= selected_run.sequence_number,
+            )
+            run_filter = OutputAssembly.generation_run_id.in_(later_run_ids)
+        filters.append((OutputAssembly.generation_run_id.is_(None)) | run_filter)
     records = list(session.scalars(select(OutputAssembly).where(*filters)).all())
     for record in records:
         job = session.get(Job, record.job_id) if record.job_id else None
@@ -2148,6 +2159,14 @@ class GenerationService:
                         {
                             "id": take.id,
                             "generation_run_id": take.generation_run_id,
+                            "generation_task_run_id": (
+                                (
+                                    take_artifact.metadata_json or {}
+                                ).get("generation_task_run_id")
+                                if take.artifact_id
+                                and (take_artifact := artifacts_by_id.get(take.artifact_id)) is not None
+                                else None
+                            ),
                             "artifact_id": take.artifact_id,
                             "parent_take_id": take.parent_take_id,
                             "kind": take.kind,
@@ -2172,8 +2191,7 @@ class GenerationService:
                             else None,
                             "llm_optimized": bool(
                                 (
-                                    artifacts_by_id.get(take.artifact_id).metadata_json
-                                    or {}
+                                    take_artifact.metadata_json or {}
                                 ).get("llm_optimized")
                             )
                             if take.artifact_id
@@ -3773,6 +3791,20 @@ class GenerationService:
                 raise ValueError(
                     "The selected source generation run does not match these segments."
                 )
+            if source_run.output_generation_run_id:
+                output_run = session.get(
+                    GenerationRun, source_run.output_generation_run_id
+                )
+                if (
+                    output_run is None
+                    or output_run.session_id != session_id
+                    or output_run.plan_revision_id != plan_revision_id
+                    or output_run.operation == "rvc"
+                ):
+                    raise ValueError(
+                        "The selected output generation run does not match this session and plan."
+                    )
+                source_run = output_run
         elif requested_segment_ids and operation != "rvc":
             source_run = session.scalar(
                 select(GenerationRun)
@@ -3780,6 +3812,7 @@ class GenerationService:
                     GenerationRun.session_id == session_id,
                     GenerationRun.plan_revision_id == plan_revision_id,
                     GenerationRun.operation != "rvc",
+                    GenerationRun.output_generation_run_id.is_(None),
                 )
                 .order_by(
                     GenerationRun.sequence_number.desc(),
@@ -3849,6 +3882,13 @@ class GenerationService:
             session_id=session_id,
             plan_revision_id=plan_revision_id,
             source_generation_run_id=source_run.id if source_run else None,
+            output_generation_run_id=(
+                source_run.id
+                if operation == "regenerate"
+                and requested_segment_ids
+                and source_run is not None
+                else None
+            ),
             sequence_number=sequence_number,
             operation=operation,
             status="queued",
@@ -3965,7 +4005,11 @@ class GenerationService:
             return {"id": run.id, "job_id": job_id, "status": run.status}
 
     @staticmethod
-    def _run_label(run: GenerationRun) -> str:
+    def _run_label(
+        run: GenerationRun,
+        *,
+        display_sequence: int | None = None,
+    ) -> str:
         snapshot = dict(run.settings_snapshot_json or {})
         tts = dict(snapshot.get("tts") or {})
         rvc = dict(snapshot.get("rvc") or {})
@@ -3985,22 +4029,41 @@ class GenerationService:
             details.append(f"RVC {model}".strip())
         if not details:
             details.append("Speech generation")
-        return f"Run {run.sequence_number}: " + " · ".join(details)
+        return f"Run {display_sequence or run.sequence_number}: " + " · ".join(details)
 
     def _run_payload(self, session, run: GenerationRun | None) -> dict[str, Any] | None:
         if run is None:
             return None
         job = session.get(Job, run.job_id) if run.job_id else None
+        output_run = (
+            session.get(GenerationRun, run.output_generation_run_id)
+            if run.output_generation_run_id
+            else run
+        )
+        output_run_id = output_run.id if output_run is not None else run.id
+        label_run = output_run or run
+        visible_sequence = int(
+            session.scalar(
+                select(func.count())
+                .select_from(GenerationRun)
+                .where(
+                    GenerationRun.session_id == run.session_id,
+                    GenerationRun.output_generation_run_id.is_(None),
+                    GenerationRun.sequence_number <= label_run.sequence_number,
+                )
+            )
+            or label_run.sequence_number
+        )
         assembly = session.scalar(
             select(OutputAssembly)
-            .where(OutputAssembly.generation_run_id == run.id)
+            .where(OutputAssembly.generation_run_id == output_run_id)
             .order_by(OutputAssembly.created_at.desc())
         )
         take_count = int(
             session.scalar(
                 select(func.count())
                 .select_from(AudioTake)
-                .where(AudioTake.generation_run_id == run.id)
+                .where(AudioTake.generation_run_id == output_run_id)
             )
             or 0
         )
@@ -4008,7 +4071,7 @@ class GenerationService:
 
         usage = list(
             session.scalars(
-                select(UsageEvent).where(UsageEvent.generation_run_id == run.id)
+                select(UsageEvent).where(UsageEvent.generation_run_id == output_run_id)
             ).all()
         )
         snapshot = dict(run.settings_snapshot_json or {})
@@ -4022,22 +4085,31 @@ class GenerationService:
             "session_id": run.session_id,
             "plan_revision_id": run.plan_revision_id,
             "source_generation_run_id": run.source_generation_run_id,
+            "output_generation_run_id": run.output_generation_run_id,
             "sequence_number": run.sequence_number,
             "operation": run.operation,
-            "label": self._run_label(run),
+            "label": self._run_label(
+                label_run,
+                display_sequence=visible_sequence,
+            ),
             "job_id": run.job_id,
             "status": run.status,
-            "progress": float(job.progress)
+            "progress": 1.0
+            if run.status == "completed"
+            else float(job.progress)
             if job
-            else (1.0 if run.status == "completed" else 0.0),
+            else 0.0,
             "pause_requested": run.pause_requested,
             "cancel_requested": run.cancel_requested,
+            "resume_source_on_completion": run.resume_source_on_completion,
             "settings_hash": run.settings_hash,
             # A run has a full reproducibility snapshot, but the history UI
             # needs only speech settings to seed an alternate take.  Do not
             # turn this list endpoint into a settings-data side channel.
             "settings_snapshot": modal_snapshot,
-            "error_message": job.error_message if job else None,
+            "error_message": job.error_message
+            if job and run.status == "failed"
+            else None,
             "take_count": take_count,
             "usage": usage_summary(usage),
             "progress_detail": job.progress_detail if job else None,
@@ -4069,24 +4141,81 @@ class GenerationService:
 
     def latest_run(self, session_id: str) -> dict[str, Any] | None:
         with self.database.session() as session:
-            run = session.scalar(
-                select(GenerationRun)
-                .where(GenerationRun.session_id == session_id)
-                .order_by(
-                    GenerationRun.sequence_number.desc(),
-                    GenerationRun.created_at.desc(),
-                )
+            runs = list(
+                session.scalars(
+                    select(GenerationRun)
+                    .where(GenerationRun.session_id == session_id)
+                    .order_by(
+                        GenerationRun.sequence_number.desc(),
+                        GenerationRun.created_at.desc(),
+                    )
+                ).all()
+            )
+            active_grouped = next(
+                (
+                    candidate
+                    for candidate in runs
+                    if candidate.output_generation_run_id
+                    and candidate.status
+                    in {"queued", "running", "pausing", "cancel_requested"}
+                ),
+                None,
+            )
+            run = active_grouped or next(
+                (
+                    candidate
+                    for candidate in runs
+                    if candidate.output_generation_run_id is None
+                ),
+                None,
             )
             return self._run_payload(session, run)
 
     def delete_run(self, run_id: str) -> dict[str, Any]:
         paths_to_remove: list[Path] = []
-        with self.database.session() as session:
+        with self.database.immediate_session() as session:
             run = session.get(GenerationRun, run_id)
             if run is None:
                 raise KeyError(run_id)
             if run.status in {"queued", "running", "pausing", "cancel_requested"}:
                 raise ValueError("Stop or cancel this run before deleting it.")
+            active_job_statuses = {"queued", "running", "cancel_requested"}
+            current_job = session.get(Job, run.job_id) if run.job_id else None
+            if current_job is not None and current_job.status in active_job_statuses:
+                raise ValueError("Wait for this run's job to stop before deleting it.")
+            grouped_children = []
+            if run.output_generation_run_id is None:
+                grouped_children = list(
+                    session.scalars(
+                        select(GenerationRun).where(
+                            GenerationRun.output_generation_run_id == run.id
+                        )
+                    ).all()
+                )
+                active_statuses = {
+                    "queued",
+                    "running",
+                    "pausing",
+                    "cancel_requested",
+                }
+                active_child = next(
+                    (
+                        child
+                        for child in grouped_children
+                        if child.status in active_statuses
+                        or (
+                            child.job_id
+                            and (child_job := session.get(Job, child.job_id)) is not None
+                            and child_job.status in active_job_statuses
+                        )
+                    ),
+                    None,
+                )
+                if active_child is not None:
+                    raise ValueError(
+                        "Stop or cancel grouped regeneration before deleting its output run."
+                    )
+            run_ids = [run.id, *(child.id for child in grouped_children)]
             takes = list(
                 session.scalars(
                     select(AudioTake).where(AudioTake.generation_run_id == run.id)
@@ -4095,7 +4224,7 @@ class GenerationService:
             assemblies = list(
                 session.scalars(
                     select(OutputAssembly).where(
-                        OutputAssembly.generation_run_id == run.id
+                        OutputAssembly.generation_run_id.in_(run_ids)
                     )
                 ).all()
             )
@@ -4149,6 +4278,12 @@ class GenerationService:
                     )
             for artifact in artifacts:
                 session.delete(artifact)
+            for child in grouped_children:
+                if child.job_id:
+                    child_job = session.get(Job, child.job_id)
+                    if child_job is not None:
+                        session.delete(child_job)
+            # The output-owner foreign key cascades child run deletion.
             session.delete(run)
         for path in paths_to_remove:
             try:

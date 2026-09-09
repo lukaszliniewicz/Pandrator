@@ -40,8 +40,14 @@
       target_language: 'target language',
       model: 'model',
       reasoning_effort: 'reasoning level',
-      instructions: 'guidance'
-    })[field] ?? field;
+      instructions: 'guidance',
+      correction_style: 'correction style',
+      char_limit: 'characters per batch',
+      max_segments_per_batch: 'segments per batch',
+      llm_concurrent_calls: 'parallel requests',
+      web_research: 'web research',
+      glossary: 'glossary'
+    })[field] ?? field.replaceAll('_', ' ');
 
   const mismatchStageLabel = (key: string) =>
     ({
@@ -56,10 +62,41 @@
 
   const mismatchReasonLabel = (reason: string) =>
     ({
-      settings_changed: 'Settings changed',
-      settings_unverifiable: 'Legacy output has no comparable settings history',
-      source_lineage_changed: 'Selected output lineage changed'
+      settings_changed:
+        'Processing settings changed since this text was created.',
+      settings_unverifiable:
+        'This result has no comparable settings record. Pandrator cannot tell whether it needs updating.',
+      source_lineage_changed:
+        'This text was produced from a different source or earlier selected text.'
     })[reason] ?? reason.replaceAll('_', ' ');
+
+  function changedSetting(
+    mismatch: StageSettingsMismatch['mismatches'][number],
+    field: string
+  ) {
+    const label = mismatchFieldLabel(field);
+    if (
+      !mismatch.stored ||
+      !mismatch.current ||
+      ['instructions', 'glossary', 'web_research'].includes(field)
+    )
+      return `${label} changed`;
+    const before = mismatch.stored[field];
+    const after = mismatch.current[field];
+    if (typeof before === 'object' || typeof after === 'object')
+      return `${label} changed`;
+    const display = (value: unknown) =>
+      value === undefined
+        ? 'not recorded'
+        : value === ''
+          ? 'default'
+          : typeof value === 'boolean'
+            ? value
+              ? 'on'
+              : 'off'
+            : String(value);
+    return `${label}: ${display(before)} → ${display(after)}`;
+  }
 </script>
 
 {#if pendingRun}
@@ -144,17 +181,21 @@
   >
     <!-- svelte-ignore a11y_no_noninteractive_element_to_interactive_role -->
     <section
-      use:modalFocus={{ onclose }}
-      class="surface w-full max-w-lg rounded-[1.7rem] p-7"
+      use:modalFocus={{
+        onclose,
+        initialFocus: '[data-generate-selected-text]'
+      }}
+      class="surface max-h-[90vh] w-full max-w-xl overflow-y-auto rounded-[1.7rem] p-7"
       role="dialog"
       aria-modal="true"
       aria-labelledby="mismatch-title"
+      style:background="var(--paper-strong)"
     >
       <div class="flex items-start justify-between gap-4">
         <div>
           <div class="eyebrow">Before generation</div>
           <h2 id="mismatch-title" class="mt-1 text-2xl font-semibold">
-            Choose prerequisite outputs
+            Generate with the selected text?
           </h2>
         </div>
         <button
@@ -164,10 +205,10 @@
         >
       </div>
       <p class="muted mt-4 text-sm leading-relaxed">
-        A prerequisite may have different settings, point to a different
-        selected-output lineage, or be a legacy result without comparable
-        history. Reusing selected outputs skips reruns for the listed stages;
-        rerunning prerequisites creates updated outputs before audio generation.
+        Your selected text is available for generation. The checks below concern
+        how that text was prepared. Generate with it using the current speech
+        settings, or refresh the earlier steps first to apply their current
+        settings.
       </p>
       <div class="mt-4 space-y-2">
         {#each pendingMismatch.mismatches as mismatch}
@@ -175,18 +216,22 @@
             class="rounded-xl border border-amber-400/40 bg-amber-500/10 p-4 text-sm"
           >
             <strong>{mismatchStageLabel(mismatch.stage)}</strong>
-            <span class="muted">
-              — changed: {(mismatch.changed_fields?.length
-                ? mismatch.changed_fields
-                : ['settings']
-              )
-                .map(mismatchFieldLabel)
-                .join(', ')}
-            </span>
             {#if mismatch.reasons?.length}
-              <div class="muted mt-1 text-xs">
-                {mismatch.reasons.map(mismatchReasonLabel).join(' · ')}
-              </div>
+              {#each mismatch.reasons as reason}
+                <p class="muted mt-1 text-sm">{mismatchReasonLabel(reason)}</p>
+              {/each}
+            {:else if !mismatch.changed_fields?.length}
+              <p class="muted mt-1 text-sm">
+                Pandrator could not confirm that this result matches the current
+                setup.
+              </p>
+            {/if}
+            {#if mismatch.changed_fields?.length}
+              <ul class="mt-2 list-inside list-disc space-y-1 text-xs">
+                {#each mismatch.changed_fields as field}
+                  <li>{changedSetting(mismatch, field)}</li>
+                {/each}
+              </ul>
             {/if}
           </div>
         {/each}
@@ -198,16 +243,17 @@
           >Cancel</button
         >
         <button
-          onclick={() => onreuse(pendingMismatch)}
-          class="rounded-xl border border-[var(--line)] px-4 py-2.5 text-sm font-semibold"
-          aria-label="Reuse all listed prerequisite outputs without rerunning them"
-          >Reuse selected outputs</button
-        >
-        <button
           onclick={() => onrefresh(pendingMismatch)}
+          class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-4 py-2.5 text-sm font-semibold"
+        >
+          <RefreshCw size={16} /> Refresh text first
+        </button>
+        <button
+          data-generate-selected-text
+          onclick={() => onreuse(pendingMismatch)}
           class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white"
         >
-          <RefreshCw size={16} /> Rerun prerequisites
+          <Play size={16} /> Generate with selected text
         </button>
       </div>
     </section>

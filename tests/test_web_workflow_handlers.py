@@ -1614,26 +1614,73 @@ A single reviewed cue.
                 operation="generate",
                 status="completed",
             )
-            session.add_all([first_run, second_run])
+            third_run = GenerationRun(
+                session_id=self.session.id,
+                plan_revision_id=plan_revision_id,
+                sequence_number=3,
+                operation="generate",
+                status="completed",
+            )
+            session.add_all([first_run, second_run, third_run])
             session.flush()
-            first_assembly = OutputAssembly(session_id=self.session.id, generation_run_id=first_run.id, status="completed")
-            second_assembly = OutputAssembly(session_id=self.session.id, generation_run_id=second_run.id, status="completed")
-            selection_assembly = OutputAssembly(session_id=self.session.id, generation_run_id=None, status="completed")
-            session.add_all([first_assembly, second_assembly, selection_assembly])
+            first_assembly = OutputAssembly(
+                session_id=self.session.id,
+                generation_run_id=first_run.id,
+                status="completed",
+            )
+            second_assembly = OutputAssembly(
+                session_id=self.session.id,
+                generation_run_id=second_run.id,
+                status="completed",
+            )
+            third_assembly = OutputAssembly(
+                session_id=self.session.id,
+                generation_run_id=third_run.id,
+                status="completed",
+            )
+            selection_assembly = OutputAssembly(
+                session_id=self.session.id,
+                generation_run_id=None,
+                status="completed",
+            )
+            session.add_all(
+                [first_assembly, second_assembly, third_assembly, selection_assembly]
+            )
             session.flush()
-            ids = (first_run.id, first_assembly.id, second_assembly.id, selection_assembly.id)
+            ids = (
+                first_run.id,
+                first_assembly.id,
+                second_assembly.id,
+                third_assembly.id,
+                selection_assembly.id,
+            )
 
             mark_output_assemblies_stale(session, self.session.id, generation_run_id=second_run.id)
             self.assertEqual("completed", session.get(OutputAssembly, ids[1]).status)
             self.assertEqual("stale", session.get(OutputAssembly, ids[2]).status)
+            self.assertEqual("completed", session.get(OutputAssembly, ids[3]).status)
+            self.assertEqual("stale", session.get(OutputAssembly, ids[4]).status)
+
+            for assembly_id in ids[1:]:
+                session.get(OutputAssembly, assembly_id).status = "completed"
+            mark_output_assemblies_stale(
+                session,
+                self.session.id,
+                generation_run_id=second_run.id,
+                include_later_runs=True,
+            )
+            self.assertEqual("completed", session.get(OutputAssembly, ids[1]).status)
+            self.assertEqual("stale", session.get(OutputAssembly, ids[2]).status)
             self.assertEqual("stale", session.get(OutputAssembly, ids[3]).status)
+            self.assertEqual("stale", session.get(OutputAssembly, ids[4]).status)
 
             for assembly_id in ids[1:]:
                 session.get(OutputAssembly, assembly_id).status = "completed"
             mark_output_assemblies_stale(session, self.session.id)
             self.assertEqual("completed", session.get(OutputAssembly, ids[1]).status)
             self.assertEqual("completed", session.get(OutputAssembly, ids[2]).status)
-            self.assertEqual("stale", session.get(OutputAssembly, ids[3]).status)
+            self.assertEqual("completed", session.get(OutputAssembly, ids[3]).status)
+            self.assertEqual("stale", session.get(OutputAssembly, ids[4]).status)
 
     def test_url_download_uses_ytdlp_and_records_provenance(self):
         captured = {}
@@ -2835,6 +2882,36 @@ A single reviewed cue.
             item for item in listed["items"] if item["id"] == loud_segment_id
         )["takes"][0]
         self.assertEqual("warning", loud_take["audio_verification"]["status"])
+
+        with self.database.session() as session:
+            root = session.get(GenerationRun, run_id)
+            child = GenerationRun(
+                session_id=self.session.id,
+                plan_revision_id=revision_id,
+                sequence_number=2,
+                operation="regenerate",
+                source_generation_run_id=run_id,
+                output_generation_run_id=run_id,
+                settings_snapshot_json=dict(root.settings_snapshot_json),
+            )
+            session.add(child)
+            session.flush()
+            child_id = child.id
+            # A user-cleared flag must not return because an old take failed;
+            # an unrelated manual flag must remain untouched.
+            session.get(GenerationSegment, loud_segment_id).marked = False
+            session.get(GenerationSegment, segment_ids[0]).marked = True
+        with mock.patch("pandrator.logic.tts_handler.text_to_audio", return_value=clean):
+            replacement = self.handlers.run_generation(
+                {"generation_run_id": child_id, "operation": "regenerate", "segment_ids": [loud_segment_id]},
+                self.progress,
+                threading.Event(),
+            )
+        self.assertEqual(0, replacement["verification_warnings"])
+        with self.database.session() as session:
+            self.assertFalse(session.get(GenerationSegment, loud_segment_id).marked)
+            self.assertTrue(session.get(GenerationSegment, segment_ids[0]).marked)
+            self.assertEqual("warning", session.get(Artifact, artifact.id).metadata_json["audio_verification"]["status"])
 
     def test_targeted_generation_appends_a_new_take_without_overwriting_the_old_one(self):
         revision_id, segment_ids = self.handlers._store_generation_plan(

@@ -215,6 +215,15 @@ class SchemaUpgradeTests(unittest.TestCase):
                         )
                     ],
                 )
+                output_owner_column = next(
+                    row for row in connection.execute("PRAGMA table_info(generation_runs)")
+                    if row[1] == "output_generation_run_id"
+                )
+                self.assertEqual(0, output_owner_column[3])
+                self.assertTrue(any(
+                    row[2] == "generation_runs" and row[3] == "output_generation_run_id" and row[6] == "CASCADE"
+                    for row in connection.execute("PRAGMA foreign_key_list(generation_runs)")
+                ))
                 self.assertIn(
                     "node_kind",
                     [

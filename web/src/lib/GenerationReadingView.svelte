@@ -1,16 +1,10 @@
 <script lang="ts">
-  import {
-    Flag,
-    Play,
-    RefreshCw,
-    RotateCcw,
-    Trash2,
-    WandSparkles
-  } from '@lucide/svelte';
+  import { Flag, Play, RotateCcw, Trash2 } from '@lucide/svelte';
   import type { GenerationSegment } from './api-models';
   import type { GenerationSegmentChanges } from './domain-api';
   import type { ReadingBlock } from './generation-view-models';
   import SpeechBoundaryMarker from './SpeechBoundaryMarker.svelte';
+  import SegmentRegenerationMenu from './SegmentRegenerationMenu.svelte';
 
   let {
     blocks,
@@ -140,26 +134,13 @@
                 aria-label={`Play segment ${item.ordinal + 1}`}
                 ><Play size={13} /></button
               >
-              <button
-                onclick={(event) => {
-                  event.stopPropagation();
-                  onregenerate(item);
-                }}
+              <SegmentRegenerationMenu
+                segmentNumber={item.ordinal + 1}
                 disabled={loading || item.removed}
-                title="Regenerate segment"
-                aria-label={`Regenerate segment ${item.ordinal + 1}`}
-                ><RefreshCw size={13} /></button
-              >
-              <button
-                onclick={(event) => {
-                  event.stopPropagation();
-                  onregeneratewith(item);
-                }}
-                disabled={loading || item.removed}
-                title="Regenerate with alternate settings"
-                aria-label={`Regenerate segment ${item.ordinal + 1} with alternate settings`}
-                ><WandSparkles size={13} /></button
-              >
+                compact
+                onregenerate={() => onregenerate(item)}
+                onregeneratewith={() => onregeneratewith(item)}
+              />
               <button
                 onclick={(event) => {
                   event.stopPropagation();
@@ -312,7 +293,9 @@
       transform 0.12s ease;
   }
   .reading-segment:hover .reading-actions,
-  .reading-segment:focus-within .reading-actions {
+  .reading-segment:focus-within .reading-actions,
+  .reading-segment:has(:global(.regenerate-trigger[aria-expanded='true']))
+    .reading-actions {
     opacity: 1;
     pointer-events: auto;
     transform: translate(-50%, 0);

@@ -29,13 +29,15 @@ test('generation and voice controls expose resolved selection semantics', () => 
   expect(stageCard).toContain("stage's Selected version control");
 
   expect(runDialogs).toContain('source_lineage_changed');
-  expect(runDialogs).toContain('Selected output lineage changed');
+  expect(runDialogs).toContain(
+    'This text was produced from a different source or earlier selected text.'
+  );
   expect(runDialogs).toContain('settings_unverifiable');
   expect(runDialogs).toContain(
-    'Legacy output has no comparable settings history'
+    'This result has no comparable settings record.'
   );
-  expect(runDialogs).toContain('Reuse selected outputs');
-  expect(runDialogs).toContain('Rerun prerequisites');
+  expect(runDialogs).toContain('Generate with selected text');
+  expect(runDialogs).toContain('Refresh text first');
   expect(workspace).toContain('pending.mismatches.map((item) => item.stage)');
 
   expect(voiceLibrary).toContain('class="modal-scroll min-h-0 flex-1');
@@ -298,8 +300,10 @@ test('generation settings make source, availability, voice language, and reuse c
           mismatches: [
             {
               stage: 'translate',
-              changed_fields: [],
-              reasons: ['source_lineage_changed']
+              changed_fields: ['target_language', 'model'],
+              reasons: ['source_lineage_changed', 'settings_changed'],
+              stored: { target_language: 'en', model: 'previous-model' },
+              current: { target_language: 'de', model: 'current-model' }
             },
             {
               stage: 'correct',
@@ -384,25 +388,48 @@ test('generation settings make source, availability, voice language, and reuse c
 
   await generationCard.getByRole('button', { name: 'Run now' }).click();
   const mismatchDialog = page.getByRole('dialog', {
-    name: 'Choose prerequisite outputs'
+    name: 'Generate with the selected text?'
   });
   await expect(mismatchDialog).toContainText('Translation');
   await expect(mismatchDialog).toContainText('Correction');
-  await expect(mismatchDialog).toContainText('Selected output lineage changed');
   await expect(mismatchDialog).toContainText(
-    'Legacy output has no comparable settings history'
+    'This text was produced from a different source or earlier selected text.'
+  );
+  await expect(mismatchDialog).toContainText(
+    'This result has no comparable settings record.'
   );
   await expect(
     mismatchDialog.getByRole('button', {
-      name: 'Reuse all listed prerequisite outputs without rerunning them'
+      name: 'Generate with selected text'
     })
   ).toBeVisible();
   await expect(
-    mismatchDialog.getByRole('button', { name: 'Rerun prerequisites' })
+    mismatchDialog.getByRole('button', { name: 'Refresh text first' })
   ).toBeVisible();
+  await expect(mismatchDialog).toContainText('target language: en → de');
+  await expect(mismatchDialog).toContainText(
+    'model: previous-model → current-model'
+  );
+  await expect(
+    mismatchDialog.getByRole('button', {
+      name: 'Generate with selected text',
+      exact: true
+    })
+  ).toBeFocused();
+  await page.screenshot({ path: '/tmp/pandrator-generation-freshness.png' });
+  await page.keyboard.press('Enter');
+  await expect
+    .poll(() => generationRunPayload)
+    .toMatchObject({ reuse_stages: ['translate', 'correct'] });
+  await expect(mismatchDialog).toBeHidden();
+  generationRunPayload = null;
+  await generationCard.getByRole('button', { name: 'Run now' }).click();
   await mismatchDialog
-    .getByRole('button', { name: 'Close settings change prompt' })
+    .getByRole('button', { name: 'Refresh text first' })
     .click();
+  await expect.poll(() => generationRunPayload).not.toBeNull();
+  expect(generationRunPayload).not.toHaveProperty('reuse_stages');
+  generationRunPayload = null;
 
   await page
     .getByLabel('Workspace mode')
@@ -410,9 +437,13 @@ test('generation settings make source, availability, voice language, and reuse c
     .click();
   await page.getByRole('button', { name: 'Generate audio segments' }).click();
   await expect.poll(() => generationRunPayload).not.toBeNull();
-  expect(generationRunPayload).not.toHaveProperty('reuse_stages');
+  expect(generationRunPayload).toMatchObject({
+    reuse_stages: ['translate', 'correct']
+  });
   await expect(
-    page.getByText(/Rerunning stale translate and correct/)
+    page.getByText(
+      /Generating with the selected text. Keeping the selected translate and correct results/
+    )
   ).toBeVisible();
 
   const currentTtsSettings = await page.request.get(

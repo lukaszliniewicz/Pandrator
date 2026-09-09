@@ -818,6 +818,9 @@ class GenerationRun(Base):
     source_generation_run_id: Mapped[str | None] = mapped_column(
         ForeignKey("generation_runs.id", ondelete="SET NULL"), index=True
     )
+    output_generation_run_id: Mapped[str | None] = mapped_column(
+        ForeignKey("generation_runs.id", ondelete="CASCADE"), index=True
+    )
     job_id: Mapped[str | None] = mapped_column(
         ForeignKey("jobs.id", ondelete="SET NULL"), index=True
     )

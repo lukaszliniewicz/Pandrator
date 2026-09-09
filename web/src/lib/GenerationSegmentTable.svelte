@@ -1,11 +1,5 @@
 <script lang="ts">
-  import {
-    RefreshCw,
-    RotateCcw,
-    Scissors,
-    Trash2,
-    WandSparkles
-  } from '@lucide/svelte';
+  import { RotateCcw, Scissors, Trash2, WandSparkles } from '@lucide/svelte';
   import type { GenerationSegment } from './api-models';
   import type { GenerationSegmentChanges } from './domain-api';
   import type { PlayableTake } from './generation-view-models';
@@ -13,6 +7,7 @@
   import type { VoiceDescriptor } from './voice-catalog';
   import AudioPlayer from './AudioPlayer.svelte';
   import SpeechBoundaryMarker from './SpeechBoundaryMarker.svelte';
+  import SegmentRegenerationMenu from './SegmentRegenerationMenu.svelte';
   import WaveformPeaks from './WaveformPeaks.svelte';
 
   let {
@@ -431,30 +426,12 @@
             >
               <Scissors size={14} />
             </button>
-            <button
-              onclick={(event) => {
-                event.stopPropagation();
-                onregenerate(item);
-              }}
+            <SegmentRegenerationMenu
+              segmentNumber={item.ordinal + 1}
               disabled={loading || item.removed}
-              class="action icon-action"
-              title="Regenerate this segment"
-              aria-label={`Regenerate segment ${item.ordinal + 1}`}
-            >
-              <RefreshCw size={14} />
-            </button>
-            <button
-              onclick={(event) => {
-                event.stopPropagation();
-                onregeneratewith(item);
-              }}
-              disabled={loading || item.removed}
-              class="action icon-action"
-              title="Regenerate with alternate settings"
-              aria-label={`Regenerate segment ${item.ordinal + 1} with alternate settings`}
-            >
-              <WandSparkles size={14} />
-            </button>
+              onregenerate={() => onregenerate(item)}
+              onregeneratewith={() => onregeneratewith(item)}
+            />
             <button
               onclick={(event) => {
                 event.stopPropagation();

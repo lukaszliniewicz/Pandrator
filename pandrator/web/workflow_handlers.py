@@ -718,20 +718,28 @@ class WorkflowHandlers:
         return verify_audio(audio, synthesized_text, settings)
 
     def _finalize_run_audio_verification(self, run_id: str) -> int:
-        """Add conservative run-relative RMS warnings after all takes exist."""
+        """Check the latest available take per segment within this output run."""
         marked_segment_ids: set[str] = set()
         with self.database.session() as session:
             rows = list(
                 session.execute(
                     select(AudioTake, Artifact)
                     .join(Artifact, AudioTake.artifact_id == Artifact.id)
-                    .where(AudioTake.generation_run_id == run_id)
+                    .where(
+                        AudioTake.generation_run_id == run_id,
+                        AudioTake.status == "completed",
+                    )
+                    .order_by(AudioTake.created_at.desc())
                 ).all()
             )
             grouped: dict[
                 tuple[str, str], list[tuple[AudioTake, Artifact, dict[str, Any]]]
             ] = {}
+            seen_segments: set[str] = set()
             for take, artifact in rows:
+                if take.generation_segment_id in seen_segments:
+                    continue
+                seen_segments.add(take.generation_segment_id)
                 metadata = dict(artifact.metadata_json or {})
                 verification = metadata.get("audio_verification")
                 if (
@@ -8025,6 +8033,17 @@ class WorkflowHandlers:
             run = session.get(GenerationRun, run_id)
             if run is None:
                 raise KeyError(run_id)
+            output_run_id = str(run.output_generation_run_id or run.id)
+            output_run = session.get(GenerationRun, output_run_id)
+            if (
+                output_run is None
+                or output_run.session_id != run.session_id
+                or output_run.plan_revision_id != run.plan_revision_id
+                or (output_run.operation == "rvc" and output_run_id != run.id)
+            ):
+                raise ValueError(
+                    "The output generation run does not match this session and plan."
+                )
             run.status = "running"
             run.updated_at = utcnow()
             settings_snapshot = dict(run.settings_snapshot_json or {})
@@ -8046,7 +8065,6 @@ class WorkflowHandlers:
         with self.database.session() as session:
             selected_segments = list(session.scalars(statement).all())
             segment_ids = [item.id for item in selected_segments]
-            source_texts = [item.text for item in selected_segments]
             segment_seeds = {
                 item.id: {
                     "text": item.text,
@@ -8056,6 +8074,16 @@ class WorkflowHandlers:
                     "status": item.status,
                 }
                 for item in selected_segments
+            }
+            completed_take_ids = {
+                segment_id
+                for segment_id in session.scalars(
+                    select(AudioTake.generation_segment_id).where(
+                        AudioTake.generation_run_id == output_run_id,
+                        AudioTake.status == "completed",
+                        AudioTake.artifact_id.is_not(None),
+                    )
+                ).all()
             }
         if not segment_ids:
             with self.database.session() as session:
@@ -8202,22 +8230,33 @@ class WorkflowHandlers:
                         str(selected_tts_override.get("voice_language") or "").strip()
                         or None
                     )
-                optimized, optimization_model = self._optimize_generation_texts(
-                    session_id,
-                    segment_ids,
-                    source_texts,
-                    {**text_settings, **tts_settings},
-                    cancel_event,
-                    lambda value, detail=None: progress(
-                        float(value) * optimization_share, detail
-                    ),
-                    job_id=job_id,
-                    generation_run_id=run_id,
-                    pronunciation_settings=alternate_pronunciation_settings,
-                    pronunciation_language=alternate_pronunciation_language,
-                    pronunciation_voice_language=alternate_pronunciation_voice_language,
-                )
-                optimized_by_id = dict(zip(segment_ids, optimized, strict=True))
+                optimization_segment_ids = [
+                    segment_id
+                    for segment_id in segment_ids
+                    if operation != "resume" or segment_id not in completed_take_ids
+                ]
+                if optimization_segment_ids:
+                    optimized, optimization_model = self._optimize_generation_texts(
+                        session_id,
+                        optimization_segment_ids,
+                        [
+                            segment_seeds[segment_id]["text"]
+                            for segment_id in optimization_segment_ids
+                        ],
+                        {**text_settings, **tts_settings},
+                        cancel_event,
+                        lambda value, detail=None: progress(
+                            float(value) * optimization_share, detail
+                        ),
+                        job_id=job_id,
+                        generation_run_id=output_run_id,
+                        pronunciation_settings=alternate_pronunciation_settings,
+                        pronunciation_language=alternate_pronunciation_language,
+                        pronunciation_voice_language=alternate_pronunciation_voice_language,
+                    )
+                    optimized_by_id = dict(
+                        zip(optimization_segment_ids, optimized, strict=True)
+                    )
             except Exception:
                 with self.database.session() as session:
                     run = session.get(GenerationRun, run_id)
@@ -8265,9 +8304,9 @@ class WorkflowHandlers:
             if effective_batch_size > 1:
                 batch_items: list[tuple[str, str, dict[str, Any]]] = []
                 for segment_id in segment_ids:
-                    seed = segment_seeds[segment_id]
-                    if operation == "resume" and seed["status"] == "completed":
+                    if operation == "resume" and segment_id in completed_take_ids:
                         continue
+                    seed = segment_seeds[segment_id]
                     segment_tts_settings = _apply_segment_tts_overrides(
                         tts_settings,
                         language=seed["language"],
@@ -8331,7 +8370,7 @@ class WorkflowHandlers:
                         "status": "paused",
                         "generated": generated,
                     }
-                if operation == "resume" and segment.status == "completed":
+                if operation == "resume" and segment_id in completed_take_ids:
                     skipped += 1
                     progress(
                         optimization_share
@@ -8403,6 +8442,28 @@ class WorkflowHandlers:
                     parent_take_id = source_take_id
                     take_settings = rvc_settings
                 else:
+                    previous_active_take_id = None
+                    if operation == "regenerate":
+                        with self.database.session() as session:
+                            previous_active_take_id = session.scalar(
+                                select(AudioTake.id)
+                                .where(
+                                    AudioTake.generation_segment_id == segment_id,
+                                    AudioTake.generation_run_id == output_run_id,
+                                    AudioTake.status.in_(("completed", "stale")),
+                                    AudioTake.artifact_id.is_not(None),
+                                )
+                                .order_by(AudioTake.created_at.desc())
+                            )
+                            if previous_active_take_id is None:
+                                previous_active_take_id = session.scalar(
+                                    select(AudioTake.id)
+                                    .where(
+                                        AudioTake.generation_segment_id == segment_id,
+                                        AudioTake.is_active.is_(True),
+                                    )
+                                    .order_by(AudioTake.created_at.desc())
+                                )
                     batch_context = batch_contexts.get(segment_id)
                     if batch_context is not None:
                         text = str(batch_context["text"])
@@ -8484,7 +8545,7 @@ class WorkflowHandlers:
                     if audio is None:
                         raise RuntimeError("The speech service returned no audio.")
                     take_kind = "tts"
-                    parent_take_id = None
+                    parent_take_id = previous_active_take_id
                     take_settings = segment_tts_settings
                     if bool(selected_rvc_override.get("enabled")):
                         if not str(
@@ -8530,7 +8591,12 @@ class WorkflowHandlers:
                         settings=stored_take_settings,
                         metadata={
                             "generation_segment_id": segment_id,
-                            "generation_run_id": run_id,
+                            "generation_run_id": output_run_id,
+                            **(
+                                {"generation_task_run_id": run_id}
+                                if output_run_id != run_id
+                                else {}
+                            ),
                             "kind": take_kind,
                             "speaker": segment_speaker,
                             "source_text": text,
@@ -8555,7 +8621,7 @@ class WorkflowHandlers:
                             len(audio),
                             job_id=job_id,
                             artifact_id=artifact.id,
-                            generation_run_id=run_id,
+                            generation_run_id=output_run_id,
                         )
                         if usage_event is not None:
                             session.add(usage_event)
@@ -8572,7 +8638,7 @@ class WorkflowHandlers:
                     session.add(
                         AudioTake(
                             generation_segment_id=segment_id,
-                            generation_run_id=run_id,
+                            generation_run_id=output_run_id,
                             artifact_id=artifact.id,
                             parent_take_id=parent_take_id,
                             kind=take_kind,
@@ -8590,7 +8656,10 @@ class WorkflowHandlers:
                         segment.marked = True
                     segment.updated_at = utcnow()
                     mark_output_assemblies_stale(
-                        session, session_id, generation_run_id=run_id
+                        session,
+                        session_id,
+                        generation_run_id=output_run_id,
+                        include_later_runs=output_run_id != run_id,
                     )
                 take_committed = True
                 generated += 1
@@ -8620,24 +8689,59 @@ class WorkflowHandlers:
                         run.updated_at = utcnow()
                 raise
 
-        verification_warning_count = self._finalize_run_audio_verification(run_id)
+        verification_warning_count = self._finalize_run_audio_verification(output_run_id)
         with self.database.session() as session:
             run = session.get(GenerationRun, run_id)
-            incomplete = int(
-                session.scalar(
-                    select(func.count())
-                    .select_from(GenerationSegment)
-                    .where(
-                        GenerationSegment.plan_revision_id == plan_revision_id,
-                        GenerationSegment.removed.is_(False),
-                        GenerationSegment.status != "completed",
+            if operation == "rvc" or (
+                operation == "regenerate" and run.output_generation_run_id is None
+            ):
+                incomplete = int(
+                    session.scalar(
+                        select(func.count())
+                        .select_from(GenerationSegment)
+                        .where(
+                            GenerationSegment.plan_revision_id == plan_revision_id,
+                            GenerationSegment.removed.is_(False),
+                            GenerationSegment.status != "completed",
+                        )
                     )
+                    or 0
                 )
-                or 0
-            )
+            else:
+                completed_segments = (
+                    select(AudioTake.generation_segment_id)
+                    .where(
+                        AudioTake.generation_run_id == output_run_id,
+                        AudioTake.status == "completed",
+                        AudioTake.artifact_id.is_not(None),
+                    )
+                    .distinct()
+                )
+                incomplete = int(
+                    session.scalar(
+                        select(func.count())
+                        .select_from(GenerationSegment)
+                        .where(
+                            GenerationSegment.plan_revision_id == plan_revision_id,
+                            GenerationSegment.removed.is_(False),
+                            ~GenerationSegment.id.in_(completed_segments),
+                        )
+                    )
+                    or 0
+                )
             final_status = "partial" if incomplete else "completed"
             run.status = final_status
             run.updated_at = utcnow()
+            if output_run_id != run_id:
+                output_run = session.get(GenerationRun, output_run_id)
+                if output_run is not None and output_run.status in {
+                    "completed",
+                    "partial",
+                    "failed",
+                    "canceled",
+                }:
+                    output_run.status = final_status
+                    output_run.updated_at = utcnow()
         progress(
             1.0,
             "Generation run complete"

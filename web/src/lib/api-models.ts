@@ -907,6 +907,8 @@ export type StageSettingsMismatch = {
     stage: string;
     changed_fields: string[];
     reasons?: string[];
+    stored?: Record<string, unknown> | null;
+    current?: Record<string, unknown> | null;
   }[];
   [key: string]: unknown;
 };
@@ -978,6 +980,7 @@ type AudioVerification = {
 
 export type AudioTake = {
   id: string;
+  generation_task_run_id?: string | null;
   generation_run_id?: string | null;
   artifact_id?: string | null;
   parent_take_id?: string | null;
@@ -1113,6 +1116,8 @@ export type GenerationRun = {
   session_id: string;
   plan_revision_id: string;
   source_generation_run_id?: string | null;
+  output_generation_run_id?: string | null;
+  resume_source_on_completion?: boolean;
   sequence_number: number;
   operation: string;
   label: string;
