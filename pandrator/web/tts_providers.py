@@ -303,7 +303,15 @@ class LegacyTtsAdapter:
         settings: dict[str, Any],
         **options: Any,
     ):
-        return tts_handler.text_to_audio(text, settings, **options)
+        try:
+            return tts_handler.text_to_audio(text, settings, **options)
+        except tts_handler.TtsGenerationError as error:
+            raise TtsProviderError(
+                self.service_id,
+                "synthesize",
+                str(error),
+                retryable=error.retryable,
+            ) from error
 
     def synthesize_batch(
         self,

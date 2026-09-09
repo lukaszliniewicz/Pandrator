@@ -77,6 +77,27 @@ Language support differs by model and sometimes by voice. Pandrator filters
 choices using capabilities reported by an installed service, but that cannot
 guarantee pronunciation quality for every language pair or cloned voice.
 
+For audio.cpp 0.7.2, Pandrator translates the session language into the model's
+request format:
+
+| Model family | Language sent to audio.cpp |
+| --- | --- |
+| Qwen3 TTS | Native names such as `German`; covers Base, CustomVoice, and VoiceDesign. |
+| FireRedTTS3 | Native names such as `German`, with native `ZH_*` dialect tags preserved. |
+| MagpieTTS | Language codes, preserving `ar-AE`, `ar-SA`, `ar-MSA`, and `pt-BR`. |
+| Chatterbox, OmniVoice | Base language codes such as `de`. |
+| Fish Audio S2, VoxCPM2, BreezeTTS | No language hint: these sessions infer language from the input. |
+| PocketTTS | No request hint: language belongs to the loaded package. The English package rejects a request to switch languages. |
+
+An omitted hint does not add language support to a model. These contracts were
+checked against the pinned audio.cpp runtime and its
+[model specifications](https://github.com/0xShug0/audio.cpp/tree/v0.7.2/model_specs).
+
+Generation failures retain the provider's explanation, model, and HTTP status.
+Temporary failures still retry; known audio.cpp language, cached-voice, and
+unknown-option rejections stop immediately even when the server labels them
+HTTP 500.
+
 Before a large run:
 
 1. confirm the service is ready;

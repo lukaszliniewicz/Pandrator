@@ -5,6 +5,7 @@ import threading
 import unittest
 from unittest.mock import patch
 
+from pandrator.logic import tts_handler
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.domain_blueprints import DOMAIN_ORDER, route_domain
@@ -15,6 +16,7 @@ from pandrator.web.tts_providers import (
     TtsHealth,
     TtsProviderAdapter,
     TtsProviderConfigurationError,
+    TtsProviderError,
     TtsProviderRegistry,
     TtsRetryPolicy,
     _audio_cpp_static_model_catalog,
@@ -301,6 +303,26 @@ class BackendArchitectureTests(unittest.TestCase):
         self.assertIsNone(failed[0].audio)
         self.assertIsNotNone(failed[0].error)
         self.assertTrue(failed[0].error.retryable)
+
+    def test_audio_cpp_preserves_failure_details_and_retryability_in_single_and_batch(self):
+        registry = TtsProviderRegistry()
+        settings = {"service": "audio.cpp", "model": "voxcpm2_q8_0"}
+        for retryable in (False, True):
+            with self.subTest(retryable=retryable):
+                failure = tts_handler.TtsGenerationError(
+                    "Speech generation failed (audio.cpp / voxcpm2_q8_0, HTTP 500): explanation",
+                    retryable=retryable,
+                )
+                with patch("pandrator.logic.tts_handler.text_to_audio", side_effect=failure):
+                    with self.assertRaises(TtsProviderError) as caught:
+                        registry.synthesize("Test.", settings)
+                    results = list(registry.synthesize_batch(
+                        [TtsBatchItem("one", "Test.", settings)], batch_size=1
+                    ))
+                self.assertEqual(str(failure), str(caught.exception))
+                self.assertEqual(retryable, caught.exception.retryable)
+                self.assertEqual(str(failure), str(results[0].error))
+                self.assertEqual(retryable, results[0].error.retryable)
 
     def test_audio_cpp_catalogue_uses_configured_models_and_model_voices(self):
         registry = TtsProviderRegistry()

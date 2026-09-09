@@ -1,3 +1,4 @@
+import base64
 import hashlib
 import io
 import json
@@ -1054,6 +1055,25 @@ class VoiceProviderPublishTests(unittest.TestCase):
                     )
                 )
                 self.assertEqual(1, len(handler._audio_cpp_voice_ref_cache))
+
+                for model in ("voxcpm2_q8_0", "fireredtts3_base_q8_0"):
+                    with self.subTest(model=model):
+                        clone_settings = handler.prepare_audio_cpp_voice_reference(
+                            {
+                                "service": "audio.cpp",
+                                "model": model,
+                                "voice": linked["provider_voice_id"],
+                            }
+                        )
+                        payload = tts_handler._build_audio_cpp_audio_payload(
+                            "Hello.", clone_settings, {}
+                        )
+                        self.assertNotIn("voice", payload)
+                        encoded = payload["voice_ref"]["data"].split(",", 1)[1]
+                        self.assertEqual(silent_wav(), base64.b64decode(encoded))
+                        self.assertEqual(
+                            "Reviewed audio.cpp reference.", payload["reference_text"]
+                        )
 
                 with mock.patch.object(handler.tts_providers, "delete_voice") as remove:
                     unlinked = handler.unpublish_voice(

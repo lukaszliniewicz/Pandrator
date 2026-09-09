@@ -59,6 +59,54 @@ AUDIO_CPP_API_BASE_URL = "http://127.0.0.1:8060"
 AUDIO_CPP_MAX_REFERENCE_BYTES = 5 * 1024 * 1024
 
 
+class TtsGenerationError(RuntimeError):
+    """A synthesis failure whose provider explanation can reach the job UI."""
+
+    def __init__(self, message: str, *, retryable: bool):
+        super().__init__(message)
+        self.retryable = retryable
+
+
+def _tts_error_detail(error: Exception) -> str:
+    """Extract a bounded explanation without dumping the request or response JSON."""
+    response = getattr(error, "response", None)
+    detail: Any = ""
+    if response is not None:
+        try:
+            body = response.json()
+        except (ValueError, requests.exceptions.RequestException):
+            body = None
+        if isinstance(body, dict):
+            provider_error = body.get("error")
+            if isinstance(provider_error, dict):
+                detail = provider_error.get("message")
+            elif isinstance(provider_error, str):
+                detail = provider_error
+            if not isinstance(detail, str) or not detail.strip():
+                detail = body.get("detail") or body.get("message")
+        if not isinstance(detail, str) or not detail.strip():
+            raw = getattr(response, "text", "")
+            # Proxy HTML and structured responses without an explanation aren't
+            # useful diagnostics and can contain unrelated data.
+            detail = (
+                raw
+                if isinstance(raw, str) and not raw.lstrip().startswith(("<", "{", "["))
+                else ""
+            )
+    if not detail:
+        detail = str(error)
+    return " ".join(detail.split())[:1000]
+
+
+def _audio_cpp_permanent_error(detail: str) -> bool:
+    """audio.cpp 0.7.2 reports these request-contract failures as HTTP 500."""
+    return bool(
+        re.search(r"unsupported .+ language tag:", detail, re.IGNORECASE)
+        or re.search(r"unknown .+ request option:", detail, re.IGNORECASE)
+        or "requires speaker reference audio, not a cached voice id" in detail
+    )
+
+
 def _import_litellm_speech_client():
     from litellm import speech as litellm_speech
 
@@ -5716,7 +5764,30 @@ _AUDIO_CPP_QWEN_LANGUAGE_NAMES = {
     "es": "Spanish",
     "it": "Italian",
 }
-_AUDIO_CPP_QWEN_SUPPORTED_LANGUAGES = frozenset(_AUDIO_CPP_QWEN_LANGUAGE_NAMES)
+# Native request tags in audio.cpp v0.7.2's FireRedTTS3 tokenizer_text.cpp.
+_AUDIO_CPP_FIRERED_LANGUAGE_NAMES = {
+    **_AUDIO_CPP_QWEN_LANGUAGE_NAMES,
+    "yue": "Cantonese",
+    "ar": "Arabic",
+    "tr": "Turkish",
+    "id": "Indonesian",
+    "nl": "Dutch",
+    "vi": "Vietnamese",
+    "uk": "Ukrainian",
+    "th": "Thai",
+    "pl": "Polish",
+    "ro": "Romanian",
+    "el": "Greek",
+    "cs": "Czech",
+    "fi": "Finnish",
+    "hi": "Hindi",
+}
+_AUDIO_CPP_FIRERED_DIALECTS = (
+    "ZH_Anhui", "ZH_Fujian", "ZH_Gansu", "ZH_Guizhou", "ZH_Hebei",
+    "ZH_Henan", "ZH_Hubei", "ZH_Hunan", "ZH_Jiangxi", "ZH_Liaoning",
+    "ZH_Minnan", "ZH_Ningxia", "ZH_Shaanxi", "ZH_Shandong", "ZH_Shanghai",
+    "ZH_Shanxi", "ZH_Sichuan", "ZH_Tianjin", "ZH_Wenzhou", "ZH_Wu", "ZH_Yunnan",
+)
 
 
 def _audio_cpp_model_metadata(model: str, endpoint: dict) -> dict[str, object]:
@@ -5802,14 +5873,48 @@ def _audio_cpp_model_metadata(model: str, endpoint: dict) -> dict[str, object]:
     return {"id": model, "family": family, "voice_mode": inferred_mode}
 
 
-def _audio_cpp_language(model: str, language: object) -> str:
+def _audio_cpp_language(model: str, language: object, endpoint: dict | None = None) -> str:
     normalized = str(language or "").strip().lower().replace("_", "-")
     if not normalized or normalized in {"auto", "unknown", "und"}:
         return ""
     iso = normalized.split("-", 1)[0]
-    metadata = _audio_cpp_model_metadata(model, {})
-    if metadata.get("family") == "qwen3_tts":
-        return _AUDIO_CPP_QWEN_LANGUAGE_NAMES.get(iso, "")
+    metadata = _audio_cpp_model_metadata(model, endpoint or {})
+    family = str(metadata.get("family") or "").strip().lower()
+    if family in {"fish_audio_s2", "fish_audio", "voxcpm2", "breeze_tts"}:
+        # These v0.7.2 sessions infer language from text; a hint is not consumed.
+        return ""
+    if family == "pocket_tts":
+        # Pocket's language belongs to the loaded model package, not a request.
+        if model == "pocket_tts_english_q8_0" and iso not in {"en", "english"}:
+            raise ValueError(
+                "The selected PocketTTS package is English-only. "
+                "Select a model package matching the requested language."
+            )
+        return ""
+    if family == "magpie_tts":
+        # Keep supported regional Arabic tokenizers instead of collapsing to ar.
+        regional = {
+            "ar-ae": "ar-AE", "ar-sa": "ar-SA", "ar-msa": "ar-MSA",
+            "pt-br": "pt-BR", "pt-brasil": "pt-BR",
+        }
+        return regional.get(normalized, iso)
+    if family in {"qwen3_tts", "fireredtts3"}:
+        if family == "fireredtts3":
+            dialect = next(
+                (tag for tag in _AUDIO_CPP_FIRERED_DIALECTS
+                 if tag.lower().replace("_", "-") == normalized),
+                None,
+            )
+            if dialect:
+                return dialect
+            names = _AUDIO_CPP_FIRERED_LANGUAGE_NAMES
+        else:
+            names = _AUDIO_CPP_QWEN_LANGUAGE_NAMES
+        named = next((name for name in names.values() if name.lower() == normalized), None)
+        result = named or names.get(iso)
+        if result:
+            return result
+        raise ValueError(f"audio.cpp model '{model}' does not support language '{language}'.")
     return iso
 
 
@@ -5849,21 +5954,10 @@ def _build_audio_cpp_audio_payload(
     raw_language = str(
         tts_settings.get("language") or tts_settings.get("target_language") or ""
     ).strip()
-    normalized_language = raw_language.lower().replace("_", "-")
-    language_iso = normalized_language.split("-", 1)[0]
-    if (
-        is_design
-        and family == "qwen3_tts"
-        and normalized_language
-        and normalized_language not in {"auto", "unknown", "und"}
-        and language_iso not in _AUDIO_CPP_QWEN_SUPPORTED_LANGUAGES
-    ):
-        raise ValueError(
-            "Qwen3 VoiceDesign supports only zh, en, ja, ko, de, fr, ru, pt, es, and it."
-        )
     language = _audio_cpp_language(
         model,
         raw_language,
+        endpoint,
     )
     if language:
         payload["language"] = language
@@ -5884,6 +5978,9 @@ def _build_audio_cpp_audio_payload(
     voice_ref = tts_settings.get("audio_cpp_voice_ref")
     if not is_prebuilt and not is_design and isinstance(voice_ref, dict) and voice_ref:
         payload["voice_ref"] = dict(voice_ref)
+        # A linked Pandrator ID identifies the local sample, not a voice cached
+        # inside audio.cpp. VoxCPM rejects cached_voice_id even with audio present.
+        payload.pop("voice", None)
 
     for key in (
         "speed",
@@ -6934,6 +7031,8 @@ def text_to_audio(
         maximum_recovery_cycles = 3
     attempt = 0
     recovery_cycles = 0
+    last_error: Exception | None = None
+    last_retryable = False
     while attempt < max_attempts:
         if cancel_event is not None and cancel_event.is_set():
             logging.info(
@@ -7018,22 +7117,26 @@ def text_to_audio(
             # Invalid service, model, voice, or configuration will not improve
             # with another identical request.
             logging.error("TTS configuration error: %s", e)
+            last_error = e
+            last_retryable = False
             break
         except Exception as e:
+            last_error = e
             status = status_code_from_error(e)
+            detail = _tts_error_detail(e)
             logging.warning(
                 "TTS generation attempt %d/%d failed%s: %s",
                 attempt,
                 max_attempts,
                 f" (HTTP {status})" if status else "",
-                e,
+                detail,
             )
-            response = getattr(e, "response", None)
-            if response is not None:
-                logging.warning(
-                    "Server response: %s", str(getattr(response, "text", ""))[:4000]
-                )
-            if not retryable_error(e):
+            last_retryable = retryable_error(e) and not (
+                _audio_cpp_lock_held
+                and status == 500
+                and _audio_cpp_permanent_error(detail)
+            )
+            if not last_retryable:
                 logging.error(
                     "TTS request is not retryable%s.",
                     f" (HTTP {status})" if status else "",
@@ -7136,7 +7239,13 @@ def text_to_audio(
             logging.info("TTS generation canceled while waiting to retry.")
             return None
 
-    logging.error(
-        "Failed to generate TTS audio after %d attempts: '%s...'", attempt, text[:50]
+    model = str(tts_settings.get("xtts_model") or tts_settings.get("model") or "").strip()
+    context = f"{service}" + (f" / {model}" if model else "")
+    status = status_code_from_error(last_error) if last_error is not None else 0
+    detail = _tts_error_detail(last_error) if last_error is not None else "No audio returned."
+    message = (
+        f"Speech generation failed ({context}"
+        + (f", HTTP {status}" if status else "")
+        + f") after {attempt} attempt(s): {detail}"
     )
-    return None
+    raise TtsGenerationError(message, retryable=last_retryable) from last_error

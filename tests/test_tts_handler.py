@@ -700,6 +700,32 @@ class TTSHandlerTests(unittest.TestCase):
         self.assertFalse(reviewed["options"]["x_vector_only_mode"])
         self.assertTrue(unreviewed["options"]["x_vector_only_mode"])
 
+    def test_audio_cpp_inline_reference_replaces_cached_voice_for_cloning_models(self):
+        reference = {"type": "base64", "data": "UklGRg=="}
+        for model in tts_provider_profiles.AUDIO_CPP_MODEL_CATALOG:
+            if model.get("voice_mode") in {"prebuilt", "design"}:
+                continue
+            with self.subTest(model=model["id"]):
+                settings = {
+                    "model": model["id"],
+                    "speaker": "pandrator-linked-speaker",
+                    "audio_cpp_voice_ref": reference,
+                    "audio_cpp_reference_text": "Reviewed words.",
+                }
+                payload = tts_handler._build_audio_cpp_audio_payload("Hello", settings, {})
+                self.assertEqual(reference, payload["voice_ref"])
+                self.assertNotIn("voice", payload)
+                self.assertEqual("pandrator-linked-speaker", settings["speaker"])
+
+    def test_audio_cpp_preserves_server_voice_presets_without_inline_reference(self):
+        for model, voice in (("pocket_tts", "alba"), ("voxcpm2_q8_0", "server-preset")):
+            with self.subTest(model=model):
+                payload = tts_handler._build_audio_cpp_audio_payload(
+                    "Hello", {"model": model, "voice": voice}, {}
+                )
+                self.assertEqual(voice, payload["voice"])
+                self.assertNotIn("voice_ref", payload)
+
     def test_audio_cpp_omnivoice_rejects_unreviewed_linked_reference(self):
         with self.assertRaisesRegex(ValueError, "reviewed transcript"):
             tts_handler._build_audio_cpp_audio_payload(
@@ -737,7 +763,7 @@ class TTSHandlerTests(unittest.TestCase):
         )
 
         self.assertEqual("A calm, low documentary voice.", designed["instructions"])
-        self.assertEqual("en", designed["language"])
+        self.assertNotIn("language", designed)
         self.assertNotIn("voice_ref", designed)
         self.assertEqual("Reviewed reference words.", cloned["reference_text"])
         self.assertEqual("base64", cloned["voice_ref"]["type"])
@@ -786,7 +812,7 @@ class TTSHandlerTests(unittest.TestCase):
                 {"language": "fr"},
                 endpoint,
             )
-        with self.assertRaisesRegex(ValueError, "supports only"):
+        with self.assertRaisesRegex(ValueError, "does not support language"):
             tts_handler._build_audio_cpp_audio_payload(
                 "Bonjour",
                 {"generation_prompt": "Warm", "language": "pl"},
@@ -816,6 +842,70 @@ class TTSHandlerTests(unittest.TestCase):
                     endpoint,
                 )
                 self.assertIn("language", payload)
+
+    def test_audio_cpp_language_contract_for_every_catalogue_model(self):
+        expected_by_family = {
+            "qwen3_tts": "English", "fireredtts3": "English",
+            "magpie_tts": "en", "chatterbox": "en", "omnivoice": "en",
+            "fish_audio_s2": None, "voxcpm2": None, "pocket_tts": None,
+            "breeze_tts": None,
+        }
+        for model in tts_provider_profiles.AUDIO_CPP_MODEL_CATALOG:
+            with self.subTest(model=model["id"]):
+                payload = tts_handler._build_audio_cpp_audio_payload(
+                    "Test.", {"model": model["id"], "language": "en-US",
+                              "generation_prompt": "Warm delivery."}, {}
+                )
+                self.assertEqual(expected_by_family[model["family"]], payload.get("language"))
+
+    def test_audio_cpp_firered_maps_languages_and_preserves_native_tags(self):
+        cases = {
+            "de": "German", "de-DE": "German", "German": "German",
+            "pl": "Polish", "yue": "Cantonese", "zh": "Chinese",
+            "ar": "Arabic", "uk": "Ukrainian", "ro": "Romanian",
+            "el": "Greek", "cs": "Czech", "fi": "Finnish", "hi": "Hindi",
+            "tr": "Turkish", "id": "Indonesian", "nl": "Dutch",
+            "vi": "Vietnamese", "th": "Thai", "pt-BR": "Portuguese",
+            "ZH_Minnan": "ZH_Minnan", "zh-shanghai": "ZH_Shanghai",
+        }
+        for language, expected in cases.items():
+            with self.subTest(language=language):
+                self.assertEqual(expected, tts_handler._audio_cpp_language(
+                    "fireredtts3_base_q8_0", language
+                ))
+        with self.assertRaisesRegex(ValueError, "does not support language"):
+            tts_handler._audio_cpp_language("fireredtts3_base_q8_0", "xx")
+
+    def test_audio_cpp_language_mapping_uses_live_family_for_custom_model_id(self):
+        payload = tts_handler._build_audio_cpp_audio_payload(
+            "Test.", {"model": "my-cloner", "language": "de"},
+            {"model_catalog": [{"id": "my-cloner", "family": "fireredtts3"}]},
+        )
+        self.assertEqual("German", payload["language"])
+
+    def test_audio_cpp_magpie_keeps_regional_arabic_and_portuguese(self):
+        for language, expected in (("ar-AE", "ar-AE"), ("ar_SA", "ar-SA"),
+                                   ("ar-MSA", "ar-MSA"), ("pt_BR", "pt-BR"),
+                                   ("de-DE", "de")):
+            with self.subTest(language=language):
+                self.assertEqual(expected, tts_handler._audio_cpp_language("magpie_tts_q8_0", language))
+
+    def test_audio_cpp_qwen_accepts_native_names_in_all_modes(self):
+        for mode in ("base", "customvoice", "voicedesign"):
+            payload = tts_handler._build_audio_cpp_audio_payload(
+                "Test.", {"model": f"qwen3_tts_1_7b_{mode}_q8_0", "language": "German",
+                          "generation_prompt": "Warm delivery."}, {}
+            )
+            self.assertEqual("German", payload["language"])
+
+    def test_audio_cpp_english_pocket_package_rejects_language_switch(self):
+        with self.assertRaisesRegex(ValueError, "English-only"):
+            tts_handler._audio_cpp_language("pocket_tts_english_q8_0", "de")
+
+    def test_audio_cpp_auto_language_is_omitted_for_every_family(self):
+        for model in tts_provider_profiles.AUDIO_CPP_MODEL_CATALOG:
+            with self.subTest(model=model["id"]):
+                self.assertEqual("", tts_handler._audio_cpp_language(model["id"], "auto"))
 
     def test_audio_cpp_catalog_filters_non_speech_models_and_server_paths(self):
         model_response = Mock()
@@ -1559,16 +1649,16 @@ class TTSHandlerTests(unittest.TestCase):
             tts_handler.requests.exceptions.HTTPError("400 invalid", response=rejected)
         )
 
-        with patch(
-            "pandrator.logic.tts_handler.requests.post", return_value=rejected
-        ) as post:
-            result = tts_handler.text_to_audio(
+        with (
+            patch("pandrator.logic.tts_handler.requests.post", return_value=rejected) as post,
+            self.assertRaisesRegex(tts_handler.TtsGenerationError, "HTTP 400.*invalid voice"),
+        ):
+            tts_handler.text_to_audio(
                 "Do not retry",
                 {"service": "Silero", "speaker": "missing", "language": "en"},
                 max_attempts=5,
             )
 
-        self.assertIsNone(result)
         self.assertEqual(1, post.call_count)
 
     def test_vertex_rate_limit_uses_capacity_aware_backoff(self):
@@ -1667,8 +1757,11 @@ class TTSHandlerTests(unittest.TestCase):
             patch(
                 "pandrator.logic.tts_handler._wait_for_kobold_qwen_recovery"
             ) as wait_for_recovery,
+            self.assertRaisesRegex(
+                tts_handler.TtsGenerationError, "HTTP 422.*voice reference not installed"
+            ),
         ):
-            result = tts_handler.text_to_audio(
+            tts_handler.text_to_audio(
                 "Do not silently fall back",
                 {
                     "service": "Qwen3 TTS",
@@ -1678,9 +1771,71 @@ class TTSHandlerTests(unittest.TestCase):
                 max_attempts=5,
             )
 
-        self.assertIsNone(result)
         self.assertEqual(1, request_audio.call_count)
         wait_for_recovery.assert_not_called()
+
+    def test_audio_cpp_contract_errors_stop_after_one_attempt_and_keep_explanation(self):
+        for explanation in (
+            "unsupported FireRedTTS3 Base language tag: de",
+            "VoxCPM2 C++ session requires speaker reference audio, not a cached voice id",
+            "unknown FireRedTTS3 Base request option: max_tokens",
+        ):
+            with self.subTest(explanation=explanation):
+                response = tts_handler.requests.Response()
+                response.status_code = 500
+                response._content = json.dumps({"error": {"message": explanation}}).encode()
+                response.url = "http://127.0.0.1:8060/v1/audio/speech"
+                with (
+                    patch(
+                        "pandrator.logic.tts_handler._request_openai_compatible_audio",
+                        return_value=response,
+                    ) as request,
+                    patch("pandrator.logic.tts_handler.wait_for_retry") as wait,
+                    self.assertRaises(tts_handler.TtsGenerationError) as caught,
+                ):
+                    tts_handler.text_to_audio(
+                        "Test.", {"service": "audio.cpp", "model": "voxcpm2_q8_0"},
+                        max_attempts=5,
+                    )
+                self.assertIn(explanation, str(caught.exception))
+                self.assertIn("audio.cpp / voxcpm2_q8_0, HTTP 500", str(caught.exception))
+                self.assertEqual(1, request.call_count)
+                wait.assert_not_called()
+
+    def test_tts_exhausted_transient_errors_preserve_last_provider_explanation(self):
+        response = tts_handler.requests.Response()
+        response.status_code = 503
+        response._content = b'{"error":{"message":"All models are busy"},"request":"private prompt"}'
+        with (
+            patch("pandrator.logic.tts_handler.requests.post", return_value=response) as request,
+            patch("pandrator.logic.tts_handler.wait_for_retry", return_value=True) as wait,
+            self.assertRaises(tts_handler.TtsGenerationError) as caught,
+        ):
+            tts_handler.text_to_audio("Test.", {"service": "Silero"}, max_attempts=2)
+        self.assertEqual(2, request.call_count)
+        self.assertEqual(1, wait.call_count)
+        self.assertIn("HTTP 503", str(caught.exception))
+        self.assertIn("All models are busy", str(caught.exception))
+        self.assertNotIn("private prompt", str(caught.exception))
+
+    def test_tts_configuration_failure_is_reported_without_retry(self):
+        with (
+            patch(
+                "pandrator.logic.tts_handler._request_openai_compatible_audio",
+                side_effect=ValueError("A reviewed reference transcript is required."),
+            ) as request,
+            self.assertRaisesRegex(tts_handler.TtsGenerationError, "reviewed reference transcript"),
+        ):
+            tts_handler.text_to_audio("Test.", {"service": "audio.cpp"}, max_attempts=5)
+        self.assertEqual(1, request.call_count)
+
+    def test_tts_cancellation_still_returns_no_audio(self):
+        event = threading.Event()
+        event.set()
+        with patch("pandrator.logic.tts_handler.requests.post") as request:
+            result = tts_handler.text_to_audio("Test.", {"service": "Silero"}, cancel_event=event)
+        self.assertIsNone(result)
+        request.assert_not_called()
 
     def test_provider_voice_delete_uses_only_voice_routes(self):
         unsupported = Mock(status_code=405, text="method not allowed")

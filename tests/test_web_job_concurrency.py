@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from sqlalchemy import select
 
+from pandrator.logic import tts_handler
 from pandrator.web.database import Database
 from pandrator.web.jobs import JobQueue, Worker, noop_handler
 from pandrator.web.models import Job, ResourceClaim, utcnow
@@ -383,6 +384,29 @@ class WorkerResilienceTests(unittest.TestCase):
     def tearDown(self):
         self.database.dispose()
         self.temporary.cleanup()
+
+    def test_tts_provider_failure_reaches_job_error_with_secrets_redacted(self):
+        job = self.queue.enqueue("test.synthesize")
+        response = tts_handler.requests.Response()
+        response.status_code = 400
+        response._content = (
+            b'{"error":{"message":"Unsupported language; api_key=super-secret-token"}}'
+        )
+
+        def synthesize(_payload, _progress, cancel_event):
+            return tts_handler.text_to_audio(
+                "Test.", {"service": "Silero", "model": "v4"}, cancel_event=cancel_event
+            )
+
+        worker = Worker(self.queue, "worker", {"test.synthesize": synthesize})
+        with patch("pandrator.logic.tts_handler.requests.post", return_value=response):
+            self.assertTrue(worker.run_once())
+        failed = self.queue.get(job.id)
+        self.assertEqual("failed", failed.status)
+        self.assertEqual("TtsGenerationError", failed.error_code)
+        self.assertIn("Silero / v4, HTTP 400", failed.error_message)
+        self.assertIn("Unsupported language", failed.error_message)
+        self.assertNotIn("super-secret-token", failed.error_message)
 
     def test_claim_failure_and_malformed_payload_do_not_stop_later_work(self):
         malformed = self.queue.enqueue("noop", ["not-an-object"])
