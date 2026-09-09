@@ -5,7 +5,7 @@ from __future__ import annotations
 import socket
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from threading import Lock
 from typing import Any, Protocol, runtime_checkable
 from urllib.parse import urlparse
@@ -104,6 +104,37 @@ def _audio_cpp_static_model_catalog(service: dict[str, Any]) -> list[dict[str, A
     return result
 
 
+def _supports_parallel_cloud_synthesis(service: Mapping[str, Any]) -> bool:
+    """Keep local compatible servers serial; enable known cloud transports."""
+    adapter = normalize_service_id(service.get("adapter"))
+    service_id = normalize_service_id(service.get("id") or service.get("name"))
+    cloud_ids = {"openai", "gemini", "vertex_ai", "elevenlabs"}
+    if adapter in {"azure_speech", "elevenlabs_native"}:
+        return True
+    if adapter and adapter != "openai_compatible":
+        return False
+    if service_id in cloud_ids:
+        return True
+    if adapter == "openai_compatible":
+        host = (
+            urlparse(
+                str(service.get("api_base") or service.get("base_url") or "")
+            ).hostname
+            or ""
+        ).lower()
+        return host == "api.openai.com" or any(
+            host.endswith(suffix)
+            for suffix in (
+                ".openai.azure.com",
+                ".cognitiveservices.azure.com",
+                ".services.ai.azure.com",
+                ".inference.ai.azure.com",
+                ".models.ai.azure.com",
+            )
+        )
+    return False
+
+
 @dataclass(frozen=True, slots=True)
 class TtsHealth:
     online: bool
@@ -121,6 +152,7 @@ class TtsCapabilities:
     voice_delete: bool = False
     batch_synthesis: bool = False
     streaming_batch: bool = False
+    parallel_synthesis: bool = False
     default_batch_size: int = 1
     max_batch_size: int = 1
 
@@ -259,6 +291,14 @@ class LegacyTtsAdapter:
             dynamic_catalog=self.service_id in {"kobold_qwen", "silero"},
             voice_upload=bool(service.get("supports_voice_cloning")),
             voice_delete=bool(service.get("supports_voice_deletion")),
+            parallel_synthesis=self.service_id
+            in {
+                "openai",
+                "gemini",
+                "vertex_ai",
+                "elevenlabs",
+                "openai_compatible",
+            },
         )
 
     def health(self, service: dict[str, Any]) -> TtsHealth:
@@ -948,7 +988,10 @@ class ElevenLabsAdapter(LegacyTtsAdapter):
         service: dict[str, Any],
     ) -> TtsCapabilities:
         del service
-        return TtsCapabilities(dynamic_catalog=True)
+        return TtsCapabilities(
+            dynamic_catalog=True,
+            parallel_synthesis=True,
+        )
 
     def enrich_catalog(
         self,
@@ -1147,7 +1190,7 @@ class TtsProviderRegistry:
             api_base = str(
                 options.get("audio_cpp_base_url") or tts_handler.AUDIO_CPP_API_BASE_URL
             )
-        return self.get(service_id).capabilities(
+        capabilities = self.get(service_id).capabilities(
             {
                 "id": service_id,
                 "api_base": api_base,
@@ -1162,6 +1205,16 @@ class TtsProviderRegistry:
                 },
             }
         )
+
+        if capabilities.parallel_synthesis:
+            service = tts_handler.get_service_config(settings, service_id)
+            if service is None:
+                service, _ = tts_handler.resolve_openai_audio_endpoint(settings)
+            capabilities = replace(
+                capabilities,
+                parallel_synthesis=_supports_parallel_cloud_synthesis(service or {}),
+            )
+        return capabilities
 
     def synthesize_batch(
         self,
@@ -1182,6 +1235,23 @@ class TtsProviderRegistry:
                 "Every item in a TTS batch must use the same service.",
             )
         adapter = self.get(service_id)
+        requested_batch_size = 1
+        try:
+            requested_batch_size = max(1, int(batch_size or 1))
+        except (TypeError, ValueError):
+            pass
+        if (
+            requested_batch_size > 1
+            and self.synthesis_capabilities(
+                items[0].settings, **options
+            ).parallel_synthesis
+        ):
+            return self._synthesize_parallel_batch(
+                items,
+                batch_size=requested_batch_size,
+                service_id=service_id,
+                **options,
+            )
         batch_method = getattr(adapter, "synthesize_batch", None)
         if callable(batch_method):
             return batch_method(
@@ -1194,6 +1264,63 @@ class TtsProviderRegistry:
             batch_size=1,
             **options,
         )
+
+    def _synthesize_parallel_batch(
+        self,
+        items: list[TtsBatchItem],
+        *,
+        batch_size: int,
+        service_id: str,
+        **options: Any,
+    ) -> Iterator[TtsBatchResult]:
+        """Synthesize bounded consecutive waves while preserving input order."""
+        workers = max(1, min(8, batch_size))
+        cancel_event = options.get("cancel_event")
+
+        def is_cancelled() -> bool:
+            return bool(cancel_event is not None and cancel_event.is_set())
+
+        def synthesize_one(item: TtsBatchItem) -> TtsBatchResult | None:
+            if is_cancelled():
+                return None
+            try:
+                return TtsBatchResult(
+                    id=item.id,
+                    audio=self.synthesize(
+                        item.text,
+                        dict(item.settings),
+                        **dict(options),
+                    ),
+                )
+            except Exception as error:  # noqa: BLE001 - stable result boundary
+                projected = (
+                    error
+                    if isinstance(error, TtsProviderError)
+                    else TtsProviderError(
+                        service_id,
+                        "synthesize",
+                        str(error),
+                        retryable=True,
+                    )
+                )
+                return TtsBatchResult(id=item.id, error=projected)
+
+        for start in range(0, len(items), workers):
+            if is_cancelled():
+                return
+            wave = items[start : start + workers]
+            futures = []
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                for item in wave:
+                    if is_cancelled():
+                        break
+                    futures.append(executor.submit(synthesize_one, item))
+                wave_results = [future.result() for future in futures]
+            for result in wave_results:
+                if result is not None:
+                    yield result
+            if is_cancelled():
+                return
 
     def upload_voice(
         self,
@@ -1254,7 +1381,12 @@ class TtsProviderRegistry:
         service: dict[str, Any],
     ) -> TtsCapabilities:
         service_id = self._service_adapter_id(service)
-        return self.get(service_id).capabilities(service)
+        capabilities = self.get(service_id).capabilities(service)
+        return replace(
+            capabilities,
+            parallel_synthesis=capabilities.parallel_synthesis
+            and _supports_parallel_cloud_synthesis(service),
+        )
 
     def health(self, service: dict[str, Any]) -> TtsHealth:
         service_id = self._service_adapter_id(service)
@@ -1657,7 +1789,11 @@ class TtsCatalogueService:
                 service,
                 resolved_credential=resolved_credential,
             )
-            if normalize_service_id(service.get("id") or service.get("name")) == "xtts":
+            service_id = normalize_service_id(service.get("id") or service.get("name"))
+            service["supports_parallel_synthesis"] = _supports_parallel_cloud_synthesis(
+                service
+            )
+            if service_id == "xtts":
                 capabilities = self.providers.capabilities(service)
                 service["supports_dynamic_catalog"] = capabilities.dynamic_catalog
                 service["supports_model_upload"] = capabilities.model_upload

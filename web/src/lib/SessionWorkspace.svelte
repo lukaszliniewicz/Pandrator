@@ -1,6 +1,7 @@
 <script lang="ts">
   import { sttLanguageProblem } from './stt-language-policy';
   import {
+    hasPrebuiltVoices,
     selectableTtsServices,
     preferredTtsService
   } from './tts-provider-policy';
@@ -46,7 +47,11 @@
   import WorkflowRunDialogs from './WorkflowRunDialogs.svelte';
   import type { PreviewableArtifact } from './artifact-display';
   import { LANGUAGE_OPTIONS } from './settings-fields';
-  import { describeVoice, languagesForService } from './voice-catalog';
+  import {
+    describeVoice,
+    languagesForService,
+    voiceSupportsLanguage
+  } from './voice-catalog';
   import { onMount } from 'svelte';
   import { type WorkflowStore } from './workflow-store.svelte';
   import type PdfEditor from './PdfEditor.svelte';
@@ -247,6 +252,7 @@
   let voiceName = $state('');
   let generationPrompt = $state('');
   let ttsBatchSize = $state(10);
+  let ttsConcurrentRequests = $state(1);
   let speechBlockMinChars = $state(10);
   let speechBlockMaxChars = $state(220);
   let speechBlockMergeThreshold = $state(1500);
@@ -956,6 +962,7 @@
         : String(activeService?.default_voice ?? '');
     generationPrompt = String(saved.generation_prompt ?? '');
     ttsBatchSize = Number(saved.tts_batch_size ?? 10);
+    ttsConcurrentRequests = Number(saved.tts_concurrent_requests ?? 1);
     speechBlockMinChars = Number(saved.speech_block_min_chars ?? 10);
     speechBlockMaxChars = Number(saved.speech_block_max_chars ?? 220);
     speechBlockMergeThreshold = Number(
@@ -1595,6 +1602,12 @@
   const supportsGenerationPrompt = $derived(
     generationPromptModels.includes(ttsModel.toLowerCase())
   );
+  const invalidTtsConcurrency = $derived(
+    Boolean(selectedTtsService?.supports_parallel_synthesis) &&
+      (!Number.isInteger(ttsConcurrentRequests) ||
+        ttsConcurrentRequests < 1 ||
+        ttsConcurrentRequests > 8)
+  );
   const supportsBatchSynthesis = $derived(
     Boolean(
       selectedTtsService?.supports_batch_synthesis &&
@@ -1632,8 +1645,7 @@
   );
   const supportsPrebuiltVoices = $derived(
     Boolean(
-      selectedTtsService?.supports_prebuilt_voices &&
-      !selectedModelHasNoPrebuiltVoices
+      hasPrebuiltVoices(selectedTtsService) && !selectedModelHasNoPrebuiltVoices
     )
   );
   const selectedModelVoiceIds = $derived(
@@ -1660,9 +1672,28 @@
     )
   );
   const filteredPrebuiltVoices = $derived(
-    ttsVoiceDescriptors.filter(
-      (voice) => !voice.languageCode || voice.languageCode === targetLanguage
+    ttsVoiceDescriptors.filter((voice) =>
+      voiceSupportsLanguage(voice, targetLanguage)
     )
+  );
+  const defaultVoiceDescriptor = $derived(
+    ttsVoiceDescriptors.find((voice) => voice.id === selectedTtsDefaultVoice)
+  );
+  const defaultVoiceLanguageMismatch = $derived(
+    Boolean(
+      defaultVoiceDescriptor &&
+      !voiceSupportsLanguage(defaultVoiceDescriptor, targetLanguage)
+    )
+  );
+  const selectedVoiceLanguageMismatch = $derived(
+    supportsPrebuiltVoices &&
+      (voiceName
+        ? ttsVoiceDescriptors.some(
+            (voice) =>
+              voice.id === voiceName &&
+              !voiceSupportsLanguage(voice, targetLanguage)
+          )
+        : defaultVoiceLanguageMismatch)
   );
   const publishedProviderVoices = $derived(
     libraryVoices.flatMap((voice) => {
@@ -2299,6 +2330,7 @@
         voice: voiceName,
         generation_prompt: generationPrompt,
         tts_batch_size: ttsBatchSize,
+        tts_concurrent_requests: ttsConcurrentRequests,
         language: targetLanguage,
         target_language: targetLanguage,
         speech_block_min_chars: speechBlockMinChars,
@@ -4409,6 +4441,19 @@
           <label class="text-sm font-semibold"
             >Speech language<select
               bind:value={targetLanguage}
+              onchange={(event) => {
+                const selected = ttsVoiceDescriptors.find(
+                  (voice) => voice.id === voiceName
+                );
+                if (
+                  selected &&
+                  !voiceSupportsLanguage(selected, event.currentTarget.value)
+                )
+                  voiceName =
+                    ttsVoiceDescriptors.find((voice) =>
+                      voiceSupportsLanguage(voice, event.currentTarget.value)
+                    )?.id ?? '';
+              }}
               class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
               >{#each ttsLanguages.length ? ttsLanguages : LANGUAGE_OPTIONS.filter((item) => item.value !== 'auto') as item}<option
                   value={item.value}>{item.label}</option
@@ -4422,6 +4467,8 @@
                 class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
                 >{#if !showClonedVoices || selectedModelAllowsReferenceFree}<option
                     value=""
+                    disabled={!selectedModelAllowsReferenceFree &&
+                      defaultVoiceLanguageMismatch}
                     >{selectedModelAllowsReferenceFree
                       ? 'Design from instructions · no reference'
                       : 'Service default'}</option
@@ -4429,9 +4476,8 @@
                     label={`${LANGUAGE_OPTIONS.find((item) => item.value === targetLanguage)?.label ?? targetLanguage} · pre-built voices`}
                     >{#each filteredPrebuiltVoices as voice}<option
                         value={voice.id}
-                        >{voice.name}{voice.gender
-                          ? ` · ${voice.gender}`
-                          : ''}</option
+                        >{voice.name}{voice.gender ? ` · ${voice.gender}` : ''} ·
+                        {voice.language}</option
                       >{/each}</optgroup
                   >{/if}{#if showClonedVoices}{#each clonedVoiceGroups as group}
                     <optgroup label={group.label}
@@ -4441,6 +4487,15 @@
                     >{/each}{/if}</select
               ></label
             >
+            {#if supportsPrebuiltVoices}
+              <p class="muted text-xs" role="status">
+                {selectedVoiceLanguageMismatch
+                  ? 'Choose a voice that supports the selected language before saving.'
+                  : filteredPrebuiltVoices.length
+                    ? `${filteredPrebuiltVoices.length} pre-built ${filteredPrebuiltVoices.length === 1 ? 'voice supports' : 'voices support'} the selected language.`
+                    : 'No pre-built voices are listed for this language. Choose another language or a provider-ready voice.'}
+              </p>
+            {/if}
             <div class="flex flex-wrap items-center justify-between gap-3">
               <p class="muted text-xs">
                 {showClonedVoices
@@ -4602,6 +4657,25 @@
               {ttsModel || 'This model'} does not accept speech-direction prompts.
               Choose an instruction-capable model to add one.
             </p>
+          {/if}
+          {#if selectedTtsService?.supports_parallel_synthesis}
+            <label class="text-sm font-semibold">
+              Concurrent TTS requests
+              <input
+                type="number"
+                min="1"
+                max="8"
+                step="1"
+                bind:value={ttsConcurrentRequests}
+                class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
+              />
+              <span class="muted mt-2 block text-xs font-normal">
+                Send 1–8 segment requests at once. Start with 2 if your provider
+                quota allows it. Completed groups become playable in segment
+                order. The current group may finish before a pause takes effect;
+                higher values can increase rate-limit retries.
+              </span>
+            </label>
           {/if}
           {#if supportsBatchSynthesis}
             <div class="rounded-xl border border-[var(--line)] p-4">
@@ -4935,6 +5009,8 @@
             Boolean(publishingLibraryVoiceId) ||
             (settingsStage.key === 'generate_audio' &&
               (!selectedTtsServiceAvailable ||
+                selectedVoiceLanguageMismatch ||
+                invalidTtsConcurrency ||
                 (Boolean(ttsSwitchSource) &&
                   (!ttsSwitchReviewed || !ttsModels.includes(ttsModel)))))}
           class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-4 py-2.5 text-sm font-semibold disabled:opacity-40"
@@ -4957,6 +5033,8 @@
               !translationSourceArtifactId) ||
             (settingsStage.key === 'generate_audio' &&
               (!selectedTtsServiceAvailable ||
+                selectedVoiceLanguageMismatch ||
+                invalidTtsConcurrency ||
                 (Boolean(ttsSwitchSource) &&
                   (!ttsSwitchReviewed || !ttsModels.includes(ttsModel)))))}
           class="rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40"

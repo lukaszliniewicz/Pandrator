@@ -232,6 +232,7 @@ _DESCRIPTIONS: dict[str, dict[str, str]] = {
         "voice": "Selects the speaker, preset voice, or provider-managed voice reference sent to the active TTS provider; the available identifiers are provider-defined.",
         "speed": "Sets the speech speed value sent to the active TTS provider; its units and supported range are provider-defined, although supported adapters generally interpret one as normal speed.",
         "max_attempts": "Limits retry attempts for one TTS synthesis item after transient or recoverable provider failures; the runtime bounds it to one through twenty attempts.",
+        "tts_concurrent_requests": "Sends up to eight segment requests concurrently through compatible cloud TTS providers. Defaults to one. Results are saved in segment order; the active group can finish before a pause takes effect. Provider quotas still apply.",
         "tts_batch_size": "Sets the requested number of speech segments in one streaming TTS batch; workflow negotiation reduces it to the active provider's advertised capability, with a local bound of one through thirty-two.",
         "temperature": "Sets the XTTS sampling temperature when the matching xtts_send_temperature switch is enabled; XTTS interprets this provider-defined value, and other adapters may use their own controls.",
         "length_penalty": "Sets the XTTS length-penalty value when xtts_send_length_penalty is enabled; XTTS applies the provider-defined value while other engines may ignore it.",
@@ -574,6 +575,7 @@ _METADATA: dict[str, dict[str, dict[str, object]]] = {
         "speed": {"unit": "provider-defined"},
         "max_attempts": {"minimum": 1, "maximum": 20},
         "tts_batch_size": {"minimum": 1, "maximum": 32, "unit": "segments"},
+        "tts_concurrent_requests": {"minimum": 1, "maximum": 8, "unit": "requests"},
         "temperature": {"applicability": "XTTS when xtts_send_temperature is enabled."},
         "length_penalty": {
             "applicability": "XTTS when xtts_send_length_penalty is enabled."

@@ -33,3 +33,15 @@ export function preferredTtsService(
       service.available === true && service.catalogue_role !== 'compatibility'
   );
 }
+
+export function hasPrebuiltVoices(service: TtsService | undefined): boolean {
+  if (!service) return false;
+  return Boolean(
+    service.supports_prebuilt_voices ||
+    (!service.supports_voice_cloning &&
+      (service.voices?.length ||
+        Object.values(service.voice_catalogues ?? {}).some(
+          (voices) => voices.length
+        )))
+  );
+}

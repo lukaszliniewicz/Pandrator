@@ -726,6 +726,7 @@ export type TtsService = {
     'prebuilt' | 'cloning' | 'hybrid' | 'optional_cloning' | 'design'
   >;
   supports_batch_synthesis?: boolean;
+  supports_parallel_synthesis?: boolean;
   batch_synthesis?: {
     supported?: boolean;
     streaming?: boolean;

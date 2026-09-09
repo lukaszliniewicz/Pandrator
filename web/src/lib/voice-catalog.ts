@@ -357,6 +357,20 @@ export function describeVoice(
       gender
     };
   }
+  const locale = String(metadata?.locale ?? '').trim();
+  if (locale) {
+    const rawName = voiceId.split(':')[0];
+    const name = rawName.toLowerCase().startsWith(`${locale.toLowerCase()}-`)
+      ? rawName.slice(locale.length + 1)
+      : rawName;
+    return {
+      id: voiceId,
+      name: String(metadata?.display_name ?? metadata?.name ?? name),
+      languageCode: locale.toLowerCase().split('-')[0],
+      language: String(metadata?.language ?? locale),
+      gender: String(metadata?.gender ?? '')
+    };
+  }
   return {
     id: voiceId,
     name: titleize(voiceId),
@@ -364,6 +378,19 @@ export function describeVoice(
     language: 'Multilingual',
     gender: ''
   };
+}
+
+export function voiceSupportsLanguage(
+  voice: VoiceDescriptor,
+  language: string
+) {
+  if (!voice.languageCode || !language) return true;
+  const requested = language.toLowerCase();
+  const supported = voice.languageCode.toLowerCase();
+  return (
+    supported === requested ||
+    (!supported.includes('-') && supported === requested.split('-')[0])
+  );
 }
 
 export function languagesForService(

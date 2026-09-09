@@ -63,6 +63,12 @@ sampling or style controls. For a cloned voice, use a clean, single-speaker
 sample with an accurate transcript. Short tests reveal pronunciation,
 language, noise, and pacing problems much more cheaply than a full run.
 
+The session card's TTS settings list pre-built voices for the selected model
+and language, including commercial providers. For compatible cloud providers,
+**Concurrent TTS requests** accepts 1–8 (default 1). Higher values submit small
+groups in parallel; results remain in segment order. The current group can finish
+before a pause takes effect, and provider rate limits still apply.
+
 Use the [pronunciation library](../guides/pronunciation-and-speech.md) for known
 names and terms. It changes only the TTS request; your displayed source remains
 readable.

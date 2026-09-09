@@ -6750,8 +6750,23 @@ class WorkflowHandlers:
         self,
         settings: dict[str, Any],
         tts_urls: dict[str, str],
+        *,
+        capabilities: Any | None = None,
     ) -> int:
-        """Return one unless the selected service advertises streaming batches."""
+        """Return the selected provider's bounded synthesis group size."""
+        if capabilities is None:
+            capabilities = self.tts_providers.synthesis_capabilities(
+                settings,
+                **tts_urls,
+            )
+        if capabilities.parallel_synthesis:
+            try:
+                return max(
+                    1,
+                    min(8, int(settings.get("tts_concurrent_requests") or 1)),
+                )
+            except (TypeError, ValueError):
+                return 1
         try:
             requested = max(
                 1,
@@ -6762,10 +6777,6 @@ class WorkflowHandlers:
         if requested == 1:
             return 1
 
-        capabilities = self.tts_providers.synthesis_capabilities(
-            settings,
-            **tts_urls,
-        )
         if not (capabilities.batch_synthesis and capabilities.streaming_batch):
             return 1
         return min(requested, max(1, capabilities.max_batch_size))
@@ -7496,9 +7507,17 @@ class WorkflowHandlers:
         tts_urls = self._tts_urls(settings)
         batch_results = None
         batch_contexts: dict[str, dict[str, Any]] = {}
+        batch_capabilities = self.tts_providers.synthesis_capabilities(
+            settings,
+            **tts_urls,
+        )
         effective_batch_size = self._negotiated_tts_batch_size(
             settings,
             tts_urls,
+            capabilities=batch_capabilities,
+        )
+        parallel_synthesis_batch = bool(
+            effective_batch_size > 1 and batch_capabilities.parallel_synthesis
         )
         if effective_batch_size > 1:
             batch_items: list[tuple[str, str, dict[str, Any]]] = []
@@ -7541,14 +7560,20 @@ class WorkflowHandlers:
                     cancel_event=cancel_event,
                 )
                 logger.info(
-                    "Using streaming %s-item TTS batches for %d automatic generation segments.",
+                    "Using grouped %s-item TTS batches for %d automatic generation segments.",
                     effective_batch_size,
                     len(batch_items),
                 )
+        parallel_wave_error: Exception | None = None
         for index, (record, generation_segment_id) in enumerate(
             zip(records, generation_segment_ids, strict=True),
             start=1,
         ):
+            if (
+                parallel_wave_error is not None
+                and (index - 1) % effective_batch_size == 0
+            ):
+                raise parallel_wave_error
             if cancel_event.is_set():
                 return {}
             text = str(
@@ -7614,17 +7639,27 @@ class WorkflowHandlers:
                     batch_result = next(batch_results)
                 except StopIteration as error:
                     raise RuntimeError(
-                        "The streaming TTS batch ended before every segment completed."
+                        "The grouped TTS batch ended before every segment completed."
                     ) from error
                 if batch_result.id != generation_segment_id:
                     raise RuntimeError(
-                        "The streaming TTS batch returned segments out of order."
+                        "The grouped TTS batch returned segments out of order."
                     )
                 if batch_result.error is not None:
+                    if parallel_synthesis_batch:
+                        parallel_wave_error = parallel_wave_error or batch_result.error
+                        with self.database.session() as session:
+                            failed_segment = session.get(
+                                GenerationSegment, generation_segment_id
+                            )
+                            if failed_segment is not None:
+                                failed_segment.status = "failed"
+                                failed_segment.updated_at = utcnow()
+                        continue
                     if not batch_result.error.retryable:
                         raise batch_result.error
                     logger.warning(
-                        "Streaming TTS batch failed for segment %s; retrying it through the ordinary synthesis path.",
+                        "Grouped TTS batch failed for segment %s; retrying it through the ordinary synthesis path.",
                         generation_segment_id,
                     )
                     audio = synthesize_one()
@@ -7712,6 +7747,9 @@ class WorkflowHandlers:
         destination = self._operation_dir(session_id, "generate-audio") / (
             "dubbing_audio.wav" if role == "dubbing_audio" else "audiobook_audio.wav"
         )
+        if parallel_wave_error is not None:
+            raise parallel_wave_error
+
         fade_enabled = bool(
             settings.get("fade_enabled", settings.get("enable_fade", False))
         )
@@ -8289,6 +8327,8 @@ class WorkflowHandlers:
         verified_qwen_voices: set[str] = set()
         batch_results = None
         batch_contexts: dict[str, dict[str, Any]] = {}
+        parallel_batch_boundaries: set[str] = set()
+        parallel_synthesis_batch = False
         # The selected alternate owns the provider endpoint for this run.  In
         # particular, a first-class service's explicit base URL must reach the
         # legacy synthesis boundary instead of the source provider's URL.
@@ -8296,10 +8336,20 @@ class WorkflowHandlers:
         if operation != "rvc":
             # The selected-only setting set may switch provider.  Do not reuse
             # the source provider's streaming/batching capabilities for it.
+            batch_capabilities = None
+            if not selected_tts_override:
+                batch_capabilities = self.tts_providers.synthesis_capabilities(
+                    tts_settings,
+                    **tts_urls,
+                )
             effective_batch_size = (
                 1
                 if selected_tts_override
-                else self._negotiated_tts_batch_size(tts_settings, tts_urls)
+                else self._negotiated_tts_batch_size(
+                    tts_settings,
+                    tts_urls,
+                    capabilities=batch_capabilities,
+                )
             )
             if effective_batch_size > 1:
                 batch_items: list[tuple[str, str, dict[str, Any]]] = []
@@ -8345,12 +8395,27 @@ class WorkflowHandlers:
                         tts_urls=tts_urls,
                         cancel_event=cancel_event,
                     )
+                    if (
+                        batch_capabilities is not None
+                        and batch_capabilities.parallel_synthesis
+                    ):
+                        parallel_synthesis_batch = True
+                        ordered_batch_ids = list(batch_contexts)
+                        parallel_batch_boundaries = set(
+                            ordered_batch_ids[::effective_batch_size]
+                        )
                     logger.info(
-                        "Using streaming %s-item TTS batches for %d generation segments.",
+                        "Using grouped %s-item TTS batches for %d generation segments.",
                         effective_batch_size,
                         len(batch_items),
                     )
+        parallel_wave_error: Exception | None = None
         for index, segment_id in enumerate(segment_ids):
+            if (
+                parallel_wave_error is not None
+                and segment_id in parallel_batch_boundaries
+            ):
+                raise parallel_wave_error
             with self.database.session() as session:
                 run = session.get(GenerationRun, run_id)
                 segment = session.get(GenerationSegment, segment_id)
@@ -8362,7 +8427,10 @@ class WorkflowHandlers:
                         "status": "canceled",
                         "generated": generated,
                     }
-                if run.pause_requested:
+                if run.pause_requested and (
+                    not parallel_batch_boundaries
+                    or segment_id in parallel_batch_boundaries
+                ):
                     run.status = "paused"
                     run.updated_at = utcnow()
                     return {
@@ -8524,17 +8592,31 @@ class WorkflowHandlers:
                             batch_result = next(batch_results)
                         except StopIteration as error:
                             raise RuntimeError(
-                                "The streaming TTS batch ended before every segment completed."
+                                "The grouped TTS batch ended before every segment completed."
                             ) from error
                         if batch_result.id != segment_id:
                             raise RuntimeError(
-                                "The streaming TTS batch returned segments out of order."
+                                "The grouped TTS batch returned segments out of order."
                             )
                         if batch_result.error is not None:
+                            if parallel_synthesis_batch:
+                                parallel_wave_error = (
+                                    parallel_wave_error or batch_result.error
+                                )
+                                with self.database.session() as session:
+                                    failed_segment = session.get(
+                                        GenerationSegment, segment_id
+                                    )
+                                    failed_segment.status = "failed"
+                                    failed_segment.updated_at = utcnow()
+                                    failed_run = session.get(GenerationRun, run_id)
+                                    failed_run.status = "failed"
+                                    failed_run.updated_at = utcnow()
+                                continue
                             if not batch_result.error.retryable:
                                 raise batch_result.error
                             logger.warning(
-                                "Streaming TTS batch failed for segment %s; retrying it through the ordinary synthesis path.",
+                                "Grouped TTS batch failed for segment %s; retrying it through the ordinary synthesis path.",
                                 segment_id,
                             )
                             audio = synthesize_one()
@@ -8688,6 +8770,9 @@ class WorkflowHandlers:
                         run.status = "failed"
                         run.updated_at = utcnow()
                 raise
+
+        if parallel_wave_error is not None:
+            raise parallel_wave_error
 
         verification_warning_count = self._finalize_run_audio_verification(output_run_id)
         with self.database.session() as session:

@@ -2,6 +2,11 @@ name: Publish Python packages
 
 on:
   workflow_dispatch:
+    inputs:
+      publish_mcp:
+        description: Publish MCP (disable when its version is unchanged)
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -110,6 +115,7 @@ jobs:
           packages-dir: dist/pandrator-manager
 
   publish-mcp:
+    if: inputs.publish_mcp
     name: Publish Pandrator MCP to PyPI
     needs: build
     runs-on: ubuntu-22.04

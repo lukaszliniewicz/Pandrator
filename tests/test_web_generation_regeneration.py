@@ -1,3 +1,4 @@
+import json
 import tempfile
 import threading
 import unittest
@@ -14,6 +15,7 @@ from pandrator.web.models import Artifact, AudioTake, GenerationRun, Job
 from pandrator.web.tts_providers import (
     TtsBatchResult,
     TtsCapabilities,
+    TtsProviderError,
 )
 
 
@@ -150,6 +152,150 @@ class GenerationRegenerationTests(unittest.TestCase):
             self._progress,
             threading.Event(),
         )
+
+    def test_cloud_pause_saves_current_wave_and_resume_keeps_its_takes(self):
+        root = self._start(
+            run_override={"tts": {"service": "openai", "tts_concurrent_requests": 2}}
+        )
+        handlers = self.app.extensions["pandrator"]["workflow_handlers"]
+        calls = []
+        barrier = threading.Barrier(2)
+
+        def synthesize(text, _settings, **_options):
+            calls.append(text)
+            barrier.wait(timeout=5)
+            if text == "One":
+                with self.database.session() as session:
+                    session.get(GenerationRun, root["id"]).pause_requested = True
+            return AudioSegment.silent(duration=20)
+
+        with patch.object(handlers.tts_providers, "synthesize", side_effect=synthesize):
+            result = self._run_job(handlers, {"generation_run_id": root["id"]})
+        self.assertEqual("paused", result["status"])
+        self.assertCountEqual(["One", "Two"], calls)
+        with self.database.session() as session:
+            takes = list(
+                session.scalars(
+                    select(AudioTake).where(AudioTake.generation_run_id == root["id"])
+                )
+            )
+            self.assertEqual(2, len(takes))
+            run = session.get(GenerationRun, root["id"])
+            run.pause_requested = False
+
+        calls.clear()
+
+        def resume_synthesis(text, _settings, **_options):
+            calls.append(text)
+            return AudioSegment.silent(duration=20)
+
+        with patch.object(
+            handlers.tts_providers, "synthesize", side_effect=resume_synthesis
+        ):
+            result = self._run_job(
+                handlers, {"generation_run_id": root["id"], "operation": "resume"}
+            )
+        self.assertEqual(["Three"], calls)
+        self.assertEqual("completed", result["status"])
+        with self.database.session() as session:
+            self.assertEqual(
+                3,
+                len(
+                    list(
+                        session.scalars(
+                            select(AudioTake).where(
+                                AudioTake.generation_run_id == root["id"]
+                            )
+                        )
+                    )
+                ),
+            )
+
+    def test_cloud_failure_saves_other_wave_results_without_extra_retry(self):
+        root = self._start(
+            run_override={"tts": {"service": "openai", "tts_concurrent_requests": 2}}
+        )
+        handlers = self.app.extensions["pandrator"]["workflow_handlers"]
+        calls = []
+        error = TtsProviderError(
+            "openai", "synthesize", "Rate limit exhausted", retryable=True
+        )
+
+        def synthesize(text, _settings, **_options):
+            calls.append(text)
+            if text == "One":
+                raise error
+            return AudioSegment.silent(duration=20)
+
+        with patch.object(handlers.tts_providers, "synthesize", side_effect=synthesize):
+            with self.assertRaises(TtsProviderError) as raised:
+                self._run_job(handlers, {"generation_run_id": root["id"]})
+        self.assertIs(error, raised.exception)
+        self.assertCountEqual(["One", "Two"], calls)
+        with self.database.session() as session:
+            takes = list(
+                session.scalars(
+                    select(AudioTake).where(AudioTake.generation_run_id == root["id"])
+                )
+            )
+            self.assertEqual(
+                [self.segment_ids[1]], [take.generation_segment_id for take in takes]
+            )
+            self.assertEqual("failed", session.get(GenerationRun, root["id"]).status)
+        calls.clear()
+
+        def resume_synthesis(text, _settings, **_options):
+            calls.append(text)
+            return AudioSegment.silent(duration=20)
+
+        with patch.object(
+            handlers.tts_providers, "synthesize", side_effect=resume_synthesis
+        ):
+            result = self._run_job(
+                handlers, {"generation_run_id": root["id"], "operation": "resume"}
+            )
+        self.assertCountEqual(["One", "Three"], calls)
+        self.assertEqual("completed", result["status"])
+
+    def test_automatic_cloud_failure_preserves_other_results_in_final_wave(self):
+        handlers = self.app.extensions["pandrator"]["workflow_handlers"]
+        source_path = handlers._session_dir(self.session_id) / "prepared.json"
+        source_path.write_text(
+            json.dumps([{"text": "One"}, {"text": "Two"}, {"text": "Three"}]),
+            encoding="utf-8",
+        )
+        source = handlers.artifacts.register(
+            source_path, kind="json", role="prepared_text", session_id=self.session_id
+        )
+        calls = []
+        error = TtsProviderError(
+            "openai", "synthesize", "Invalid voice", retryable=False
+        )
+
+        def synthesize(text, _settings, **_options):
+            calls.append(text)
+            if text == "One":
+                raise error
+            return AudioSegment.silent(duration=20)
+
+        with patch.object(handlers.tts_providers, "synthesize", side_effect=synthesize):
+            with self.assertRaises(TtsProviderError) as raised:
+                handlers._generate_audio(
+                    self.session_id,
+                    source,
+                    source_path,
+                    {"service": "openai", "tts_concurrent_requests": 3},
+                    self._progress,
+                    threading.Event(),
+                    role="generated_audio",
+                )
+        self.assertIs(error, raised.exception)
+        self.assertCountEqual(["One", "Two", "Three"], calls)
+        with self.database.session() as session:
+            takes = list(session.scalars(select(AudioTake)))
+            self.assertCountEqual(
+                self.segment_ids[1:], [take.generation_segment_id for take in takes]
+            )
 
     def test_repeated_default_regeneration_replaces_single_root_baton(self):
         root = self._start()

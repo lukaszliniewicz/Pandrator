@@ -158,3 +158,12 @@ noise, and identity drift before selecting the converted result.
 For how voices enter an audiobook or timed voiceover, continue with
 [your first audiobook](../getting-started/first-audiobook.md) or
 [your first voiceover](../getting-started/first-voiceover.md).
+
+## MAI Voice 2 delivery
+
+MAI Voice 2 and Flash have separate voice catalogues. The voice picker uses
+Microsoft's locale metadata to show voices for the selected language.
+Leaving Azure Speech style empty omits the SSML emotion/style tag; style degree
+has no effect without a style. This uses the voice's natural default delivery,
+which can remain expressive or conversational. It does not request a flat
+neutral mode. See [Microsoft's MAI documentation](https://learn.microsoft.com/en-us/azure/ai-services/speech-service/mai-voices).

@@ -1,1 +1,0 @@
-function i(e,t){const a=String(t??"").trim().toLowerCase();return[e.id,e.name].some(r=>String(r??"").trim().toLowerCase()===a)}function o(e,t,a=!1){return e.filter(r=>r.catalogue_role!=="compatibility"||i(r,t)||a)}function n(e){return e.find(t=>t.available===!0&&t.catalogue_role!=="compatibility")}export{i as a,n as p,o as s};

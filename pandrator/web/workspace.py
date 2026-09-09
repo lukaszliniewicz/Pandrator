@@ -214,6 +214,7 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "speed": 1.0,
         "max_attempts": 5,
         "tts_batch_size": 10,
+        "tts_concurrent_requests": 1,
         "temperature": 0.75,
         "length_penalty": 1.0,
         "repetition_penalty": 5.0,

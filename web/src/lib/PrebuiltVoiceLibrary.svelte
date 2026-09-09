@@ -1,5 +1,8 @@
 <script lang="ts">
-  import { selectableTtsServices } from './tts-provider-policy';
+  import {
+    hasPrebuiltVoices,
+    selectableTtsServices
+  } from './tts-provider-policy';
   import { errorMessage } from './errors';
   import {
     Check,
@@ -23,6 +26,7 @@
   import {
     describeVoice,
     languagesForService,
+    voiceSupportsLanguage,
     type VoiceDescriptor
   } from './voice-catalog';
   import AudioPlayer from './AudioPlayer.svelte';
@@ -57,8 +61,8 @@
   const isString = (value: string | undefined): value is string =>
     Boolean(value);
   const services = $derived(
-    selectableTtsServices(payload.services ?? [], serviceId).filter(
-      (service) => service.supports_prebuilt_voices
+    selectableTtsServices(payload.services ?? [], serviceId).filter((service) =>
+      hasPrebuiltVoices(service)
     )
   );
   const service = $derived(
@@ -114,10 +118,7 @@
     })
   );
   const visibleVoices = $derived(
-    descriptors.filter(
-      (voice) =>
-        !language || !voice.languageCode || voice.languageCode === language
-    )
+    descriptors.filter((voice) => voiceSupportsLanguage(voice, language))
   );
   const languageDefault = $derived(
     String(
