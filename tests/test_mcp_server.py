@@ -58,6 +58,7 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                 names = sorted(tool.name for tool in listed.tools)
                 self.assertEqual(
                     [
+                        "pandrator_adopt_subtitle_source",
                         "pandrator_assemble_generation_run",
                         "pandrator_attach_existing_source",
                         "pandrator_browse_local_sources",
@@ -79,6 +80,7 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                         "pandrator_execute_component_plan",
                         "pandrator_execute_workflow_plan",
                         "pandrator_explain_system",
+                        "pandrator_generate_speech_plan",
                         "pandrator_get_capabilities",
                         "pandrator_get_dispatch_run",
                         "pandrator_get_media_edit",
@@ -110,6 +112,7 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                         "pandrator_list_source_cleaning_dispatch_runs",
                         "pandrator_list_sources",
                         "pandrator_list_speech_optimization_dispatch_runs",
+                        "pandrator_list_speech_plan_revisions",
                         "pandrator_list_work",
                         "pandrator_manager_doctor",
                         "pandrator_manager_status",
@@ -138,6 +141,7 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                         "pandrator_request_subtitle_evidence",
                         "pandrator_resolve_subtitle_evidence",
                         "pandrator_revise_speech_block_plan",
+                        "pandrator_revise_speech_block_plan_batch",
                         "pandrator_select_take",
                         "pandrator_submit_dispatch_batch",
                         "pandrator_submit_media_edit_dispatch_batch",
@@ -185,7 +189,7 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                     "pandrator_attach_existing_source",
                 ):
                     self.assertEqual(
-                        ["primary", "reference", "transcript"],
+                        ["primary", "reference", "transcript", "media"],
                         tools_by_name[source_tool].input_schema["properties"]["role"][
                             "enum"
                         ],
