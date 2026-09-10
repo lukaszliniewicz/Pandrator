@@ -1596,6 +1596,32 @@
         "title": "EventBounds",
         "type": "object"
       },
+      "GenerationPlanBatchRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_revision_id": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Expected Revision Id",
+            "type": "string"
+          },
+          "operations": {
+            "items": {
+              "$ref": "#/components/schemas/GenerationTopologyEdit"
+            },
+            "maxItems": 50,
+            "minItems": 1,
+            "title": "Operations",
+            "type": "array"
+          }
+        },
+        "required": [
+          "expected_revision_id",
+          "operations"
+        ],
+        "title": "GenerationPlanBatchRequest",
+        "type": "object"
+      },
       "GenerationPlanCreate": {
         "additionalProperties": false,
         "properties": {
@@ -1901,6 +1927,78 @@
         "title": "GenerationSegmentCreate",
         "type": "object"
       },
+      "GenerationSegmentSelector": {
+        "additionalProperties": false,
+        "properties": {
+          "ordinal": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Ordinal"
+          },
+          "result_ref": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Result Ref"
+          },
+          "segment_id": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Segment Id"
+          },
+          "source_cue_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "integer"
+                    }
+                  ]
+                },
+                "maxItems": 1000,
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Source Cue Ids"
+          }
+        },
+        "title": "GenerationSegmentSelector",
+        "type": "object"
+      },
       "GenerationSegmentUpdate": {
         "additionalProperties": false,
         "properties": {
@@ -2038,6 +2136,97 @@
         "title": "GenerationSegmentUpdate",
         "type": "object"
       },
+      "GenerationSplitBoundary": {
+        "additionalProperties": false,
+        "properties": {
+          "after_sentence": {
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "After Sentence"
+          },
+          "after_source_cue_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "After Source Cue Id"
+          },
+          "after_text": {
+            "anyOf": [
+              {
+                "maxLength": 8000,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "After Text"
+          },
+          "before_source_cue_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Before Source Cue Id"
+          },
+          "before_text": {
+            "anyOf": [
+              {
+                "maxLength": 8000,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Before Text"
+          },
+          "cursor": {
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cursor"
+          }
+        },
+        "title": "GenerationSplitBoundary",
+        "type": "object"
+      },
       "GenerationStartRequest": {
         "additionalProperties": false,
         "properties": {
@@ -2079,9 +2268,167 @@
             "additionalProperties": true,
             "title": "Selected Segment Override",
             "type": "object"
+          },
+          "speech_plan_revision_id": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Speech Plan Revision Id"
+          },
+          "stale_only": {
+            "default": false,
+            "title": "Stale Only",
+            "type": "boolean"
           }
         },
         "title": "GenerationStartRequest",
+        "type": "object"
+      },
+      "GenerationTopologyEdit": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "enum": [
+              "split",
+              "merge"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "boundary": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GenerationSplitBoundary"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "cursor": {
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cursor"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,39}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Label"
+          },
+          "left": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GenerationSegmentSelector"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "left_segment_id": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Left Segment Id"
+          },
+          "right": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GenerationSegmentSelector"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "right_segment_id": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Right Segment Id"
+          },
+          "segment": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GenerationSegmentSelector"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "segment_id": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Segment Id"
+          },
+          "text_layer": {
+            "default": "display",
+            "enum": [
+              "display",
+              "speech"
+            ],
+            "title": "Text Layer",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "title": "GenerationTopologyEdit",
         "type": "object"
       },
       "JobCreate": {
@@ -6046,6 +6393,30 @@
           }
         },
         "title": "StageSelectionUpdate",
+        "type": "object"
+      },
+      "SubtitleAlignRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_revision": {
+            "minimum": 0,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "method": {
+            "default": "ctc",
+            "enum": [
+              "ctc",
+              "ctc_asr_fallback"
+            ],
+            "title": "Method",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_revision"
+        ],
+        "title": "SubtitleAlignRequest",
         "type": "object"
       },
       "SubtitleEvidenceCreateRequest": {
@@ -10520,6 +10891,57 @@
         }
       }
     },
+    "/api/v1/sessions/{sessionId}/generation-plan/revisions": {
+      "get": {
+        "operationId": "listSpeechPlanRevisions",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "before_revision_number",
+            "schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "listSpeechPlanRevisions"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
+      }
+    },
     "/api/v1/sessions/{sessionId}/generation-plan/topology": {
       "post": {
         "operationId": "reviseGenerationPlanTopology",
@@ -10565,6 +10987,65 @@
         "responses": {
           "201": {
             "description": "Create an immutable generation-plan topology revision"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/sessions/{sessionId}/generation-plan/topology/batch": {
+      "post": {
+        "operationId": "reviseGenerationPlanTopologyBatch",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenerationPlanBatchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "reviseGenerationPlanTopologyBatch"
           }
         },
         "security": [
@@ -10686,6 +11167,78 @@
             "schema": {
               "format": "uuid",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "plan_revision_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "view",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "fields",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end_ordinal",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "around_ordinal",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "source_cue_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "radius",
+            "required": false,
+            "schema": {
+              "type": "integer"
             }
           },
           {
@@ -11781,6 +12334,92 @@
         ]
       }
     },
+    "/api/v1/sessions/{sessionId}/sources/adopt-subtitles": {
+      "post": {
+        "operationId": "adoptSubtitleSource",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SourceAttachRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "adoptSubtitleSource"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/sessions/{sessionId}/sources/align-subtitles": {
+      "post": {
+        "operationId": "alignSubtitleSource",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubtitleAlignRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "alignSubtitleSource"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
+            ]
+          }
+        ]
+      }
+    },
     "/api/v1/sessions/{sessionId}/sources/reuse": {
       "post": {
         "operationId": "reuseSource",
@@ -11809,6 +12448,39 @@
             "description": "Queued"
           }
         }
+      }
+    },
+    "/api/v1/sessions/{sessionId}/sources/subtitle-status": {
+      "get": {
+        "operationId": "subtitleSourceStatus",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "subtitleSourceStatus"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
       }
     },
     "/api/v1/sessions/{sessionId}/sources/url": {

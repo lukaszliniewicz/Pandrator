@@ -490,6 +490,10 @@ ACTION_CATALOG = ActionCatalog(
             "/api/v1/sessions/{sessionId}/generation-runs",
             True,
         ),
+        ActionSpec("pandrator_list_speech_plan_revisions", "List versioned speech plans", "ListSpeechPlanRevisionsInput", RiskClass.READ, "app.read", "listSpeechPlanRevisions", "GET", "/api/v1/sessions/{sessionId}/generation-plan/revisions", True),
+        ActionSpec("pandrator_revise_speech_block_plan_batch", "Atomically revise speech-block topology", "ReviseSpeechBlockPlanBatchInput", RiskClass.WRITE, "app.write", "reviseGenerationPlanTopologyBatch", "POST", "/api/v1/sessions/{sessionId}/generation-plan/topology/batch", True, True),
+        ActionSpec("pandrator_generate_speech_plan", "Generate a selected speech-plan revision", "GenerateSpeechPlanInput", RiskClass.WRITE, "app.write", "startGenerationRun", "POST", "/api/v1/sessions/{sessionId}/generation-runs", True, True),
+        ActionSpec("pandrator_adopt_subtitle_source", "Adopt an existing managed subtitle source", "AdoptSubtitleSourceInput", RiskClass.WRITE, "app.write", "adoptSubtitleSource", "POST", "/api/v1/sessions/{sessionId}/sources/adopt-subtitles", True, True),
         ActionSpec(
             "pandrator_list_generation_segments",
             "List generation segments and audio takes",

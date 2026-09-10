@@ -434,6 +434,25 @@ def _passive_phase(
     }
 
 
+def _subtitle_adoption_needed(workflow: dict[str, object], session_id: str) -> ToolOutcome | None:
+    status = workflow.get("subtitle_source")
+    if not isinstance(status, dict) or not status.get("adoption_required"):
+        return None
+    asset_id = status.get("source_asset_id")
+    if not asset_id:
+        return None
+    action = NextAction(
+        tool="pandrator_adopt_subtitle_source",
+        arguments={"session_id": session_id, "source_asset_id": asset_id,
+                   "expected_revision": status.get("session_revision"),
+                   "idempotency_key": f"adopt-subtitles:{session_id}:{asset_id}"},
+        reason="The primary SRT/VTT is stored, but has no timed revision. Adopt it without re-uploading, then request the workflow plan again.",
+    )
+    return ToolOutcome(result={"session_id": session_id, "status": "source_adoption_required",
+                              "subtitle_source": status, "next_action": action.model_dump(mode="json")},
+                       next_actions=[action])
+
+
 def plan_orchestrated_workflow(
     runtime: McpRuntime,
     arguments: PlanOrchestratedWorkflowInput,
@@ -466,6 +485,9 @@ def plan_orchestrated_workflow(
             details={"workflow_kind": workflow_kind, "final_stage": "generate_audio"},
         )
     workflow = application.get_workflow(arguments.session_id)
+    recovery = _subtitle_adoption_needed(workflow, arguments.session_id)
+    if recovery is not None:
+        return recovery
     statuses = _safe_stage_statuses(workflow)
     status_by_stage = {
         str(item["stage"]): item.get("status") for item in statuses if item.get("stage")
@@ -610,7 +632,11 @@ def plan_workflow(
     runtime: McpRuntime,
     arguments: PlanWorkflowInput,
 ) -> ToolOutcome:
-    plan = runtime.require_application().create_workflow_plan(
+    application = runtime.require_application()
+    recovery = _subtitle_adoption_needed(application.get_workflow(arguments.session_id), arguments.session_id)
+    if recovery is not None:
+        return recovery
+    plan = application.create_workflow_plan(
         arguments.session_id,
         target_stage=arguments.target_stage,
         overrides=arguments.overrides,

@@ -175,3 +175,29 @@ def resolve_primary_source(
         mime_type="",
         resolution="none",
     )
+
+
+def resolve_media_source(db_session: Session, session_id: str) -> PrimarySourceResolution:
+    """Resolve the independently attached media target, then a media primary.
+
+    A subtitle primary remains authoritative text when a recording is attached.
+    Do not search old uploads: a detached recording must not reappear.
+    """
+    row = db_session.execute(
+        select(SessionSource, SourceAsset, Artifact)
+        .join(SourceAsset, SourceAsset.id == SessionSource.source_asset_id)
+        .join(Artifact, Artifact.id == SourceAsset.artifact_id)
+        .where(SessionSource.session_id == session_id, SessionSource.role == "media",
+               SessionSource.is_current.is_(True), SourceAsset.state == "current",
+               Artifact.state != "deleted")
+        .order_by(SessionSource.updated_at.desc(), SessionSource.id.desc()).limit(1)
+    ).first()
+    if row is None:
+        return resolve_primary_source(db_session, session_id)
+    attachment, asset, artifact = row
+    name = str(asset.display_name or _artifact_name(artifact))
+    kind = str(asset.kind or artifact.kind or "")
+    mime = str(asset.mime_type or artifact.mime_type or "")
+    return PrimarySourceResolution(artifact=artifact, source_asset=asset,
+        attachment=attachment, profile=classify_source(name=name, kind=kind, mime_type=mime),
+        name=name, kind=kind, mime_type=mime, resolution="attached_media")

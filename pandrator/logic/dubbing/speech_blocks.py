@@ -633,6 +633,12 @@ def _should_merge_parts(
 
     if previous.speaker_key != current.speaker_key:
         return False
+    # Keep a natural sentence break once packing would approach the hard cap.
+    # Very short complete utterances may still share a useful-sized block.
+    if max(display_length, speech_length) > max_chars * 0.8 and min(
+        len(previous.optimized_text), len(current.optimized_text)
+    ) >= min(32, max_chars * 0.25):
+        return False
 
     gap_ms = current.start_ms - previous.end_ms
     # The merge threshold is a user-facing timing rule, so sentence-final
@@ -793,20 +799,36 @@ def _combine_parts(previous: _SpeechPart, current: _SpeechPart) -> _SpeechPart:
 
 
 def _break_cost(text: str, position: int, preferred_breaks: set[int]) -> float:
+    """Prefer complete thoughts over subtitle boundaries or balanced packing.
+
+    This is a deterministic multilingual heuristic, not a syntactic parser.
+    The partitioner still enforces the synthesis engine's hard character cap.
+    """
     if position >= len(text):
         return 0.0
     before = text[:position].rstrip()
+    after = text[position:].lstrip()
     if not before:
         return 30.0
-    last = before[-1]
-    cost = 3.0
-    if last in ".!?\u2026\u3002\uff01\uff1f":
-        cost -= 8.0
-    elif last in ",;:\u2014\u2013":
-        cost -= 4.0
+    terminal = before.rstrip('\"\'»”’)]}')
+    last = terminal[-1:] or before[-1]
+    complete = last in ".!?\u2026\u3002\uff01\uff1f"
+    cost = -24.0 if complete else 6.0
+    if last in ";:\u2014\u2013":
+        cost -= 5.0
+    elif last in ",\u060c\uff0c":
+        # A comma often introduces an apposition, not a complete thought.
+        cost += 10.0
     if position in preferred_breaks:
-        cost -= 6.0
-    if position < len(text) and not text[position].isspace():
+        cost -= 2.0
+    last_word = re.findall(r"[^\W\d_]+", terminal.casefold())
+    function_words = {word for words in CONJUNCTIONS.values() for word in words}
+    function_words.update({"a", "an", "the", "to", "of", "in", "with", "from", "can", "could", "would", "should", "der", "die", "das", "ein", "eine", "mit", "von", "zu", "w", "z", "na", "do"})
+    if not complete and last_word and last_word[-1] in function_words:
+        cost += 20.0
+    if not complete and after[:1].islower():
+        cost += 5.0
+    if position < len(text) and not text[position].isspace() and not complete:
         cost += 18.0
     return cost
 
@@ -838,7 +860,12 @@ def _partition_variant_exact(
         for match in re.finditer(r"[.!?,;:\u2026\u3002\uff01\uff1f\u2014\u2013]", text)
     )
 
+    break_costs: dict[int, float] = {}
+
     def solve(candidates: list[int]) -> list[int] | None:
+        for position in candidates:
+            if position not in break_costs:
+                break_costs[position] = _break_cost(text, position, preferred_breaks)
         target = len(text) / part_count
         states: dict[int, tuple[float, list[int]]] = {0: (0.0, [0])}
         for part_index in range(part_count):
@@ -865,7 +892,7 @@ def _partition_variant_exact(
                     ) ** 2 * 12.0
                     shortfall = max(0, min_chars - len(segment))
                     quality_cost = balance_cost + (shortfall * shortfall * 0.3)
-                    quality_cost += _break_cost(text, end, preferred_breaks)
+                    quality_cost += break_costs[end]
                     total = base_cost + quality_cost
                     existing = next_states.get(end)
                     if existing is None or total < existing[0]:
@@ -980,6 +1007,13 @@ def _split_utterance(
             )
         ),
     )
+    # A subtitle can itself contain several complete thoughts. Prefer their
+    # sentence boundaries instead of making every block nearly the hard cap.
+    sentence_count = len(re.findall(r"[.!?。！？](?:[\"'»”’)]*)\s+", utterance.optimized_text)) + 1
+    if sentence_count > 1 and len(utterance.optimized_text) > max_chars * 0.8:
+        part_count = max(part_count, min(sentence_count, _minimum_part_count(
+            utterance.optimized_text, max(1, int(max_chars * 0.8))
+        )))
     maximum_parts = max(len(utterance.text), len(utterance.optimized_text), part_count)
     display_parts = None
     speech_parts = None

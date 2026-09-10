@@ -495,6 +495,11 @@ class SourceAttachRequest(StrictModel):
     role: str = Field(default="primary", min_length=1, max_length=80)
 
 
+class SubtitleAlignRequest(StrictModel):
+    method: Literal["ctc", "ctc_asr_fallback"] = "ctc"
+    expected_revision: int = Field(ge=0)
+
+
 class SourceUpdateRequest(StrictModel):
     display_name: str = Field(min_length=1, max_length=255)
 
@@ -596,6 +601,67 @@ class GenerationPlanCreate(StrictModel):
     settings: dict[str, Any] = Field(default_factory=dict)
 
 
+class GenerationSegmentSelector(StrictModel):
+    segment_id: str | None = Field(default=None, min_length=1, max_length=80)
+    source_cue_ids: list[str | StrictInt] | None = Field(default=None, min_length=1, max_length=1000)
+    ordinal: StrictInt | None = Field(default=None, ge=0)
+    result_ref: str | None = Field(default=None, min_length=1, max_length=80)
+
+    @model_validator(mode="after")
+    def exactly_one_selector(self) -> GenerationSegmentSelector:
+        if sum(value is not None for value in (self.segment_id, self.source_cue_ids, self.ordinal, self.result_ref)) != 1:
+            raise ValueError("Choose exactly one segment selector.")
+        return self
+
+
+class GenerationSplitBoundary(StrictModel):
+    cursor: StrictInt | None = Field(default=None, ge=1)
+    before_text: str | None = Field(default=None, min_length=1, max_length=8000)
+    after_text: str | None = Field(default=None, min_length=1, max_length=8000)
+    before_source_cue_id: str | StrictInt | None = None
+    after_source_cue_id: str | StrictInt | None = None
+    after_sentence: StrictInt | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def exactly_one_boundary(self) -> GenerationSplitBoundary:
+        if sum(value is not None for value in self.model_dump().values()) != 1:
+            raise ValueError("Choose exactly one split boundary.")
+        return self
+
+
+class GenerationTopologyEdit(StrictModel):
+    action: Literal["split", "merge"]
+    label: str | None = Field(default=None, pattern=r"^[A-Za-z][A-Za-z0-9_-]{0,39}$")
+    segment_id: str | None = Field(default=None, min_length=1, max_length=80)
+    segment: GenerationSegmentSelector | None = None
+    cursor: StrictInt | None = Field(default=None, ge=1)
+    boundary: GenerationSplitBoundary | None = None
+    text_layer: Literal["display", "speech"] = "display"
+    left_segment_id: str | None = Field(default=None, min_length=1, max_length=80)
+    right_segment_id: str | None = Field(default=None, min_length=1, max_length=80)
+    left: GenerationSegmentSelector | None = None
+    right: GenerationSegmentSelector | None = None
+
+    @model_validator(mode="after")
+    def validate_edit_shape(self) -> GenerationTopologyEdit:
+        if self.action == "split":
+            if (self.segment_id is None) == (self.segment is None) or (self.cursor is None) == (self.boundary is None):
+                raise ValueError("A split needs exactly one segment selector and one boundary selector.")
+            if any(value is not None for value in (self.left_segment_id, self.right_segment_id, self.left, self.right)):
+                raise ValueError("A split cannot contain merge selectors.")
+        else:
+            if (self.left_segment_id is None) == (self.left is None) or (self.right_segment_id is None) == (self.right is None):
+                raise ValueError("A merge needs exactly one left selector and one right selector.")
+            if any(value is not None for value in (self.segment_id, self.segment, self.cursor, self.boundary)) or self.text_layer != "display":
+                raise ValueError("A merge cannot contain split selectors.")
+        return self
+
+
+class GenerationPlanBatchRequest(StrictModel):
+    expected_revision_id: str = Field(min_length=1, max_length=80)
+    operations: list[GenerationTopologyEdit] = Field(min_length=1, max_length=50)
+
+
 class GenerationPlanTopologyRequest(StrictModel):
     """One of the three immutable, typed generation-plan topology edits."""
 
@@ -678,6 +744,8 @@ class GenerationSegmentBatchUpdate(StrictModel):
 
 
 class GenerationStartRequest(StrictModel):
+    speech_plan_revision_id: str | None = Field(default=None, min_length=1, max_length=80)
+    stale_only: bool = False
     run_override: dict[str, Any] = Field(default_factory=dict)
     # This intentionally remains distinct from a normal run override.  It is
     # applied only to the requested segment set, after any saved per-segment
@@ -1647,6 +1715,8 @@ SCHEMA_MODELS = {
         SessionSettingsUpdate,
         OutcomePlanUpdate,
         SourceAttachRequest,
+        SubtitleAlignRequest,
+        GenerationPlanBatchRequest,
         SourceUpdateRequest,
         MediaEditPrepareRequest,
         MediaEditProposeRequest,

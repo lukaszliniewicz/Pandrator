@@ -45,6 +45,7 @@
   import GenerationSegmentTable from './GenerationSegmentTable.svelte';
   import GenerationReadingView from './GenerationReadingView.svelte';
   import SpeechPlanReviewDialog from './SpeechPlanReviewDialog.svelte';
+  import SpeechPlanHistory from './SpeechPlanHistory.svelte';
   import SearchReplaceBar from './SearchReplaceBar.svelte';
   import type { TextReplacement, TextSearchMatch } from './search-replace';
   import { LANGUAGE_OPTIONS } from './settings-fields';
@@ -897,7 +898,8 @@
   async function start(
     operation: 'generate' | 'regenerate' | 'rvc' = 'generate',
     ids: string[] = [],
-    selectedSegmentOverride: Record<string, unknown> = {}
+    selectedSegmentOverride: Record<string, unknown> = {},
+    staleOnly = false
   ) {
     if (operation === 'rvc' && !rvcModel) {
       showRvc = true;
@@ -928,7 +930,9 @@
         ids,
         ids.length && operation !== 'rvc' ? selectedRunId || null : null,
         run_override,
-        selectedSegmentOverride
+        selectedSegmentOverride,
+        selectedRunId && ids.length ? null : payload.plan_revision_id || null,
+        staleOnly
       );
       generationStore.upsertRun(started);
       if (operation === 'rvc') showRvc = false;
@@ -1655,6 +1659,24 @@
               : 'flags'}
           </span>
         {/if}
+        <SpeechPlanHistory
+          {sessionId}
+          activeRevisionId={selectedRunId
+            ? null
+            : payload.plan_revision_id || null}
+          disabled={loading ||
+            topologyBusy ||
+            pendingSegmentUpdates > 0 ||
+            ['queued', 'running', 'pausing', 'cancel_requested'].includes(
+              run?.status ?? ''
+            )}
+          onrestore={(revisionId) =>
+            reviseSpeechBlocks({
+              action: 'restore',
+              target_revision_id: revisionId
+            })}
+          ongenerate={(staleOnly) => start('generate', [], {}, staleOnly)}
+        />
         {#if payload.parent_revision_id && !selectedRunId}
           <button
             type="button"

@@ -1763,16 +1763,58 @@ class ApplicationClient:
         cursor: int = 0,
         limit: int = 50,
         generation_run_id: str | None = None,
+        plan_revision_id: str | None = None,
+        view: str = "full",
+        fields: list[str] | None = None,
+        end_ordinal: int | None = None,
+        around_ordinal: int | None = None,
+        source_cue_id: str | None = None,
+        radius: int = 2,
     ) -> dict[str, Any]:
-        params: dict[str, Any] = {
-            "cursor": max(0, int(cursor)),
-            "limit": max(1, min(int(limit), 100)),
+        params: dict[str, Any] = {"cursor": max(0, int(cursor)), "limit": max(1, min(int(limit), 100))}
+        optional = {
+            "generation_run_id": generation_run_id, "plan_revision_id": plan_revision_id,
+            "end_ordinal": end_ordinal, "around_ordinal": around_ordinal, "source_cue_id": source_cue_id,
         }
-        if generation_run_id:
-            params["generation_run_id"] = generation_run_id
+        params.update({key: value for key, value in optional.items() if value is not None})
+        if view != "full":
+            params["view"] = view
+        if fields is not None:
+            params["fields"] = ",".join(fields)
+        if around_ordinal is not None or source_cue_id is not None:
+            params["radius"] = radius
         return self._request_json(
-            f"/api/v1/sessions/{quote(session_id, safe='')}/generation-segments",
-            parameters=params,
+            f"/api/v1/sessions/{quote(session_id, safe='')}/generation-segments", parameters=params,
+        )
+
+    def list_speech_plan_revisions(
+        self, session_id: str, *, limit: int = 50, before_revision_number: int | None = None
+    ) -> dict[str, Any]:
+        parameters: dict[str, Any] = {"limit": limit}
+        if before_revision_number is not None:
+            parameters["before_revision_number"] = before_revision_number
+        return self._request_json(
+            f"/api/v1/sessions/{quote(session_id, safe='')}/generation-plan/revisions", parameters=parameters,
+        )
+
+    def revise_generation_plan_topology_batch(
+        self, session_id: str, *, expected_revision_id: str,
+        operations: list[dict[str, Any]], idempotency_key: str,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/sessions/{quote(session_id, safe='')}/generation-plan/topology/batch",
+            method="POST", body={"expected_revision_id": expected_revision_id, "operations": operations},
+            if_match_revision=expected_revision_id, idempotency_key=idempotency_key,
+        )
+
+    def adopt_subtitle_source(
+        self, session_id: str, *, source_asset_id: str,
+        expected_revision: int | None = None, idempotency_key: str,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/sessions/{quote(session_id, safe='')}/sources/adopt-subtitles",
+            method="POST", body={"source_asset_id": source_asset_id},
+            if_match_revision=expected_revision, idempotency_key=idempotency_key,
         )
 
     def revise_generation_plan_topology(
@@ -1848,15 +1890,19 @@ class ApplicationClient:
         segment_ids: list[str] | tuple[str, ...] | None = None,
         operation: str = "generate",
         idempotency_key: str,
+        speech_plan_revision_id: str | None = None,
+        stale_only: bool = False,
     ) -> dict[str, Any]:
         body: dict[str, Any] = {"operation": operation}
         if segment_ids:
             body["segment_ids"] = list(segment_ids)
+        if speech_plan_revision_id is not None:
+            body["speech_plan_revision_id"] = speech_plan_revision_id
+        if stale_only:
+            body["stale_only"] = True
         return self._request_json(
             f"/api/v1/sessions/{quote(session_id, safe='')}/generation-runs",
-            method="POST",
-            body=body,
-            idempotency_key=idempotency_key,
+            method="POST", body=body, idempotency_key=idempotency_key,
         )
 
     def create_output_assembly(

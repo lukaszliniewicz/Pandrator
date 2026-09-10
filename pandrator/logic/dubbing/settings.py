@@ -258,7 +258,7 @@ def migrate_dubbing_payload(
     migrated.setdefault("speech_block_min_chars", 10)
     migrated.setdefault("speech_block_max_chars", 220)
     migrated.setdefault("speech_block_continuation_threshold_ms", 3000)
-    migrated.setdefault("speech_block_max_internal_gap_ms", 1800)
+    migrated.setdefault("speech_block_max_internal_gap_ms", 4000)
     migrated.setdefault("timing_context_enabled", True)
     migrated.setdefault("timing_context_gap_ms", 2000)
 

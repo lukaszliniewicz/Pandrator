@@ -47,7 +47,7 @@ class ImportLocalSourceInput(ToolInput):
         max_length=2048,
         description="Relative file path returned by local source browsing.",
     )
-    role: Literal["primary", "reference", "transcript"] = "primary"
+    role: Literal["primary", "reference", "transcript", "media"] = "primary"
     expected_session_revision: int = Field(
         ge=1,
         description="Current session revision used to prevent attaching to stale state.",
@@ -73,7 +73,7 @@ class CreateTextSourceInput(ToolInput):
         max_length=255,
         description="Plain filename for the managed text source.",
     )
-    role: Literal["primary", "reference", "transcript"] = "primary"
+    role: Literal["primary", "reference", "transcript", "media"] = "primary"
     expected_session_revision: int = Field(
         ge=1,
         description="Current session revision used to prevent attaching to stale state.",

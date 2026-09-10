@@ -3176,6 +3176,35 @@ def build_openapi_document() -> dict:
         ]
 
     paths.update(transcription_paths())
+    # Subtitle-first media and immutable speech-plan review operations.
+    extra_operations = [
+        ("/api/v1/sessions/{sessionId}/sources/subtitle-status", "get", "subtitleSourceStatus", None, "200"),
+        ("/api/v1/sessions/{sessionId}/sources/adopt-subtitles", "post", "adoptSubtitleSource", "SourceAttachRequest", "201"),
+        ("/api/v1/sessions/{sessionId}/sources/align-subtitles", "post", "alignSubtitleSource", "SubtitleAlignRequest", "202"),
+        ("/api/v1/sessions/{sessionId}/generation-plan/revisions", "get", "listSpeechPlanRevisions", None, "200"),
+        ("/api/v1/sessions/{sessionId}/generation-plan/topology/batch", "post", "reviseGenerationPlanTopologyBatch", "GenerationPlanBatchRequest", "201"),
+    ]
+    for path, method, name, schema, status in extra_operations:
+        definition = operation(name, name, schema, status)
+        definition["security"] = [{"cookieAuth": []}, {"bearerToken": []}, {"nativeOAuth": ["app.read" if method == "get" else "app.write"]}]
+        paths.setdefault(path, {})[method] = definition
+    batch = paths["/api/v1/sessions/{sessionId}/generation-plan/topology/batch"]["post"]
+    batch["parameters"] = [
+        {"name": name, "in": "header", "required": True, "schema": {"type": "string"}}
+        for name in ("If-Match", "Idempotency-Key")
+    ]
+    history = paths["/api/v1/sessions/{sessionId}/generation-plan/revisions"]["get"]
+    history["parameters"] = [
+        {"name": "limit", "in": "query", "schema": {"type": "integer", "minimum": 1, "maximum": 100, "default": 50}},
+        {"name": "before_revision_number", "in": "query", "schema": {"type": "integer", "minimum": 1}},
+    ]
+    inspection = paths["/api/v1/sessions/{sessionId}/generation-segments"]["get"]
+    inspection["parameters"].extend([
+        {"name": name, "in": "query", "required": False, "schema": {"type": kind}}
+        for name, kind in (("plan_revision_id", "string"), ("view", "string"), ("fields", "string"),
+                           ("cursor", "integer"), ("limit", "integer"), ("end_ordinal", "integer"),
+                           ("around_ordinal", "integer"), ("source_cue_id", "string"), ("radius", "integer"))
+    ])
     # Every templated route must expose its parameters to generated clients.
     # Most operations use the same UUID-like string identifiers, while chunk
     # indices are the one numeric route component.

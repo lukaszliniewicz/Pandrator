@@ -80,7 +80,7 @@ from .models import (
     utcnow,
 )
 from .output_settings_snapshot import build_output_settings_snapshot
-from .source_resolution import resolve_primary_source
+from .source_resolution import resolve_primary_source, resolve_media_source
 from .voice_library import (
     mark_provider_registrations_stale,
     remove_managed_files,
@@ -435,7 +435,7 @@ def _speech_block_settings(settings: dict[str, Any]) -> tuple[int, int, int, int
     )
     max_internal_gap = max(
         0,
-        integer_setting("speech_block_max_internal_gap_ms", 1800),
+        integer_setting("speech_block_max_internal_gap_ms", 4000),
     )
     return (
         min_chars,
@@ -1155,7 +1155,7 @@ class WorkflowHandlers:
                     metadata_json={"url": url, "downloader": "yt-dlp"},
                 )
             )
-        library = SourceLibraryService(self.database)
+        library = SourceLibraryService(self.database, self.artifacts)
         asset = library.ensure_for_artifact(
             artifact.id,
             display_name=output.name,
@@ -1197,7 +1197,7 @@ class WorkflowHandlers:
                     metadata_json={"reused_from": source.id},
                 )
             )
-        library = SourceLibraryService(self.database)
+        library = SourceLibraryService(self.database, self.artifacts)
         asset = library.ensure_for_artifact(
             artifact.id,
             display_name=source_path.name,
@@ -1353,6 +1353,14 @@ class WorkflowHandlers:
 
         session_id = str(payload.get("session_id") or "")
         target_key = str(payload.get("target_stage") or "generate_audio")
+        expected_speech_revision = str(payload.get("speech_plan_revision_id") or "")
+        if expected_speech_revision:
+            with self.database.session() as session:
+                current_plan = session.scalar(select(GenerationPlan).where(GenerationPlan.session_id == session_id))
+                if current_plan is None or current_plan.active_revision_id != expected_speech_revision:
+                    from .workspace import RevisionConflict
+
+                    raise RevisionConflict("The speech plan changed after this workflow was queued. Review the current revision and start again.")
         record = self._session_record(session_id)
         definitions = (
             AUDIOBOOK_STAGES
@@ -1372,7 +1380,7 @@ class WorkflowHandlers:
                 if upload
                 else ""
             )
-            is_srt_source = filename.endswith(".srt")
+            is_srt_source = filename.endswith((".srt", ".vtt"))
             if is_srt_source:
                 definitions = tuple(
                     item for item in definitions if item.key != "transcribe"
@@ -1559,6 +1567,7 @@ class WorkflowHandlers:
                     "resolved_settings_snapshot"
                 )
             if definition.key == "generate_audio":
+                handler_payload["speech_plan_revision_id"] = expected_speech_revision or None
                 result = self._run_reviewable_generation(
                     handler_payload,
                     stage_progress,
@@ -2233,6 +2242,23 @@ class WorkflowHandlers:
                 select(GenerationPlan).where(GenerationPlan.session_id == session_id)
             )
             previous_revision_id = plan.active_revision_id if plan else None
+            active_revision = session.get(GenerationPlanRevision, previous_revision_id) if previous_revision_id else None
+            expected_revision_id = str(settings.get("speech_plan_revision_id") or "")
+            if expected_revision_id and expected_revision_id != previous_revision_id:
+                from .workspace import RevisionConflict
+
+                raise RevisionConflict("The selected speech plan changed before workflow execution.")
+            reviewed = bool(active_revision and (active_revision.operation_json or session.scalar(
+                select(GenerationSegment.id).where(
+                    GenerationSegment.plan_revision_id == previous_revision_id,
+                    GenerationSegment.revision > 1,
+                ).limit(1)
+            )))
+            if active_revision is not None and (expected_revision_id or reviewed):
+                planned_source = str((active_revision.settings_json or {}).get("_source_artifact_id") or "")
+                if planned_source and planned_source != source_artifact.id:
+                    raise ValueError("The selected speech plan belongs to a different subtitle source. Restore the matching source or explicitly prepare a new speech plan.")
+                return active_revision.id
 
         records, source_revision_id, display_artifact = (
             self._subtitle_generation_records(
@@ -3558,6 +3584,13 @@ class WorkflowHandlers:
 
         runtime_settings = normalize_alignment_settings(runtime_settings)
         caption_artifact = self._current_media_edit_transcript(session_id)
+        if payload.get("caption_artifact_id"):
+            caption_artifact, _caption_path = self._resolve_input(str(payload["caption_artifact_id"]))
+            if caption_artifact.session_id != session_id or caption_artifact.state == "deleted":
+                raise ValueError("The selected subtitle revision is not available in this session.")
+            if (source_artifact.content_hash != payload.get("source_content_hash")
+                    or caption_artifact.content_hash != payload.get("caption_content_hash")):
+                raise ValueError("The recording or subtitle source changed after alignment was queued.")
         alignment_method = str(
             runtime_settings.get("caption_alignment_method") or "ctc"
         ).strip().lower()
@@ -7934,6 +7967,15 @@ class WorkflowHandlers:
         settings = dict(payload.get("settings") or {})
         language = self._generation_language(session_id, source_artifact, settings)
         settings = {**settings, "language": language, "target_language": language}
+        expected_revision_id = str(payload.get("speech_plan_revision_id") or settings.get("speech_plan_revision_id") or "")
+        if expected_revision_id:
+            settings["speech_plan_revision_id"] = expected_revision_id
+            with self.database.session() as session:
+                current_plan = session.scalar(select(GenerationPlan).where(GenerationPlan.session_id == session_id))
+                if current_plan is None or current_plan.active_revision_id != expected_revision_id:
+                    from .workspace import RevisionConflict
+
+                    raise RevisionConflict("The selected speech plan is no longer current.")
         progress(0.0, "Preparing generation segments")
 
         plan_revision_id: str | None = None
@@ -7955,7 +7997,7 @@ class WorkflowHandlers:
                         GenerationPlan.session_id == session_id
                     )
                 )
-                if source_artifact.role == "prepared_text" and plan is not None:
+                if plan is not None and (source_artifact.role == "prepared_text" or expected_revision_id):
                     plan_revision_id = plan.active_revision_id
             if not plan_revision_id:
                 records = json.loads(source_path.read_text(encoding="utf-8-sig"))
@@ -8000,6 +8042,7 @@ class WorkflowHandlers:
             "use_existing_speech_plans": source_artifact.role == "tts_optimized",
         }
         snapshot["source_artifact_id"] = source_artifact.id
+        snapshot["speech_plan_revision_id"] = plan_revision_id
         frozen_hash = hashlib.sha256(
             json.dumps(
                 snapshot,
@@ -8009,7 +8052,12 @@ class WorkflowHandlers:
                 default=str,
             ).encode("utf-8")
         ).hexdigest()
-        with self.database.session() as session:
+        with self.database.immediate_session() as session:
+            current_plan = session.scalar(select(GenerationPlan).where(GenerationPlan.session_id == session_id))
+            if current_plan is None or current_plan.active_revision_id != plan_revision_id:
+                from .workspace import RevisionConflict
+
+                raise RevisionConflict("The speech plan changed before workflow generation could start.")
             sequence_number = (
                 int(
                     session.scalar(
@@ -10195,7 +10243,7 @@ class WorkflowHandlers:
                 # session is edited before the queued worker starts.
                 attached_sources = []
             else:
-                compatibility_source = resolve_primary_source(
+                compatibility_source = resolve_media_source(
                     session, session_id
                 ).artifact
                 attached_sources = (

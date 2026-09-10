@@ -9,6 +9,10 @@ from ..errors import NextAction
 from ..results import ToolOutcome
 from ..schemas.generation import (
     AssembleGenerationRunInput,
+    AdoptSubtitleSourceInput,
+    GenerateSpeechPlanInput,
+    ListSpeechPlanRevisionsInput,
+    ReviseSpeechBlockPlanBatchInput,
     ListGenerationSegmentsInput,
     RegenerateSegmentsInput,
     ReviseSpeechBlockPlanInput,
@@ -63,23 +67,37 @@ def list_generation_segments(
     arguments: ListGenerationSegmentsInput,
 ) -> dict[str, Any]:
     application = runtime.require_application()
+    options: dict[str, Any] = {}
+    for key in ("plan_revision_id", "fields", "end_ordinal", "around_ordinal", "source_cue_id"):
+        value = getattr(arguments, key)
+        if value is not None:
+            options[key] = value
+    if arguments.view != "full":
+        options["view"] = arguments.view
+    if arguments.around_ordinal is not None or arguments.source_cue_id is not None:
+        options["radius"] = arguments.radius
     payload = application.list_generation_segments(
         arguments.session_id,
         cursor=arguments.cursor,
         limit=arguments.limit,
         generation_run_id=arguments.generation_run_id,
+        **options,
     )
     items = payload.get("items") or []
     return {
         "schema_version": "1",
         "session_id": arguments.session_id,
-        "items": [_segment_projection(item) for item in items if isinstance(item, dict)],
+        "items": [(_segment_projection(item) if arguments.view == "full" and arguments.fields is None else item) for item in items if isinstance(item, dict)],
+        "view": arguments.view,
+        "fields": payload.get("fields"),
+        "active_plan_revision_id": payload.get("active_plan_revision_id"),
+        "is_active_revision": payload.get("is_active_revision"),
         "next_cursor": payload.get("next_cursor"),
         "total": payload.get("total"),
         "plan_revision_id": payload.get("plan_revision_id"),
         "plan_revision_number": payload.get("plan_revision_number"),
         "parent_revision_id": payload.get("parent_revision_id"),
-        "operation_json": payload.get("operation_json") or {},
+        "operation_json": (payload.get("operation_json") or {}) if arguments.view == "full" else {key: value for key, value in (payload.get("operation_json") or {}).items() if key in {"action", "batch", "target_revision_id"}},
         "speech_block_settings": payload.get("speech_block_settings") or {},
     }
 
@@ -110,6 +128,42 @@ def revise_speech_block_plan(
                 reason="Re-list segments and inspect the new immutable plan revision.",
             )
         ],
+    )
+
+
+def list_speech_plan_revisions(runtime: McpRuntime, arguments: ListSpeechPlanRevisionsInput) -> dict[str, Any]:
+    payload = runtime.require_application().list_speech_plan_revisions(
+        arguments.session_id, limit=arguments.limit, before_revision_number=arguments.before_revision_number,
+    )
+    return {"schema_version": "1", "session_id": arguments.session_id, **payload}
+
+
+def revise_speech_block_plan_batch(runtime: McpRuntime, arguments: ReviseSpeechBlockPlanBatchInput) -> ToolOutcome:
+    result = runtime.require_application().revise_generation_plan_topology_batch(
+        arguments.session_id, expected_revision_id=arguments.expected_revision_id,
+        operations=[operation.model_dump(exclude_none=True) for operation in arguments.operations],
+        idempotency_key=arguments.idempotency_key,
+    )
+    return ToolOutcome(result=result, next_actions=[NextAction(
+        tool="pandrator_list_generation_segments",
+        arguments={"session_id": arguments.session_id, "plan_revision_id": result.get("plan_revision_id"), "view": "compact"},
+        reason="Review the final revision; original-to-final block IDs and named results are in the batch receipt.",
+    )])
+
+
+def generate_speech_plan(runtime: McpRuntime, arguments: GenerateSpeechPlanInput) -> ToolOutcome:
+    result = runtime.require_application().start_generation_run(
+        arguments.session_id, speech_plan_revision_id=arguments.speech_plan_revision_id,
+        stale_only=arguments.stale_only, idempotency_key=arguments.idempotency_key,
+    )
+    return ToolOutcome(
+        result={"schema_version": "1", "session_id": arguments.session_id, **result},
+        work=application_work_reference(result),
+        next_actions=[NextAction(
+            tool="pandrator_list_generation_segments",
+            arguments={"session_id": arguments.session_id, "plan_revision_id": arguments.speech_plan_revision_id, "view": "compact"},
+            reason="Review synthesis progress for the pinned speech-plan revision before assembling its output.",
+        )],
     )
 
 
@@ -230,3 +284,14 @@ def assemble_generation_run(
             )
         ],
     )
+
+
+def adopt_subtitle_source(runtime: McpRuntime, arguments: AdoptSubtitleSourceInput) -> ToolOutcome:
+    result = runtime.require_application().adopt_subtitle_source(
+        arguments.session_id, source_asset_id=arguments.source_asset_id,
+        expected_revision=arguments.expected_revision, idempotency_key=arguments.idempotency_key,
+    )
+    return ToolOutcome(result={"session_id": arguments.session_id, **result}, next_actions=[NextAction(
+        tool="pandrator_get_session", arguments={"session_id": arguments.session_id},
+        reason="The existing managed subtitles now have a timed revision; inspect readiness before planning correction or translation.",
+    )])

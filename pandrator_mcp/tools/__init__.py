@@ -22,6 +22,11 @@ from .e2e import (
 from .generation import (
     assemble_generation_run,
     list_generation_segments,
+    list_speech_plan_revisions,
+    revise_speech_block_plan_batch,
+    generate_speech_plan,
+    adopt_subtitle_source,
+
     regenerate_segments,
     revise_speech_block_plan,
     select_take,
@@ -158,6 +163,11 @@ __all__ = [
     "list_artifacts",
     "list_generation_runs",
     "list_generation_segments",
+    "list_speech_plan_revisions",
+    "revise_speech_block_plan_batch",
+    "generate_speech_plan",
+    "adopt_subtitle_source",
+
     "revise_speech_block_plan",
     "list_dispatch_runs",
     "list_source_cleaning_dispatch_runs",

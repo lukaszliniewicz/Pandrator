@@ -56,6 +56,7 @@
   import { type WorkflowStore } from './workflow-store.svelte';
   import type PdfEditor from './PdfEditor.svelte';
   import type AddSourceDialog from './AddSourceDialog.svelte';
+  import SubtitleSourceTools from './SubtitleSourceTools.svelte';
   import type ArtifactPreview from './ArtifactPreview.svelte';
   import type SessionForkDialog from './SessionForkDialog.svelte';
   import type SettingsModal from './SettingsModal.svelte';
@@ -257,7 +258,7 @@
   let speechBlockMaxChars = $state(220);
   let speechBlockMergeThreshold = $state(1500);
   let speechBlockContinuationThreshold = $state(3000);
-  let speechBlockMaxInternalGap = $state(1800);
+  let speechBlockMaxInternalGap = $state(4000);
   let subtitleMode = $state('soft');
   let subtitleSelection = $state('dual');
   let audioMode = $state('mixed');
@@ -972,7 +973,7 @@
       saved.speech_block_continuation_threshold_ms ?? 3000
     );
     speechBlockMaxInternalGap = Number(
-      saved.speech_block_max_internal_gap_ms ?? 1800
+      saved.speech_block_max_internal_gap_ms ?? 4000
     );
     subtitleMode = String(saved.subtitle_mode ?? 'soft');
     subtitleSelection = String(saved.subtitle_selection ?? 'dual');
@@ -2554,6 +2555,20 @@
 </script>
 
 <div class="min-w-0 max-w-full overflow-x-hidden">
+  {#if session.workflow_kind === 'subtitles' || session.workflow_kind === 'voiceover'}
+    <SubtitleSourceTools
+      sessionId={session.id}
+      refreshKey={JSON.stringify([
+        session.revision,
+        snapshot?.stages.map((stage) => [
+          stage.key,
+          stage.status,
+          stage.selected_artifact_id
+        ])
+      ])}
+      onchanged={sourceAdded}
+    />
+  {/if}
   <button
     onclick={onback}
     class="muted mb-4 flex items-center gap-2 text-sm font-semibold"

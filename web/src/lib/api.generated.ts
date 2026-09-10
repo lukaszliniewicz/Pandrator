@@ -1542,6 +1542,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{sessionId}/generation-plan/revisions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listSpeechPlanRevisions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{sessionId}/generation-plan/topology": {
         parameters: {
             query?: never;
@@ -1552,6 +1568,22 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["reviseGenerationPlanTopology"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/generation-plan/topology/batch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["reviseGenerationPlanTopologyBatch"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1910,6 +1942,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{sessionId}/sources/adopt-subtitles": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["adoptSubtitleSource"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/sources/align-subtitles": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["alignSubtitleSource"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{sessionId}/sources/reuse": {
         parameters: {
             query?: never;
@@ -1920,6 +1984,22 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["reuseSource"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/sources/subtitle-status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["subtitleSourceStatus"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -3592,6 +3672,13 @@ export interface components {
              */
             schema_version?: "1";
         };
+        /** GenerationPlanBatchRequest */
+        GenerationPlanBatchRequest: {
+            /** Expected Revision Id */
+            expected_revision_id: string;
+            /** Operations */
+            operations: components["schemas"]["GenerationTopologyEdit"][];
+        };
         /** GenerationPlanCreate */
         GenerationPlanCreate: {
             /** Segments */
@@ -3710,6 +3797,29 @@ export interface components {
              */
             voice_id?: string | null;
         };
+        /** GenerationSegmentSelector */
+        GenerationSegmentSelector: {
+            /**
+             * Ordinal
+             * @default null
+             */
+            ordinal?: number | null;
+            /**
+             * Result Ref
+             * @default null
+             */
+            result_ref?: string | null;
+            /**
+             * Segment Id
+             * @default null
+             */
+            segment_id?: string | null;
+            /**
+             * Source Cue Ids
+             * @default null
+             */
+            source_cue_ids?: (string | number)[] | null;
+        };
         /** GenerationSegmentUpdate */
         GenerationSegmentUpdate: {
             /**
@@ -3763,6 +3873,39 @@ export interface components {
              */
             voice_id?: string | null;
         };
+        /** GenerationSplitBoundary */
+        GenerationSplitBoundary: {
+            /**
+             * After Sentence
+             * @default null
+             */
+            after_sentence?: number | null;
+            /**
+             * After Source Cue Id
+             * @default null
+             */
+            after_source_cue_id?: string | number | null;
+            /**
+             * After Text
+             * @default null
+             */
+            after_text?: string | null;
+            /**
+             * Before Source Cue Id
+             * @default null
+             */
+            before_source_cue_id?: string | number | null;
+            /**
+             * Before Text
+             * @default null
+             */
+            before_text?: string | null;
+            /**
+             * Cursor
+             * @default null
+             */
+            cursor?: number | null;
+        };
         /** GenerationStartRequest */
         GenerationStartRequest: {
             /**
@@ -3786,6 +3929,63 @@ export interface components {
             selected_segment_override?: {
                 [key: string]: unknown;
             };
+            /**
+             * Speech Plan Revision Id
+             * @default null
+             */
+            speech_plan_revision_id?: string | null;
+            /**
+             * Stale Only
+             * @default false
+             */
+            stale_only?: boolean;
+        };
+        /** GenerationTopologyEdit */
+        GenerationTopologyEdit: {
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "split" | "merge";
+            /** @default null */
+            boundary?: components["schemas"]["GenerationSplitBoundary"] | null;
+            /**
+             * Cursor
+             * @default null
+             */
+            cursor?: number | null;
+            /**
+             * Label
+             * @default null
+             */
+            label?: string | null;
+            /** @default null */
+            left?: components["schemas"]["GenerationSegmentSelector"] | null;
+            /**
+             * Left Segment Id
+             * @default null
+             */
+            left_segment_id?: string | null;
+            /** @default null */
+            right?: components["schemas"]["GenerationSegmentSelector"] | null;
+            /**
+             * Right Segment Id
+             * @default null
+             */
+            right_segment_id?: string | null;
+            /** @default null */
+            segment?: components["schemas"]["GenerationSegmentSelector"] | null;
+            /**
+             * Segment Id
+             * @default null
+             */
+            segment_id?: string | null;
+            /**
+             * Text Layer
+             * @default display
+             * @enum {string}
+             */
+            text_layer?: "display" | "speech";
         };
         /** JobCreate */
         JobCreate: {
@@ -5399,6 +5599,17 @@ export interface components {
              * @default null
              */
             artifact_id?: string | null;
+        };
+        /** SubtitleAlignRequest */
+        SubtitleAlignRequest: {
+            /** Expected Revision */
+            expected_revision: number;
+            /**
+             * Method
+             * @default ctc
+             * @enum {string}
+             */
+            method?: "ctc" | "ctc_asr_fallback";
         };
         /** SubtitleEvidenceCreateRequest */
         SubtitleEvidenceCreateRequest: {
@@ -8458,6 +8669,29 @@ export interface operations {
             };
         };
     };
+    listSpeechPlanRevisions: {
+        parameters: {
+            query?: {
+                limit?: number;
+                before_revision_number?: number;
+            };
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description listSpeechPlanRevisions */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     reviseGenerationPlanTopology: {
         parameters: {
             query?: never;
@@ -8477,6 +8711,33 @@ export interface operations {
         };
         responses: {
             /** @description Create an immutable generation-plan topology revision */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    reviseGenerationPlanTopologyBatch: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": string;
+                "Idempotency-Key": string;
+            };
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GenerationPlanBatchRequest"];
+            };
+        };
+        responses: {
+            /** @description reviseGenerationPlanTopologyBatch */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -8557,6 +8818,15 @@ export interface operations {
             query?: {
                 /** @description Return the plan revision bound to this generation run. */
                 generation_run_id?: string;
+                plan_revision_id?: string;
+                view?: string;
+                fields?: string;
+                cursor?: number;
+                limit?: number;
+                end_ordinal?: number;
+                around_ordinal?: number;
+                source_cue_id?: string;
+                radius?: number;
             };
             header?: never;
             path: {
@@ -9248,6 +9518,54 @@ export interface operations {
             };
         };
     };
+    adoptSubtitleSource: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SourceAttachRequest"];
+            };
+        };
+        responses: {
+            /** @description adoptSubtitleSource */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    alignSubtitleSource: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SubtitleAlignRequest"];
+            };
+        };
+        responses: {
+            /** @description alignSubtitleSource */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     reuseSource: {
         parameters: {
             query?: never;
@@ -9265,6 +9583,26 @@ export interface operations {
         responses: {
             /** @description Queued */
             202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    subtitleSourceStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description subtitleSourceStatus */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };

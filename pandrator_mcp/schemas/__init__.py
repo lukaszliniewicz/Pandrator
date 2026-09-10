@@ -29,6 +29,11 @@ from .e2e import (
 from .generation import (
     AssembleGenerationRunInput,
     ListGenerationSegmentsInput,
+    ListSpeechPlanRevisionsInput,
+    ReviseSpeechBlockPlanBatchInput,
+    GenerateSpeechPlanInput,
+    AdoptSubtitleSourceInput,
+
     RegenerateSegmentsInput,
     ReviseSpeechBlockPlanInput,
     SelectTakeInput,
@@ -217,6 +222,11 @@ TOOL_INPUT_MODELS = (
     PatchSubtitleCuesInput,
     ImportSubtitlesInput,
     ListGenerationSegmentsInput,
+    ListSpeechPlanRevisionsInput,
+    ReviseSpeechBlockPlanBatchInput,
+    GenerateSpeechPlanInput,
+    AdoptSubtitleSourceInput,
+
     UpdateGenerationSegmentInput,
     SelectTakeInput,
     RegenerateSegmentsInput,
@@ -286,6 +296,11 @@ __all__ = [
     "ListArtifactsInput",
     "ListGenerationRunsInput",
     "ListGenerationSegmentsInput",
+    "ListSpeechPlanRevisionsInput",
+    "ReviseSpeechBlockPlanBatchInput",
+    "GenerateSpeechPlanInput",
+    "AdoptSubtitleSourceInput",
+
     "ListDispatchRunsInput",
     "ListSourceCleaningDispatchRunsInput",
     "ListSpeechOptimizationDispatchRunsInput",

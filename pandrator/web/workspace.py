@@ -41,7 +41,7 @@ from .models import (
     UsageEvent,
     utcnow,
 )
-from .source_resolution import classify_source, resolve_primary_source
+from .source_resolution import classify_source, resolve_primary_source, resolve_media_source
 from .tts_optimization import (
     DEFAULT_FIRST_PROMPT,
     DEFAULT_PROMPT,
@@ -285,7 +285,7 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "speech_block_max_chars": 220,
         "speech_block_merge_threshold": 1500,
         "speech_block_continuation_threshold_ms": 3000,
-        "speech_block_max_internal_gap_ms": 1800,
+        "speech_block_max_internal_gap_ms": 4000,
     },
     "audio": {
         "audio_verification_mode": "off",
@@ -635,7 +635,7 @@ class WorkspaceSettingsService:
 
     @staticmethod
     def _output_context(session, session_record: SessionRecord) -> dict[str, Any]:
-        source = resolve_primary_source(session, session_record.id)
+        source = resolve_media_source(session, session_record.id)
         workflow_kind = session_record.workflow_kind
         source_artifact = source.artifact
         source_name = source.name
@@ -1393,8 +1393,9 @@ class OutcomePlanService:
 
 
 class SourceLibraryService:
-    def __init__(self, database: Database):
+    def __init__(self, database: Database, artifacts=None):
         self.database = database
+        self.artifacts = artifacts
 
     @staticmethod
     def _asset_payload(
@@ -1498,8 +1499,8 @@ class SourceLibraryService:
                 expected_session_revision=(expected_session_revision),
             )
 
-    @staticmethod
     def attach_in_session(
+        self,
         session: Session,
         session_id: str,
         source_asset_id: str,
@@ -1518,6 +1519,10 @@ class SourceLibraryService:
             raise RevisionConflict(
                 "The session changed before its source was attached."
             )
+        if role == "media" and classify_source(
+            name=asset.display_name, kind=asset.kind, mime_type=asset.mime_type or ""
+        ) not in {"audio", "video"}:
+            raise ValueError("A media target must be an audio or video source, not subtitle text.")
         for current in session.scalars(
             select(SessionSource).where(
                 SessionSource.session_id == session_id,
@@ -1546,12 +1551,15 @@ class SourceLibraryService:
             attachment.is_current = True
             attachment.revision += 1
             attachment.updated_at = utcnow()
+        subtitle_revision = None
         if role == "primary":
-            select_source_path(
-                session,
-                session_id,
-                asset.artifact_id,
-            )
+            if self.artifacts is not None and str(asset.kind).lower() in {"srt", "vtt"}:
+                from .subtitle_sources import adopt_subtitle_source_in_session
+
+                subtitle_revision = adopt_subtitle_source_in_session(
+                    session, self.artifacts, session_id, asset.artifact_id
+                )
+            select_source_path(session, session_id, asset.artifact_id)
         if expected_session_revision is not None:
             session_record.revision += 1
             session_record.updated_at = utcnow()
@@ -1560,11 +1568,42 @@ class SourceLibraryService:
             "id": attachment.id,
             "session_id": session_id,
             "source_asset_id": source_asset_id,
+            "subtitle_revision": subtitle_revision,
             "role": role,
             "is_current": True,
             "revision": attachment.revision,
             "session_revision": session_record.revision,
         }
+
+    def adopt_subtitles(
+        self, session_id: str, source_asset_id: str, *, expected_session_revision: int | None = None
+    ) -> dict[str, Any]:
+        """Recover an attached subtitle source without another upload."""
+        from .subtitle_sources import adopt_subtitle_source_in_session
+
+        if self.artifacts is None:
+            raise ValueError("Subtitle adoption requires the managed artifact service.")
+        with self.database.immediate_session() as session:
+            record = session.get(SessionRecord, session_id)
+            asset = session.get(SourceAsset, source_asset_id)
+            attachment = session.scalar(select(SessionSource).where(
+                SessionSource.session_id == session_id,
+                SessionSource.source_asset_id == source_asset_id,
+                SessionSource.role == "primary",
+                SessionSource.is_current.is_(True),
+            ))
+            if record is None or asset is None or attachment is None:
+                raise KeyError(source_asset_id)
+            if expected_session_revision is not None and record.revision != expected_session_revision:
+                raise RevisionConflict("The session changed before its subtitle source was adopted.")
+            result = adopt_subtitle_source_in_session(session, self.artifacts, session_id, asset.artifact_id)
+            select_source_path(session, session_id, asset.artifact_id)
+            if not result["reused"]:
+                record.revision += 1
+                record.updated_at = utcnow()
+            result["session_revision"] = record.revision
+            result["source_asset_id"] = source_asset_id
+            return result
 
     def detach(
         self, session_id: str, attachment_id: str, expected_revision: int
@@ -2034,7 +2073,22 @@ class GenerationService:
         marked: bool | None = None,
         verification: str | None = None,
         generation_run_id: str | None = None,
+        plan_revision_id: str | None = None,
+        view: str = "full",
+        fields: list[str] | None = None,
+        end_ordinal: int | None = None,
+        around_ordinal: int | None = None,
+        source_cue_id: str | None = None,
+        radius: int = 2,
     ) -> dict[str, Any]:
+        from .generation_review import project_segments, source_references
+
+        project_segments({"items": []}, view=view, fields=fields)
+        requested_plan_revision_id = plan_revision_id
+        if radius < 0 or radius > 25:
+            raise ValueError("Inspection radius must be between 0 and 25 blocks.")
+        if around_ordinal is not None and source_cue_id is not None:
+            raise ValueError("Choose either a block ordinal or a source cue for contextual inspection.")
         limit = max(1, min(int(limit), 250))
         if verification not in {None, "issues"}:
             raise ValueError("verification must be 'issues' when supplied.")
@@ -2060,10 +2114,14 @@ class GenerationService:
                     "operation_json": {},
                     "speech_block_settings": {},
                 }
-            plan_revision_id = plan.active_revision_id
+            plan_revision_id = requested_plan_revision_id or plan.active_revision_id
             if selected_run is not None:
+                if requested_plan_revision_id and selected_run.plan_revision_id != requested_plan_revision_id:
+                    raise ValueError("The selected run does not use the requested speech-plan revision.")
                 plan_revision_id = selected_run.plan_revision_id
             plan_revision = session.get(GenerationPlanRevision, plan_revision_id)
+            if plan_revision is None or plan_revision.plan_id != plan.id:
+                raise KeyError(plan_revision_id)
             revision_settings = (
                 dict(plan_revision.settings_json or {})
                 if plan_revision is not None
@@ -2093,6 +2151,25 @@ class GenerationService:
                     )
                     .exists()
                 )
+            if around_ordinal is not None:
+                if around_ordinal < 0:
+                    raise ValueError("Block ordinals cannot be negative.")
+                cursor = max(0, around_ordinal - radius)
+                end_ordinal = around_ordinal + radius
+            if source_cue_id is not None:
+                evidence_rows = session.execute(select(
+                    GenerationSegment.ordinal, GenerationSegment.source_segment_ids_json,
+                    GenerationSegment.speech_block_provenance_json,
+                ).where(GenerationSegment.plan_revision_id == plan_revision_id))
+                matching = [row.ordinal for row in evidence_rows if str(source_cue_id) in source_references(row)]
+                if not matching:
+                    raise ValueError("No speech blocks reference the requested source cue in this revision.")
+                cursor = max(0, min(matching) - radius)
+                end_ordinal = max(matching) + radius
+            if end_ordinal is not None:
+                if end_ordinal < max(0, cursor):
+                    raise ValueError("The end ordinal must not precede the requested start.")
+                filters.append(GenerationSegment.ordinal <= end_ordinal)
             page_filters = [*filters, GenerationSegment.ordinal >= max(0, cursor)]
             rows = list(
                 session.scalars(
@@ -2224,11 +2301,13 @@ class GenerationService:
                 )
                 or 0
             )
-            return {
+            return project_segments({
                 "items": items,
                 "next_cursor": rows[-1].ordinal + 1 if rows and has_more else None,
                 "total": total,
                 "plan_revision_id": plan_revision_id,
+                "active_plan_revision_id": plan.active_revision_id,
+                "is_active_revision": plan_revision_id == plan.active_revision_id,
                 "plan_revision_number": (
                     plan_revision.revision_number if plan_revision is not None else None
                 ),
@@ -2243,7 +2322,7 @@ class GenerationService:
                     else {}
                 ),
                 "speech_block_settings": speech_block_settings,
-            }
+            }, view=view, fields=fields)
 
     @staticmethod
     def _updated_segment_payload(segment: GenerationSegment) -> dict[str, Any]:
@@ -3177,6 +3256,7 @@ class GenerationService:
                 values["text"] = text
                 values["optimized_text"] = speech if segment.optimized_text else None
                 values["speech_block_provenance_json"] = provenance_value
+                values["source_segment_ids_json"] = self._provenance_source_refs(provenance_value) or list(segment.source_segment_ids_json or [])
                 values["speech_plan_json"] = {
                     "version": 1,
                     "status": "manual_topology",
@@ -3402,9 +3482,9 @@ class GenerationService:
         revision = GenerationPlanRevision(
             plan_id=plan.id,
             parent_revision_id=current.id,
-            source_revision_id=current.source_revision_id,
+            source_revision_id=target.source_revision_id if action == "restore" else current.source_revision_id,
             revision_number=revision_number,
-            settings_json=deepcopy(current.settings_json or {}),
+            settings_json=deepcopy((target.settings_json if action == "restore" else current.settings_json) or {}),
             operation_json=deepcopy(operation_json),
             content_hash=stable_hash(
                 {
@@ -3445,7 +3525,8 @@ class GenerationService:
                     continue
                 source_values = self._segment_copy_values(source)
                 target_values = self._segment_copy_values(new_segments[new_index])
-                for ignored_key in ("ordinal", "revision"):
+                # Alignment groups are assembly bookkeeping, not TTS input.
+                for ignored_key in ("ordinal", "revision", "alignment_group"):
                     source_values.pop(ignored_key, None)
                     target_values.pop(ignored_key, None)
                 unchanged = source_values == target_values
@@ -3463,14 +3544,30 @@ class GenerationService:
             jobs=self.jobs,
         )
         session.flush()
-        affected_ids = [segment.id for segment in new_segments]
+        lineage: dict[str, list[str]] = {}
+        affected_ids: list[str] = []
+        new_index = 0
+        for source in target_segments if action == "restore" else current_segments:
+            replacement_count = len(replacement_by_old.get(source.id, [None]))
+            children = [item.id for item in new_segments[new_index:new_index + replacement_count]]
+            lineage[source.id] = children
+            if source.id in replacement_by_old:
+                affected_ids.extend(children)
+            new_index += replacement_count
+        if action == "merge":
+            lineage[right.id] = list(lineage[left.id])
+        operation_json["lineage"] = lineage
+        revision.operation_json = deepcopy(operation_json)
+        revision.content_hash = stable_hash({"parent_revision_id": current.id, "operation": operation_json, "segments": persisted_values})
+        session.flush()
         return {
             "id": plan.id,
+            "lineage": lineage,
             "plan_revision_id": revision.id,
             "revision_number": revision.revision_number,
             "parent_revision_id": revision.parent_revision_id,
             "operation_json": dict(revision.operation_json or {}),
-            "segment_ids": affected_ids,
+            "segment_ids": [segment.id for segment in new_segments],
             "affected_segment_ids": affected_ids,
         }
 
@@ -3550,48 +3647,67 @@ class GenerationService:
         segment_ids: list[str] | None = None,
         generation_run_id: str | None = None,
         operation: str = "generate",
+        speech_plan_revision_id: str | None = None,
+        stale_only: bool = False,
     ) -> dict[str, Any]:
-        """Resolve settings and refresh a full plan before a short write transaction."""
-        requested_segment_ids = [
-            str(value) for value in (segment_ids or []) if str(value)
-        ]
+        """Resolve delivery settings and bind one immutable plan before queuing.
+
+        A selected revision is never refreshed. Legacy callers may still refresh
+        an untouched automatic plan, but reviewed topology is always preserved.
+        The final write transaction rechecks the captured revision.
+        """
+        requested_segment_ids = list(dict.fromkeys(str(value) for value in (segment_ids or []) if str(value)))
         run_override = dict(run_override or {})
-        selected_segment_override = _secret_free(
-            deepcopy(selected_segment_override or {})
-        )
+        selected_segment_override = _secret_free(deepcopy(selected_segment_override or {}))
+        if stale_only and (requested_segment_ids or generation_run_id or operation != "generate" or selected_segment_override):
+            raise ValueError("Stale-only generation cannot be combined with selected segments, an older run, or alternate segment settings.")
         if selected_segment_override and not requested_segment_ids:
-            raise ValueError(
-                "An alternate segment setting set requires one or more selected segments."
-            )
+            raise ValueError("An alternate segment setting set requires one or more selected segments.")
         if selected_segment_override:
             selected_tts = selected_segment_override.get("tts")
             if isinstance(selected_tts, dict):
-                # Provider metadata is server-owned.  The compact UI override
-                # may name a provider but must not smuggle an arbitrary
-                # catalogue or secret into an immutable run snapshot.
                 selected_tts.pop("provider_configs", None)
                 selected_tts.pop("service_configs", None)
-                binding = self._selected_tts_provider_binding(
-                    session_id,
-                    selected_segment_override,
-                )
+                binding = self._selected_tts_provider_binding(session_id, selected_segment_override)
                 if binding is not None:
                     selected_tts["provider_configs"] = [binding]
-        # Resolve before the caller opens an immediate transaction: resolving
-        # selected settings can itself persist normalization state, and full-run
-        # plan refresh owns a separate write transaction.
         resolved_for_new = self.settings.resolve(session_id, run_override=run_override)
-        if (
-            operation == "generate"
-            and not requested_segment_ids
-            and self.plan_refresher is not None
-        ):
+        with self.database.session() as session:
+            plan = session.scalar(select(GenerationPlan).where(GenerationPlan.session_id == session_id))
+            current_id = plan.active_revision_id if plan else None
+            current = session.get(GenerationPlanRevision, current_id) if current_id else None
+            reviewed = bool(current and (current.operation_json or session.scalar(
+                select(GenerationSegment.id).where(GenerationSegment.plan_revision_id == current_id, GenerationSegment.revision > 1).limit(1)
+            )))
+            if speech_plan_revision_id and speech_plan_revision_id != current_id:
+                raise RevisionConflict("The selected speech plan changed. Refresh the revision list before generating.")
+        if operation == "generate" and not requested_segment_ids and not speech_plan_revision_id and not stale_only and not reviewed and self.plan_refresher is not None:
             self.plan_refresher(session_id, resolved_for_new[0])
-            resolved_for_new = (
-                resolved_for_new[0],
-                stable_hash(resolved_for_new[0]),
-            )
-
+            resolved_for_new = (resolved_for_new[0], stable_hash(resolved_for_new[0]))
+        reusable_take_ids: dict[str, str] = {}
+        with self.database.session() as session:
+            plan = session.scalar(select(GenerationPlan).where(GenerationPlan.session_id == session_id))
+            bound_revision_id = plan.active_revision_id if plan else None
+            if speech_plan_revision_id and speech_plan_revision_id != bound_revision_id:
+                raise RevisionConflict("The selected speech plan changed while generation was being prepared.")
+            if stale_only:
+                rows = list(session.scalars(select(GenerationSegment).where(
+                    GenerationSegment.plan_revision_id == bound_revision_id,
+                    GenerationSegment.removed.is_(False),
+                ).order_by(GenerationSegment.ordinal)))
+                for segment in rows:
+                    take = session.scalar(select(AudioTake).join(Artifact, Artifact.id == AudioTake.artifact_id).where(
+                        AudioTake.generation_segment_id == segment.id,
+                        AudioTake.is_active.is_(True),
+                        AudioTake.status == "completed",
+                        Artifact.state != "deleted",
+                    ).order_by(AudioTake.created_at.desc()).limit(1))
+                    if segment.status == "completed" and take is not None:
+                        reusable_take_ids[segment.id] = take.id
+                    else:
+                        requested_segment_ids.append(segment.id)
+                if not requested_segment_ids:
+                    raise ValueError("There are no missing or stale speech blocks to generate.")
         return {
             "requested_segment_ids": requested_segment_ids,
             "run_override": run_override,
@@ -3599,6 +3715,10 @@ class GenerationService:
             "generation_run_id": generation_run_id,
             "operation": operation,
             "resolved_for_new": resolved_for_new,
+            "speech_plan_revision_id": bound_revision_id,
+            "explicit_speech_plan_revision_id": speech_plan_revision_id,
+            "stale_only": stale_only,
+            "reusable_take_ids": reusable_take_ids,
         }
 
     def start(
@@ -3610,6 +3730,8 @@ class GenerationService:
         segment_ids: list[str] | None = None,
         generation_run_id: str | None = None,
         operation: str = "generate",
+        speech_plan_revision_id: str | None = None,
+        stale_only: bool = False,
     ) -> dict[str, Any]:
         prepared = self.prepare_start(
             session_id,
@@ -3618,6 +3740,8 @@ class GenerationService:
             segment_ids=segment_ids,
             generation_run_id=generation_run_id,
             operation=operation,
+            speech_plan_revision_id=speech_plan_revision_id,
+            stale_only=stale_only,
         )
         with self.database.immediate_session() as session:
             return self.start_in_session(session, session_id, prepared=prepared)
@@ -3753,6 +3877,9 @@ class GenerationService:
                 "Create generation segments before starting audio generation."
             )
         plan_revision_id = plan.active_revision_id
+        bound_revision_id = prepared.get("speech_plan_revision_id")
+        if bound_revision_id and bound_revision_id != plan.active_revision_id:
+            raise RevisionConflict("The speech plan changed before generation could be queued.")
         if requested_segment_ids:
             unique_requested_ids = set(requested_segment_ids)
             requested_rows = list(
@@ -3779,6 +3906,8 @@ class GenerationService:
                 raise ValueError(
                     "Selected generation segments do not belong to this session."
                 )
+            if prepared.get("explicit_speech_plan_revision_id") and requested_revision_id != bound_revision_id:
+                raise RevisionConflict("Selected segments do not belong to the selected speech-plan revision.")
             plan_revision_id = requested_revision_id
         source_run = None
         if requested_segment_ids and generation_run_id:
@@ -3806,7 +3935,7 @@ class GenerationService:
                         "The selected output generation run does not match this session and plan."
                     )
                 source_run = output_run
-        elif requested_segment_ids and operation != "rvc":
+        elif requested_segment_ids and operation != "rvc" and not prepared.get("stale_only"):
             source_run = session.scalar(
                 select(GenerationRun)
                 .where(
@@ -3867,7 +3996,10 @@ class GenerationService:
                 settings_hash = stable_hash(snapshot)
         if selected_segment_override:
             snapshot["selected_segment_override"] = deepcopy(selected_segment_override)
-            settings_hash = stable_hash(snapshot)
+        snapshot["speech_plan_revision_id"] = plan_revision_id
+        if prepared.get("stale_only"):
+            snapshot["stale_only"] = True
+        settings_hash = stable_hash(snapshot)
         sequence_number = (
             int(
                 session.scalar(
@@ -3899,8 +4031,32 @@ class GenerationService:
         )
         session.add(run)
         session.flush()
+        for segment_id, take_id in dict(prepared.get("reusable_take_ids") or {}).items():
+            source_take = session.get(AudioTake, take_id)
+            segment = session.get(GenerationSegment, segment_id)
+            artifact = session.get(Artifact, source_take.artifact_id) if source_take and source_take.artifact_id else None
+            if (source_take is None or segment is None or artifact is None
+                    or segment.plan_revision_id != plan_revision_id or segment.status != "completed"
+                    or source_take.generation_segment_id != segment_id
+                    or source_take.status != "completed" or not source_take.is_active
+                    or artifact.state == "deleted"):
+                raise RevisionConflict("A reusable take changed while stale-only generation was being prepared.")
+            source_take.is_active = False
+            session.add(AudioTake(
+                generation_segment_id=segment_id,
+                generation_run_id=run.id,
+                artifact_id=source_take.artifact_id,
+                parent_take_id=source_take.id,
+                kind=source_take.kind,
+                status="completed",
+                settings_hash=source_take.settings_hash,
+                duration_ms=source_take.duration_ms,
+                is_active=True,
+            ))
+        session.flush()
         job_payload = {
             "generation_run_id": run.id,
+            "speech_plan_revision_id": plan_revision_id,
             "segment_ids": requested_segment_ids,
             "operation": operation,
         }

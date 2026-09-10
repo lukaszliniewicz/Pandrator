@@ -61,6 +61,11 @@ from .schemas import (
     ListDispatchRunsInput,
     ListGenerationRunsInput,
     ListGenerationSegmentsInput,
+    ListSpeechPlanRevisionsInput,
+    ReviseSpeechBlockPlanBatchInput,
+    GenerateSpeechPlanInput,
+    AdoptSubtitleSourceInput,
+
     ListMediaEditCutsArguments,
     ListMediaEditDispatchRunsInput,
     ListSessionsInput,
@@ -166,6 +171,11 @@ from .tools import (
     list_dispatch_runs,
     list_generation_runs,
     list_generation_segments,
+    list_speech_plan_revisions,
+    revise_speech_block_plan_batch,
+    generate_speech_plan,
+    adopt_subtitle_source,
+
     list_media_edit_cuts,
     list_media_edit_dispatch_runs,
     list_sessions,
@@ -1129,7 +1139,7 @@ def build_server(runtime: McpRuntime):
             ),
         ],
         filename: Annotated[str, Field(min_length=1, max_length=255)] = "inline.txt",
-        role: Literal["primary", "reference", "transcript"] = "primary",
+        role: Literal["primary", "reference", "transcript", "media"] = "primary",
     ) -> dict[str, Any]:
         """Store supplied UTF-8 text as a managed source and attach it once."""
 
@@ -1164,7 +1174,7 @@ def build_server(runtime: McpRuntime):
                 pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$",
             ),
         ],
-        role: Literal["primary", "reference", "transcript"] = "primary",
+        role: Literal["primary", "reference", "transcript", "media"] = "primary",
     ) -> dict[str, Any]:
         """Stream one approved local file via resumable upload and attach it once."""
 
@@ -2422,7 +2432,7 @@ def build_server(runtime: McpRuntime):
         source_asset_id: str,
         expected_session_revision: Annotated[int, Field(ge=1)],
         idempotency_key: str,
-        role: Literal["primary", "reference", "transcript"] = "primary",
+        role: Literal["primary", "reference", "transcript", "media"] = "primary",
     ) -> dict[str, Any]:
         """Attach one existing source when the session revision still matches."""
 
@@ -2805,6 +2815,13 @@ def build_server(runtime: McpRuntime):
         cursor: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=100)] = 50,
         generation_run_id: Annotated[str | None, Field(max_length=80)] = None,
+        plan_revision_id: str | None = None,
+        view: Literal["full", "compact", "provenance"] = "full",
+        fields: list[str] | None = None,
+        end_ordinal: int | None = None,
+        around_ordinal: int | None = None,
+        source_cue_id: str | None = None,
+        radius: Annotated[int, Field(ge=0, le=25)] = 2,
     ) -> dict[str, Any]:
         """List generation segments, assigned voices, takes, and text."""
 
@@ -2816,8 +2833,31 @@ def build_server(runtime: McpRuntime):
                 cursor=cursor,
                 limit=limit,
                 generation_run_id=generation_run_id,
+                plan_revision_id=plan_revision_id, view=view, fields=fields,
+                end_ordinal=end_ordinal, around_ordinal=around_ordinal,
+                source_cue_id=source_cue_id, radius=radius,
             ),
         )
+
+    @server.tool(name="pandrator_list_speech_plan_revisions", title="List versioned speech plans", annotations=read_only)
+    def speech_plan_revisions_tool(session_id: str, limit: int = 50, before_revision_number: int | None = None) -> dict[str, Any]:
+        """Inspect automatic/manual revision history, ancestry and reusable/stale take counts."""
+        return _call_with_validated_input(list_speech_plan_revisions, runtime, ListSpeechPlanRevisionsInput, {key: value for key, value in locals().items() if key in ListSpeechPlanRevisionsInput.model_fields})
+
+    @server.tool(name="pandrator_revise_speech_block_plan_batch", title="Atomically revise speech-block topology", annotations=write_action)
+    def speech_plan_batch_tool(session_id: str, expected_revision_id: str, operations: list[dict[str, Any]], idempotency_key: str) -> dict[str, Any]:
+        """Apply up to 50 ordered split/merge edits atomically. Select by ID, ordinal, source_cue_ids or result_ref; split by unique text, cue, sentence or cursor. Labels expose label.left/right results. Ambiguity rolls back the entire batch."""
+        return _call_with_validated_input(revise_speech_block_plan_batch, runtime, ReviseSpeechBlockPlanBatchInput, {key: value for key, value in locals().items() if key in ReviseSpeechBlockPlanBatchInput.model_fields})
+
+    @server.tool(name="pandrator_generate_speech_plan", title="Generate a selected speech-plan revision", annotations=write_action)
+    def generate_speech_plan_tool(session_id: str, speech_plan_revision_id: str, idempotency_key: str, stale_only: bool = False) -> dict[str, Any]:
+        """Generate exactly the active selected revision without rebuilding topology. A stale revision is rejected; stale_only retains unchanged completed audio."""
+        return _call_with_validated_input(generate_speech_plan, runtime, GenerateSpeechPlanInput, {key: value for key, value in locals().items() if key in GenerateSpeechPlanInput.model_fields})
+
+    @server.tool(name="pandrator_adopt_subtitle_source", title="Adopt an existing managed subtitle source", annotations=write_action)
+    def adopt_subtitle_source_tool(session_id: str, source_asset_id: str, idempotency_key: str, expected_revision: int | None = None) -> dict[str, Any]:
+        """Materialize a timed subtitle revision from an attached primary SRT/VTT, without another upload. Identical content is reused; reviewed derivatives are preserved."""
+        return _call_with_validated_input(adopt_subtitle_source, runtime, AdoptSubtitleSourceInput, {key: value for key, value in locals().items() if key in AdoptSubtitleSourceInput.model_fields})
 
     @server.tool(
         name="pandrator_revise_speech_block_plan",

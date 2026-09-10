@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .models import Artifact, ArtifactEdge, SessionSource, SourceAsset
-from .source_resolution import classify_source, resolve_primary_source
+from .source_resolution import classify_source, resolve_media_source
 
 
 def _media_identity(artifact: Artifact) -> tuple[str, str] | None:
@@ -175,8 +175,8 @@ def resolve_subtitle_media(
             key=lambda item: (item.created_at, item.id),
         )
 
-    primary = resolve_primary_source(session, session_id)
+    primary = resolve_media_source(session, session_id)
     media = primary.artifact
     if media is None or not primary.has_audio:
-        raise ValueError("A managed primary audio or video source is required.")
+        raise ValueError("Attach a managed audio or video recording to this subtitle source.")
     return media

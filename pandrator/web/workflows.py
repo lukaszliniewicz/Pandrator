@@ -16,12 +16,14 @@ from .artifact_selection import (
 )
 from .database import Database
 from .export_contract import build_export_contract
+from .subtitle_sources import subtitle_source_status_in_session
 from .jobs import JobQueue
 from .models import (
     AgentRun,
     Artifact,
     ArtifactEdge,
     GenerationPlan,
+    GenerationPlanRevision,
     GenerationRun,
     GenerationSegment,
     Job,
@@ -39,6 +41,7 @@ from .source_resolution import (
     PrimarySourceResolution,
     classify_source,
     resolve_primary_source,
+    resolve_media_source,
 )
 
 WORKFLOW_HISTORY_PREVIEW_LIMIT = 10
@@ -493,7 +496,7 @@ class WorkflowService:
         return tuple(
             item
             for item in definitions
-            if not (filename.endswith(".srt") and item.key == "transcribe")
+            if not (filename.endswith((".srt", ".vtt")) and item.key == "transcribe")
         )
 
     @staticmethod
@@ -1567,12 +1570,19 @@ class WorkflowService:
                     "model_id": " · ".join(models),
                     "created_at": created_at.isoformat() if created_at else None,
                 }
+            source_readiness = subtitle_source_status_in_session(session, session_id)
+            if source_readiness["adoption_required"]:
+                for stage in stages:
+                    if stage["key"] in {"correct", "translate", "optimize_document", "generate_audio"} and stage["status"] == "ready":
+                        stage["status"] = "unavailable"
+                        stage["stale_reason"] = "Register the existing subtitle source to create a timed revision first."
             return {
                 "session_id": record.id,
                 "workflow_kind": record.workflow_kind,
                 "workflow_preset": record.workflow_preset,
                 "revision": record.revision,
                 "stages": stages,
+                "subtitle_source": source_readiness,
                 "sources": [
                     {
                         "id": artifact.id,
@@ -1881,8 +1891,15 @@ class WorkflowService:
                 "resolved_settings_snapshot": resolved,
                 "settings_hash": settings_hash,
             }
+            if stage_key == "generate_audio":
+                generation_plan = session.scalar(select(GenerationPlan).where(GenerationPlan.session_id == session_id))
+                generation_revision = session.get(GenerationPlanRevision, generation_plan.active_revision_id) if generation_plan and generation_plan.active_revision_id else None
+                if generation_revision is not None and (generation_revision.operation_json or session.scalar(
+                    select(GenerationSegment.id).where(GenerationSegment.plan_revision_id == generation_revision.id, GenerationSegment.revision > 1).limit(1)
+                )):
+                    payload["speech_plan_revision_id"] = generation_revision.id
             if stage_key == "export":
-                export_source = primary_source
+                export_source = resolve_media_source(session, session_id)
                 if record.workflow_kind == "media_edit":
                     edited_media = by_role.get("media_edit_media")
                     if edited_media is None:
@@ -1949,7 +1966,7 @@ class WorkflowService:
                     (upload.metadata_json or {}).get("original_filename")
                     or upload.relative_path
                 ).lower()
-                if not filename.endswith(".srt") and not any(
+                if not filename.endswith((".srt", ".vtt")) and not any(
                     artifact.state == "current" and artifact.role == "transcription"
                     for artifact in all_artifacts
                 ):

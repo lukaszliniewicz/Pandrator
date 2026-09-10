@@ -165,7 +165,7 @@ from .sessions import RevisionConflict
 from .source_cleaning_dispatch_routes import (
     register_source_cleaning_dispatch_routes,
 )
-from .source_resolution import resolve_primary_source
+from .source_resolution import resolve_primary_source, resolve_media_source
 from .speech_optimization_dispatch_routes import (
     register_speech_optimization_dispatch_routes,
 )
@@ -2560,6 +2560,32 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             )
         return jsonify(result), 201
 
+    from .subtitle_source_routes import register_subtitle_source_routes
+
+    register_subtitle_source_routes(app, services, require_auth, error_response)
+
+    @app.post("/api/v1/sessions/<session_id>/sources/adopt-subtitles")
+    @require_auth
+    def session_source_adopt_subtitles(session_id: str):
+        payload = SourceAttachRequest.model_validate(request.get_json(silent=True) or {})
+        if payload.role != "primary":
+            return error_response("validation_error", "Only the primary subtitle source can be adopted.", 422)
+        raw_revision = request.headers.get("If-Match", "").strip('W/" ')
+        try:
+            expected = int(raw_revision) if raw_revision else None
+            result = source_library.adopt_subtitles(
+                session_id, payload.source_asset_id, expected_session_revision=expected
+            )
+        except WorkspaceRevisionConflict as error:
+            return error_response("revision_conflict", str(error), 409)
+        except KeyError:
+            return error_response("not_found", "Attach this subtitle source as the session's primary source first.", 404)
+        except ValueError as error:
+            return error_response("validation_error", str(error), 422)
+        response = jsonify(result)
+        response.headers["ETag"] = f'"{result["session_revision"]}"'
+        return response, 200 if result["reused"] else 201
+
     @app.delete("/api/v1/sessions/<session_id>/sources/<attachment_id>")
     @require_auth
     def session_source_detach(session_id: str, attachment_id: str):
@@ -2831,6 +2857,72 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         response.headers["ETag"] = f'"{result["plan_revision_id"]}"'
         return response
 
+    @app.get("/api/v1/sessions/<session_id>/generation-plan/revisions")
+    @require_auth
+    def generation_plan_revisions(session_id: str):
+        from .generation_review import revision_history
+
+        try:
+            result = revision_history(
+                database, session_id, limit=int(request.args.get("limit", 50)),
+                before_revision_number=int(request.args["before_revision_number"]) if "before_revision_number" in request.args else None,
+            )
+        except KeyError:
+            return error_response("not_found", "Session not found.", 404)
+        except ValueError as error:
+            return error_response("validation_error", str(error), 422)
+        return jsonify(result)
+
+    @app.post("/api/v1/sessions/<session_id>/generation-plan/topology/batch")
+    @require_auth
+    def generation_plan_topology_batch(session_id: str):
+        from .generation_review import revise_topology_batch_in_session
+        from .schemas import GenerationPlanBatchRequest
+
+        payload = GenerationPlanBatchRequest.model_validate(request.get_json(silent=True) or {})
+        raw_etag = request.headers.get("If-Match", "").strip('W/" ')
+        if not raw_etag:
+            return error_response("precondition_required", "If-Match must contain the current speech-plan revision ID.", 428)
+        if raw_etag != payload.expected_revision_id:
+            return error_response("revision_conflict", "The request revision does not match If-Match.", 409)
+        idempotency_key, idempotency_error = mutation_idempotency_key()
+        if idempotency_error is not None:
+            return idempotency_error
+        if idempotency_key is None:
+            return error_response("idempotency_key_required", "Atomic topology batches require Idempotency-Key.", 400)
+        request_payload = {"session_id": session_id, **payload.model_dump(exclude_none=True)}
+        try:
+            with database.immediate_session() as db_session:
+                reservation = services.idempotency.begin(
+                    db_session, principal=context.guards.principal(), operation_id="reviseGenerationPlanTopologyBatch",
+                    idempotency_key=idempotency_key, payload=request_payload,
+                )
+                if reservation.response is not None:
+                    result, status_code = reservation.response
+                    response = jsonify(result)
+                    response.status_code = status_code
+                    response.headers["Idempotency-Replayed"] = "true"
+                    response.headers["ETag"] = f'"{result["plan_revision_id"]}"'
+                    return response
+                result = revise_topology_batch_in_session(
+                    generation, db_session, session_id, payload.expected_revision_id,
+                    [operation.model_dump(exclude_none=True) for operation in payload.operations],
+                )
+                services.idempotency.complete(
+                    db_session, reservation, response=result, status_code=201,
+                    resource_kind="generation_plan_revision", resource_id=result["plan_revision_id"],
+                )
+        except WorkspaceRevisionConflict as error:
+            return error_response("revision_conflict", str(error), 409)
+        except (IdempotencyConflict, IdempotencyInProgress, ValueError) as error:
+            return idempotency_failure(error)
+        except KeyError:
+            return error_response("not_found", "Session, revision, or segment not found.", 404)
+        response = jsonify(result)
+        response.status_code = 201
+        response.headers["ETag"] = f'"{result["plan_revision_id"]}"'
+        return response
+
     @app.get("/api/v1/sessions/<session_id>/generation-segments")
     @require_auth
     def generation_segment_list(session_id: str):
@@ -2845,6 +2937,13 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 marked=marked,
                 verification=request.args.get("verification"),
                 generation_run_id=request.args.get("generation_run_id"),
+                plan_revision_id=request.args.get("plan_revision_id"),
+                view=request.args.get("view", "full"),
+                fields=request.args["fields"].split(",") if "fields" in request.args else None,
+                end_ordinal=int(request.args["end_ordinal"]) if "end_ordinal" in request.args else None,
+                around_ordinal=int(request.args["around_ordinal"]) if "around_ordinal" in request.args else None,
+                source_cue_id=request.args.get("source_cue_id"),
+                radius=int(request.args.get("radius", 2)),
             )
         except KeyError:
             return error_response(
@@ -3144,6 +3243,8 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                     segment_ids=payload.segment_ids,
                     generation_run_id=payload.generation_run_id,
                     operation=payload.operation,
+                    speech_plan_revision_id=payload.speech_plan_revision_id,
+                    stale_only=payload.stale_only,
                 )
             except KeyError:
                 abandon_generation_reservation()
@@ -3188,6 +3289,8 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 segment_ids=payload.segment_ids,
                 generation_run_id=payload.generation_run_id,
                 operation=payload.operation,
+                speech_plan_revision_id=payload.speech_plan_revision_id,
+                stale_only=payload.stale_only,
             )
         except KeyError:
             return error_response("not_found", "Session not found.", 404)
@@ -3331,7 +3434,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                     "Soundtrack mix previews are available for voiceover sessions.",
                     409,
                 )
-            source_resolution = resolve_primary_source(db_session, session_id)
+            source_resolution = resolve_media_source(db_session, session_id)
             source = source_resolution.artifact
             if source is None or not source_resolution.has_audio:
                 return error_response(

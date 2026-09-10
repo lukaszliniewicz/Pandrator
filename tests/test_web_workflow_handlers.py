@@ -3461,7 +3461,7 @@ A single reviewed cue.
                 "max_chars": 120,
                 "merge_threshold": 425,
                 "continuation_threshold_ms": 3000,
-                "max_internal_gap_ms": 1800,
+                "max_internal_gap_ms": 4000,
             },
         )
 

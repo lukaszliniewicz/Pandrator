@@ -191,7 +191,7 @@ class ApplicationServices:
             manager_bridge=manager_bridge,
         )
         outcome_plans = OutcomePlanService(database)
-        source_library = SourceLibraryService(database)
+        source_library = SourceLibraryService(database, artifacts)
         generation = GenerationService(
             database,
             jobs,

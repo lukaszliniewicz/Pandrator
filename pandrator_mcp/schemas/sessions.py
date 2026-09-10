@@ -385,7 +385,7 @@ class UpdateSessionInput(ToolInput):
 class AttachExistingSourceInput(ToolInput):
     session_id: str = Field(min_length=1, max_length=80)
     source_asset_id: str = Field(min_length=1, max_length=80)
-    role: Literal["primary", "reference", "transcript"] = "primary"
+    role: Literal["primary", "reference", "transcript", "media"] = "primary"
     expected_session_revision: int = Field(ge=1)
     idempotency_key: str = Field(
         min_length=8,
