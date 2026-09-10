@@ -1140,7 +1140,7 @@ class WebParityWorkspaceTests(unittest.TestCase):
 
     def test_chunk_upload_is_resumable_and_creates_global_source(self):
         record = self.create_session()
-        content = b"abcdefghij"
+        content = b"1\n00:00:00,000 --> 00:00:01,000\nMeeting transcript.\n"
         initialized = self.client.post(
             "/api/v1/uploads/init",
             json={

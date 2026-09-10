@@ -18,18 +18,25 @@
   let {
     sessionId,
     allowTranscriptRole = false,
+    sourceRole = 'primary',
+    onpick,
     onclose,
     onadded
   }: {
     sessionId: string;
     allowTranscriptRole?: boolean;
+    sourceRole?: 'primary' | 'media';
+    onpick?: (sourceId: string) => Promise<unknown>;
     onclose: () => void;
     onadded: (message: string) => void | Promise<void>;
   } = $props();
 
   type SourceMode = 'upload' | 'paste' | 'url' | 'reuse';
   let mode = $state<SourceMode>('upload');
-  let role = $state<'primary' | 'transcript'>('primary');
+  let role = $state<'primary' | 'transcript' | 'media'>('primary');
+  $effect(() => {
+    if (sourceRole === 'media') role = 'media';
+  });
   let file = $state<File | null>(null);
   let pastedText = $state('');
   let pastedName = $state('Pasted text');
@@ -47,6 +54,13 @@
     const name =
       `${source.display_name ?? ''}.${source.kind ?? ''}`.toLowerCase();
     const mime = String(source.mime_type ?? '').toLowerCase();
+    if (role === 'media')
+      return (
+        /^(audio|video)\//.test(mime) ||
+        /\.(mp4|mkv|mov|webm|avi|wav|mp3|flac|m4a|aac|ogg|opus)(?:\.|$)/.test(
+          name
+        )
+      );
     return role === 'transcript'
       ? /\.(srt|vtt|txt)(?:\.|$)/.test(name) ||
           ['text/plain', 'text/vtt', 'application/x-subrip'].includes(mime)
@@ -55,12 +69,14 @@
   }
 
   const compatibleSources = $derived(
-    allowTranscriptRole ? sources.filter(isRoleCompatible) : sources
+    allowTranscriptRole || role === 'media'
+      ? sources.filter(isRoleCompatible)
+      : sources
   );
 
   $effect(() => {
     if (
-      allowTranscriptRole &&
+      (allowTranscriptRole || role === 'media') &&
       !compatibleSources.some((source) => source.id === sourceAssetId)
     )
       sourceAssetId = compatibleSources[0]?.id ?? '';
@@ -126,12 +142,13 @@
     if (mode === 'url') return Boolean(sourceUrl.trim());
     return Boolean(
       sourceAssetId &&
-      (!allowTranscriptRole ||
+      (!(allowTranscriptRole || role === 'media') ||
         compatibleSources.some((source) => source.id === sourceAssetId))
     );
   }
 
   async function attachSource(sourceId: string) {
+    if (onpick) return onpick(sourceId);
     const session = await sessionApi.get(sessionId);
     return sessionApi.attachSource(sessionId, sourceId, session.revision, role);
   }
@@ -151,10 +168,10 @@
       if (mode === 'upload' && file) {
         const uploaded = await uploadManagedFile(
           file,
-          role === 'primary' ? sessionId : undefined,
+          role === 'primary' && !onpick ? sessionId : undefined,
           (value) => (progress = value)
         );
-        if (role === 'transcript') {
+        if (role !== 'primary' || onpick) {
           const sourceId = String(uploaded.source_asset_id ?? '');
           if (!sourceId)
             throw new Error('The upload did not create a reusable source.');
@@ -171,10 +188,10 @@
         });
         const uploaded = await uploadManagedFile(
           textFile,
-          role === 'primary' ? sessionId : undefined,
+          role === 'primary' && !onpick ? sessionId : undefined,
           (value) => (progress = value)
         );
-        if (role === 'transcript') {
+        if (role !== 'primary' || onpick) {
           const sourceId = String(uploaded.source_asset_id ?? '');
           if (!sourceId)
             throw new Error('The upload did not create a reusable source.');
@@ -191,7 +208,7 @@
             ? 'Source-library item attached as the current editorial transcript.'
             : 'Source-library item attached and selected as the current input.';
       }
-      await onadded(message);
+      if (!onpick) await onadded(message);
       onclose();
     } catch (caught) {
       error = errorMessage(caught);
@@ -223,9 +240,11 @@
           Add a source
         </h2>
         <p class="muted mt-2 text-sm">
-          {allowTranscriptRole
-            ? 'Attach the recording to edit or a timed transcript to guide it. Earlier source history remains available.'
-            : 'The new source becomes current; earlier sources and their artifact histories remain available.'}
+          {onpick
+            ? 'Upload or choose a managed replacement. The current session is unchanged until you confirm.'
+            : allowTranscriptRole
+              ? 'Attach the recording to edit or a timed transcript to guide it. Earlier source history remains available.'
+              : 'The new source becomes current; earlier sources and their artifact histories remain available.'}
         </p>
       </div>
       <button
@@ -259,7 +278,7 @@
         </div>
       </fieldset>{/if}
     <div class="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-      {#each choices.filter( (choice) => (role === 'transcript' ? choice.id !== 'url' : !allowTranscriptRole || choice.id !== 'paste') ) as choice}{@const Icon =
+      {#each choices.filter((choice) => (!onpick || choice.id !== 'url') && (role !== 'media' || ['upload', 'reuse'].includes(choice.id)) && (role === 'transcript' ? choice.id !== 'url' : !allowTranscriptRole || choice.id !== 'paste')) as choice}{@const Icon =
           choice.icon}<button
           onclick={() => (mode = choice.id)}
           class:active={mode === choice.id}

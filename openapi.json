@@ -4658,6 +4658,28 @@
         "title": "ProviderUpdate",
         "type": "object"
       },
+      "RecordingTimingRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_revision": {
+            "minimum": 1,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "media_artifact_id": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Media Artifact Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_revision",
+          "media_artifact_id"
+        ],
+        "title": "RecordingTimingRequest",
+        "type": "object"
+      },
       "RvcConvertRequest": {
         "additionalProperties": false,
         "properties": {
@@ -4960,6 +4982,80 @@
           "source_asset_id"
         ],
         "title": "SourceAttachRequest",
+        "type": "object"
+      },
+      "SourceChangePreviewRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "new_source_asset_id": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "New Source Asset Id"
+          },
+          "role": {
+            "default": "primary",
+            "enum": [
+              "primary",
+              "media"
+            ],
+            "title": "Role",
+            "type": "string"
+          }
+        },
+        "title": "SourceChangePreviewRequest",
+        "type": "object"
+      },
+      "SourceChangeRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_revision": {
+            "minimum": 1,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "impact_token": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Impact Token",
+            "type": "string"
+          },
+          "new_source_asset_id": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "New Source Asset Id"
+          },
+          "role": {
+            "default": "primary",
+            "enum": [
+              "primary",
+              "media"
+            ],
+            "title": "Role",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_revision",
+          "impact_token"
+        ],
+        "title": "SourceChangeRequest",
         "type": "object"
       },
       "SourceCleaningDispatchBatchClaimResponse": {
@@ -6374,6 +6470,95 @@
           "duration_ms"
         ],
         "title": "SpeechOptimizationDispatchUnitTiming",
+        "type": "object"
+      },
+      "SpeechPlanPrepareRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_plan_revision_id": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Plan Revision Id"
+          },
+          "expected_revision": {
+            "minimum": 1,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "source_artifact_id": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Source Artifact Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_revision",
+          "source_artifact_id"
+        ],
+        "title": "SpeechPlanPrepareRequest",
+        "type": "object"
+      },
+      "SpeechPlanReviewRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "content_signature": {
+            "maxLength": 128,
+            "minLength": 32,
+            "title": "Content Signature",
+            "type": "string"
+          },
+          "revision_id": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Revision Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "revision_id",
+          "content_signature"
+        ],
+        "title": "SpeechPlanReviewRequest",
+        "type": "object"
+      },
+      "SpeechPlanSelectRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_plan_revision_id": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Plan Revision Id"
+          },
+          "revision_id": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Revision Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "revision_id"
+        ],
+        "title": "SpeechPlanSelectRequest",
         "type": "object"
       },
       "StageSelectionUpdate": {
@@ -10891,6 +11076,146 @@
         }
       }
     },
+    "/api/v1/sessions/{sessionId}/generation-plan/prepare": {
+      "post": {
+        "operationId": "prepareSpeechPlan",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SpeechPlanPrepareRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Current state or completed action"
+          },
+          "404": {
+            "description": "Session or revision not found"
+          },
+          "409": {
+            "description": "Changed revision, active work, or idempotency conflict"
+          },
+          "422": {
+            "description": "Invalid action"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/sessions/{sessionId}/generation-plan/review": {
+      "post": {
+        "operationId": "reviewSpeechPlan",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SpeechPlanReviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Current state or completed action"
+          },
+          "404": {
+            "description": "Session or revision not found"
+          },
+          "409": {
+            "description": "Changed revision, active work, or idempotency conflict"
+          },
+          "422": {
+            "description": "Invalid action"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
+            ]
+          }
+        ]
+      }
+    },
     "/api/v1/sessions/{sessionId}/generation-plan/revisions": {
       "get": {
         "operationId": "listSpeechPlanRevisions",
@@ -10925,6 +11250,126 @@
         "responses": {
           "200": {
             "description": "listSpeechPlanRevisions"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/sessions/{sessionId}/generation-plan/select": {
+      "post": {
+        "operationId": "selectSpeechPlan",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SpeechPlanSelectRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Current state or completed action"
+          },
+          "404": {
+            "description": "Session or revision not found"
+          },
+          "409": {
+            "description": "Changed revision, active work, or idempotency conflict"
+          },
+          "422": {
+            "description": "Invalid action"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/sessions/{sessionId}/generation-plan/status": {
+      "get": {
+        "operationId": "getSpeechPlanStatus",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Current state or completed action"
+          },
+          "404": {
+            "description": "Session or revision not found"
+          },
+          "409": {
+            "description": "Changed revision, active work, or idempotency conflict"
+          },
+          "422": {
+            "description": "Invalid action"
           }
         },
         "security": [
@@ -12420,6 +12865,256 @@
         ]
       }
     },
+    "/api/v1/sessions/{sessionId}/sources/change": {
+      "post": {
+        "operationId": "changeSessionSource",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SourceChangeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Current state or completed action"
+          },
+          "404": {
+            "description": "Session or revision not found"
+          },
+          "409": {
+            "description": "Changed revision, active work, or idempotency conflict"
+          },
+          "422": {
+            "description": "Invalid action"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/sessions/{sessionId}/sources/change-preview": {
+      "post": {
+        "operationId": "previewSessionSourceChange",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SourceChangePreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Current state or completed action"
+          },
+          "404": {
+            "description": "Session or revision not found"
+          },
+          "409": {
+            "description": "Changed revision, active work, or idempotency conflict"
+          },
+          "422": {
+            "description": "Invalid action"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/sessions/{sessionId}/sources/cleanup": {
+      "post": {
+        "operationId": "cleanupResetSourceFiles",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Current state or completed action"
+          },
+          "404": {
+            "description": "Session or revision not found"
+          },
+          "409": {
+            "description": "Changed revision, active work, or idempotency conflict"
+          },
+          "422": {
+            "description": "Invalid action"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/sessions/{sessionId}/sources/confirm-timing": {
+      "post": {
+        "operationId": "confirmRecordingTiming",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordingTimingRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Current state or completed action"
+          },
+          "404": {
+            "description": "Session or revision not found"
+          },
+          "409": {
+            "description": "Changed revision, active work, or idempotency conflict"
+          },
+          "422": {
+            "description": "Invalid action"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
+            ]
+          }
+        ]
+      }
+    },
     "/api/v1/sessions/{sessionId}/sources/reuse": {
       "post": {
         "operationId": "reuseSource",
@@ -12448,6 +13143,126 @@
             "description": "Queued"
           }
         }
+      }
+    },
+    "/api/v1/sessions/{sessionId}/sources/start-new-session": {
+      "post": {
+        "operationId": "startNewSourceSession",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SourceChangeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Current state or completed action"
+          },
+          "404": {
+            "description": "Session or revision not found"
+          },
+          "409": {
+            "description": "Changed revision, active work, or idempotency conflict"
+          },
+          "422": {
+            "description": "Invalid action"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/sessions/{sessionId}/sources/status": {
+      "get": {
+        "operationId": "getSessionSourceStatus",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Current state or completed action"
+          },
+          "404": {
+            "description": "Session or revision not found"
+          },
+          "409": {
+            "description": "Changed revision, active work, or idempotency conflict"
+          },
+          "422": {
+            "description": "Invalid action"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
       }
     },
     "/api/v1/sessions/{sessionId}/sources/subtitle-status": {

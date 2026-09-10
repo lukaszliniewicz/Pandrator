@@ -15,6 +15,7 @@
   import type { WorkflowStage } from './api-models';
   import { modelDisplayName } from './model-display';
   import StageArtifactHistory from './StageArtifactHistory.svelte';
+  import type { Snippet } from 'svelte';
   import type { StageArtifact } from './stage-artifacts';
 
   let {
@@ -23,6 +24,8 @@
     optional = false,
     runLabel = '',
     historyLoading = false,
+    runDisabled = false,
+    inputControls,
     onsettings,
     ontoggle,
     onrun,
@@ -40,6 +43,8 @@
     optional?: boolean;
     runLabel?: string;
     historyLoading?: boolean;
+    runDisabled?: boolean;
+    inputControls?: Snippet;
     onsettings: () => void;
     ontoggle: (enabled: boolean) => void;
     onrun: () => void;
@@ -444,6 +449,9 @@
           </div>
         {/if}
 
+        {#if inputControls}<div class="my-3">
+            {@render inputControls()}
+          </div>{/if}
         {#if (stage.artifacts?.length ?? 0) > 0}
           <StageArtifactHistory
             artifacts={stage.artifacts ?? []}
@@ -503,7 +511,7 @@
               stage.resumable
                 ? onresume
                 : onrun}
-              disabled={stage.status === 'unavailable'}
+              disabled={runDisabled || stage.status === 'unavailable'}
               class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-35"
             >
               <Play size={16} />
@@ -546,7 +554,7 @@
               stage.resumable
                 ? onresume
                 : onrun}
-              disabled={stage.status === 'unavailable'}
+              disabled={runDisabled || stage.status === 'unavailable'}
               class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-35"
             >
               <Play size={16} />
@@ -571,7 +579,7 @@
       {:else}
         <button
           onclick={onrun}
-          disabled={stage.status === 'unavailable'}
+          disabled={runDisabled || stage.status === 'unavailable'}
           class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-35"
         >
           {#if stage.key === 'edit_media'}

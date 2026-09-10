@@ -14,6 +14,7 @@ import threading
 import time
 import unicodedata
 from collections import OrderedDict
+from contextlib import nullcontext
 from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
@@ -2248,7 +2249,7 @@ class WorkflowHandlers:
                 from .workspace import RevisionConflict
 
                 raise RevisionConflict("The selected speech plan changed before workflow execution.")
-            reviewed = bool(active_revision and (active_revision.operation_json or session.scalar(
+            reviewed = bool(active_revision and (active_revision.operation_json or (active_revision.settings_json or {}).get("_prepared_for_review") or session.scalar(
                 select(GenerationSegment.id).where(
                     GenerationSegment.plan_revision_id == previous_revision_id,
                     GenerationSegment.revision > 1,
@@ -6609,6 +6610,8 @@ class WorkflowHandlers:
         settings: dict[str, Any],
         source_revision_id: str | None = None,
         source_artifact_id: str | None = None,
+        db_session=None,
+        force_new: bool = False,
     ) -> tuple[str, list[str]]:
         clean = [
             item
@@ -6628,13 +6631,13 @@ class WorkflowHandlers:
                 default=str,
             ).encode("utf-8")
         ).hexdigest()
-        with self.database.session() as session:
+        with (nullcontext(db_session) if db_session is not None else self.database.immediate_session()) as session:
             plan = session.scalar(
                 select(GenerationPlan).where(GenerationPlan.session_id == session_id)
             )
             if plan is not None and plan.active_revision_id:
                 active = session.get(GenerationPlanRevision, plan.active_revision_id)
-                if active is not None and active.content_hash == digest:
+                if not force_new and active is not None and active.content_hash == digest:
                     # Identical source content and segmentation settings: keep
                     # the existing segments so takes, edits, and run history
                     # stay attached instead of being orphaned by a new revision.
@@ -6663,6 +6666,7 @@ class WorkflowHandlers:
                 stored_settings["_source_artifact_id"] = source_artifact_id
             revision = GenerationPlanRevision(
                 plan_id=plan.id,
+                parent_revision_id=plan.active_revision_id,
                 source_revision_id=source_revision_id,
                 revision_number=int(maximum) + 1,
                 settings_json=stored_settings,
@@ -8058,6 +8062,10 @@ class WorkflowHandlers:
                 from .workspace import RevisionConflict
 
                 raise RevisionConflict("The speech plan changed before workflow generation could start.")
+            from .speech_plan_workspace import freeze_speech_snapshot
+
+            freeze_speech_snapshot(session, plan_revision_id, snapshot, explicit=bool(expected_revision_id))
+            frozen_hash = hashlib.sha256(json.dumps(snapshot, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")).hexdigest()
             sequence_number = (
                 int(
                     session.scalar(
@@ -8133,11 +8141,18 @@ class WorkflowHandlers:
             run.status = "running"
             run.updated_at = utcnow()
             settings_snapshot = dict(run.settings_snapshot_json or {})
+            from .speech_plan_workspace import plan_signature
+
+            plan_changed = bool(settings_snapshot.get("speech_plan_signature") and settings_snapshot["speech_plan_signature"] != plan_signature(session, run.plan_revision_id))
+            if plan_changed:
+                run.status = "failed"
             session_id = run.session_id
             plan_revision_id = run.plan_revision_id
             run_sequence_number = run.sequence_number
             job_id = run.job_id or str(payload.get("_job_id") or "") or None
 
+        if plan_changed:
+            raise ValueError("The selected speech plan changed after generation was queued. Review and submit it again.")
         statement = (
             select(GenerationSegment)
             .where(
@@ -8154,6 +8169,7 @@ class WorkflowHandlers:
             segment_seeds = {
                 item.id: {
                     "text": item.text,
+                    "optimized_text": item.optimized_text,
                     "speaker": item.speaker,
                     "language": self._usable_language(item.language),
                     "voice": str(item.voice or "").strip() or None,
@@ -8279,13 +8295,15 @@ class WorkflowHandlers:
             "text", dict(settings_snapshot.get("text") or {})
         )
         optimization_model = ""
-        optimized_by_id: dict[str, str] = {}
+        optimized_by_id: dict[str, str] = {
+            key: value["optimized_text"] or value["text"] for key, value in segment_seeds.items()
+        } if settings_snapshot.get("speech_plan_frozen") else {}
         optimization_share = (
             0.2
             if operation != "rvc" and bool(text_settings.get("llm_tts_optimization"))
             else 0.0
         )
-        if operation != "rvc":
+        if operation != "rvc" and not settings_snapshot.get("speech_plan_frozen"):
             try:
                 alternate_pronunciation_settings = None
                 alternate_pronunciation_language = None
@@ -10128,7 +10146,7 @@ class WorkflowHandlers:
         audio_mode = normalize_audio_mode(settings.get("audio_mode"))
         needs_assembly = bool(generation_run_id) and (
             record.workflow_kind == "audiobook"
-            or (export_mode == "media" and audio_mode in {"mixed", "dubbing_only"})
+            or (export_mode in {"media", "audio"} and audio_mode in {"mixed", "dubbing_only"})
         )
         if needs_assembly:
             self._ensure_export_generation_assembly(
@@ -10151,7 +10169,6 @@ class WorkflowHandlers:
 
         from pandrator.logic.dubbing.audio_sync import (
             build_mix_audio_command,
-            build_mix_video_audio_command,
             media_has_audio_stream,
         )
         from pandrator.logic.dubbing.bilingual_ass import write_bilingual_ass
@@ -10172,6 +10189,9 @@ class WorkflowHandlers:
 
         session_id = str(payload.get("session_id") or "")
         settings = dict(payload.get("settings") or {})
+        from .source_management import require_recording_timing_review
+
+        require_recording_timing_review(self.database, session_id, settings)
         raw_export_contract = payload.get("export_contract")
         if raw_export_contract is not None and not isinstance(
             raw_export_contract, dict
@@ -10409,7 +10429,7 @@ class WorkflowHandlers:
                 "text",
             }:
                 export_mode = "subtitles"
-            if export_mode not in {"media", "subtitles", "text"}:
+            if export_mode not in {"media", "audio", "subtitles", "text"}:
                 export_mode = "media"
             contract = (
                 ExportContract.verify(
@@ -10504,7 +10524,7 @@ class WorkflowHandlers:
                 if selected_assembly is not None
                 else by_role.get("assembled_audio") or by_role.get("dubbing_audio")
             )
-            if record.workflow_kind == "voiceover" and export_mode == "media":
+            if record.workflow_kind == "voiceover" and export_mode in {"media", "audio"}:
                 canonical_audio_mode = (
                     contract.audio_mode
                     if contract is not None
@@ -10525,7 +10545,7 @@ class WorkflowHandlers:
             else:
                 audio_mode = "source"
             if (
-                export_mode == "media"
+                export_mode in {"media", "audio"}
                 and audio_mode in {"dubbed", "mixed"}
                 and dubbing_audio is None
             ):
@@ -10533,7 +10553,7 @@ class WorkflowHandlers:
                     "This media export requires assembled generated audio. Select a completed audio version and assemble it before exporting."
                 )
             if (
-                export_mode == "media"
+                export_mode in {"media", "audio"}
                 and upload_media
                 and audio_mode in {"source", "mixed"}
             ):
@@ -10563,6 +10583,8 @@ class WorkflowHandlers:
                         f"The source video has no audio stream to {action}. "
                         "Choose Voiceover only and submit the export again."
                     )
+            if export_mode == "audio":
+                selected_subtitles = []
             finalized_subtitles: list[Artifact] = []
             progress(
                 0.12,
@@ -10697,6 +10719,22 @@ class WorkflowHandlers:
                         0.35 + 0.55 * (index / len(selected_subtitles)),
                         f"Exported track {index} of {len(selected_subtitles)}",
                     )
+            elif export_mode == "audio":
+                from .soundtrack_export import ensure_soundtrack_master, export_soundtrack_file
+
+                progress(0.35, "Preparing the selected soundtrack without rendering video")
+                master = ensure_soundtrack_master(
+                    self, session_id=session_id, source=upload_media or upload_audio,
+                    speech=dubbing_audio, audio_mode=audio_mode, settings=settings,
+                    cancel_event=cancel_event,
+                )
+                format_name = str(settings.get("format") or "wav").lower()
+                destination = _next_available_path(output_dir / f"{export_name}_{audio_mode}.{format_name}")
+                produced.append(export_soundtrack_file(
+                    self, session_id=session_id, master=master, destination=destination,
+                    settings=settings, cancel_event=cancel_event,
+                ))
+                progress(0.92, "Audio-only soundtrack ready")
             elif upload_media:
                 progress(0.35, "Preparing source media")
                 _media_record, media_path = self._resolve_input(upload_media.id)
@@ -10736,20 +10774,21 @@ class WorkflowHandlers:
                         )
                         progress(0.4, "Replacing source audio with generated speech")
                     else:
-                        command = build_mix_video_audio_command(
-                            str(media_path),
-                            str(audio_path),
-                            str(audio_video),
-                            source_gain_db=settings.get("mix_source_gain_db", 0.0),
-                            voice_gain_db=settings.get("mix_voice_gain_db", 0.0),
-                            voice_lufs=settings.get("mix_voice_lufs", -16.0),
-                            ducking=str(settings.get("mix_ducking") or "strong"),
-                            attack_ms=settings.get("mix_attack_ms", 25),
-                            release_ms=settings.get("mix_release_ms", 350),
-                            audio_bitrate=video_audio_bitrate,
-                            ffmpeg_executable=ffmpeg_executable,
+                        from .soundtrack_export import ensure_soundtrack_master
+
+                        master = ensure_soundtrack_master(
+                            self, session_id=session_id, source=upload_media,
+                            speech=dubbing_audio, audio_mode="mixed", settings=settings,
+                            cancel_event=cancel_event,
                         )
-                        progress(0.4, "Mixing source audio with generated speech")
+                        _master, master_path = self._resolve_input(master.id)
+                        audio_parent_ids.append(master.id)
+                        command = build_replace_video_audio_command(
+                            str(media_path), str(master_path), str(audio_video),
+                            ffmpeg_executable=ffmpeg_executable,
+                            audio_bitrate=video_audio_bitrate,
+                        )
+                        progress(0.4, "Using the selected mixed soundtrack")
                     subprocess.run(command, check=True, capture_output=True, text=True)
                     progress(0.58, "Media audio track ready")
                     working_video = audio_video

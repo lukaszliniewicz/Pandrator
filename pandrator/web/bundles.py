@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import shutil
@@ -19,7 +18,7 @@ from pandrator.runtime import DataPaths
 from .artifacts import ArtifactService, sha256_file
 from .credentials import SecretRedactor
 from .database import Database
-from .models import Artifact, ArtifactEdge, SessionRecord
+from .models import Artifact, ArtifactEdge, SessionRecord, SessionSource, SourceAsset
 from .sessions import SessionService
 
 
@@ -59,7 +58,13 @@ class SessionBundleService:
             record = session.get(SessionRecord, session_id)
             if record is None:
                 raise KeyError(session_id)
-            artifacts = list(session.scalars(select(Artifact).where(Artifact.session_id == session_id).order_by(Artifact.created_at)).all())
+            attached_ids = set(session.scalars(select(SourceAsset.artifact_id)
+                .join(SessionSource, SessionSource.source_asset_id == SourceAsset.id)
+                .where(SessionSource.session_id == session_id, SessionSource.is_current.is_(True))))
+            artifacts = list(session.scalars(select(Artifact).where(
+                (Artifact.session_id == session_id) | Artifact.id.in_(attached_ids),
+                Artifact.state != "deleted", Artifact.role != "session_bundle",
+            ).order_by(Artifact.created_at)).all())
             artifact_ids = [item.id for item in artifacts]
             edges = list(session.scalars(select(ArtifactEdge).where(ArtifactEdge.child_artifact_id.in_(artifact_ids))).all()) if artifact_ids else []
             session_payload = {
@@ -77,7 +82,7 @@ class SessionBundleService:
             included_artifacts = [
                 artifact
                 for artifact in artifacts
-                if include_sources or artifact.role != "upload"
+                if include_sources or (artifact.role != "upload" and artifact.id not in attached_ids)
             ]
             for index, artifact in enumerate(included_artifacts, start=1):
                 path = self.paths.managed_path(artifact.relative_path)

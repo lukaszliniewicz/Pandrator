@@ -165,7 +165,7 @@ from .sessions import RevisionConflict
 from .source_cleaning_dispatch_routes import (
     register_source_cleaning_dispatch_routes,
 )
-from .source_resolution import resolve_primary_source, resolve_media_source
+from .source_resolution import resolve_media_source
 from .speech_optimization_dispatch_routes import (
     register_speech_optimization_dispatch_routes,
 )
@@ -2563,6 +2563,9 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     from .subtitle_source_routes import register_subtitle_source_routes
 
     register_subtitle_source_routes(app, services, require_auth, error_response)
+    from .session_flow_routes import register_session_flow_routes
+
+    register_session_flow_routes(app, services, require_auth, error_response, context.guards.principal)
 
     @app.post("/api/v1/sessions/<session_id>/sources/adopt-subtitles")
     @require_auth

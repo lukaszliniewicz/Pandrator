@@ -205,7 +205,7 @@
       };
       const usesGeneratedAudio =
         session?.workflow_kind === 'audiobook' ||
-        (exportMode === 'media' && audioMode !== 'preserve');
+        (['media', 'audio'].includes(exportMode) && audioMode !== 'preserve');
       if (usesGeneratedAudio && !selectedRunId)
         throw new Error(
           'Select a completed audio version for this media export.'
@@ -441,7 +441,7 @@
           : session?.workflow_kind === 'audiobook'
             ? 'Audiobook output'
             : hasSourceVideo
-              ? 'Video output'
+              ? 'Voiceover output'
               : 'Voiceover output'}
       </h2>
       <p class="muted mt-2">
@@ -450,7 +450,7 @@
           : session?.workflow_kind === 'audiobook'
             ? 'Assemble the selected narration takes with book metadata, chapters, and optional cover artwork.'
             : hasSourceVideo
-              ? 'Create a mixed, source-only, or voiceover-only video with optional subtitle tracks.'
+              ? 'Export video or an audio-only soundtrack, using original audio, generated speech, or the complete mix.'
               : 'Create standalone voiceover audio plus optional subtitle or text documents.'}
       </p>
     </div>

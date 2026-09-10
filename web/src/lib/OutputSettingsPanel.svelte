@@ -98,6 +98,8 @@
   const exportMode = $derived(
     String(value('export_mode', subtitleWorkspace ? 'subtitles' : 'media'))
   );
+  const mediaOutput = $derived(['media', 'audio'].includes(exportMode));
+  const rendersVideo = $derived(exportMode === 'media' && hasSourceVideo);
   const audioMode = $derived(
     String(value('audio_mode', hasSourceAudio ? 'mixed' : 'dubbing_only'))
   );
@@ -138,7 +140,7 @@
     'synchronization_speed',
     'synchronization_sentence_gap_ms'
   ];
-  function applicableOutputKeys() {
+  function applicableOutputKeys(mode = exportMode) {
     if (audiobookWorkspace)
       return new Set([
         'format',
@@ -156,17 +158,20 @@
       keys.add('audio_mode');
       for (const key of mixKeys) keys.add(key);
     }
-    if (hasSourceVideo) {
+    if (hasSourceVideo && mode === 'media') {
       for (const key of videoKeys) keys.add(key);
     } else {
       keys.add('format');
       keys.add('bitrate');
     }
+    if (mode === 'audio') keys.add('audio_match_source_duration');
     return keys;
   }
 
   function sanitizeOutput(source: Record<string, unknown>) {
-    const allowed = applicableOutputKeys();
+    const allowed = applicableOutputKeys(
+      String(source.export_mode ?? exportMode)
+    );
     const selectedFormat = source.format ?? value('format', 'wav');
     return Object.fromEntries(
       Object.entries(source).filter(
@@ -705,12 +710,13 @@
                 >{hasSourceVideo
                   ? 'Rendered video'
                   : 'Voiceover audio and companion files'}</option
+              ><option value="audio">Audio only — soundtrack file</option
               ><option value="subtitles">Subtitles only</option><option
                 value="text">Concatenated text only</option
               ></select
             ></label
           >
-          {#if exportMode === 'media'}
+          {#if mediaOutput}
             {#if hasSourceAudio}<label
                 >Audio result<select
                   value={audioMode}
@@ -730,7 +736,7 @@
                   This source has no soundtrack to preserve or mix.
                 </p>
               </div>{/if}
-            {#if hasSourceVideo}<label
+            {#if rendersVideo}<label
                 >Subtitles<select
                   value={subtitleMode}
                   onchange={(event) =>
@@ -782,7 +788,7 @@
                 ></select
               ></label
             >{/if}
-          {#if exportMode !== 'media' || (hasSourceVideo && subtitleMode !== 'none')}<label
+          {#if ['subtitles', 'text'].includes(exportMode) || (rendersVideo && subtitleMode !== 'none')}<label
               >Subtitle tracks<select
                 value={String(value('subtitle_selection', 'translation'))}
                 onchange={(event) =>
@@ -795,7 +801,28 @@
             >{/if}
         </div>
 
-        {#if exportMode === 'media' && hasSourceAudio && audioMode === 'mixed'}
+        {#if exportMode === 'audio'}
+          <label
+            class="flex items-start gap-3 rounded-xl border border-[var(--line)] p-4"
+          >
+            <input
+              type="checkbox"
+              checked={Boolean(value('audio_match_source_duration', true))}
+              onchange={(event) =>
+                set('audio_match_source_duration', event.currentTarget.checked)}
+            />
+            <span>
+              <strong>Match the recording timeline</strong>
+              <span class="muted mt-1 block text-xs"
+                >Preserve the introduction, pauses and ending for an alternative
+                audio track. Speech extending beyond the recording is reported,
+                not silently clipped.</span
+              >
+            </span>
+          </label>
+        {/if}
+
+        {#if mediaOutput && hasSourceAudio && audioMode === 'mixed'}
           <fieldset class="rounded-2xl border border-[var(--line)] p-5">
             <legend class="px-2 text-sm font-semibold">Soundtrack mix</legend>
             <p class="muted text-xs">
@@ -926,7 +953,7 @@
           </fieldset>
         {/if}
 
-        {#if exportMode === 'media'}
+        {#if mediaOutput}
           <fieldset class="rounded-2xl border border-[var(--line)] p-5">
             <legend class="px-2 text-sm font-semibold"
               >Voiceover synchronization</legend

@@ -620,7 +620,7 @@ class WorkflowExecutionPlanService:
         audio_mode = normalize_audio_mode(settings.get("audio_mode"))
         needs_assembly = bool(generation_run_id) and (
             resolved.workflow_kind == "audiobook"
-            or (export_mode == "media" and audio_mode in {"mixed", "dubbing_only"})
+            or (export_mode in {"media", "audio"} and audio_mode in {"mixed", "dubbing_only"})
         )
         if target_stage == "export" and needs_assembly:
             snapshot = resolved.payload.get("resolved_settings_snapshot")

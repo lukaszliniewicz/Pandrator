@@ -1894,7 +1894,7 @@ class WorkflowService:
             if stage_key == "generate_audio":
                 generation_plan = session.scalar(select(GenerationPlan).where(GenerationPlan.session_id == session_id))
                 generation_revision = session.get(GenerationPlanRevision, generation_plan.active_revision_id) if generation_plan and generation_plan.active_revision_id else None
-                if generation_revision is not None and (generation_revision.operation_json or session.scalar(
+                if generation_revision is not None and (generation_revision.operation_json or (generation_revision.settings_json or {}).get("_prepared_for_review") or session.scalar(
                     select(GenerationSegment.id).where(GenerationSegment.plan_revision_id == generation_revision.id, GenerationSegment.revision > 1).limit(1)
                 )):
                     payload["speech_plan_revision_id"] = generation_revision.id

@@ -109,6 +109,7 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
     "system-media-serial": (
         "tests/test_dubbing_audio_sync.py",
         "tests/test_frontend_architecture.py",
+        "tests/test_soundtrack_export.py",
         "tests/test_media_edit_video_muxing.py",
         "tests/test_phase0_baseline.py",
         "tests/test_state_db_handler.py",
@@ -154,6 +155,7 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_web_capabilities.py",
         "tests/test_web_job_concurrency.py",
         "tests/test_generation_plan_review.py",
+        "tests/test_session_source_plan_controls.py",
         "tests/test_subtitle_first_workflow.py",
         "tests/test_tts_parallel_generation.py",
         "tests/test_web_generation_regeneration.py",

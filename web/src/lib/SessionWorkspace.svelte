@@ -17,7 +17,6 @@
     Library,
     Link2,
     Play,
-    Plus,
     RefreshCw,
     RotateCcw,
     Save,
@@ -56,7 +55,16 @@
   import { type WorkflowStore } from './workflow-store.svelte';
   import type PdfEditor from './PdfEditor.svelte';
   import type AddSourceDialog from './AddSourceDialog.svelte';
-  import SubtitleSourceTools from './SubtitleSourceTools.svelte';
+  import SessionSourceCard from './SessionSourceCard.svelte';
+  import SpeechPlanCard from './SpeechPlanCard.svelte';
+  import SpeechPlanPicker from './SpeechPlanPicker.svelte';
+  import {
+    speechPlanState,
+    sessionFlowAction,
+    openSpeechPlanEditor,
+    type SpeechPlanState
+  } from './session-flow';
+  import { invalidationBus, invalidates } from './invalidation';
   import type ArtifactPreview from './ArtifactPreview.svelte';
   import type SessionForkDialog from './SessionForkDialog.svelte';
   import type SettingsModal from './SettingsModal.svelte';
@@ -86,6 +94,103 @@
     initialSettingsStage?: string;
   } = $props();
   const snapshot = $derived(workflowStore.snapshot);
+  let speechPlan = $state<SpeechPlanState | null>(null);
+  let planBusy = $state(false);
+  let planRequest = 0;
+  const selectedSpeechPlan = $derived(
+    speechPlan?.items.find(
+      (item) => item.id === speechPlan?.selected_revision_id
+    )
+  );
+
+  async function loadSpeechPlan() {
+    if (
+      !workflowStore.snapshot?.stages.some(
+        (item) => item.key === 'generate_audio'
+      )
+    )
+      return;
+    const request = ++planRequest;
+    try {
+      const value = await speechPlanState(session.id);
+      if (request === planRequest) speechPlan = value;
+    } catch (caught) {
+      if (request === planRequest) error = errorMessage(caught);
+    }
+  }
+  async function planAction(
+    action: 'prepare' | 'select' | 'review',
+    revisionId = ''
+  ) {
+    if (!speechPlan || planBusy) return;
+    planBusy = true;
+    error = '';
+    try {
+      const body =
+        action === 'prepare'
+          ? {
+              expected_revision: speechPlan.session_revision,
+              expected_plan_revision_id: speechPlan.selected_revision_id,
+              source_artifact_id: speechPlan.current_input?.artifact_id
+            }
+          : action === 'select'
+            ? {
+                revision_id: revisionId,
+                expected_plan_revision_id: speechPlan.selected_revision_id
+              }
+            : {
+                revision_id: speechPlan.selected_revision_id,
+                content_signature: speechPlan.content_signature
+              };
+      await sessionFlowAction(session.id, `generation-plan/${action}`, body);
+      await loadSpeechPlan();
+    } catch (caught) {
+      error = errorMessage(caught);
+    } finally {
+      planBusy = false;
+    }
+  }
+  async function generateSelectedPlan(staleOnly = false) {
+    if (planBusy) return;
+    const chosen = speechPlan?.selected_revision_id;
+    planBusy = true;
+    error = '';
+    try {
+      const current = await speechPlanState(session.id);
+      speechPlan = current;
+      if (!chosen || current.selected_revision_id !== chosen)
+        throw new Error(
+          'The selected speech plan changed. Review its selection before generating.'
+        );
+      if (!current.can_generate)
+        throw new Error(
+          current.warning ||
+            current.blocked_reason ||
+            'Prepare a speech plan from the selected text first.'
+        );
+      const serviceProblem = await generationServiceProblem();
+      if (serviceProblem) throw new Error(serviceProblem);
+      await sessionFlowAction(session.id, 'generation-runs', {
+        operation: 'generate',
+        speech_plan_revision_id: chosen,
+        stale_only: staleOnly
+      });
+      await load();
+    } catch (caught) {
+      error = errorMessage(caught);
+    } finally {
+      planBusy = false;
+    }
+  }
+  onMount(() =>
+    invalidationBus.subscribe((change) => {
+      if (
+        invalidates(change, 'generation', session.id) ||
+        invalidates(change, 'workflow', session.id)
+      )
+        void loadSpeechPlan();
+    })
+  );
   const hasAttachedCaptions = $derived(
     session.workflow_kind === 'media_edit' &&
       Boolean(
@@ -318,6 +423,7 @@
   async function load(options: { initial?: boolean } = {}) {
     try {
       const next = await workflowStore.load(!(options.initial ?? false));
+      await loadSpeechPlan();
       const speechOptimization = next?.stages.find(
         (stage) => stage.key === 'optimize_tts'
       );
@@ -482,6 +588,10 @@
     }
     if (stage.key === 'export') {
       location.href = `/sessions/${session.id}/output`;
+      return;
+    }
+    if (stage.key === 'generate_audio' && workspaceMode === 'review') {
+      await generateSelectedPlan();
       return;
     }
     if (stage.key === 'generate_audio') {
@@ -2555,20 +2665,6 @@
 </script>
 
 <div class="min-w-0 max-w-full overflow-x-hidden">
-  {#if session.workflow_kind === 'subtitles' || session.workflow_kind === 'voiceover'}
-    <SubtitleSourceTools
-      sessionId={session.id}
-      refreshKey={JSON.stringify([
-        session.revision,
-        snapshot?.stages.map((stage) => [
-          stage.key,
-          stage.status,
-          stage.selected_artifact_id
-        ])
-      ])}
-      onchanged={sourceAdded}
-    />
-  {/if}
   <button
     onclick={onback}
     class="muted mb-4 flex items-center gap-2 text-sm font-semibold"
@@ -2610,11 +2706,7 @@
           onclick={() => openPdfEditor(availablePdf)}
           class="lift flex items-center gap-3 rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] px-4 py-3 text-sm font-semibold"
           ><Crop size={18} /> Edit PDF</button
-        >{/if}<button
-        onclick={openSourceDialog}
-        class="lift flex items-center gap-3 rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] px-4 py-3 text-sm font-semibold"
-        ><Plus size={18} /> Add source</button
-      >
+        >{/if}
     </div>
   </header>
   {#if sourceMessage}<div
@@ -2685,16 +2777,44 @@
     </div>
   {:else if snapshot}
     <div class="space-y-4">
+      <SessionSourceCard
+        sessionId={session.id}
+        refreshKey={JSON.stringify([
+          session.revision,
+          snapshot.stages.map((stage) => [
+            stage.key,
+            stage.status,
+            stage.selected_artifact_id
+          ])
+        ])}
+        oninitialsource={openSourceDialog}
+        onchanged={sourceAdded}
+      />
       {#each snapshot.stages as stage}
+        {#if stage.key === 'generate_audio' && workspaceMode === 'review'}
+          <SpeechPlanCard
+            sessionId={session.id}
+            plan={speechPlan}
+            busy={planBusy}
+            onprepare={() => planAction('prepare')}
+            onselect={(id) => planAction('select', id)}
+            onreview={() => planAction('review')}
+          />
+        {/if}
         <WorkflowStageCard
           {stage}
           {workspaceMode}
-          runLabel={session.workflow_kind === 'media_edit' &&
-          stage.key === 'transcribe'
-            ? hasAttachedCaptions
-              ? 'Configure & align captions'
-              : 'Configure transcription'
-            : ''}
+          runDisabled={stage.key === 'generate_audio' &&
+            workspaceMode === 'review' &&
+            (planBusy || !speechPlan?.can_generate)}
+          runLabel={stage.key === 'generate_audio' && workspaceMode === 'review'
+            ? 'Generate selected plan'
+            : session.workflow_kind === 'media_edit' &&
+                stage.key === 'transcribe'
+              ? hasAttachedCaptions
+                ? 'Configure & align captions'
+                : 'Configure transcription'
+              : ''}
           optional={session.workflow_kind === 'media_edit' &&
             stage.key === 'transcribe' &&
             !stage.included}
@@ -2716,7 +2836,33 @@
             : undefined}
           ondelete={(artifact) => deleteStageArtifact(stage, artifact)}
           onloadmore={() => loadMoreStageArtifacts(stage)}
-        />
+        >
+          {#snippet inputControls()}
+            {#if stage.key === 'generate_audio' && workspaceMode === 'review'}
+              <SpeechPlanPicker
+                plan={speechPlan}
+                disabled={planBusy || Boolean(speechPlan?.blocked_reason)}
+                onselect={(id) => planAction('select', id)}
+              />
+              <div class="mt-2 flex flex-wrap gap-2">
+                <button
+                  class="btn btn-sm"
+                  disabled={!speechPlan?.selected_revision_id}
+                  onclick={() => openSpeechPlanEditor(session.id)}
+                  >Review selected plan</button
+                >
+                <button
+                  class="btn btn-sm"
+                  disabled={planBusy ||
+                    !speechPlan?.can_generate ||
+                    !selectedSpeechPlan?.stale_segment_count}
+                  onclick={() => void generateSelectedPlan(true)}
+                  >Generate missing / stale only</button
+                >
+              </div>
+            {/if}
+          {/snippet}
+        </WorkflowStageCard>
       {/each}
     </div>
   {/if}

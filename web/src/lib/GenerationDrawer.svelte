@@ -46,6 +46,11 @@
   import GenerationReadingView from './GenerationReadingView.svelte';
   import SpeechPlanReviewDialog from './SpeechPlanReviewDialog.svelte';
   import SpeechPlanHistory from './SpeechPlanHistory.svelte';
+  import {
+    sessionFlowAction,
+    notifySessionFlowChange,
+    subscribeSpeechPlanEditor
+  } from './session-flow';
   import SearchReplaceBar from './SearchReplaceBar.svelte';
   import type { TextReplacement, TextSearchMatch } from './search-replace';
   import { LANGUAGE_OPTIONS } from './settings-fields';
@@ -742,12 +747,20 @@
     regenerateMenuOpen = false;
     try {
       const updated = await generationStore.updateSegment(item, changes);
+      if (updated.id !== item.id) {
+        selectedRunId = '';
+        selectedRow = '';
+        selectedRows = [];
+        filter = 'all';
+        await load(true, false);
+      }
       if (
         'node_kind' in changes ||
         'silence_after_ms' in changes ||
         'removed' in changes
       )
         await refreshAssembly();
+      notifySessionFlowChange(sessionId);
       return updated;
     } catch (caught) {
       error = errorMessage(caught);
@@ -800,6 +813,7 @@
       selectedRow = '';
       selectedRows = [];
       selectionAnchor = '';
+      notifySessionFlowChange(sessionId);
       await load(true, false);
       await refreshAssembly();
     } catch (caught) {
@@ -1414,12 +1428,21 @@
   }
 
   onMount(() => {
+    const openPlan = (requestedSessionId: string) => {
+      if (requestedSessionId !== sessionId) return;
+      selectedRunId = '';
+      filter = 'all';
+      mode = 'half';
+      void load(true, false);
+    };
+    const disconnectPlanEditor = subscribeSpeechPlanEditor(openPlan);
     const disconnect = generationStore.connect(
       () => ({ filter, selectedRunId }),
       applyLoadResult
     );
     return () => {
       disconnect();
+      disconnectPlanEditor();
       if (timer) window.clearTimeout(timer);
       startedRunReconciliation?.abort();
       stopPlayback();
@@ -1670,6 +1693,14 @@
             ['queued', 'running', 'pausing', 'cancel_requested'].includes(
               run?.status ?? ''
             )}
+          onselect={async (revisionId) => {
+            await sessionFlowAction(sessionId, 'generation-plan/select', {
+              revision_id: revisionId,
+              expected_plan_revision_id: payload.plan_revision_id
+            });
+            selectedRunId = '';
+            await load(true, false);
+          }}
           onrestore={(revisionId) =>
             reviseSpeechBlocks({
               action: 'restore',

@@ -9,12 +9,14 @@ from .schemas import SCHEMA_MODELS
 from .work import EventBounds, WorkError, WorkEvent, WorkEventPage, WorkView
 from .quick_transcription_schemas import TranscriptionCreate, TranscriptionWait, TranscriptionSnapshot, TranscriptionResultPage
 from .quick_transcription_openapi import transcription_paths
+from .session_flow_routes import FLOW_SCHEMAS, session_flow_paths
 
 
 def build_openapi_document() -> dict:
     schemas: dict[str, dict] = {}
     contract_models = {
         **SCHEMA_MODELS,
+        **FLOW_SCHEMAS,
         "ApplicationIdentityDocument": ApplicationIdentityDocument,
         "EventBounds": EventBounds,
         "WorkError": WorkError,
@@ -3176,6 +3178,7 @@ def build_openapi_document() -> dict:
         ]
 
     paths.update(transcription_paths())
+    paths.update(session_flow_paths())
     # Subtitle-first media and immutable speech-plan review operations.
     extra_operations = [
         ("/api/v1/sessions/{sessionId}/sources/subtitle-status", "get", "subtitleSourceStatus", None, "200"),

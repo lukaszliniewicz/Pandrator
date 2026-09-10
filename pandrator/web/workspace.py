@@ -41,7 +41,9 @@ from .models import (
     UsageEvent,
     utcnow,
 )
-from .source_resolution import classify_source, resolve_primary_source, resolve_media_source
+from .source_resolution import classify_source, resolve_media_source
+# Public compatibility re-export used by source-cleaning dispatch.
+from .source_resolution import resolve_primary_source as resolve_primary_source
 from .tts_optimization import (
     DEFAULT_FIRST_PROMPT,
     DEFAULT_PROMPT,
@@ -326,6 +328,7 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "bitrate": "192k",
         "export_mode": "media",
         "audio_mode": "mixed",
+        "audio_match_source_duration": True,
         "subtitle_mode": "none",
         "subtitle_selection": "translation",
         "subtitle_format": "srt",
@@ -885,6 +888,7 @@ class WorkspaceSettingsService:
         elif section == "output" and session_record.workflow_kind == "voiceover":
             if str(effective.get("export_mode") or "").lower() not in {
                 "media",
+                "audio",
                 "subtitles",
                 "text",
             }:
@@ -897,7 +901,7 @@ class WorkspaceSettingsService:
                 "dubbing_only",
             }:
                 effective["audio_mode"] = "mixed"
-            if output_context["has_source_video"]:
+            if output_context["has_source_video"] and effective["export_mode"] == "media":
                 # Video uses a lossless assembly intermediate; the final MP4
                 # path encodes new audio as AAC when replacement/mixing occurs.
                 effective["format"] = "wav"
@@ -988,7 +992,12 @@ class WorkspaceSettingsService:
                 }
                 value = {key: item for key, item in value.items() if key in allowed}
             else:
-                if output_context["has_source_video"]:
+                mode = str(
+                    value.get("export_mode")
+                    or self.get_in_session(session, session_id, section)["effective"].get("export_mode")
+                    or "media"
+                ).lower()
+                if output_context["has_source_video"] and mode == "media":
                     value.pop("format", None)
                     value.pop("bitrate", None)
                 else:
@@ -2522,7 +2531,14 @@ class GenerationService:
             raise KeyError(segment_id)
         if segment.revision != expected_revision:
             raise RevisionConflict("The generation segment changed in another client.")
-        return self._apply_segment_changes(session, segment, changes)
+        from .speech_plan_workspace import prepare_segment_edit_targets
+
+        original_id = segment.id
+        targets = prepare_segment_edit_targets(self, session, {original_id: segment}, [{"id": original_id, "changes": changes}])
+        result = self._apply_segment_changes(session, targets[original_id], changes)
+        if result["id"] != original_id:
+            result["previous_segment_id"] = original_id
+        return result
 
     def update_segments(
         self, session_id: str, updates: list[dict[str, Any]]
@@ -2590,6 +2606,10 @@ class GenerationService:
                         "One or more generation segments changed in another client; no replacements were applied."
                     )
 
+            from .speech_plan_workspace import prepare_segment_edit_targets
+
+            segments = prepare_segment_edit_targets(self, session, segments, updates)
+            segment_ids = [segment.id for segment in segments.values()]
             completed_takes_by_segment: dict[str, list[AudioTake]] = {}
             for take in session.scalars(
                 select(AudioTake).where(
@@ -2603,6 +2623,8 @@ class GenerationService:
 
             assembly_keys = {
                 "text",
+                "optimized_text",
+                "speech_plan",
                 "node_kind",
                 "paragraph_break_after",
                 "voice_id",
@@ -2628,6 +2650,9 @@ class GenerationService:
                         mark_assemblies=False,
                     )
                 )
+            for request_item, result in zip(updates, results, strict=True):
+                if result["id"] != str(request_item["id"]):
+                    result["previous_segment_id"] = str(request_item["id"])
             if assembly_changed:
                 mark_output_assemblies_stale(session, session_id)
             session.flush()
@@ -3676,7 +3701,7 @@ class GenerationService:
             plan = session.scalar(select(GenerationPlan).where(GenerationPlan.session_id == session_id))
             current_id = plan.active_revision_id if plan else None
             current = session.get(GenerationPlanRevision, current_id) if current_id else None
-            reviewed = bool(current and (current.operation_json or session.scalar(
+            reviewed = bool(current and (current.operation_json or (current.settings_json or {}).get("_prepared_for_review") or session.scalar(
                 select(GenerationSegment.id).where(GenerationSegment.plan_revision_id == current_id, GenerationSegment.revision > 1).limit(1)
             )))
             if speech_plan_revision_id and speech_plan_revision_id != current_id:
@@ -3997,6 +4022,9 @@ class GenerationService:
         if selected_segment_override:
             snapshot["selected_segment_override"] = deepcopy(selected_segment_override)
         snapshot["speech_plan_revision_id"] = plan_revision_id
+        from .speech_plan_workspace import freeze_speech_snapshot
+
+        freeze_speech_snapshot(session, plan_revision_id, snapshot, explicit=bool(prepared.get("explicit_speech_plan_revision_id")))
         if prepared.get("stale_only"):
             snapshot["stale_only"] = True
         settings_hash = stable_hash(snapshot)

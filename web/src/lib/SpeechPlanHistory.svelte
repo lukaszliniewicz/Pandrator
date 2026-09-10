@@ -26,12 +26,14 @@
     activeRevisionId,
     disabled = false,
     onrestore,
+    onselect,
     ongenerate
   }: {
     sessionId: string;
     activeRevisionId: string | null;
     disabled?: boolean;
     onrestore: (revisionId: string) => Promise<unknown>;
+    onselect?: (revisionId: string) => Promise<unknown>;
     ongenerate: (staleOnly: boolean) => Promise<unknown>;
   } = $props();
   let open = $state(false);
@@ -89,11 +91,12 @@
     }
   }
 
-  async function restore() {
+  async function restore(copy = true) {
     if (!selected || selected === activeRevisionId) return;
     busy = true;
     try {
-      await onrestore(selected);
+      if (copy || !onselect) await onrestore(selected);
+      else await onselect(selected);
       await loadHistory();
     } catch (caught) {
       error = errorMessage(caught);
@@ -169,6 +172,12 @@
         </p>
         <div class="mb-4 flex flex-wrap gap-2">
           {#if selected !== activeRevisionId}
+            {#if onselect}<button
+                type="button"
+                class="btn btn-primary"
+                disabled={busy || disabled}
+                onclick={() => void restore(false)}>Select this revision</button
+              >{/if}
             <button
               type="button"
               class="btn btn-primary"

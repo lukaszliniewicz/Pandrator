@@ -134,7 +134,7 @@ class PlanOrchestratedWorkflowInput(DelegationExecutionMixin):
     )
     final_stage: Literal["generate_audio", "export"] = "export"
     overrides: dict[str, Any] = Field(default_factory=dict)
-    export_mode: Literal["media", "subtitles", "text"] = "media"
+    export_mode: Literal["media", "audio", "subtitles", "text"] = "media"
     audio_mode: Literal["preserve", "mixed", "dubbing_only"] = "mixed"
     subtitle_mode: Literal["none", "soft", "burned"] = "none"
     subtitle_selection: Literal["source", "translation", "dual"] = "translation"

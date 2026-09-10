@@ -725,6 +725,18 @@ class GenerationPlanRevision(Base):
     )
 
 
+class SpeechPlanReview(Base):
+    """Review metadata is separate from immutable speech-plan content."""
+
+    __tablename__ = "speech_plan_reviews"
+
+    revision_id: Mapped[str] = mapped_column(
+        ForeignKey("generation_plan_revisions.id", ondelete="CASCADE"), primary_key=True
+    )
+    content_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    reviewed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
 class MediaEditPlan(Base):
     """The active immutable media-edit revision for one session."""
 

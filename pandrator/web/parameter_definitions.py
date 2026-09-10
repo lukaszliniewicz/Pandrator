@@ -343,7 +343,8 @@ _DESCRIPTIONS: dict[str, dict[str, str]] = {
     "output": {
         "format": "Selects the container used for assembled audio output; supported values are WAV, MP3, M4B, Opus, and FLAC, with M4B restricted to audiobook workflows.",
         "bitrate": "Sets the codec bitrate string used for lossy audio formats such as MP3, M4B, and Opus; the codec and provider/FFmpeg parser define accepted bitrate syntax.",
-        "export_mode": "Selects whether export produces media, subtitle files, or concatenated text; subtitle workflows are restricted to subtitle or text export.",
+        "export_mode": "Selects video/media, audio-only soundtrack, subtitle files, or concatenated text; subtitle workflows are restricted to subtitle or text export.",
+        "audio_match_source_duration": "Match the associated recording’s complete timeline, including initial and trailing silence. Speech overruns are rejected rather than silently clipped; turn off only when a longer independent audio file is intended.",
         "audio_mode": "Selects the source-audio policy for voiceover media export: preserve source audio, mix source with generated speech, or export dubbing only.",
         "subtitle_mode": "Selects whether selected subtitles are omitted, muxed as soft tracks, or burned into a rendered video; burning forces video transcoding.",
         "subtitle_selection": "Selects the source subtitle track, translation track, or both when exporting or attaching subtitle tracks.",
@@ -829,7 +830,7 @@ _METADATA: dict[str, dict[str, dict[str, object]]] = {
     },
     "output": {
         "format": {"choices": ["wav", "mp3", "m4b", "opus", "flac"]},
-        "export_mode": {"choices": ["media", "subtitles", "text"]},
+        "export_mode": {"choices": ["media", "audio", "subtitles", "text"]},
         "audio_mode": {"choices": ["mixed", "preserve", "dubbing_only"]},
         "subtitle_mode": {"choices": ["none", "soft", "burned"]},
         "subtitle_selection": {"choices": ["source", "translation", "dual"]},

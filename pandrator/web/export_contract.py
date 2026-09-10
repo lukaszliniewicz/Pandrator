@@ -9,7 +9,7 @@ from .source_resolution import PrimarySourceResolution
 
 
 EXPORT_CONTRACT_VERSION = 1
-EXPORT_MODES = frozenset({"media", "subtitles", "text"})
+EXPORT_MODES = frozenset({"media", "audio", "subtitles", "text"})
 AUDIO_MODE_ALIASES = {
     "preserve": "preserve",
     "source": "preserve",
@@ -53,7 +53,7 @@ def build_export_contract(
         workflow_kind=workflow_kind,
     )
     audio_mode = None
-    if workflow_kind == "voiceover" and export_mode == "media":
+    if workflow_kind == "voiceover" and export_mode in {"media", "audio"}:
         audio_mode = normalize_audio_mode(settings.get("audio_mode"))
         if audio_mode in {"preserve", "mixed"} and (
             source.artifact is None or not source.has_audio
@@ -113,7 +113,7 @@ class ExportContract:
         if export_mode != requested_export_mode:
             raise ValueError("The queued export mode does not match its immutable export contract.")
         audio_mode = None
-        if workflow_kind == "voiceover" and export_mode == "media":
+        if workflow_kind == "voiceover" and export_mode in {"media", "audio"}:
             audio_mode = normalize_audio_mode(payload.get("audio_mode"))
             if audio_mode != normalize_audio_mode(settings.get("audio_mode")):
                 raise ValueError(

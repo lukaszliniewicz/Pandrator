@@ -172,6 +172,7 @@ const CHOICES: Record<string, SettingOption[]> = {
   ],
   export_mode: [
     option('media', 'Video / media'),
+    option('audio', 'Audio only (no video)'),
     option('subtitles', 'Subtitles only'),
     option('text', 'Concatenated text only')
   ],
@@ -467,6 +468,7 @@ const SETTING_ORDER: Record<string, string[]> = {
   ],
   output: [
     'export_mode',
+    'audio_match_source_duration',
     'format',
     'bitrate',
     'audio_mode',
@@ -669,6 +671,7 @@ export function settingApplies(
 
   if (section === 'output') {
     const exportMode = selected('export_mode', 'media');
+    if (key === 'audio_match_source_duration') return exportMode === 'audio';
     if (exportMode === 'subtitles')
       return [
         'export_mode',
@@ -678,6 +681,17 @@ export function settingApplies(
       ].includes(key);
     if (exportMode === 'text')
       return ['export_mode', 'subtitle_selection', 'language'].includes(key);
+    if (
+      exportMode === 'audio' &&
+      (OUTPUT_VIDEO_KEYS.has(key) ||
+        [
+          'subtitle_mode',
+          'subtitle_selection',
+          'subtitle_format',
+          'video_transcode'
+        ].includes(key))
+    )
+      return false;
     const subtitleMode = selected('subtitle_mode', 'none');
     const transcodesVideo =
       enabled('video_transcode') || subtitleMode === 'burned';
