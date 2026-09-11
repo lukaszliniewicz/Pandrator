@@ -167,6 +167,25 @@ class ReviseSpeechBlockPlanBatchInput(GenerationPlanBatchRequest):
     idempotency_key: str = Field(min_length=8, max_length=200, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$")
 
 
+class SpeechPlanStatusInput(ToolInput):
+    session_id: str = Field(min_length=1, max_length=80)
+
+
+class PrepareSpeechPlanInput(ToolInput):
+    session_id: str = Field(min_length=1, max_length=80)
+    expected_revision: int = Field(ge=1)
+    expected_plan_revision_id: str | None = Field(default=None, min_length=1, max_length=80)
+    source_artifact_id: str = Field(min_length=1, max_length=80)
+    idempotency_key: str = Field(min_length=8, max_length=200, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$")
+
+
+class ReviewSpeechPlanInput(ToolInput):
+    session_id: str = Field(min_length=1, max_length=80)
+    revision_id: str = Field(min_length=1, max_length=80)
+    content_signature: str = Field(min_length=32, max_length=128)
+    idempotency_key: str = Field(min_length=8, max_length=200, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$")
+
+
 class ListSpeechPlanRevisionsInput(ToolInput):
     session_id: str = Field(min_length=1, max_length=80)
     limit: int = Field(default=50, ge=1, le=100)

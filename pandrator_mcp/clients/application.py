@@ -1787,6 +1787,37 @@ class ApplicationClient:
             f"/api/v1/sessions/{quote(session_id, safe='')}/generation-segments", parameters=params,
         )
 
+    def get_speech_plan_status(self, session_id: str) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/sessions/{quote(session_id, safe='')}/generation-plan/status"
+        )
+
+    def prepare_speech_plan(
+        self, session_id: str, *, expected_revision: int, expected_plan_revision_id: str | None,
+        source_artifact_id: str, idempotency_key: str,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/sessions/{quote(session_id, safe='')}/generation-plan/prepare",
+            method="POST",
+            body={
+                "expected_revision": expected_revision,
+                "expected_plan_revision_id": expected_plan_revision_id,
+                "source_artifact_id": source_artifact_id,
+            },
+            if_match_revision=expected_revision,
+            idempotency_key=idempotency_key,
+        )
+
+    def review_speech_plan(
+        self, session_id: str, *, revision_id: str, content_signature: str, idempotency_key: str,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/sessions/{quote(session_id, safe='')}/generation-plan/review",
+            method="POST",
+            body={"revision_id": revision_id, "content_signature": content_signature},
+            idempotency_key=idempotency_key,
+        )
+
     def list_speech_plan_revisions(
         self, session_id: str, *, limit: int = 50, before_revision_number: int | None = None
     ) -> dict[str, Any]:

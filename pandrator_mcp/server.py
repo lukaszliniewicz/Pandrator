@@ -70,6 +70,9 @@ from .schemas import (
     ListSourcesInput,
     ListSpeechOptimizationDispatchRunsInput,
     ListSpeechPlanRevisionsInput,
+    PrepareSpeechPlanInput,
+    ReviewSpeechPlanInput,
+    SpeechPlanStatusInput,
     ListWorkInput,
     ManagerDesiredComponentInput,
     MediaEditDispatchResultInput,
@@ -179,6 +182,9 @@ from .tools import (
     list_sources,
     list_speech_optimization_dispatch_runs,
     list_speech_plan_revisions,
+    speech_plan_status,
+    prepare_speech_plan,
+    review_speech_plan,
     list_work,
     manager_doctor,
     manager_status,
@@ -2836,6 +2842,21 @@ def build_server(runtime: McpRuntime):
                 source_cue_id=source_cue_id, radius=radius,
             ),
         )
+
+    @server.tool(name="pandrator_get_speech_plan_status", title="Inspect speech-plan review status", annotations=read_only)
+    def speech_plan_status_tool(session_id: str) -> dict[str, Any]:
+        """Inspect current text input, active plan compatibility, review state, and revision guards."""
+        return _call_with_validated_input(speech_plan_status, runtime, SpeechPlanStatusInput, {key: value for key, value in locals().items() if key in SpeechPlanStatusInput.model_fields})
+
+    @server.tool(name="pandrator_prepare_speech_plan", title="Prepare a fresh reviewable speech plan", annotations=write_action)
+    def prepare_speech_plan_tool(session_id: str, expected_revision: int, source_artifact_id: str, idempotency_key: str, expected_plan_revision_id: str | None = None) -> dict[str, Any]:
+        """Deterministically rebuild speech blocks from the selected subtitle/text artifact without starting synthesis."""
+        return _call_with_validated_input(prepare_speech_plan, runtime, PrepareSpeechPlanInput, {key: value for key, value in locals().items() if key in PrepareSpeechPlanInput.model_fields})
+
+    @server.tool(name="pandrator_review_speech_plan", title="Mark the selected speech plan reviewed", annotations=write_action)
+    def review_speech_plan_tool(session_id: str, revision_id: str, content_signature: str, idempotency_key: str) -> dict[str, Any]:
+        """Record review only when the active plan still has the inspected content signature."""
+        return _call_with_validated_input(review_speech_plan, runtime, ReviewSpeechPlanInput, {key: value for key, value in locals().items() if key in ReviewSpeechPlanInput.model_fields})
 
     @server.tool(name="pandrator_list_speech_plan_revisions", title="List versioned speech plans", annotations=read_only)
     def speech_plan_revisions_tool(session_id: str, limit: int = 50, before_revision_number: int | None = None) -> dict[str, Any]:

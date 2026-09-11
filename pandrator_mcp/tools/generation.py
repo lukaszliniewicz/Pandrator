@@ -12,6 +12,9 @@ from ..schemas.generation import (
     AdoptSubtitleSourceInput,
     GenerateSpeechPlanInput,
     ListSpeechPlanRevisionsInput,
+    PrepareSpeechPlanInput,
+    ReviewSpeechPlanInput,
+    SpeechPlanStatusInput,
     ReviseSpeechBlockPlanBatchInput,
     ListGenerationSegmentsInput,
     RegenerateSegmentsInput,
@@ -129,6 +132,34 @@ def revise_speech_block_plan(
             )
         ],
     )
+
+
+def speech_plan_status(runtime: McpRuntime, arguments: SpeechPlanStatusInput) -> dict[str, Any]:
+    payload = runtime.require_application().get_speech_plan_status(arguments.session_id)
+    return {"schema_version": "1", **payload}
+
+
+def prepare_speech_plan(runtime: McpRuntime, arguments: PrepareSpeechPlanInput) -> ToolOutcome:
+    result = runtime.require_application().prepare_speech_plan(
+        arguments.session_id,
+        expected_revision=arguments.expected_revision,
+        expected_plan_revision_id=arguments.expected_plan_revision_id,
+        source_artifact_id=arguments.source_artifact_id,
+        idempotency_key=arguments.idempotency_key,
+    )
+    return ToolOutcome(result={"schema_version": "1", **result}, next_actions=[NextAction(
+        tool="pandrator_list_generation_segments",
+        arguments={"session_id": arguments.session_id, "plan_revision_id": result.get("selected_revision_id"), "view": "provenance"},
+        reason="Review every block and boundary in the newly prepared speech plan before marking it reviewed or generating audio.",
+    )])
+
+
+def review_speech_plan(runtime: McpRuntime, arguments: ReviewSpeechPlanInput) -> ToolOutcome:
+    result = runtime.require_application().review_speech_plan(
+        arguments.session_id, revision_id=arguments.revision_id,
+        content_signature=arguments.content_signature, idempotency_key=arguments.idempotency_key,
+    )
+    return ToolOutcome(result={"schema_version": "1", **result})
 
 
 def list_speech_plan_revisions(runtime: McpRuntime, arguments: ListSpeechPlanRevisionsInput) -> dict[str, Any]:
