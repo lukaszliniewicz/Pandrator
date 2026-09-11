@@ -302,12 +302,20 @@ def register_speech_optimization_dispatch_routes(
                     services.idempotency.validate_key(key)
                 except ValueError as error:
                     return idempotency_error(error)
-                result, status = dispatch.submit_in_session(
-                    db_session,
-                    batch_id=batch_id,
-                    submission_key=key,
-                    **payload.model_dump(mode="json"),
-                )
+                try:
+                    result, status = dispatch.submit_in_session(
+                        db_session,
+                        batch_id=batch_id,
+                        submission_key=key,
+                        **payload.model_dump(mode="json"),
+                    )
+                except DispatchError as error:
+                    # Finalization conflicts can accept the batch and mark the run
+                    # failed. Return inside the transaction so those terminal
+                    # state changes commit instead of being rolled back.
+                    if error.status == 422:
+                        return jsonify(error_body(error)), error.status
+                    return dispatch_error(error)
             return jsonify(result), status
         except DispatchError as error:
             if error.status == 422:

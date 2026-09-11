@@ -13,6 +13,7 @@ from pandrator.web.models import (
     Document,
     Segment,
     SpeechOptimizationDispatchBatch,
+    SpeechOptimizationDispatchRun,
     utcnow,
 )
 from pandrator.web.schemas import (
@@ -491,6 +492,59 @@ class SpeechOptimizationDispatchWebTests(unittest.TestCase):
             self.assertEqual(
                 ["SPEAKER_00", "SPEAKER_01"], [item.speaker for item in segments]
             )
+
+    def test_finalization_conflict_commits_failed_run_state(self):
+        srt = (
+            "1\n00:00:00,000 --> 00:00:01,200\nOriginal text.\n"
+        )
+        record, source, path = self._create_source(
+            workflow_kind="voiceover",
+            role="translation",
+            filename="translation.srt",
+            content=srt,
+        )
+        run = self._create_run(record.id, source_artifact_id=source.id)
+        claimed = self._claim(run["id"], 1)
+
+        replacement_path = path.parent / "replacement.srt"
+        replacement_path.write_text(
+            "1\n00:00:00,000 --> 00:00:01,200\nReplacement text.\n",
+            encoding="utf-8",
+        )
+        replacement_artifact = self.extension["artifacts"].register(
+            replacement_path,
+            kind="srt",
+            role="translation",
+            session_id=record.id,
+            parent_ids=[source.id],
+        )
+        from pandrator.web.artifact_selection import choose_artifact
+
+        with self.extension["database"].session() as session:
+            choose_artifact(session, record.id, "translate", replacement_artifact.id)
+
+        response = self.client.post(
+            f"/api/v1/speech-optimization-dispatch-batches/{claimed['batch_id']}/submit",
+            json={
+                "lease_token": claimed["lease_token"],
+                "result": {
+                    "kind": "speech_optimization",
+                    "items": [{"unit_id": 1, "text": "Original text."}],
+                },
+            },
+            headers=self._headers("speech-finalization-conflict"),
+        )
+        self.assertEqual(409, response.status_code, response.get_json())
+        self.assertEqual(
+            "finalization_conflict", response.get_json()["error"]["code"]
+        )
+        with self.extension["database"].session() as session:
+            failed = session.get(SpeechOptimizationDispatchRun, run["id"])
+            self.assertEqual("failed", failed.status)
+            batch = session.get(
+                SpeechOptimizationDispatchBatch, claimed["batch_id"]
+            )
+            self.assertEqual("completed", batch.status)
 
     def test_attached_library_source_is_eligible_and_remains_pinned(self):
         record = self.extension["sessions"].create(
