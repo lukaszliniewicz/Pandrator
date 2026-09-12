@@ -1,5 +1,8 @@
 import tempfile
 import unittest
+from unittest import mock
+
+from sqlalchemy import select
 
 from pandrator.runtime import DataPaths
 from pandrator.web.artifact_selection import STAGE_OUTPUT_ROLES
@@ -7,7 +10,7 @@ from pandrator.web.artifacts import ArtifactService
 from pandrator.web.database import Database, upgrade_database
 from pandrator.web.jobs import JobQueue
 from pandrator.web.media_edit import MediaEditService
-from pandrator.web.models import OutcomePlan, SessionSource, SourceAsset
+from pandrator.web.models import Artifact, MediaEditPlan, OutcomePlan, SessionSource, SourceAsset
 from pandrator.web.sessions import SessionService
 from pandrator.web.workflow_handlers import WorkflowHandlers
 from pandrator.web.workflows import MEDIA_EDIT_STAGES, WorkflowService
@@ -15,6 +18,10 @@ from pandrator.web.workspace import OutcomePlanService
 
 
 class MediaEditWorkflowTests(unittest.TestCase):
+    @staticmethod
+    def _progress(_value, _detail=None):
+        return None
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.paths = DataPaths.from_value(self.temporary.name).ensure()
@@ -84,6 +91,7 @@ class MediaEditWorkflowTests(unittest.TestCase):
             duration_probe=lambda _path: 5000,
         ).prepare(self.record.id)["plan"]
         self.workflow = WorkflowService(self.database, JobQueue(self.database))
+        self.handlers = WorkflowHandlers(self.database, self.paths)
 
     def tearDown(self):
         self.database.dispose()
@@ -115,6 +123,30 @@ class MediaEditWorkflowTests(unittest.TestCase):
             "revision_id": self.plan["revision_id"],
             "content_hash": self.plan["content_hash"],
         }
+
+    def _rendered_media(self, name="edited.mp4"):
+        return self._artifact(
+            name,
+            role="media_edit_media",
+            kind="video",
+            content=b"edited media",
+            metadata=self._edit_metadata(),
+        )
+
+    def _convert_to_voiceover(self):
+        self.record = SessionService(self.database).update(
+            self.record.id,
+            self.record.revision,
+            {"workflow_kind": "voiceover"},
+        )
+
+    def _media_edit_service(self):
+        return MediaEditService(
+            self.database,
+            self.artifacts,
+            lambda _session_id: self.session_dir,
+            duration_probe=lambda _path: 5000,
+        )
 
     def test_definitions_make_edit_reviewable_and_downstream(self):
         self.assertEqual(
@@ -245,6 +277,194 @@ class MediaEditWorkflowTests(unittest.TestCase):
                 "export",
                 {"export_mode": "media", "audio_mode": "preserve"},
             )
+
+    def test_converted_voiceover_exports_pin_the_active_edited_media(self):
+        edited_media = self._rendered_media()
+        self._convert_to_voiceover()
+
+        for export_mode in ("media", "audio"):
+            for audio_mode in ("preserve", "mixed", "dubbing_only"):
+                with self.subTest(export_mode=export_mode, audio_mode=audio_mode):
+                    resolved = self.workflow.resolve_stage(
+                        self.record.id,
+                        "export",
+                        {
+                            "export_mode": export_mode,
+                            "audio_mode": audio_mode,
+                        },
+                    )
+
+                    contract = resolved.payload["export_contract"]
+                    self.assertEqual(edited_media.id, contract["source_artifact_id"])
+                    self.assertEqual(
+                        edited_media.content_hash,
+                        contract["source_content_hash"],
+                    )
+                    self.assertEqual("derived_media_edit", contract["source_resolution"])
+
+    def test_converted_voiceover_export_requires_a_current_render(self):
+        self._convert_to_voiceover()
+
+        for export_mode in ("media", "audio"):
+            with self.subTest(export_mode=export_mode):
+                with self.assertRaisesRegex(ValueError, "Render and review"):
+                    self.workflow.resolve_stage(
+                        self.record.id,
+                        "export",
+                        {
+                            "export_mode": export_mode,
+                            "audio_mode": "preserve",
+                        },
+                    )
+
+    def test_converted_voiceover_export_rejects_an_obsolete_current_render(self):
+        edited_media = self._rendered_media("obsolete-edited.mp4")
+        newer = self._media_edit_service().update(
+            self.record.id,
+            self.plan["revision"],
+            keep_ranges=self.plan["keep_ranges"],
+            instructions="A newer edit.",
+        )
+        self.assertNotEqual(self.plan["revision_id"], newer["plan"]["revision_id"])
+        with self.database.session() as session:
+            session.get(Artifact, edited_media.id).state = "current"
+        self._convert_to_voiceover()
+
+        for export_mode in ("media", "audio"):
+            with self.subTest(export_mode=export_mode):
+                with self.assertRaisesRegex(ValueError, "Render and review"):
+                    self.workflow.resolve_stage(
+                        self.record.id,
+                        "export",
+                        {
+                            "export_mode": export_mode,
+                            "audio_mode": "preserve",
+                        },
+                    )
+
+    def test_worker_rejects_an_original_source_contract_for_converted_voiceover(self):
+        self._rendered_media()
+        self._convert_to_voiceover()
+        payload = {
+            "session_id": self.record.id,
+            "settings": {"export_mode": "media", "audio_mode": "preserve"},
+            "export_contract": {
+                "version": 1,
+                "workflow_kind": "voiceover",
+                "export_mode": "media",
+                "audio_mode": "preserve",
+                "source_artifact_id": self.original.id,
+                "source_content_hash": self.original.content_hash,
+                "source_profile": "video",
+                "source_resolution": "attached",
+            },
+        }
+
+        with mock.patch(
+            "pandrator.logic.dubbing.audio_sync.media_has_audio_stream"
+        ) as media_has_audio_stream:
+            with self.assertRaisesRegex(ValueError, "selected media edit changed"):
+                self.handlers.export(payload, self._progress, mock.sentinel.cancel)
+
+        media_has_audio_stream.assert_not_called()
+
+    def test_worker_rejects_a_queued_export_after_the_edit_revision_changes(self):
+        edited_media = self._rendered_media()
+        old_revision_id = self.plan["revision_id"]
+        newer = self._media_edit_service().update(
+            self.record.id,
+            self.plan["revision"],
+            keep_ranges=self.plan["keep_ranges"],
+            instructions="A newer edit.",
+        )
+        newer_revision_id = newer["plan"]["revision_id"]
+        with self.database.session() as session:
+            plan = session.scalar(
+                select(MediaEditPlan).where(MediaEditPlan.session_id == self.record.id)
+            )
+            plan.active_revision_id = old_revision_id
+            session.get(Artifact, edited_media.id).state = "current"
+        self._convert_to_voiceover()
+        queued = self.workflow.resolve_stage(
+            self.record.id,
+            "export",
+            {"export_mode": "media", "audio_mode": "preserve"},
+        )
+        with self.database.session() as session:
+            plan = session.scalar(
+                select(MediaEditPlan).where(MediaEditPlan.session_id == self.record.id)
+            )
+            plan.active_revision_id = newer_revision_id
+            session.get(Artifact, edited_media.id).state = "current"
+
+        with mock.patch(
+            "pandrator.logic.dubbing.audio_sync.media_has_audio_stream"
+        ) as media_has_audio_stream:
+            with self.assertRaisesRegex(ValueError, "media-edit revision changed"):
+                self.handlers.export(
+                    queued.payload,
+                    self._progress,
+                    mock.sentinel.cancel,
+                )
+
+        media_has_audio_stream.assert_not_called()
+
+    def test_subtitle_only_voiceover_export_does_not_require_a_render(self):
+        self._convert_to_voiceover()
+        for export_mode in ("subtitles", "text"):
+            with self.subTest(export_mode=export_mode):
+                resolved = self.workflow.resolve_stage(
+                    self.record.id,
+                    "export",
+                    {
+                        "export_mode": export_mode,
+                        "subtitle_format": "srt",
+                        "subtitle_selection": "source",
+                    },
+                )
+
+                self.assertEqual(
+                    export_mode,
+                    resolved.payload["export_contract"]["export_mode"],
+                )
+                result = self.handlers.export(
+                    resolved.payload,
+                    self._progress,
+                    mock.sentinel.cancel,
+                )
+
+                exported, _path = self.artifacts.resolve(result["artifact_ids"][0])
+                self.assertEqual(
+                    f"export_{'subtitle' if export_mode == 'subtitles' else 'text'}_source",
+                    exported.role,
+                )
+
+    def test_voiceover_without_a_media_edit_plan_keeps_the_original_source(self):
+        voiceover = SessionService(self.database).create(
+            "Ordinary voiceover",
+            workflow_kind="voiceover",
+        )
+        voiceover_dir = self.paths.sessions / voiceover.storage_key
+        voiceover_dir.mkdir(parents=True, exist_ok=True)
+        source_path = voiceover_dir / "ordinary.mp4"
+        source_path.write_bytes(b"ordinary source")
+        source = self.artifacts.register(
+            source_path,
+            kind="video",
+            role="upload",
+            session_id=voiceover.id,
+        )
+
+        resolved = self.workflow.resolve_stage(
+            voiceover.id,
+            "export",
+            {"export_mode": "media", "audio_mode": "preserve"},
+        )
+
+        contract = resolved.payload["export_contract"]
+        self.assertEqual(source.id, contract["source_artifact_id"])
+        self.assertEqual(source.content_hash, contract["source_content_hash"])
+        self.assertEqual("legacy", contract["source_resolution"])
 
     def test_continuation_uses_edited_subtitles_without_retranscribing_media(self):
         self.assertEqual(

@@ -15,7 +15,7 @@ from .artifact_selection import (
     stage_histories,
 )
 from .database import Database
-from .export_contract import build_export_contract
+from .export_contract import build_export_contract, normalize_export_mode
 from .subtitle_sources import subtitle_source_status_in_session
 from .jobs import JobQueue
 from .models import (
@@ -1721,7 +1721,7 @@ class WorkflowService:
                 session.scalar(
                     select(MediaEditPlan).where(MediaEditPlan.session_id == session_id)
                 )
-                if record.workflow_kind == "media_edit"
+                if record.workflow_kind in {"media_edit", "voiceover"}
                 else None
             )
             active_media_edit_revision = (
@@ -1900,7 +1900,16 @@ class WorkflowService:
                     payload["speech_plan_revision_id"] = generation_revision.id
             if stage_key == "export":
                 export_source = resolve_media_source(session, session_id)
-                if record.workflow_kind == "media_edit":
+                # Converting an edited recording to voiceover retains its cut
+                # timeline. Export must keep using the matching render.
+                if record.workflow_kind == "media_edit" or (
+                    record.workflow_kind == "voiceover"
+                    and media_edit_plan is not None
+                    and normalize_export_mode(
+                        flattened.get("export_mode"),
+                        workflow_kind=record.workflow_kind,
+                    ) in {"media", "audio"}
+                ):
                     edited_media = by_role.get("media_edit_media")
                     if edited_media is None:
                         raise ValueError(

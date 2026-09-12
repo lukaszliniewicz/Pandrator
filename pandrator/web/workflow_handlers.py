@@ -10216,16 +10216,17 @@ class WorkflowHandlers:
                 resolved_settings_snapshot
             )
         record = self._session_record(session_id)
+        media_edit_plan: MediaEditPlan | None = None
         active_media_edit_revision: MediaEditPlanRevision | None = None
         with self.database.session() as session:
-            if record.workflow_kind == "media_edit":
-                active_media_edit_revision = session.scalar(
-                    select(MediaEditPlanRevision)
-                    .join(
-                        MediaEditPlan,
-                        MediaEditPlan.active_revision_id == MediaEditPlanRevision.id,
-                    )
-                    .where(MediaEditPlan.session_id == session_id)
+            if record.workflow_kind in {"media_edit", "voiceover"}:
+                media_edit_plan = session.scalar(
+                    select(MediaEditPlan).where(MediaEditPlan.session_id == session_id)
+                )
+                active_media_edit_revision = (
+                    session.get(MediaEditPlanRevision, media_edit_plan.active_revision_id)
+                    if media_edit_plan is not None and media_edit_plan.active_revision_id
+                    else None
                 )
             current = list(
                 session.scalars(
@@ -10442,7 +10443,17 @@ class WorkflowHandlers:
             )
             if contract is not None:
                 export_mode = contract.export_mode
-            if record.workflow_kind == "media_edit" and export_mode == "media":
+            requires_edited_media = (
+                record.workflow_kind == "media_edit" and export_mode == "media"
+            ) or (
+                record.workflow_kind == "voiceover"
+                and export_mode in {"media", "audio"}
+                and (
+                    media_edit_plan is not None
+                    or any(item.role == "media_edit_media" for item in attached_sources)
+                )
+            )
+            if requires_edited_media:
                 edited_media = by_role.get("media_edit_media")
                 if contract is None or edited_media is None:
                     raise ValueError(
