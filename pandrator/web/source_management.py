@@ -68,7 +68,7 @@ def _digest(value: Any) -> str:
     ).hexdigest()
 
 
-def assert_session_idle(session, session_id: str) -> None:
+def assert_session_idle(session, session_id: str, *, include_editing_dispatches: bool = True) -> None:
     """Never race a worker or a leased external editing batch during a reset."""
     if session.scalar(
         select(m.Job.id)
@@ -91,7 +91,7 @@ def assert_session_idle(session, session_id: str) -> None:
         raise RevisionConflict(
             "Stop or cancel audio generation before changing its sources."
         )
-    for model in DISPATCH_MODELS:
+    for model in DISPATCH_MODELS if include_editing_dispatches else ():
         if session.scalar(
             select(model.id)
             .where(model.session_id == session_id, model.status.not_in(TERMINAL))

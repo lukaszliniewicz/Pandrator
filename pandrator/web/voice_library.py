@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import re
 import shutil
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -13,6 +13,10 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from pandrator.logic.dubbing.stt_languages import (
+    PARAKEET_V3_LANGUAGE_CODES,
+    normalize_stt_language,
+)
 from pandrator.runtime import DataPaths
 
 from .artifacts import ArtifactService
@@ -26,6 +30,43 @@ BUNDLED_SAMPLE_TRANSCRIPT = (
     "you may dismiss the window. I remember the old lady saying there was a bar "
     "across it, and that nobody could have squeezed through."
 )
+
+
+def resolve_voice_sample_transcription_settings(
+    settings: Mapping[str, Any],
+    voice_language: str | None,
+) -> dict[str, Any]:
+    """Freeze voice-reference transcription language and engine defaults.
+
+    Voice samples use their voice language when the request does not select a
+    language.  Parakeet v3 is preferred for its authoritative language table;
+    explicit engine/backend choices remain untouched so this helper does not
+    alter session or global STT defaults.
+    """
+
+    resolved = deepcopy(dict(settings))
+    requested_language = resolved.get("stt_language")
+    if str(requested_language or "").strip():
+        selected_language = requested_language
+    elif str(voice_language or "").strip():
+        selected_language = voice_language
+    else:
+        selected_language = "auto"
+    resolved["stt_language"] = selected_language
+
+    has_explicit_engine = bool(str(resolved.get("stt_engine") or "").strip())
+    has_explicit_backend = bool(str(resolved.get("stt_backend") or "").strip())
+    if not has_explicit_engine and not has_explicit_backend:
+        normalized_language = normalize_stt_language(str(selected_language))
+        engine = (
+            "parakeet"
+            if normalized_language == "auto"
+            or normalized_language in PARAKEET_V3_LANGUAGE_CODES
+            else "whisper"
+        )
+        resolved["stt_engine"] = engine
+        resolved["stt_backend"] = engine
+    return resolved
 
 
 def is_bundled_voice(voice: Voice) -> bool:

@@ -14,6 +14,7 @@
   import { errorMessage } from './errors';
   import { modalFocus } from './modal-focus';
   import AudioPlayer from './AudioPlayer.svelte';
+  import { VOICE_DESIGN_SAMPLES } from './voice-design-samples';
 
   let {
     services,
@@ -39,6 +40,7 @@
     text: string;
     language: string;
     seed: number;
+    model: string;
   };
 
   let catalogueServices = $state<TtsService[]>([]);
@@ -103,11 +105,15 @@
     )
   );
   let prompt = $state('');
-  let sampleText = $state(
-    'At the edge of the quiet harbor, morning light moved across the water while the city slowly woke.'
-  );
+  let sampleText = $state(VOICE_DESIGN_SAMPLES.en);
   let seed = $state(randomSeed());
-  let preview = $state<PreviewSnapshot | null>(null);
+  let fixedSeed = $state(false);
+  let candidateCount = $state(3);
+  let previews = $state<PreviewSnapshot[]>([]);
+  let selectedPreviewId = $state('');
+  const preview = $derived(
+    previews.find((item) => item.artifactId === selectedPreviewId) ?? null
+  );
   let generating = $state(false);
   let saving = $state(false);
   let activeJobId = $state('');
@@ -115,6 +121,7 @@
   let error = $state('');
   let progressDetail = $state('');
   let alive = true;
+  let closing = false;
   const validSeed = $derived(
     Number.isInteger(seed) && seed >= 0 && seed <= 4_294_967_295
   );
@@ -133,7 +140,8 @@
   }
 
   function invalidatePreview() {
-    preview = null;
+    previews = [];
+    selectedPreviewId = '';
     error = '';
     progressDetail = '';
   }
@@ -141,8 +149,15 @@
   function chooseTarget() {
     const target = availableVoices.find((voice) => voice.id === targetVoiceId);
     const targetLanguage = String(target?.language ?? '').toLowerCase();
-    if (targetLanguage)
+    if (targetLanguage) {
       language = targetLanguage.replaceAll('_', '-').split('-')[0];
+      sampleText = VOICE_DESIGN_SAMPLES[language] ?? '';
+    }
+    invalidatePreview();
+  }
+
+  function chooseLanguage() {
+    sampleText = VOICE_DESIGN_SAMPLES[language] ?? '';
     invalidatePreview();
   }
 
@@ -167,7 +182,8 @@
 
   async function waitJob(id: string, attempts = 4000): Promise<JobRecord> {
     for (let attempt = 0; attempt < attempts; attempt += 1) {
-      if (!alive) throw new DOMException('Dialog closed', 'AbortError');
+      if (!alive || closing)
+        throw new DOMException('Dialog closed', 'AbortError');
       const job = await jobApi.get(id);
       progressDetail = job.progress_detail ?? '';
       if (job.status === 'succeeded') return job;
@@ -183,38 +199,79 @@
   async function generatePreview() {
     const cleanPrompt = prompt.trim();
     const cleanText = sampleText.trim();
-    if (!cleanPrompt || !cleanText || !audioCpp || !canGenerate || !validSeed)
+    if (
+      generating ||
+      saving ||
+      !cleanPrompt ||
+      !cleanText ||
+      !audioCpp ||
+      !canGenerate ||
+      (fixedSeed && !validSeed)
+    )
       return;
+    const count = Math.max(1, Math.min(4, Number(candidateCount) || 1));
+    const requestedModel = designModel;
+    const requestedLanguage = language;
+    const baseSeed = seed;
+    const usedSeeds = new Set<number>();
     generating = true;
+    closing = false;
     error = '';
-    preview = null;
-    progressDetail = `Starting ${designModelNames[designModel]} voice design…`;
+    previews = [];
+    selectedPreviewId = '';
     try {
-      const queued = await speechServiceApi.preview(audioCpp.id, {
-        text: cleanText,
-        model: designModel,
-        voice: '',
-        language,
-        generation_prompt: cleanPrompt,
-        seed
-      });
-      activeJobId = queued.id;
-      const complete = await waitJob(queued.id);
-      const artifactId = String(complete.result_json?.artifact_id ?? '');
-      if (!artifactId)
-        throw new Error(
-          'The model finished without returning a playable preview artifact.'
-        );
-      preview = {
-        artifactId,
-        prompt: cleanPrompt,
-        text: cleanText,
-        language,
-        seed
-      };
-      progressDetail = 'Preview ready. Listen before saving it as a reference.';
+      for (let index = 0; index < count; index += 1) {
+        if (!alive || closing) break;
+        let candidateSeed = fixedSeed
+          ? (baseSeed + index) % 4_294_967_296
+          : randomSeed();
+        while (usedSeeds.has(candidateSeed))
+          candidateSeed = (candidateSeed + 1) % 4_294_967_296;
+        usedSeeds.add(candidateSeed);
+        if (!fixedSeed) seed = candidateSeed;
+        progressDetail = `Generating candidate ${index + 1} of ${count}…`;
+        const queued = await speechServiceApi.preview(audioCpp.id, {
+          text: cleanText,
+          model: requestedModel,
+          voice: '',
+          language: requestedLanguage,
+          generation_prompt: cleanPrompt,
+          seed: candidateSeed
+        });
+        activeJobId = queued.id;
+        if (!alive || closing) {
+          await jobApi.cancel(queued.id).catch(() => null);
+          break;
+        }
+        const complete = await waitJob(queued.id);
+        if (!alive || closing) break;
+        const artifactId = String(complete.result_json?.artifact_id ?? '');
+        if (!artifactId)
+          throw new Error(
+            'The model finished without returning a playable preview artifact.'
+          );
+        previews = [
+          ...previews,
+          {
+            artifactId,
+            prompt: cleanPrompt,
+            text: cleanText,
+            language: requestedLanguage,
+            seed: candidateSeed,
+            model: requestedModel
+          }
+        ];
+        selectedPreviewId ||= artifactId;
+        activeJobId = '';
+      }
+      if (alive && !closing)
+        progressDetail = `${previews.length} candidate${previews.length === 1 ? '' : 's'} ready. Listen and choose one to save.`;
     } catch (caught) {
-      if (alive && (caught as { name?: string })?.name !== 'AbortError')
+      if (
+        alive &&
+        !closing &&
+        (caught as { name?: string })?.name !== 'AbortError'
+      )
         error = errorMessage(caught);
     } finally {
       if (alive) {
@@ -226,6 +283,7 @@
 
   async function closeDialog() {
     if (saving) return;
+    closing = true;
     if (activeJobId) {
       progressDetail = 'Canceling voice design…';
       await jobApi.cancel(activeJobId).catch(() => null);
@@ -336,303 +394,370 @@
   <!-- svelte-ignore a11y_no_noninteractive_element_to_interactive_role -->
   <section
     use:modalFocus={{ onclose: () => !saving && void closeDialog() }}
-    class="surface max-h-[94vh] w-full max-w-3xl overflow-y-auto rounded-[1.8rem] p-6 shadow-2xl sm:p-8"
+    class="surface flex max-h-[94vh] w-full max-w-3xl flex-col overflow-hidden rounded-[1.8rem] shadow-2xl"
     role="dialog"
     aria-modal="true"
     aria-labelledby="voice-design-title"
     aria-busy={catalogueLoading || generating || saving}
   >
-    <header class="flex items-start justify-between gap-4">
-      <div>
-        <div class="eyebrow">Local voice design</div>
-        <h2 id="voice-design-title" class="mt-1 text-2xl font-semibold">
-          Design a reusable voice
-        </h2>
-        <p class="muted mt-2 max-w-2xl text-sm leading-relaxed">
-          Describe the speaker, provide the exact words to read, then audition
-          the result. Saving promotes that audio to a normal reference sample;
-          the sample text becomes its reviewed transcript.
-        </p>
-      </div>
-      <button
-        type="button"
-        onclick={() => void closeDialog()}
-        disabled={saving}
-        aria-label="Close voice designer"
-        class="rounded-xl p-2 disabled:opacity-40"><X size={20} /></button
-      >
-    </header>
-
-    {#if error}<div
-        role="alert"
-        class="mt-5 flex items-start gap-2 rounded-xl border border-red-400/40 bg-red-500/10 px-4 py-3 text-sm"
-      >
-        <CircleAlert class="mt-0.5 shrink-0" size={16} /><span>{error}</span>
-      </div>{/if}
-
-    {#if catalogueLoading}<div
-        role="status"
-        class="mt-5 flex items-center gap-2 rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 text-sm"
-      >
-        <LoaderCircle class="animate-spin text-[var(--accent)]" size={16} />
-        Checking the installed audio.cpp models…
-      </div>{:else if catalogueError}<div
-        role="alert"
-        class="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--warning)]/40 bg-[var(--warning)]/10 px-4 py-3 text-sm"
-      >
-        <span>Could not refresh the audio.cpp model list: {catalogueError}</span
-        >
-        <button
-          type="button"
-          onclick={refreshCatalogue}
-          class="btn btn-sm btn-secondary"><RefreshCw size={14} /> Retry</button
-        >
-      </div>{:else if !designModel}<div
-        class="mt-5 rounded-xl border border-[var(--warning)]/40 bg-[var(--warning)]/10 px-4 py-3 text-sm"
-      >
-        Install Qwen3 VoiceDesign or BreezeTTS 2 under audio.cpp in the Manager
-        before designing a voice.
-        <a
-          href="/providers?tab=speech&speech=local#component-audio_cpp"
-          class="ml-1 font-semibold text-[var(--accent)] underline"
-          >Open local model settings.</a
-        >
-      </div>{:else if audioCpp?.available === false}<div
-        class="mt-5 rounded-xl border border-[var(--warning)]/40 bg-[var(--warning)]/10 px-4 py-3 text-sm"
-      >
-        {audioCpp.availability_reason || 'Start audio.cpp to design a voice.'}
-        <a
-          href="/providers?tab=speech&speech=local#component-audio_cpp"
-          class="ml-1 font-semibold text-[var(--accent)] underline"
-          >Open local model settings.</a
-        >
-      </div>{/if}
-
-    <div class="mt-6 grid gap-4 sm:grid-cols-2">
-      <label class="text-sm font-semibold sm:col-span-2"
-        >Design model
-        <select
-          bind:value={designModel}
-          onchange={invalidatePreview}
-          disabled={generating || saving || !designModels.length}
-          class="mt-1 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2.5 font-normal"
-        >
-          {#if !designModels.length}<option value=""
-              >Install a voice-design model</option
-            >{/if}
-          {#each designModels as model}<option value={model}
-              >{designModelNames[model]}{model === 'breeze_tts_2_q8_0'
-                ? ' · English and Mandarin Chinese'
-                : ' · 10 languages'}</option
-            >{/each}
-        </select>
-      </label>
-
-      <label class="text-sm font-semibold"
-        >Save to<select
-          bind:value={targetVoiceId}
-          onchange={chooseTarget}
-          disabled={generating || saving}
-          class="mt-1 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2.5 font-normal"
-          ><option value="">A new library voice</option
-          >{#each availableVoices as voice}<option value={voice.id}
-              >Existing · {voice.name}</option
-            >{/each}</select
-        ></label
-      >
-      {#if !targetVoiceId}<label class="text-sm font-semibold"
-          >Voice name<input
-            bind:value={voiceName}
-            maxlength="255"
-            disabled={generating || saving}
-            placeholder="e.g. Measured lecturer"
-            class="mt-1 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2.5 font-normal"
-          /></label
-        >{:else}<div
-          class="rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2.5 text-sm"
-        >
-          <span class="muted block text-xs font-semibold">Existing voice</span>
-          <span class="mt-0.5 block font-semibold"
-            >{availableVoices.find((voice) => voice.id === targetVoiceId)
-              ?.name}</span
-          >
-        </div>{/if}
-      <label class="text-sm font-semibold"
-        >Language<select
-          bind:value={language}
-          oninput={invalidatePreview}
-          disabled={generating || saving}
-          class="mt-1 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2.5 font-normal"
-        >
-          {#if !(language in designLanguageNames)}<option
-              value={language}
-              disabled>{language} · unsupported language</option
-            >{/if}
-          {#each Object.entries(designLanguageNames) as [code, name]}<option
-              value={code}
-              disabled={!designLanguages.includes(code)}
-              >{name}{!designLanguages.includes(code)
-                ? ' · unsupported by this model'
-                : ''}</option
-            >{/each}
-        </select></label
-      >
-      <label class="text-sm font-semibold"
-        >Variation seed
-        <div class="mt-1 flex gap-2">
-          <input
-            bind:value={seed}
-            oninput={invalidatePreview}
-            type="number"
-            min="0"
-            max="4294967295"
-            aria-invalid={!validSeed}
-            disabled={generating || saving}
-            class="min-w-0 flex-1 rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2.5 font-mono font-normal"
-          /><button
-            type="button"
-            onclick={chooseAnotherSeed}
-            disabled={generating || saving}
-            title="Choose another random seed"
-            aria-label="Choose another random seed"
-            class="rounded-xl border border-[var(--line)] px-3 disabled:opacity-40"
-            ><RefreshCw size={16} /></button
-          >
-        </div>
-        {#if !validSeed}<span
-            class="mt-1 block text-xs font-normal text-red-600"
-            >Use a whole number from 0 to 4,294,967,295.</span
-          >{/if}</label
-      >
-    </div>
-
-    <label class="mt-4 block text-sm font-semibold"
-      >Voice description<textarea
-        bind:value={prompt}
-        oninput={invalidatePreview}
-        rows="3"
-        maxlength="4000"
-        disabled={generating || saving}
-        placeholder="Warm, thoughtful middle-aged lecturer; intimate microphone; measured pace; gentle confidence…"
-        class="mt-1 w-full resize-y rounded-xl border border-[var(--line)] bg-[var(--paper)] p-3 font-normal leading-relaxed"
-      ></textarea><span class="muted mt-1 block text-xs font-normal"
-        >Describe identity, age, accent, texture, pace, emotion, and recording
-        style. Avoid naming a real person.</span
-      ></label
-    >
-
-    <label class="mt-4 block text-sm font-semibold"
-      >Sample text<textarea
-        bind:value={sampleText}
-        oninput={invalidatePreview}
-        rows="4"
-        maxlength="1000"
-        disabled={generating || saving}
-        class="mt-1 w-full resize-y rounded-xl border border-[var(--line)] bg-[var(--paper)] p-3 font-normal leading-relaxed"
-      ></textarea><span class="muted mt-1 block text-xs font-normal"
-        >These exact words are sent to the selected model and saved as the
-        sample's transcript. A varied, natural 10–20 second passage usually
-        makes a better cloning reference.</span
-      ></label
-    >
-
-    {#if designLanguageProblem}<p
-        class="mt-3 text-sm text-red-600"
-        role="alert"
-      >
-        {designModelNames[designModel]} does not support {language}. Choose a
-        supported language or another model.
-      </p>{/if}
-    <div class="mt-5 rounded-2xl border border-[var(--line)] p-4">
-      <div class="flex flex-wrap items-center justify-between gap-3">
+    <div class="modal-scroll p-6 sm:p-8">
+      <header class="flex items-start justify-between gap-4">
         <div>
-          <h3 class="font-semibold">Audition</h3>
-          <p class="muted mt-1 text-xs">
-            {progressDetail ||
-              'Generate one candidate, listen, then change the seed or description if needed.'}
+          <div class="eyebrow">Local voice design</div>
+          <h2 id="voice-design-title" class="mt-1 text-2xl font-semibold">
+            Design a reusable voice
+          </h2>
+          <p class="muted mt-2 max-w-2xl text-sm leading-relaxed">
+            Describe the speaker, provide the exact words to read, then audition
+            the result. Saving promotes that audio to a normal reference sample;
+            the sample text becomes its reviewed transcript.
           </p>
         </div>
         <button
           type="button"
-          onclick={generatePreview}
-          disabled={!canGenerate ||
-            generating ||
-            saving ||
-            !validSeed ||
-            !prompt.trim() ||
-            !sampleText.trim()}
-          class="btn btn-primary disabled:opacity-40"
-          >{#if generating}<LoaderCircle
-              class="animate-spin"
-              size={16}
-            />{:else}<WandSparkles size={16} />{/if}
-          {generating
-            ? 'Designing…'
-            : preview
-              ? 'Regenerate'
-              : 'Generate preview'}</button
-        >
-      </div>
-      {#if preview}<div class="mt-4">
-          <AudioPlayer
-            src={`/api/v1/artifacts/${preview.artifactId}/content`}
-            label="Designed voice preview"
-          />
-        </div>{/if}
-    </div>
-
-    <label class="mt-5 flex items-start gap-3 rounded-xl bg-[var(--paper)] p-3"
-      ><input
-        type="checkbox"
-        bind:checked={linkAfterSave}
-        disabled={saving}
-        class="mt-1 accent-[var(--accent)]"
-      /><span class="text-sm"
-        ><strong>Link the saved reference to audio.cpp</strong><span
-          class="muted mt-0.5 block text-xs"
-          >Recommended: this makes the new library voice immediately available
-          for compatible audio.cpp cloning models. Qwen3 VoiceDesign itself
-          creates voices from descriptions.</span
-        ></span
-      ></label
-    >
-
-    <div
-      class="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-[var(--line)] pt-5"
-    >
-      <p class="muted max-w-lg text-xs leading-relaxed">
-        {designModel === 'breeze_tts_2_q8_0'
-          ? 'BreezeTTS 2 is licensed for research and non-commercial use.'
-          : 'Qwen3 VoiceDesign is licensed under Apache-2.0.'}
-        {#if designInfo?.license?.url}<a
-            href={designInfo.license.url}
-            target="_blank"
-            rel="noreferrer"
-            class="font-semibold text-[var(--accent)] underline"
-            >Read the model license.</a
-          >{/if}
-      </p>
-      <div class="flex gap-2">
-        <button
-          type="button"
           onclick={() => void closeDialog()}
           disabled={saving}
-          class="btn btn-secondary disabled:opacity-40"
-          >{generating ? 'Cancel generation' : 'Cancel'}</button
-        ><button
-          type="button"
-          onclick={saveDesign}
-          disabled={!preview ||
-            saving ||
-            generating ||
-            (!targetVoiceId && !voiceName.trim())}
-          class="btn btn-primary disabled:opacity-40"
-          >{#if saving}<LoaderCircle
-              class="animate-spin"
-              size={16}
-            />{:else}<Save size={16} />{/if}
-          {saving ? 'Saving…' : 'Save as reviewed sample'}</button
+          aria-label="Close voice designer"
+          class="rounded-xl p-2 disabled:opacity-40"><X size={20} /></button
         >
+      </header>
+
+      {#if error}<div
+          role="alert"
+          class="mt-5 flex items-start gap-2 rounded-xl border border-red-400/40 bg-red-500/10 px-4 py-3 text-sm"
+        >
+          <CircleAlert class="mt-0.5 shrink-0" size={16} /><span>{error}</span>
+        </div>{/if}
+
+      {#if catalogueLoading}<div
+          role="status"
+          class="mt-5 flex items-center gap-2 rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 text-sm"
+        >
+          <LoaderCircle class="animate-spin text-[var(--accent)]" size={16} />
+          Checking the installed audio.cpp models…
+        </div>{:else if catalogueError}<div
+          role="alert"
+          class="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--warning)]/40 bg-[var(--warning)]/10 px-4 py-3 text-sm"
+        >
+          <span
+            >Could not refresh the audio.cpp model list: {catalogueError}</span
+          >
+          <button
+            type="button"
+            onclick={refreshCatalogue}
+            class="btn btn-sm btn-secondary"
+            ><RefreshCw size={14} /> Retry</button
+          >
+        </div>{:else if !designModel}<div
+          class="mt-5 rounded-xl border border-[var(--warning)]/40 bg-[var(--warning)]/10 px-4 py-3 text-sm"
+        >
+          Install Qwen3 VoiceDesign or BreezeTTS 2 under audio.cpp in the
+          Manager before designing a voice.
+          <a
+            href="/providers?tab=speech&speech=local#component-audio_cpp"
+            class="ml-1 font-semibold text-[var(--accent)] underline"
+            >Open local model settings.</a
+          >
+        </div>{:else if audioCpp?.available === false}<div
+          class="mt-5 rounded-xl border border-[var(--warning)]/40 bg-[var(--warning)]/10 px-4 py-3 text-sm"
+        >
+          {audioCpp.availability_reason || 'Start audio.cpp to design a voice.'}
+          <a
+            href="/providers?tab=speech&speech=local#component-audio_cpp"
+            class="ml-1 font-semibold text-[var(--accent)] underline"
+            >Open local model settings.</a
+          >
+        </div>{/if}
+
+      <div class="mt-6 grid gap-4 sm:grid-cols-2">
+        <label class="text-sm font-semibold sm:col-span-2"
+          >Design model
+          <select
+            bind:value={designModel}
+            onchange={invalidatePreview}
+            disabled={generating || saving || !designModels.length}
+            class="mt-1 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2.5 font-normal"
+          >
+            {#if !designModels.length}<option value=""
+                >Install a voice-design model</option
+              >{/if}
+            {#each designModels as model}<option value={model}
+                >{designModelNames[model]}{model === 'breeze_tts_2_q8_0'
+                  ? ' · English and Mandarin Chinese'
+                  : ' · 10 languages'}</option
+              >{/each}
+          </select>
+        </label>
+
+        <label class="text-sm font-semibold"
+          >Save to<select
+            bind:value={targetVoiceId}
+            onchange={chooseTarget}
+            disabled={generating || saving}
+            class="mt-1 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2.5 font-normal"
+            ><option value="">A new library voice</option
+            >{#each availableVoices as voice}<option value={voice.id}
+                >Existing · {voice.name}</option
+              >{/each}</select
+          ></label
+        >
+        {#if !targetVoiceId}<label class="text-sm font-semibold"
+            >Voice name<input
+              bind:value={voiceName}
+              maxlength="255"
+              disabled={generating || saving}
+              placeholder="e.g. Measured lecturer"
+              class="mt-1 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2.5 font-normal"
+            /></label
+          >{:else}<div
+            class="rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2.5 text-sm"
+          >
+            <span class="muted block text-xs font-semibold">Existing voice</span
+            >
+            <span class="mt-0.5 block font-semibold"
+              >{availableVoices.find((voice) => voice.id === targetVoiceId)
+                ?.name}</span
+            >
+          </div>{/if}
+        <label class="text-sm font-semibold"
+          >Language<select
+            bind:value={language}
+            onchange={chooseLanguage}
+            disabled={generating || saving}
+            class="mt-1 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2.5 font-normal"
+          >
+            {#if !(language in designLanguageNames)}<option
+                value={language}
+                disabled>{language} · unsupported language</option
+              >{/if}
+            {#each Object.entries(designLanguageNames) as [code, name]}<option
+                value={code}
+                disabled={!designLanguages.includes(code)}
+                >{name}{!designLanguages.includes(code)
+                  ? ' · unsupported by this model'
+                  : ''}</option
+              >{/each}
+          </select></label
+        >
+        <div class="text-sm font-semibold">
+          <label
+            >Candidates per audition<select
+              bind:value={candidateCount}
+              disabled={generating || saving}
+              class="mt-1 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2.5 font-normal"
+            >
+              {#each [1, 2, 3, 4] as count}<option value={count}
+                  >{count} candidate{count === 1 ? '' : 's'}</option
+                >{/each}
+            </select></label
+          >
+        </div>
+        <details
+          class="rounded-xl border border-[var(--line)] p-3 sm:col-span-2"
+        >
+          <summary class="cursor-pointer text-sm font-semibold"
+            >Variation settings <span class="muted font-normal"
+              >· {fixedSeed ? 'fixed seeds' : 'new seeds every audition'}</span
+            ></summary
+          >
+          <label class="my-3 flex items-center gap-2 text-sm"
+            ><input
+              type="checkbox"
+              bind:checked={fixedSeed}
+              disabled={generating || saving}
+            />Use a fixed seed to repeat an audition</label
+          >
+          <label class="text-sm font-semibold"
+            >Variation seed
+            <div class="mt-1 flex gap-2">
+              <input
+                bind:value={seed}
+                oninput={invalidatePreview}
+                type="number"
+                min="0"
+                max="4294967295"
+                aria-invalid={!validSeed}
+                disabled={generating || saving || !fixedSeed}
+                class="min-w-0 flex-1 rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2.5 font-mono font-normal"
+              /><button
+                type="button"
+                onclick={chooseAnotherSeed}
+                disabled={generating || saving || !fixedSeed}
+                title="Choose another random seed"
+                aria-label="Choose another random seed"
+                class="rounded-xl border border-[var(--line)] px-3 disabled:opacity-40"
+                ><RefreshCw size={16} /></button
+              >
+            </div>
+            {#if !validSeed}<span
+                class="mt-1 block text-xs font-normal text-red-600"
+                >Use a whole number from 0 to 4,294,967,295.</span
+              >{/if}</label
+          >
+          <p class="muted mt-2 text-xs">
+            Multiple candidates use consecutive seeds in fixed mode. Each
+            candidate shows its seed for later reuse.
+          </p>
+        </details>
+      </div>
+
+      <label class="mt-4 block text-sm font-semibold"
+        >Voice description<textarea
+          bind:value={prompt}
+          oninput={invalidatePreview}
+          rows="3"
+          maxlength="4000"
+          disabled={generating || saving}
+          placeholder="Warm, thoughtful middle-aged lecturer; intimate microphone; measured pace; gentle confidence…"
+          class="mt-1 w-full resize-y rounded-xl border border-[var(--line)] bg-[var(--paper)] p-3 font-normal leading-relaxed"
+        ></textarea><span class="muted mt-1 block text-xs font-normal"
+          >Describe identity, age, accent, texture, pace, emotion, and recording
+          style. Avoid naming a real person.</span
+        ></label
+      >
+
+      <label class="mt-4 block text-sm font-semibold"
+        >Sample text<textarea
+          bind:value={sampleText}
+          oninput={invalidatePreview}
+          rows="4"
+          maxlength="1000"
+          disabled={generating || saving}
+          class="mt-1 w-full resize-y rounded-xl border border-[var(--line)] bg-[var(--paper)] p-3 font-normal leading-relaxed"
+        ></textarea><span class="muted mt-1 block text-xs font-normal"
+          >These exact words are sent to the selected model and saved as the
+          sample's transcript. The suggested passage is translated for each
+          supported language; edit it freely.</span
+        ></label
+      >
+
+      {#if designLanguageProblem}<p
+          class="mt-3 text-sm text-red-600"
+          role="alert"
+        >
+          {designModelNames[designModel]} does not support {language}. Choose a
+          supported language or another model.
+        </p>{/if}
+      <div class="mt-5 rounded-2xl border border-[var(--line)] p-4">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h3 class="font-semibold">Audition</h3>
+            <p class="muted mt-1 text-xs">
+              {progressDetail ||
+                (fixedSeed
+                  ? 'Generate a few variations, listen to each, and select your favorite. Fixed mode repeats the same seeds.'
+                  : 'Generate a few variations, listen to each, and select your favorite. New seeds are used automatically.')}
+            </p>
+          </div>
+          <button
+            type="button"
+            onclick={generatePreview}
+            disabled={!canGenerate ||
+              generating ||
+              saving ||
+              (fixedSeed && !validSeed) ||
+              !prompt.trim() ||
+              !sampleText.trim()}
+            class="btn btn-primary disabled:opacity-40"
+            >{#if generating}<LoaderCircle
+                class="animate-spin"
+                size={16}
+              />{:else}<WandSparkles size={16} />{/if}
+            {generating
+              ? 'Designing…'
+              : `Generate ${candidateCount} candidate${candidateCount === 1 ? '' : 's'}`}</button
+          >
+        </div>
+        {#if previews.length}<div
+            class="mt-4 space-y-3"
+            role="radiogroup"
+            aria-label="Voice candidates"
+          >
+            {#each previews as candidate, index (candidate.artifactId)}
+              <article
+                class="rounded-xl border p-4"
+                class:border-[var(--accent)]={selectedPreviewId ===
+                  candidate.artifactId}
+              >
+                <label
+                  class="mb-3 flex cursor-pointer items-center gap-3 text-sm font-semibold"
+                >
+                  <input
+                    type="radio"
+                    name="voice-candidate"
+                    value={candidate.artifactId}
+                    bind:group={selectedPreviewId}
+                    disabled={saving}
+                    class="accent-[var(--accent)]"
+                  />
+                  Candidate {index + 1}<span
+                    class="muted ml-auto text-xs font-normal"
+                    >Seed {candidate.seed}</span
+                  >
+                </label>
+                <AudioPlayer
+                  src={`/api/v1/artifacts/${candidate.artifactId}/content`}
+                  label={`Voice candidate ${index + 1}`}
+                />
+              </article>
+            {/each}
+          </div>{/if}
+      </div>
+
+      <label
+        class="mt-5 flex items-start gap-3 rounded-xl bg-[var(--paper)] p-3"
+        ><input
+          type="checkbox"
+          bind:checked={linkAfterSave}
+          disabled={saving}
+          class="mt-1 accent-[var(--accent)]"
+        /><span class="text-sm"
+          ><strong>Link the saved reference to audio.cpp</strong><span
+            class="muted mt-0.5 block text-xs"
+            >Recommended: this makes the new library voice immediately available
+            for compatible audio.cpp cloning models. Qwen3 VoiceDesign itself
+            creates voices from descriptions.</span
+          ></span
+        ></label
+      >
+
+      <div
+        class="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-[var(--line)] pt-5"
+      >
+        <p class="muted max-w-lg text-xs leading-relaxed">
+          {designModel === 'breeze_tts_2_q8_0'
+            ? 'BreezeTTS 2 is licensed for research and non-commercial use.'
+            : 'Qwen3 VoiceDesign is licensed under Apache-2.0.'}
+          {#if designInfo?.license?.url}<a
+              href={designInfo.license.url}
+              target="_blank"
+              rel="noreferrer"
+              class="font-semibold text-[var(--accent)] underline"
+              >Read the model license.</a
+            >{/if}
+        </p>
+        <div class="flex gap-2">
+          <button
+            type="button"
+            onclick={() => void closeDialog()}
+            disabled={saving}
+            class="btn btn-secondary disabled:opacity-40"
+            >{generating ? 'Cancel generation' : 'Cancel'}</button
+          ><button
+            type="button"
+            onclick={saveDesign}
+            disabled={!preview ||
+              saving ||
+              generating ||
+              (!targetVoiceId && !voiceName.trim())}
+            class="btn btn-primary disabled:opacity-40"
+            >{#if saving}<LoaderCircle
+                class="animate-spin"
+                size={16}
+              />{:else}<Save size={16} />{/if}
+            {saving ? 'Saving…' : 'Save selected voice'}</button
+          >
+        </div>
       </div>
     </div>
   </section>

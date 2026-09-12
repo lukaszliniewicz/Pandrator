@@ -223,6 +223,13 @@ def speech_plan_status(services, session_id: str) -> dict[str, Any]:
             assert_session_idle(session, session_id)
         except RevisionConflict as error:
             blocked = str(error)
+        generation_blocked = None
+        try:
+            # Synthesis consumes a frozen plan. An external edit of upstream
+            # text does not mutate that plan and must not disable a new run.
+            assert_session_idle(session, session_id, include_editing_dispatches=False)
+        except RevisionConflict as error:
+            generation_blocked = str(error)
         longest = max(
             (
                 len(row.optimized_text or row.text)
@@ -258,7 +265,8 @@ def speech_plan_status(services, session_id: str) -> dict[str, Any]:
             "can_prepare": bool(
                 source_artifact and source_artifact.kind in {"srt", "json"}
             ),
-            "can_generate": bool(selected_matches and not warning and not blocked),
+            "can_generate": bool(selected_matches and not warning and not generation_blocked),
+            "generation_blocked_reason": generation_blocked,
             "blocked_reason": blocked,
             "warning": warning,
         }

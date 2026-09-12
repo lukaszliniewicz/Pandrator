@@ -175,6 +175,7 @@ from .voice_library import (
     is_bundled_voice,
     mark_provider_registrations_stale,
     remove_managed_files,
+    resolve_voice_sample_transcription_settings,
     retire_sample_artifact,
     sample_file_status,
     voice_payload,
@@ -6671,12 +6672,21 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     @app.post("/api/v1/voices/<voice_id>/samples/<sample_id>/transcribe")
     @require_auth
     def voice_sample_transcribe(voice_id: str, sample_id: str):
-        settings = request.get_json(silent=True) or {}
+        raw_settings = request.get_json(silent=True)
+        settings = {} if raw_settings is None else raw_settings
+        if not isinstance(settings, dict):
+            return error_response(
+                "validation_error", "Transcription settings must be an object.", 422
+            )
         with database.session() as db_session:
+            voice = db_session.get(Voice, voice_id)
             sample = db_session.get(VoiceSample, sample_id)
-            if sample is None or sample.voice_id != voice_id:
+            if voice is None or sample is None or sample.voice_id != voice_id:
                 return error_response("not_found", "Voice sample not found.", 404)
             artifact_id = sample.artifact_id
+            settings = resolve_voice_sample_transcription_settings(
+                settings, voice.language
+            )
         job = jobs.enqueue(
             "voice.transcribe",
             {

@@ -1722,15 +1722,23 @@
         {/if}
       {/if}
       <div class="ml-auto flex flex-wrap gap-2">
-        {#if !run || ['completed', 'partial', 'failed', 'canceled'].includes(run.status)}
-          <button onclick={() => start()} class="action primary"
-            ><Play size={14} /> Start</button
+        {#if !run || ['completed', 'partial', 'failed', 'canceled', 'paused'].includes(run.status)}
+          <button
+            onclick={() => start()}
+            disabled={loading || topologyBusy || pendingSegmentUpdates > 0}
+            class="action primary"
+            title="Start a new run from this speech plan using the current voice and settings"
+            ><Play size={14} /> New run</button
           >
-        {:else if run.status === 'paused'}
-          <button onclick={() => action('resume')} class="action primary"
-            ><Play size={14} /> Resume</button
+        {/if}
+        {#if run?.status === 'paused'}
+          <button
+            onclick={() => action('resume')}
+            class="action"
+            title="Continue the paused run with its saved voice and settings"
+            ><Play size={14} /> Resume previous run</button
           >
-        {:else if ['queued', 'running'].includes(run.status)}
+        {:else if run && ['queued', 'running'].includes(run.status)}
           <button
             onclick={() => action('pause')}
             class="action icon-action"

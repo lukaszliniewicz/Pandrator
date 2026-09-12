@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { LANGUAGE_OPTIONS } from './settings-fields';
   import { sttLanguageProblem } from './stt-language-policy';
   import { selectableTtsServices } from './tts-provider-policy';
   import { errorMessage } from './errors';
@@ -84,7 +85,8 @@
   let sampleUploadInput = $state<HTMLInputElement>();
   let nameRequired = $state(false);
   let language = $state('en');
-  let engine = $state('whisper');
+  let enginePreference = $state('auto');
+  let creatingVoice = $state(false);
   let computeBackend = $state('auto');
   let modelQuantization = $state('f16');
   let vadEnabled = $state(true);
@@ -207,6 +209,18 @@
     Object.values(transcribing).filter(Boolean).length
   );
   const sampleLanguage = $derived(selected?.language || 'auto');
+  const automaticEngine = $derived(
+    sttLanguageProblem(capabilities, 'parakeet', sampleLanguage)
+      ? 'whisper'
+      : 'parakeet'
+  );
+  const engine = $derived(
+    enginePreference === 'auto' ? automaticEngine : enginePreference
+  );
+  $effect(() => {
+    chooseSttEngine();
+  });
+
   const sampleLanguageProblem = $derived(
     sttLanguageProblem(capabilities, engine, sampleLanguage)
   );
@@ -217,8 +231,6 @@
     label: string
   ) => {
     const info = capabilities?.stt?.models?.[modelId] ?? {};
-    if (info.default)
-      return `${label} · default${info.installed ? '' : ' · downloads on first use'}`;
     return `${label}${info.installed ? ' · ready' : ' · downloads on first use'}`;
   };
 
@@ -260,6 +272,7 @@
   }
 
   async function createVoice() {
+    if (creatingVoice) return;
     if (!newName.trim()) {
       nameRequired = true;
       newNameInput?.focus();
@@ -267,6 +280,7 @@
     }
     nameRequired = false;
     error = '';
+    creatingVoice = true;
     try {
       const voice = await voiceApi.create<Voice>({
         name: newName.trim(),
@@ -277,6 +291,8 @@
       await choose(voice);
     } catch (caught) {
       report(caught);
+    } finally {
+      creatingVoice = false;
     }
   }
 
@@ -326,6 +342,29 @@
       notice = 'Voice details saved.';
       await loadVoices();
       await choose(updated);
+    } catch (caught) {
+      report(caught);
+    } finally {
+      savingVoice = false;
+    }
+  }
+
+  async function changeVoiceLanguage(value: string) {
+    if (!selected || selected.bundled || savingVoice) return;
+    const voice = selected;
+    savingVoice = true;
+    error = '';
+    try {
+      const updated = await voiceApi.update<Voice>(voice.id, voice.revision, {
+        language: value
+      });
+      voices = voices.map((item) => (item.id === updated.id ? updated : item));
+      if (selected?.id === updated.id) {
+        selected = updated;
+        editLanguage = updated.language ?? '';
+      }
+      enginePreference = 'auto';
+      notice = 'Voice language saved.';
     } catch (caught) {
       report(caught);
     } finally {
@@ -760,7 +799,7 @@
     try {
       await voiceApi.reviewTranscript<Sample>(selected.id, sample.id, {
         transcript: transcripts[sample.id].trim(),
-        language,
+        language: sampleLanguage,
         expected_voice_revision: selected.revision
       });
       notice = 'Reviewed transcript saved.';
@@ -818,11 +857,7 @@
       ]);
       capabilities = capabilityPayload;
       ttsServices = servicesPayload.services ?? [];
-      engine = String(capabilities?.stt?.default_engine ?? 'whisper');
-      modelQuantization = String(
-        capabilities?.stt?.default_model_quantization ?? 'f16'
-      );
-      if (engine === 'moss') vadEnabled = false;
+
       const requestedVoice = voices.find((voice) => voice.id === initialVoice);
       if (requestedVoice) await choose(requestedVoice);
       await refreshMicrophones(false);
@@ -931,7 +966,13 @@
 
     <div class="grid items-start gap-5 lg:grid-cols-[20rem_1fr]">
       <aside class="surface flex flex-col rounded-3xl p-4">
-        <div class="relative flex gap-2">
+        <form
+          class="relative flex gap-2"
+          onsubmit={(event) => {
+            event.preventDefault();
+            void createVoice();
+          }}
+        >
           <input
             bind:this={newNameInput}
             bind:value={newName}
@@ -943,7 +984,8 @@
             class:border-red-500={nameRequired}
             class="min-w-0 flex-1 rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-sm"
           /><button
-            onclick={createVoice}
+            type="submit"
+            disabled={creatingVoice}
             aria-label="Add voice"
             title="Add voice"
             class="btn btn-icon btn-primary"><Plus size={17} /></button
@@ -956,7 +998,7 @@
                 class="absolute -top-1 left-4 size-2 rotate-45 bg-[var(--ink)]"
               ></span>
             </div>{/if}
-        </div>
+        </form>
         <div class="mt-4 space-y-1">
           {#each voices as voice}<button
               onclick={() => choose(voice)}
@@ -1075,104 +1117,145 @@
               />{/if}
           </section>
 
-          <p class="muted mb-2 text-xs">
-            Transcription language: {sampleLanguage}. Edit the voice to change
-            its language.
-          </p>
-          {#if sampleLanguageProblem}<p
-              class="mb-3 text-sm text-red-600"
-              role="alert"
-            >
-              {sampleLanguageProblem}
-            </p>{/if}
-          <div class="mb-5 flex flex-wrap items-center justify-end gap-3">
-            <div class="stt-toolbar">
+          <div class="mb-4 flex flex-wrap items-end justify-between gap-3">
+            <label class="text-sm font-semibold"
+              >Voice language
               <select
-                bind:value={engine}
-                onchange={chooseSttEngine}
-                disabled={!canTranscribe || transcribingCount > 0}
-                aria-label="Transcription model"
-                ><option
-                  value="whisper"
-                  disabled={Boolean(
-                    sttLanguageProblem(capabilities, 'whisper', sampleLanguage)
-                  )}>{sttModelLabel('whisper', 'Whisper large-v3')}</option
-                ><option
-                  value="parakeet"
-                  disabled={Boolean(
-                    sttLanguageProblem(capabilities, 'parakeet', sampleLanguage)
-                  )}>{sttModelLabel('parakeet', 'Parakeet 0.6B v3')}</option
-                ><option
-                  value="moss"
-                  disabled={Boolean(
-                    sttLanguageProblem(capabilities, 'moss', sampleLanguage)
-                  )}>{sttModelLabel('moss', 'MOSS Diarize 0.9B')}</option
-                ></select
-              ><select
-                bind:value={modelQuantization}
-                disabled={!canTranscribe || transcribingCount > 0}
-                aria-label="Transcription model precision"
-                ><option value="f16">FP16</option
-                >{#if engine === 'whisper'}<option value="q5_0">Q5_0</option
-                  >{:else if engine === 'parakeet'}<option value="q8_0"
-                    >Q8_0</option
-                  ><option value="q5_0">Q5_0</option><option value="q4_k"
-                    >Q4_K</option
-                  >{:else}<option value="q8_0">Q8_0 · recommended</option
-                  ><option value="q4_k">Q4_K</option>{/if}</select
-              ><select
-                bind:value={computeBackend}
-                disabled={!canTranscribe || transcribingCount > 0}
-                aria-label="Transcription compute backend"
-                ><option value="auto">Automatic compute</option><option
-                  value="cpu">CPU</option
-                ><option value="cuda">CUDA</option><option value="vulkan"
-                  >Vulkan</option
-                ><option value="metal">Metal</option></select
-              ><label class="stt-control"
-                ><input
-                  bind:checked={vadEnabled}
-                  disabled={transcribingCount > 0}
-                  type="checkbox"
-                  class="accent-[var(--accent)]"
-                /><span>VAD</span></label
-              ><label
-                class:opacity-45={!vadEnabled}
-                class="stt-control vad-threshold"
-                ><span>VAD threshold</span><input
-                  bind:value={vadThreshold}
-                  aria-label="VAD threshold"
-                  type="range"
-                  min="0"
-                  max="1"
-                  step="0.05"
-                  disabled={!vadEnabled || transcribingCount > 0}
-                /><output>{Number(vadThreshold).toFixed(2)}</output></label
-              ><button
-                onclick={transcribeMissing}
-                disabled={!canTranscribe ||
-                  transcribingMissing ||
+                value={sampleLanguage}
+                onchange={(event) =>
+                  void changeVoiceLanguage(event.currentTarget.value)}
+                disabled={selected.bundled ||
+                  savingVoice ||
                   transcribingCount > 0 ||
-                  !samples.some((item) => !item.transcript_reviewed)}
-                class="stt-control font-semibold disabled:opacity-40"
-                >{#if transcribingMissing}<LoaderCircle
-                    class="animate-spin"
-                    size={16}
-                  />{:else}<WandSparkles size={16} />{/if}
-                {transcribingMissing
-                  ? 'Transcribing…'
-                  : 'Transcribe missing'}</button
+                  recording ||
+                  savingRecording}
+                class="mt-1 block min-w-52 rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-sm font-normal"
+              >
+                {#if !LANGUAGE_OPTIONS.some((item) => item.value === sampleLanguage)}<option
+                    value={sampleLanguage}>{sampleLanguage}</option
+                  >{/if}
+                {#each LANGUAGE_OPTIONS as item}<option value={item.value}
+                    >{item.label}</option
+                  >{/each}
+              </select>
+            </label>
+            <button
+              onclick={transcribeMissing}
+              disabled={!canTranscribe ||
+                transcribingMissing ||
+                transcribingCount > 0 ||
+                Boolean(sampleLanguageProblem) ||
+                !samples.some((item) => !item.transcript_reviewed)}
+              class="btn btn-secondary"
+              ><WandSparkles size={16} />{transcribingMissing
+                ? 'Transcribing…'
+                : 'Transcribe missing'}</button
+            >
+          </div>
+          <details class="mb-5 rounded-2xl border border-[var(--line)] p-4">
+            <summary class="cursor-pointer text-sm font-semibold"
+              >Transcription settings <span class="muted font-normal"
+                >· {sttEngineName()}{enginePreference === 'auto'
+                  ? ' · automatic'
+                  : ''}</span
+              ></summary
+            >
+            <p class="muted mb-3 mt-2 text-xs">
+              Automatic uses Parakeet for supported languages and Whisper
+              otherwise. Each transcript remains editable before you save it.
+            </p>
+            {#if sampleLanguageProblem}<p
+                class="mb-3 text-sm text-red-600"
+                role="alert"
+              >
+                {sampleLanguageProblem}
+              </p>{/if}
+            <div class="mb-5 flex flex-wrap items-center justify-end gap-3">
+              <div class="stt-toolbar">
+                <select
+                  bind:value={enginePreference}
+                  disabled={!canTranscribe || transcribingCount > 0}
+                  aria-label="Transcription model"
+                  ><option value="auto"
+                    >Automatic · {automaticEngine === 'parakeet'
+                      ? 'Parakeet'
+                      : 'Whisper'}</option
+                  ><option
+                    value="whisper"
+                    disabled={Boolean(
+                      sttLanguageProblem(
+                        capabilities,
+                        'whisper',
+                        sampleLanguage
+                      )
+                    )}>{sttModelLabel('whisper', 'Whisper large-v3')}</option
+                  ><option
+                    value="parakeet"
+                    disabled={Boolean(
+                      sttLanguageProblem(
+                        capabilities,
+                        'parakeet',
+                        sampleLanguage
+                      )
+                    )}>{sttModelLabel('parakeet', 'Parakeet 0.6B v3')}</option
+                  ><option
+                    value="moss"
+                    disabled={Boolean(
+                      sttLanguageProblem(capabilities, 'moss', sampleLanguage)
+                    )}>{sttModelLabel('moss', 'MOSS Diarize 0.9B')}</option
+                  ></select
+                ><select
+                  bind:value={modelQuantization}
+                  disabled={!canTranscribe || transcribingCount > 0}
+                  aria-label="Transcription model precision"
+                  ><option value="f16">FP16</option
+                  >{#if engine === 'whisper'}<option value="q5_0">Q5_0</option
+                    >{:else if engine === 'parakeet'}<option value="q8_0"
+                      >Q8_0</option
+                    ><option value="q5_0">Q5_0</option><option value="q4_k"
+                      >Q4_K</option
+                    >{:else}<option value="q8_0">Q8_0 · recommended</option
+                    ><option value="q4_k">Q4_K</option>{/if}</select
+                ><select
+                  bind:value={computeBackend}
+                  disabled={!canTranscribe || transcribingCount > 0}
+                  aria-label="Transcription compute backend"
+                  ><option value="auto">Automatic compute</option><option
+                    value="cpu">CPU</option
+                  ><option value="cuda">CUDA</option><option value="vulkan"
+                    >Vulkan</option
+                  ><option value="metal">Metal</option></select
+                ><label class="stt-control"
+                  ><input
+                    bind:checked={vadEnabled}
+                    disabled={transcribingCount > 0}
+                    type="checkbox"
+                    class="accent-[var(--accent)]"
+                  /><span>VAD</span></label
+                ><label
+                  class:opacity-45={!vadEnabled}
+                  class="stt-control vad-threshold"
+                  ><span>VAD threshold</span><input
+                    bind:value={vadThreshold}
+                    aria-label="VAD threshold"
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.05"
+                    disabled={!vadEnabled || transcribingCount > 0}
+                  /><output>{Number(vadThreshold).toFixed(2)}</output></label
+                >
+              </div>
+            </div>
+
+            <div class="mb-4 flex justify-end">
+              <button
+                onclick={() => (sttSettingsOpen = true)}
+                class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3 py-2 text-xs font-semibold"
+                ><Settings2 size={15} /> All speech recognition and VAD defaults</button
               >
             </div>
-          </div>
-
-          <div class="mb-4 flex justify-end">
-            <button
-              onclick={() => (sttSettingsOpen = true)}
-              class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3 py-2 text-xs font-semibold"
-              ><Settings2 size={15} /> All speech recognition and VAD defaults</button
-            >
-          </div>
+          </details>
           {#if providerTarget}
             <section
               class="mb-5 flex flex-wrap items-center gap-4 rounded-2xl border border-[var(--accent)]/35 bg-[var(--accent-soft)] p-4"

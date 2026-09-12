@@ -13,10 +13,10 @@
   } = $props();
 </script>
 
-<label class="block text-sm font-medium"
+<label class="block text-sm font-semibold"
   >{label}
   <select
-    class="field mt-1 w-full"
+    class="mt-2 w-full cursor-pointer rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 text-sm font-medium shadow-sm focus:border-[var(--accent)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-soft)] disabled:cursor-not-allowed disabled:opacity-50"
     value={plan?.selected_revision_id ?? ''}
     disabled={disabled || !plan?.items.length}
     onchange={(event) => void onselect(event.currentTarget.value)}

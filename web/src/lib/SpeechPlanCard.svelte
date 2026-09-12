@@ -4,7 +4,8 @@
     Eye,
     Check,
     RefreshCw,
-    LoaderCircle
+    LoaderCircle,
+    Settings2
   } from '@lucide/svelte';
   import SpeechPlanPicker from './SpeechPlanPicker.svelte';
   import AudioReuseNotice from './AudioReuseNotice.svelte';
@@ -15,7 +16,8 @@
     busy = false,
     onprepare,
     onselect,
-    onreview
+    onreview,
+    onsettings
   }: {
     sessionId: string;
     plan: SpeechPlanState | null;
@@ -23,6 +25,7 @@
     onprepare: () => Promise<unknown>;
     onselect: (id: string) => Promise<unknown>;
     onreview: () => Promise<unknown>;
+    onsettings: () => void;
   } = $props();
   const selected = $derived(
     plan?.items.find((item) => item.id === plan.selected_revision_id)
@@ -83,6 +86,9 @@
         {plan.blocked_reason}
       </p>{/if}
     <div class="flex flex-wrap gap-2">
+      <button class="btn btn-secondary" onclick={onsettings} disabled={busy}
+        ><Settings2 size={16} /> Block settings</button
+      >
       <button
         class="btn"
         disabled={busy || !plan?.can_prepare || Boolean(plan?.blocked_reason)}

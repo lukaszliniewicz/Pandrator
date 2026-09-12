@@ -57,6 +57,7 @@
   import type AddSourceDialog from './AddSourceDialog.svelte';
   import SessionSourceCard from './SessionSourceCard.svelte';
   import SpeechPlanCard from './SpeechPlanCard.svelte';
+  import SpeechPlanSettings from './SpeechPlanSettings.svelte';
   import SpeechPlanPicker from './SpeechPlanPicker.svelte';
   import {
     speechPlanState,
@@ -96,6 +97,7 @@
   const snapshot = $derived(workflowStore.snapshot);
   let speechPlan = $state<SpeechPlanState | null>(null);
   let planBusy = $state(false);
+  let planSettingsOpen = $state(false);
   let planRequest = 0;
   const selectedSpeechPlan = $derived(
     speechPlan?.items.find(
@@ -165,7 +167,7 @@
       if (!current.can_generate)
         throw new Error(
           current.warning ||
-            current.blocked_reason ||
+            current.generation_blocked_reason ||
             'Prepare a speech plan from the selected text first.'
         );
       const serviceProblem = await generationServiceProblem();
@@ -359,11 +361,6 @@
   let generationPrompt = $state('');
   let ttsBatchSize = $state(10);
   let ttsConcurrentRequests = $state(1);
-  let speechBlockMinChars = $state(10);
-  let speechBlockMaxChars = $state(220);
-  let speechBlockMergeThreshold = $state(1500);
-  let speechBlockContinuationThreshold = $state(3000);
-  let speechBlockMaxInternalGap = $state(4000);
   let subtitleMode = $state('soft');
   let subtitleSelection = $state('dual');
   let audioMode = $state('mixed');
@@ -1074,17 +1071,6 @@
     generationPrompt = String(saved.generation_prompt ?? '');
     ttsBatchSize = Number(saved.tts_batch_size ?? 10);
     ttsConcurrentRequests = Number(saved.tts_concurrent_requests ?? 1);
-    speechBlockMinChars = Number(saved.speech_block_min_chars ?? 10);
-    speechBlockMaxChars = Number(saved.speech_block_max_chars ?? 220);
-    speechBlockMergeThreshold = Number(
-      saved.speech_block_merge_threshold ?? 1500
-    );
-    speechBlockContinuationThreshold = Number(
-      saved.speech_block_continuation_threshold_ms ?? 3000
-    );
-    speechBlockMaxInternalGap = Number(
-      saved.speech_block_max_internal_gap_ms ?? 4000
-    );
     subtitleMode = String(saved.subtitle_mode ?? 'soft');
     subtitleSelection = String(saved.subtitle_selection ?? 'dual');
     audioMode = String(
@@ -2443,13 +2429,7 @@
         tts_batch_size: ttsBatchSize,
         tts_concurrent_requests: ttsConcurrentRequests,
         language: targetLanguage,
-        target_language: targetLanguage,
-        speech_block_min_chars: speechBlockMinChars,
-        speech_block_max_chars: speechBlockMaxChars,
-        speech_block_merge_threshold: speechBlockMergeThreshold,
-        speech_block_continuation_threshold_ms:
-          speechBlockContinuationThreshold,
-        speech_block_max_internal_gap_ms: speechBlockMaxInternalGap
+        target_language: targetLanguage
       };
     else if (key === 'export')
       stageSettings[key] = {
@@ -2672,14 +2652,8 @@
   >
   <header class="mb-6 flex flex-wrap items-end justify-between gap-6">
     <div>
-      <div class="eyebrow mb-2">Resolved outcome</div>
-      <p class="muted max-w-2xl">
-        {session.workflow_kind === 'subtitles'
-          ? 'Transcribe, refine, translate, and export subtitle documents. Voice generation and rendered video remain available by converting this workspace to voiceover.'
-          : 'Choose how much control you want while keeping the same settings, artifacts, and review history.'}
-      </p>
       {#if session.workflow_kind !== 'subtitles'}<div
-          class="mt-4 inline-flex rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] p-1"
+          class="inline-flex rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] p-1"
           aria-label="Workspace mode"
         >
           <button
@@ -2799,6 +2773,7 @@
             onprepare={() => planAction('prepare')}
             onselect={(id) => planAction('select', id)}
             onreview={() => planAction('review')}
+            onsettings={() => (planSettingsOpen = true)}
           />
         {/if}
         <WorkflowStageCard
@@ -2808,7 +2783,7 @@
             workspaceMode === 'review' &&
             (planBusy || !speechPlan?.can_generate)}
           runLabel={stage.key === 'generate_audio' && workspaceMode === 'review'
-            ? 'Generate selected plan'
+            ? 'Start new run from plan'
             : session.workflow_kind === 'media_edit' &&
                 stage.key === 'transcribe'
               ? hasAttachedCaptions
@@ -2844,15 +2819,25 @@
                 disabled={planBusy || Boolean(speechPlan?.blocked_reason)}
                 onselect={(id) => planAction('select', id)}
               />
+              <p class="muted mt-2 text-xs">
+                A new run uses this plan with the current voice and generation
+                settings.
+              </p>
+              {#if speechPlan?.generation_blocked_reason}<p
+                  class="mt-2 text-sm text-[var(--warning)]"
+                  role="status"
+                >
+                  {speechPlan.generation_blocked_reason}
+                </p>{/if}
               <div class="mt-2 flex flex-wrap gap-2">
                 <button
-                  class="btn btn-sm"
+                  class="btn btn-sm btn-secondary border border-[var(--line)]"
                   disabled={!speechPlan?.selected_revision_id}
                   onclick={() => openSpeechPlanEditor(session.id)}
                   >Review selected plan</button
                 >
                 <button
-                  class="btn btn-sm"
+                  class="btn btn-sm btn-secondary border border-[var(--line)]"
                   disabled={planBusy ||
                     !speechPlan?.can_generate ||
                     !selectedSpeechPlan?.stale_segment_count}
@@ -2901,460 +2886,715 @@
 
 {#if settingsStage && !fullSettingsSection}
   <div
-    class="fixed inset-0 z-50 grid place-items-center bg-black/35 p-5 backdrop-blur-sm"
+    class="fixed inset-0 z-[60] grid place-items-center bg-black/35 p-5 backdrop-blur-sm"
     role="presentation"
     onclick={(event) =>
       event.target === event.currentTarget && (settingsStage = null)}
   >
     <div
       use:modalFocus={{ onclose: () => (settingsStage = null) }}
-      class="surface max-h-[92vh] w-full max-w-xl overflow-y-auto rounded-[1.7rem] p-7"
+      class="surface flex max-h-[92vh] w-full max-w-xl flex-col overflow-hidden rounded-[1.7rem]"
       role="dialog"
       aria-modal="true"
       aria-labelledby="settings-title"
       aria-busy={settingsLoading}
     >
-      <div class="flex justify-between gap-5">
-        <div>
-          <div class="eyebrow">Stage settings</div>
-          <h2 id="settings-title" class="mt-1 text-2xl font-semibold">
-            {settingsStage.title}
-          </h2>
-        </div>
-        <button
-          onclick={() => (settingsStage = null)}
-          aria-label="Close stage settings"
-          class="rounded-lg p-2"><X size={19} /></button
-        >
-      </div>
-      {#if settingsLoading}<div
-          role="status"
-          class="mt-5 flex items-center gap-2 rounded-xl bg-[var(--accent-soft)] px-4 py-3 text-sm"
-        >
-          <LoaderCircle class="animate-spin" size={16} /> Loading available models
-          and saved settings…
-        </div>{/if}
-      <fieldset disabled={settingsLoading} class="mt-6 grid min-w-0 gap-5">
-        {#if settingsStage.key === 'correct' || (settingsStage.key === 'translate' && backend === 'llm') || ['optimize_tts', 'optimize_document', 'clean_source'].includes(settingsStage.key)}<label
-            class="text-sm font-semibold"
-            >LLM model<select
-              bind:value={model}
-              class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
-              ><option value="default">Application default</option
-              >{#each llmModels as item}<option value={item.value}
-                  >{item.label}{item.isDefault ? ' · default' : ''}</option
-                >{/each}</select
-            ></label
-          >{/if}
-        {#if settingsStage.key === 'correct' || (settingsStage.key === 'translate' && backend === 'llm')}
-          <div
-            class="rounded-xl border border-[var(--line)] bg-[var(--accent-soft)] p-4"
+      <div class="modal-scroll p-7">
+        <div class="flex justify-between gap-5">
+          <div>
+            <div class="eyebrow">Stage settings</div>
+            <h2 id="settings-title" class="mt-1 text-2xl font-semibold">
+              {settingsStage.title}
+            </h2>
+          </div>
+          <button
+            onclick={() => (settingsStage = null)}
+            aria-label="Close stage settings"
+            class="rounded-lg p-2"><X size={19} /></button
           >
-            <label class="text-sm font-semibold"
-              >Reasoning level<select
-                bind:value={reasoningEffort}
+        </div>
+        {#if settingsLoading}<div
+            role="status"
+            class="mt-5 flex items-center gap-2 rounded-xl bg-[var(--accent-soft)] px-4 py-3 text-sm"
+          >
+            <LoaderCircle class="animate-spin" size={16} /> Loading available models
+            and saved settings…
+          </div>{/if}
+        <fieldset disabled={settingsLoading} class="mt-6 grid min-w-0 gap-5">
+          {#if settingsStage.key === 'correct' || (settingsStage.key === 'translate' && backend === 'llm') || ['optimize_tts', 'optimize_document', 'clean_source'].includes(settingsStage.key)}<label
+              class="text-sm font-semibold"
+              >LLM model<select
+                bind:value={model}
                 class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
-                ><option value="">Use model default</option><option
-                  value="minimal">Minimal · fastest</option
-                ><option value="low">Low · economical</option><option
-                  value="medium">Medium · balanced</option
-                ><option value="high">High · strongest</option></select
+                ><option value="default">Application default</option
+                >{#each llmModels as item}<option value={item.value}
+                    >{item.label}{item.isDefault ? ' · default' : ''}</option
+                  >{/each}</select
               ></label
+            >{/if}
+          {#if settingsStage.key === 'correct' || (settingsStage.key === 'translate' && backend === 'llm')}
+            <div
+              class="rounded-xl border border-[var(--line)] bg-[var(--accent-soft)] p-4"
             >
-            <p class="muted mt-2 text-xs leading-relaxed">
-              Higher reasoning can improve difficult passages, but usually adds
-              latency and may add billed reasoning tokens. {#if reasoningEffort}This
-                overrides the model default for this stage.{:else if selectedLlmModel?.defaultReasoningEffort}The
-                selected model currently defaults to
-                <strong>{selectedLlmModel.defaultReasoningEffort}</strong
-                >.{:else}The model or provider chooses the level.{/if}
-              Availability depends on the selected model.
-            </p>
-          </div>
-        {/if}
-        {#if settingsStage.key === 'correct' || (settingsStage.key === 'translate' && backend === 'llm') || ['optimize_tts', 'optimize_document'].includes(settingsStage.key)}
-          <div class="rounded-xl border border-[var(--line)] p-4">
-            <label class="text-sm font-semibold"
-              >Concurrent LLM requests<input
-                type="number"
-                min="1"
-                max="16"
-                bind:value={optimizationConcurrent}
-                class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
-              /></label
-            >
-            <p class="muted mt-2 text-xs leading-relaxed">
-              1 is the quality-first default. Higher values process independent
-              requests in parallel for speed.
-              {#if settingsStage.key === 'correct'}Parallel correction cannot
-                include the preceding corrected batch.{:else if settingsStage.key === 'translate'}Parallel
-                translation cannot include the preceding translation or glossary
-                terms discovered by sibling batches.{:else}Units inside one
-                optimization request share context. Parallel requests do not
-                carry discoveries between them.{/if}
-            </p>
-          </div>
-        {/if}
-        {#if settingsStage.key === 'correct' || (settingsStage.key === 'translate' && backend === 'llm')}
-          <div class="rounded-xl border border-[var(--line)] p-4">
-            <label class="block text-sm font-semibold"
-              >Cue timing context<select
-                bind:value={timingContextMode}
-                class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
-              >
-                <option value="full">Full timing · best quality</option>
-                <option value="overlap_only">Overlap only · fewer tokens</option
-                >
-                <option value="none">No timing context</option>
-              </select><span
-                class="muted mt-2 block text-xs font-normal leading-relaxed"
-                >Full timing includes each cue interval and its preceding gap or
-                overlap exactly once. Overlap-only is a useful compromise for
-                simultaneous speech and ASR seam detection. None excludes every
-                timing field.</span
-              ></label
-            >
-            {#if timingContextMode === 'full'}<label
-                class="mt-4 block text-xs font-semibold"
-                ><ParameterLabel
-                  section={settingsStage.key === 'correct'
-                    ? 'correction'
-                    : 'translation'}
-                  name="substantial_gap_ms"
-                  label="Model context gap (ms)"
-                  compact
-                /><input
-                  type="number"
-                  min="0"
-                  max="10000"
-                  step="100"
-                  bind:value={timingContextGap}
-                  class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
-                /><span class="muted mt-1 block font-normal"
-                  >The model is asked to preserve a rhetorical boundary at or
-                  above this gap, and Pandrator prefers it when forming model
-                  batches. It does not merge or split subtitle cues.</span
+              <label class="text-sm font-semibold"
+                >Reasoning level<select
+                  bind:value={reasoningEffort}
+                  class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
+                  ><option value="">Use model default</option><option
+                    value="minimal">Minimal · fastest</option
+                  ><option value="low">Low · economical</option><option
+                    value="medium">Medium · balanced</option
+                  ><option value="high">High · strongest</option></select
                 ></label
-              >{/if}
-          </div>
-        {/if}
-        {#if settingsStage.key === 'correct' || (settingsStage.key === 'translate' && backend === 'llm')}
-          <div class="rounded-xl border border-[var(--line)] p-4">
-            <div class="grid grid-cols-2 gap-3">
-              <label class="text-xs font-semibold"
-                >Maximum batch characters<input
+              >
+              <p class="muted mt-2 text-xs leading-relaxed">
+                Higher reasoning can improve difficult passages, but usually
+                adds latency and may add billed reasoning tokens. {#if reasoningEffort}This
+                  overrides the model default for this stage.{:else if selectedLlmModel?.defaultReasoningEffort}The
+                  selected model currently defaults to
+                  <strong>{selectedLlmModel.defaultReasoningEffort}</strong
+                  >.{:else}The model or provider chooses the level.{/if}
+                Availability depends on the selected model.
+              </p>
+            </div>
+          {/if}
+          {#if settingsStage.key === 'correct' || (settingsStage.key === 'translate' && backend === 'llm') || ['optimize_tts', 'optimize_document'].includes(settingsStage.key)}
+            <div class="rounded-xl border border-[var(--line)] p-4">
+              <label class="text-sm font-semibold"
+                >Concurrent LLM requests<input
                   type="number"
                   min="1"
-                  max="100000"
-                  step="100"
-                  bind:value={correctionBatchCharLimit}
-                  class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
-                /></label
-              ><label class="text-xs font-semibold"
-                >Maximum cues per batch<input
-                  type="number"
-                  min="1"
-                  max="500"
-                  bind:value={correctionBatchSegmentLimit}
-                  class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                  max="16"
+                  bind:value={optimizationConcurrent}
+                  class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
                 /></label
               >
+              <p class="muted mt-2 text-xs leading-relaxed">
+                1 is the quality-first default. Higher values process
+                independent requests in parallel for speed.
+                {#if settingsStage.key === 'correct'}Parallel correction cannot
+                  include the preceding corrected batch.{:else if settingsStage.key === 'translate'}Parallel
+                  translation cannot include the preceding translation or
+                  glossary terms discovered by sibling batches.{:else}Units
+                  inside one optimization request share context. Parallel
+                  requests do not carry discoveries between them.{/if}
+              </p>
             </div>
-            <p class="muted mt-2 text-xs leading-relaxed">
-              Pandrator stops at whichever limit is reached first and prefers a
-              sentence, speaker, or configured model-context gap. The
-              quality-first defaults are 6,000 characters and 40 cues.
-            </p>
-            {#if settingsStage.key === 'correct' || backend === 'llm'}
-              <div class="mt-4 grid grid-cols-2 gap-3">
-                <label class="text-xs font-semibold"
-                  >Previous output cues<input
+          {/if}
+          {#if settingsStage.key === 'correct' || (settingsStage.key === 'translate' && backend === 'llm')}
+            <div class="rounded-xl border border-[var(--line)] p-4">
+              <label class="block text-sm font-semibold"
+                >Cue timing context<select
+                  bind:value={timingContextMode}
+                  class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
+                >
+                  <option value="full">Full timing · best quality</option>
+                  <option value="overlap_only"
+                    >Overlap only · fewer tokens</option
+                  >
+                  <option value="none">No timing context</option>
+                </select><span
+                  class="muted mt-2 block text-xs font-normal leading-relaxed"
+                  >Full timing includes each cue interval and its preceding gap
+                  or overlap exactly once. Overlap-only is a useful compromise
+                  for simultaneous speech and ASR seam detection. None excludes
+                  every timing field.</span
+                ></label
+              >
+              {#if timingContextMode === 'full'}<label
+                  class="mt-4 block text-xs font-semibold"
+                  ><ParameterLabel
+                    section={settingsStage.key === 'correct'
+                      ? 'correction'
+                      : 'translation'}
+                    name="substantial_gap_ms"
+                    label="Model context gap (ms)"
+                    compact
+                  /><input
                     type="number"
                     min="0"
-                    max="20"
-                    bind:value={contextBefore}
+                    max="10000"
+                    step="100"
+                    bind:value={timingContextGap}
+                    class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                  /><span class="muted mt-1 block font-normal"
+                    >The model is asked to preserve a rhetorical boundary at or
+                    above this gap, and Pandrator prefers it when forming model
+                    batches. It does not merge or split subtitle cues.</span
+                  ></label
+                >{/if}
+            </div>
+          {/if}
+          {#if settingsStage.key === 'correct' || (settingsStage.key === 'translate' && backend === 'llm')}
+            <div class="rounded-xl border border-[var(--line)] p-4">
+              <div class="grid grid-cols-2 gap-3">
+                <label class="text-xs font-semibold"
+                  >Maximum batch characters<input
+                    type="number"
+                    min="1"
+                    max="100000"
+                    step="100"
+                    bind:value={correctionBatchCharLimit}
                     class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
                   /></label
                 ><label class="text-xs font-semibold"
-                  >Following source cues<input
+                  >Maximum cues per batch<input
                     type="number"
-                    min="0"
-                    max="20"
-                    bind:value={contextAfter}
+                    min="1"
+                    max="500"
+                    bind:value={correctionBatchSegmentLimit}
                     class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
                   /></label
                 >
               </div>
               <p class="muted mt-2 text-xs leading-relaxed">
-                Boundary context improves names, sentence continuity, and
-                punctuation without making those cues editable. Sequential mode
-                can use corrected or translated output from the previous batch;
-                parallel mode cannot.
+                Pandrator stops at whichever limit is reached first and prefers
+                a sentence, speaker, or configured model-context gap. The
+                quality-first defaults are 6,000 characters and 40 cues.
               </p>
-              <label class="mt-4 flex items-start gap-3 text-sm font-semibold"
-                ><input
-                  type="checkbox"
-                  bind:checked={preventSubtitleRemoval}
-                  class="mt-1 accent-[var(--accent)]"
-                /><span
-                  >Prevent cue removal<span
-                    class="muted mt-1 block text-xs font-normal leading-relaxed"
-                    >Every source cue must survive correction or translation.
-                    Enable this when omissions would be worse than preserving an
-                    uncertain filler or ASR artifact.</span
-                  ></span
-                ></label
-              >
-            {/if}
-          </div>
-        {/if}
-        {#if settingsStage.key === 'correct' || (settingsStage.key === 'translate' && backend === 'llm')}
-          <fieldset class="rounded-xl border border-[var(--line)] p-4">
-            <legend class="px-1 text-sm font-semibold">Web research</legend>
-            <label class="flex items-start gap-3 text-sm font-semibold">
-              <input
-                type="checkbox"
-                bind:checked={webResearchEnabled}
-                class="mt-1 accent-[var(--accent)]"
-              />
-              <span>
-                Ground uncertain terms before processing
-                <span
-                  class="muted mt-1 block text-xs font-normal leading-relaxed"
-                  >Research evidence is kept separately from the editable
-                  glossary and attached to the resulting artifact.</span
-                >
-              </span>
-            </label>
-            {#if webResearchEnabled}
-              <div class="mt-4 grid gap-4">
-                <label class="text-xs font-semibold">
-                  Researcher model
-                  <select
-                    bind:value={webResearchModel}
-                    class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
-                  >
-                    <option value="">Use the task model</option>
-                    {#each llmModels as item}
-                      <option value={item.value}>{item.label}</option>
-                    {/each}
-                  </select>
-                </label>
-                <label class="text-xs font-semibold">
-                  Research mode
-                  <select
-                    bind:value={webResearchMode}
-                    class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
-                  >
-                    <option value="global"
-                      >Research once for the full document</option
-                    >
-                    <option value="per_chunk"
-                      >Research each chunk and compound findings</option
-                    >
-                  </select>
-                </label>
-                <label class="text-xs font-semibold">
-                  Maximum researcher context ({Math.round(
-                    webResearchContextFraction * 100
-                  )}%)
-                  <input
-                    type="range"
-                    min="0.1"
-                    max="0.8"
-                    step="0.05"
-                    bind:value={webResearchContextFraction}
-                    class="mt-2 w-full accent-[var(--accent)]"
-                  />
-                </label>
-                <p class="muted text-xs leading-relaxed">
-                  {#if webResearchMode === 'global'}The researcher receives up
-                    to this share of its context in deterministic batches, then
-                    the consolidated evidence is reused by every request.{:else}Per-chunk
-                    research runs as a sequential prepass so each chunk can
-                    refine the accumulated evidence. Transformation requests may
-                    still run concurrently after that prepass.{/if}
-                </p>
-              </div>
-            {/if}
-          </fieldset>
-        {/if}
-        {#if settingsStage.key === 'transcribe'}
-          {#if session.workflow_kind === 'media_edit'}<div
-              class="rounded-xl border border-[var(--line)] bg-[var(--accent-soft)] p-4"
-            >
-              <div class="text-sm font-semibold">
-                {hasAttachedCaptions
-                  ? 'Align attached captions'
-                  : 'Generate a word-timed transcript'}
-              </div>
-              {#if hasAttachedCaptions}<p
-                  class="muted mt-1 text-xs leading-relaxed"
-                >
-                  Zoom wording and speakers remain authoritative. Local CTC
-                  aligns those exact words against short, VAD-checked audio
-                  windows; overlapping cues stay together and uncertain cues
-                  retry in isolation. The resulting word data follows the
-                  subtitles into Pandrator's native document for later layout,
-                  speech-block, and cut-boundary work.
-                </p>{:else}<p class="muted mt-1 text-xs leading-relaxed">
-                  With no captions attached, this model creates the
-                  authoritative transcript, cue timing, and word timing used by
-                  the editor.
-                </p>{/if}
-            </div>{/if}
-          {#if hasAttachedCaptions}
-            <label class="text-sm font-semibold"
-              ><ParameterLabel
-                section="stt"
-                name="caption_alignment_method"
-                label="Caption alignment method"
-              /><select
-                bind:value={captionAlignmentMethod}
-                onchange={() => {
-                  if (
-                    captionAlignmentMethod === 'ctc_asr_fallback' &&
-                    !isCloudStt(sttEngine) &&
-                    sttEngine === 'whisper'
-                  )
-                    sttEngine = 'parakeet';
-                }}
-                class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
-                ><option value="ctc"
-                  >Local CTC forced alignment · recommended</option
-                ><option value="ctc_asr_fallback"
-                  >Local CTC, then ASR if coverage is low</option
-                ><option value="asr">ASR lexical projection · legacy</option
-                ></select
-              ><span class="muted mt-1 block text-xs font-normal"
-                >{captionAlignmentMethod === 'ctc'
-                  ? 'Uses only the supplied captions and local acoustic evidence. It does not generate replacement wording.'
-                  : captionAlignmentMethod === 'ctc_asr_fallback'
-                    ? 'Runs CTC first. ASR is loaded only when eligible CTC coverage falls below the threshold, then fills rejected cues without replacing accepted CTC timing.'
-                    : 'Transcribes the whole recording, then matches recognized words back to nearby caption cues.'}</span
-              ></label
-            >
-            {#if captionAlignmentMethod !== 'asr'}
-              <div
-                class="rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] p-4"
-              >
-                <div class="text-sm font-semibold">Target-local Canary CTC</div>
-                <p class="muted mt-1 text-xs leading-relaxed">
-                  Each cleaned cue is evaluated independently with bounded
-                  following-caption context; only that target cue's timing is
-                  kept. VAD checks word placement, and CTC blank tails are
-                  capped by the shifted caption duration. Rejected cues retain
-                  their original timing.
-                </p>
-                <div class="mt-3 grid gap-3 sm:grid-cols-2">
+              {#if settingsStage.key === 'correct' || backend === 'llm'}
+                <div class="mt-4 grid grid-cols-2 gap-3">
                   <label class="text-xs font-semibold"
-                    ><ParameterLabel
-                      section="stt"
-                      name="caption_alignment_ctc_model"
-                      label="CTC aligner"
-                      compact
-                    /><select
-                      bind:value={captionAlignmentCtcModel}
-                      class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
-                      ><option value="auto"
-                        >Canary CTC aligner · managed model</option
-                      ></select
-                    ></label
-                  ><label class="text-xs font-semibold"
-                    ><ParameterLabel
-                      section="stt"
-                      name="caption_alignment_padding_ms"
-                      label="Cue padding (ms)"
-                      compact
-                    /><input
+                    >Previous output cues<input
                       type="number"
-                      min="250"
-                      max="5000"
-                      step="50"
-                      bind:value={captionAlignmentPaddingMs}
+                      min="0"
+                      max="20"
+                      bind:value={contextBefore}
                       class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
                     /></label
                   ><label class="text-xs font-semibold"
-                    ><ParameterLabel
-                      section="stt"
-                      name="caption_alignment_batch_seconds"
-                      label="Maximum context window (s)"
-                      compact
-                    /><input
+                    >Following source cues<input
                       type="number"
-                      min="5"
-                      max="60"
-                      step="1"
-                      bind:value={captionAlignmentBatchSeconds}
+                      min="0"
+                      max="20"
+                      bind:value={contextAfter}
                       class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
                     /></label
-                  ><label class="text-xs font-semibold"
-                    ><ParameterLabel
-                      section="stt"
-                      name="caption_alignment_min_confidence"
-                      label="Minimum timing quality"
-                      compact
-                    /><span
-                      class="mt-1 grid min-h-10 grid-cols-[1fr_2.5rem] items-center gap-2 rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3"
-                      ><input
-                        type="range"
-                        min="0.5"
-                        max="1"
-                        step="0.05"
-                        bind:value={captionAlignmentMinConfidence}
-                        class="w-full accent-[var(--accent)]"
-                      /><output class="text-right text-xs font-bold"
-                        >{Number(captionAlignmentMinConfidence).toFixed(
-                          2
-                        )}</output
-                      ></span
-                    ></label
-                  >{#if captionAlignmentMethod === 'ctc_asr_fallback'}<label
-                      class="text-xs font-semibold sm:col-span-2"
-                      ><ParameterLabel
-                        section="stt"
-                        name="caption_alignment_fallback_coverage"
-                        label="Run ASR below eligible coverage"
-                        compact
-                      /><span
-                        class="mt-1 grid min-h-10 grid-cols-[1fr_3rem] items-center gap-2 rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3"
-                        ><input
-                          type="range"
-                          min="0"
-                          max="1"
-                          step="0.05"
-                          bind:value={captionAlignmentFallbackCoverage}
-                          class="w-full accent-[var(--accent)]"
-                        /><output class="text-right text-xs font-bold"
-                          >{Math.round(
-                            Number(captionAlignmentFallbackCoverage) * 100
-                          )}%</output
-                        ></span
-                      ></label
-                    >{/if}
+                  >
                 </div>
-              </div>
-            {/if}
-            {#if captionAlignmentMethod === 'ctc'}
-              <div
+                <p class="muted mt-2 text-xs leading-relaxed">
+                  Boundary context improves names, sentence continuity, and
+                  punctuation without making those cues editable. Sequential
+                  mode can use corrected or translated output from the previous
+                  batch; parallel mode cannot.
+                </p>
+                <label class="mt-4 flex items-start gap-3 text-sm font-semibold"
+                  ><input
+                    type="checkbox"
+                    bind:checked={preventSubtitleRemoval}
+                    class="mt-1 accent-[var(--accent)]"
+                  /><span
+                    >Prevent cue removal<span
+                      class="muted mt-1 block text-xs font-normal leading-relaxed"
+                      >Every source cue must survive correction or translation.
+                      Enable this when omissions would be worse than preserving
+                      an uncertain filler or ASR artifact.</span
+                    ></span
+                  ></label
+                >
+              {/if}
+            </div>
+          {/if}
+          {#if settingsStage.key === 'correct' || (settingsStage.key === 'translate' && backend === 'llm')}
+            <fieldset class="rounded-xl border border-[var(--line)] p-4">
+              <legend class="px-1 text-sm font-semibold">Web research</legend>
+              <label class="flex items-start gap-3 text-sm font-semibold">
+                <input
+                  type="checkbox"
+                  bind:checked={webResearchEnabled}
+                  class="mt-1 accent-[var(--accent)]"
+                />
+                <span>
+                  Ground uncertain terms before processing
+                  <span
+                    class="muted mt-1 block text-xs font-normal leading-relaxed"
+                    >Research evidence is kept separately from the editable
+                    glossary and attached to the resulting artifact.</span
+                  >
+                </span>
+              </label>
+              {#if webResearchEnabled}
+                <div class="mt-4 grid gap-4">
+                  <label class="text-xs font-semibold">
+                    Researcher model
+                    <select
+                      bind:value={webResearchModel}
+                      class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                    >
+                      <option value="">Use the task model</option>
+                      {#each llmModels as item}
+                        <option value={item.value}>{item.label}</option>
+                      {/each}
+                    </select>
+                  </label>
+                  <label class="text-xs font-semibold">
+                    Research mode
+                    <select
+                      bind:value={webResearchMode}
+                      class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                    >
+                      <option value="global"
+                        >Research once for the full document</option
+                      >
+                      <option value="per_chunk"
+                        >Research each chunk and compound findings</option
+                      >
+                    </select>
+                  </label>
+                  <label class="text-xs font-semibold">
+                    Maximum researcher context ({Math.round(
+                      webResearchContextFraction * 100
+                    )}%)
+                    <input
+                      type="range"
+                      min="0.1"
+                      max="0.8"
+                      step="0.05"
+                      bind:value={webResearchContextFraction}
+                      class="mt-2 w-full accent-[var(--accent)]"
+                    />
+                  </label>
+                  <p class="muted text-xs leading-relaxed">
+                    {#if webResearchMode === 'global'}The researcher receives up
+                      to this share of its context in deterministic batches,
+                      then the consolidated evidence is reused by every request.{:else}Per-chunk
+                      research runs as a sequential prepass so each chunk can
+                      refine the accumulated evidence. Transformation requests
+                      may still run concurrently after that prepass.{/if}
+                  </p>
+                </div>
+              {/if}
+            </fieldset>
+          {/if}
+          {#if settingsStage.key === 'transcribe'}
+            {#if session.workflow_kind === 'media_edit'}<div
                 class="rounded-xl border border-[var(--line)] bg-[var(--accent-soft)] p-4"
               >
-                <div class="text-sm font-semibold">Local acoustic runtime</div>
-                <p class="muted mt-1 text-xs leading-relaxed">
-                  The selected VAD model first maps speech across the recording.
-                  Canary CTC then processes bounded caption batches on the
-                  selected compute backend; no ASR model is loaded.
+                <div class="text-sm font-semibold">
+                  {hasAttachedCaptions
+                    ? 'Align attached captions'
+                    : 'Generate a word-timed transcript'}
+                </div>
+                {#if hasAttachedCaptions}<p
+                    class="muted mt-1 text-xs leading-relaxed"
+                  >
+                    Zoom wording and speakers remain authoritative. Local CTC
+                    aligns those exact words against short, VAD-checked audio
+                    windows; overlapping cues stay together and uncertain cues
+                    retry in isolation. The resulting word data follows the
+                    subtitles into Pandrator's native document for later layout,
+                    speech-block, and cut-boundary work.
+                  </p>{:else}<p class="muted mt-1 text-xs leading-relaxed">
+                    With no captions attached, this model creates the
+                    authoritative transcript, cue timing, and word timing used
+                    by the editor.
+                  </p>{/if}
+              </div>{/if}
+            {#if hasAttachedCaptions}
+              <label class="text-sm font-semibold"
+                ><ParameterLabel
+                  section="stt"
+                  name="caption_alignment_method"
+                  label="Caption alignment method"
+                /><select
+                  bind:value={captionAlignmentMethod}
+                  onchange={() => {
+                    if (
+                      captionAlignmentMethod === 'ctc_asr_fallback' &&
+                      !isCloudStt(sttEngine) &&
+                      sttEngine === 'whisper'
+                    )
+                      sttEngine = 'parakeet';
+                  }}
+                  class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
+                  ><option value="ctc"
+                    >Local CTC forced alignment · recommended</option
+                  ><option value="ctc_asr_fallback"
+                    >Local CTC, then ASR if coverage is low</option
+                  ><option value="asr">ASR lexical projection · legacy</option
+                  ></select
+                ><span class="muted mt-1 block text-xs font-normal"
+                  >{captionAlignmentMethod === 'ctc'
+                    ? 'Uses only the supplied captions and local acoustic evidence. It does not generate replacement wording.'
+                    : captionAlignmentMethod === 'ctc_asr_fallback'
+                      ? 'Runs CTC first. ASR is loaded only when eligible CTC coverage falls below the threshold, then fills rejected cues without replacing accepted CTC timing.'
+                      : 'Transcribes the whole recording, then matches recognized words back to nearby caption cues.'}</span
+                ></label
+              >
+              {#if captionAlignmentMethod !== 'asr'}
+                <div
+                  class="rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] p-4"
+                >
+                  <div class="text-sm font-semibold">
+                    Target-local Canary CTC
+                  </div>
+                  <p class="muted mt-1 text-xs leading-relaxed">
+                    Each cleaned cue is evaluated independently with bounded
+                    following-caption context; only that target cue's timing is
+                    kept. VAD checks word placement, and CTC blank tails are
+                    capped by the shifted caption duration. Rejected cues retain
+                    their original timing.
+                  </p>
+                  <div class="mt-3 grid gap-3 sm:grid-cols-2">
+                    <label class="text-xs font-semibold"
+                      ><ParameterLabel
+                        section="stt"
+                        name="caption_alignment_ctc_model"
+                        label="CTC aligner"
+                        compact
+                      /><select
+                        bind:value={captionAlignmentCtcModel}
+                        class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                        ><option value="auto"
+                          >Canary CTC aligner · managed model</option
+                        ></select
+                      ></label
+                    ><label class="text-xs font-semibold"
+                      ><ParameterLabel
+                        section="stt"
+                        name="caption_alignment_padding_ms"
+                        label="Cue padding (ms)"
+                        compact
+                      /><input
+                        type="number"
+                        min="250"
+                        max="5000"
+                        step="50"
+                        bind:value={captionAlignmentPaddingMs}
+                        class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                      /></label
+                    ><label class="text-xs font-semibold"
+                      ><ParameterLabel
+                        section="stt"
+                        name="caption_alignment_batch_seconds"
+                        label="Maximum context window (s)"
+                        compact
+                      /><input
+                        type="number"
+                        min="5"
+                        max="60"
+                        step="1"
+                        bind:value={captionAlignmentBatchSeconds}
+                        class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                      /></label
+                    ><label class="text-xs font-semibold"
+                      ><ParameterLabel
+                        section="stt"
+                        name="caption_alignment_min_confidence"
+                        label="Minimum timing quality"
+                        compact
+                      /><span
+                        class="mt-1 grid min-h-10 grid-cols-[1fr_2.5rem] items-center gap-2 rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3"
+                        ><input
+                          type="range"
+                          min="0.5"
+                          max="1"
+                          step="0.05"
+                          bind:value={captionAlignmentMinConfidence}
+                          class="w-full accent-[var(--accent)]"
+                        /><output class="text-right text-xs font-bold"
+                          >{Number(captionAlignmentMinConfidence).toFixed(
+                            2
+                          )}</output
+                        ></span
+                      ></label
+                    >{#if captionAlignmentMethod === 'ctc_asr_fallback'}<label
+                        class="text-xs font-semibold sm:col-span-2"
+                        ><ParameterLabel
+                          section="stt"
+                          name="caption_alignment_fallback_coverage"
+                          label="Run ASR below eligible coverage"
+                          compact
+                        /><span
+                          class="mt-1 grid min-h-10 grid-cols-[1fr_3rem] items-center gap-2 rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3"
+                          ><input
+                            type="range"
+                            min="0"
+                            max="1"
+                            step="0.05"
+                            bind:value={captionAlignmentFallbackCoverage}
+                            class="w-full accent-[var(--accent)]"
+                          /><output class="text-right text-xs font-bold"
+                            >{Math.round(
+                              Number(captionAlignmentFallbackCoverage) * 100
+                            )}%</output
+                          ></span
+                        ></label
+                      >{/if}
+                  </div>
+                </div>
+              {/if}
+              {#if captionAlignmentMethod === 'ctc'}
+                <div
+                  class="rounded-xl border border-[var(--line)] bg-[var(--accent-soft)] p-4"
+                >
+                  <div class="text-sm font-semibold">
+                    Local acoustic runtime
+                  </div>
+                  <p class="muted mt-1 text-xs leading-relaxed">
+                    The selected VAD model first maps speech across the
+                    recording. Canary CTC then processes bounded caption batches
+                    on the selected compute backend; no ASR model is loaded.
+                  </p>
+                  <div class="mt-3 grid gap-3 sm:grid-cols-2">
+                    <label class="text-xs font-semibold"
+                      ><ParameterLabel
+                        section="stt"
+                        name="stt_compute_backend"
+                        label="Compute backend"
+                        compact
+                      /><select
+                        bind:value={sttComputeBackend}
+                        class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                        ><option value="auto">Automatic</option><option
+                          value="cpu"
+                          disabled={!supportsSttCompute('cpu')}>CPU</option
+                        ><option
+                          value="cuda"
+                          disabled={!supportsSttCompute('cuda')}>CUDA</option
+                        ><option
+                          value="vulkan"
+                          disabled={!supportsSttCompute('vulkan')}
+                          >Vulkan</option
+                        ><option
+                          value="metal"
+                          disabled={!supportsSttCompute('metal')}>Metal</option
+                        ></select
+                      ></label
+                    ><label class="text-xs font-semibold"
+                      ><ParameterLabel
+                        section="stt"
+                        name="stt_compute_device"
+                        label="Device"
+                        compact
+                      /><input
+                        type="number"
+                        min="0"
+                        disabled={['auto', 'cpu'].includes(sttComputeBackend)}
+                        bind:value={sttDevice}
+                        class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal disabled:opacity-40"
+                      /></label
+                    ><label
+                      class="flex items-center gap-3 text-xs font-semibold"
+                      ><input
+                        type="checkbox"
+                        bind:checked={vadEnabled}
+                        class="size-4 accent-[var(--accent)]"
+                      /><ParameterLabel
+                        section="stt"
+                        name="crispasr_vad_enabled"
+                        label="Validate against VAD"
+                        compact
+                      /></label
+                    >{#if vadEnabled}<label class="text-xs font-semibold"
+                        ><ParameterLabel
+                          section="stt"
+                          name="crispasr_vad_model"
+                          label="VAD model"
+                          compact
+                        /><select
+                          bind:value={vadModel}
+                          class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                          ><option value="silero">Silero · recommended</option
+                          ><option value="firered">FireRedVAD · robust</option
+                          ><option value="marblenet">MarbleNet · compact</option
+                          ><option value="whisper-vad"
+                            >Whisper VAD · experimental</option
+                          ></select
+                        ></label
+                      ><label class="text-xs font-semibold sm:col-span-2"
+                        ><ParameterLabel
+                          section="stt"
+                          name="crispasr_vad_threshold"
+                          label="VAD speech threshold"
+                          compact
+                        /><span
+                          class="mt-1 grid min-h-10 grid-cols-[1fr_2.5rem] items-center gap-2 rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3"
+                          ><input
+                            type="range"
+                            min="0"
+                            max="1"
+                            step="0.05"
+                            bind:value={vadThreshold}
+                            class="w-full accent-[var(--accent)]"
+                          /><output class="text-right text-xs font-bold"
+                            >{Number(vadThreshold).toFixed(2)}</output
+                          ></span
+                        ></label
+                      >{/if}
+                  </div>
+                </div>
+              {/if}
+            {/if}
+            {#if !hasAttachedCaptions || captionAlignmentMethod !== 'ctc'}
+              <label class="text-sm font-semibold"
+                ><ParameterLabel
+                  section="stt"
+                  name="stt_engine"
+                  label={hasAttachedCaptions &&
+                  captionAlignmentMethod === 'ctc_asr_fallback'
+                    ? 'Fallback recognition model'
+                    : 'Recognition model'}
+                /><select
+                  bind:value={sttEngine}
+                  onchange={() =>
+                    (sttQuantization = String(
+                      capabilities?.stt?.models?.[sttEngine]?.precision ?? 'f16'
+                    ))}
+                  class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
+                  ><option
+                    value="whisper"
+                    disabled={Boolean(
+                      sttLanguageProblem(
+                        capabilities,
+                        'whisper',
+                        originalLanguage
+                      )
+                    )}
+                    >{sttOptionLabel(
+                      'whisper',
+                      'Whisper large-v3',
+                      'DTW timestamps'
+                    )}</option
+                  ><option
+                    value="parakeet"
+                    disabled={Boolean(
+                      sttLanguageProblem(
+                        capabilities,
+                        'parakeet',
+                        originalLanguage
+                      )
+                    )}
+                    >{sttOptionLabel(
+                      'parakeet',
+                      'Parakeet TDT 0.6B v3',
+                      'native timestamps'
+                    )}</option
+                  ><option
+                    value="moss"
+                    disabled={Boolean(
+                      sttLanguageProblem(capabilities, 'moss', originalLanguage)
+                    )}
+                    >{sttOptionLabel(
+                      'moss',
+                      'MOSS Transcribe-Diarize 0.9B',
+                      'native speakers + CTC words'
+                    )}</option
+                  >{#each sttCatalogue.services as service}<option
+                      value={service.id}
+                      >{service.name} · cloud word timestamps</option
+                    >{/each}
+                  ></select
+                ><span class="muted mt-1 block text-xs"
+                  >{isCloudStt(sttEngine)
+                    ? 'The selected connection runs remotely; audio is sent to its configured provider.'
+                    : 'CrispASR downloads a model the first time you use it; the installer-selected model is the default.'}</span
+                ></label
+              >
+              {#if sttLanguageIssue}<p
+                  class="text-sm text-red-600"
+                  role="alert"
+                >
+                  {sttLanguageIssue}
+                </p>{/if}
+              {#if ttsModelAcquisitionHint}
+                <p class="muted -mt-2 text-xs leading-relaxed">
+                  {ttsModelAcquisitionHint}
                 </p>
-                <div class="mt-3 grid gap-3 sm:grid-cols-2">
-                  <label class="text-xs font-semibold"
+              {/if}
+              {#if isCloudStt(sttEngine)}
+                <div
+                  class="rounded-xl border border-[var(--line)] bg-[var(--accent-soft)] p-4"
+                >
+                  <div class="text-sm font-semibold">
+                    Remote timed transcription
+                  </div>
+                  <p class="muted mt-1 text-xs leading-relaxed">
+                    Pandrator sends the normalized WAV to this provider and
+                    accepts the result only when it includes genuine word-level
+                    spans. Diarization is not available for this profile.
+                  </p>
+                  <a
+                    href="/providers?tab=speech&service=stt"
+                    class="mt-3 inline-flex text-xs font-semibold text-[var(--accent)]"
+                    >Manage recognition connection</a
+                  >
+                </div>
+                <div class="grid gap-3 sm:grid-cols-2">
+                  <label class="text-sm font-semibold"
+                    ><ParameterLabel
+                      section="stt"
+                      name="stt_language"
+                      label="Source language"
+                    /><select
+                      bind:value={originalLanguage}
+                      class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
+                      >{#each LANGUAGE_OPTIONS as item}<option
+                          value={item.value}>{item.label}</option
+                        >{/each}</select
+                    ></label
+                  ><label class="text-sm font-semibold"
+                    ><ParameterLabel
+                      section="stt"
+                      name="stt_transcribe_style"
+                      label="Transcript style"
+                    /><select
+                      bind:value={sttTranscribeStyle}
+                      class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
+                      ><option value="readability">Readable transcript</option
+                      ><option value="verbatim"
+                        >Verbatim · preserve fillers</option
+                      ></select
+                    ></label
+                  >
+                </div>
+                <label class="text-sm font-semibold"
+                  ><ParameterLabel
+                    section="stt"
+                    name="stt_hotwords"
+                    label="Phrase hints"
+                  /><textarea
+                    rows="2"
+                    bind:value={sttHotwords}
+                    placeholder="Names and terminology, comma-separated"
+                    class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
+                  ></textarea><span class="muted mt-1 block text-xs font-normal"
+                    >Sent as the provider's phrase list; useful for names and
+                    specialist terms.</span
+                  ></label
+                >
+              {:else}
+                <label class="text-sm font-semibold"
+                  ><ParameterLabel
+                    section="stt"
+                    name="stt_model_quantization"
+                    label="Model precision"
+                  /><select
+                    bind:value={sttQuantization}
+                    class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
+                    ><option value="f16">Full F16</option
+                    >{#if sttEngine === 'whisper'}<option value="q5_0"
+                        >Q5_0 · 1.08 GB</option
+                      >{:else if sttEngine === 'parakeet'}<option value="q8_0"
+                        >Q8_0 · 745 MB</option
+                      ><option value="q5_0">Q5_0 · 541 MB</option><option
+                        value="q4_k">Q4_K · 489 MB</option
+                      >{:else}<option value="q8_0">Q8_0 · recommended</option
+                      ><option value="q4_k">Q4_K</option>{/if}</select
+                  ><span class="muted mt-1 block text-xs"
+                    >F16 maximizes fidelity; quantized files reduce download and
+                    memory use.</span
+                  ></label
+                >
+                <div class="grid gap-3 sm:grid-cols-[1fr_7rem]">
+                  <label class="text-sm font-semibold"
                     ><ParameterLabel
                       section="stt"
                       name="stt_compute_backend"
                       label="Compute backend"
-                      compact
                     /><select
                       bind:value={sttComputeBackend}
-                      class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                      class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
                       ><option value="auto">Automatic</option><option
                         value="cpu"
                         disabled={!supportsSttCompute('cpu')}>CPU</option
@@ -3368,32 +3608,130 @@
                         value="metal"
                         disabled={!supportsSttCompute('metal')}>Metal</option
                       ></select
+                    ><span class="muted mt-1 block text-xs"
+                      >Only backends compiled into the installed CrispASR
+                      runtime can be forced.</span
                     ></label
-                  ><label class="text-xs font-semibold"
+                  ><label class="text-sm font-semibold"
                     ><ParameterLabel
                       section="stt"
                       name="stt_compute_device"
                       label="Device"
-                      compact
                     /><input
                       type="number"
                       min="0"
                       disabled={['auto', 'cpu'].includes(sttComputeBackend)}
                       bind:value={sttDevice}
-                      class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal disabled:opacity-40"
+                      class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal disabled:opacity-40"
                     /></label
-                  ><label class="flex items-center gap-3 text-xs font-semibold"
+                  >
+                </div>
+                {#if sttEngine === 'moss'}
+                  <div
+                    class="rounded-xl border border-[var(--line)] bg-[var(--accent-soft)] p-4"
+                  >
+                    <div class="text-sm font-semibold">
+                      Native speaker turns with local CTC timing
+                    </div>
+                    <p class="muted mt-1 text-xs leading-relaxed">
+                      MOSS detects the language and speaker changes. Each turn
+                      is then aligned separately with Canary CTC and a small
+                      acoustic margin, avoiding long-recording alignment drift.
+                    </p>
+                    <div class="mt-3 grid gap-3 sm:grid-cols-2">
+                      <label
+                        class="flex items-center gap-3 text-xs font-semibold"
+                        ><input
+                          type="checkbox"
+                          bind:checked={mossCtcAlignmentEnabled}
+                          class="size-4 accent-[var(--accent)]"
+                        />
+                        <ParameterLabel
+                          section="stt"
+                          name="moss_ctc_alignment_enabled"
+                          label="Word-level CTC alignment"
+                          compact
+                        /></label
+                      ><label class="text-xs font-semibold"
+                        ><ParameterLabel
+                          section="stt"
+                          name="moss_ctc_padding_seconds"
+                          label="CTC padding (s)"
+                          compact
+                        /><input
+                          type="number"
+                          min="0"
+                          max="2"
+                          step="0.1"
+                          disabled={!mossCtcAlignmentEnabled}
+                          bind:value={mossCtcPaddingSeconds}
+                          class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal disabled:opacity-40"
+                        /></label
+                      >
+                    </div>
+                  </div>
+                {:else}
+                  <div class="grid gap-3 sm:grid-cols-2">
+                    <label class="text-sm font-semibold"
+                      >Source language<select
+                        bind:value={originalLanguage}
+                        class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
+                        >{#each LANGUAGE_OPTIONS as item}<option
+                            value={item.value}>{item.label}</option
+                          >{/each}</select
+                      ></label
+                    ><label class="text-sm font-semibold"
+                      ><ParameterLabel
+                        section="stt"
+                        name="stt_lid_backend"
+                        label="Language detector"
+                      /><select
+                        bind:value={sttLidBackend}
+                        class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
+                        ><option value="whisper">Whisper tiny</option><option
+                          value="ecapa">ECAPA (recommended)</option
+                        ><option value="silero">Silero</option><option
+                          value="off">Off</option
+                        ></select
+                      ></label
+                    >
+                  </div>
+                {/if}
+                {#if sttEngine === 'moss'}<label
+                    class="flex items-start gap-3 text-sm font-semibold"
+                    ><input
+                      type="checkbox"
+                      bind:checked={mossVadEnabled}
+                      class="mt-0.5 size-4 accent-[var(--accent)]"
+                    />
+                    <span
+                      ><ParameterLabel
+                        section="stt"
+                        name="moss_vad_enabled"
+                        label="Voice activity detection"
+                      /><span class="muted mt-1 block text-xs font-normal"
+                        >Off by default so native speaker tracking keeps the
+                        longest context. The normal chunker still seeks
+                        low-energy cut points.</span
+                      ></span
+                    ></label
+                  >{:else}<label
+                    class="flex items-center gap-3 text-sm font-semibold"
                     ><input
                       type="checkbox"
                       bind:checked={vadEnabled}
                       class="size-4 accent-[var(--accent)]"
-                    /><ParameterLabel
+                    />
+                    <ParameterLabel
                       section="stt"
                       name="crispasr_vad_enabled"
-                      label="Validate against VAD"
-                      compact
+                      label="Voice activity detection"
                     /></label
-                  >{#if vadEnabled}<label class="text-xs font-semibold"
+                  >{/if}
+                {#if sttEngine === 'moss' ? mossVadEnabled : vadEnabled}<div
+                    class="grid grid-cols-2 gap-3"
+                  >
+                    <label class="text-xs font-semibold"
                       ><ParameterLabel
                         section="stt"
                         name="crispasr_vad_model"
@@ -3402,18 +3740,18 @@
                       /><select
                         bind:value={vadModel}
                         class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
-                        ><option value="silero">Silero · recommended</option
+                        ><option value="silero">Silero · general purpose</option
                         ><option value="firered">FireRedVAD · robust</option
                         ><option value="marblenet">MarbleNet · compact</option
                         ><option value="whisper-vad"
                           >Whisper VAD · experimental</option
                         ></select
                       ></label
-                    ><label class="text-xs font-semibold sm:col-span-2"
+                    ><label class="text-xs font-semibold"
                       ><ParameterLabel
                         section="stt"
                         name="crispasr_vad_threshold"
-                        label="VAD speech threshold"
+                        label="VAD threshold"
                         compact
                       /><span
                         class="mt-1 grid min-h-10 grid-cols-[1fr_2.5rem] items-center gap-2 rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3"
@@ -3428,1785 +3766,1388 @@
                           >{Number(vadThreshold).toFixed(2)}</output
                         ></span
                       ></label
-                    >{/if}
-                </div>
-              </div>
-            {/if}
-          {/if}
-          {#if !hasAttachedCaptions || captionAlignmentMethod !== 'ctc'}
-            <label class="text-sm font-semibold"
-              ><ParameterLabel
-                section="stt"
-                name="stt_engine"
-                label={hasAttachedCaptions &&
-                captionAlignmentMethod === 'ctc_asr_fallback'
-                  ? 'Fallback recognition model'
-                  : 'Recognition model'}
-              /><select
-                bind:value={sttEngine}
-                onchange={() =>
-                  (sttQuantization = String(
-                    capabilities?.stt?.models?.[sttEngine]?.precision ?? 'f16'
-                  ))}
-                class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
-                ><option
-                  value="whisper"
-                  disabled={Boolean(
-                    sttLanguageProblem(
-                      capabilities,
-                      'whisper',
-                      originalLanguage
-                    )
-                  )}
-                  >{sttOptionLabel(
-                    'whisper',
-                    'Whisper large-v3',
-                    'DTW timestamps'
-                  )}</option
-                ><option
-                  value="parakeet"
-                  disabled={Boolean(
-                    sttLanguageProblem(
-                      capabilities,
-                      'parakeet',
-                      originalLanguage
-                    )
-                  )}
-                  >{sttOptionLabel(
-                    'parakeet',
-                    'Parakeet TDT 0.6B v3',
-                    'native timestamps'
-                  )}</option
-                ><option
-                  value="moss"
-                  disabled={Boolean(
-                    sttLanguageProblem(capabilities, 'moss', originalLanguage)
-                  )}
-                  >{sttOptionLabel(
-                    'moss',
-                    'MOSS Transcribe-Diarize 0.9B',
-                    'native speakers + CTC words'
-                  )}</option
-                >{#each sttCatalogue.services as service}<option
-                    value={service.id}
-                    >{service.name} · cloud word timestamps</option
-                  >{/each}
-                ></select
-              ><span class="muted mt-1 block text-xs"
-                >{isCloudStt(sttEngine)
-                  ? 'The selected connection runs remotely; audio is sent to its configured provider.'
-                  : 'CrispASR downloads a model the first time you use it; the installer-selected model is the default.'}</span
-              ></label
-            >
-            {#if sttLanguageIssue}<p class="text-sm text-red-600" role="alert">
-                {sttLanguageIssue}
-              </p>{/if}
-            {#if ttsModelAcquisitionHint}
-              <p class="muted -mt-2 text-xs leading-relaxed">
-                {ttsModelAcquisitionHint}
-              </p>
-            {/if}
-            {#if isCloudStt(sttEngine)}
-              <div
-                class="rounded-xl border border-[var(--line)] bg-[var(--accent-soft)] p-4"
-              >
-                <div class="text-sm font-semibold">
-                  Remote timed transcription
-                </div>
-                <p class="muted mt-1 text-xs leading-relaxed">
-                  Pandrator sends the normalized WAV to this provider and
-                  accepts the result only when it includes genuine word-level
-                  spans. Diarization is not available for this profile.
-                </p>
-                <a
-                  href="/providers?tab=speech&service=stt"
-                  class="mt-3 inline-flex text-xs font-semibold text-[var(--accent)]"
-                  >Manage recognition connection</a
-                >
-              </div>
-              <div class="grid gap-3 sm:grid-cols-2">
-                <label class="text-sm font-semibold"
-                  ><ParameterLabel
-                    section="stt"
-                    name="stt_language"
-                    label="Source language"
-                  /><select
-                    bind:value={originalLanguage}
-                    class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
-                    >{#each LANGUAGE_OPTIONS as item}<option value={item.value}
-                        >{item.label}</option
-                      >{/each}</select
-                  ></label
-                ><label class="text-sm font-semibold"
-                  ><ParameterLabel
-                    section="stt"
-                    name="stt_transcribe_style"
-                    label="Transcript style"
-                  /><select
-                    bind:value={sttTranscribeStyle}
-                    class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
-                    ><option value="readability">Readable transcript</option
-                    ><option value="verbatim"
-                      >Verbatim · preserve fillers</option
-                    ></select
-                  ></label
-                >
-              </div>
-              <label class="text-sm font-semibold"
-                ><ParameterLabel
-                  section="stt"
-                  name="stt_hotwords"
-                  label="Phrase hints"
-                /><textarea
-                  rows="2"
-                  bind:value={sttHotwords}
-                  placeholder="Names and terminology, comma-separated"
-                  class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
-                ></textarea><span class="muted mt-1 block text-xs font-normal"
-                  >Sent as the provider's phrase list; useful for names and
-                  specialist terms.</span
-                ></label
-              >
-            {:else}
-              <label class="text-sm font-semibold"
-                ><ParameterLabel
-                  section="stt"
-                  name="stt_model_quantization"
-                  label="Model precision"
-                /><select
-                  bind:value={sttQuantization}
-                  class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
-                  ><option value="f16">Full F16</option
-                  >{#if sttEngine === 'whisper'}<option value="q5_0"
-                      >Q5_0 · 1.08 GB</option
-                    >{:else if sttEngine === 'parakeet'}<option value="q8_0"
-                      >Q8_0 · 745 MB</option
-                    ><option value="q5_0">Q5_0 · 541 MB</option><option
-                      value="q4_k">Q4_K · 489 MB</option
-                    >{:else}<option value="q8_0">Q8_0 · recommended</option
-                    ><option value="q4_k">Q4_K</option>{/if}</select
-                ><span class="muted mt-1 block text-xs"
-                  >F16 maximizes fidelity; quantized files reduce download and
-                  memory use.</span
-                ></label
-              >
-              <div class="grid gap-3 sm:grid-cols-[1fr_7rem]">
-                <label class="text-sm font-semibold"
-                  ><ParameterLabel
-                    section="stt"
-                    name="stt_compute_backend"
-                    label="Compute backend"
-                  /><select
-                    bind:value={sttComputeBackend}
-                    class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
-                    ><option value="auto">Automatic</option><option
-                      value="cpu"
-                      disabled={!supportsSttCompute('cpu')}>CPU</option
-                    ><option value="cuda" disabled={!supportsSttCompute('cuda')}
-                      >CUDA</option
-                    ><option
-                      value="vulkan"
-                      disabled={!supportsSttCompute('vulkan')}>Vulkan</option
-                    ><option
-                      value="metal"
-                      disabled={!supportsSttCompute('metal')}>Metal</option
-                    ></select
-                  ><span class="muted mt-1 block text-xs"
-                    >Only backends compiled into the installed CrispASR runtime
-                    can be forced.</span
-                  ></label
-                ><label class="text-sm font-semibold"
-                  ><ParameterLabel
-                    section="stt"
-                    name="stt_compute_device"
-                    label="Device"
-                  /><input
-                    type="number"
-                    min="0"
-                    disabled={['auto', 'cpu'].includes(sttComputeBackend)}
-                    bind:value={sttDevice}
-                    class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal disabled:opacity-40"
-                  /></label
-                >
-              </div>
-              {#if sttEngine === 'moss'}
-                <div
-                  class="rounded-xl border border-[var(--line)] bg-[var(--accent-soft)] p-4"
-                >
-                  <div class="text-sm font-semibold">
-                    Native speaker turns with local CTC timing
-                  </div>
-                  <p class="muted mt-1 text-xs leading-relaxed">
-                    MOSS detects the language and speaker changes. Each turn is
-                    then aligned separately with Canary CTC and a small acoustic
-                    margin, avoiding long-recording alignment drift.
-                  </p>
-                  <div class="mt-3 grid gap-3 sm:grid-cols-2">
-                    <label class="flex items-center gap-3 text-xs font-semibold"
-                      ><input
-                        type="checkbox"
-                        bind:checked={mossCtcAlignmentEnabled}
-                        class="size-4 accent-[var(--accent)]"
-                      />
-                      <ParameterLabel
+                    ><label class="text-xs font-semibold"
+                      ><ParameterLabel
                         section="stt"
-                        name="moss_ctc_alignment_enabled"
-                        label="Word-level CTC alignment"
+                        name="crispasr_vad_min_speech_ms"
+                        label="Minimum speech (ms)"
                         compact
+                      /><input
+                        type="number"
+                        min="0"
+                        bind:value={vadMinSpeech}
+                        class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
                       /></label
                     ><label class="text-xs font-semibold"
                       ><ParameterLabel
                         section="stt"
-                        name="moss_ctc_padding_seconds"
-                        label="CTC padding (s)"
+                        name="crispasr_vad_min_silence_ms"
+                        label="Minimum silence (ms)"
                         compact
                       /><input
                         type="number"
                         min="0"
-                        max="2"
-                        step="0.1"
-                        disabled={!mossCtcAlignmentEnabled}
-                        bind:value={mossCtcPaddingSeconds}
-                        class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal disabled:opacity-40"
+                        bind:value={vadMinSilence}
+                        class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                      /></label
+                    ><label class="text-xs font-semibold"
+                      ><ParameterLabel
+                        section="stt"
+                        name="crispasr_vad_max_speech_seconds"
+                        label="Maximum speech (s)"
+                        compact
+                      /><input
+                        type="number"
+                        min="1"
+                        bind:value={vadMaxSpeech}
+                        class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                      /></label
+                    ><label class="text-xs font-semibold"
+                      ><ParameterLabel
+                        section="stt"
+                        name="crispasr_vad_speech_pad_ms"
+                        label="Speech padding (ms)"
+                        compact
+                      /><input
+                        type="number"
+                        min="0"
+                        bind:value={vadSpeechPad}
+                        class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
                       /></label
                     >
-                  </div>
-                </div>
-              {:else}
-                <div class="grid gap-3 sm:grid-cols-2">
-                  <label class="text-sm font-semibold"
-                    >Source language<select
-                      bind:value={originalLanguage}
-                      class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
-                      >{#each LANGUAGE_OPTIONS as item}<option
-                          value={item.value}>{item.label}</option
-                        >{/each}</select
-                    ></label
-                  ><label class="text-sm font-semibold"
-                    ><ParameterLabel
-                      section="stt"
-                      name="stt_lid_backend"
-                      label="Language detector"
-                    /><select
-                      bind:value={sttLidBackend}
-                      class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
-                      ><option value="whisper">Whisper tiny</option><option
-                        value="ecapa">ECAPA (recommended)</option
-                      ><option value="silero">Silero</option><option value="off"
-                        >Off</option
-                      ></select
-                    ></label
+                  </div>{/if}
+                <details class="rounded-xl border border-[var(--line)] p-4">
+                  <summary class="cursor-pointer text-sm font-semibold"
+                    >Decoder and long-form controls</summary
                   >
-                </div>
+                  <div class="mt-4 grid grid-cols-2 gap-3">
+                    <label class="text-xs font-semibold"
+                      ><ParameterLabel
+                        section="stt"
+                        name="stt_threads"
+                        label="Threads (0 = automatic)"
+                        compact
+                      /><input
+                        type="number"
+                        min="0"
+                        bind:value={sttThreads}
+                        class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                      /></label
+                    ><label class="text-xs font-semibold"
+                      ><ParameterLabel
+                        section="stt"
+                        name="stt_beam_size"
+                        label="Beam size"
+                        compact
+                      /><input
+                        type="number"
+                        min="1"
+                        max="16"
+                        bind:value={sttBeamSize}
+                        class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                      /></label
+                    >{#if sttEngine === 'parakeet'}<label
+                        class="text-xs font-semibold"
+                        ><ParameterLabel
+                          section="stt"
+                          name="parakeet_decoder"
+                          label="Parakeet decoder"
+                          compact
+                        /><select
+                          bind:value={parakeetDecoder}
+                          class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                          ><option value="tdt">TDT greedy / beam</option><option
+                            value="maes">MAES beam</option
+                          ><option value="ctc">CTC greedy</option></select
+                        ></label
+                      >{/if}{#if sttEngine === 'moss'}<label
+                        class="text-xs font-semibold"
+                        ><ParameterLabel
+                          section="stt"
+                          name="moss_max_chunk_seconds"
+                          label="Maximum MOSS context (s)"
+                          compact
+                        /><input
+                          type="number"
+                          min="30"
+                          max="120"
+                          step="1"
+                          bind:value={mossMaxChunkSeconds}
+                          class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                        /></label
+                      >{:else}<label class="text-xs font-semibold"
+                        ><ParameterLabel
+                          section="stt"
+                          name="stt_chunk_seconds"
+                          label="Forced chunk size (s, 0 = default)"
+                          compact
+                        /><input
+                          type="number"
+                          min="0"
+                          step="1"
+                          bind:value={sttChunkSeconds}
+                          class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                        /></label
+                      >{/if}{#if sttEngine === 'moss'}<label
+                        class="text-xs font-semibold"
+                        ><ParameterLabel
+                          section="stt"
+                          name="moss_chunk_overlap_seconds"
+                          label="MOSS chunk overlap (s)"
+                          compact
+                        /><input
+                          type="number"
+                          min="0"
+                          step="0.5"
+                          bind:value={mossChunkOverlap}
+                          class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                        /><span class="muted mt-1 block font-normal"
+                          >0 prevents duplicated speech and conflicting speaker
+                          IDs at chunk seams.</span
+                        ></label
+                      >{:else}<label class="text-xs font-semibold"
+                        ><ParameterLabel
+                          section="stt"
+                          name="stt_chunk_overlap_seconds"
+                          label="Chunk overlap (s)"
+                          compact
+                        /><input
+                          type="number"
+                          min="0"
+                          step="0.5"
+                          bind:value={sttChunkOverlap}
+                          class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                        /></label
+                      >{/if}
+                    ><label class="col-span-2 text-xs font-semibold"
+                      ><ParameterLabel
+                        section="stt"
+                        name="stt_hotwords"
+                        label="Hotwords"
+                        compact
+                      /><textarea
+                        rows="2"
+                        bind:value={sttHotwords}
+                        placeholder="Names and terminology, comma-separated"
+                        class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                      ></textarea></label
+                    >
+                  </div>
+                  {#if sttEngine === 'moss'}<p class="muted mt-3 text-xs">
+                      Pandrator uses the longest safe MOSS window, then lets
+                      CrispASR seek the lowest-energy point near its limit.
+                      Speaker IDs remain local to a chunk; speaker-change
+                      boundaries are preserved.
+                    </p>{:else}<p class="muted mt-3 text-xs">
+                      Parakeet normally preserves full context and handles long
+                      recordings internally. Force chunking only for constrained
+                      systems or diagnostics.
+                    </p>{/if}
+                </details>
               {/if}
-              {#if sttEngine === 'moss'}<label
-                  class="flex items-start gap-3 text-sm font-semibold"
-                  ><input
-                    type="checkbox"
-                    bind:checked={mossVadEnabled}
-                    class="mt-0.5 size-4 accent-[var(--accent)]"
-                  />
-                  <span
-                    ><ParameterLabel
-                      section="stt"
-                      name="moss_vad_enabled"
-                      label="Voice activity detection"
-                    /><span class="muted mt-1 block text-xs font-normal"
-                      >Off by default so native speaker tracking keeps the
-                      longest context. The normal chunker still seeks low-energy
-                      cut points.</span
-                    ></span
-                  ></label
-                >{:else}<label
-                  class="flex items-center gap-3 text-sm font-semibold"
-                  ><input
-                    type="checkbox"
-                    bind:checked={vadEnabled}
-                    class="size-4 accent-[var(--accent)]"
-                  />
-                  <ParameterLabel
-                    section="stt"
-                    name="crispasr_vad_enabled"
-                    label="Voice activity detection"
-                  /></label
-                >{/if}
-              {#if sttEngine === 'moss' ? mossVadEnabled : vadEnabled}<div
-                  class="grid grid-cols-2 gap-3"
-                >
-                  <label class="text-xs font-semibold"
-                    ><ParameterLabel
-                      section="stt"
-                      name="crispasr_vad_model"
-                      label="VAD model"
-                      compact
-                    /><select
-                      bind:value={vadModel}
-                      class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
-                      ><option value="silero">Silero · general purpose</option
-                      ><option value="firered">FireRedVAD · robust</option
-                      ><option value="marblenet">MarbleNet · compact</option
-                      ><option value="whisper-vad"
-                        >Whisper VAD · experimental</option
-                      ></select
-                    ></label
-                  ><label class="text-xs font-semibold"
-                    ><ParameterLabel
-                      section="stt"
-                      name="crispasr_vad_threshold"
-                      label="VAD threshold"
-                      compact
-                    /><span
-                      class="mt-1 grid min-h-10 grid-cols-[1fr_2.5rem] items-center gap-2 rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3"
-                      ><input
-                        type="range"
-                        min="0"
-                        max="1"
-                        step="0.05"
-                        bind:value={vadThreshold}
-                        class="w-full accent-[var(--accent)]"
-                      /><output class="text-right text-xs font-bold"
-                        >{Number(vadThreshold).toFixed(2)}</output
-                      ></span
-                    ></label
-                  ><label class="text-xs font-semibold"
-                    ><ParameterLabel
-                      section="stt"
-                      name="crispasr_vad_min_speech_ms"
-                      label="Minimum speech (ms)"
-                      compact
-                    /><input
-                      type="number"
-                      min="0"
-                      bind:value={vadMinSpeech}
-                      class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
-                    /></label
-                  ><label class="text-xs font-semibold"
-                    ><ParameterLabel
-                      section="stt"
-                      name="crispasr_vad_min_silence_ms"
-                      label="Minimum silence (ms)"
-                      compact
-                    /><input
-                      type="number"
-                      min="0"
-                      bind:value={vadMinSilence}
-                      class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
-                    /></label
-                  ><label class="text-xs font-semibold"
-                    ><ParameterLabel
-                      section="stt"
-                      name="crispasr_vad_max_speech_seconds"
-                      label="Maximum speech (s)"
-                      compact
-                    /><input
-                      type="number"
-                      min="1"
-                      bind:value={vadMaxSpeech}
-                      class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
-                    /></label
-                  ><label class="text-xs font-semibold"
-                    ><ParameterLabel
-                      section="stt"
-                      name="crispasr_vad_speech_pad_ms"
-                      label="Speech padding (ms)"
-                      compact
-                    /><input
-                      type="number"
-                      min="0"
-                      bind:value={vadSpeechPad}
-                      class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
-                    /></label
-                  >
-                </div>{/if}
-              <details class="rounded-xl border border-[var(--line)] p-4">
-                <summary class="cursor-pointer text-sm font-semibold"
-                  >Decoder and long-form controls</summary
-                >
-                <div class="mt-4 grid grid-cols-2 gap-3">
-                  <label class="text-xs font-semibold"
-                    ><ParameterLabel
-                      section="stt"
-                      name="stt_threads"
-                      label="Threads (0 = automatic)"
-                      compact
-                    /><input
-                      type="number"
-                      min="0"
-                      bind:value={sttThreads}
-                      class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
-                    /></label
-                  ><label class="text-xs font-semibold"
-                    ><ParameterLabel
-                      section="stt"
-                      name="stt_beam_size"
-                      label="Beam size"
-                      compact
-                    /><input
-                      type="number"
-                      min="1"
-                      max="16"
-                      bind:value={sttBeamSize}
-                      class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
-                    /></label
-                  >{#if sttEngine === 'parakeet'}<label
-                      class="text-xs font-semibold"
-                      ><ParameterLabel
-                        section="stt"
-                        name="parakeet_decoder"
-                        label="Parakeet decoder"
-                        compact
-                      /><select
-                        bind:value={parakeetDecoder}
-                        class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
-                        ><option value="tdt">TDT greedy / beam</option><option
-                          value="maes">MAES beam</option
-                        ><option value="ctc">CTC greedy</option></select
-                      ></label
-                    >{/if}{#if sttEngine === 'moss'}<label
-                      class="text-xs font-semibold"
-                      ><ParameterLabel
-                        section="stt"
-                        name="moss_max_chunk_seconds"
-                        label="Maximum MOSS context (s)"
-                        compact
-                      /><input
-                        type="number"
-                        min="30"
-                        max="120"
-                        step="1"
-                        bind:value={mossMaxChunkSeconds}
-                        class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
-                      /></label
-                    >{:else}<label class="text-xs font-semibold"
-                      ><ParameterLabel
-                        section="stt"
-                        name="stt_chunk_seconds"
-                        label="Forced chunk size (s, 0 = default)"
-                        compact
-                      /><input
-                        type="number"
-                        min="0"
-                        step="1"
-                        bind:value={sttChunkSeconds}
-                        class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
-                      /></label
-                    >{/if}{#if sttEngine === 'moss'}<label
-                      class="text-xs font-semibold"
-                      ><ParameterLabel
-                        section="stt"
-                        name="moss_chunk_overlap_seconds"
-                        label="MOSS chunk overlap (s)"
-                        compact
-                      /><input
-                        type="number"
-                        min="0"
-                        step="0.5"
-                        bind:value={mossChunkOverlap}
-                        class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
-                      /><span class="muted mt-1 block font-normal"
-                        >0 prevents duplicated speech and conflicting speaker
-                        IDs at chunk seams.</span
-                      ></label
-                    >{:else}<label class="text-xs font-semibold"
-                      ><ParameterLabel
-                        section="stt"
-                        name="stt_chunk_overlap_seconds"
-                        label="Chunk overlap (s)"
-                        compact
-                      /><input
-                        type="number"
-                        min="0"
-                        step="0.5"
-                        bind:value={sttChunkOverlap}
-                        class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
-                      /></label
-                    >{/if}
-                  ><label class="col-span-2 text-xs font-semibold"
-                    ><ParameterLabel
-                      section="stt"
-                      name="stt_hotwords"
-                      label="Hotwords"
-                      compact
-                    /><textarea
-                      rows="2"
-                      bind:value={sttHotwords}
-                      placeholder="Names and terminology, comma-separated"
-                      class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
-                    ></textarea></label
-                  >
-                </div>
-                {#if sttEngine === 'moss'}<p class="muted mt-3 text-xs">
-                    Pandrator uses the longest safe MOSS window, then lets
-                    CrispASR seek the lowest-energy point near its limit.
-                    Speaker IDs remain local to a chunk; speaker-change
-                    boundaries are preserved.
-                  </p>{:else}<p class="muted mt-3 text-xs">
-                    Parakeet normally preserves full context and handles long
-                    recordings internally. Force chunking only for constrained
-                    systems or diagnostics.
-                  </p>{/if}
-              </details>
             {/if}
-          {/if}
-          <div class="rounded-xl border border-[var(--line)] p-4">
-            <div class="text-sm font-semibold">
-              Readable subtitle composition
-            </div>
-            <p class="muted mt-1 text-xs">
-              Pandrator's deterministic word-timed composer uses these limits;
-              they are not sent to the correction model. It may regroup source
-              cues while preserving speakers, hard pauses, reading speed, and
-              the configured display capacity.
-            </p>
-            <div class="mt-3 grid grid-cols-2 gap-3">
-              <label class="text-xs font-semibold"
-                ><ParameterLabel
-                  section="subtitles"
-                  name="max_chars_per_line"
-                  label="Characters / line"
-                  compact
-                /><input
-                  type="number"
-                  min="20"
-                  max="100"
-                  bind:value={subtitleChars}
-                  class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
-                /></label
-              ><label class="text-xs font-semibold"
-                ><ParameterLabel
-                  section="subtitles"
-                  name="max_lines"
-                  label="Lines"
-                  compact
-                /><input
-                  type="number"
-                  min="1"
-                  max="3"
-                  bind:value={subtitleLines}
-                  class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
-                /></label
-              ><label class="text-xs font-semibold"
-                ><ParameterLabel
-                  section="subtitles"
-                  name="min_duration_ms"
-                  label="Minimum duration (ms)"
-                  compact
-                /><input
-                  type="number"
-                  min="250"
-                  bind:value={subtitleMinDuration}
-                  class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
-                /></label
-              ><label class="text-xs font-semibold"
-                ><ParameterLabel
-                  section="subtitles"
-                  name="max_duration_ms"
-                  label="Maximum duration (ms)"
-                  compact
-                /><input
-                  type="number"
-                  min="1000"
-                  bind:value={subtitleMaxDuration}
-                  class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
-                /></label
-              ><label class="text-xs font-semibold"
-                ><ParameterLabel
-                  section="subtitles"
-                  name="max_cps"
-                  label="Characters / second"
-                  compact
-                /><input
-                  type="number"
-                  min="5"
-                  max="40"
-                  step="0.5"
-                  bind:value={subtitleCps}
-                  class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
-                /></label
-              ><label class="text-xs font-semibold"
-                ><ParameterLabel
-                  section="subtitles"
-                  name="min_gap_ms"
-                  label="Minimum cue gap (ms)"
-                  compact
-                /><input
-                  type="number"
-                  min="0"
-                  max="500"
-                  bind:value={subtitleMinGap}
-                  class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
-                /></label
-              ><label class="text-xs font-semibold"
-                ><ParameterLabel
-                  section="subtitles"
-                  name="phrase_gap_ms"
-                  label="Subtitle grouping gap (ms)"
-                  compact
-                /><input
-                  type="number"
-                  min="100"
-                  max="3000"
-                  bind:value={subtitlePhraseGap}
-                  class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
-                /></label
-              ><label class="text-xs font-semibold"
-                ><ParameterLabel
-                  section="subtitles"
-                  name="hard_gap_ms"
-                  label="Hard silence boundary (ms)"
-                  compact
-                /><input
-                  type="number"
-                  min="250"
-                  max="5000"
-                  bind:value={subtitleHardGap}
-                  class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
-                /></label
-              ><label class="text-xs font-semibold"
-                ><ParameterLabel
-                  section="subtitles"
-                  name="sentence_boundary_threshold"
-                  label="Sentence boundary threshold"
-                  compact
-                /><input
-                  type="number"
-                  min="0.01"
-                  max="0.99"
-                  step="0.01"
-                  bind:value={subtitleSentenceBoundaryThreshold}
-                  class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
-                /></label
-              >
-            </div>
-          </div>
-        {/if}
-        {#if settingsStage.key === 'correct'}<label
-            class="text-sm font-semibold"
-            ><ParameterLabel
-              section="correction"
-              name="correction_style"
-              label="Correction approach"
-            /><select
-              bind:value={correctionStyle}
-              class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
-              ><option value="publishable"
-                >Publication-ready · remove disfluencies</option
-              ><option value="faithful"
-                >Transcript-faithful · preserve delivery</option
-              ></select
-            ></label
-          ><label class="text-sm font-semibold"
-            >Additional correction guidance<textarea
-              bind:value={instructions}
-              rows="4"
-              class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
-            ></textarea><span
-              class="muted mt-1 block text-xs font-normal leading-relaxed"
-              >These instructions and the approach above are sent to the model.
-              Cue size and silence controls are applied separately by Pandrator.</span
-            ></label
-          >{/if}
-        {#if settingsStage.key === 'translate'}<label
-            class="text-sm font-semibold"
-            >Translate from<select
-              bind:value={translationSourceArtifactId}
-              required
-              class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
-              >{#if !translationSourceArtifactId}<option value="" disabled
-                  >Choose subtitle input</option
-                >{/if}{#each subtitleCatalogItems as item (item.artifact_id)}<option
-                  value={item.artifact_id}>{subtitleSourceLabel(item)}</option
-                >{/each}</select
-            ><span class="muted mt-1 block text-xs font-normal leading-relaxed"
-              >Choose the exact transcription or corrected revision. A
-              correction no longer silently replaces your selected
-              transcription.</span
-            ></label
-          ><label class="text-sm font-semibold"
-            >Translation backend<select
-              bind:value={backend}
-              class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
-              ><option value="llm">LLM</option><option value="deepl"
-                >DeepL</option
-              ></select
-            ></label
-          ><label class="text-sm font-semibold"
-            >Target language<select
-              bind:value={targetLanguage}
-              class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
-              >{#each LANGUAGE_OPTIONS.filter((item) => item.value !== 'auto') as item}<option
-                  value={item.value}>{item.label}</option
-                >{/each}</select
-            ></label
-          >{#if backend === 'llm'}<label class="text-sm font-semibold"
-              >Translation guidance<textarea
-                bind:value={instructions}
-                rows="3"
-                class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
-              ></textarea><span
-                class="muted mt-1 block text-xs font-normal leading-relaxed"
-                >The model creates natural display subtitles. Optional speech
-                optimization remains a separate, reviewable layer for voiceover.</span
-              ></label
-            >{/if}{/if}
-        {#if settingsStage.key === 'optimize_tts'}
-          <fieldset class="rounded-xl border border-[var(--line)] p-4">
-            <legend class="px-1 text-sm font-semibold"
-              >When should optimization run?</legend
-            >
-            <div class="mt-2 grid gap-2">
-              <label
-                class="flex items-start gap-3 rounded-xl bg-[var(--accent-soft)] p-3 text-sm"
-                ><input
-                  type="radio"
-                  bind:group={optimizationTiming}
-                  value="document"
-                  class="mt-1 accent-[var(--accent)]"
-                /><span
-                  ><strong class="block"
-                    >Before generation · reviewable revision</strong
-                  ><span class="muted mt-1 block text-xs"
-                    >Process the document's existing narration units, create an
-                    editable before-and-after artifact, and review it before
-                    TTS.</span
-                  ></span
-                ></label
-              ><label
-                class="flex items-start gap-3 rounded-xl bg-[var(--accent-soft)] p-3 text-sm"
-                ><input
-                  type="radio"
-                  bind:group={optimizationTiming}
-                  value="generation"
-                  class="mt-1 accent-[var(--accent)]"
-                /><span
-                  ><strong class="block"
-                    >During generation · final speech units</strong
-                  ><span class="muted mt-1 block text-xs"
-                    >Optimize the final synthesis units as generation begins and
-                    compare each result in the generation drawer.</span
-                  ></span
-                ></label
-              >
-            </div>
-          </fieldset>
-          <label class="text-sm font-semibold"
-            >Speech-planning policy<select
-              bind:value={speechOptimizationMode}
-              class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
-            >
-              <option value="guarded">Guarded · safest</option>
-              <option value="flexible">Flexible · contextual rewrite</option>
-            </select><span
-              class="muted mt-2 block text-xs font-normal leading-relaxed"
-              >Guarded changes only validated speech candidates. Flexible may
-              revise phrasing but must preserve protected text and meaning.</span
-            ></label
-          >
-          <div>
-            <label class="text-sm font-semibold"
-              >Units per model request{#if optimizationTiming === 'document'}<input
-                  type="number"
-                  min="1"
-                  max="64"
-                  bind:value={documentOptimizationBatchSize}
-                  class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
-                />{:else}<input
-                  type="number"
-                  min="1"
-                  max="64"
-                  bind:value={optimizationBatchSize}
-                  class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
-                />{/if}</label
-            >
-            <p class="muted mt-2 text-xs leading-relaxed">
-              Use 1 for small local models. Larger values reduce request
-              overhead and provide neighboring context; every unit is still
-              validated and stored independently.
-            </p>
-          </div>
-        {/if}
-        {#if settingsStage.key === 'clean_source'}<label
-            class="flex items-start gap-3 rounded-xl border border-[var(--line)] p-4"
-            ><input
-              type="checkbox"
-              bind:checked={agentic}
-              class="mt-1 size-4 accent-[var(--accent)]"
-            /><span
-              ><span class="block text-sm font-semibold"
-                >Agentic review loop</span
-              ><span class="muted mt-1 block text-xs"
-                >Runs focused metadata, navigation, boilerplate,
-                repeated-element, and chapter passes. Provider costs may apply.</span
-              ></span
-            ></label
-          >{#if agentic}<label class="text-sm font-semibold"
-              >Maximum LLM turns<input
-                type="number"
-                min="5"
-                max="500"
-                bind:value={maxIterations}
-                class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
-              /></label
-            >{/if}{/if}
-        {#if settingsStage.key === 'prepare_text'}<div
-            class="rounded-xl border border-[var(--line)] bg-[var(--accent-soft)] p-4"
-          >
-            <div class="text-sm font-semibold">
-              Provider-independent segmentation
-            </div>
-            <p class="muted mt-1 text-xs leading-relaxed">
-              These controls create editable narration units and pauses. Voice,
-              model, and synthesis controls are selected later in Generate
-              audio.
-            </p>
-          </div>
-          <div class="grid gap-3 sm:grid-cols-2">
-            <label
-              class="flex items-center gap-3 rounded-xl border border-[var(--line)] p-3 text-sm font-semibold"
-              ><input
-                type="checkbox"
-                bind:checked={splitSentences}
-                class="size-4 accent-[var(--accent)]"
-              /> Split long sentences</label
-            ><label
-              class="flex items-center gap-3 rounded-xl border border-[var(--line)] p-3 text-sm font-semibold"
-              ><input
-                type="checkbox"
-                bind:checked={appendSentences}
-                class="size-4 accent-[var(--accent)]"
-              /> Join short sentences</label
-            ><label class="text-sm font-semibold"
-              >Maximum segment length<input
-                type="number"
-                min="20"
-                max="2000"
-                bind:value={maxSentenceLength}
-                class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
-              /></label
-            ><label
-              class="flex items-center gap-3 rounded-xl border border-[var(--line)] p-3 text-sm font-semibold"
-              ><input
-                type="checkbox"
-                bind:checked={nemoNormalization}
-                class="size-4 accent-[var(--accent)]"
-              /> Deterministic normalization</label
-            >
-          </div>
-          <details class="rounded-xl border border-[var(--line)] p-4">
-            <summary class="cursor-pointer text-sm font-semibold"
-              >Advanced text cleanup</summary
-            >
-            <div class="mt-4 grid gap-3 sm:grid-cols-2">
-              <label class="flex items-center gap-3 text-sm"
-                ><input
-                  type="checkbox"
-                  bind:checked={normalizeAllCaps}
-                  class="size-4 accent-[var(--accent)]"
-                /> Normalize all-caps text</label
-              ><label class="flex items-center gap-3 text-sm"
-                ><input
-                  type="checkbox"
-                  bind:checked={removeDiacritics}
-                  class="size-4 accent-[var(--accent)]"
-                /> Remove diacritics</label
-              ><label class="flex items-center gap-3 text-sm"
-                ><input
-                  type="checkbox"
-                  bind:checked={removeQuotationMarks}
-                  class="size-4 accent-[var(--accent)]"
-                /> Remove quotation marks</label
-              >
-            </div>
-          </details>{/if}
-        {#if settingsStage.key === 'generate_audio'}
-          {#if selectedTtsService?.catalogue_role === 'compatibility'}
-            <div class="rounded-xl border border-[var(--line)] p-4 text-sm">
-              <strong>Compatibility provider</strong>
-              <p class="muted mt-1">
-                This session keeps its existing engine. For new generation, you
-                can switch to the matching audio.cpp model and review its voice
-                and settings.
-              </p>
-              <button
-                type="button"
-                class="btn btn-secondary mt-3"
-                onclick={() =>
-                  chooseTtsService(
-                    String(selectedTtsService?.replacement_service_id)
-                  )}
-                disabled={!ttsCatalogue.services.some(
-                  (item) =>
-                    item.id === selectedTtsService?.replacement_service_id &&
-                    item.available
-                )}>Switch to audio.cpp</button
-              >
-            </div>
-          {/if}
-          {#if ttsSwitchSource}
-            <div
-              class="rounded-xl border border-[var(--accent)] p-4 text-sm"
-              role="status"
-            >
-              <strong>Review switch from {ttsSwitchSource.name}</strong>
-              <p class="muted mt-1">
-                Check the model and voice below. Only an existing target voice
-                or ready reference link is reused. Old engine options and
-                reference settings will be cleared when you save. Existing takes
-                and the original engine remain available.
-              </p>
-              <p class="muted mt-2">
-                Preview the selected voice in the Voice Library before starting
-                a long generation.
-              </p>
-              <label class="mt-3 flex items-start gap-2"
-                ><input
-                  type="checkbox"
-                  bind:checked={ttsSwitchReviewed}
-                  class="mt-1"
-                /> I reviewed the target model, voice, and settings reset.</label
-              >
-            </div>
-          {/if}
-          <div class="grid gap-2">
-            <div class="flex items-center justify-between gap-3">
-              <span class="text-sm font-semibold">TTS service</span><button
-                type="button"
-                onclick={refreshSpeechServices}
-                disabled={refreshingTtsServices}
-                class="flex items-center gap-2 rounded-lg border border-[var(--line)] px-3 py-2 text-xs font-semibold disabled:opacity-50"
-                ><RefreshCw
-                  size={14}
-                  class={refreshingTtsServices ? 'animate-spin' : ''}
-                /> Refresh service availability</button
-              >
-            </div>
-            <select
-              value={ttsService}
-              onchange={(event) => chooseTtsService(event.currentTarget.value)}
-              class="w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
-              aria-label="TTS service"
-              >{#if availableTtsServices.length}<optgroup label="Available"
-                  >{#each availableTtsServices as service}<option
-                      value={service.id}>{service.name} · available</option
-                    >{/each}</optgroup
-                >{/if}{#if unavailableTtsServices.length}<optgroup
-                  label="Unavailable"
-                  >{#each unavailableTtsServices as service}<option
-                      value={service.id}
-                      disabled
-                      class="text-[var(--muted)]"
-                      >{service.name} · unavailable</option
-                    >{/each}</optgroup
-                >{/if}</select
-            >{#if selectedTtsService && !selectedTtsServiceAvailable}<span
-                class="text-xs font-semibold text-red-500"
-                role="status"
-                >{selectedTtsService.availability_reason ||
-                  `${selectedTtsService.name} is unavailable. Refresh availability or choose another provider.`}</span
-              >{/if}<span class="muted text-xs"
-              >Available means Pandrator can use the provider. Cloud providers
-              can be available without a local process.</span
-            >
-          </div>
-          {#if selectedTtsServiceId === 'audio_cpp'}
-            <p class="muted text-xs">
-              audio.cpp runs several local speech models through one provider.
-              Choose the model below. You can install more model packages under
-              Providers &amp; services.
-            </p>
-          {/if}
-          <div class="flex flex-wrap items-center justify-between gap-3">
-            <p class="muted text-xs">
-              The preferred available service is selected automatically. Your
-              selected unavailable service remains visible until it is ready.
-            </p>
-            <button
-              type="button"
-              onclick={openTtsServices}
-              class="text-xs font-semibold text-[var(--accent)]"
-              >Manage services</button
-            >
-          </div>
-          <label class="text-sm font-semibold"
-            >{selectedTtsServiceId === 'kobold_qwen'
-              ? 'Voice type'
-              : 'Model'}<select
-              value={ttsModel}
-              onchange={(event) => chooseTtsModel(event.currentTarget.value)}
-              class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
-              aria-label="TTS model"
-              >{#each ttsModels as item}<option value={item}>{item}</option
-                >{/each}</select
-            ></label
-          >
-          {#if supportsXttsModelUpload}
-            <section
-              class="rounded-xl border border-[var(--line)] bg-[var(--accent-soft)] p-4"
-              aria-labelledby="xtts-model-upload-title"
-            >
-              <div class="flex flex-wrap items-start justify-between gap-3">
-                <div>
-                  <h3
-                    id="xtts-model-upload-title"
-                    class="text-sm font-semibold"
-                  >
-                    XTTS model management
-                  </h3>
-                  <p class="muted mt-1 max-w-xl text-xs leading-relaxed">
-                    Select any listed model for this generation. Local complete
-                    bundles can be removed here; the built-in XTTS model is
-                    protected. Add a fine-tuned model with the four-file bundle
-                    below—Pandrator installs it in stable user data.
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onclick={loadXttsModels}
-                  disabled={xttsModelsLoading}
-                  class="flex items-center gap-2 rounded-lg border border-[var(--line)] px-3 py-2 text-xs font-semibold disabled:opacity-50"
-                  ><RefreshCw
-                    size={14}
-                    class={xttsModelsLoading ? 'animate-spin' : ''}
-                  /> Refresh models</button
-                >
-              </div>
-              {#if xttsModelsCompatibility}<p
-                  class="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-950"
-                  role="status"
-                >
-                  {xttsModelsCompatibility}
-                </p>{/if}
-              {#if xttsModels.length}<div
-                  class="mt-3 overflow-hidden rounded-lg border border-[var(--line)] bg-[var(--paper)]"
-                >
-                  {#each xttsModels as model}<div
-                      class="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--line)] p-3 last:border-b-0"
-                    >
-                      <div class="min-w-0">
-                        <button
-                          type="button"
-                          onclick={() => chooseTtsModel(model.id)}
-                          class="max-w-full truncate text-left text-xs font-semibold text-[var(--accent)]"
-                          aria-label={`Select XTTS model ${model.id}`}
-                          >{model.id}</button
-                        >
-                        <p class="muted mt-1 text-xs">
-                          {model.is_default
-                            ? 'Built-in protected model'
-                            : model.removable
-                              ? 'Local model bundle'
-                              : model.lifecycle_supported
-                                ? 'Local model (not removable)'
-                                : 'Model lifecycle requires an XTTS update'}
-                        </p>
-                        {#if model.id === ttsModel}<span
-                            class="mt-1 inline-block rounded bg-[var(--accent-soft)] px-2 py-0.5 text-[11px] font-semibold"
-                            >Selected for this generation</span
-                          >{/if}
-                      </div>
-                      <div class="flex items-center gap-2">
-                        <button
-                          type="button"
-                          onclick={() => chooseTtsModel(model.id)}
-                          class="rounded-lg border border-[var(--line)] px-3 py-2 text-xs font-semibold"
-                          >Select</button
-                        >{#if model.removable && xttsModelsLifecycleSupported}<button
-                            type="button"
-                            onclick={() => removeXttsModel(model)}
-                            disabled={Boolean(deletingXttsModelId)}
-                            class="rounded-lg border border-red-300 px-3 py-2 text-xs font-semibold text-red-700 disabled:opacity-50"
-                            >{deletingXttsModelId === model.id
-                              ? 'Removing…'
-                              : 'Remove'}</button
-                          >{:else if !model.is_default}<span
-                            class="muted text-xs">Removal unavailable</span
-                          >{/if}
-                      </div>
-                    </div>{/each}
-                </div>{/if}
-              <div class="mt-3 grid gap-3 sm:grid-cols-2">
-                <label class="text-xs font-semibold"
-                  >Model ID<input
-                    bind:value={xttsModelId}
-                    placeholder="custom/my-narrator-v1"
-                    disabled={uploadingXttsModel}
-                    class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-sm font-normal"
-                  /></label
-                ><label class="text-xs font-semibold"
-                  >Bundle files<input
-                    type="file"
-                    multiple
-                    accept=".json,.pth"
-                    disabled={uploadingXttsModel}
-                    onchange={(event) =>
-                      chooseXttsModelFiles(event.currentTarget.files)}
-                    class="mt-1 block w-full text-sm font-normal"
-                  /></label
-                >
-              </div>
-              <p class="muted mt-3 text-xs">
-                Required: <code>config.json</code>, <code>model.pth</code>,
-                <code>speakers_xtts.pth</code>, and <code>vocab.json</code>.
-                {#if xttsModelFiles.length}
-                  Selected: {xttsModelFiles
-                    .map((file) => file.name)
-                    .join(', ')}.
-                {/if}
-              </p>
-              <div class="mt-3 flex flex-wrap items-center gap-3">
-                <button
-                  type="button"
-                  onclick={uploadXttsModel}
-                  disabled={uploadingXttsModel || !selectedTtsServiceAvailable}
-                  class="flex items-center gap-2 rounded-lg bg-[var(--accent)] px-3 py-2 text-xs font-semibold text-white disabled:opacity-50"
-                  >{#if uploadingXttsModel}<LoaderCircle
-                      class="animate-spin"
-                      size={14}
-                    /> Uploading model…{:else}<CloudUpload size={14} /> Upload and
-                    select{/if}</button
-                >
-                {#if xttsModelUploadError}<p
-                    class="basis-full rounded-lg border border-red-300 bg-red-50 p-3 text-xs text-red-800"
-                    role="alert"
-                  >
-                    {xttsModelUploadError}
-                  </p>{/if}
-                {#if xttsModelUploadMessage && !uploadingXttsModel}<span
-                    class="text-xs"
-                    role="status"
-                    aria-live="polite">{xttsModelUploadMessage}</span
-                  >{/if}
-              </div>
-              {#if uploadingXttsModel}<div class="mt-3">
-                  <div
-                    class="mb-1.5 flex items-center justify-between gap-3 text-xs"
-                  >
-                    <span class="muted"
-                      >{xttsModelUploadPhase === 'installing'
-                        ? 'Upload transferred; Pandrator is installing the model…'
-                        : 'Uploading the XTTS model…'}</span
-                    ><span class="muted tabular-nums"
-                      >{Math.round(xttsModelUploadProgress * 100)}%</span
-                    >
-                  </div>
-                  <progress
-                    class="h-2 w-full overflow-hidden rounded-full accent-[var(--accent)]"
-                    max="1"
-                    value={xttsModelUploadProgress}
-                    aria-label="XTTS model upload progress"
-                    >{Math.round(xttsModelUploadProgress * 100)}%</progress
-                  >
-                </div>{/if}
-            </section>
-          {/if}
-          <label class="text-sm font-semibold"
-            >Speech language<select
-              bind:value={targetLanguage}
-              onchange={(event) => {
-                const selected = ttsVoiceDescriptors.find(
-                  (voice) => voice.id === voiceName
-                );
-                if (
-                  selected &&
-                  !voiceSupportsLanguage(selected, event.currentTarget.value)
-                )
-                  voiceName =
-                    ttsVoiceDescriptors.find((voice) =>
-                      voiceSupportsLanguage(voice, event.currentTarget.value)
-                    )?.id ?? '';
-              }}
-              class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
-              >{#each ttsLanguages.length ? ttsLanguages : LANGUAGE_OPTIONS.filter((item) => item.value !== 'auto') as item}<option
-                  value={item.value}>{item.label}</option
-                >{/each}</select
-            ></label
-          >
-          {#if supportsPrebuiltVoices || showClonedVoices}
-            <label class="text-sm font-semibold"
-              >Voice<select
-                bind:value={voiceName}
-                class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
-                >{#if !showClonedVoices || selectedModelAllowsReferenceFree}<option
-                    value=""
-                    disabled={!selectedModelAllowsReferenceFree &&
-                      defaultVoiceLanguageMismatch}
-                    >{selectedModelAllowsReferenceFree
-                      ? 'Design from instructions · no reference'
-                      : 'Service default'}</option
-                  >{/if}{#if supportsPrebuiltVoices}<optgroup
-                    label={`${LANGUAGE_OPTIONS.find((item) => item.value === targetLanguage)?.label ?? targetLanguage} · pre-built voices`}
-                    >{#each filteredPrebuiltVoices as voice}<option
-                        value={voice.id}
-                        >{voice.name}{voice.gender ? ` · ${voice.gender}` : ''} ·
-                        {voice.language}</option
-                      >{/each}</optgroup
-                  >{/if}{#if showClonedVoices}{#each clonedVoiceGroups as group}
-                    <optgroup label={group.label}
-                      >{#each group.voices as voice}<option value={voice.id}
-                          >{voice.name}</option
-                        >{/each}</optgroup
-                    >{/each}{/if}</select
-              ></label
-            >
-            {#if supportsPrebuiltVoices}
-              <p class="muted text-xs" role="status">
-                {selectedVoiceLanguageMismatch
-                  ? 'Choose a voice that supports the selected language before saving.'
-                  : filteredPrebuiltVoices.length
-                    ? `${filteredPrebuiltVoices.length} pre-built ${filteredPrebuiltVoices.length === 1 ? 'voice supports' : 'voices support'} the selected language.`
-                    : 'No pre-built voices are listed for this language. Choose another language or a provider-ready voice.'}
-              </p>
-            {/if}
-            <div class="flex flex-wrap items-center justify-between gap-3">
-              <p class="muted text-xs">
-                {showClonedVoices
-                  ? selectedModelAllowsReferenceFree
-                    ? 'Leave “Design from instructions” selected to follow the speech direction, or choose a linked local voice to clone it.'
-                    : audioCppLinkedReferences
-                      ? 'Linked local voices can be selected above. Qwen benefits from a reviewed transcript; OmniVoice requires one.'
-                      : 'Provider-ready voices can be selected above. Local voices can be prepared in one click below.'
-                  : 'Only voices supported by the selected model are shown.'}
-              </p>
-              {#if showClonedVoices}<button
-                  type="button"
-                  onclick={() =>
-                    openVoiceLibrary('references', selectedTtsServiceId)}
-                  class="flex items-center gap-1.5 text-xs font-semibold text-[var(--accent)]"
-                  ><Library size={14} /> Manage Voice Library</button
-                >{:else}<button
-                  type="button"
-                  onclick={() => openVoiceLibrary('prebuilt')}
-                  class="flex items-center gap-1.5 text-xs font-semibold text-[var(--accent)]"
-                  ><Library size={14} /> Browse pre-built voices</button
-                >{/if}
-            </div>
-            {#if showClonedVoices}
-              <section
-                class="rounded-2xl border border-[var(--line)] bg-[var(--paper)] p-4"
-              >
-                <div class="flex flex-wrap items-start justify-between gap-3">
-                  <div>
-                    <h4 class="text-sm font-semibold">
-                      Available from your Voice Library
-                    </h4>
-                    <p class="muted mt-1 text-xs">
-                      {audioCppLinkedReferences
-                        ? 'Choose a local voice; Pandrator links its newest sample without making a provider-side copy, then selects it automatically.'
-                        : 'Choose a local voice; Pandrator uploads or refreshes only that voice, then selects it automatically.'}
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    onclick={() =>
-                      openVoiceLibrary('references', selectedTtsServiceId)}
-                    class="text-xs font-semibold text-[var(--accent)]"
-                    >Add a new voice</button
-                  >
-                </div>
-                {#if localVoiceChoices.length}
-                  <div class="mt-3 grid gap-2 sm:grid-cols-2">
-                    {#each localVoiceChoices as choice}
-                      {@const ready =
-                        choice.registration?.status === 'ready' &&
-                        Boolean(choice.registration.voice_id)}
-                      {@const preparing =
-                        publishingLibraryVoiceId === choice.voice.id}
-                      <article
-                        class="flex min-w-0 items-center gap-3 rounded-xl border border-[var(--line)] px-3 py-3"
-                      >
-                        <div class="min-w-0 flex-1">
-                          <div class="truncate text-sm font-semibold">
-                            {choice.voice.name}
-                          </div>
-                          <div class="muted mt-0.5 text-xs">
-                            {choice.voice.language || 'Language not set'} · {ready
-                              ? audioCppLinkedReferences
-                                ? 'linked to newest sample'
-                                : 'ready in provider'
-                              : choice.registration?.status === 'stale'
-                                ? audioCppLinkedReferences
-                                  ? 'link needs refresh'
-                                  : 'provider copy needs update'
-                                : !choice.hasSample
-                                  ? 'sample needed'
-                                  : choice.needsTranscript
-                                    ? 'reviewed transcript needed'
-                                    : audioCppLinkedReferences
-                                      ? 'ready to link'
-                                      : 'ready to upload'}
-                          </div>
-                        </div>
-                        <button
-                          type="button"
-                          onclick={() => useLibraryVoice(choice.voice)}
-                          disabled={preparing ||
-                            (Boolean(publishingLibraryVoiceId) && !preparing) ||
-                            (selectedTtsService?.available === false &&
-                              !audioCppLinkedReferences &&
-                              !ready &&
-                              choice.hasSample &&
-                              !choice.needsTranscript)}
-                          class:btn-primary={!ready}
-                          class="btn shrink-0 disabled:opacity-40"
-                        >
-                          {#if preparing}<LoaderCircle
-                              size={15}
-                              class="animate-spin"
-                            />{:else if ready}<CheckCircle2
-                              size={15}
-                            />{:else if audioCppLinkedReferences}<Link2
-                              size={15}
-                            />{:else}<CloudUpload size={15} />{/if}
-                          {preparing
-                            ? audioCppLinkedReferences
-                              ? 'Linking…'
-                              : 'Uploading…'
-                            : ready
-                              ? voiceName === choice.registration?.voice_id
-                                ? 'Selected'
-                                : 'Use'
-                              : !choice.hasSample
-                                ? 'Add sample'
-                                : choice.needsTranscript
-                                  ? 'Review text'
-                                  : choice.registration?.status === 'stale'
-                                    ? audioCppLinkedReferences
-                                      ? 'Refresh & use'
-                                      : 'Update & use'
-                                    : audioCppLinkedReferences
-                                      ? 'Link & use'
-                                      : 'Upload & use'}
-                        </button>
-                      </article>
-                    {/each}
-                  </div>
-                {:else}
-                  <p
-                    class="muted mt-3 rounded-xl border border-dashed border-[var(--line)] p-4 text-sm"
-                  >
-                    No local voices yet. Add one once, then reuse it across
-                    compatible speech services.
-                  </p>
-                {/if}
-                {#if voicePublishStatus}<p
-                    class="mt-3 text-xs font-semibold text-[var(--accent)]"
-                    role="status"
-                  >
-                    {voicePublishStatus}
-                  </p>{/if}
-              </section>
-            {/if}
-          {/if}
-          {#if supportsGenerationPrompt}
-            <label class="text-sm font-semibold"
-              ><ParameterLabel
-                section="tts"
-                name="generation_prompt"
-                label="Speech direction"
-              /><textarea
-                bind:value={generationPrompt}
-                rows="4"
-                placeholder="For example: Warm, intimate narration with measured pacing and subtle excitement."
-                class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
-              ></textarea><span class="muted mt-2 block text-xs"
-                >Sent with every segment as performance guidance. It does not
-                rewrite the transcript and should not be spoken aloud.</span
-              ></label
-            >
-          {:else if generationPromptModels.length}
-            <p class="muted rounded-xl bg-[var(--accent-soft)] p-3 text-xs">
-              {ttsModel || 'This model'} does not accept speech-direction prompts.
-              Choose an instruction-capable model to add one.
-            </p>
-          {/if}
-          {#if selectedTtsService?.supports_parallel_synthesis}
-            <label class="text-sm font-semibold">
-              Concurrent TTS requests
-              <input
-                type="number"
-                min="1"
-                max="8"
-                step="1"
-                bind:value={ttsConcurrentRequests}
-                class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
-              />
-              <span class="muted mt-2 block text-xs font-normal">
-                Send 1–8 segment requests at once. Start with 2 if your provider
-                quota allows it. Completed groups become playable in segment
-                order. The current group may finish before a pause takes effect;
-                higher values can increase rate-limit retries.
-              </span>
-            </label>
-          {/if}
-          {#if supportsBatchSynthesis}
             <div class="rounded-xl border border-[var(--line)] p-4">
               <div class="text-sm font-semibold">
-                Streaming generation batches
+                Readable subtitle composition
               </div>
-              <p class="muted mt-1 text-xs leading-relaxed">
-                Keep the speech engine continuously occupied while completed
-                segments become playable one by one. Use 1 to disable batching.
-              </p>
-              <label class="mt-3 block text-xs font-semibold"
-                ><ParameterLabel
-                  section="tts"
-                  name="tts_batch_size"
-                  label="Segments per batch"
-                  compact
-                /><input
-                  type="number"
-                  min="1"
-                  max={maximumTtsBatchSize}
-                  bind:value={ttsBatchSize}
-                  class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
-                /></label
-              >
-            </div>
-          {/if}
-          {#if session.workflow_kind !== 'audiobook'}<div
-              class="rounded-xl border border-[var(--line)] p-4"
-            >
-              <div class="text-sm font-semibold">Speech blocks for dubbing</div>
               <p class="muted mt-1 text-xs">
-                Pandrator first reconstructs unfinished same-speaker sentences,
-                then splits at balanced linguistic boundaries and optionally
-                packs nearby complete utterances. These TTS chunks remain
-                reviewable before synthesis and are independent from the final
-                subtitle layout; all controls below belong to this deterministic
-                planning step, not an LLM prompt.
+                Pandrator's deterministic word-timed composer uses these limits;
+                they are not sent to the correction model. It may regroup source
+                cues while preserving speakers, hard pauses, reading speed, and
+                the configured display capacity.
               </p>
               <div class="mt-3 grid grid-cols-2 gap-3">
                 <label class="text-xs font-semibold"
                   ><ParameterLabel
-                    section="tts"
-                    name="speech_block_min_chars"
-                    label="Preferred minimum split size"
+                    section="subtitles"
+                    name="max_chars_per_line"
+                    label="Characters / line"
+                    compact
+                  /><input
+                    type="number"
+                    min="20"
+                    max="100"
+                    bind:value={subtitleChars}
+                    class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                  /></label
+                ><label class="text-xs font-semibold"
+                  ><ParameterLabel
+                    section="subtitles"
+                    name="max_lines"
+                    label="Lines"
                     compact
                   /><input
                     type="number"
                     min="1"
-                    bind:value={speechBlockMinChars}
+                    max="3"
+                    bind:value={subtitleLines}
                     class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
                   /></label
                 ><label class="text-xs font-semibold"
                   ><ParameterLabel
-                    section="tts"
-                    name="speech_block_max_chars"
-                    label="Maximum characters"
+                    section="subtitles"
+                    name="min_duration_ms"
+                    label="Minimum duration (ms)"
                     compact
                   /><input
                     type="number"
-                    min="1"
-                    bind:value={speechBlockMaxChars}
+                    min="250"
+                    bind:value={subtitleMinDuration}
                     class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
                   /></label
                 ><label class="text-xs font-semibold"
                   ><ParameterLabel
-                    section="tts"
-                    name="speech_block_merge_threshold"
-                    label="Speech-block merge gap (ms)"
+                    section="subtitles"
+                    name="max_duration_ms"
+                    label="Maximum duration (ms)"
+                    compact
+                  /><input
+                    type="number"
+                    min="1000"
+                    bind:value={subtitleMaxDuration}
+                    class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                  /></label
+                ><label class="text-xs font-semibold"
+                  ><ParameterLabel
+                    section="subtitles"
+                    name="max_cps"
+                    label="Characters / second"
+                    compact
+                  /><input
+                    type="number"
+                    min="5"
+                    max="40"
+                    step="0.5"
+                    bind:value={subtitleCps}
+                    class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                  /></label
+                ><label class="text-xs font-semibold"
+                  ><ParameterLabel
+                    section="subtitles"
+                    name="min_gap_ms"
+                    label="Minimum cue gap (ms)"
                     compact
                   /><input
                     type="number"
                     min="0"
-                    bind:value={speechBlockMergeThreshold}
+                    max="500"
+                    bind:value={subtitleMinGap}
                     class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
                   /></label
                 ><label class="text-xs font-semibold"
                   ><ParameterLabel
-                    section="tts"
-                    name="speech_block_continuation_threshold_ms"
-                    label="Unfinished-sentence pause (ms)"
+                    section="subtitles"
+                    name="phrase_gap_ms"
+                    label="Subtitle grouping gap (ms)"
                     compact
                   /><input
                     type="number"
-                    min="0"
-                    bind:value={speechBlockContinuationThreshold}
+                    min="100"
+                    max="3000"
+                    bind:value={subtitlePhraseGap}
                     class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
                   /></label
                 ><label class="text-xs font-semibold"
                   ><ParameterLabel
-                    section="tts"
-                    name="speech_block_max_internal_gap_ms"
-                    label="Maximum silence inside a TTS chunk (ms)"
+                    section="subtitles"
+                    name="hard_gap_ms"
+                    label="Hard silence boundary (ms)"
                     compact
                   /><input
                     type="number"
-                    min="0"
-                    bind:value={speechBlockMaxInternalGap}
+                    min="250"
+                    max="5000"
+                    bind:value={subtitleHardGap}
+                    class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                  /></label
+                ><label class="text-xs font-semibold"
+                  ><ParameterLabel
+                    section="subtitles"
+                    name="sentence_boundary_threshold"
+                    label="Sentence boundary threshold"
+                    compact
+                  /><input
+                    type="number"
+                    min="0.01"
+                    max="0.99"
+                    step="0.01"
+                    bind:value={subtitleSentenceBoundaryThreshold}
                     class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
                   /></label
                 >
               </div>
-            </div>{/if}
-        {/if}
-        {#if settingsStage.key === 'export'}
-          <label class="text-sm font-semibold"
-            ><ParameterLabel
-              section="output"
-              name="export_mode"
-              label="Export target"
-            /><select
-              bind:value={exportMode}
-              class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
-              >{#if session.workflow_kind !== 'subtitles'}<option value="media"
-                  >Rendered video / media</option
-                >{/if}<option value="subtitles">Subtitle file</option><option
-                value="text">Concatenated plain text</option
-              ></select
-            ></label
-          >
-          {#if exportMode === 'media'}
-            <label class="text-sm font-semibold"
+            </div>
+          {/if}
+          {#if settingsStage.key === 'correct'}<label
+              class="text-sm font-semibold"
               ><ParameterLabel
-                section="output"
-                name="audio_mode"
-                label="Audio"
+                section="correction"
+                name="correction_style"
+                label="Correction approach"
               /><select
-                bind:value={audioMode}
+                bind:value={correctionStyle}
                 class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
-                ><option value="mixed"
-                  >Mix source and dubbing (recommended)</option
-                ><option value="preserve">Preserve source audio</option><option
-                  value="dubbing_only">Dubbing only</option
+                ><option value="publishable"
+                  >Publication-ready · remove disfluencies</option
+                ><option value="faithful"
+                  >Transcript-faithful · preserve delivery</option
                 ></select
               ></label
             ><label class="text-sm font-semibold"
-              ><ParameterLabel
-                section="output"
-                name="subtitle_mode"
-                label="Subtitles"
-              /><select
-                bind:value={subtitleMode}
+              >Additional correction guidance<textarea
+                bind:value={instructions}
+                rows="4"
                 class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
-                ><option value="none">None</option><option value="soft"
-                  >Injected soft tracks</option
-                ><option value="burned">Burned subtitles</option></select
+              ></textarea><span
+                class="muted mt-1 block text-xs font-normal leading-relaxed"
+                >These instructions and the approach above are sent to the
+                model. Cue size and silence controls are applied separately by
+                Pandrator.</span
+              ></label
+            >{/if}
+          {#if settingsStage.key === 'translate'}<label
+              class="text-sm font-semibold"
+              >Translate from<select
+                bind:value={translationSourceArtifactId}
+                required
+                class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
+                >{#if !translationSourceArtifactId}<option value="" disabled
+                    >Choose subtitle input</option
+                  >{/if}{#each subtitleCatalogItems as item (item.artifact_id)}<option
+                    value={item.artifact_id}>{subtitleSourceLabel(item)}</option
+                  >{/each}</select
+              ><span
+                class="muted mt-1 block text-xs font-normal leading-relaxed"
+                >Choose the exact transcription or corrected revision. A
+                correction no longer silently replaces your selected
+                transcription.</span
+              ></label
+            ><label class="text-sm font-semibold"
+              >Translation backend<select
+                bind:value={backend}
+                class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
+                ><option value="llm">LLM</option><option value="deepl"
+                  >DeepL</option
+                ></select
+              ></label
+            ><label class="text-sm font-semibold"
+              >Target language<select
+                bind:value={targetLanguage}
+                class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
+                >{#each LANGUAGE_OPTIONS.filter((item) => item.value !== 'auto') as item}<option
+                    value={item.value}>{item.label}</option
+                  >{/each}</select
+              ></label
+            >{#if backend === 'llm'}<label class="text-sm font-semibold"
+                >Translation guidance<textarea
+                  bind:value={instructions}
+                  rows="3"
+                  class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
+                ></textarea><span
+                  class="muted mt-1 block text-xs font-normal leading-relaxed"
+                  >The model creates natural display subtitles. Optional speech
+                  optimization remains a separate, reviewable layer for
+                  voiceover.</span
+                ></label
+              >{/if}{/if}
+          {#if settingsStage.key === 'optimize_tts'}
+            <fieldset class="rounded-xl border border-[var(--line)] p-4">
+              <legend class="px-1 text-sm font-semibold"
+                >When should optimization run?</legend
+              >
+              <div class="mt-2 grid gap-2">
+                <label
+                  class="flex items-start gap-3 rounded-xl bg-[var(--accent-soft)] p-3 text-sm"
+                  ><input
+                    type="radio"
+                    bind:group={optimizationTiming}
+                    value="document"
+                    class="mt-1 accent-[var(--accent)]"
+                  /><span
+                    ><strong class="block"
+                      >Before generation · reviewable revision</strong
+                    ><span class="muted mt-1 block text-xs"
+                      >Process the document's existing narration units, create
+                      an editable before-and-after artifact, and review it
+                      before TTS.</span
+                    ></span
+                  ></label
+                ><label
+                  class="flex items-start gap-3 rounded-xl bg-[var(--accent-soft)] p-3 text-sm"
+                  ><input
+                    type="radio"
+                    bind:group={optimizationTiming}
+                    value="generation"
+                    class="mt-1 accent-[var(--accent)]"
+                  /><span
+                    ><strong class="block"
+                      >During generation · final speech units</strong
+                    ><span class="muted mt-1 block text-xs"
+                      >Optimize the final synthesis units as generation begins
+                      and compare each result in the generation drawer.</span
+                    ></span
+                  ></label
+                >
+              </div>
+            </fieldset>
+            <label class="text-sm font-semibold"
+              >Speech-planning policy<select
+                bind:value={speechOptimizationMode}
+                class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
+              >
+                <option value="guarded">Guarded · safest</option>
+                <option value="flexible">Flexible · contextual rewrite</option>
+              </select><span
+                class="muted mt-2 block text-xs font-normal leading-relaxed"
+                >Guarded changes only validated speech candidates. Flexible may
+                revise phrasing but must preserve protected text and meaning.</span
               ></label
             >
-          {:else if exportMode === 'subtitles'}
+            <div>
+              <label class="text-sm font-semibold"
+                >Units per model request{#if optimizationTiming === 'document'}<input
+                    type="number"
+                    min="1"
+                    max="64"
+                    bind:value={documentOptimizationBatchSize}
+                    class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
+                  />{:else}<input
+                    type="number"
+                    min="1"
+                    max="64"
+                    bind:value={optimizationBatchSize}
+                    class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
+                  />{/if}</label
+              >
+              <p class="muted mt-2 text-xs leading-relaxed">
+                Use 1 for small local models. Larger values reduce request
+                overhead and provide neighboring context; every unit is still
+                validated and stored independently.
+              </p>
+            </div>
+          {/if}
+          {#if settingsStage.key === 'clean_source'}<label
+              class="flex items-start gap-3 rounded-xl border border-[var(--line)] p-4"
+              ><input
+                type="checkbox"
+                bind:checked={agentic}
+                class="mt-1 size-4 accent-[var(--accent)]"
+              /><span
+                ><span class="block text-sm font-semibold"
+                  >Agentic review loop</span
+                ><span class="muted mt-1 block text-xs"
+                  >Runs focused metadata, navigation, boilerplate,
+                  repeated-element, and chapter passes. Provider costs may
+                  apply.</span
+                ></span
+              ></label
+            >{#if agentic}<label class="text-sm font-semibold"
+                >Maximum LLM turns<input
+                  type="number"
+                  min="5"
+                  max="500"
+                  bind:value={maxIterations}
+                  class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
+                /></label
+              >{/if}{/if}
+          {#if settingsStage.key === 'prepare_text'}<div
+              class="rounded-xl border border-[var(--line)] bg-[var(--accent-soft)] p-4"
+            >
+              <div class="text-sm font-semibold">
+                Provider-independent segmentation
+              </div>
+              <p class="muted mt-1 text-xs leading-relaxed">
+                These controls create editable narration units and pauses.
+                Voice, model, and synthesis controls are selected later in
+                Generate audio.
+              </p>
+            </div>
+            <div class="grid gap-3 sm:grid-cols-2">
+              <label
+                class="flex items-center gap-3 rounded-xl border border-[var(--line)] p-3 text-sm font-semibold"
+                ><input
+                  type="checkbox"
+                  bind:checked={splitSentences}
+                  class="size-4 accent-[var(--accent)]"
+                /> Split long sentences</label
+              ><label
+                class="flex items-center gap-3 rounded-xl border border-[var(--line)] p-3 text-sm font-semibold"
+                ><input
+                  type="checkbox"
+                  bind:checked={appendSentences}
+                  class="size-4 accent-[var(--accent)]"
+                /> Join short sentences</label
+              ><label class="text-sm font-semibold"
+                >Maximum segment length<input
+                  type="number"
+                  min="20"
+                  max="2000"
+                  bind:value={maxSentenceLength}
+                  class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
+                /></label
+              ><label
+                class="flex items-center gap-3 rounded-xl border border-[var(--line)] p-3 text-sm font-semibold"
+                ><input
+                  type="checkbox"
+                  bind:checked={nemoNormalization}
+                  class="size-4 accent-[var(--accent)]"
+                /> Deterministic normalization</label
+              >
+            </div>
+            <details class="rounded-xl border border-[var(--line)] p-4">
+              <summary class="cursor-pointer text-sm font-semibold"
+                >Advanced text cleanup</summary
+              >
+              <div class="mt-4 grid gap-3 sm:grid-cols-2">
+                <label class="flex items-center gap-3 text-sm"
+                  ><input
+                    type="checkbox"
+                    bind:checked={normalizeAllCaps}
+                    class="size-4 accent-[var(--accent)]"
+                  /> Normalize all-caps text</label
+                ><label class="flex items-center gap-3 text-sm"
+                  ><input
+                    type="checkbox"
+                    bind:checked={removeDiacritics}
+                    class="size-4 accent-[var(--accent)]"
+                  /> Remove diacritics</label
+                ><label class="flex items-center gap-3 text-sm"
+                  ><input
+                    type="checkbox"
+                    bind:checked={removeQuotationMarks}
+                    class="size-4 accent-[var(--accent)]"
+                  /> Remove quotation marks</label
+                >
+              </div>
+            </details>{/if}
+          {#if settingsStage.key === 'generate_audio'}
+            {#if selectedTtsService?.catalogue_role === 'compatibility'}
+              <div class="rounded-xl border border-[var(--line)] p-4 text-sm">
+                <strong>Compatibility provider</strong>
+                <p class="muted mt-1">
+                  This session keeps its existing engine. For new generation,
+                  you can switch to the matching audio.cpp model and review its
+                  voice and settings.
+                </p>
+                <button
+                  type="button"
+                  class="btn btn-secondary mt-3"
+                  onclick={() =>
+                    chooseTtsService(
+                      String(selectedTtsService?.replacement_service_id)
+                    )}
+                  disabled={!ttsCatalogue.services.some(
+                    (item) =>
+                      item.id === selectedTtsService?.replacement_service_id &&
+                      item.available
+                  )}>Switch to audio.cpp</button
+                >
+              </div>
+            {/if}
+            {#if ttsSwitchSource}
+              <div
+                class="rounded-xl border border-[var(--accent)] p-4 text-sm"
+                role="status"
+              >
+                <strong>Review switch from {ttsSwitchSource.name}</strong>
+                <p class="muted mt-1">
+                  Check the model and voice below. Only an existing target voice
+                  or ready reference link is reused. Old engine options and
+                  reference settings will be cleared when you save. Existing
+                  takes and the original engine remain available.
+                </p>
+                <p class="muted mt-2">
+                  Preview the selected voice in the Voice Library before
+                  starting a long generation.
+                </p>
+                <label class="mt-3 flex items-start gap-2"
+                  ><input
+                    type="checkbox"
+                    bind:checked={ttsSwitchReviewed}
+                    class="mt-1"
+                  /> I reviewed the target model, voice, and settings reset.</label
+                >
+              </div>
+            {/if}
+            <div class="grid gap-2">
+              <div class="flex items-center justify-between gap-3">
+                <span class="text-sm font-semibold">TTS service</span><button
+                  type="button"
+                  onclick={refreshSpeechServices}
+                  disabled={refreshingTtsServices}
+                  class="flex items-center gap-2 rounded-lg border border-[var(--line)] px-3 py-2 text-xs font-semibold disabled:opacity-50"
+                  ><RefreshCw
+                    size={14}
+                    class={refreshingTtsServices ? 'animate-spin' : ''}
+                  /> Refresh service availability</button
+                >
+              </div>
+              <select
+                value={ttsService}
+                onchange={(event) =>
+                  chooseTtsService(event.currentTarget.value)}
+                class="w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
+                aria-label="TTS service"
+                >{#if availableTtsServices.length}<optgroup label="Available"
+                    >{#each availableTtsServices as service}<option
+                        value={service.id}>{service.name} · available</option
+                      >{/each}</optgroup
+                  >{/if}{#if unavailableTtsServices.length}<optgroup
+                    label="Unavailable"
+                    >{#each unavailableTtsServices as service}<option
+                        value={service.id}
+                        disabled
+                        class="text-[var(--muted)]"
+                        >{service.name} · unavailable</option
+                      >{/each}</optgroup
+                  >{/if}</select
+              >{#if selectedTtsService && !selectedTtsServiceAvailable}<span
+                  class="text-xs font-semibold text-red-500"
+                  role="status"
+                  >{selectedTtsService.availability_reason ||
+                    `${selectedTtsService.name} is unavailable. Refresh availability or choose another provider.`}</span
+                >{/if}<span class="muted text-xs"
+                >Available means Pandrator can use the provider. Cloud providers
+                can be available without a local process.</span
+              >
+            </div>
+            {#if selectedTtsServiceId === 'audio_cpp'}
+              <p class="muted text-xs">
+                audio.cpp runs several local speech models through one provider.
+                Choose the model below. You can install more model packages
+                under Providers &amp; services.
+              </p>
+            {/if}
+            <div class="flex flex-wrap items-center justify-between gap-3">
+              <p class="muted text-xs">
+                The preferred available service is selected automatically. Your
+                selected unavailable service remains visible until it is ready.
+              </p>
+              <button
+                type="button"
+                onclick={openTtsServices}
+                class="text-xs font-semibold text-[var(--accent)]"
+                >Manage services</button
+              >
+            </div>
+            <label class="text-sm font-semibold"
+              >{selectedTtsServiceId === 'kobold_qwen'
+                ? 'Voice type'
+                : 'Model'}<select
+                value={ttsModel}
+                onchange={(event) => chooseTtsModel(event.currentTarget.value)}
+                class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
+                aria-label="TTS model"
+                >{#each ttsModels as item}<option value={item}>{item}</option
+                  >{/each}</select
+              ></label
+            >
+            {#if supportsXttsModelUpload}
+              <section
+                class="rounded-xl border border-[var(--line)] bg-[var(--accent-soft)] p-4"
+                aria-labelledby="xtts-model-upload-title"
+              >
+                <div class="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <h3
+                      id="xtts-model-upload-title"
+                      class="text-sm font-semibold"
+                    >
+                      XTTS model management
+                    </h3>
+                    <p class="muted mt-1 max-w-xl text-xs leading-relaxed">
+                      Select any listed model for this generation. Local
+                      complete bundles can be removed here; the built-in XTTS
+                      model is protected. Add a fine-tuned model with the
+                      four-file bundle below—Pandrator installs it in stable
+                      user data.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onclick={loadXttsModels}
+                    disabled={xttsModelsLoading}
+                    class="flex items-center gap-2 rounded-lg border border-[var(--line)] px-3 py-2 text-xs font-semibold disabled:opacity-50"
+                    ><RefreshCw
+                      size={14}
+                      class={xttsModelsLoading ? 'animate-spin' : ''}
+                    /> Refresh models</button
+                  >
+                </div>
+                {#if xttsModelsCompatibility}<p
+                    class="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-950"
+                    role="status"
+                  >
+                    {xttsModelsCompatibility}
+                  </p>{/if}
+                {#if xttsModels.length}<div
+                    class="mt-3 overflow-hidden rounded-lg border border-[var(--line)] bg-[var(--paper)]"
+                  >
+                    {#each xttsModels as model}<div
+                        class="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--line)] p-3 last:border-b-0"
+                      >
+                        <div class="min-w-0">
+                          <button
+                            type="button"
+                            onclick={() => chooseTtsModel(model.id)}
+                            class="max-w-full truncate text-left text-xs font-semibold text-[var(--accent)]"
+                            aria-label={`Select XTTS model ${model.id}`}
+                            >{model.id}</button
+                          >
+                          <p class="muted mt-1 text-xs">
+                            {model.is_default
+                              ? 'Built-in protected model'
+                              : model.removable
+                                ? 'Local model bundle'
+                                : model.lifecycle_supported
+                                  ? 'Local model (not removable)'
+                                  : 'Model lifecycle requires an XTTS update'}
+                          </p>
+                          {#if model.id === ttsModel}<span
+                              class="mt-1 inline-block rounded bg-[var(--accent-soft)] px-2 py-0.5 text-[11px] font-semibold"
+                              >Selected for this generation</span
+                            >{/if}
+                        </div>
+                        <div class="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onclick={() => chooseTtsModel(model.id)}
+                            class="rounded-lg border border-[var(--line)] px-3 py-2 text-xs font-semibold"
+                            >Select</button
+                          >{#if model.removable && xttsModelsLifecycleSupported}<button
+                              type="button"
+                              onclick={() => removeXttsModel(model)}
+                              disabled={Boolean(deletingXttsModelId)}
+                              class="rounded-lg border border-red-300 px-3 py-2 text-xs font-semibold text-red-700 disabled:opacity-50"
+                              >{deletingXttsModelId === model.id
+                                ? 'Removing…'
+                                : 'Remove'}</button
+                            >{:else if !model.is_default}<span
+                              class="muted text-xs">Removal unavailable</span
+                            >{/if}
+                        </div>
+                      </div>{/each}
+                  </div>{/if}
+                <div class="mt-3 grid gap-3 sm:grid-cols-2">
+                  <label class="text-xs font-semibold"
+                    >Model ID<input
+                      bind:value={xttsModelId}
+                      placeholder="custom/my-narrator-v1"
+                      disabled={uploadingXttsModel}
+                      class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-sm font-normal"
+                    /></label
+                  ><label class="text-xs font-semibold"
+                    >Bundle files<input
+                      type="file"
+                      multiple
+                      accept=".json,.pth"
+                      disabled={uploadingXttsModel}
+                      onchange={(event) =>
+                        chooseXttsModelFiles(event.currentTarget.files)}
+                      class="mt-1 block w-full text-sm font-normal"
+                    /></label
+                  >
+                </div>
+                <p class="muted mt-3 text-xs">
+                  Required: <code>config.json</code>, <code>model.pth</code>,
+                  <code>speakers_xtts.pth</code>, and <code>vocab.json</code>.
+                  {#if xttsModelFiles.length}
+                    Selected: {xttsModelFiles
+                      .map((file) => file.name)
+                      .join(', ')}.
+                  {/if}
+                </p>
+                <div class="mt-3 flex flex-wrap items-center gap-3">
+                  <button
+                    type="button"
+                    onclick={uploadXttsModel}
+                    disabled={uploadingXttsModel ||
+                      !selectedTtsServiceAvailable}
+                    class="flex items-center gap-2 rounded-lg bg-[var(--accent)] px-3 py-2 text-xs font-semibold text-white disabled:opacity-50"
+                    >{#if uploadingXttsModel}<LoaderCircle
+                        class="animate-spin"
+                        size={14}
+                      /> Uploading model…{:else}<CloudUpload size={14} /> Upload and
+                      select{/if}</button
+                  >
+                  {#if xttsModelUploadError}<p
+                      class="basis-full rounded-lg border border-red-300 bg-red-50 p-3 text-xs text-red-800"
+                      role="alert"
+                    >
+                      {xttsModelUploadError}
+                    </p>{/if}
+                  {#if xttsModelUploadMessage && !uploadingXttsModel}<span
+                      class="text-xs"
+                      role="status"
+                      aria-live="polite">{xttsModelUploadMessage}</span
+                    >{/if}
+                </div>
+                {#if uploadingXttsModel}<div class="mt-3">
+                    <div
+                      class="mb-1.5 flex items-center justify-between gap-3 text-xs"
+                    >
+                      <span class="muted"
+                        >{xttsModelUploadPhase === 'installing'
+                          ? 'Upload transferred; Pandrator is installing the model…'
+                          : 'Uploading the XTTS model…'}</span
+                      ><span class="muted tabular-nums"
+                        >{Math.round(xttsModelUploadProgress * 100)}%</span
+                      >
+                    </div>
+                    <progress
+                      class="h-2 w-full overflow-hidden rounded-full accent-[var(--accent)]"
+                      max="1"
+                      value={xttsModelUploadProgress}
+                      aria-label="XTTS model upload progress"
+                      >{Math.round(xttsModelUploadProgress * 100)}%</progress
+                    >
+                  </div>{/if}
+              </section>
+            {/if}
+            <label class="text-sm font-semibold"
+              >Speech language<select
+                bind:value={targetLanguage}
+                onchange={(event) => {
+                  const selected = ttsVoiceDescriptors.find(
+                    (voice) => voice.id === voiceName
+                  );
+                  if (
+                    selected &&
+                    !voiceSupportsLanguage(selected, event.currentTarget.value)
+                  )
+                    voiceName =
+                      ttsVoiceDescriptors.find((voice) =>
+                        voiceSupportsLanguage(voice, event.currentTarget.value)
+                      )?.id ?? '';
+                }}
+                class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
+                >{#each ttsLanguages.length ? ttsLanguages : LANGUAGE_OPTIONS.filter((item) => item.value !== 'auto') as item}<option
+                    value={item.value}>{item.label}</option
+                  >{/each}</select
+              ></label
+            >
+            {#if supportsPrebuiltVoices || showClonedVoices}
+              <label class="text-sm font-semibold"
+                >Voice<select
+                  bind:value={voiceName}
+                  class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
+                  >{#if !showClonedVoices || selectedModelAllowsReferenceFree}<option
+                      value=""
+                      disabled={!selectedModelAllowsReferenceFree &&
+                        defaultVoiceLanguageMismatch}
+                      >{selectedModelAllowsReferenceFree
+                        ? 'Design from instructions · no reference'
+                        : 'Service default'}</option
+                    >{/if}{#if supportsPrebuiltVoices}<optgroup
+                      label={`${LANGUAGE_OPTIONS.find((item) => item.value === targetLanguage)?.label ?? targetLanguage} · pre-built voices`}
+                      >{#each filteredPrebuiltVoices as voice}<option
+                          value={voice.id}
+                          >{voice.name}{voice.gender
+                            ? ` · ${voice.gender}`
+                            : ''} ·
+                          {voice.language}</option
+                        >{/each}</optgroup
+                    >{/if}{#if showClonedVoices}{#each clonedVoiceGroups as group}
+                      <optgroup label={group.label}
+                        >{#each group.voices as voice}<option value={voice.id}
+                            >{voice.name}</option
+                          >{/each}</optgroup
+                      >{/each}{/if}</select
+                ></label
+              >
+              {#if supportsPrebuiltVoices}
+                <p class="muted text-xs" role="status">
+                  {selectedVoiceLanguageMismatch
+                    ? 'Choose a voice that supports the selected language before saving.'
+                    : filteredPrebuiltVoices.length
+                      ? `${filteredPrebuiltVoices.length} pre-built ${filteredPrebuiltVoices.length === 1 ? 'voice supports' : 'voices support'} the selected language.`
+                      : 'No pre-built voices are listed for this language. Choose another language or a provider-ready voice.'}
+                </p>
+              {/if}
+              <div class="flex flex-wrap items-center justify-between gap-3">
+                <p class="muted text-xs">
+                  {showClonedVoices
+                    ? selectedModelAllowsReferenceFree
+                      ? 'Leave “Design from instructions” selected to follow the speech direction, or choose a linked local voice to clone it.'
+                      : audioCppLinkedReferences
+                        ? 'Linked local voices can be selected above. Qwen benefits from a reviewed transcript; OmniVoice requires one.'
+                        : 'Provider-ready voices can be selected above. Local voices can be prepared in one click below.'
+                    : 'Only voices supported by the selected model are shown.'}
+                </p>
+                {#if showClonedVoices}<button
+                    type="button"
+                    onclick={() =>
+                      openVoiceLibrary('references', selectedTtsServiceId)}
+                    class="flex items-center gap-1.5 text-xs font-semibold text-[var(--accent)]"
+                    ><Library size={14} /> Manage Voice Library</button
+                  >{:else}<button
+                    type="button"
+                    onclick={() => openVoiceLibrary('prebuilt')}
+                    class="flex items-center gap-1.5 text-xs font-semibold text-[var(--accent)]"
+                    ><Library size={14} /> Browse pre-built voices</button
+                  >{/if}
+              </div>
+              {#if showClonedVoices}
+                <details
+                  class="rounded-2xl border border-[var(--line)] bg-[var(--paper)] p-4"
+                >
+                  <summary class="cursor-pointer text-sm font-semibold"
+                    >Available from your Voice Library <span
+                      class="muted font-normal"
+                      >· {localVoiceChoices.length}
+                      {localVoiceChoices.length === 1
+                        ? 'voice'
+                        : 'voices'}</span
+                    ></summary
+                  >
+                  <div
+                    class="mt-3 flex flex-wrap items-start justify-between gap-3"
+                  >
+                    <div>
+                      <p class="muted mt-1 text-xs">
+                        {audioCppLinkedReferences
+                          ? 'Choose a local voice; Pandrator links its newest sample without making a provider-side copy, then selects it automatically.'
+                          : 'Choose a local voice; Pandrator uploads or refreshes only that voice, then selects it automatically.'}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onclick={() =>
+                        openVoiceLibrary('references', selectedTtsServiceId)}
+                      class="text-xs font-semibold text-[var(--accent)]"
+                      >Add a new voice</button
+                    >
+                  </div>
+                  {#if localVoiceChoices.length}
+                    <div class="mt-3 space-y-2">
+                      {#each localVoiceChoices as choice}
+                        {@const ready =
+                          choice.registration?.status === 'ready' &&
+                          Boolean(choice.registration.voice_id)}
+                        {@const preparing =
+                          publishingLibraryVoiceId === choice.voice.id}
+                        <article
+                          class="flex min-w-0 items-center gap-3 rounded-xl border border-[var(--line)] px-3 py-3"
+                        >
+                          <div class="min-w-0 flex-1">
+                            <div class="break-words text-sm font-semibold">
+                              {choice.voice.name}
+                            </div>
+                            <div class="muted mt-0.5 text-xs">
+                              {choice.voice.language || 'Language not set'} · {ready
+                                ? audioCppLinkedReferences
+                                  ? 'linked to newest sample'
+                                  : 'ready in provider'
+                                : choice.registration?.status === 'stale'
+                                  ? audioCppLinkedReferences
+                                    ? 'link needs refresh'
+                                    : 'provider copy needs update'
+                                  : !choice.hasSample
+                                    ? 'sample needed'
+                                    : choice.needsTranscript
+                                      ? 'reviewed transcript needed'
+                                      : audioCppLinkedReferences
+                                        ? 'ready to link'
+                                        : 'ready to upload'}
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onclick={() => useLibraryVoice(choice.voice)}
+                            disabled={preparing ||
+                              (Boolean(publishingLibraryVoiceId) &&
+                                !preparing) ||
+                              (selectedTtsService?.available === false &&
+                                !audioCppLinkedReferences &&
+                                !ready &&
+                                choice.hasSample &&
+                                !choice.needsTranscript)}
+                            class:btn-primary={!ready}
+                            class="btn shrink-0 disabled:opacity-40"
+                          >
+                            {#if preparing}<LoaderCircle
+                                size={15}
+                                class="animate-spin"
+                              />{:else if ready}<CheckCircle2
+                                size={15}
+                              />{:else if audioCppLinkedReferences}<Link2
+                                size={15}
+                              />{:else}<CloudUpload size={15} />{/if}
+                            {preparing
+                              ? audioCppLinkedReferences
+                                ? 'Linking…'
+                                : 'Uploading…'
+                              : ready
+                                ? voiceName === choice.registration?.voice_id
+                                  ? 'Selected'
+                                  : 'Use'
+                                : !choice.hasSample
+                                  ? 'Add sample'
+                                  : choice.needsTranscript
+                                    ? 'Review text'
+                                    : choice.registration?.status === 'stale'
+                                      ? audioCppLinkedReferences
+                                        ? 'Refresh & use'
+                                        : 'Update & use'
+                                      : audioCppLinkedReferences
+                                        ? 'Link & use'
+                                        : 'Upload & use'}
+                          </button>
+                        </article>
+                      {/each}
+                    </div>
+                  {:else}
+                    <p
+                      class="muted mt-3 rounded-xl border border-dashed border-[var(--line)] p-4 text-sm"
+                    >
+                      No local voices yet. Add one once, then reuse it across
+                      compatible speech services.
+                    </p>
+                  {/if}
+                  {#if voicePublishStatus}<p
+                      class="mt-3 text-xs font-semibold text-[var(--accent)]"
+                      role="status"
+                    >
+                      {voicePublishStatus}
+                    </p>{/if}
+                </details>
+              {/if}
+            {/if}
+            {#if supportsGenerationPrompt}
+              <label class="text-sm font-semibold"
+                ><ParameterLabel
+                  section="tts"
+                  name="generation_prompt"
+                  label="Speech direction"
+                /><textarea
+                  bind:value={generationPrompt}
+                  rows="4"
+                  placeholder="For example: Warm, intimate narration with measured pacing and subtle excitement."
+                  class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
+                ></textarea><span class="muted mt-2 block text-xs"
+                  >Sent with every segment as performance guidance. It does not
+                  rewrite the transcript and should not be spoken aloud.</span
+                ></label
+              >
+            {:else if generationPromptModels.length}
+              <p class="muted rounded-xl bg-[var(--accent-soft)] p-3 text-xs">
+                {ttsModel || 'This model'} does not accept speech-direction prompts.
+                Choose an instruction-capable model to add one.
+              </p>
+            {/if}
+            {#if selectedTtsService?.supports_parallel_synthesis}
+              <label class="text-sm font-semibold">
+                Concurrent TTS requests
+                <input
+                  type="number"
+                  min="1"
+                  max="8"
+                  step="1"
+                  bind:value={ttsConcurrentRequests}
+                  class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
+                />
+                <span class="muted mt-2 block text-xs font-normal">
+                  Send 1–8 segment requests at once. Start with 2 if your
+                  provider quota allows it. Completed groups become playable in
+                  segment order. The current group may finish before a pause
+                  takes effect; higher values can increase rate-limit retries.
+                </span>
+              </label>
+            {/if}
+            {#if supportsBatchSynthesis}
+              <div class="rounded-xl border border-[var(--line)] p-4">
+                <div class="text-sm font-semibold">
+                  Streaming generation batches
+                </div>
+                <p class="muted mt-1 text-xs leading-relaxed">
+                  Keep the speech engine continuously occupied while completed
+                  segments become playable one by one. Use 1 to disable
+                  batching.
+                </p>
+                <label class="mt-3 block text-xs font-semibold"
+                  ><ParameterLabel
+                    section="tts"
+                    name="tts_batch_size"
+                    label="Segments per batch"
+                    compact
+                  /><input
+                    type="number"
+                    min="1"
+                    max={maximumTtsBatchSize}
+                    bind:value={ttsBatchSize}
+                    class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                  /></label
+                >
+              </div>
+            {/if}
+          {/if}
+          {#if settingsStage.key === 'export'}
             <label class="text-sm font-semibold"
               ><ParameterLabel
                 section="output"
-                name="subtitle_format"
-                label="Subtitle format"
+                name="export_mode"
+                label="Export target"
               /><select
-                bind:value={subtitleFormat}
+                bind:value={exportMode}
                 class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
-                ><option value="srt">SubRip (.srt)</option><option value="vtt"
-                  >WebVTT (.vtt)</option
+                >{#if session.workflow_kind !== 'subtitles'}<option
+                    value="media">Rendered video / media</option
+                  >{/if}<option value="subtitles">Subtitle file</option><option
+                  value="text">Concatenated plain text</option
                 ></select
               ></label
             >
-          {:else}<p
-              class="muted rounded-xl bg-[var(--accent-soft)] p-3 text-xs"
-            >
-              Cue timestamps and numbering are removed and the selected subtitle
-              text is joined into one plain-text document.
-            </p>{/if}
-          {#if exportMode !== 'media' || subtitleMode !== 'none'}<label
-              class="text-sm font-semibold"
-              ><ParameterLabel
-                section="output"
-                name="subtitle_selection"
-                label="Subtitle tracks"
-              /><select
-                bind:value={subtitleSelection}
-                class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
-                ><option value="source">Source / corrected</option><option
-                  value="translation">Translation</option
-                ><option value="dual">Source and translation</option></select
-              ></label
-            >{/if}
-          <div class="rounded-xl border border-[var(--line)] p-4">
-            <div class="text-sm font-semibold">Final subtitle layout</div>
-            <p class="muted mt-1 text-xs">
-              Applied only to derived export subtitles; source and reviewed
-              revisions remain unchanged.
-            </p>
-            <div class="mt-3 grid grid-cols-2 gap-3">
-              <label class="text-xs font-semibold"
+            {#if exportMode === 'media'}
+              <label class="text-sm font-semibold"
                 ><ParameterLabel
-                  section="subtitles"
-                  name="max_chars_per_line"
-                  label="Characters / line"
-                  compact
-                /><input
-                  type="number"
-                  min="20"
-                  max="100"
-                  bind:value={subtitleChars}
-                  class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
-                /></label
-              ><label class="text-xs font-semibold"
+                  section="output"
+                  name="audio_mode"
+                  label="Audio"
+                /><select
+                  bind:value={audioMode}
+                  class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
+                  ><option value="mixed"
+                    >Mix source and dubbing (recommended)</option
+                  ><option value="preserve">Preserve source audio</option
+                  ><option value="dubbing_only">Dubbing only</option></select
+                ></label
+              ><label class="text-sm font-semibold"
                 ><ParameterLabel
-                  section="subtitles"
-                  name="max_lines"
-                  label="Lines"
-                  compact
-                /><input
-                  type="number"
-                  min="1"
-                  max="3"
-                  bind:value={subtitleLines}
-                  class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
-                /></label
-              ><label class="text-xs font-semibold"
-                ><ParameterLabel
-                  section="subtitles"
-                  name="min_duration_ms"
-                  label="Minimum duration (ms)"
-                  compact
-                /><input
-                  type="number"
-                  min="250"
-                  bind:value={subtitleMinDuration}
-                  class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
-                /></label
-              ><label class="text-xs font-semibold"
-                ><ParameterLabel
-                  section="subtitles"
-                  name="max_duration_ms"
-                  label="Maximum duration (ms)"
-                  compact
-                /><input
-                  type="number"
-                  min="1000"
-                  bind:value={subtitleMaxDuration}
-                  class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
-                /></label
-              ><label class="text-xs font-semibold"
-                ><ParameterLabel
-                  section="subtitles"
-                  name="max_cps"
-                  label="Characters / second"
-                  compact
-                /><input
-                  type="number"
-                  min="5"
-                  max="40"
-                  step="0.5"
-                  bind:value={subtitleCps}
-                  class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
-                /></label
-              ><label class="text-xs font-semibold"
-                ><ParameterLabel
-                  section="subtitles"
-                  name="min_gap_ms"
-                  label="Minimum cue gap (ms)"
-                  compact
-                /><input
-                  type="number"
-                  min="0"
-                  max="500"
-                  bind:value={subtitleMinGap}
-                  class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
-                /></label
-              ><label class="text-xs font-semibold"
-                ><ParameterLabel
-                  section="subtitles"
-                  name="phrase_gap_ms"
-                  label="Subtitle grouping gap (ms)"
-                  compact
-                /><input
-                  type="number"
-                  min="100"
-                  max="3000"
-                  bind:value={subtitlePhraseGap}
-                  class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
-                /></label
-              ><label class="text-xs font-semibold"
-                ><ParameterLabel
-                  section="subtitles"
-                  name="hard_gap_ms"
-                  label="Hard silence boundary (ms)"
-                  compact
-                /><input
-                  type="number"
-                  min="250"
-                  max="5000"
-                  bind:value={subtitleHardGap}
-                  class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
-                /></label
-              ><label class="text-xs font-semibold"
-                ><ParameterLabel
-                  section="subtitles"
-                  name="sentence_boundary_threshold"
-                  label="Sentence boundary threshold"
-                  compact
-                /><input
-                  type="number"
-                  min="0.01"
-                  max="0.99"
-                  step="0.01"
-                  bind:value={subtitleSentenceBoundaryThreshold}
-                  class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
-                /></label
+                  section="output"
+                  name="subtitle_mode"
+                  label="Subtitles"
+                /><select
+                  bind:value={subtitleMode}
+                  class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
+                  ><option value="none">None</option><option value="soft"
+                    >Injected soft tracks</option
+                  ><option value="burned">Burned subtitles</option></select
+                ></label
               >
+            {:else if exportMode === 'subtitles'}
+              <label class="text-sm font-semibold"
+                ><ParameterLabel
+                  section="output"
+                  name="subtitle_format"
+                  label="Subtitle format"
+                /><select
+                  bind:value={subtitleFormat}
+                  class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
+                  ><option value="srt">SubRip (.srt)</option><option value="vtt"
+                    >WebVTT (.vtt)</option
+                  ></select
+                ></label
+              >
+            {:else}<p
+                class="muted rounded-xl bg-[var(--accent-soft)] p-3 text-xs"
+              >
+                Cue timestamps and numbering are removed and the selected
+                subtitle text is joined into one plain-text document.
+              </p>{/if}
+            {#if exportMode !== 'media' || subtitleMode !== 'none'}<label
+                class="text-sm font-semibold"
+                ><ParameterLabel
+                  section="output"
+                  name="subtitle_selection"
+                  label="Subtitle tracks"
+                /><select
+                  bind:value={subtitleSelection}
+                  class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
+                  ><option value="source">Source / corrected</option><option
+                    value="translation">Translation</option
+                  ><option value="dual">Source and translation</option></select
+                ></label
+              >{/if}
+            <div class="rounded-xl border border-[var(--line)] p-4">
+              <div class="text-sm font-semibold">Final subtitle layout</div>
+              <p class="muted mt-1 text-xs">
+                Applied only to derived export subtitles; source and reviewed
+                revisions remain unchanged.
+              </p>
+              <div class="mt-3 grid grid-cols-2 gap-3">
+                <label class="text-xs font-semibold"
+                  ><ParameterLabel
+                    section="subtitles"
+                    name="max_chars_per_line"
+                    label="Characters / line"
+                    compact
+                  /><input
+                    type="number"
+                    min="20"
+                    max="100"
+                    bind:value={subtitleChars}
+                    class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                  /></label
+                ><label class="text-xs font-semibold"
+                  ><ParameterLabel
+                    section="subtitles"
+                    name="max_lines"
+                    label="Lines"
+                    compact
+                  /><input
+                    type="number"
+                    min="1"
+                    max="3"
+                    bind:value={subtitleLines}
+                    class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                  /></label
+                ><label class="text-xs font-semibold"
+                  ><ParameterLabel
+                    section="subtitles"
+                    name="min_duration_ms"
+                    label="Minimum duration (ms)"
+                    compact
+                  /><input
+                    type="number"
+                    min="250"
+                    bind:value={subtitleMinDuration}
+                    class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                  /></label
+                ><label class="text-xs font-semibold"
+                  ><ParameterLabel
+                    section="subtitles"
+                    name="max_duration_ms"
+                    label="Maximum duration (ms)"
+                    compact
+                  /><input
+                    type="number"
+                    min="1000"
+                    bind:value={subtitleMaxDuration}
+                    class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                  /></label
+                ><label class="text-xs font-semibold"
+                  ><ParameterLabel
+                    section="subtitles"
+                    name="max_cps"
+                    label="Characters / second"
+                    compact
+                  /><input
+                    type="number"
+                    min="5"
+                    max="40"
+                    step="0.5"
+                    bind:value={subtitleCps}
+                    class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                  /></label
+                ><label class="text-xs font-semibold"
+                  ><ParameterLabel
+                    section="subtitles"
+                    name="min_gap_ms"
+                    label="Minimum cue gap (ms)"
+                    compact
+                  /><input
+                    type="number"
+                    min="0"
+                    max="500"
+                    bind:value={subtitleMinGap}
+                    class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                  /></label
+                ><label class="text-xs font-semibold"
+                  ><ParameterLabel
+                    section="subtitles"
+                    name="phrase_gap_ms"
+                    label="Subtitle grouping gap (ms)"
+                    compact
+                  /><input
+                    type="number"
+                    min="100"
+                    max="3000"
+                    bind:value={subtitlePhraseGap}
+                    class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                  /></label
+                ><label class="text-xs font-semibold"
+                  ><ParameterLabel
+                    section="subtitles"
+                    name="hard_gap_ms"
+                    label="Hard silence boundary (ms)"
+                    compact
+                  /><input
+                    type="number"
+                    min="250"
+                    max="5000"
+                    bind:value={subtitleHardGap}
+                    class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                  /></label
+                ><label class="text-xs font-semibold"
+                  ><ParameterLabel
+                    section="subtitles"
+                    name="sentence_boundary_threshold"
+                    label="Sentence boundary threshold"
+                    compact
+                  /><input
+                    type="number"
+                    min="0.01"
+                    max="0.99"
+                    step="0.01"
+                    bind:value={subtitleSentenceBoundaryThreshold}
+                    class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                  /></label
+                >
+              </div>
             </div>
-          </div>
-        {/if}
-      </fieldset>
-      {#if stageMessage}<p
-          role="status"
-          class="mt-5 rounded-xl bg-[var(--accent-soft)] p-3 text-xs"
-        >
-          {stageMessage}
-        </p>{/if}
-      <div class="mt-7 flex flex-wrap justify-end gap-3">
-        <button
-          onclick={openFullSettingsFromStage}
-          disabled={settingsLoading}
-          class="mr-auto rounded-xl border border-[var(--line)] px-4 py-2.5 text-sm font-semibold"
-          >All {sectionDisplay(stageSection(settingsStage.key))} settings</button
-        ><button
-          onclick={revertStageToDefaults}
-          disabled={settingsLoading}
-          class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-4 py-2.5 text-sm font-semibold"
-          ><RotateCcw size={15} /> Revert to defaults</button
-        ><button
-          onclick={() => saveSettings('defaults')}
-          disabled={settingsLoading ||
-            Boolean(publishingLibraryVoiceId) ||
-            (settingsStage.key === 'generate_audio' &&
-              (!selectedTtsServiceAvailable ||
-                selectedVoiceLanguageMismatch ||
-                invalidTtsConcurrency ||
-                (Boolean(ttsSwitchSource) &&
-                  (!ttsSwitchReviewed || !ttsModels.includes(ttsModel)))))}
-          class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-4 py-2.5 text-sm font-semibold disabled:opacity-40"
-          ><Save size={15} /> Save as defaults</button
-        ><button
-          onclick={() => (settingsStage = null)}
-          class="rounded-xl border border-[var(--line)] px-4 py-2.5 text-sm font-semibold"
-          >Cancel</button
-        ><button
-          onclick={() =>
-            saveSettings(
-              'session',
-              session.workflow_kind === 'media_edit' &&
-                settingsStage?.key === 'transcribe' &&
-                settingsStage.status !== 'running'
-            )}
-          disabled={settingsLoading ||
-            Boolean(publishingLibraryVoiceId) ||
-            (settingsStage.key === 'translate' &&
-              !translationSourceArtifactId) ||
-            (settingsStage.key === 'generate_audio' &&
-              (!selectedTtsServiceAvailable ||
-                selectedVoiceLanguageMismatch ||
-                invalidTtsConcurrency ||
-                (Boolean(ttsSwitchSource) &&
-                  (!ttsSwitchReviewed || !ttsModels.includes(ttsModel)))))}
-          class="rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40"
-          >{session.workflow_kind === 'media_edit' &&
-          settingsStage.key === 'transcribe' &&
-          settingsStage.status !== 'running'
-            ? hasAttachedCaptions
-              ? 'Save & align captions'
-              : 'Save & transcribe'
-            : 'Save settings'}</button
-        >
+          {/if}
+        </fieldset>
+        {#if stageMessage}<p
+            role="status"
+            class="mt-5 rounded-xl bg-[var(--accent-soft)] p-3 text-xs"
+          >
+            {stageMessage}
+          </p>{/if}
+        <div class="mt-7 flex flex-wrap justify-end gap-3">
+          <button
+            onclick={openFullSettingsFromStage}
+            disabled={settingsLoading}
+            class="mr-auto rounded-xl border border-[var(--line)] px-4 py-2.5 text-sm font-semibold"
+            >All {sectionDisplay(stageSection(settingsStage.key))} settings</button
+          ><button
+            onclick={revertStageToDefaults}
+            disabled={settingsLoading}
+            class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-4 py-2.5 text-sm font-semibold"
+            ><RotateCcw size={15} /> Revert to defaults</button
+          ><button
+            onclick={() => saveSettings('defaults')}
+            disabled={settingsLoading ||
+              Boolean(publishingLibraryVoiceId) ||
+              (settingsStage.key === 'generate_audio' &&
+                (!selectedTtsServiceAvailable ||
+                  selectedVoiceLanguageMismatch ||
+                  invalidTtsConcurrency ||
+                  (Boolean(ttsSwitchSource) &&
+                    (!ttsSwitchReviewed || !ttsModels.includes(ttsModel)))))}
+            class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-4 py-2.5 text-sm font-semibold disabled:opacity-40"
+            ><Save size={15} /> Save as defaults</button
+          ><button
+            onclick={() => (settingsStage = null)}
+            class="rounded-xl border border-[var(--line)] px-4 py-2.5 text-sm font-semibold"
+            >Cancel</button
+          ><button
+            onclick={() =>
+              saveSettings(
+                'session',
+                session.workflow_kind === 'media_edit' &&
+                  settingsStage?.key === 'transcribe' &&
+                  settingsStage.status !== 'running'
+              )}
+            disabled={settingsLoading ||
+              Boolean(publishingLibraryVoiceId) ||
+              (settingsStage.key === 'translate' &&
+                !translationSourceArtifactId) ||
+              (settingsStage.key === 'generate_audio' &&
+                (!selectedTtsServiceAvailable ||
+                  selectedVoiceLanguageMismatch ||
+                  invalidTtsConcurrency ||
+                  (Boolean(ttsSwitchSource) &&
+                    (!ttsSwitchReviewed || !ttsModels.includes(ttsModel)))))}
+            class="rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40"
+            >{session.workflow_kind === 'media_edit' &&
+            settingsStage.key === 'transcribe' &&
+            settingsStage.status !== 'running'
+              ? hasAttachedCaptions
+                ? 'Save & align captions'
+                : 'Save & transcribe'
+              : 'Save settings'}</button
+          >
+        </div>
       </div>
     </div>
   </div>
@@ -5268,6 +5209,12 @@
   steps={workflowTourSteps}
   bind:open={workflowTour}
 />
+
+{#if planSettingsOpen}<SpeechPlanSettings
+    sessionId={session.id}
+    onclose={() => (planSettingsOpen = false)}
+    onsaved={loadSpeechPlan}
+  />{/if}
 
 <style>
   .mode-choice {

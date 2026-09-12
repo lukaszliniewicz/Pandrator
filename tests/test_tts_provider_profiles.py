@@ -1,6 +1,8 @@
 import unittest
+from unittest.mock import patch
 
 from pandrator.logic import tts_handler, tts_provider_profiles
+from pandrator.web.tts_providers import AudioCppAdapter
 
 
 class TTSProviderProfileTests(unittest.TestCase):
@@ -134,6 +136,40 @@ class TTSProviderProfileTests(unittest.TestCase):
         self.assertNotIn(
             "qwen3_tts_1_7b_voicedesign_q8_0", profile["voice_catalogues"]
         )
+
+    def test_audio_cpp_catalogue_does_not_advertise_serial_batch_as_true_batch(self):
+        adapter = AudioCppAdapter("audio_cpp")
+        service = {
+            "id": "audio_cpp",
+            "adapter": "audio_cpp",
+            "api_base": "http://127.0.0.1:8060",
+            "model_catalog": [{"id": "qwen3_tts_1_7b_base_q8_0"}],
+        }
+
+        with (
+            patch(
+                "pandrator.logic.tts_handler.get_audio_cpp_model_catalog",
+                return_value=[{"id": "qwen3_tts_1_7b_base_q8_0"}],
+            ),
+            patch(
+                "pandrator.logic.tts_handler.get_audio_cpp_voice_catalog",
+                return_value=[],
+            ),
+        ):
+            catalogue = adapter.enrich_catalog(service)
+
+        self.assertFalse(catalogue["supports_batch_synthesis"])
+        self.assertEqual(
+            {
+                "supported": False,
+                "streaming": False,
+                "default_batch_size": 1,
+                "max_batch_size": 1,
+                "parallelism": 1,
+            },
+            catalogue["batch_synthesis"],
+        )
+        self.assertNotIn("protocol", catalogue["batch_synthesis"])
 
     def test_azure_speech_profile_has_static_models_voices_and_safe_pricing(self):
         profile = tts_provider_profiles.get_tts_provider_profile(

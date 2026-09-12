@@ -62,6 +62,7 @@ export type SpeechPlanState = {
   content_signature: string | null;
   can_prepare: boolean;
   can_generate: boolean;
+  generation_blocked_reason?: string | null;
   current_input: {
     artifact_id: string;
     label: string;

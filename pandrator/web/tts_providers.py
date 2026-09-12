@@ -534,10 +534,10 @@ class AudioCppAdapter(LegacyTtsAdapter):
         del service
         return TtsCapabilities(
             dynamic_catalog=True,
-            batch_synthesis=True,
-            streaming_batch=True,
-            default_batch_size=10,
-            max_batch_size=32,
+            batch_synthesis=False,
+            streaming_batch=False,
+            default_batch_size=1,
+            max_batch_size=1,
         )
 
     def health(self, service: dict[str, Any]) -> TtsHealth:
@@ -667,13 +667,12 @@ class AudioCppAdapter(LegacyTtsAdapter):
             "voice_catalogues": voice_catalogues,
             "model_voice_modes": model_voice_modes,
             "supports_dynamic_catalog": True,
-            "supports_batch_synthesis": True,
+            "supports_batch_synthesis": False,
             "batch_synthesis": {
-                "supported": True,
-                "streaming": True,
-                "protocol": "pandrator-ordered-serial-v1",
-                "default_batch_size": 10,
-                "max_batch_size": 32,
+                "supported": False,
+                "streaming": False,
+                "default_batch_size": 1,
+                "max_batch_size": 1,
                 "parallelism": 1,
             },
         }

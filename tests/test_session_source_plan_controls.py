@@ -108,6 +108,32 @@ class SessionSourcePlanControlTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.get_json())
         return response.get_json()
 
+    def test_open_text_dispatch_does_not_block_new_audio_from_frozen_plan(self):
+        plan = self.prepare()
+        with self.services.database.session() as session:
+            revision = session.scalar(select(m.DocumentRevision).join(m.Document).where(m.Document.session_id == self.sid))
+            dispatch = m.DispatchRun(
+                session_id=self.sid, kind="correction", output_role="correction",
+                source_artifact_id=self.uploaded["artifact_id"],
+                source_revision_id=revision.id, source_content_hash="fixture",
+                input_hash="fixture", status="running",
+            )
+            session.add(dispatch)
+            session.flush()
+            dispatch_id = dispatch.id
+        state = self.client.get(self.base + "/generation-plan/status").get_json()
+        self.assertTrue(state["can_generate"], state)
+        self.assertIsNone(state["generation_blocked_reason"])
+        self.assertIn("editing dispatch", state["blocked_reason"])
+        run = self.services.generation.start(self.sid, speech_plan_revision_id=plan["selected_revision_id"])
+        self.assertEqual(run["plan_revision_id"], plan["selected_revision_id"])
+        with self.services.database.session() as session:
+            self.assertEqual(session.get(m.DispatchRun, dispatch_id).status, "running")
+        # Once real audio work is queued, readiness must still block another run.
+        state = self.client.get(self.base + "/generation-plan/status").get_json()
+        self.assertFalse(state["can_generate"])
+        self.assertTrue(state["generation_blocked_reason"])
+
     def test_reset_removes_derived_state_and_files_but_retains_source_library(self):
         plan = self.prepare()
         p = self.services.paths.uploads / "derived.bin"

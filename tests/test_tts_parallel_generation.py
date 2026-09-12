@@ -3,7 +3,9 @@ import time
 import unittest
 from unittest.mock import Mock, patch
 
+from pandrator.logic import tts_handler
 from pandrator.web.tts_providers import (
+    AudioCppAdapter,
     TtsBatchItem,
     TtsCapabilities,
     TtsProviderError,
@@ -130,6 +132,11 @@ class ParallelTtsGenerationTests(unittest.TestCase):
                         {"service": service}
                     ).parallel_synthesis
                 )
+        audio_cpp = registry.synthesis_capabilities({"service": "audio_cpp"})
+        self.assertFalse(audio_cpp.batch_synthesis)
+        self.assertFalse(audio_cpp.streaming_batch)
+        self.assertEqual(1, audio_cpp.default_batch_size)
+        self.assertEqual(1, audio_cpp.max_batch_size)
         self.assertTrue(
             registry.synthesis_capabilities({"service": "openai"}).parallel_synthesis
         )
@@ -142,6 +149,90 @@ class ParallelTtsGenerationTests(unittest.TestCase):
             registry.synthesis_capabilities({"service": "openai"}),
             TtsCapabilities,
         )
+
+    def test_kobold_qwen_true_batch_capability_remains_supported(self):
+        registry = TtsProviderRegistry()
+        advertised = {
+            "supported": True,
+            "streaming": True,
+            "protocol": "ndjson-v1",
+            "default_batch_size": 10,
+            "max_batch_size": 32,
+        }
+
+        with patch.object(
+            tts_handler,
+            "get_kobold_qwen_batch_capabilities",
+            return_value=advertised,
+        ):
+            capabilities = registry.synthesis_capabilities(
+                {"service": "kobold_qwen"}
+            )
+
+        self.assertTrue(capabilities.batch_synthesis)
+        self.assertTrue(capabilities.streaming_batch)
+        self.assertEqual(10, capabilities.default_batch_size)
+        self.assertEqual(32, capabilities.max_batch_size)
+
+    def test_audio_cpp_batch_compatibility_path_sends_one_serial_request_per_item(
+        self,
+    ):
+        adapter = AudioCppAdapter("audio_cpp")
+
+        class FakeResponse:
+            status_code = 200
+
+            def raise_for_status(self):
+                return None
+
+        class FakeRequestSession:
+            def __init__(self):
+                self.calls = []
+
+            def post(self, url, **kwargs):
+                self.calls.append((url, kwargs))
+                return FakeResponse()
+
+        session = FakeRequestSession()
+        settings = {
+            "service": "audio_cpp",
+            "audio_cpp_base_url": "http://audio.cpp.test:8060",
+            "model": "qwen3_tts_1_7b_base_q8_0",
+            "language": "en",
+            "speaker": "reader",
+            "audio_cpp_reference_text": "Reference transcript.",
+            "audio_cpp_voice_ref": {"id": "reference-1", "data": "encoded"},
+        }
+        items = [
+            TtsBatchItem(str(index), f"text-{index}", settings)
+            for index in range(3)
+        ]
+
+        with (
+            patch.object(adapter, "_session_for", return_value=session),
+            patch.object(tts_handler, "_decode_audio_response", return_value=b"wav"),
+        ):
+            results = list(adapter.synthesize_batch(items, batch_size=3))
+
+        self.assertEqual(["0", "1", "2"], [item.id for item in results])
+        self.assertTrue(all(item.audio == b"wav" for item in results))
+        self.assertEqual(3, len(session.calls))
+        for index, (url, request) in enumerate(session.calls):
+            with self.subTest(index=index):
+                self.assertEqual(
+                    "http://audio.cpp.test:8060/v1/audio/speech",
+                    url,
+                )
+                self.assertEqual(f"text-{index}", request["json"]["input"])
+                self.assertNotIn("items", request["json"])
+                self.assertNotIn("stream", request["json"])
+                self.assertEqual(
+                    "Reference transcript.", request["json"]["reference_text"]
+                )
+                self.assertEqual(
+                    {"id": "reference-1", "data": "encoded"},
+                    request["json"]["voice_ref"],
+                )
 
     def test_custom_transport_controls_parallel_eligibility(self):
         registry = TtsProviderRegistry()

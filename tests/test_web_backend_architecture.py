@@ -261,8 +261,8 @@ class BackendArchitectureTests(unittest.TestCase):
             ),
         )
         capabilities = registry.synthesis_capabilities(base_settings)
-        self.assertTrue(capabilities.batch_synthesis)
-        self.assertTrue(capabilities.streaming_batch)
+        self.assertFalse(capabilities.batch_synthesis)
+        self.assertFalse(capabilities.streaming_batch)
         with patch(
             "pandrator.logic.tts_handler.text_to_audio",
             side_effect=["one", "two"],
