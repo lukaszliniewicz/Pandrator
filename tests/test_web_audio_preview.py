@@ -446,9 +446,103 @@ class AudioPreviewTests(unittest.TestCase):
             item for item in snapshot["stages"] if item["key"] == "generate_audio"
         )
         self.assertEqual(direct.id, stage["job_id"])
-        self.assertEqual(0.5, stage["progress"])
-        self.assertEqual("segments", stage["progress_basis"])
+        self.assertEqual(0.8, stage["progress"])
+        self.assertEqual("job", stage["progress_basis"])
         self.assertEqual("Generating resumed run", stage["detail"])
+
+    def test_workflow_snapshot_returns_idle_segment_progress_after_pause(self):
+        with self.database.session() as session:
+            plan = GenerationPlan(session_id=self.session.id)
+            session.add(plan)
+            session.flush()
+            revision = GenerationPlanRevision(
+                plan_id=plan.id,
+                revision_number=1,
+                content_hash="paused-plan-hash",
+                settings_json={},
+            )
+            session.add(revision)
+            session.flush()
+            plan.active_revision_id = revision.id
+            session.add_all(
+                [
+                    GenerationSegment(
+                        plan_revision_id=revision.id,
+                        ordinal=0,
+                        text="Done",
+                        status="completed",
+                    ),
+                    GenerationSegment(
+                        plan_revision_id=revision.id,
+                        ordinal=1,
+                        text="Pending",
+                        status="ready",
+                    ),
+                ]
+            )
+            run = GenerationRun(
+                session_id=self.session.id,
+                plan_revision_id=revision.id,
+                sequence_number=1,
+                operation="generate",
+                status="queued",
+            )
+            session.add(run)
+            session.flush()
+            job = Job(
+                kind="generation.run",
+                session_id=self.session.id,
+                status="queued",
+                progress=0.0,
+                payload_json={"generation_run_id": run.id},
+            )
+            session.add(job)
+            session.flush()
+            run.job_id = job.id
+
+        queued = self.app.extensions["pandrator"]["workflows"].snapshot(
+            self.session.id
+        )
+        queued_stage = next(
+            item for item in queued["stages"] if item["key"] == "generate_audio"
+        )
+        self.assertEqual(0.0, queued_stage["progress"])
+        self.assertEqual("job", queued_stage["progress_basis"])
+        self.assertEqual("Waiting for an available worker", queued_stage["detail"])
+
+        with self.database.session() as session:
+            run = session.get(GenerationRun, run.id)
+            job = session.get(Job, job.id)
+            run.status = "pausing"
+            job.status = "running"
+            job.progress = 0.64
+            job.progress_detail = "Pausing after current block"
+
+        active = self.app.extensions["pandrator"]["workflows"].snapshot(
+            self.session.id
+        )
+        active_stage = next(
+            item for item in active["stages"] if item["key"] == "generate_audio"
+        )
+        self.assertEqual(0.64, active_stage["progress"])
+        self.assertEqual("job", active_stage["progress_basis"])
+        self.assertEqual("Pausing after current block", active_stage["detail"])
+
+        with self.database.session() as session:
+            run = session.get(GenerationRun, run.id)
+            job = session.get(Job, job.id)
+            run.status = "paused"
+            job.status = "succeeded"
+
+        paused = self.app.extensions["pandrator"]["workflows"].snapshot(
+            self.session.id
+        )
+        paused_stage = next(
+            item for item in paused["stages"] if item["key"] == "generate_audio"
+        )
+        self.assertEqual(0.5, paused_stage["progress"])
+        self.assertEqual("segments", paused_stage["progress_basis"])
+        self.assertEqual("Generated 1 of 2 segments", paused_stage["detail"])
 
 
 if __name__ == "__main__":

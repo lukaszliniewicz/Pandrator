@@ -7,6 +7,8 @@ export type VoiceDescriptor = {
 };
 
 export type ModelLanguageMetadata = {
+  family?: string;
+  supported_languages?: readonly string[];
   id?: string;
   languages?: readonly (
     string | { language_id?: string; id?: string; code?: string; name?: string }
@@ -406,7 +408,7 @@ export function languagesForService(
     (item) =>
       String(item.id ?? '').trim() === String(options.modelId ?? '').trim()
   );
-  const modelLanguages = (model?.languages ?? [])
+  const modelLanguages = (model?.languages ?? model?.supported_languages ?? [])
     .map((language) =>
       typeof language === 'string'
         ? language
@@ -415,8 +417,38 @@ export function languagesForService(
           ).trim()
     )
     .filter(Boolean);
-  const fallbackCodes =
-    service === 'kokoro'
+  const audioCpp = service === 'audio_cpp' || service === 'audio.cpp';
+  const modelId = String(options.modelId ?? '').toLowerCase();
+  const audioCppLanguages = !audioCpp
+    ? []
+    : modelId.startsWith('qwen3_')
+      ? QWEN_LANGUAGES
+      : modelId.startsWith('pocket_tts_english')
+        ? ['en']
+        : modelId.startsWith('magpie_')
+          ? Object.values(MAGPIE_LOCALES)
+          : modelId.startsWith('fireredtts3_')
+            ? [
+                ...QWEN_LANGUAGES,
+                'yue',
+                'ar',
+                'tr',
+                'id',
+                'nl',
+                'vi',
+                'uk',
+                'th',
+                'pl',
+                'ro',
+                'el',
+                'cs',
+                'fi',
+                'hi'
+              ]
+            : [];
+  const fallbackCodes = audioCppLanguages.length
+    ? audioCppLanguages
+    : service === 'kokoro'
       ? KOKORO_LANGUAGES
       : service === 'kobold_qwen' || service.includes('qwen')
         ? QWEN_LANGUAGES

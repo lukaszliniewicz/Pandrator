@@ -7,10 +7,12 @@
     LoaderCircle,
     Settings2
   } from '@lucide/svelte';
+  import type { Snippet } from 'svelte';
   import SpeechPlanPicker from './SpeechPlanPicker.svelte';
   import AudioReuseNotice from './AudioReuseNotice.svelte';
   import { openSpeechPlanEditor, type SpeechPlanState } from './session-flow';
   let {
+    inputControls,
     sessionId,
     plan,
     busy = false,
@@ -19,6 +21,7 @@
     onreview,
     onsettings
   }: {
+    inputControls?: Snippet;
     sessionId: string;
     plan: SpeechPlanState | null;
     busy?: boolean;
@@ -54,7 +57,9 @@
       >{/if}
   </header>
   <div class="mt-4 space-y-3 sm:ml-[3.75rem]">
-    {#if plan?.current_input}<p class="text-sm">
+    {#if inputControls}{@render inputControls()}{:else if plan?.current_input}<p
+        class="text-sm"
+      >
         Selected input: <strong
           >{plan.current_input.label}{plan.current_input.version
             ? ` v${plan.current_input.version}`

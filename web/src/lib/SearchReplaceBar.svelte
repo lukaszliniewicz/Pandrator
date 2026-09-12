@@ -8,7 +8,7 @@
     Search,
     WholeWord
   } from '@lucide/svelte';
-  import { tick } from 'svelte';
+  import { tick, untrack } from 'svelte';
   import {
     findTextMatches,
     replacementsForMatches,
@@ -22,7 +22,10 @@
     onnavigate,
     onactivate,
     disabled = false,
-    label = 'editable text'
+    label = 'editable text',
+    onsearch,
+    searching = false,
+    serverMatches
   }: {
     texts: string[];
     onreplace: (updates: TextReplacement[]) => void | Promise<void>;
@@ -30,6 +33,12 @@
     onactivate?: () => void | Promise<void>;
     disabled?: boolean;
     label?: string;
+    onsearch?: (
+      query: string,
+      options: { matchCase: boolean; wholeWord: boolean }
+    ) => void;
+    searching?: boolean;
+    serverMatches?: TextSearchMatch[];
   } = $props();
 
   let query = $state('');
@@ -41,12 +50,17 @@
   let error = $state('');
 
   const matches = $derived(
-    findTextMatches(texts, query, { matchCase, wholeWord })
+    serverMatches ?? findTextMatches(texts, query, { matchCase, wholeWord })
   );
   const currentIndex = $derived(
     matches.length ? Math.min(activeIndex, matches.length - 1) : 0
   );
   const currentMatch = $derived(matches[currentIndex]);
+
+  $effect(() => {
+    const search = { query, matchCase, wholeWord };
+    untrack(() => onsearch?.(search.query, search));
+  });
 
   function resetSearchPosition() {
     activeIndex = 0;
@@ -58,7 +72,7 @@
   }
 
   async function navigate(step: number) {
-    if (!matches.length) return;
+    if (searching || !matches.length) return;
     activeIndex = (currentIndex + step + matches.length) % matches.length;
     await onnavigate?.(matches[activeIndex]);
   }
@@ -118,21 +132,23 @@
       aria-label={`Find in ${label}`}
     />
     <span class="count" aria-live="polite"
-      >{query
-        ? matches.length
-          ? `${currentIndex + 1} / ${matches.length}`
-          : 'No matches'
-        : ''}</span
+      >{searching
+        ? 'Searching…'
+        : query
+          ? matches.length
+            ? `${currentIndex + 1} / ${matches.length}`
+            : 'No matches'
+          : ''}</span
     >
     <button
       onclick={() => navigate(-1)}
-      disabled={!matches.length}
+      disabled={searching || !matches.length}
       title="Previous match"
       aria-label="Previous match"><ChevronUp size={15} /></button
     >
     <button
       onclick={() => navigate(1)}
-      disabled={!matches.length}
+      disabled={searching || !matches.length}
       title="Next match"
       aria-label="Next match"><ChevronDown size={15} /></button
     >
@@ -146,11 +162,13 @@
     />
     <button
       onclick={replaceCurrent}
-      disabled={disabled || replacing || !currentMatch}>Replace</button
+      disabled={disabled || searching || replacing || !currentMatch}
+      >Replace</button
     >
     <button
       onclick={replaceAll}
-      disabled={disabled || replacing || !matches.length}>Replace all</button
+      disabled={disabled || searching || replacing || !matches.length}
+      >Replace all</button
     >
   </div>
   <div class="options">

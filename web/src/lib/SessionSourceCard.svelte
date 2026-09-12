@@ -29,11 +29,13 @@
   let {
     sessionId,
     refreshKey,
+    compact = false,
     oninitialsource,
     onchanged
   }: {
     sessionId: string;
     refreshKey: string;
+    compact?: boolean;
     oninitialsource: () => void;
     onchanged: (message: string) => Promise<unknown>;
   } = $props();
@@ -210,24 +212,26 @@
 </script>
 
 <section
-  class="surface rounded-3xl border border-[var(--line)] p-5 sm:p-6"
+  class={compact
+    ? 'rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] p-3.5'
+    : 'surface rounded-3xl border border-[var(--line)] p-5 sm:p-6'}
   aria-label="Session source"
 >
-  <header class="flex items-start gap-4">
-    <span
-      class="grid size-11 shrink-0 place-items-center rounded-2xl bg-[var(--accent-soft)] text-[var(--accent)]"
-      ><FileInput size={21} /></span
-    >
-    <div class="min-w-0 flex-1">
-      <h2 class="text-lg font-semibold">Source</h2>
-      <p class="muted mt-1 text-sm">
-        {sourceInfo?.subtitle.supported
-          ? 'Authoritative subtitle text and its optional recording.'
-          : 'The input from which this session is built.'}
-      </p>
-    </div>
-  </header>
-  <div class="mt-4 space-y-3 sm:ml-[3.75rem]">
+  {#if !compact}<header class="flex items-start gap-4">
+      <span
+        class="grid size-11 shrink-0 place-items-center rounded-2xl bg-[var(--accent-soft)] text-[var(--accent)]"
+        ><FileInput size={21} /></span
+      >
+      <div class="min-w-0 flex-1">
+        <h2 class="text-lg font-semibold">Source</h2>
+        <p class="muted mt-1 text-sm">
+          {sourceInfo?.subtitle.supported
+            ? 'Authoritative subtitle text and its optional recording.'
+            : 'The input from which this session is built.'}
+        </p>
+      </div>
+    </header>{/if}
+  <div class={compact ? 'space-y-3' : 'mt-4 space-y-3 sm:ml-[3.75rem]'}>
     {#if sourceInfo?.primary}
       <div
         class="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--line)] p-3"

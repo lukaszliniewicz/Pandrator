@@ -25,6 +25,7 @@ export type SegmentFilter =
   | 'marked'
   | 'failed'
   | 'stale'
+  | 'boundary_flags'
   | 'verification_issues';
 
 export const SEGMENT_FILTER_OPTIONS: {
@@ -37,6 +38,7 @@ export const SEGMENT_FILTER_OPTIONS: {
   { value: 'marked', label: 'Marked' },
   { value: 'failed', label: 'Generation failed' },
   { value: 'stale', label: 'Stale' },
+  { value: 'boundary_flags', label: 'Block flags' },
   { value: 'verification_issues', label: 'Verification issues' }
 ];
 
@@ -52,6 +54,8 @@ export type GenerationLoadOptions = {
   selectedRunId: string;
   reset?: boolean;
   preserveLoaded?: boolean;
+  search?: URLSearchParams;
+  startOrdinal?: number;
 };
 
 export type GenerationLoadResult = {
@@ -85,6 +89,8 @@ export class GenerationStore {
   error = $state('');
   private loadedFilter: SegmentFilter | '' = '';
   private loadedRunId = '';
+  private loadedSearch = '';
+  private loadedStartOrdinal = 0;
   private loadedPlanRevisionId: string | null = null;
   private loadedThroughOrdinal = -1;
   private initialized = false;
@@ -113,7 +119,19 @@ export class GenerationStore {
           ? Math.min(250, Math.max(100, this.loadedThroughOrdinal + 1))
           : 100;
       const query = new URLSearchParams({ limit: String(requestedLimit) });
+      const searchScope = options.search?.toString() ?? '';
+      options.search?.forEach((value, key) => query.set(key, value));
+      const startOrdinal =
+        options.startOrdinal ??
+        (preserveLoaded &&
+        this.loadedFilter === filter &&
+        this.loadedRunId === options.selectedRunId &&
+        this.loadedSearch === searchScope
+          ? this.loadedStartOrdinal
+          : 0);
+      if (startOrdinal) query.set('cursor', String(startOrdinal));
       if (filter === 'marked') query.set('marked', 'true');
+      else if (filter === 'boundary_flags') query.set('boundary_flags', 'true');
       else if (filter === 'verification_issues')
         query.set('verification', 'issues');
       else if (filter !== 'all') query.set('status', filter);
@@ -162,6 +180,7 @@ export class GenerationStore {
         };
       } else if (
         preserveLoaded &&
+        this.loadedSearch === searchScope &&
         this.loadedFilter === filter &&
         this.loadedRunId === selectedRunId &&
         this.payload.plan_revision_id === next.plan_revision_id &&
@@ -200,10 +219,14 @@ export class GenerationStore {
       this.activeRun = activeRun;
       this.assembly = latestAssembly.item;
       const sameLoadedScope =
+        this.loadedSearch === searchScope &&
+        this.loadedStartOrdinal === startOrdinal &&
         this.loadedFilter === filter &&
         this.loadedRunId === selectedRunId &&
         this.loadedPlanRevisionId === payload.plan_revision_id;
       this.loadedFilter = filter;
+      this.loadedSearch = searchScope;
+      this.loadedStartOrdinal = startOrdinal;
       this.loadedRunId = selectedRunId;
       this.loadedPlanRevisionId = payload.plan_revision_id;
       this.loadedThroughOrdinal = sameLoadedScope

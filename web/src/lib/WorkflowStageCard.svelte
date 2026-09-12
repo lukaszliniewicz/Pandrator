@@ -25,6 +25,8 @@
     runLabel = '',
     historyLoading = false,
     runDisabled = false,
+    outputsOnly = false,
+    onpreviewversion,
     inputControls,
     onsettings,
     ontoggle,
@@ -44,6 +46,8 @@
     runLabel?: string;
     historyLoading?: boolean;
     runDisabled?: boolean;
+    outputsOnly?: boolean;
+    onpreviewversion?: (artifact: StageArtifact) => void;
     inputControls?: Snippet;
     onsettings: () => void;
     ontoggle: (enabled: boolean) => void;
@@ -342,7 +346,7 @@
           </details>
         {/if}
 
-        {#if stage.key === 'generate_audio' && stage.resolved_input}
+        {#if stage.key === 'generate_audio' && stage.resolved_input && !inputControls}
           <div
             class="mt-3 max-w-3xl rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] px-3.5 py-3 text-sm"
             aria-label={`Generation input: ${stage.resolved_input.label}${stage.resolved_input.version ? ` v${stage.resolved_input.version}` : ''}`}
@@ -454,6 +458,8 @@
           </div>{/if}
         {#if (stage.artifacts?.length ?? 0) > 0}
           <StageArtifactHistory
+            {outputsOnly}
+            {onpreviewversion}
             artifacts={stage.artifacts ?? []}
             total={stage.artifact_history_total}
             hasMore={Boolean(stage.artifact_history_has_more)}

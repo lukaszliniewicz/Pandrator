@@ -39,6 +39,10 @@ def _material_settings(snapshot: dict[str, Any]) -> dict[str, Any]:
     # Imported lazily: workspace owns the persisted settings vocabulary and
     # consumes this module at its generation boundary.
     from pandrator.logic import tts_handler
+    from pandrator.logic.audio_cpp_parameters import (
+        request_parameters_for_family,
+        validate_audio_cpp_model_options,
+    )
 
     from .workspace import (
         BUILTIN_DEFAULTS,
@@ -88,6 +92,32 @@ def _material_settings(snapshot: dict[str, Any]) -> dict[str, Any]:
     if selected == tts_handler.OPENAI_COMPAT_SERVICE:
         selected = str(values.get("openai_audio_endpoint") or selected)
     provider = tts_handler.get_service_config(values, selected)
+    raw_model_settings = values.pop("audio_cpp_model_settings", None)
+    selected_model_options: dict[str, Any] | None = None
+    selected_model = str(
+        values.get("xtts_model") or values.get("model") or ""
+    ).strip()
+    if not selected_model and isinstance(provider, dict):
+        selected_model = str(provider.get("default_model") or "").strip()
+    provider_adapter = str((provider or {}).get("adapter") or "").strip().lower()
+    audio_cpp_selected = provider_adapter == "audio_cpp" or selected in {
+        "audio_cpp",
+        "audio.cpp",
+        "audio-cpp",
+        "audiocpp",
+    }
+    if audio_cpp_selected and isinstance(raw_model_settings, dict):
+        raw_selected_options = raw_model_settings.get(selected_model)
+        if isinstance(raw_selected_options, dict):
+            metadata = tts_handler._audio_cpp_model_metadata(
+                selected_model,
+                provider if isinstance(provider, dict) else {},
+            )
+            family = str(metadata.get("family") or "").strip()
+            selected_model_options = validate_audio_cpp_model_options(
+                family,
+                raw_selected_options,
+            )
     values = {
         key: value
         for key, value in _secret_free(values).items()
@@ -96,6 +126,28 @@ def _material_settings(snapshot: dict[str, Any]) -> dict[str, Any]:
             ("_", "speech_block_", "speech_plan_", "llm_", "source_")
         )
     }
+    if selected_model_options is not None:
+        # A selected model map suppresses legacy tuning sources at request
+        # time, so ignored values must not invalidate reusable audio either.
+        ignored_tuning_keys = {
+            "audio_cpp_options",
+            "options",
+            "seed",
+            "speed",
+            "audio_cpp_speed",
+        }
+        ignored_tuning_keys.update(
+            f"audio_cpp_{key}"
+            for key in request_parameters_for_family(family)
+        )
+        values = {
+            key: value
+            for key, value in values.items()
+            if key not in ignored_tuning_keys
+        }
+        values["audio_cpp_model_settings"] = {
+            selected_model: selected_model_options,
+        }
     # Other installed providers, credentials, labels and catalog ordering do
     # not change the selected service's audio.
     if provider:

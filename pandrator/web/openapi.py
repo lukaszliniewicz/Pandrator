@@ -3203,6 +3203,13 @@ def build_openapi_document() -> dict:
     ]
     inspection = paths["/api/v1/sessions/{sessionId}/generation-segments"]["get"]
     inspection["parameters"].extend([
+        {"name": "q", "in": "query", "description": "Literal search across the complete selected speech plan. Matching items include original-text UTF-16 search_matches offsets.", "schema": {"type": "string", "maxLength": 4000}},
+        {"name": "match_case", "in": "query", "schema": {"type": "boolean", "default": False}},
+        {"name": "whole_word", "in": "query", "schema": {"type": "boolean", "default": False}},
+        {"name": "text_field", "in": "query", "description": "Spoken text uses optimized_text when present, otherwise text.", "schema": {"type": "string", "enum": ["text", "spoken"], "default": "text"}},
+        {"name": "boundary_flags", "in": "query", "description": "Filter nonremoved speech blocks by boundary-risk flags.", "schema": {"type": "boolean"}},
+    ])
+    inspection["parameters"].extend([
         {"name": name, "in": "query", "required": False, "schema": {"type": kind}}
         for name, kind in (("plan_revision_id", "string"), ("view", "string"), ("fields", "string"),
                            ("cursor", "integer"), ("limit", "integer"), ("end_ordinal", "integer"),

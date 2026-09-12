@@ -195,6 +195,7 @@
         <td>
           <input
             type="checkbox"
+            class="mark-toggle"
             checked={item.marked}
             aria-label={`Mark segment ${item.ordinal + 1}`}
             onclick={(event) => event.stopPropagation()}
@@ -463,6 +464,34 @@
 </table>
 
 <style>
+  .mark-toggle {
+    appearance: none;
+    display: inline-grid;
+    place-content: center;
+    width: 1.15rem;
+    height: 1.15rem;
+    border: 1.5px solid var(--line);
+    border-radius: 50%;
+    background: var(--paper);
+    cursor: pointer;
+    vertical-align: middle;
+  }
+  .mark-toggle:checked {
+    border-color: var(--accent);
+    background: var(--accent);
+  }
+  .mark-toggle:checked::after {
+    content: '';
+    width: 0.3rem;
+    height: 0.55rem;
+    border: solid white;
+    border-width: 0 2px 2px 0;
+    transform: translateY(-1px) rotate(45deg);
+  }
+  .mark-toggle:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+  }
   th,
   td {
     border-bottom: 1px solid var(--line);

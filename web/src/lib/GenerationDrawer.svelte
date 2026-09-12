@@ -136,6 +136,30 @@
   let regenerateAfterReview = $state(true);
   let comparisonDiff = $state(false);
   let searchLoading = $state(false);
+  let searchQuery = $state('');
+  let searchOptions = $state({ matchCase: false, wholeWord: false });
+  let searchItems = $state<
+    Pick<
+      GenerationSegment,
+      | 'id'
+      | 'ordinal'
+      | 'revision'
+      | 'text'
+      | 'optimized_text'
+      | 'search_matches'
+    >[]
+  >([]);
+  let searchController: AbortController | undefined;
+  const searchParams = $derived.by(() => {
+    const params = new URLSearchParams();
+    if (searchQuery) {
+      params.set('q', searchQuery);
+      params.set('match_case', String(searchOptions.matchCase));
+      params.set('whole_word', String(searchOptions.wholeWord));
+      params.set('text_field', textMode === 'speech' ? 'spoken' : 'text');
+    }
+    return params;
+  });
   let speechOptionsLoading = $state(false);
   let topologyBusy = $state(false);
   let supportingOptionsLoaded = false;
@@ -473,7 +497,11 @@
       .map((item) => item.id)
   );
   const editableTexts = $derived(
-    payload.items.map((item) => String(item.text ?? ''))
+    searchItems.map((item) =>
+      String(
+        textMode === 'speech' ? item.optimized_text || item.text : item.text
+      )
+    )
   );
   const activeFilterLabel = $derived(
     SEGMENT_FILTER_OPTIONS.find((option) => option.value === filter)?.label ??
@@ -493,11 +521,7 @@
   const topologyDisabled = $derived(
     topologyBusy || Boolean(selectedRunId) || !payload.plan_revision_id
   );
-  const boundaryRiskCount = $derived(
-    payload.items.filter(
-      (item) => (item.speech_block_provenance?.risk_flags?.length ?? 0) > 0
-    ).length
-  );
+  const boundaryRiskCount = $derived(payload.boundary_flag_count ?? 0);
   const topologyUndoLabel = $derived(
     payload.operation_json?.action === 'restore'
       ? 'Redo the reverted speech-block edit'
@@ -722,7 +746,8 @@
           filter,
           selectedRunId,
           reset,
-          preserveLoaded
+          preserveLoaded,
+          search: searchParams
         })
       );
     } catch (caught) {
@@ -731,7 +756,7 @@
   }
 
   function expandIfCollapsed() {
-    if (mode === 'collapsed') mode = 'half';
+    if (mode === 'collapsed') mode = 'full';
   }
 
   function applyLoadResult(result: GenerationLoadResult) {
@@ -1245,17 +1270,64 @@
       .trim();
   }
 
-  async function loadAllSegments() {
-    if (searchLoading || payload.next_cursor == null) return;
-    searchLoading = true;
-    try {
-      while (payload.next_cursor != null) {
-        const previousLength = payload.items.length;
-        await load(false);
-        if (payload.items.length <= previousLength) break;
-      }
-    } finally {
+  function changeSearch(
+    query: string,
+    options: { matchCase: boolean; wholeWord: boolean }
+  ) {
+    searchQuery = query;
+    searchOptions = options;
+  }
+
+  async function searchAllMatches(controller: AbortController) {
+    searchItems = [];
+    if (!searchQuery) {
       searchLoading = false;
+      await load(true, false);
+      return;
+    }
+    searchLoading = true;
+    const query = new URLSearchParams(searchParams);
+    query.set('limit', '250');
+    query.set(
+      'fields',
+      'id,ordinal,revision,text,optimized_text,search_matches'
+    );
+    if (selectedRunId) query.set('generation_run_id', selectedRunId);
+    if (filter === 'marked') query.set('marked', 'true');
+    else if (filter === 'boundary_flags') query.set('boundary_flags', 'true');
+    else if (filter === 'verification_issues')
+      query.set('verification', 'issues');
+    else if (filter !== 'all') query.set('status', filter);
+    try {
+      const items: typeof searchItems = [];
+      let revision: string | null | undefined;
+      do {
+        const page = await generationApi.segments(
+          sessionId,
+          query,
+          controller.signal
+        );
+        if (controller.signal.aborted) return;
+        if (revision !== undefined && revision !== page.plan_revision_id)
+          throw new Error(
+            'The speech plan changed during search. Search again.'
+          );
+        revision = page.plan_revision_id;
+        if (revision) query.set('plan_revision_id', revision);
+        items.push(...page.items);
+        if (items.length > 20000)
+          throw new Error(
+            'More than 20,000 segments match. Narrow the search before replacing.'
+          );
+        if (page.next_cursor == null) break;
+        query.set('cursor', String(page.next_cursor));
+      } while (!controller.signal.aborted);
+      await load(true, false);
+      if (!controller.signal.aborted) searchItems = items;
+    } catch (caught) {
+      if (!controller.signal.aborted) error = errorMessage(caught);
+    } finally {
+      if (!controller.signal.aborted) searchLoading = false;
     }
   }
 
@@ -1272,30 +1344,58 @@
     error = '';
     try {
       const changes = updates.flatMap((update) => {
-        const item = payload.items[update.index];
-        if (!item || update.text === item.text) return [];
+        const item = searchItems[update.index];
+        if (!item || update.text === editableTexts[update.index]) return [];
         if (!update.text.trim())
           throw new Error(
             'Replacement would leave a generation segment blank. Remove that segment instead.'
           );
-        return [{ segment: item, changes: { text: update.text.trim() } }];
+        return [
+          {
+            segment: item,
+            changes:
+              textMode === 'speech'
+                ? { optimized_text: update.text }
+                : { text: update.text }
+          }
+        ];
       });
       if (!changes.length) return;
       await generationStore.updateSegments(changes);
       await refreshAssembly();
+      searchController?.abort();
+      searchController = new AbortController();
+      await searchAllMatches(searchController);
     } catch (caught) {
       const message = errorMessage(caught);
+      searchController?.abort();
+      searchController = new AbortController();
+      await searchAllMatches(searchController);
       error = message;
-      await load(true, true);
-      throw new Error(error, { cause: caught });
+      throw new Error(message, { cause: caught });
     }
   }
 
   async function navigateSearchMatch(match: TextSearchMatch) {
+    const item = searchItems[match.itemIndex];
+    if (!item || searchLoading) return;
+    if (!payload.items.some((row) => row.id === item.id)) {
+      applyLoadResult(
+        await generationStore.load({
+          filter,
+          selectedRunId,
+          search: searchParams,
+          reset: true,
+          preserveLoaded: false,
+          startOrdinal: item.ordinal
+        })
+      );
+    }
     if (viewMode !== 'segments') viewMode = 'segments';
     await tick();
+    const itemIndex = payload.items.findIndex((row) => row.id === item.id);
     const field = document.querySelector<HTMLTextAreaElement>(
-      `[data-generation-search-index="${match.itemIndex}"]`
+      `[data-generation-search-index="${itemIndex}"]`
     );
     field?.scrollIntoView({ block: 'center', behavior: 'smooth' });
     field?.focus({ preventScroll: true });
@@ -1432,18 +1532,19 @@
       if (requestedSessionId !== sessionId) return;
       selectedRunId = '';
       filter = 'all';
-      mode = 'half';
+      mode = 'full';
       void load(true, false);
     };
     const disconnectPlanEditor = subscribeSpeechPlanEditor(openPlan);
     const disconnect = generationStore.connect(
-      () => ({ filter, selectedRunId }),
+      () => ({ filter, selectedRunId, search: searchParams }),
       applyLoadResult
     );
     return () => {
       disconnect();
       disconnectPlanEditor();
       if (timer) window.clearTimeout(timer);
+      searchController?.abort();
       startedRunReconciliation?.abort();
       stopPlayback();
     };
@@ -1453,7 +1554,21 @@
   });
   $effect(() => {
     void filter;
-    untrack(() => load(true, false));
+    void selectedRunId;
+    void textMode;
+    void searchQuery;
+    void searchOptions;
+    searchLoading = Boolean(searchQuery);
+    const controller = new AbortController();
+    searchController = controller;
+    const timeout = window.setTimeout(
+      () => void searchAllMatches(controller),
+      searchQuery ? 250 : 0
+    );
+    return () => {
+      window.clearTimeout(timeout);
+      controller.abort();
+    };
   });
   $effect(() => {
     if (timer) clearTimeout(timer);
@@ -1496,7 +1611,7 @@
   ></button>
 {/if}
 
-{#if payload.total > 0 || run}
+{#if payload.total > 0 || payload.plan_revision_id || run || searchQuery || filter !== 'all'}
   <aside
     data-generation-layout={mode}
     class:full={mode === 'full'}
@@ -1504,10 +1619,11 @@
     class="generation-drawer fixed inset-x-3 bottom-3 z-50 overflow-hidden rounded-2xl md:left-[calc(var(--sidebar-offset,5rem)+.35rem)] md:right-[.35rem]"
   >
     <header
-      class="generation-header flex flex-wrap items-center gap-3 border-b border-[var(--line)] px-4 py-3 lg:flex-nowrap"
+      class:border-b={mode !== 'collapsed'}
+      class="generation-header flex flex-wrap items-center gap-3 border-[var(--line)] px-4 py-3 lg:flex-nowrap"
     >
       <button
-        onclick={() => (mode = mode === 'collapsed' ? 'half' : 'collapsed')}
+        onclick={() => (mode = mode === 'collapsed' ? 'full' : 'collapsed')}
         class="flex items-center gap-2 font-semibold"
       >
         {#if mode === 'collapsed'}<ChevronUp size={17} />{:else}<ChevronDown
@@ -1673,14 +1789,20 @@
           {/if}
         </div>
         {#if boundaryRiskCount > 0}
-          <span
-            class="rounded-full bg-amber-500/12 px-2 py-1 text-[.62rem] font-semibold text-amber-700"
-            title="Speech-block boundaries carrying deterministic review flags"
+          <button
+            class="rounded-full border border-amber-500/25 bg-amber-500/12 px-2.5 py-1 text-[.62rem] font-semibold text-amber-700 hover:bg-amber-500/20"
+            aria-pressed={filter === 'boundary_flags'}
+            onclick={() => {
+              filter = filter === 'boundary_flags' ? 'all' : 'boundary_flags';
+              viewMode = 'segments';
+              mode = 'full';
+            }}
+            title="Show only speech blocks with boundary review flags"
           >
             {boundaryRiskCount} block {boundaryRiskCount === 1
               ? 'flag'
               : 'flags'}
-          </span>
+          </button>
         {/if}
         <SpeechPlanHistory
           {sessionId}
@@ -1950,28 +2072,23 @@
             onnavigate={navigateSearchMatch}
             disabled={searchLoading || loading}
             label={searchScopeLabel}
+            onsearch={changeSearch}
+            searching={searchLoading}
+            serverMatches={searchItems.flatMap((item, itemIndex) =>
+              (item.search_matches ?? []).map((match) => ({
+                ...match,
+                itemIndex
+              }))
+            )}
           />
-          {#if payload.next_cursor != null || searchLoading}
-            <div
-              class="muted mt-1 flex flex-wrap items-center justify-between gap-2 px-1 text-[.65rem]"
+          {#if searchQuery}<p
+              class="muted mt-1 px-1 text-[.65rem]"
               aria-live="polite"
             >
-              <span>
-                Searching {payload.items.length} loaded {searchScopeLabel} out of
-                {payload.total}.
-              </span>
-              <button
-                type="button"
-                onclick={loadAllSegments}
-                disabled={searchLoading || loading}
-                class="font-semibold text-[var(--accent)] underline decoration-dotted underline-offset-2 disabled:opacity-50"
-              >
-                {searchLoading
-                  ? 'Loading all segments…'
-                  : `Load all ${payload.total} for search`}
-              </button>
-            </div>
-          {/if}
+              {searchLoading
+                ? 'Searching the complete plan…'
+                : `${searchItems.length} matching segments across the complete plan · ${textMode === 'speech' ? 'spoken overrides' : 'script text'}`}
+            </p>{/if}
         </div>
 
         {#if selectedAssembly?.status === 'completed' && selectedAssembly.artifact_id}

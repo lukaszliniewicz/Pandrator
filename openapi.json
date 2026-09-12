@@ -11615,6 +11615,52 @@
             }
           },
           {
+            "description": "Literal search across the complete selected speech plan. Matching items include original-text UTF-16 search_matches offsets.",
+            "in": "query",
+            "name": "q",
+            "schema": {
+              "maxLength": 4000,
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "match_case",
+            "schema": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "whole_word",
+            "schema": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "Spoken text uses optimized_text when present, otherwise text.",
+            "in": "query",
+            "name": "text_field",
+            "schema": {
+              "default": "text",
+              "enum": [
+                "text",
+                "spoken"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "description": "Filter nonremoved speech blocks by boundary-risk flags.",
+            "in": "query",
+            "name": "boundary_flags",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
             "in": "query",
             "name": "plan_revision_id",
             "required": false,

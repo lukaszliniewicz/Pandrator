@@ -9244,6 +9244,14 @@ export interface operations {
             query?: {
                 /** @description Return the plan revision bound to this generation run. */
                 generation_run_id?: string;
+                /** @description Literal search across the complete selected speech plan. Matching items include original-text UTF-16 search_matches offsets. */
+                q?: string;
+                match_case?: boolean;
+                whole_word?: boolean;
+                /** @description Spoken text uses optimized_text when present, otherwise text. */
+                text_field?: "text" | "spoken";
+                /** @description Filter nonremoved speech blocks by boundary-risk flags. */
+                boundary_flags?: boolean;
                 plan_revision_id?: string;
                 view?: string;
                 fields?: string;

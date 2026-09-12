@@ -651,7 +651,20 @@ type TtsLanguage = {
   [key: string]: unknown;
 };
 
+export type TtsRequestParameter = {
+  type: 'integer' | 'number' | 'boolean' | 'string';
+  default?: number | string | boolean | null;
+  minimum?: number;
+  maximum?: number;
+  exclusive_minimum?: number;
+  exclusive_maximum?: number;
+  enum?: string[];
+};
+
 type TtsModel = {
+  family?: string;
+  supported_languages?: string[];
+  request_parameters?: Record<string, TtsRequestParameter>;
   id: string;
   label?: string;
   display_name?: string;
@@ -1029,6 +1042,7 @@ type SpeechBlockProvenance = {
 };
 
 export type GenerationSegment = {
+  search_matches?: { start: number; end: number }[];
   audio_reuse_reason?: string;
   has_reusable_take?: boolean;
   id: string;
@@ -1057,6 +1071,7 @@ export type GenerationSegment = {
 };
 
 export type GenerationSegmentPage = {
+  boundary_flag_count?: number;
   items: GenerationSegment[];
   next_cursor: number | null;
   total: number;

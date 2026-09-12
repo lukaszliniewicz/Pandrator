@@ -2945,9 +2945,17 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     @app.get("/api/v1/sessions/<session_id>/generation-segments")
     @require_auth
     def generation_segment_list(session_id: str):
-        marked_arg = request.args.get("marked")
-        marked = None if marked_arg is None else marked_arg.lower() == "true"
+        def optional_bool_arg(name: str, *, default: bool | None = None) -> bool | None:
+            raw = request.args.get(name)
+            if raw is None:
+                return default
+            normalized = raw.strip().lower()
+            if normalized not in {"true", "false"}:
+                raise ValueError(f"{name} must be true or false.")
+            return normalized == "true"
+
         try:
+            marked = optional_bool_arg("marked")
             result = generation.list_segments(
                 session_id,
                 cursor=request.args.get("cursor", 0, type=int),
@@ -2963,6 +2971,11 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 around_ordinal=int(request.args["around_ordinal"]) if "around_ordinal" in request.args else None,
                 source_cue_id=request.args.get("source_cue_id"),
                 radius=int(request.args.get("radius", 2)),
+                q=request.args.get("q"),
+                match_case=optional_bool_arg("match_case", default=False),
+                whole_word=optional_bool_arg("whole_word", default=False),
+                text_field=request.args.get("text_field", "text"),
+                boundary_flags=optional_bool_arg("boundary_flags"),
             )
         except KeyError:
             return error_response(

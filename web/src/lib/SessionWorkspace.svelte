@@ -7,7 +7,6 @@
   } from './tts-provider-policy';
   import { errorMessage } from './errors';
   import {
-    ArrowLeft,
     ChevronRight,
     CheckCircle2,
     CircleAlert,
@@ -56,6 +55,7 @@
   import type PdfEditor from './PdfEditor.svelte';
   import type AddSourceDialog from './AddSourceDialog.svelte';
   import SessionSourceCard from './SessionSourceCard.svelte';
+  import StageInputPicker from './StageInputPicker.svelte';
   import SpeechPlanCard from './SpeechPlanCard.svelte';
   import SpeechPlanSettings from './SpeechPlanSettings.svelte';
   import SpeechPlanPicker from './SpeechPlanPicker.svelte';
@@ -83,14 +83,12 @@
     session,
     outcome: initialOutcome,
     workflowStore,
-    onback,
     onupdated,
     initialSettingsStage = ''
   }: {
     session: SessionRecord;
     outcome: OutcomePlan;
     workflowStore: WorkflowStore;
-    onback: () => void;
     onupdated: (session: SessionRecord) => void;
     initialSettingsStage?: string;
   } = $props();
@@ -691,6 +689,131 @@
     } catch (caught) {
       error = errorMessage(caught);
     }
+  }
+
+  let inputBusy = $state(false);
+  const inputsLocked = $derived(
+    inputBusy ||
+      Boolean(snapshot?.stages.some((stage) => stage.status === 'running'))
+  );
+  const sourceCardStage = $derived(
+    snapshot?.stages.find((stage) =>
+      ['transcribe', 'prepare_text', 'edit_media'].includes(stage.key)
+    )?.key
+  );
+  const timedInputs = $derived(
+    ['voiceover', 'subtitles', 'media_edit'].includes(session.workflow_kind)
+  );
+  const documentSpeechOptimization = $derived(
+    Boolean(outcome.value.transformations?.llm_tts_document_optimization)
+  );
+  function outputHasInputPicker(key: string) {
+    const consumers =
+      key === 'transcribe' || key === 'edit_media'
+        ? ['correct', 'translate', 'generate_audio']
+        : key === 'correct'
+          ? ['translate', 'generate_audio']
+          : key === 'translate' || key === 'optimize_tts'
+            ? ['generate_audio']
+            : [];
+    return (
+      timedInputs &&
+      Boolean(snapshot?.stages.some((stage) => consumers.includes(stage.key)))
+    );
+  }
+  function sourceStageKey(role: string) {
+    if (role === 'source')
+      return session.workflow_kind === 'media_edit'
+        ? 'edit_media'
+        : 'transcribe';
+    return (
+      {
+        correction: 'correct',
+        translation: 'translate',
+        optimized: 'optimize_tts',
+        prepared: 'prepare_text'
+      } as Record<string, string>
+    )[role];
+  }
+  function inputStage(role: string) {
+    return snapshot?.stages.find((stage) => stage.key === sourceStageKey(role));
+  }
+  const sourceChoices = $derived([
+    {
+      value: 'source',
+      label:
+        session.workflow_kind === 'media_edit'
+          ? 'Edited subtitles'
+          : 'Source subtitles'
+    },
+    { value: 'correction', label: 'Correction' },
+    { value: 'translation', label: 'Translation' }
+  ]);
+  function inputRole(consumer: string) {
+    if (consumer === 'correct') return 'source';
+    if (consumer === 'translate')
+      return outcome.value.inputs.translation ?? 'correction';
+    if (consumer === 'speech_plan' && documentSpeechOptimization)
+      return 'optimized';
+    if (session.workflow_kind === 'audiobook') return 'prepared';
+    return outcome.value.inputs.generation ?? 'translation';
+  }
+  function choicesForInput(consumer: string) {
+    if (consumer === 'speech_plan' && documentSpeechOptimization)
+      return [{ value: 'optimized', label: 'Optimized speech text' }];
+    if (session.workflow_kind === 'audiobook')
+      return [{ value: 'prepared', label: 'Prepared text' }];
+    return sourceChoices.slice(
+      0,
+      consumer === 'correct' ? 1 : consumer === 'translate' ? 2 : 3
+    );
+  }
+  async function changeInputRole(consumer: string, role: string) {
+    const key = consumer === 'translate' ? 'translation' : 'generation';
+    if (inputsLocked || outcome.value.inputs[key] === role) return;
+    inputBusy = true;
+    error = '';
+    try {
+      outcome = await sessionApi.updateOutcome(session.id, outcome.revision, {
+        ...outcome.value,
+        inputs: { ...outcome.value.inputs, [key]: role }
+      });
+      onupdated(session);
+      await load({ initial: false });
+    } catch (caught) {
+      error = errorMessage(caught);
+    } finally {
+      inputBusy = false;
+    }
+  }
+  async function chooseInputVersion(producer: Stage | undefined, id: string) {
+    if (!producer || inputsLocked) return;
+    inputBusy = true;
+    try {
+      await chooseStageArtifact(producer, id);
+    } finally {
+      inputBusy = false;
+    }
+  }
+  async function previewVersion(artifact: StageArtifact) {
+    const role = artifact.raw_role ?? artifact.role;
+    if (role === 'tts_optimized' && artifact.kind === 'json')
+      return openOptimizationReview(artifact.id);
+    if (
+      [
+        'transcription',
+        'correction',
+        'translation',
+        'tts_optimized',
+        'media_edit_subtitles'
+      ].includes(role)
+    )
+      return openSubtitleReview(artifact.id);
+    return openArtifactPreview({
+      ...artifact,
+      role,
+      relative_path: artifact.relative_path ?? artifact.path
+    });
   }
 
   async function clearStageArtifact(stage: Stage) {
@@ -2645,11 +2768,6 @@
 </script>
 
 <div class="min-w-0 max-w-full overflow-x-hidden">
-  <button
-    onclick={onback}
-    class="muted mb-4 flex items-center gap-2 text-sm font-semibold"
-    ><ArrowLeft size={16} /> Sessions</button
-  >
   <header class="mb-6 flex flex-wrap items-end justify-between gap-6">
     <div>
       {#if session.workflow_kind !== 'subtitles'}<div
@@ -2745,25 +2863,47 @@
       <CircleAlert class="mt-0.5 shrink-0" size={17} /><span>{error}</span>
     </div>{/if}
 
+  {#snippet stageInput(consumer: string)}
+    {@const role = inputRole(consumer)}
+    {@const producer = inputStage(role)}
+    <StageInputPicker
+      label={consumer === 'speech_plan'
+        ? 'Prepare plan from'
+        : 'Use input from'}
+      choices={choicesForInput(consumer)}
+      value={role}
+      stage={producer}
+      disabled={inputsLocked}
+      loadingMore={Boolean(producer && historyLoading[producer.key])}
+      onchange={(value) => changeInputRole(consumer, value)}
+      onselect={(id) => chooseInputVersion(producer, id)}
+      onpreview={previewVersion}
+      onloadmore={() => producer && loadMoreStageArtifacts(producer)}
+    />
+  {/snippet}
+  {#snippet sessionSource()}
+    <SessionSourceCard
+      compact={Boolean(sourceCardStage)}
+      sessionId={session.id}
+      refreshKey={JSON.stringify([
+        session.revision,
+        snapshot?.stages.map((stage) => [
+          stage.key,
+          stage.status,
+          stage.selected_artifact_id
+        ])
+      ])}
+      oninitialsource={openSourceDialog}
+      onchanged={sourceAdded}
+    />
+  {/snippet}
   {#if workflowStore.loading}
     <div class="surface grid min-h-64 place-items-center rounded-3xl">
       <LoaderCircle class="animate-spin text-[var(--accent)]" size={28} />
     </div>
   {:else if snapshot}
     <div class="space-y-4">
-      <SessionSourceCard
-        sessionId={session.id}
-        refreshKey={JSON.stringify([
-          session.revision,
-          snapshot.stages.map((stage) => [
-            stage.key,
-            stage.status,
-            stage.selected_artifact_id
-          ])
-        ])}
-        oninitialsource={openSourceDialog}
-        onchanged={sourceAdded}
-      />
+      {#if !sourceCardStage}{@render sessionSource()}{/if}
       {#each snapshot.stages as stage}
         {#if stage.key === 'generate_audio' && workspaceMode === 'review'}
           <SpeechPlanCard
@@ -2774,10 +2914,16 @@
             onselect={(id) => planAction('select', id)}
             onreview={() => planAction('review')}
             onsettings={() => (planSettingsOpen = true)}
-          />
+          >
+            {#snippet inputControls()}{@render stageInput(
+                'speech_plan'
+              )}{/snippet}
+          </SpeechPlanCard>
         {/if}
         <WorkflowStageCard
           {stage}
+          outputsOnly={outputHasInputPicker(stage.key)}
+          onpreviewversion={previewVersion}
           {workspaceMode}
           runDisabled={stage.key === 'generate_audio' &&
             workspaceMode === 'review' &&
@@ -2813,6 +2959,12 @@
           onloadmore={() => loadMoreStageArtifacts(stage)}
         >
           {#snippet inputControls()}
+            {#if stage.key === sourceCardStage}{@render sessionSource()}{/if}
+            {#if timedInputs && (['correct', 'translate'].includes(stage.key) || (stage.key === 'optimize_tts' && documentSpeechOptimization))}
+              {@render stageInput(stage.key)}
+            {:else if stage.key === 'generate_audio' && workspaceMode !== 'review'}
+              {@render stageInput('speech_plan')}
+            {/if}
             {#if stage.key === 'generate_audio' && workspaceMode === 'review'}
               <SpeechPlanPicker
                 plan={speechPlan}
@@ -4627,77 +4779,91 @@
               ></label
             >
             {#if supportsPrebuiltVoices || showClonedVoices}
-              <label class="text-sm font-semibold"
-                >Voice<select
-                  bind:value={voiceName}
-                  class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
-                  >{#if !showClonedVoices || selectedModelAllowsReferenceFree}<option
-                      value=""
-                      disabled={!selectedModelAllowsReferenceFree &&
-                        defaultVoiceLanguageMismatch}
-                      >{selectedModelAllowsReferenceFree
-                        ? 'Design from instructions · no reference'
-                        : 'Service default'}</option
-                    >{/if}{#if supportsPrebuiltVoices}<optgroup
-                      label={`${LANGUAGE_OPTIONS.find((item) => item.value === targetLanguage)?.label ?? targetLanguage} · pre-built voices`}
-                      >{#each filteredPrebuiltVoices as voice}<option
-                          value={voice.id}
-                          >{voice.name}{voice.gender
-                            ? ` · ${voice.gender}`
-                            : ''} ·
-                          {voice.language}</option
-                        >{/each}</optgroup
-                    >{/if}{#if showClonedVoices}{#each clonedVoiceGroups as group}
-                      <optgroup label={group.label}
-                        >{#each group.voices as voice}<option value={voice.id}
-                            >{voice.name}</option
+              {#if !audioCppLinkedReferences || !showClonedVoices}
+                <label class="text-sm font-semibold"
+                  >Voice<select
+                    bind:value={voiceName}
+                    class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
+                    >{#if !showClonedVoices || selectedModelAllowsReferenceFree}<option
+                        value=""
+                        disabled={!selectedModelAllowsReferenceFree &&
+                          defaultVoiceLanguageMismatch}
+                        >{selectedModelAllowsReferenceFree
+                          ? 'Design from instructions · no reference'
+                          : 'Service default'}</option
+                      >{/if}{#if supportsPrebuiltVoices}<optgroup
+                        label={`${LANGUAGE_OPTIONS.find((item) => item.value === targetLanguage)?.label ?? targetLanguage} · pre-built voices`}
+                        >{#each filteredPrebuiltVoices as voice}<option
+                            value={voice.id}
+                            >{voice.name}{voice.gender
+                              ? ` · ${voice.gender}`
+                              : ''} ·
+                            {voice.language}</option
                           >{/each}</optgroup
-                      >{/each}{/if}</select
-                ></label
-              >
-              {#if supportsPrebuiltVoices}
-                <p class="muted text-xs" role="status">
-                  {selectedVoiceLanguageMismatch
-                    ? 'Choose a voice that supports the selected language before saving.'
-                    : filteredPrebuiltVoices.length
-                      ? `${filteredPrebuiltVoices.length} pre-built ${filteredPrebuiltVoices.length === 1 ? 'voice supports' : 'voices support'} the selected language.`
-                      : 'No pre-built voices are listed for this language. Choose another language or a provider-ready voice.'}
-                </p>
+                      >{/if}{#if showClonedVoices}{#each clonedVoiceGroups as group}
+                        <optgroup label={group.label}
+                          >{#each group.voices as voice}<option value={voice.id}
+                              >{voice.name}</option
+                            >{/each}</optgroup
+                        >{/each}{/if}</select
+                  ></label
+                >
+                {#if supportsPrebuiltVoices}
+                  <p class="muted text-xs" role="status">
+                    {selectedVoiceLanguageMismatch
+                      ? 'Choose a voice that supports the selected language before saving.'
+                      : filteredPrebuiltVoices.length
+                        ? `${filteredPrebuiltVoices.length} pre-built ${filteredPrebuiltVoices.length === 1 ? 'voice supports' : 'voices support'} the selected language.`
+                        : 'No pre-built voices are listed for this language. Choose another language or a provider-ready voice.'}
+                  </p>
+                {/if}
+                <div class="flex flex-wrap items-center justify-between gap-3">
+                  <p class="muted text-xs">
+                    {showClonedVoices
+                      ? selectedModelAllowsReferenceFree
+                        ? 'Leave “Design from instructions” selected to follow the speech direction, or choose a linked local voice to clone it.'
+                        : audioCppLinkedReferences
+                          ? 'Linked local voices can be selected above. Qwen benefits from a reviewed transcript; OmniVoice requires one.'
+                          : 'Provider-ready voices can be selected above. Local voices can be prepared in one click below.'
+                      : 'Only voices supported by the selected model are shown.'}
+                  </p>
+                  {#if showClonedVoices}<button
+                      type="button"
+                      onclick={() =>
+                        openVoiceLibrary('references', selectedTtsServiceId)}
+                      class="flex items-center gap-1.5 text-xs font-semibold text-[var(--accent)]"
+                      ><Library size={14} /> Manage Voice Library</button
+                    >{:else}<button
+                      type="button"
+                      onclick={() => openVoiceLibrary('prebuilt')}
+                      class="flex items-center gap-1.5 text-xs font-semibold text-[var(--accent)]"
+                      ><Library size={14} /> Browse pre-built voices</button
+                    >{/if}
+                </div>
               {/if}
-              <div class="flex flex-wrap items-center justify-between gap-3">
-                <p class="muted text-xs">
-                  {showClonedVoices
-                    ? selectedModelAllowsReferenceFree
-                      ? 'Leave “Design from instructions” selected to follow the speech direction, or choose a linked local voice to clone it.'
-                      : audioCppLinkedReferences
-                        ? 'Linked local voices can be selected above. Qwen benefits from a reviewed transcript; OmniVoice requires one.'
-                        : 'Provider-ready voices can be selected above. Local voices can be prepared in one click below.'
-                    : 'Only voices supported by the selected model are shown.'}
-                </p>
-                {#if showClonedVoices}<button
-                    type="button"
-                    onclick={() =>
-                      openVoiceLibrary('references', selectedTtsServiceId)}
-                    class="flex items-center gap-1.5 text-xs font-semibold text-[var(--accent)]"
-                    ><Library size={14} /> Manage Voice Library</button
-                  >{:else}<button
-                    type="button"
-                    onclick={() => openVoiceLibrary('prebuilt')}
-                    class="flex items-center gap-1.5 text-xs font-semibold text-[var(--accent)]"
-                    ><Library size={14} /> Browse pre-built voices</button
-                  >{/if}
-              </div>
               {#if showClonedVoices}
                 <details
                   class="rounded-2xl border border-[var(--line)] bg-[var(--paper)] p-4"
+                  open={audioCppLinkedReferences &&
+                    !voiceName &&
+                    !selectedModelAllowsReferenceFree}
                 >
                   <summary class="cursor-pointer text-sm font-semibold"
-                    >Available from your Voice Library <span
-                      class="muted font-normal"
-                      >· {localVoiceChoices.length}
-                      {localVoiceChoices.length === 1
-                        ? 'voice'
-                        : 'voices'}</span
+                    >{audioCppLinkedReferences
+                      ? 'Voice'
+                      : 'Available from your Voice Library'}
+                    <span class="muted font-normal"
+                      >· {#if audioCppLinkedReferences}{localVoiceChoices.find(
+                          (choice) =>
+                            choice.registration?.voice_id === voiceName
+                        )?.voice.name ||
+                          voiceName ||
+                          (selectedModelAllowsReferenceFree
+                            ? 'Speech direction · no reference'
+                            : 'Choose a voice')}{:else}{localVoiceChoices.length}
+                        {localVoiceChoices.length === 1
+                          ? 'voice'
+                          : 'voices'}{/if}</span
                     ></summary
                   >
                   <div
@@ -4715,9 +4881,19 @@
                       onclick={() =>
                         openVoiceLibrary('references', selectedTtsServiceId)}
                       class="text-xs font-semibold text-[var(--accent)]"
-                      >Add a new voice</button
+                      >Manage Voice Library</button
                     >
                   </div>
+                  {#if audioCppLinkedReferences && selectedModelAllowsReferenceFree}
+                    <button
+                      type="button"
+                      class="btn btn-secondary mt-3 w-full justify-between"
+                      onclick={() => (voiceName = '')}
+                    >
+                      Use speech direction without a reference
+                      {#if !voiceName}<CheckCircle2 size={16} />{/if}
+                    </button>
+                  {/if}
                   {#if localVoiceChoices.length}
                     <div class="mt-3 space-y-2">
                       {#each localVoiceChoices as choice}

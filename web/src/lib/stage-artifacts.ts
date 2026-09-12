@@ -5,6 +5,7 @@ import { LANGUAGE_OPTIONS } from './settings-fields';
 export type StageArtifact = PreviewableArtifact & {
   id: string;
   role: string;
+  raw_role?: string;
   version: number;
   created_at: string;
   is_selected: boolean;

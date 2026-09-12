@@ -7,9 +7,11 @@
 
   let {
     value,
-    onchange
+    onchange,
+    onloaded
   }: {
     value: string;
+    onloaded?: (services: TtsService[]) => void;
     onchange: (value: string, resetSelection: boolean) => void;
   } = $props();
   let services = $state<TtsService[]>([]);
@@ -23,6 +25,7 @@
   onMount(async () => {
     try {
       services = (await speechServiceApi.catalogue()).services;
+      onloaded?.(services);
     } catch (caught) {
       error = errorMessage(caught);
     } finally {
@@ -59,8 +62,7 @@
   {#if selected?.id === 'audio_cpp'}
     <p class="muted mt-2 text-xs">
       audio.cpp is one provider with several local speech models. Install model
-      packages in the Manager, then choose an installed model in Generate audio
-      settings.
+      packages in the Manager, then choose a model and its controls here.
     </p>
   {/if}
   {#if selected?.catalogue_role === 'compatibility'}

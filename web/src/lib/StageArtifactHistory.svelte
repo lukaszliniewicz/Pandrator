@@ -21,6 +21,8 @@
 
   let {
     artifacts,
+    outputsOnly = false,
+    onpreviewversion,
     total,
     hasMore = false,
     loadingMore = false,
@@ -34,6 +36,8 @@
     onloadmore
   }: {
     artifacts: StageArtifact[];
+    outputsOnly?: boolean;
+    onpreviewversion?: (artifact: StageArtifact) => void;
     total?: number;
     hasMore?: boolean;
     loadingMore?: boolean;
@@ -56,21 +60,27 @@
 <div class="mt-3 w-full">
   <div class="version-row flex flex-wrap items-center gap-2">
     <History class="muted" size={14} />
-    <label class="version-picker min-w-0 text-xs font-semibold">
-      Selected version
-      <select
-        value={selectedArtifactId ?? ''}
-        onchange={(event) => onselect(event.currentTarget.value)}
-        title={selectedArtifact ? artifactOptionLabel(selectedArtifact) : ''}
-        class="version-select ml-1 max-w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-2 py-1.5 font-normal"
-      >
-        {#if !selectedArtifactId}<option value="">No result selected</option
-          >{/if}
-        {#each artifacts as artifact (artifact.id)}
-          <option value={artifact.id}>{artifactOptionLabel(artifact)}</option>
-        {/each}
-      </select>
-    </label>
+    {#if outputsOnly}<span class="text-xs font-semibold"
+        >{savedCount} saved {savedCount === 1
+          ? 'result'
+          : 'results'}{selectedArtifact
+          ? ` · v${selectedArtifact.version} current`
+          : ''}</span
+      >{:else}<label class="version-picker min-w-0 text-xs font-semibold">
+        Selected version
+        <select
+          value={selectedArtifactId ?? ''}
+          onchange={(event) => onselect(event.currentTarget.value)}
+          title={selectedArtifact ? artifactOptionLabel(selectedArtifact) : ''}
+          class="version-select ml-1 max-w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-2 py-1.5 font-normal"
+        >
+          {#if !selectedArtifactId}<option value="">No result selected</option
+            >{/if}
+          {#each artifacts as artifact (artifact.id)}
+            <option value={artifact.id}>{artifactOptionLabel(artifact)}</option>
+          {/each}
+        </select>
+      </label>{/if}
     {#if canPreview}
       <button
         onclick={onpreview}
@@ -78,11 +88,11 @@
       >
         Preview selected<ChevronRight size={13} />
       </button>
-      <button
-        onclick={onclear}
-        class="muted text-xs font-semibold hover:text-red-500"
-        >Clear selection</button
-      >
+      {#if !outputsOnly}<button
+          onclick={onclear}
+          class="muted text-xs font-semibold hover:text-red-500"
+          >Clear selection</button
+        >{/if}
     {:else}
       <span class="muted text-xs"
         >Choose an earlier version or run this stage for the selected input.</span
@@ -187,7 +197,10 @@
                   </div>
                 </div>
                 <div class="flex shrink-0 gap-2 sm:justify-end">
-                  {#if selected && canPreview}
+                  {#if outputsOnly && onpreviewversion}<button
+                      onclick={() => onpreviewversion?.(artifact)}
+                      class="history-action"><Eye size={13} /> Preview</button
+                    >{:else if selected && canPreview}
                     <button onclick={onpreview} class="history-action"
                       ><Eye size={13} /> Preview</button
                     >

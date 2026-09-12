@@ -1,20 +1,24 @@
 <script lang="ts">
   import { page } from '$app/state';
-  import { onMount, setContext } from 'svelte';
+  import { onMount, setContext, tick } from 'svelte';
   import type { Snippet } from 'svelte';
   import {
     Activity,
     AudioLines,
     ChevronLeft,
+    Check,
     FileText,
     Layers3,
+    Pencil,
     Settings2,
     Scissors,
     Sparkles,
-    WandSparkles
+    WandSparkles,
+    X
   } from '@lucide/svelte';
   import { appState } from '$lib/app-state.svelte';
   import { sessionApi } from '$lib/domain-api';
+  import { errorMessage } from '$lib/errors';
   import { invalidates, invalidationBus } from '$lib/invalidation';
   import { SESSION_CONTEXT, type SessionContext } from '$lib/session-context';
   import { SessionStore } from '$lib/session-store.svelte';
@@ -28,6 +32,12 @@
   );
   let GenerationDrawerComponent = $state<typeof GenerationDrawer | null>(null);
   let sourceProfile = $state('none');
+  let editingName = $state(false);
+  let nameDraft = $state('');
+  let nameRevision = $state(0);
+  let savingName = $state(false);
+  let nameError = $state('');
+  let nameInput = $state<HTMLInputElement>();
   const sessionStore = new SessionStore(page.params.id ?? '', (session) =>
     appState.upsertSession(session)
   );
@@ -75,6 +85,36 @@
       await import('$lib/WorkflowCustomizer.svelte')
     ).default;
     customizeOpen = true;
+  }
+  async function editName() {
+    if (!contextState.session) return;
+    nameDraft = contextState.session.name;
+    nameRevision = contextState.session.revision;
+    nameError = '';
+    editingName = true;
+    await tick();
+    nameInput?.focus();
+    nameInput?.select();
+  }
+  async function saveName() {
+    if (!contextState.session || savingName || !nameDraft.trim()) return;
+    if (nameDraft.trim() === contextState.session.name) {
+      editingName = false;
+      return;
+    }
+    savingName = true;
+    nameError = '';
+    try {
+      await sessionApi.update(contextState.session.id, nameRevision, {
+        name: nameDraft.trim()
+      });
+      await sessionStore.load(true);
+      editingName = false;
+    } catch (caught) {
+      nameError = errorMessage(caught);
+    } finally {
+      savingName = false;
+    }
   }
   onMount(() => {
     const disconnectSession = sessionStore.connect();
@@ -147,11 +187,66 @@
         <div class="eyebrow capitalize">
           {contextState.session.workflow_kind} workspace
         </div>
-        <h1
-          class="mt-1 break-words text-3xl font-semibold tracking-[-.035em] [overflow-wrap:anywhere]"
-        >
-          {contextState.session.name}
-        </h1>
+        {#if editingName}
+          <form
+            class="mt-2 flex flex-wrap items-center gap-2"
+            onsubmit={(event) => {
+              event.preventDefault();
+              void saveName();
+            }}
+          >
+            <input
+              bind:this={nameInput}
+              bind:value={nameDraft}
+              aria-label="Session name"
+              maxlength="255"
+              required
+              disabled={savingName}
+              onkeydown={(event) => {
+                if (event.key === 'Escape' && !savingName) {
+                  event.preventDefault();
+                  editingName = false;
+                  nameError = '';
+                }
+              }}
+              class="min-w-0 flex-1 rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-xl font-semibold sm:min-w-80"
+            />
+            <button
+              type="submit"
+              aria-label="Save session name"
+              disabled={savingName || !nameDraft.trim()}
+              class="btn btn-icon btn-primary"><Check size={18} /></button
+            >
+            <button
+              type="button"
+              aria-label="Cancel renaming"
+              disabled={savingName}
+              onclick={() => {
+                editingName = false;
+                nameError = '';
+              }}
+              class="btn btn-icon btn-secondary"><X size={18} /></button
+            >
+          </form>
+        {:else}
+          <h1 class="mt-1 text-3xl font-semibold tracking-[-.035em]">
+            <button
+              onclick={editName}
+              aria-label={`Rename session ${contextState.session.name}`}
+              title="Click to rename this session"
+              class="group inline-flex max-w-full items-center gap-2 rounded-lg text-left hover:text-[var(--accent)] focus-visible:outline-2 focus-visible:outline-[var(--accent)]"
+              ><span class="min-w-0 break-words [overflow-wrap:anywhere]"
+                >{contextState.session.name}</span
+              ><Pencil
+                size={17}
+                class="muted shrink-0 opacity-50 group-hover:opacity-100"
+              /></button
+            >
+          </h1>
+        {/if}
+        {#if nameError}<p class="mt-2 text-sm text-red-500" role="alert">
+            {nameError}
+          </p>{/if}
         <div
           class="muted mt-2 flex flex-wrap items-center gap-2 text-xs capitalize"
         >

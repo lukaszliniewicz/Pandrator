@@ -10,7 +10,13 @@
     TriangleAlert
   } from '@lucide/svelte';
   import { sessionApi } from './domain-api';
-  import type { SettingsPayload } from './api-models';
+  import type { SettingsPayload, TtsService, VoiceRecord } from './api-models';
+  import { onMount } from 'svelte';
+  import { voiceApi } from './admin-api';
+  import { serviceMatches } from './tts-provider-policy';
+  import { languagesForService, describeVoice } from './voice-catalog';
+  import { LANGUAGE_OPTIONS } from './settings-fields';
+  import AudioCppModelSettings from './AudioCppModelSettings.svelte';
   import SettingField from './SettingField.svelte';
   import TtsServiceSelect from './TtsServiceSelect.svelte';
   import { settingApplies } from './settings-fields';
@@ -156,6 +162,8 @@
       'speed',
       'max_attempts',
       'tts_batch_size',
+      'tts_concurrent_requests',
+      'generation_prompt',
       'speech_block_min_chars',
       'speech_block_max_chars',
       'speech_block_merge_threshold',
@@ -229,6 +237,139 @@
       : fallback;
   const set = (key: string, next: unknown) =>
     (override = { ...override, [key]: next });
+  let ttsServices = $state<TtsService[]>([]);
+  let localVoices = $state<VoiceRecord[]>([]);
+  const effectiveTts = $derived({ ...payload?.effective, ...override });
+  const selectedTts = $derived(
+    ttsServices.find((service) => serviceMatches(service, effectiveTts.service))
+  );
+  const audioCpp = $derived(
+    selectedTts?.adapter === 'audio_cpp' ||
+      ['audio_cpp', 'audio.cpp'].includes(
+        String(effectiveTts.service).toLowerCase()
+      )
+  );
+  const selectedModel = $derived(String(effectiveTts.model ?? ''));
+  const modelMetadata = $derived(
+    selectedTts?.model_catalog?.find((model) => model.id === selectedModel)
+  );
+  const modelTuningError = $derived.by(() => {
+    if (section !== 'tts' || !audioCpp) return '';
+    const values = (
+      effectiveTts.audio_cpp_model_settings as
+        Record<string, Record<string, unknown>> | undefined
+    )?.[selectedModel];
+    if (!values) return '';
+    for (const [key, spec] of Object.entries(
+      modelMetadata?.request_parameters ?? {}
+    )) {
+      const current = values[key];
+      if (current == null || current === '') continue;
+      const label = key.replaceAll('_', ' ');
+      if (spec.type === 'boolean') {
+        if (typeof current !== 'boolean')
+          return `Choose a valid value for ${label}.`;
+        continue;
+      }
+      if (spec.enum) {
+        if (!spec.enum.includes(String(current)))
+          return `Choose a valid value for ${label}.`;
+        continue;
+      }
+      const number = Number(current);
+      if (
+        !Number.isFinite(number) ||
+        (spec.type === 'integer' && !Number.isSafeInteger(number))
+      )
+        return `Enter a valid ${spec.type === 'integer' ? 'whole number' : 'number'} for ${label}.`;
+      if (spec.minimum != null && number < spec.minimum)
+        return `${label} must be at least ${spec.minimum}.`;
+      if (spec.maximum != null && number > spec.maximum)
+        return `${label} must be at most ${spec.maximum}.`;
+      if (spec.exclusive_minimum != null && number <= spec.exclusive_minimum)
+        return `${label} must be greater than ${spec.exclusive_minimum}.`;
+      if (spec.exclusive_maximum != null && number >= spec.exclusive_maximum)
+        return `${label} must be below ${spec.exclusive_maximum}.`;
+    }
+    return '';
+  });
+  const voiceMode = $derived(
+    selectedTts?.model_voice_modes?.[selectedModel] ??
+      String(modelMetadata?.voice_mode ?? '')
+  );
+  const modelChoices = $derived(
+    Array.from(
+      new Set([
+        ...(selectedTts?.models ?? []),
+        ...(selectedModel ? [selectedModel] : [])
+      ])
+    )
+  );
+  const voiceChoices = $derived.by(() => {
+    const usesReferences = ['cloning', 'hybrid', 'optional_cloning'].includes(
+      voiceMode
+    );
+    const catalog =
+      selectedTts?.voice_catalogues?.[selectedModel] ??
+      (audioCpp && usesReferences ? [] : (selectedTts?.voices ?? []));
+    const provider = selectedTts?.id ?? '';
+    const names = new Map<string, string>();
+    for (const voice of localVoices) {
+      const registration = voice.metadata_json?.providers?.[provider];
+      const id = String(
+        registration?.voice_id ?? registration?.speaker_id ?? ''
+      );
+      if (
+        id &&
+        voiceMode !== 'prebuilt' &&
+        voiceMode !== 'design' &&
+        (voice.available_sample_count ?? voice.sample_count ?? 0) > 0
+      )
+        names.set(id, voice.name);
+    }
+    return Array.from(new Set([...catalog, ...names.keys()])).map((id) => ({
+      value: id,
+      label:
+        names.get(id) ??
+        describeVoice(
+          provider,
+          id,
+          selectedTts?.voice_metadata?.[`${selectedModel}:${id}`]
+        ).name
+    }));
+  });
+  const speechLanguages = $derived.by(() => {
+    const options = languagesForService(selectedTts?.id ?? '', [], {
+      modelId: selectedModel,
+      modelCatalog: selectedTts?.model_catalog
+    });
+    return options.length ? options : LANGUAGE_OPTIONS;
+  });
+  const allowsPrompt = $derived(
+    Boolean(selectedTts?.generation_prompt_models?.includes(selectedModel)) ||
+      ['design', 'optional_cloning'].includes(voiceMode)
+  );
+  onMount(() => {
+    if (section === 'tts')
+      void voiceApi
+        .list<VoiceRecord>()
+        .then((result) => {
+          localVoices = result.items;
+        })
+        .catch(() => {});
+  });
+  function changeModel(model: string) {
+    override = {
+      ...override,
+      model,
+      xtts_model: model,
+      voice: '',
+      speaker: ''
+    };
+  }
+  function changeVoice(voice: string) {
+    override = { ...override, voice, speaker: voice };
+  }
   const entries = $derived(
     Object.entries(payload?.effective ?? {}).sort(([left], [right]) => {
       const order = common[section] ?? [];
@@ -260,7 +401,40 @@
       )
         return false;
       if (section !== 'tts') return true;
-      if (providerSetting(key)) return false;
+      if (
+        providerSetting(key) ||
+        [
+          'speaker',
+          'xtts_model',
+          'tts_service',
+          'audio_cpp_model_settings'
+        ].includes(key) ||
+        key.startsWith('speech_block_')
+      )
+        return false;
+      if (audioCpp)
+        return (
+          [
+            'service',
+            'model',
+            'voice',
+            'language',
+            'max_attempts',
+            'generation_prompt'
+          ].includes(key) &&
+          (key !== 'voice' || voiceMode !== 'design') &&
+          (key !== 'generation_prompt' || allowsPrompt)
+        );
+      if (key.startsWith('audio_cpp_') || key === 'options') return false;
+      if (key === 'generation_prompt') return allowsPrompt;
+      if (key === 'tts_batch_size')
+        return Boolean(
+          selectedTts?.supports_batch_synthesis &&
+          selectedTts?.batch_synthesis?.streaming
+        );
+      if (key === 'tts_concurrent_requests')
+        return Boolean(selectedTts?.supports_parallel_synthesis);
+      if (key === 'kokoro_default_voices') return selectedTts?.id === 'kokoro';
       const service = String(
         value('service', payload?.effective?.service ?? '')
       ).toLowerCase();
@@ -456,6 +630,7 @@
       message = 'Unsaved changes from the stage editor are ready to review.';
   }
   async function save() {
+    if (modelTuningError) return;
     saving = true;
     message = '';
     try {
@@ -498,6 +673,7 @@
     }
   }
   async function saveAsDefaults() {
+    if (modelTuningError) return;
     saving = true;
     message = '';
     try {
@@ -547,6 +723,7 @@
     disabled={!payload ||
       saving ||
       deepLResearchConflict ||
+      Boolean(modelTuningError) ||
       !Object.keys(override).length}
     title={deepLResearchConflict
       ? 'Resolve the translation backend and web research conflict first.'
@@ -554,7 +731,10 @@
     class="tool"><Save size={14} /> Save as defaults</button
   ><button
     onclick={save}
-    disabled={!payload || saving || deepLResearchConflict}
+    disabled={!payload ||
+      saving ||
+      deepLResearchConflict ||
+      Boolean(modelTuningError)}
     title={deepLResearchConflict
       ? 'Resolve the translation backend and web research conflict first.'
       : ''}
@@ -783,6 +963,20 @@
           </div>
         {/if}
       </section>
+      {#if section === 'tts' && audioCpp && modelMetadata?.request_parameters}
+        <AudioCppModelSettings
+          model={selectedModel}
+          parameters={modelMetadata.request_parameters}
+          settings={effectiveTts}
+          onchange={(map) => set('audio_cpp_model_settings', map)}
+        />
+      {/if}
+      {#if section === 'tts'}<p class="muted mt-4 text-xs">
+          Speech-block boundaries are configured in the <a
+            class="font-semibold text-[var(--accent)]"
+            href={`/sessions/${sessionId}`}>speech plan</a
+          >.
+        </p>{/if}
       {#if applicable.length > (common[section]?.length ?? 0)}<button
           onclick={() => (advanced = !advanced)}
           class="muted mt-5 flex items-center gap-1 text-xs font-semibold"
@@ -797,9 +991,14 @@
           <div>
             {#if section === 'tts' && key === 'service'}<TtsServiceSelect
                 value={String(value(key, fallback) ?? '')}
+                onloaded={(services) => {
+                  ttsServices = services;
+                }}
                 onchange={(next, resetSelection) => {
+                  const changed = next !== String(value(key, fallback));
                   set(key, next);
-                  if (resetSelection) {
+                  set('tts_service', next);
+                  if (changed || resetSelection) {
                     for (const field of [
                       'model',
                       'xtts_model',
@@ -809,7 +1008,58 @@
                       set(field, '');
                   }
                 }}
-              />{:else}<SettingField
+              />{:else if section === 'tts' && key === 'model' && modelChoices.length}
+              <label class="block text-xs font-semibold"
+                >Model<select
+                  class="tts-field"
+                  value={selectedModel}
+                  onchange={(event) => changeModel(event.currentTarget.value)}
+                  ><option value="">Choose a model</option
+                  >{#each modelChoices as model}<option value={model}
+                      >{selectedTts?.model_catalog?.find(
+                        (item) => item.id === model
+                      )?.label ?? model}</option
+                    >{/each}</select
+                ></label
+              >
+            {:else if section === 'tts' && key === 'voice' && selectedTts}
+              <label class="block text-xs font-semibold"
+                >Voice<select
+                  class="tts-field"
+                  value={String(effectiveTts.voice ?? '')}
+                  onchange={(event) => changeVoice(event.currentTarget.value)}
+                  ><option value=""
+                    >{voiceMode === 'optional_cloning'
+                      ? 'Use speech direction'
+                      : 'Choose a voice'}</option
+                  >{#if effectiveTts.voice && !voiceChoices.some((voice) => voice.value === effectiveTts.voice)}<option
+                      value={String(effectiveTts.voice)}
+                      >{String(effectiveTts.voice)}</option
+                    >{/if}{#each voiceChoices as voice}<option
+                      value={voice.value}>{voice.label}</option
+                    >{/each}</select
+                ></label
+              >
+              <a
+                class="mt-2 inline-block text-xs font-semibold text-[var(--accent)]"
+                href="/voices">Manage Voice Library</a
+              >
+            {:else if section === 'tts' && key === 'language'}
+              <label class="block text-xs font-semibold"
+                >Language<select
+                  class="tts-field"
+                  value={String(effectiveTts.language ?? '')}
+                  onchange={(event) =>
+                    set('language', event.currentTarget.value)}
+                  >{#if effectiveTts.language && !speechLanguages.some((language) => language.value === effectiveTts.language)}<option
+                      value={String(effectiveTts.language)}
+                      >{String(effectiveTts.language)} · saved</option
+                    >{/if}{#each speechLanguages as language}<option
+                      value={language.value}>{language.label}</option
+                    >{/each}</select
+                ></label
+              >
+            {:else}<SettingField
                 {section}
                 keyName={key}
                 value={value(key, fallback)}
@@ -825,6 +1075,20 @@
           </div>
         {/each}
       </div>
+      {#if section === 'tts' && audioCpp && modelMetadata?.request_parameters}
+        <AudioCppModelSettings
+          model={selectedModel}
+          parameters={modelMetadata.request_parameters}
+          settings={effectiveTts}
+          onchange={(map) => set('audio_cpp_model_settings', map)}
+        />
+      {/if}
+      {#if section === 'tts'}<p class="muted mt-4 text-xs">
+          Speech-block boundaries are configured in the <a
+            class="font-semibold text-[var(--accent)]"
+            href={`/sessions/${sessionId}`}>speech plan</a
+          >.
+        </p>{/if}
       {#if applicable.length > (common[section]?.length ?? 0)}<button
           onclick={() => (advanced = !advanced)}
           class="muted mt-5 flex items-center gap-1 text-xs font-semibold"
@@ -835,6 +1099,9 @@
         >{/if}
     {/if}
   {/if}
+  {#if modelTuningError}<p class="mt-4 text-sm text-red-500" role="alert">
+      {modelTuningError}
+    </p>{/if}
   {#if message}<p
       class="mt-4 text-xs"
       class:text-red-500={message.includes('invalid') ||
@@ -845,6 +1112,17 @@
 </svelte:element>
 
 <style>
+  .tts-field {
+    display: block;
+    margin-top: 0.4rem;
+    width: 100%;
+    border: 1px solid var(--line);
+    border-radius: 0.72rem;
+    background: var(--paper);
+    color: var(--ink);
+    padding: 0.65rem 0.72rem;
+    font-weight: 400;
+  }
   .tool {
     display: flex;
     align-items: center;

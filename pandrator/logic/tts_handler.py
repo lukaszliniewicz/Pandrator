@@ -33,6 +33,7 @@ from .retry_utils import (
     status_code_from_error,
     wait_for_retry,
 )
+from .audio_cpp_parameters import validate_audio_cpp_model_options
 from .tts_provider_profiles import (
     AUDIO_CPP_MODEL_CATALOG,
     AUDIO_CPP_MODEL_VOICE_MODES,
@@ -5918,6 +5919,22 @@ def _audio_cpp_language(model: str, language: object, endpoint: dict | None = No
     return iso
 
 
+def _audio_cpp_selected_model_options(
+    tts_settings: dict[str, Any],
+    model: str,
+    family: str,
+) -> dict[str, Any] | None:
+    """Return validated options only when the exact model has an option map."""
+
+    model_settings = tts_settings.get("audio_cpp_model_settings")
+    if not isinstance(model_settings, dict):
+        return None
+    selected = model_settings.get(model)
+    if not isinstance(selected, dict):
+        return None
+    return validate_audio_cpp_model_options(family, selected)
+
+
 def _build_audio_cpp_audio_payload(
     text: str,
     tts_settings: dict,
@@ -5948,7 +5965,7 @@ def _build_audio_cpp_audio_payload(
         "response_format": "wav",
     }
     voice = str(tts_settings.get("speaker") or tts_settings.get("voice") or "").strip()
-    if voice and not is_design:
+    if voice and not is_design and family != "magpie_tts":
         payload["voice"] = voice
 
     raw_language = str(
@@ -5973,7 +5990,7 @@ def _build_audio_cpp_audio_payload(
         payload["instructions"] = instructions
 
     reference_text = str(tts_settings.get("audio_cpp_reference_text") or "").strip()
-    if reference_text and not is_prebuilt and not is_design:
+    if reference_text and not is_prebuilt and not is_design and family != "pocket_tts":
         payload["reference_text"] = reference_text
     voice_ref = tts_settings.get("audio_cpp_voice_ref")
     if not is_prebuilt and not is_design and isinstance(voice_ref, dict) and voice_ref:
@@ -5982,53 +5999,92 @@ def _build_audio_cpp_audio_payload(
         # inside audio.cpp. VoxCPM rejects cached_voice_id even with audio present.
         payload.pop("voice", None)
 
-    for key in (
-        "speed",
-        "seed",
-        "temperature",
-        "top_k",
-        "top_p",
-        "max_tokens",
-        "max_steps",
-        "repetition_penalty",
-        "guidance_scale",
-        "num_inference_steps",
-    ):
-        value = tts_settings.get(f"audio_cpp_{key}")
-        if value in (None, "") and key == "seed":
-            value = tts_settings.get("seed")
-        if value in (None, "") and key == "speed":
-            value = tts_settings.get("speed")
-        if value not in (None, ""):
-            if is_design and key == "seed":
-                if isinstance(value, bool):
-                    raise ValueError("audio.cpp VoiceDesign seed must be an integer.")
-                try:
-                    parsed_seed = int(value)
-                except (TypeError, ValueError) as error:
+    selected_options = _audio_cpp_selected_model_options(tts_settings, model, family)
+    selected_options_authoritative = selected_options is not None
+    if selected_options_authoritative:
+        # A selected model map is the complete request-tuning source.  Legacy
+        # scalar settings and raw option bags are intentionally ignored.
+        options = selected_options
+        # Voice auditions can request a fresh seed for one preview while the
+        # persisted model map remains in the inherited settings snapshot.  The
+        # preview boundary marks that explicit value with preview_service_id;
+        # keep this one-shot request control authoritative for the audition.
+        if (
+            tts_settings.get("preview_service_id")
+            and "audio_cpp_seed" in tts_settings
+            and tts_settings.get("audio_cpp_seed") not in (None, "")
+        ):
+            preview_seed = tts_settings["audio_cpp_seed"]
+            if isinstance(preview_seed, bool):
+                raise ValueError("audio.cpp preview seed must be an integer.")
+            try:
+                parsed_preview_seed = int(preview_seed)
+            except (TypeError, ValueError) as error:
+                raise ValueError("audio.cpp preview seed must be an integer.") from error
+            if isinstance(preview_seed, float) and not preview_seed.is_integer():
+                raise ValueError("audio.cpp preview seed must be an integer.")
+            if is_design:
+                if not 0 <= parsed_preview_seed <= 0xFFFFFFFF:
                     raise ValueError(
-                        "audio.cpp VoiceDesign seed must be an integer."
-                    ) from error
-                if isinstance(value, float) and not value.is_integer():
-                    raise ValueError("audio.cpp VoiceDesign seed must be an integer.")
-                if not 0 <= parsed_seed <= 0xFFFFFFFF:
-                    raise ValueError(
-                        "audio.cpp VoiceDesign seed must be between 0 and 4294967295."
+                        "audio.cpp preview seed must be between 0 and 4294967295."
                     )
-                value = parsed_seed
-            payload[key] = (
-                str(value)
-                if key == "seed"
-                and isinstance(value, int)
-                and not isinstance(value, bool)
-                and value >= 2**53
-                else value
-            )
+                options["seed"] = parsed_preview_seed
+            else:
+                options["seed"] = validate_audio_cpp_model_options(
+                    family,
+                    {"seed": parsed_preview_seed},
+                )["seed"]
+    else:
+        raw_options = tts_settings.get("audio_cpp_options")
+        if raw_options is None:
+            raw_options = tts_settings.get("options")
+        options = dict(raw_options) if isinstance(raw_options, dict) else {}
+        for key in (
+            "speed",
+            "seed",
+            "temperature",
+            "top_k",
+            "top_p",
+            "max_tokens",
+            "max_steps",
+            "repetition_penalty",
+            "guidance_scale",
+            "num_inference_steps",
+        ):
+            value = tts_settings.get(f"audio_cpp_{key}")
+            if value in (None, "") and key == "seed":
+                value = tts_settings.get("seed")
+            if value in (None, "") and key == "speed":
+                value = tts_settings.get("speed")
+            if value not in (None, ""):
+                if is_design and key == "seed":
+                    if isinstance(value, bool):
+                        raise ValueError("audio.cpp VoiceDesign seed must be an integer.")
+                    try:
+                        parsed_seed = int(value)
+                    except (TypeError, ValueError) as error:
+                        raise ValueError(
+                            "audio.cpp VoiceDesign seed must be an integer."
+                        ) from error
+                    if isinstance(value, float) and not value.is_integer():
+                        raise ValueError("audio.cpp VoiceDesign seed must be an integer.")
+                    if not 0 <= parsed_seed <= 0xFFFFFFFF:
+                        raise ValueError(
+                            "audio.cpp VoiceDesign seed must be between 0 and 4294967295."
+                        )
+                    value = parsed_seed
+                if family == "omnivoice" and key == "speed":
+                    options[key] = value
+                else:
+                    payload[key] = (
+                        str(value)
+                        if key == "seed"
+                        and isinstance(value, int)
+                        and not isinstance(value, bool)
+                        and value >= 2**53
+                        else value
+                    )
 
-    raw_options = tts_settings.get("audio_cpp_options")
-    if raw_options is None:
-        raw_options = tts_settings.get("options")
-    options = dict(raw_options) if isinstance(raw_options, dict) else {}
     if is_design:
         cloning_only_options = {
             "audio_sample",
@@ -6047,6 +6103,14 @@ def _build_audio_cpp_audio_payload(
             for key, value in options.items()
             if str(key).strip().casefold() not in cloning_only_options
         }
+    if family == "magpie_tts" and voice and not is_design:
+        # Magpie consumes its selected preset as an option, not OpenAI's
+        # top-level voice field.  A selected voice is authoritative.
+        options["voice_id"] = voice
+    if family == "pocket_tts" and reference_text and not is_design and not is_prebuilt:
+        # Pocket's reviewed clone transcript is a request option.  It must win
+        # over any stale value in a legacy raw option bag.
+        options["voice_clone_text"] = reference_text
     linked_reference = isinstance(voice_ref, dict)
     if linked_reference and family == "omnivoice" and not reference_text and not is_design:
         raise ValueError(

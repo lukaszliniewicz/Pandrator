@@ -9,7 +9,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text as sql_text
 from sqlalchemy.orm import Session
 
 from pandrator.logic.tts_provider_policy import DEFAULT_TTS_SERVICE_ID
@@ -2111,8 +2111,14 @@ class GenerationService:
         around_ordinal: int | None = None,
         source_cue_id: str | None = None,
         radius: int = 2,
+        q: str | None = None,
+        match_case: bool = False,
+        whole_word: bool = False,
+        text_field: str = "text",
+        boundary_flags: bool | None = None,
     ) -> dict[str, Any]:
         from .generation_review import project_segments, source_references
+        from .generation_search import literal_matches
 
         project_segments({"items": []}, view=view, fields=fields)
         requested_plan_revision_id = plan_revision_id
@@ -2124,6 +2130,10 @@ class GenerationService:
         limit = max(1, min(int(limit), 250))
         if verification not in {None, "issues"}:
             raise ValueError("verification must be 'issues' when supplied.")
+        if q is not None and len(q) > 4000:
+            raise ValueError("Search query must be at most 4000 characters.")
+        if text_field not in {"text", "spoken"}:
+            raise ValueError("text_field must be 'text' or 'spoken'.")
         with self.database.session() as session:
             if session.get(SessionRecord, session_id) is None:
                 raise KeyError(session_id)
@@ -2140,6 +2150,7 @@ class GenerationService:
                     "items": [],
                     "next_cursor": None,
                     "total": 0,
+                    "boundary_flag_count": 0,
                     "plan_revision_id": None,
                     "plan_revision_number": None,
                     "parent_revision_id": None,
@@ -2165,10 +2176,56 @@ class GenerationService:
                 if str(key).startswith("speech_block_")
             }
             filters = [GenerationSegment.plan_revision_id == plan_revision_id]
+            search_matches_by_id: dict[str, list[dict[str, int]]] = {}
+            if q:
+                searchable_rows = session.execute(
+                    select(
+                        GenerationSegment.id,
+                        GenerationSegment.text,
+                        GenerationSegment.optimized_text,
+                    ).where(GenerationSegment.plan_revision_id == plan_revision_id)
+                )
+                matched_ids = []
+                for row in searchable_rows:
+                    matches = literal_matches(
+                        (
+                            row.optimized_text
+                            if text_field == "spoken" and row.optimized_text
+                            else row.text
+                        )
+                        or "",
+                        q,
+                        match_case=match_case,
+                        whole_word=whole_word,
+                    )
+                    if matches:
+                        matched_ids.append(row.id)
+                        search_matches_by_id[row.id] = matches
+                filters.append(
+                    sql_text(
+                        "generation_segments.id IN "
+                        "(SELECT value FROM json_each(:matched_ids_json))"
+                    ).bindparams(matched_ids_json=json.dumps(matched_ids))
+                )
             if status:
                 filters.append(GenerationSegment.status == status)
             if marked is not None:
                 filters.append(GenerationSegment.marked.is_(marked))
+            risk_flags_count = func.coalesce(
+                func.json_array_length(
+                    func.json_extract(
+                        GenerationSegment.speech_block_provenance_json,
+                        "$.risk_flags",
+                    )
+                ),
+                0,
+            )
+            if boundary_flags is not None:
+                filters.append(GenerationSegment.removed.is_(False))
+                if boundary_flags:
+                    filters.append(risk_flags_count > 0)
+                else:
+                    filters.append(risk_flags_count == 0)
             if verification == "issues":
                 verification_status = Artifact.metadata_json["audio_verification"][
                     "status"
@@ -2327,6 +2384,9 @@ class GenerationService:
                 }
                 for item in rows
             ]
+            if q is not None:
+                for item in items:
+                    item["search_matches"] = search_matches_by_id.get(item["id"], [])
             from .generation_audio_identity import (
                 AudioIdentityContext,
                 take_reuse_reason,
@@ -2345,10 +2405,23 @@ class GenerationService:
                 )
                 or 0
             )
+            boundary_flag_count = int(
+                session.scalar(
+                    select(func.count())
+                    .select_from(GenerationSegment)
+                    .where(
+                        GenerationSegment.plan_revision_id == plan_revision_id,
+                        GenerationSegment.removed.is_(False),
+                        risk_flags_count > 0,
+                    )
+                )
+                or 0
+            )
             return project_segments({
                 "items": items,
                 "next_cursor": rows[-1].ordinal + 1 if rows and has_more else None,
                 "total": total,
+                "boundary_flag_count": boundary_flag_count,
                 "plan_revision_id": plan_revision_id,
                 "active_plan_revision_id": plan.active_revision_id,
                 "is_active_revision": plan_revision_id == plan.active_revision_id,

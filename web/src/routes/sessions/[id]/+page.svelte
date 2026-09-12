@@ -10,6 +10,5 @@
     outcome={context.outcome}
     workflowStore={context.workflow}
     initialSettingsStage={page.url.searchParams.get('settings') ?? ''}
-    onback={() => (location.href = '/sessions')}
     onupdated={() => context.reload()}
   />{/if}

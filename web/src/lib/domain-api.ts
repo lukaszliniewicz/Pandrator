@@ -856,7 +856,7 @@ export type GenerationSegmentChanges = Partial<
   ApiSchema<'GenerationSegmentUpdate'>
 >;
 export type GenerationSegmentBatchChange = {
-  segment: GenerationSegment;
+  segment: Pick<GenerationSegment, 'id' | 'revision'>;
   changes: GenerationSegmentChanges;
 };
 

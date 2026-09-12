@@ -1,6 +1,7 @@
 import copy
 
 from ..constants import magpie_voice_catalog
+from .audio_cpp_parameters import request_parameters_for_family
 
 OPENAI_ADAPTER = "openai_compatible"
 AUDIO_CPP_ADAPTER = "audio_cpp"
@@ -107,6 +108,12 @@ AUDIO_CPP_MODEL_CATALOG = [
         ),
     },
 ]
+
+for _audio_cpp_model in AUDIO_CPP_MODEL_CATALOG:
+    _audio_cpp_model["request_parameters"] = request_parameters_for_family(
+        str(_audio_cpp_model.get("family") or "")
+    )
+
 AUDIO_CPP_MODEL_VOICE_MODES = {
     item["id"]: item["voice_mode"] for item in AUDIO_CPP_MODEL_CATALOG
 }

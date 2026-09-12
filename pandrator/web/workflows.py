@@ -729,7 +729,9 @@ class WorkflowService:
                     .where(
                         Job.session_id == session_id,
                         Job.kind == "generation.run",
-                        Job.status.in_(("running", "queued", "cancel_requested")),
+                        Job.status.in_(
+                            ("running", "queued", "pausing", "cancel_requested")
+                        ),
                     )
                     .order_by(Job.created_at.asc(), Job.id.asc())
                 ).all()
@@ -753,7 +755,9 @@ class WorkflowService:
                 generation_jobs.append(candidate)
                 generation_job_runs[candidate.id] = candidate_run
             running_generation_jobs = [
-                job for job in generation_jobs if job.status == "running"
+                job
+                for job in generation_jobs
+                if job.status in {"running", "pausing"}
             ]
             queued_generation_jobs = [
                 job for job in generation_jobs if job.status == "queued"
@@ -941,6 +945,11 @@ class WorkflowService:
                 f"Generated {generation_completed} of {generation_total} segments"
                 if generation_total
                 else "Generated 0 of 0 segments"
+            )
+            generation_job_progress = (
+                min(1.0, max(0.0, float(generation_job.progress)))
+                if generation_job is not None
+                else None
             )
             stages = []
             stage_usage_scopes: dict[str, dict[str, str]] = {}
@@ -1239,6 +1248,27 @@ class WorkflowService:
                 run_metrics = (
                     _job_run_metrics(metric_job) if metric_job is not None else None
                 )
+                if active and status == "failed":
+                    stage_detail = active.error_message
+                elif (
+                    definition.key == "generate_audio"
+                    and generation_job_progress is not None
+                ):
+                    stage_detail = active.progress_detail or (
+                        "Waiting for an available worker"
+                        if active.status == "queued"
+                        else None
+                    )
+                elif active and status == "running":
+                    stage_detail = active.progress_detail or (
+                        "Waiting for an available worker"
+                        if active.status == "queued"
+                        else None
+                    )
+                elif definition.key == "generate_audio":
+                    stage_detail = generation_progress_detail
+                else:
+                    stage_detail = None
                 resolved_generation_input = None
                 if definition.key == "generate_audio" and prerequisite is not None:
                     input_stage = {
@@ -1352,37 +1382,25 @@ class WorkflowService:
                         and agent_run.status in {"failed", "interrupted"}
                     ),
                     "progress": (
-                        generation_progress
+                        generation_job_progress
+                        if definition.key == "generate_audio"
+                        and generation_job_progress is not None
+                        else generation_progress
                         if definition.key == "generate_audio"
                         else active.progress
                         if active and status in {"running", "failed"}
                         else None
                     ),
-                    "detail": (
-                        active.error_message
-                        if active and status == "failed"
-                        else (
-                            (
-                                active.progress_detail
-                                or (
-                                    "Waiting for an available worker"
-                                    if active.status == "queued"
-                                    else generation_progress_detail
-                                    if definition.key == "generate_audio"
-                                    else None
-                                )
-                            )
-                            if active and status == "running"
-                            else generation_progress_detail
-                            if definition.key == "generate_audio"
-                            else None
-                        )
-                    ),
+                    "detail": stage_detail,
                     "usage": None,
                     "run_metrics": run_metrics,
                 }
                 if definition.key == "generate_audio":
-                    stage["progress_basis"] = "segments"
+                    stage["progress_basis"] = (
+                        "job"
+                        if generation_job_progress is not None
+                        else "segments"
+                    )
                     stage["resolved_input"] = resolved_generation_input
                 stages.append(stage)
 
