@@ -408,7 +408,18 @@
             <span class="muted text-xs">Not generated</span>
           {/if}
         </td>
-        <td><span class="status">{item.status}</span></td>
+        <td>
+          <span class="status">{item.status}</span>
+          {#if ['generation_settings_changed', 'voice_reference_changed'].includes(item.audio_reuse_reason ?? '')}
+            <span class="mt-1 block text-xs text-[var(--warning)]"
+              >Audio settings changed</span
+            >
+          {:else if item.audio_reuse_reason === 'audio_identity_unknown'}
+            <span class="mt-1 block text-xs text-[var(--warning)]"
+              >Older audio · regenerate to reuse</span
+            >
+          {/if}
+        </td>
         <td>
           <div class="flex justify-center gap-1">
             <button

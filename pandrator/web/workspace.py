@@ -38,10 +38,12 @@ from .models import (
     SessionSource,
     SourceAsset,
     SourceRecord,
+    SpeechPlanReview,
     UsageEvent,
     utcnow,
 )
 from .source_resolution import classify_source, resolve_media_source
+
 # Public compatibility re-export used by source-cleaning dispatch.
 from .source_resolution import resolve_primary_source as resolve_primary_source
 from .tts_optimization import (
@@ -1532,6 +1534,26 @@ class SourceLibraryService:
             name=asset.display_name, kind=asset.kind, mime_type=asset.mime_type or ""
         ) not in {"audio", "video"}:
             raise ValueError("A media target must be an audio or video source, not subtitle text.")
+        if role == "media":
+            from .source_management import (
+                _invalidate_recording_outputs,
+                assert_session_idle,
+            )
+
+            assert_session_idle(session, session_id)
+            previous_media = resolve_media_source(session, session_id)
+            previous_id = previous_media.artifact.id if previous_media.artifact and previous_media.has_audio else None
+            if previous_id != asset.artifact_id:
+                _invalidate_recording_outputs(session, session_id, previous_id)
+                timing = session.get(SessionSetting, (session_id, "_recording_timing_review"))
+                if timing is None:
+                    timing = SessionSetting(session_id=session_id, section="_recording_timing_review", value_json={})
+                    session.add(timing)
+                timing.value_json = {
+                    "required": bool(previous_id or (timing.value_json or {}).get("required")),
+                    "media_artifact_id": asset.artifact_id,
+                }
+                timing.revision = (timing.revision or 0) + 1
         for current in session.scalars(
             select(SessionSource).where(
                 SessionSource.session_id == session_id,
@@ -2094,6 +2116,7 @@ class GenerationService:
 
         project_segments({"items": []}, view=view, fields=fields)
         requested_plan_revision_id = plan_revision_id
+        audio_snapshot, _ = self.settings.resolve(session_id)
         if radius < 0 or radius > 25:
             raise ValueError("Inspection radius must be between 0 and 25 blocks.")
         if around_ordinal is not None and source_cue_id is not None:
@@ -2304,6 +2327,18 @@ class GenerationService:
                 }
                 for item in rows
             ]
+            from .generation_audio_identity import (
+                AudioIdentityContext,
+                take_reuse_reason,
+            )
+
+            audio_identity = AudioIdentityContext(session, selected_run.settings_snapshot_json if selected_run else audio_snapshot)
+            for row, item in zip(rows, items, strict=True):
+                active_take = next((take for take in takes_by_segment.get(row.id, []) if take.is_active), None)
+                artifact = artifacts_by_id.get(active_take.artifact_id) if active_take and active_take.artifact_id else None
+                reason = take_reuse_reason(row, active_take, artifact, audio_identity.for_segment(row))
+                item["audio_reuse_reason"] = reason
+                item["has_reusable_take"] = reason == "reusable"
             total = int(
                 session.scalar(
                     select(func.count()).select_from(GenerationSegment).where(*filters)
@@ -3701,7 +3736,7 @@ class GenerationService:
             plan = session.scalar(select(GenerationPlan).where(GenerationPlan.session_id == session_id))
             current_id = plan.active_revision_id if plan else None
             current = session.get(GenerationPlanRevision, current_id) if current_id else None
-            reviewed = bool(current and (current.operation_json or (current.settings_json or {}).get("_prepared_for_review") or session.scalar(
+            reviewed = bool(current and (session.get(SpeechPlanReview, current.id) or current.operation_json or (current.settings_json or {}).get("_prepared_for_review") or session.scalar(
                 select(GenerationSegment.id).where(GenerationSegment.plan_revision_id == current_id, GenerationSegment.revision > 1).limit(1)
             )))
             if speech_plan_revision_id and speech_plan_revision_id != current_id:
@@ -3716,6 +3751,12 @@ class GenerationService:
             if speech_plan_revision_id and speech_plan_revision_id != bound_revision_id:
                 raise RevisionConflict("The selected speech plan changed while generation was being prepared.")
             if stale_only:
+                from .generation_audio_identity import (
+                    AudioIdentityContext,
+                    take_reuse_reason,
+                )
+
+                audio_identity = AudioIdentityContext(session, resolved_for_new[0])
                 rows = list(session.scalars(select(GenerationSegment).where(
                     GenerationSegment.plan_revision_id == bound_revision_id,
                     GenerationSegment.removed.is_(False),
@@ -3727,7 +3768,8 @@ class GenerationService:
                         AudioTake.status == "completed",
                         Artifact.state != "deleted",
                     ).order_by(AudioTake.created_at.desc()).limit(1))
-                    if segment.status == "completed" and take is not None:
+                    artifact = session.get(Artifact, take.artifact_id) if take else None
+                    if take is not None and take_reuse_reason(segment, take, artifact, audio_identity.for_segment(segment)) == "reusable":
                         reusable_take_ids[segment.id] = take.id
                     else:
                         requested_segment_ids.append(segment.id)
@@ -4025,6 +4067,9 @@ class GenerationService:
         from .speech_plan_workspace import freeze_speech_snapshot
 
         freeze_speech_snapshot(session, plan_revision_id, snapshot, explicit=bool(prepared.get("explicit_speech_plan_revision_id")))
+        from .generation_audio_identity import plan_audio_identities, take_reuse_reason
+
+        snapshot["generation_audio_identities"] = plan_audio_identities(session, plan_revision_id, snapshot)
         if prepared.get("stale_only"):
             snapshot["stale_only"] = True
         settings_hash = stable_hash(snapshot)
@@ -4067,7 +4112,7 @@ class GenerationService:
                     or segment.plan_revision_id != plan_revision_id or segment.status != "completed"
                     or source_take.generation_segment_id != segment_id
                     or source_take.status != "completed" or not source_take.is_active
-                    or artifact.state == "deleted"):
+                    or take_reuse_reason(segment, source_take, artifact, snapshot["generation_audio_identities"][segment_id]) != "reusable"):
                 raise RevisionConflict("A reusable take changed while stale-only generation was being prepared.")
             source_take.is_active = False
             session.add(AudioTake(

@@ -49,6 +49,8 @@ export type SpeechPlanRevision = {
   active_segment_count: number;
   reusable_segment_count: number;
   stale_segment_count: number;
+  audio_settings_stale_segment_count?: number;
+  audio_identity_unknown_segment_count?: number;
   source_artifact_id: string | null;
 };
 export type SpeechPlanState = {

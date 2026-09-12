@@ -72,6 +72,7 @@ from .models import (
     SessionSource,
     SourceAsset,
     SourceRecord,
+    SpeechPlanReview,
     TimedWord,
     TrainingRun,
     UsageEvent,
@@ -81,7 +82,7 @@ from .models import (
     utcnow,
 )
 from .output_settings_snapshot import build_output_settings_snapshot
-from .source_resolution import resolve_primary_source, resolve_media_source
+from .source_resolution import resolve_media_source, resolve_primary_source
 from .voice_library import (
     mark_provider_registrations_stale,
     remove_managed_files,
@@ -790,105 +791,10 @@ class WorkflowHandlers:
         if "audio_cpp_voice_ref" in prepared:
             return prepared
 
-        from pandrator.logic import tts_handler
+        from .voice_library import resolve_audio_cpp_voice_reference
 
-        registration_ids = {"audio_cpp"}
-        endpoint, _error = tts_handler.resolve_openai_audio_endpoint(prepared)
-        if endpoint is not None and (
-            str(endpoint.get("adapter") or "").strip().casefold().replace("-", "_")
-            == "audio_cpp"
-        ):
-            registration_ids.add(
-                _normalized_provider_registration_id(endpoint.get("name"))
-            )
-
-        selected = str(prepared.get("voice") or prepared.get("speaker") or "").strip()
-        if not selected:
-            return prepared
-        selected_key = selected.casefold()
-        match: tuple[str, Path, Artifact, VoiceSample] | None = None
         with self.database.session() as session:
-            for voice in session.scalars(select(Voice)).all():
-                providers = dict((voice.metadata_json or {}).get("providers") or {})
-                registration = None
-                for provider_id, raw_registration in providers.items():
-                    normalized_provider = _normalized_provider_registration_id(
-                        provider_id
-                    )
-                    if normalized_provider not in registration_ids or not isinstance(
-                        raw_registration, dict
-                    ):
-                        continue
-                    if (
-                        str(raw_registration.get("resource_kind") or "")
-                        != "linked_reference"
-                        or str(raw_registration.get("status") or "") != "ready"
-                    ):
-                        continue
-                    candidate_names = {
-                        voice.name,
-                        str(raw_registration.get("voice_id") or ""),
-                        str(raw_registration.get("provider_voice_id") or ""),
-                    }
-                    if selected_key not in {
-                        name.strip().casefold()
-                        for name in candidate_names
-                        if name.strip()
-                    }:
-                        continue
-                    registration = raw_registration
-                    break
-                if registration is None:
-                    continue
-
-                samples = list(
-                    session.scalars(
-                        select(VoiceSample)
-                        .where(VoiceSample.voice_id == voice.id)
-                        .order_by(VoiceSample.created_at.desc())
-                    ).all()
-                )
-                sample = next(
-                    (
-                        item
-                        for item in samples
-                        if sample_file_status(session, self.paths, item)[0] == "ready"
-                    ),
-                    None,
-                )
-                if sample is None:
-                    raise ValueError(
-                        f"Linked audio.cpp voice '{voice.name}' has no readable sample."
-                    )
-                artifact = session.get(Artifact, sample.artifact_id)
-                status, path = sample_file_status(session, self.paths, sample)
-                if artifact is None or status != "ready" or path is None:
-                    raise ValueError(
-                        f"Linked audio.cpp voice '{voice.name}' has no readable sample."
-                    )
-                if path.suffix.lower() != ".wav":
-                    raise ValueError(
-                        "audio.cpp linked voice references require a normalized WAV sample."
-                    )
-                try:
-                    size_bytes = path.stat().st_size
-                except OSError as error:
-                    raise ValueError(
-                        "The audio.cpp linked voice sample could not be read."
-                    ) from error
-                if size_bytes > 5 * 1024 * 1024:
-                    raise ValueError(
-                        "audio.cpp linked voice references must be at most 5 MiB."
-                    )
-                content_hash = str(artifact.content_hash or "").strip()
-                if not content_hash:
-                    digest = hashlib.sha256()
-                    with path.open("rb") as handle:
-                        while chunk := handle.read(1024 * 1024):
-                            digest.update(chunk)
-                    content_hash = digest.hexdigest()
-                match = (content_hash, path, artifact, sample)
-                break
+            match = resolve_audio_cpp_voice_reference(session, self.paths, prepared)
 
         if match is None:
             return prepared
@@ -2249,7 +2155,7 @@ class WorkflowHandlers:
                 from .workspace import RevisionConflict
 
                 raise RevisionConflict("The selected speech plan changed before workflow execution.")
-            reviewed = bool(active_revision and (active_revision.operation_json or (active_revision.settings_json or {}).get("_prepared_for_review") or session.scalar(
+            reviewed = bool(active_revision and (session.get(SpeechPlanReview, active_revision.id) or active_revision.operation_json or (active_revision.settings_json or {}).get("_prepared_for_review") or session.scalar(
                 select(GenerationSegment.id).where(
                     GenerationSegment.plan_revision_id == previous_revision_id,
                     GenerationSegment.revision > 1,
@@ -3586,6 +3492,12 @@ class WorkflowHandlers:
         runtime_settings = normalize_alignment_settings(runtime_settings)
         caption_artifact = self._current_media_edit_transcript(session_id)
         if payload.get("caption_artifact_id"):
+            from .source_resolution import resolve_media_source
+
+            with self.database.session() as session:
+                current_media = resolve_media_source(session, session_id)
+                if current_media.artifact is None or current_media.artifact.id != source_artifact.id:
+                    raise ValueError("The attached recording changed after alignment was queued.")
             caption_artifact, _caption_path = self._resolve_input(str(payload["caption_artifact_id"]))
             if caption_artifact.session_id != session_id or caption_artifact.state == "deleted":
                 raise ValueError("The selected subtitle revision is not available in this session.")
@@ -8065,6 +7977,9 @@ class WorkflowHandlers:
             from .speech_plan_workspace import freeze_speech_snapshot
 
             freeze_speech_snapshot(session, plan_revision_id, snapshot, explicit=bool(expected_revision_id))
+            from .generation_audio_identity import plan_audio_identities
+
+            snapshot["generation_audio_identities"] = plan_audio_identities(session, plan_revision_id, snapshot)
             frozen_hash = hashlib.sha256(json.dumps(snapshot, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")).hexdigest()
             sequence_number = (
                 int(
@@ -8141,10 +8056,13 @@ class WorkflowHandlers:
             run.status = "running"
             run.updated_at = utcnow()
             settings_snapshot = dict(run.settings_snapshot_json or {})
+            from .generation_audio_identity import plan_audio_identities
             from .speech_plan_workspace import plan_signature
 
             plan_changed = bool(settings_snapshot.get("speech_plan_signature") and settings_snapshot["speech_plan_signature"] != plan_signature(session, run.plan_revision_id))
-            if plan_changed:
+            audio_identities = plan_audio_identities(session, run.plan_revision_id, settings_snapshot)
+            audio_identity_changed = bool(settings_snapshot.get("generation_audio_identities") and settings_snapshot["generation_audio_identities"] != audio_identities)
+            if plan_changed or audio_identity_changed:
                 run.status = "failed"
             session_id = run.session_id
             plan_revision_id = run.plan_revision_id
@@ -8153,6 +8071,8 @@ class WorkflowHandlers:
 
         if plan_changed:
             raise ValueError("The selected speech plan changed after generation was queued. Review and submit it again.")
+        if audio_identity_changed:
+            raise ValueError("A voice reference changed after generation was queued. Start a new run to use the current voice consistently.")
         statement = (
             select(GenerationSegment)
             .where(
@@ -8177,15 +8097,21 @@ class WorkflowHandlers:
                 }
                 for item in selected_segments
             }
+            from .generation_audio_identity import take_reuse_reason
+
+            selected_by_id = {segment.id: segment for segment in selected_segments}
             completed_take_ids = {
-                segment_id
-                for segment_id in session.scalars(
-                    select(AudioTake.generation_segment_id).where(
+                take.generation_segment_id
+                for take, artifact in session.execute(
+                    select(AudioTake, Artifact).join(Artifact, Artifact.id == AudioTake.artifact_id).where(
                         AudioTake.generation_run_id == output_run_id,
                         AudioTake.status == "completed",
                         AudioTake.artifact_id.is_not(None),
                     )
-                ).all()
+                )
+                if take.generation_segment_id in selected_by_id
+                and take_reuse_reason(selected_by_id[take.generation_segment_id], take, artifact,
+                                      audio_identities[take.generation_segment_id]) == "reusable"
             }
         if not segment_ids:
             with self.database.session() as session:
@@ -8258,6 +8184,14 @@ class WorkflowHandlers:
                 manager_bridge=self.manager_bridge,
             )
             selected_tts_runtime.update(explicit_endpoints)
+
+        def _assert_current_audio_identity(segment_id: str) -> None:
+            from .generation_audio_identity import AudioIdentityContext
+
+            with self.database.session() as session:
+                segment = session.get(GenerationSegment, segment_id)
+                if segment is None or AudioIdentityContext(session, settings_snapshot).for_segment(segment) != audio_identities[segment_id]:
+                    raise ValueError("A voice reference or segment delivery setting changed during generation. Start a new run to keep its audio consistent.")
 
         def _tts_settings_for_segment(
             segment_settings: dict[str, Any],
@@ -8442,6 +8376,7 @@ class WorkflowHandlers:
                         verified=verified_qwen_voices,
                         cancel_event=cancel_event,
                     )
+                    _assert_current_audio_identity(segment_id)
                     synthesized_text = optimized_by_id.get(
                         segment_id,
                         str(seed["text"]),
@@ -8624,6 +8559,7 @@ class WorkflowHandlers:
                             verified=verified_qwen_voices,
                             cancel_event=cancel_event,
                         )
+                        _assert_current_audio_identity(segment_id)
 
                     def synthesize_one(
                         *,
@@ -8740,6 +8676,7 @@ class WorkflowHandlers:
                         metadata={
                             "generation_segment_id": segment_id,
                             "generation_run_id": output_run_id,
+                            **({"generation_audio_identity": audio_identities[segment_id]} if operation != "rvc" else {}),
                             **(
                                 {"generation_task_run_id": run_id}
                                 if output_run_id != run_id
@@ -10731,7 +10668,10 @@ class WorkflowHandlers:
                         f"Exported track {index} of {len(selected_subtitles)}",
                     )
             elif export_mode == "audio":
-                from .soundtrack_export import ensure_soundtrack_master, export_soundtrack_file
+                from .soundtrack_export import (
+                    ensure_soundtrack_master,
+                    export_soundtrack_file,
+                )
 
                 progress(0.35, "Preparing the selected soundtrack without rendering video")
                 master = ensure_soundtrack_master(

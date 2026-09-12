@@ -2,6 +2,7 @@
   import { apiJson } from './api';
   import { errorMessage } from './errors';
   import { modalFocus } from './modal-focus';
+  import AudioReuseNotice from './AudioReuseNotice.svelte';
 
   type Revision = {
     id: string;
@@ -12,6 +13,8 @@
     segment_count: number;
     reusable_segment_count: number;
     stale_segment_count: number;
+    audio_settings_stale_segment_count?: number;
+    audio_identity_unknown_segment_count?: number;
     source_artifact_id: string | null;
   };
   type Block = {
@@ -45,6 +48,9 @@
   let nextCursor = $state<number | null>(null);
   let nextRevision = $state<number | null>(null);
   const current = $derived(revisions.find((item) => item.id === selected));
+  const parentRevision = $derived(
+    revisions.find((item) => item.id === current?.parent_revision_id)
+  );
   const base = $derived(`/api/v1/sessions/${encodeURIComponent(sessionId)}`);
   let previewRequest = 0;
 
@@ -170,6 +176,19 @@
           {current.reusable_segment_count} reusable · {current.stale_segment_count}
           missing or stale. Revision ID: <code>{current.id}</code>
         </p>
+        <p class="muted mb-3 text-sm">
+          {#if parentRevision}
+            Based on revision r{parentRevision.revision_number}.
+          {:else if current.parent_revision_id}
+            Parent revision: <code>{current.parent_revision_id}</code>
+          {:else}
+            First revision.
+          {/if}
+        </p>
+        <AudioReuseNotice
+          settingsStale={current.audio_settings_stale_segment_count}
+          identityUnknown={current.audio_identity_unknown_segment_count}
+        />
         <div class="mb-4 flex flex-wrap gap-2">
           {#if selected !== activeRevisionId}
             {#if onselect}<button

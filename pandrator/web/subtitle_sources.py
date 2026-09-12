@@ -12,7 +12,14 @@ from sqlalchemy.orm import Session
 from pandrator.logic.dubbing.srt_utils import compose_srt, parse_srt
 
 from .artifacts import ArtifactService, sha256_file
-from .models import Artifact, ArtifactEdge, Document, DocumentRevision, Segment, SessionRecord
+from .models import (
+    Artifact,
+    ArtifactEdge,
+    Document,
+    DocumentRevision,
+    Segment,
+    SessionRecord,
+)
 
 _SUBTITLE_KINDS = {"srt", "vtt"}
 _VTT_TIMESTAMP = re.compile(r"^(?:(\d{2,}):)?(\d{2}):(\d{2})[.,](\d{3})$")
@@ -186,7 +193,7 @@ def adopt_subtitle_source_in_session(
 
 def subtitle_source_status_in_session(session: Session, session_id: str) -> dict[str, Any]:
     """Read-only subtitle-first readiness, shared by the UI and MCP planner."""
-    from .source_resolution import resolve_primary_source, resolve_media_source
+    from .source_resolution import resolve_media_source, resolve_primary_source
 
     record = session.get(SessionRecord, session_id)
     if record is None:
@@ -209,7 +216,12 @@ def subtitle_source_status_in_session(session: Session, session_id: str) -> dict
     aligned = session.scalar(select(Artifact).where(
         Artifact.session_id == session_id, Artifact.role == "transcription", Artifact.state == "current",
         Artifact.metadata_json["authoritative_transcript_artifact_id"].as_string() == (imported.id if imported else ""),
+        Artifact.metadata_json["source_artifact_id"].as_string() == (media.artifact.id if media.artifact else ""),
     ).order_by(Artifact.created_at.desc()).limit(1)) if imported else None
+    word_timing_id = (aligned.metadata_json or {}).get("aligned_word_timestamps_artifact_id") if aligned else None
+    word_timing = session.get(Artifact, word_timing_id) if word_timing_id else None
+    if word_timing is None or word_timing.state != "current":
+        word_timing_id = None
     return {
         "supported": supported,
         "session_revision": record.revision,
@@ -224,6 +236,6 @@ def subtitle_source_status_in_session(session: Session, session_id: str) -> dict
         "media_filename": media.name if media.has_audio else None,
         "has_video": media.has_video,
         "can_align": supported and media.has_audio,
-        "word_timing_artifact_id": (aligned.metadata_json or {}).get("aligned_word_timestamps_artifact_id") if aligned else None,
+        "word_timing_artifact_id": word_timing_id,
         "alignment_note": None if media.has_audio else "Attach the original audio or video to align words. Subtitle editing and audio-only generation do not require media.",
     }

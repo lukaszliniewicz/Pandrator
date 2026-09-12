@@ -2550,15 +2550,30 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             response.status_code = 201
             response.headers["ETag"] = f'"{result["session_revision"]}"'
             return response
+        raw_etag = request.headers.get("If-Match", "").strip('W/" ')
         try:
-            result = source_library.attach(
-                session_id, payload.source_asset_id, role=payload.role
-            )
+            expected = int(raw_etag) if raw_etag else None
+        except ValueError:
+            return error_response("precondition_required", "If-Match must contain the current session revision.", 428)
+        try:
+            with database.immediate_session() as db_session:
+                record = db_session.get(SessionRecord, session_id)
+                if record is None:
+                    raise KeyError(session_id)
+                result = source_library.attach(
+                    session_id, payload.source_asset_id, role=payload.role,
+                    expected_session_revision=record.revision if expected is None else expected,
+                    db_session=db_session,
+                )
         except KeyError:
             return error_response(
                 "not_found", "Session or source asset not found.", 404
             )
-        return jsonify(result), 201
+        except WorkspaceRevisionConflict as error:
+            return error_response("revision_conflict", str(error), 409)
+        response = jsonify(result)
+        response.headers["ETag"] = f'"{result["session_revision"]}"'
+        return response, 201
 
     from .subtitle_source_routes import register_subtitle_source_routes
 

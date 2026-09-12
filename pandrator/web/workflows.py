@@ -16,7 +16,6 @@ from .artifact_selection import (
 )
 from .database import Database
 from .export_contract import build_export_contract, normalize_export_mode
-from .subtitle_sources import subtitle_source_status_in_session
 from .jobs import JobQueue
 from .models import (
     AgentRun,
@@ -34,15 +33,17 @@ from .models import (
     SessionSetting,
     SessionSource,
     SourceAsset,
+    SpeechPlanReview,
     UsageEvent,
     utcnow,
 )
 from .source_resolution import (
     PrimarySourceResolution,
     classify_source,
-    resolve_primary_source,
     resolve_media_source,
+    resolve_primary_source,
 )
+from .subtitle_sources import subtitle_source_status_in_session
 
 WORKFLOW_HISTORY_PREVIEW_LIMIT = 10
 
@@ -1894,7 +1895,7 @@ class WorkflowService:
             if stage_key == "generate_audio":
                 generation_plan = session.scalar(select(GenerationPlan).where(GenerationPlan.session_id == session_id))
                 generation_revision = session.get(GenerationPlanRevision, generation_plan.active_revision_id) if generation_plan and generation_plan.active_revision_id else None
-                if generation_revision is not None and (generation_revision.operation_json or (generation_revision.settings_json or {}).get("_prepared_for_review") or session.scalar(
+                if generation_revision is not None and (session.get(SpeechPlanReview, generation_revision.id) or generation_revision.operation_json or (generation_revision.settings_json or {}).get("_prepared_for_review") or session.scalar(
                     select(GenerationSegment.id).where(GenerationSegment.plan_revision_id == generation_revision.id, GenerationSegment.revision > 1).limit(1)
                 )):
                     payload["speech_plan_revision_id"] = generation_revision.id

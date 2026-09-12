@@ -12,7 +12,6 @@ from .generation_review import revision_history
 from .source_management import assert_session_idle
 from .workspace import RevisionConflict, adapt_runtime_settings, stable_hash
 
-
 SIGNATURE_FIELDS = (
     "ordinal",
     "text",
@@ -46,7 +45,7 @@ def freeze_speech_snapshot(
 ) -> None:
     revision = session.get(m.GenerationPlanRevision, revision_id)
     if revision is not None and (
-        explicit or (revision.settings_json or {}).get("_prepared_for_review")
+        explicit or session.get(m.SpeechPlanReview, revision_id) or (revision.settings_json or {}).get("_prepared_for_review")
     ):
         snapshot["speech_plan_frozen"] = True
         snapshot["speech_plan_signature"] = plan_signature(session, revision_id)

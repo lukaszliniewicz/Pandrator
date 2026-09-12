@@ -12,7 +12,18 @@ from sqlalchemy import func, select
 
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
-from pandrator.web.models import AudioTake, GenerationPlan, GenerationPlanRevision, GenerationRun, GenerationSegment, Job
+from pandrator.web.generation_audio_identity import IDENTITY_KEY, AudioIdentityContext
+from pandrator.web.models import (
+    Artifact,
+    AudioTake,
+    GenerationPlan,
+    GenerationPlanRevision,
+    GenerationRun,
+    GenerationSegment,
+    Job,
+    OutcomePlan,
+)
+from pandrator.web.speech_plan_workspace import plan_signature
 from pandrator.web.workspace import RevisionConflict
 
 
@@ -61,6 +72,12 @@ class GenerationPlanReviewTests(unittest.TestCase):
             take = AudioTake(generation_segment_id=last.id, artifact_id=artifact.id, status="completed", is_active=True, duration_ms=100)
             session.add(take)
             session.flush()
+            resolved, _ = self.services["workspace_settings"].resolve(self.session_id)
+            managed_artifact = session.get(Artifact, artifact.id)
+            managed_artifact.metadata_json = {
+                **(managed_artifact.metadata_json or {}),
+                IDENTITY_KEY: AudioIdentityContext(session, resolved).for_segment(last),
+            }
             self.take_id = take.id
 
     def batch(self, operations, *, revision=None, key=None):
@@ -138,6 +155,60 @@ class GenerationPlanReviewTests(unittest.TestCase):
         with self.database.session() as session:
             run = session.get(GenerationRun, result["id"])
             self.assertEqual(run.settings_snapshot_json["speech_plan_revision_id"], self.revision_id)
+
+    def test_reviewed_automatic_plan_is_pinned_across_direct_workflow_and_worker_paths(self):
+        with self.database.session() as session:
+            signature = plan_signature(session, self.revision_id)
+        reviewed = self.client.post(
+            f"/api/v1/sessions/{self.session_id}/generation-plan/review",
+            json={"revision_id": self.revision_id, "content_signature": signature},
+            headers={**self.headers, "Idempotency-Key": f"review-{uuid.uuid4().hex}"},
+        )
+        self.assertEqual(200, reviewed.status_code, reviewed.get_json())
+
+        with patch.object(self.generation, "plan_refresher", side_effect=AssertionError("reviewed automatic plan must stay pinned")):
+            prepared = self.generation.prepare_start(self.session_id)
+        self.assertEqual(self.revision_id, prepared["speech_plan_revision_id"])
+
+        with self.database.session() as session:
+            outcome = session.scalar(
+                select(OutcomePlan).where(OutcomePlan.session_id == self.session_id)
+            )
+            if outcome is None:
+                outcome = OutcomePlan(
+                    session_id=self.session_id,
+                    value_json={"inputs": {"generation": "source"}},
+                )
+                session.add(outcome)
+            else:
+                outcome.value_json = {
+                    **(outcome.value_json or {}),
+                    "inputs": {**(outcome.value_json or {}).get("inputs", {}), "generation": "source"},
+                }
+        resolved = self.services["workflows"].resolve_stage(
+            self.session_id,
+            "generate_audio",
+            {"source_artifact_id": self.source.id},
+        )
+        self.assertEqual(self.revision_id, resolved.payload["speech_plan_revision_id"])
+
+        with patch.object(self.handlers, "_subtitle_generation_records", side_effect=AssertionError("reviewed plan must not be rematerialized")):
+            materialized = self.handlers._materialize_subtitle_generation_plan(
+                self.session_id,
+                self.source,
+                self.source_path,
+                {},
+                "en",
+            )
+        self.assertEqual(self.revision_id, materialized)
+
+        queued = self.generation.start(self.session_id)
+        with self.database.session() as session:
+            run = session.get(GenerationRun, queued["id"])
+            self.assertTrue(run.settings_snapshot_json["speech_plan_frozen"])
+            self.assertEqual(
+                signature, run.settings_snapshot_json["speech_plan_signature"]
+            )
 
     def test_changed_revision_between_prepare_and_queue_is_rejected(self):
         prepared = self.generation.prepare_start(self.session_id, speech_plan_revision_id=self.revision_id)

@@ -7,6 +7,7 @@
     LoaderCircle
   } from '@lucide/svelte';
   import SpeechPlanPicker from './SpeechPlanPicker.svelte';
+  import AudioReuseNotice from './AudioReuseNotice.svelte';
   import { openSpeechPlanEditor, type SpeechPlanState } from './session-flow';
   let {
     sessionId,
@@ -70,6 +71,10 @@
           {selected.reusable_segment_count} reusable blocks · {selected.stale_segment_count}
           missing or stale. {selected.summary}.
         </p>{/if}
+      <AudioReuseNotice
+        settingsStale={selected?.audio_settings_stale_segment_count}
+        identityUnknown={selected?.audio_identity_unknown_segment_count}
+      />
     {/if}
     {#if plan?.warning}<p class="text-sm text-amber-700" role="status">
         {plan.warning}

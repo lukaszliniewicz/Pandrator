@@ -1029,6 +1029,8 @@ type SpeechBlockProvenance = {
 };
 
 export type GenerationSegment = {
+  audio_reuse_reason?: string;
+  has_reusable_take?: boolean;
   id: string;
   ordinal: number;
   node_kind: 'paragraph' | 'heading' | 'chapter_marker' | 'subtitle_cue';

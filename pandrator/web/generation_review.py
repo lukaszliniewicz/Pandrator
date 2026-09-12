@@ -7,11 +7,19 @@ from typing import Any
 
 from sqlalchemy import func, select
 
-from .models import Artifact, AudioTake, GenerationPlan, GenerationPlanRevision, GenerationSegment, SessionRecord
+from .models import (
+    Artifact,
+    AudioTake,
+    GenerationPlan,
+    GenerationPlanRevision,
+    GenerationSegment,
+    SessionRecord,
+)
 
 COMPACT_SEGMENT_FIELDS = (
     "id", "ordinal", "revision", "text", "source_segment_ids", "status", "removed",
     "optimization_status", "take_count", "active_take_id", "has_usable_take",
+    "audio_reuse_reason", "has_reusable_take",
 )
 EXTRA_SEGMENT_FIELDS = {"take_count", "active_take_id", "has_usable_take"}
 PROJECTABLE_SEGMENT_FIELDS = set(COMPACT_SEGMENT_FIELDS) | {
@@ -41,6 +49,10 @@ def project_segments(payload: dict[str, Any], *, view: str = "full", fields: lis
 
 
 def revision_history(database, session_id: str, *, limit: int = 50, before_revision_number: int | None = None) -> dict[str, Any]:
+    from .generation_audio_identity import AudioIdentityContext, take_reuse_reason
+    from .workspace import WorkspaceSettingsService
+
+    snapshot, _ = WorkspaceSettingsService(database).resolve(session_id)
     limit = max(1, min(int(limit), 100))
     with database.session() as session:
         if session.get(SessionRecord, session_id) is None:
@@ -64,14 +76,18 @@ def revision_history(database, session_id: str, *, limit: int = 50, before_revis
                 values["total"] += count
                 if not removed:
                     values["active"] += count
-            for revision_id, count in session.execute(select(
-                GenerationSegment.plan_revision_id, func.count(func.distinct(GenerationSegment.id)),
+            audio_identity = AudioIdentityContext(session, snapshot)
+            for segment, take, artifact in session.execute(select(
+                GenerationSegment, AudioTake, Artifact,
             ).join(AudioTake, AudioTake.generation_segment_id == GenerationSegment.id).join(Artifact, Artifact.id == AudioTake.artifact_id).where(
                 GenerationSegment.plan_revision_id.in_(ids),
                 GenerationSegment.removed.is_(False), GenerationSegment.status == "completed",
                 AudioTake.is_active.is_(True), AudioTake.status == "completed", Artifact.state != "deleted",
-            ).group_by(GenerationSegment.plan_revision_id)):
-                counts.setdefault(revision_id, {"total": 0, "active": 0, "reusable": 0})["reusable"] = count
+            )):
+                values = counts[segment.plan_revision_id]
+                reason = take_reuse_reason(segment, take, artifact, audio_identity.for_segment(segment))
+                key = "reusable" if reason == "reusable" else "unknown" if reason == "audio_identity_unknown" else "settings_stale"
+                values[key] = values.get(key, 0) + 1
         items = []
         for revision in revisions:
             operation = dict(revision.operation_json or {})
@@ -95,6 +111,8 @@ def revision_history(database, session_id: str, *, limit: int = 50, before_revis
                 "segment_count": values["total"], "active_segment_count": values["active"],
                 "reusable_segment_count": values["reusable"],
                 "stale_segment_count": values["active"] - values["reusable"],
+                "audio_settings_stale_segment_count": values.get("settings_stale", 0),
+                "audio_identity_unknown_segment_count": values.get("unknown", 0),
                 "created_at": revision.created_at.isoformat(),
                 "speech_block_settings": {key: value for key, value in (revision.settings_json or {}).items() if key.startswith("speech_block_")},
             })

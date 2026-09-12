@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import re
 import shutil
 from collections.abc import Iterable
 from copy import deepcopy
@@ -331,3 +333,113 @@ def ensure_bundled_voice(
         session.flush()
         session.expunge(voice)
         return voice
+
+
+def _reference_registration_id(value: object) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", str(value or "").strip().casefold()).strip("_")
+
+
+def resolve_audio_cpp_voice_reference(
+    session: Session, paths: DataPaths, settings: dict[str, Any]
+) -> tuple[str, Path, Artifact, VoiceSample] | None:
+    """Select exactly the linked reference that audio.cpp synthesis will use."""
+    from pandrator.logic import tts_handler
+
+    registration_ids = {"audio_cpp"}
+    endpoint, _error = tts_handler.resolve_openai_audio_endpoint(settings)
+    if endpoint is not None and (
+        str(endpoint.get("adapter") or "").strip().casefold().replace("-", "_")
+        == "audio_cpp"
+    ):
+        registration_ids.add(
+            _reference_registration_id(endpoint.get("name"))
+        )
+
+    selected = str(settings.get("voice") or settings.get("speaker") or "").strip()
+    if not selected:
+        return None
+    selected_key = selected.casefold()
+    match: tuple[str, Path, Artifact, VoiceSample] | None = None
+    for voice in session.scalars(select(Voice)).all():
+        providers = dict((voice.metadata_json or {}).get("providers") or {})
+        registration = None
+        for provider_id, raw_registration in providers.items():
+            normalized_provider = _reference_registration_id(
+                provider_id
+            )
+            if normalized_provider not in registration_ids or not isinstance(
+                raw_registration, dict
+            ):
+                continue
+            if (
+                str(raw_registration.get("resource_kind") or "")
+                != "linked_reference"
+                or str(raw_registration.get("status") or "") != "ready"
+            ):
+                continue
+            candidate_names = {
+                voice.name,
+                str(raw_registration.get("voice_id") or ""),
+                str(raw_registration.get("provider_voice_id") or ""),
+            }
+            if selected_key not in {
+                name.strip().casefold()
+                for name in candidate_names
+                if name.strip()
+            }:
+                continue
+            registration = raw_registration
+            break
+        if registration is None:
+            continue
+
+        samples = list(
+            session.scalars(
+                select(VoiceSample)
+                .where(VoiceSample.voice_id == voice.id)
+                .order_by(VoiceSample.created_at.desc())
+            ).all()
+        )
+        sample = next(
+            (
+                item
+                for item in samples
+                if sample_file_status(session, paths, item)[0] == "ready"
+            ),
+            None,
+        )
+        if sample is None:
+            raise ValueError(
+                f"Linked audio.cpp voice '{voice.name}' has no readable sample."
+            )
+        artifact = session.get(Artifact, sample.artifact_id)
+        status, path = sample_file_status(session, paths, sample)
+        if artifact is None or status != "ready" or path is None:
+            raise ValueError(
+                f"Linked audio.cpp voice '{voice.name}' has no readable sample."
+            )
+        if path.suffix.lower() != ".wav":
+            raise ValueError(
+                "audio.cpp linked voice references require a normalized WAV sample."
+            )
+        try:
+            size_bytes = path.stat().st_size
+        except OSError as error:
+            raise ValueError(
+                "The audio.cpp linked voice sample could not be read."
+            ) from error
+        if size_bytes > 5 * 1024 * 1024:
+            raise ValueError(
+                "audio.cpp linked voice references must be at most 5 MiB."
+            )
+        content_hash = str(artifact.content_hash or "").strip()
+        if not content_hash:
+            digest = hashlib.sha256()
+            with path.open("rb") as handle:
+                while chunk := handle.read(1024 * 1024):
+                    digest.update(chunk)
+            content_hash = digest.hexdigest()
+        match = (content_hash, path, artifact, sample)
+        break
+
+    return match
