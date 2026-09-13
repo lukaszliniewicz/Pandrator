@@ -50,6 +50,7 @@
   ];
   let stored = $state<SettingsPayload | null>(null);
   let values = $state<Record<string, number>>({});
+  let earlyRepairEnabled = $state(false);
   let saving = $state(false);
   let error = $state('');
   let alive = true;
@@ -64,6 +65,8 @@
       .then((result) => {
         if (!alive) return;
         stored = result;
+        earlyRepairEnabled =
+          result.effective.speech_block_early_repair_enabled === true;
         values = Object.fromEntries(
           controls.map(({ key, fallback }) => [
             key,
@@ -85,7 +88,8 @@
     try {
       await sessionApi.saveSettings(sessionId, 'tts', stored.revision, {
         ...stored.override,
-        ...values
+        ...values,
+        speech_block_early_repair_enabled: earlyRepairEnabled
       });
       await onsaved();
       onclose();
@@ -119,8 +123,8 @@
             Speech-block settings
           </h2>
           <p class="muted mt-2 text-sm">
-            Control how subtitle text becomes speech blocks. These settings
-            apply when you prepare a new plan; saved versions remain available.
+            Control how subtitle text becomes speech blocks. Block sizes apply
+            when you prepare a new plan; saved versions remain available.
           </p>
         </div>
         <button
@@ -164,6 +168,30 @@
               /></label
             >
           {/each}
+          <label
+            class="flex items-start gap-3 rounded-xl border border-[var(--line)] p-4 text-sm sm:col-span-2"
+          >
+            <input
+              type="checkbox"
+              bind:checked={earlyRepairEnabled}
+              class="mt-1"
+              aria-describedby="early-repair-description"
+            />
+            <span>
+              <span class="font-semibold"
+                >Reduce speech getting ahead of subtitles</span
+              >
+              <span id="early-repair-description" class="muted mt-1 block">
+                Regenerate combined blocks as smaller parts when later phrases
+                are spoken before their subtitles. Keep short blocks together
+                when they help playback catch up.
+              </span>
+              <span class="muted mt-2 block text-xs">
+                Uses extra speech generation. You can return to the original
+                version.
+              </span>
+            </span>
+          </label>
         </fieldset>
         <footer
           class="mt-6 flex justify-end gap-2 border-t border-[var(--line)] pt-4"

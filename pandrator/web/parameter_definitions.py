@@ -305,6 +305,7 @@ _DESCRIPTIONS: dict[str, dict[str, str]] = {
         "speech_block_merge_threshold": "Sets the largest source pause across which Pandrator's deterministic speech planner may pack compatible same-speaker utterances when their combined display and speech text fits the character cap. It is not sent to a model and does not change subtitle cues.",
         "speech_block_continuation_threshold_ms": "Sets how many milliseconds of pause a local speech-block builder may bridge when an utterance appears to continue; it affects segmentation only, not displayed subtitle boundaries.",
         "speech_block_max_internal_gap_ms": "Sets the maximum internal silent gap, in milliseconds, permitted inside one local TTS speech block; it prevents a block from spanning a long pause.",
+        "speech_block_early_repair_enabled": "After voiceover generation, splits and regenerates substantially short multi-cue blocks at suitable cue boundaries. Requires at least one second and twenty percent of shortfall; blocks carrying playback delay stay together to preserve catch-up. Original plan versions remain available.",
     },
     "audio": {
         "audio_verification_mode": "Selects whether generated speech takes receive the optional raw-signal screen; off disables checks and signal records RMS, clipping, DC offset, tails, and duration anomalies.",
@@ -315,6 +316,7 @@ _DESCRIPTIONS: dict[str, dict[str, str]] = {
         "fade_out_ms": "Sets the fade-out duration applied to each assembled audio part when fade_enabled is true, measured in milliseconds.",
         "synchronization_delay_ms": "Sets the maximum initial voiceover delay, in milliseconds, allowed while aligning generated speech blocks to subtitle timing.",
         "synchronization_speed": "Sets the maximum synchronization catch-up speed: values at or below 10 are interpreted as a multiplier and values above 10 as a percentage; alignment caps the effective speed at 1x through 4x.",
+        "synchronization_slowdown_enabled": "Allows pitch-preserving voiceover slowdown down to 0.9x when speech is substantially shorter than its own cue span. Small differences and blocks carrying playback delay are left alone. Speech is not stretched across the gap before the next block.",
         "synchronization_sentence_gap_ms": "Adds this many milliseconds between sentence files inside one subtitle-timed speech block before alignment computes catch-up speed.",
     },
     "rvc": {
@@ -785,6 +787,10 @@ _METADATA: dict[str, dict[str, dict[str, object]]] = {
             "minimum": 0,
             "unit": "milliseconds",
             "applicability": "Local Pandrator speech-block segmentation only.",
+        },
+        "speech_block_early_repair_enabled": {
+            "applicability": "Subtitle-timed voiceover generation only.",
+            "caveat": "Optional and off by default. Repair generates additional speech takes.",
         },
     },
     "audio": {

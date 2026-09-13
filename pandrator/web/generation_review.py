@@ -95,6 +95,8 @@ def revision_history(database, session_id: str, *, limit: int = 50, before_revis
             action = str(operation.get("action") or "automatic")
             batch = operation.get("batch") or {}
             summary = {"automatic": "Automatic speech plan", "split": "Split speech block", "merge": "Merge adjacent speech blocks", "restore": "Restore earlier speech plan"}.get(action, action.replace("_", " ").capitalize())
+            if operation.get("reason") == "early_timing_repair":
+                summary = "Repair speech running ahead of its cues"
             if operation.get("reason") == "edit_copy":
                 summary = "Editable copy of reviewed or historical speech plan"
             if batch:

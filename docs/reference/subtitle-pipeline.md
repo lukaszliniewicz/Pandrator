@@ -301,6 +301,21 @@ is a request/streaming throughput preference negotiated with the service;
 `max_attempts` (5) bounds generation retries. Service-specific sampling and
 voice parameters affect sound, not subtitle or speech-block boundaries.
 
+The optional TTS setting `speech_block_early_repair_enabled` defaults to `false`.
+After a complete voiceover generation run, it checks blocks containing multiple
+whole cues for a shortfall of at least 1000 ms and 20%, including start delay.
+It skips blocks carrying delay from earlier speech. A reliable sentence or
+clause boundary must also offer an estimated improvement of at least 1000 ms
+at a later cue's start. This estimate uses the spoken-text proportions; it does
+not claim word-level alignment. Invalid or stale cue spans are skipped.
+
+At most one boundary is tried per original block. New children are generated
+in an inactive plan version; unchanged takes are reused. The version becomes
+active only if synthesis succeeds, the source plan and selected takes still
+match, and measured forward fitting shows no additional outgoing delay. Original
+takes and plan versions remain available. Cancellation or failure keeps the last accepted
+version. Individual selected-take regeneration does not trigger this pass.
+
 For timed voiceover, selected audio is mapped back through each block's source
 subtitle references. Blocks sharing an `alignment_group` are concatenated
 before being fitted to the shared timing window. Relevant assembly defaults:
@@ -309,6 +324,7 @@ before being fitted to the shared timing window. Relevant assembly defaults:
 | --- | --- | --- |
 | `synchronization_delay_ms` | `800` | Maximum allowed start delay when fitting generated speech. |
 | `synchronization_speed` | `1.2` | Maximum speed-up factor used to fit a block. |
+| `synchronization_slowdown_enabled` | `false` | Allow pitch-preserving slowdown to a minimum of 0.9× within the block's own cue span, only with zero incoming delay. Requires at least 500 ms and 5% of spare time after start delay. |
 | `synchronization_sentence_gap_ms` | `100` | Minimum generated gap retained between aligned sentence blocks. |
 | `audio_verification_mode` | `off` | Optional signal-level checks for suspicious generated audio. |
 | `sentence_silence_ms` | `250` | Narration pause after a sentence; timed subtitle blocks normally derive timing from the source instead. |

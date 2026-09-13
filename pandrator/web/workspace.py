@@ -290,6 +290,7 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "speech_block_merge_threshold": 1500,
         "speech_block_continuation_threshold_ms": 3000,
         "speech_block_max_internal_gap_ms": 4000,
+        "speech_block_early_repair_enabled": False,
     },
     "audio": {
         "audio_verification_mode": "off",
@@ -300,6 +301,7 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "fade_out_ms": 0,
         "synchronization_delay_ms": 800,
         "synchronization_speed": 1.2,
+        "synchronization_slowdown_enabled": False,
         "synchronization_sentence_gap_ms": 100,
     },
     "rvc": {
@@ -3255,6 +3257,8 @@ class GenerationService:
         session_id: str,
         expected_revision_id: str,
         operation: dict[str, Any],
+        *,
+        activate: bool = True,
     ) -> dict[str, Any]:
         """Create one immutable typed topology revision in a caller transaction."""
 
@@ -3355,6 +3359,12 @@ class GenerationService:
                 },
                 "source_references": source_references,
             }
+            if operation.get("reason") == "early_timing_repair":
+                event.update(
+                    action="automatic_split",
+                    reason_code="early_timing_repair",
+                    summary="Short voiceover block split at a source cue boundary to reduce early speech.",
+                )
             left_provenance, right_provenance = self._split_provenance(
                 provenance,
                 display_cursor=display_cursor,
@@ -3668,14 +3678,15 @@ class GenerationService:
                         session, source.id, new_segments[new_index].id
                     )
                 new_index += 1
-        plan.active_revision_id = revision.id
-        plan.updated_at = utcnow()
-        mark_output_assemblies_stale(
-            session,
-            session_id,
-            cancel_active=True,
-            jobs=self.jobs,
-        )
+        if activate:
+            plan.active_revision_id = revision.id
+            plan.updated_at = utcnow()
+            mark_output_assemblies_stale(
+                session,
+                session_id,
+                cancel_active=True,
+                jobs=self.jobs,
+            )
         session.flush()
         lineage: dict[str, list[str]] = {}
         affected_ids: list[str] = []

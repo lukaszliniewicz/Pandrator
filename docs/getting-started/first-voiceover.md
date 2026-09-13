@@ -45,12 +45,32 @@ pronunciation, pacing, emotion, speaker consistency, noise, and whether speech
 can fit the source window without sounding rushed. Regenerate selected blocks
 or create alternate takes rather than overwriting the subtitle track.
 
+In **Block settings**, optionally enable **Reduce speech getting ahead of subtitles**.
+After a complete generation run, Pandrator checks multi-cue blocks that finish
+at least one second and 20% early, accounting for the configured start delay.
+It can split at a reliable sentence or clause boundary between source cues and
+generate the two groups separately. Blocks carrying playback delay stay intact
+so their shorter audio can help the voiceover catch up. Each original block is
+considered once per pass. Uncertain text-to-cue mappings are skipped.
+
+The repair uses additional TTS calls. A new plan version becomes active only
+after replacement audio succeeds and passes timing checks; earlier versions
+and takes remain available. This pass applies to complete voiceover generation
+runs, including resumed runs, rather than individual selected-take regeneration.
+
 ## 5. Synchronize and mix
 
 Pandrator maps selected takes through each speech block's source references.
 Blocks in one alignment group are fitted together to their shared source
 window. Review any speed-up, allowed start delay, and gaps between generated
 sentences.
+
+**Allow gentle voiceover slowdown (down to 0.9×)** in the session's audio
+settings is a separate option, off by default. It preserves pitch and only uses
+space within the block's own cue span. It skips small differences (less than
+half a second or 5%) and any block already carrying delay. The existing maximum
+catch-up speed remains in effect. Slowdown is applied during assembly, leaving
+the generated take unchanged.
 
 Choose deliberately among:
 

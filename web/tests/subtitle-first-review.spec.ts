@@ -132,6 +132,67 @@ const generationCard = (page: Page) =>
     has: page.getByRole('heading', { name: 'Generate audio', exact: true })
   });
 
+test('early voiceover repair is optional and persists in block settings', async ({
+  page
+}, testInfo) => {
+  const { session, endpoint } = await setup(page);
+  await page.goto(`/sessions/${session.id}`);
+  await page
+    .getByRole('button', { name: 'Block settings', exact: true })
+    .click();
+  const dialog = page.getByRole('dialog', { name: 'Speech-block settings' });
+  const repair = dialog.getByRole('checkbox', {
+    name: /Reduce speech getting ahead of subtitles/
+  });
+  await expect(repair).not.toBeChecked();
+  await repair.check();
+  await dialog.getByRole('button', { name: 'Save block settings' }).click();
+  await expect(dialog).toBeHidden();
+  const settings = await (
+    await page.request.get(`${endpoint}/settings/tts`)
+  ).json();
+  expect(settings.effective.speech_block_early_repair_enabled).toBe(true);
+  await page.reload();
+  await page
+    .getByRole('button', { name: 'Block settings', exact: true })
+    .click();
+  await expect(repair).toBeChecked();
+  await page.screenshot({
+    path: testInfo.outputPath('early-repair-settings.png')
+  });
+});
+
+test('gentle voiceover slowdown is optional and persists in audio settings', async ({
+  page
+}, testInfo) => {
+  const { session, endpoint } = await setup(page);
+  await page.goto(`/sessions/${session.id}/voice`);
+  const slowdown = page.getByRole('checkbox', {
+    name: /Allow gentle voiceover slowdown/
+  });
+  await expect(slowdown).not.toBeChecked();
+  await slowdown.check();
+  await page
+    .locator('section.settings-panel')
+    .filter({ has: slowdown })
+    .getByRole('button', { name: 'Save', exact: true })
+    .click();
+  await expect
+    .poll(async () => {
+      const settings = await (
+        await page.request.get(`${endpoint}/settings/audio`)
+      ).json();
+      return settings.effective.synchronization_slowdown_enabled;
+    })
+    .toBe(true);
+  await page.reload();
+  await expect(slowdown).toBeChecked();
+  await slowdown.scrollIntoViewIfNeeded();
+  await page.screenshot({
+    path: testInfo.outputPath('voiceover-slowdown-settings.png')
+  });
+});
+
 test('Source card attaches independent media and keeps timed text after reopening', async ({
   page
 }) => {

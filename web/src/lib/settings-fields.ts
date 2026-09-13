@@ -441,6 +441,7 @@ const SETTING_ORDER: Record<string, string[]> = {
     'fade_out_ms',
     'synchronization_delay_ms',
     'synchronization_speed',
+    'synchronization_slowdown_enabled',
     'synchronization_sentence_gap_ms'
   ],
   rvc: [
@@ -927,6 +928,8 @@ export function settingLabel(key: string): string {
     silero_sample_rate: 'Sample rate',
     synchronization_delay_ms: 'Maximum voiceover start delay',
     synchronization_speed: 'Maximum synchronization speed-up',
+    synchronization_slowdown_enabled:
+      'Allow gentle voiceover slowdown (down to 0.9×)',
     synchronization_sentence_gap_ms: 'Generated sentence gap',
     mix_source_gain_db: 'Source soundtrack level (dB)',
     mix_voice_gain_db: 'Voiceover level (dB)',

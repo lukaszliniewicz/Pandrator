@@ -250,6 +250,8 @@ def alignment_adjustment(
     *,
     delay_start_ms: int,
     max_speed_factor: float,
+    allow_slowdown: bool = False,
+    speech_window_duration_ms: int | None = None,
 ) -> AudioAlignmentAdjustment:
     """Plan speed and placement against the *remaining* timing window.
 
@@ -272,6 +274,22 @@ def alignment_adjustment(
     start_delay = 0
     if drift == 0 and slack:
         start_delay = min(max(0, int(delay_start_ms)), int(slack * 0.7))
+    if (
+        allow_slowdown
+        and drift == 0
+        and duration > 0
+        and speed_factor == 1.0
+        and speech_window_duration_ms is not None
+    ):
+        speech_window = int(speech_window_duration_ms)
+        if speech_window > 0:
+            remaining_target = min(available, speech_window) - start_delay
+            remaining_slack = remaining_target - duration
+            if remaining_slack >= 500 and remaining_slack >= remaining_target * 0.05:
+                speed_factor = min(
+                    1.0,
+                    max(0.9, duration / max(1, remaining_target - 1)),
+                )
     return AudioAlignmentAdjustment(
         available_ms=available,
         drift_ms=drift,
@@ -346,6 +364,7 @@ def _align_audio_blocks_streaming(
     output_path: str | os.PathLike[str] | None,
     diagnostics: dict[str, Any] | None,
     cancel_event: threading.Event | None,
+    allow_slowdown: bool = False,
 ) -> str:
     from pandrator.web.audio_assembly import (
         AudioAssemblyPart,
@@ -425,6 +444,7 @@ def _align_audio_blocks_streaming(
             else:
                 slot_end_ms = max(block_start_ms + 1, int(block.end_ms))
             window_duration = slot_end_ms - block_start_ms
+            speech_window_duration = max(1, int(block.end_ms) - int(block.start_ms))
             initial_silence_ms = max(0, block_start_ms - current_time)
             current_time += initial_silence_ms
             drift_at_start = max(0, current_time - block_start_ms)
@@ -434,6 +454,8 @@ def _align_audio_blocks_streaming(
                 drift_at_start,
                 delay_start_ms=delay_start_ms,
                 max_speed_factor=maximum_speed,
+                allow_slowdown=allow_slowdown,
+                speech_window_duration_ms=speech_window_duration,
             )
             processed_path = block_path
             processed_duration = original_audio_duration
@@ -470,6 +492,25 @@ def _align_audio_blocks_streaming(
                             / max(1, adjustment.available_ms - 1)
                         ),
                     )
+            if allow_slowdown and applied_speed < 0.9999:
+                candidate = temporary_path / f"block-{index + 1:06d}-slow.wav"
+                _speed_up_wav_streaming(
+                    block_path,
+                    candidate,
+                    applied_speed,
+                    sample_rate_hz=sample_rate_hz,
+                    channels=channels,
+                    ffmpeg_executable=ffmpeg_executable,
+                    cancel_event=cancel_event,
+                )
+                candidate_duration = _streaming_audio_duration_ms(candidate)
+                speech_limit = min(adjustment.available_ms, speech_window_duration)
+                if candidate_duration + adjustment.start_delay_ms <= speech_limit:
+                    processed_path = candidate
+                    processed_duration = candidate_duration
+                else:
+                    applied_speed = 1.0
+                    processed_duration = original_audio_duration
 
             silence_before_ms = initial_silence_ms + adjustment.start_delay_ms
             current_time += adjustment.start_delay_ms + processed_duration
@@ -494,7 +535,8 @@ def _align_audio_blocks_streaming(
                     "processed_audio_ms": processed_duration,
                     "requested_speed_factor": round(applied_speed, 6),
                     "effective_speed_factor": round(effective_speed, 6),
-                    "speed_adjusted": effective_speed > 1.0001,
+                    "speed_adjusted": effective_speed > 1.0001
+                    or (allow_slowdown and effective_speed < 0.9999),
                     "start_delay_ms": adjustment.start_delay_ms,
                     "drift_before_ms": drift_at_start,
                     "drift_after_ms": drift_after_ms,
@@ -528,16 +570,26 @@ def _align_audio_blocks_streaming(
 
     if diagnostics is not None:
         adjusted = [item for item in alignment_details if item["speed_adjusted"]]
+        slowed = [item for item in alignment_details if float(item["effective_speed_factor"]) < 0.9999]
         diagnostics.clear()
         diagnostics.update(
             {
                 "mode": "subtitle_timed",
                 "configured_max_speed_factor": maximum_speed,
+                "configured_min_speed_factor": 0.9 if allow_slowdown else 1.0,
                 "configured_max_start_delay_ms": max(0, int(delay_start_ms)),
                 "configured_sentence_gap_ms": sentence_gap,
                 "block_count": len(alignment_details),
                 "speed_adjusted_block_count": len(adjusted),
+                "slowed_block_count": len(slowed),
                 "max_effective_speed_factor": max(
+                    (
+                        float(item["effective_speed_factor"])
+                        for item in alignment_details
+                    ),
+                    default=1.0,
+                ),
+                "min_effective_speed_factor": min(
                     (
                         float(item["effective_speed_factor"])
                         for item in alignment_details
@@ -574,6 +626,7 @@ def align_audio_blocks(
     diagnostics: dict[str, Any] | None = None,
     backend: str | None = None,
     cancel_event: threading.Event | None = None,
+    allow_slowdown: bool = False,
 ) -> str:
     from pandrator.web.audio_assembly import PYDUB_BACKEND, resolve_assembly_backend
 
@@ -591,6 +644,7 @@ def align_audio_blocks(
             output_path=output_path,
             diagnostics=diagnostics,
             cancel_event=cancel_event,
+            allow_slowdown=allow_slowdown,
         )
     from pydub import AudioSegment
 
@@ -612,6 +666,7 @@ def align_audio_blocks(
         else:
             slot_end_ms = max(block_start_ms + 1, int(block.end_ms))
         window_duration = slot_end_ms - block_start_ms
+        speech_window_duration = max(1, int(block.end_ms) - int(block.start_ms))
 
         if current_time < block_start_ms:
             final_audio += AudioSegment.silent(duration=block_start_ms - current_time)
@@ -633,6 +688,8 @@ def align_audio_blocks(
             drift_at_start,
             delay_start_ms=delay_start_ms,
             max_speed_factor=maximum_speed,
+            allow_slowdown=allow_slowdown,
+            speech_window_duration_ms=speech_window_duration,
         )
         processed_audio = block_audio
         applied_speed = adjustment.speed_factor
@@ -656,6 +713,22 @@ def align_audio_blocks(
                         maximum_speed,
                         applied_speed * (len(processed_audio) / max(1, adjustment.available_ms - 1)),
                     )
+        if allow_slowdown and applied_speed < 0.9999:
+            with tempfile.TemporaryDirectory(prefix=".sync-slow-", dir=session_path) as temporary:
+                temporary_path = Path(temporary)
+                processed_candidate = _speed_up_audio_segment(
+                    block_audio,
+                    applied_speed,
+                    temporary_path,
+                    ffmpeg_executable=ffmpeg_executable,
+                    run_func=run_func,
+                )
+            speech_limit = min(adjustment.available_ms, speech_window_duration)
+            if len(processed_candidate) + adjustment.start_delay_ms <= speech_limit:
+                processed_audio = processed_candidate
+            else:
+                applied_speed = 1.0
+                processed_audio = block_audio
         if adjustment.start_delay_ms > 0:
             final_audio += AudioSegment.silent(duration=adjustment.start_delay_ms)
             current_time += adjustment.start_delay_ms
@@ -675,7 +748,8 @@ def align_audio_blocks(
                 "processed_audio_ms": len(processed_audio),
                 "requested_speed_factor": round(applied_speed, 6),
                 "effective_speed_factor": round(effective_speed, 6),
-                "speed_adjusted": effective_speed > 1.0001,
+                "speed_adjusted": effective_speed > 1.0001
+                or (allow_slowdown and effective_speed < 0.9999),
                 "start_delay_ms": adjustment.start_delay_ms,
                 "drift_before_ms": drift_at_start,
                 "drift_after_ms": drift_after_ms,
@@ -697,17 +771,27 @@ def align_audio_blocks(
     final_audio.export(destination, format="wav")
     if diagnostics is not None:
         adjusted = [item for item in alignment_details if item["speed_adjusted"]]
+        slowed = [item for item in alignment_details if float(item["effective_speed_factor"]) < 0.9999]
         diagnostics.clear()
         diagnostics.update(
             {
                 "mode": "subtitle_timed",
                 "configured_max_speed_factor": maximum_speed,
+                "configured_min_speed_factor": 0.9 if allow_slowdown else 1.0,
                 "configured_max_start_delay_ms": max(0, int(delay_start_ms)),
                 "configured_sentence_gap_ms": sentence_gap,
                 "block_count": len(alignment_details),
                 "speed_adjusted_block_count": len(adjusted),
+                "slowed_block_count": len(slowed),
                 "max_effective_speed_factor": max(
                     (float(item["effective_speed_factor"]) for item in alignment_details),
+                    default=1.0,
+                ),
+                "min_effective_speed_factor": min(
+                    (
+                        float(item["effective_speed_factor"])
+                        for item in alignment_details
+                    ),
                     default=1.0,
                 ),
                 "total_original_audio_ms": sum(int(item["original_audio_ms"]) for item in alignment_details),

@@ -8073,6 +8073,19 @@ class WorkflowHandlers:
             raise ValueError("The selected speech plan changed after generation was queued. Review and submit it again.")
         if audio_identity_changed:
             raise ValueError("A voice reference changed after generation was queued. Start a new run to use the current voice consistently.")
+        completion_progress = progress
+        repair_requested = bool(
+            operation in {"generate", "resume"}
+            and not selected_ids
+            and not settings_snapshot.get("early_repair_parent_run_id")
+            and (settings_snapshot.get("tts") or {}).get("speech_block_early_repair_enabled") is True
+            and self._session_record(session_id).workflow_kind == "voiceover"
+        )
+        if repair_requested:
+            def generation_progress(value, detail=None):
+                completion_progress(0.85 * value, detail)
+
+            progress = generation_progress
         statement = (
             select(GenerationSegment)
             .where(
@@ -8818,7 +8831,7 @@ class WorkflowHandlers:
                     or 0
                 )
             final_status = "partial" if incomplete else "completed"
-            run.status = final_status
+            run.status = "running" if repair_requested and final_status == "completed" else final_status
             run.updated_at = utcnow()
             if output_run_id != run_id:
                 output_run = session.get(GenerationRun, output_run_id)
@@ -8857,6 +8870,26 @@ class WorkflowHandlers:
         }
         if auto_resume_source_id:
             result["resumed_source_job_id"] = resumed_job_id
+        if final_status == "completed" and repair_requested:
+            from .voiceover_repair import repair_early_blocks
+
+            try:
+                result.update(repair_early_blocks(
+                    self, run_id,
+                    lambda value, detail=None: completion_progress(0.85 + 0.14 * value, detail),
+                    cancel_event,
+                ))
+            except Exception:
+                logger.warning("Optional voiceover repair could not finish; the generated audio remains available.", exc_info=True)
+                result["early_repair_status"] = "failed"
+            finally:
+                with self.database.session() as session:
+                    session.get(GenerationRun, run_id).status = final_status
+            if result.get("repaired_blocks"):
+                result["source_generation_run_id"] = run_id
+                result["generation_run_id"] = result["repaired_generation_run_id"]
+        if repair_requested:
+            completion_progress(1.0, f"Voiceover timing checked; {result.get('repaired_blocks', 0)} block(s) repaired")
         return result
 
     def assemble_generation_output(self, payload, progress, cancel_event):
@@ -9304,6 +9337,7 @@ class WorkflowHandlers:
                                 ),
                             ),
                             speed_up_percent=max(100, speed_up_percent),
+                            allow_slowdown=bool(audio_settings.get("synchronization_slowdown_enabled", False)),
                             sentence_gap_ms=max(
                                 0,
                                 int(

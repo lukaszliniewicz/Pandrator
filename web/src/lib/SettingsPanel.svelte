@@ -179,6 +179,7 @@
       'fade_out_ms',
       'synchronization_delay_ms',
       'synchronization_speed',
+      'synchronization_slowdown_enabled',
       'synchronization_sentence_gap_ms'
     ],
     rvc: [
