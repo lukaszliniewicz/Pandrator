@@ -1,4 +1,5 @@
 import { errorMessage } from './errors';
+import { generationHistoryVersion } from './generation-history';
 import {
   generationApi,
   type GenerationSegmentBatchChange,
@@ -52,6 +53,7 @@ const EMPTY_SEGMENTS: GenerationSegmentPage = {
 export type GenerationLoadOptions = {
   filter: SegmentFilter;
   selectedRunId: string;
+  selectedRunVersionId?: string;
   reset?: boolean;
   preserveLoaded?: boolean;
   search?: URLSearchParams;
@@ -153,13 +155,20 @@ export class GenerationStore {
       const runs = runPayload.items;
       // Run history is newest-first, but a newer queued regeneration must not
       // hide the run that currently owns the worker.
-      const activeRun = preferredActiveRun(runs);
+      const activeRun = preferredActiveRun(
+        runs.filter((item) => !item.early_repair_parent_run_id)
+      );
       const selectedRunId =
         options.selectedRunId &&
         runs.some((item) => item.id === options.selectedRunId)
           ? options.selectedRunId
           : '';
-      if (selectedRunId) query.set('generation_run_id', selectedRunId);
+      const selectedVersion = generationHistoryVersion(
+        runs,
+        selectedRunId,
+        options.selectedRunVersionId
+      );
+      if (selectedVersion) query.set('generation_run_id', selectedVersion.id);
       const next = await generationApi.segments(
         this.sessionId,
         query,
@@ -169,7 +178,7 @@ export class GenerationStore {
         return { selectedRunId, shouldExpand: false };
       }
       let payload = next;
-      if (!reset) {
+      if (!reset && this.payload.plan_revision_id === next.plan_revision_id) {
         const known = new Set(this.payload.items.map((item) => item.id));
         payload = {
           ...next,

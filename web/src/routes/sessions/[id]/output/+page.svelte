@@ -1,4 +1,10 @@
 <script lang="ts">
+  import GenerationRunHistory from '$lib/GenerationRunHistory.svelte';
+  import {
+    generationHistoryVersion,
+    generationHistoryStatus,
+    visibleGenerationRuns
+  } from '$lib/generation-history';
   import { isJobStatus } from '$lib/job-status';
   import { errorMessage } from '$lib/errors';
   import { page } from '$app/state';
@@ -51,6 +57,14 @@
   let session = $state<SessionRecord | null>(null);
   let outputProfile = $state<SettingsPayload | null>(null);
   let selectedRunId = $state('');
+  let selectedRunVersionId = $state('');
+  const historyRuns = $derived(visibleGenerationRuns(runs));
+  const selectedHistoryRun = $derived(
+    historyRuns.find((item) => item.id === selectedRunId)
+  );
+  const selectedRun = $derived(
+    generationHistoryVersion(runs, selectedRunId, selectedRunVersionId)
+  );
   let busy = $state(false);
   let message = $state('');
   let error = $state('');
@@ -117,9 +131,7 @@
       .sort((left, right) =>
         String(right.created_at).localeCompare(String(left.created_at))
       );
-    runs = (runPayload.items ?? []).filter(
-      (item) => !item.output_generation_run_id
-    );
+    runs = runPayload.items ?? [];
     exportJobs = (jobPayload.items ?? [])
       .filter(
         (item) => item.session_id === sessionId && item.kind === 'export.create'
@@ -127,9 +139,14 @@
       .slice(0, 8);
     session = sessionPayload;
     outputProfile = settingsPayload;
-    if (!selectedRunId || !runs.some((item) => item.id === selectedRunId))
+    if (
+      !selectedRunId ||
+      !historyRuns.some((item) => item.id === selectedRunId)
+    ) {
       selectedRunId =
-        runs.find((item) => item.status === 'completed')?.id ?? '';
+        historyRuns.find((item) => item.status === 'completed')?.id ?? '';
+      selectedRunVersionId = '';
+    }
   }
   function waitForAssemblyPoll(signal: AbortSignal) {
     return new Promise<void>((resolve, reject) => {
@@ -152,9 +169,7 @@
     for (let attempt = 0; attempt < 300; attempt += 1) {
       await waitForAssemblyPoll(signal);
       const result = await generationApi.runs(sessionId, signal);
-      runs = (result.items ?? []).filter(
-        (item) => !item.output_generation_run_id
-      );
+      runs = result.items ?? [];
       const assembly = runs.find((item) => item.id === runId)?.assembly;
       if (assembly?.status === 'completed') return assembly;
       if (['failed', 'canceled'].includes(assembly?.status ?? ''))
@@ -179,8 +194,9 @@
     busy = true;
     error = '';
     try {
+      const selected = selectedRun;
+      const exportRunId = selected?.id ?? '';
       const savedProfile = await saveProfile();
-      const selected = runs.find((item) => item.id === selectedRunId);
       const effective = savedProfile.output ?? {};
       // The API can omit inherited defaults from `effective`; resolve the same
       // workflow-aware fallbacks used by OutputSettingsPanel before deciding
@@ -206,11 +222,11 @@
       const usesGeneratedAudio =
         session?.workflow_kind === 'audiobook' ||
         (['media', 'audio'].includes(exportMode) && audioMode !== 'preserve');
-      if (usesGeneratedAudio && !selectedRunId)
+      if (usesGeneratedAudio && !exportRunId)
         throw new Error(
           'Select a completed audio version for this media export.'
         );
-      const needsAssembly = usesGeneratedAudio && Boolean(selectedRunId);
+      const needsAssembly = usesGeneratedAudio && Boolean(exportRunId);
       const resolvedAssemblySettings = needsAssembly
         ? await sessionApi.resolveSettings(
             sessionId,
@@ -234,14 +250,14 @@
         )
           await generationApi.createAssembly(
             sessionId,
-            selectedRunId,
+            exportRunId,
             runOverride
           );
-        await waitForAssembly(selectedRunId, controller.signal);
+        await waitForAssembly(exportRunId, controller.signal);
       }
       const job = await sessionApi.runStage(sessionId, 'export', {
         ...runOverride,
-        ...(needsAssembly ? { generation_run_id: selectedRunId } : {})
+        ...(needsAssembly ? { generation_run_id: exportRunId } : {})
       });
       exportJobs = [
         job,
@@ -455,14 +471,19 @@
       </p>
     </div>
     <div class="flex flex-wrap items-end gap-2">
-      {#if runs.length && session?.workflow_kind !== 'subtitles'}<label
+      {#if historyRuns.length && session?.workflow_kind !== 'subtitles'}<label
           class="text-xs font-semibold"
           >Audio version<select
             bind:value={selectedRunId}
+            disabled={busy}
+            onchange={() => (selectedRunVersionId = '')}
             class="mt-1 block max-w-sm rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] px-3 py-2 text-sm font-normal"
             ><option value="">Do not select generated audio</option
-            >{#each runs.filter((item) => item.status === 'completed') as item}<option
-                value={item.id}>{item.label}</option
+            >{#each historyRuns.filter((item) => item.status === 'completed') as item}<option
+                value={item.id}
+                >{item.label}{item.timing_repair
+                  ? ` · ${generationHistoryStatus(item)}`
+                  : ''}</option
               >{/each}</select
           ></label
         >{/if}<button
@@ -537,9 +558,17 @@
           </div>{/each}
       </div>
     </section>{/if}
+  {#if selectedHistoryRun?.timing_repair}
+    <GenerationRunHistory
+      run={selectedHistoryRun}
+      versionId={selectedRunVersionId}
+      disabled={busy}
+      onSelectVersion={(versionId) => (selectedRunVersionId = versionId)}
+    />
+  {/if}
   <OutputSettingsPanel
     {sessionId}
-    generationRunId={selectedRunId}
+    generationRunId={selectedRun?.id ?? ''}
     onSaveForExportReady={(save) => {
       saveOutputProfile = save;
     }}

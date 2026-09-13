@@ -1,4 +1,10 @@
 <script lang="ts">
+  import GenerationRunHistory from './GenerationRunHistory.svelte';
+  import {
+    generationHistoryVersion,
+    generationHistoryStatus,
+    visibleGenerationRuns
+  } from './generation-history';
   import { selectableTtsServices } from './tts-provider-policy';
   import { errorMessage } from './errors';
   import {
@@ -73,9 +79,7 @@
   let mode = $state<'collapsed' | 'half' | 'full'>('collapsed');
   const payload = $derived(generationStore.payload);
   const run = $derived(generationStore.activeRun);
-  const runs = $derived(
-    generationStore.runs.filter((item) => !item.output_generation_run_id)
-  );
+  const runs = $derived(visibleGenerationRuns(generationStore.runs));
   const takeNumbers = $derived.by(() => {
     const numbers = new Map<string, number>();
     for (const item of payload.items) {
@@ -90,7 +94,9 @@
     return numbers;
   });
   const latestFailure = $derived.by(() => {
-    const latest = generationStore.runs[0];
+    const latest = generationStore.runs.find(
+      (item) => !item.early_repair_parent_run_id
+    );
     if (
       latest?.status !== 'failed' ||
       ['queued', 'running', 'pausing', 'cancel_requested'].includes(
@@ -110,6 +116,7 @@
     return latest;
   });
   let selectedRunId = $state('');
+  let selectedRunVersionId = $state('');
   const assembly = $derived(generationStore.assembly);
   let filter = $state<SegmentFilter>('all');
   let error = $state('');
@@ -513,8 +520,16 @@
       : `${activeFilterLabel.toLowerCase()} segments`
   );
   const selectedRun = $derived(
+    generationHistoryVersion(
+      generationStore.runs,
+      selectedRunId,
+      selectedRunVersionId
+    )
+  );
+  const selectedHistoryRun = $derived(
     runs.find((item) => item.id === selectedRunId) ?? null
   );
+  const repairHistoryRun = $derived(selectedHistoryRun ?? runs[0] ?? null);
   const comparisonPlan = $derived<SpeechPlan>(
     comparisonItem?.speech_plan ?? {}
   );
@@ -562,8 +577,11 @@
     selectedRun?.assembly ??
       (!selectedRun && !assembly?.generation_run_id ? assembly : null)
   );
+  const selectedRunUsage = $derived(
+    selectedHistoryRun?.timing_repair?.usage ?? selectedRun?.usage
+  );
   const selectedRunCost = $derived.by(() => {
-    const value = selectedRun?.usage?.total_cost_usd;
+    const value = selectedRunUsage?.total_cost_usd;
     if (value == null) return 'Cost unavailable';
     return `$${Number(value).toFixed(Number(value) < 0.01 ? 6 : 4)}`;
   });
@@ -745,6 +763,7 @@
         await generationStore.load({
           filter,
           selectedRunId,
+          selectedRunVersionId,
           reset,
           preserveLoaded,
           search: searchParams
@@ -959,7 +978,7 @@
                 pitch: rvcPitch,
                 f0_method: rvcF0,
                 index_rate: rvcIndexRate,
-                source_run_id: selectedRunId || null
+                source_run_id: selectedRun?.id || null
               }
             }
           : {};
@@ -967,7 +986,7 @@
         sessionId,
         operation,
         ids,
-        ids.length && operation !== 'rvc' ? selectedRunId || null : null,
+        ids.length && operation !== 'rvc' ? selectedRun?.id || null : null,
         run_override,
         selectedSegmentOverride,
         selectedRunId && ids.length ? null : payload.plan_revision_id || null,
@@ -1103,7 +1122,7 @@
     error = '';
     try {
       generationStore.setAssembly(
-        await generationApi.createAssembly(sessionId, selectedRunId || null)
+        await generationApi.createAssembly(sessionId, selectedRun?.id || null)
       );
       await load();
     } catch (caught) {
@@ -1116,7 +1135,10 @@
   function activeTake(item: GenerationSegment): PlayableTake | undefined {
     if (selectedRun) {
       const sequences = new Map(
-        runs.map((item) => [item.id, Number(item.sequence_number || 0)])
+        generationStore.runs.map((item) => [
+          item.id,
+          Number(item.sequence_number || 0)
+        ])
       );
       const targetSequence = Number(selectedRun.sequence_number || 0);
       const candidates = (item.takes ?? [])
@@ -1190,7 +1212,9 @@
   }
 
   function takeLabel(take: AudioTake) {
-    const owner = runs.find((item) => item.id === take.generation_run_id);
+    const owner = generationStore.runs.find(
+      (item) => item.id === take.generation_run_id
+    );
     const task = generationStore.runs.find(
       (item) => item.id === take.generation_task_run_id
     );
@@ -1211,7 +1235,9 @@
   function outputRunBusy(runId: string) {
     return generationStore.runs.some(
       (item) =>
-        (item.id === runId || item.output_generation_run_id === runId) &&
+        (item.id === runId ||
+          item.output_generation_run_id === runId ||
+          item.early_repair_parent_run_id === runId) &&
         ['queued', 'running', 'pausing', 'cancel_requested'].includes(
           item.status
         )
@@ -1242,18 +1268,18 @@
   }
 
   async function deleteSelectedRun() {
-    if (!selectedRun || outputRunBusy(selectedRun.id)) return;
+    if (!selectedHistoryRun || outputRunBusy(selectedHistoryRun.id)) return;
     if (
       !window.confirm(
-        `Delete ${selectedRun.label}, including its audio takes, assembled audio, and regeneration history? This cannot be undone.`
+        `Delete ${selectedHistoryRun.label}, including its audio takes, assembled audio, timing repairs, and regeneration history? This cannot be undone.`
       )
     )
       return;
     loading = true;
     error = '';
     try {
-      await generationApi.deleteRun(selectedRun.id);
-      generationStore.removeRun(selectedRun.id);
+      await generationApi.deleteRun(selectedHistoryRun.id);
+      generationStore.removeRun(selectedHistoryRun.id);
       selectedRunId = '';
       await load(true, false);
     } catch (caught) {
@@ -1292,7 +1318,7 @@
       'fields',
       'id,ordinal,revision,text,optimized_text,search_matches'
     );
-    if (selectedRunId) query.set('generation_run_id', selectedRunId);
+    if (selectedRun) query.set('generation_run_id', selectedRun.id);
     if (filter === 'marked') query.set('marked', 'true');
     else if (filter === 'boundary_flags') query.set('boundary_flags', 'true');
     else if (filter === 'verification_issues')
@@ -1333,6 +1359,18 @@
 
   async function changeSelectedRun(event: Event) {
     selectedRunId = (event.currentTarget as HTMLSelectElement).value;
+    selectedRunVersionId = '';
+    selectedRow = '';
+    selectedRows = [];
+    selectionAnchor = '';
+    stopPlayback();
+    await load(true, false);
+  }
+
+  async function selectRepairVersion(versionId: string) {
+    if (!repairHistoryRun) return;
+    selectedRunId = repairHistoryRun.id;
+    selectedRunVersionId = versionId;
     selectedRow = '';
     selectedRows = [];
     selectionAnchor = '';
@@ -1384,6 +1422,7 @@
         await generationStore.load({
           filter,
           selectedRunId,
+          selectedRunVersionId,
           search: searchParams,
           reset: true,
           preserveLoaded: false,
@@ -1537,7 +1576,12 @@
     };
     const disconnectPlanEditor = subscribeSpeechPlanEditor(openPlan);
     const disconnect = generationStore.connect(
-      () => ({ filter, selectedRunId, search: searchParams }),
+      () => ({
+        filter,
+        selectedRunId,
+        selectedRunVersionId,
+        search: searchParams
+      }),
       applyLoadResult
     );
     return () => {
@@ -1555,6 +1599,7 @@
   $effect(() => {
     void filter;
     void selectedRunId;
+    void selectedRunVersionId;
     void textMode;
     void searchQuery;
     void searchOptions;
@@ -1633,14 +1678,14 @@
       </button>
       <span
         class="muted min-w-0 text-xs lg:flex-1 lg:truncate"
-        title={`${payload.total} segments · ${selectedRun?.label ?? 'Active mix'}${selectedAssembly ? ` · output ${selectedAssembly.status}` : ''}`}
-        >{payload.total} segments · {selectedRun?.label ??
+        title={`${payload.total} segments · ${selectedHistoryRun?.label ?? 'Active mix'}${selectedAssembly ? ` · output ${selectedAssembly.status}` : ''}`}
+        >{payload.total} segments · {selectedHistoryRun?.label ??
           'Active mix'}{#if selectedAssembly}
           · output {selectedAssembly.status}{/if}</span
       >
-      {#if selectedRun?.usage?.commercial}<span class="cost-pill"
-          >{selectedRun.usage.estimated ? 'Est.' : ''}
-          {selectedRunCost}{selectedRun.usage.has_unpriced_usage
+      {#if selectedRunUsage?.commercial}<span class="cost-pill"
+          >{selectedRunUsage.estimated ? 'Est.' : ''}
+          {selectedRunCost}{selectedRunUsage.has_unpriced_usage
             ? ' + unpriced usage'
             : ''}</span
         >{/if}
@@ -1906,7 +1951,9 @@
               >
                 <option value="">Active mix · current selections</option>
                 {#each runs as item}<option value={item.id}
-                    >History · {item.label} · {item.status}</option
+                    >History · {item.label} · {generationHistoryStatus(
+                      item
+                    )}</option
                   >{/each}
               </select>
             </label>
@@ -1914,7 +1961,7 @@
               onclick={deleteSelectedRun}
               disabled={loading ||
                 !selectedRun ||
-                outputRunBusy(selectedRun.id)}
+                outputRunBusy(selectedHistoryRun?.id ?? selectedRun.id)}
               class="action text-red-500"
               title={selectedRun
                 ? 'Delete this run and its generated audio'
@@ -2065,6 +2112,17 @@
             {/if}
           </div>
         </div>
+        {#if repairHistoryRun?.timing_repair}
+          <div class="border-b border-[var(--line)] p-3">
+            <GenerationRunHistory
+              run={repairHistoryRun}
+              versionId={selectedRunId ? selectedRunVersionId : ''}
+              activeMix={!selectedRunId}
+              disabled={loading}
+              onSelectVersion={selectRepairVersion}
+            />
+          </div>
+        {/if}
         <div class="border-b border-[var(--line)] px-3 py-2">
           <SearchReplaceBar
             texts={editableTexts}
@@ -2170,7 +2228,7 @@
           {:else}
             <GenerationReadingView
               blocks={readingBlocks}
-              selectedRunLabel={selectedRun?.label ?? 'Active mix'}
+              selectedRunLabel={selectedHistoryRun?.label ?? 'Active mix'}
               {textMode}
               loaded={payload.items.length}
               total={payload.total}
@@ -2322,7 +2380,7 @@
           </h2>
           <p class="muted mt-1 text-xs">
             Uses {selectedRun
-              ? `History · ${selectedRun.label}`
+              ? `History · ${selectedHistoryRun?.label ?? selectedRun.label}`
               : 'the current session settings'} as the source, then saves these choices
             with the replacement takes in the same output run. Previous takes remain
             available.

@@ -153,6 +153,10 @@ class ConfigureTtsInput(ToolInput):
 class ListGenerationRunsInput(ToolInput):
     session_id: str = Field(min_length=1, max_length=80)
     limit: int = Field(default=20, ge=1, le=100)
+    include_repairs: bool = Field(
+        default=False,
+        description="Include raw early-timing repair child runs in the result.",
+    )
 
 
 class PlanExportVariantInput(ToolInput):

@@ -2800,13 +2800,22 @@ def build_server(runtime: McpRuntime):
     def generation_runs_tool(
         session_id: Annotated[str, Field(min_length=1, max_length=80)],
         limit: Annotated[int, Field(ge=1, le=100)] = 20,
+        include_repairs: bool = False,
     ) -> dict[str, Any]:
-        """List generation run summaries for review or export selection."""
+        """List generation runs for review or export selection.
+
+        Use ``result_generation_run_id`` to select final audio; use the root
+        run ID to select the original audio.
+        """
 
         return _call(
             list_generation_runs,
             runtime,
-            ListGenerationRunsInput(session_id=session_id, limit=limit),
+            ListGenerationRunsInput(
+                session_id=session_id,
+                limit=limit,
+                include_repairs=include_repairs,
+            ),
         )
 
     @server.tool(

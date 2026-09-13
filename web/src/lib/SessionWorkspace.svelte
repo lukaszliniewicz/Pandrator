@@ -5388,6 +5388,7 @@
 
 {#if planSettingsOpen}<SpeechPlanSettings
     sessionId={session.id}
+    plan={speechPlan}
     onclose={() => (planSettingsOpen = false)}
     onsaved={loadSpeechPlan}
   />{/if}

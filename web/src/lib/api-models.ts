@@ -1135,6 +1135,27 @@ export type GenerationRun = {
   plan_revision_id: string;
   source_generation_run_id?: string | null;
   output_generation_run_id?: string | null;
+  early_repair_parent_run_id?: string | null;
+  phase?: string;
+  timing_repair?: {
+    result_generation_run_id: string;
+    result_plan_revision_id: string;
+    result_sequence_number: number;
+    applied_count: number;
+    attempt_count: number;
+    usage?: UsageSummary;
+    status: string;
+    versions: {
+      generation_run_id: string;
+      plan_revision_id: string;
+      sequence_number: number;
+      status: string;
+      repair_status: string;
+      repair_reason?: string | null;
+      source_block_ordinal?: number | null;
+      created_at?: string;
+    }[];
+  };
   resume_source_on_completion?: boolean;
   sequence_number: number;
   operation: string;

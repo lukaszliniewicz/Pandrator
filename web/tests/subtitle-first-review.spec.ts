@@ -100,6 +100,26 @@ async function speechState(page: Page, endpoint: string) {
   return response.json();
 }
 
+async function prepareInitialPlan(
+  page: Page,
+  endpoint: string,
+  headers: Record<string, string>
+) {
+  const current = await speechState(page, endpoint);
+  const response = await page.request.post(
+    `${endpoint}/generation-plan/prepare`,
+    {
+      headers: { ...headers, 'Idempotency-Key': crypto.randomUUID() },
+      data: {
+        expected_revision: current.session_revision,
+        expected_plan_revision_id: current.selected_revision_id,
+        source_artifact_id: current.current_input.artifact_id
+      }
+    }
+  );
+  expect(response.ok(), await response.text()).toBeTruthy();
+}
+
 async function attachRecording(
   page: Page,
   name: string,
@@ -238,6 +258,227 @@ test('early voiceover repair is optional and persists in block settings', async 
   await page.screenshot({
     path: testInfo.outputPath('mobile-block-settings.png')
   });
+});
+
+test('closing unsaved block settings offers save, discard, and continued editing', async ({
+  page
+}, testInfo) => {
+  const { session, endpoint } = await setup(page);
+  await page.goto(`/sessions/${session.id}`);
+  const open = page.getByRole('button', {
+    name: 'Block settings',
+    exact: true
+  });
+  const edit = page.getByRole('dialog', {
+    name: 'Speech-block settings',
+    exact: true
+  });
+  const prompt = page.getByRole('dialog', {
+    name: 'Save your block settings?'
+  });
+  const repair = edit.getByRole('checkbox', {
+    name: /Reduce speech getting ahead/
+  });
+  await open.click();
+  await expect(repair).toBeEnabled();
+  await edit
+    .getByRole('button', { name: 'Close speech-block settings' })
+    .click();
+  await expect(edit).toBeHidden();
+  await expect(prompt).toBeHidden();
+  await open.click();
+  await repair.check();
+  await repair.press('Escape');
+  await expect(prompt).toBeVisible();
+  await expect(prompt.getByRole('heading')).toBeFocused();
+  await page.screenshot({
+    path: testInfo.outputPath('unsaved-block-settings-desktop.png')
+  });
+  await prompt.press('Escape');
+  await expect(repair).toBeChecked();
+  await edit.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await prompt
+    .getByRole('button', { name: 'Keep editing', exact: true })
+    .click();
+  await expect(repair).toBeChecked();
+  await edit
+    .getByRole('button', { name: 'Close speech-block settings' })
+    .click();
+  await prompt.getByRole('button', { name: 'Discard changes' }).click();
+  let settings = await (
+    await page.request.get(`${endpoint}/settings/tts`)
+  ).json();
+  expect(settings.effective.speech_block_early_repair_enabled).toBe(false);
+  await open.click();
+  await repair.check();
+  await edit.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await prompt.boundingBox()).toMatchObject({
+    x: 0,
+    y: 0,
+    width: 390,
+    height: 844
+  });
+  await expect(
+    prompt.getByRole('button', { name: 'Save changes' })
+  ).toBeInViewport();
+  await page.screenshot({
+    path: testInfo.outputPath('unsaved-block-settings-mobile.png')
+  });
+  await prompt.getByRole('button', { name: 'Save changes' }).click();
+  await expect(prompt).toBeHidden();
+  settings = await (await page.request.get(`${endpoint}/settings/tts`)).json();
+  expect(settings.effective.speech_block_early_repair_enabled).toBe(true);
+});
+
+test('saved block-building changes offer keeping or preparing a plan, with retry after failure', async ({
+  page
+}, testInfo) => {
+  const { session, endpoint, headers } = await setup(page);
+  await prepareInitialPlan(page, endpoint, headers);
+  await page.goto(`/sessions/${session.id}`);
+  const card = page.getByRole('region', { name: 'Speech plan', exact: true });
+  await expect(
+    card.getByRole('button', { name: 'Review plan', exact: true })
+  ).toBeEnabled();
+  const original = await speechState(page, endpoint);
+  const edit = page.getByRole('dialog', {
+    name: 'Speech-block settings',
+    exact: true
+  });
+  const prompt = page.getByRole('dialog', {
+    name: 'Prepare a new speech plan?'
+  });
+  await card
+    .getByRole('button', { name: 'Block settings', exact: true })
+    .click();
+  await edit
+    .getByRole('spinbutton', { name: /^Maximum characters/ })
+    .fill('32');
+  await edit.getByRole('button', { name: 'Save block settings' }).click();
+  await expect(prompt).toBeVisible();
+  await expect(prompt.getByRole('heading')).toBeFocused();
+  await expect(
+    prompt.getByText('Your settings are saved.', { exact: true })
+  ).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath('prepare-plan-prompt-desktop.png')
+  });
+  await prompt.getByRole('button', { name: 'Keep current plan' }).click();
+  expect((await speechState(page, endpoint)).selected_revision_id).toBe(
+    original.selected_revision_id
+  );
+  await page.reload();
+  await card
+    .getByRole('button', { name: 'Block settings', exact: true })
+    .click();
+  await expect(
+    edit.getByRole('spinbutton', { name: /^Maximum characters/ })
+  ).toHaveValue('32');
+  await edit
+    .getByRole('spinbutton', { name: /^Maximum characters/ })
+    .fill('30');
+  await edit.getByRole('button', { name: 'Save block settings' }).click();
+  await expect(prompt).toBeVisible();
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await prompt.boundingBox()).toMatchObject({
+    x: 0,
+    y: 0,
+    width: 390,
+    height: 844
+  });
+  await expect(
+    prompt.getByRole('button', { name: 'Prepare a new plan', exact: true })
+  ).toBeInViewport();
+  await page.screenshot({
+    path: testInfo.outputPath('prepare-plan-prompt-mobile.png')
+  });
+  let preparationAttempts = 0;
+  await page.route(`**${endpoint}/generation-plan/prepare`, async (route) => {
+    preparationAttempts += 1;
+    if (preparationAttempts === 1)
+      return route.fulfill({
+        status: 409,
+        json: {
+          error: {
+            code: 'revision_conflict',
+            message: 'Test: preparation is temporarily unavailable.'
+          }
+        }
+      });
+    return route.continue();
+  });
+  await prompt
+    .getByRole('button', { name: 'Prepare a new plan', exact: true })
+    .click();
+  await expect(prompt.getByRole('alert')).toContainText(
+    'temporarily unavailable'
+  );
+  expect((await speechState(page, endpoint)).selected_revision_id).toBe(
+    original.selected_revision_id
+  );
+  const saved = await (
+    await page.request.get(`${endpoint}/settings/tts`)
+  ).json();
+  expect(saved.effective.speech_block_max_chars).toBe(30);
+  await prompt
+    .getByRole('button', { name: 'Prepare a new plan', exact: true })
+    .click();
+  await expect(prompt).toBeHidden();
+  const updated = await speechState(page, endpoint);
+  expect(updated.total).toBe(2);
+  expect(updated.selected_revision_id).not.toBe(original.selected_revision_id);
+  expect(
+    updated.items.some(
+      (item: { id: string }) => item.id === original.selected_revision_id
+    )
+  ).toBe(true);
+  expect(
+    (await (await page.request.get(`${endpoint}/settings/tts`)).json()).revision
+  ).toBe(saved.revision);
+  expect(
+    (await (await page.request.get(`${endpoint}/generation-runs`)).json()).items
+  ).toHaveLength(0);
+});
+
+test('repair-only changes save without prompting to rebuild an existing plan', async ({
+  page
+}) => {
+  const { session, endpoint, headers } = await setup(page);
+  await prepareInitialPlan(page, endpoint, headers);
+  await page.goto(`/sessions/${session.id}`);
+  const card = page.getByRole('region', { name: 'Speech plan', exact: true });
+  await expect(
+    card.getByRole('button', { name: 'Review plan', exact: true })
+  ).toBeEnabled();
+  const original = await speechState(page, endpoint);
+  await card
+    .getByRole('button', { name: 'Block settings', exact: true })
+    .click();
+  const dialog = page.getByRole('dialog', {
+    name: 'Speech-block settings',
+    exact: true
+  });
+  await dialog
+    .getByRole('checkbox', { name: /Reduce speech getting ahead/ })
+    .check();
+  await dialog.getByText('Repair thresholds', { exact: true }).click();
+  await dialog
+    .getByRole('spinbutton', { name: /^Minimum timing improvement/ })
+    .fill('900');
+  await dialog.getByRole('button', { name: 'Save block settings' }).click();
+  await expect(dialog).toBeHidden();
+  await expect(
+    page.getByRole('dialog', { name: 'Prepare a new speech plan?' })
+  ).toBeHidden();
+  const settings = await (
+    await page.request.get(`${endpoint}/settings/tts`)
+  ).json();
+  expect(settings.effective.speech_block_early_repair_enabled).toBe(true);
+  expect(settings.effective.speech_block_early_repair_min_advance_ms).toBe(900);
+  const updated = await speechState(page, endpoint);
+  expect(updated.total).toBe(1);
+  expect(updated.selected_revision_id).toBe(original.selected_revision_id);
 });
 
 test('gentle voiceover slowdown is optional and persists in audio settings', async ({

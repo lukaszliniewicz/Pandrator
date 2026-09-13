@@ -17,6 +17,10 @@ from pandrator.logic.tts_provider_switch import prepare_tts_provider_switch
 
 from .artifact_selection import select_source_path
 from .database import Database
+from .generation_run_history import (
+    GenerationRunHistory,
+    build_generation_run_history,
+)
 from .jobs import JobQueue
 from .models import (
     AppSetting,
@@ -4343,7 +4347,11 @@ class GenerationService:
         run: GenerationRun,
         *,
         display_sequence: int | None = None,
+        parent_label: str | None = None,
+        repair_number: int | None = None,
     ) -> str:
+        if parent_label is not None and repair_number is not None:
+            return f"{parent_label} · Timing repair {repair_number}"
         snapshot = dict(run.settings_snapshot_json or {})
         tts = dict(snapshot.get("tts") or {})
         rvc = dict(snapshot.get("rvc") or {})
@@ -4363,58 +4371,293 @@ class GenerationService:
             details.append(f"RVC {model}".strip())
         if not details:
             details.append("Speech generation")
-        return f"Run {display_sequence or run.sequence_number}: " + " · ".join(details)
+        sequence = (
+            display_sequence
+            if display_sequence is not None
+            else run.sequence_number
+        )
+        return f"Run {sequence}: " + " · ".join(details)
 
-    def _run_payload(self, session, run: GenerationRun | None) -> dict[str, Any] | None:
+    @staticmethod
+    def _run_history_active(run: GenerationRun, job: Job | None) -> bool:
+        return bool(
+            run.status in {"queued", "running", "pausing", "pause_requested", "cancel_requested"}
+            or (
+                job is not None
+                and job.status in {"queued", "running", "cancel_requested"}
+            )
+        )
+
+    def _run_history_context(
+        self,
+        session: Session,
+        session_id: str,
+        runs: list[GenerationRun] | None = None,
+    ) -> dict[str, Any]:
+        """Load one session's run history and projection inputs in batches."""
+
+        if runs is None:
+            runs = list(
+                session.scalars(
+                    select(GenerationRun)
+                    .where(GenerationRun.session_id == session_id)
+                    .order_by(
+                        GenerationRun.sequence_number.desc(),
+                        GenerationRun.created_at.desc(),
+                    )
+                ).all()
+            )
+        run_by_id = {run.id: run for run in runs}
+        revision_ids = {run.plan_revision_id for run in runs if run.plan_revision_id}
+        revisions = (
+            list(
+                session.scalars(
+                    select(GenerationPlanRevision).where(
+                        GenerationPlanRevision.id.in_(revision_ids)
+                    )
+                ).all()
+            )
+            if revision_ids
+            else []
+        )
+        revision_by_id = {revision.id: revision for revision in revisions}
+        histories = build_generation_run_history(runs, revision_by_id)
+
+        job_ids = {run.job_id for run in runs if run.job_id}
+        jobs = (
+            list(session.scalars(select(Job).where(Job.id.in_(job_ids))).all())
+            if job_ids
+            else []
+        )
+        job_by_id = {job.id: job for job in jobs}
+
+        output_run_ids = {
+            run.output_generation_run_id
+            for run in runs
+            if run.output_generation_run_id and run.output_generation_run_id in run_by_id
+        }
+        output_run_ids.update(run.id for run in runs)
+
+        assemblies = list(
+            session.scalars(
+                select(OutputAssembly)
+                .where(OutputAssembly.generation_run_id.in_(output_run_ids))
+                .order_by(OutputAssembly.created_at.desc())
+            ).all()
+        ) if output_run_ids else []
+        assembly_by_run_id: dict[str, OutputAssembly] = {}
+        for assembly in assemblies:
+            assembly_by_run_id.setdefault(assembly.generation_run_id, assembly)
+
+        take_counts: dict[str, int] = {}
+        if output_run_ids:
+            for generation_run_id, count in session.execute(
+                select(AudioTake.generation_run_id, func.count(AudioTake.id))
+                .where(AudioTake.generation_run_id.in_(output_run_ids))
+                .group_by(AudioTake.generation_run_id)
+            ):
+                take_counts[generation_run_id] = int(count)
+
+        usage_by_run_id: dict[str, list[UsageEvent]] = {}
+        if output_run_ids:
+            usage_events = list(
+                session.scalars(
+                    select(UsageEvent).where(
+                        UsageEvent.generation_run_id.in_(output_run_ids)
+                    )
+                ).all()
+            )
+            for event in usage_events:
+                usage_by_run_id.setdefault(event.generation_run_id, []).append(event)
+
+        visible_runs = [
+            run
+            for run in runs
+            if run.output_generation_run_id is None
+            and not histories[run.id].is_repair_child(run.id)
+        ]
+        visible_runs.sort(
+            key=lambda item: (
+                int(item.sequence_number or 0),
+                str(item.created_at or ""),
+                str(item.id),
+            )
+        )
+        visible_sequences = {
+            run.id: index for index, run in enumerate(visible_runs, start=1)
+        }
+        return {
+            "workflow_kind": getattr(session.get(SessionRecord, session_id), "workflow_kind", None),
+            "runs": runs,
+            "runs_by_id": run_by_id,
+            "histories": histories,
+            "revisions_by_id": revision_by_id,
+            "jobs_by_id": job_by_id,
+            "assemblies_by_run_id": assembly_by_run_id,
+            "take_counts": take_counts,
+            "usage_by_run_id": usage_by_run_id,
+            "visible_sequences": visible_sequences,
+        }
+
+    @staticmethod
+    def _logical_usage_events(
+        context: dict[str, Any],
+        history: GenerationRunHistory,
+    ) -> list[UsageEvent]:
+        """Collect usage for a logical run, de-duplicating shared ownership."""
+
+        logical_ids = {history.root.id}
+        logical_ids.update(child.id for child in history.repair_children)
+        plan_ids = {history.root.plan_revision_id, *(child.plan_revision_id for child in history.repair_children)}
+        for run in context["runs"]:
+            if run.output_generation_run_id in logical_ids and run.plan_revision_id in plan_ids:
+                logical_ids.add(run.id)
+        events: list[UsageEvent] = []
+        for run_id in logical_ids:
+            events.extend(context["usage_by_run_id"].get(run_id, ()))
+        return events
+
+    @staticmethod
+    def _timing_repair_status(
+        root: GenerationRun,
+        history: GenerationRunHistory,
+        root_job: Job | None,
+    ) -> tuple[str, bool]:
+        """Infer repair state while keeping optional repair failures local."""
+
+        children = history.repair_children
+        job_active = root_job is not None and root_job.status in {
+            "queued", "running", "cancel_requested"
+        }
+        # A crashed/stopped job can leave a child queued or an outcome pending.
+        # Such leftovers must not keep the logical run "repairing" forever.
+        if root.status == "failed" or (root_job is not None and root_job.status == "failed"):
+            return "failed", False
+        if root.status in {"canceled", "stopped", "paused"} or (
+            root_job is not None and root_job.status in {"canceled", "interrupted"}
+        ):
+            return "stopped", False
+        active_child = any(GenerationService._run_history_active(child, None) for child in children)
+        if (active_child and (root_job is None or job_active)) or (
+            job_active and (children or float(root_job.progress or 0) >= 0.85)
+        ):
+            return "running", True
+
+        outcomes = {
+            str(
+                history.repair_operations.get(str(child.id), {}).get(
+                    "repair_status"
+                )
+                or ""
+            )
+            for child in children
+        }
+        if "failed" in outcomes or any(child.status == "failed" for child in children):
+            return "failed", False
+        if "stopped" in outcomes or any(
+            child.status in {"canceled", "stopped"} for child in children
+        ):
+            return "stopped", False
+        if "pending" in outcomes or active_child:
+            return "stopped", False
+        return "completed", False
+
+    def _timing_repair_payload(
+        self,
+        context: dict[str, Any],
+        history: GenerationRunHistory,
+        root: GenerationRun,
+        root_job: Job | None,
+    ) -> tuple[dict[str, Any], bool]:
+        status, active = self._timing_repair_status(root, history, root_job)
+        result = history.result
+        versions = []
+        for child in history.repair_children:
+            operation = history.repair_operations.get(str(child.id), {})
+            versions.append(
+                {
+                    "generation_run_id": child.id,
+                    "plan_revision_id": child.plan_revision_id,
+                    "sequence_number": child.sequence_number,
+                    "status": child.status,
+                    "repair_status": operation.get("repair_status") or "unknown",
+                    "repair_reason": operation.get("repair_reason"),
+                    "source_block_ordinal": operation.get("source_block_ordinal"),
+                    "created_at": child.created_at.isoformat(),
+                }
+            )
+        usage_events = self._logical_usage_events(context, history)
+        from .usage import usage_summary
+
+        summary = {
+            "result_generation_run_id": result.id,
+            "result_plan_revision_id": result.plan_revision_id,
+            "result_sequence_number": result.sequence_number,
+            "applied_count": len(history.applied_children),
+            "attempt_count": len(history.repair_children),
+            "status": status,
+            "versions": versions,
+            "usage": usage_summary(usage_events),
+        }
+        return summary, active
+
+    def _run_payload(
+        self,
+        session,
+        run: GenerationRun | None,
+        *,
+        _context: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
         if run is None:
             return None
-        job = session.get(Job, run.job_id) if run.job_id else None
+        context = _context or self._run_history_context(session, run.session_id)
+        history: GenerationRunHistory = context["histories"].get(run.id)
+        if history is None:
+            history = GenerationRunHistory(
+                root=run,
+                repair_children=(),
+                result=run,
+                repair_operations={},
+            )
+        job = context["jobs_by_id"].get(run.job_id) if run.job_id else None
         output_run = (
-            session.get(GenerationRun, run.output_generation_run_id)
+            context["runs_by_id"].get(run.output_generation_run_id)
             if run.output_generation_run_id
             else run
         )
         output_run_id = output_run.id if output_run is not None else run.id
         label_run = output_run or run
-        visible_sequence = int(
-            session.scalar(
-                select(func.count())
-                .select_from(GenerationRun)
-                .where(
-                    GenerationRun.session_id == run.session_id,
-                    GenerationRun.output_generation_run_id.is_(None),
-                    GenerationRun.sequence_number <= label_run.sequence_number,
-                )
+        visible_sequence = context["visible_sequences"].get(
+            label_run.id, label_run.sequence_number
+        )
+        repair_number = None
+        parent_label = None
+        label_history = context["histories"].get(label_run.id, history)
+        if label_history.is_repair_child(label_run.id):
+            repair_number = next(
+                index
+                for index, child in enumerate(label_history.repair_children, start=1)
+                if child.id == label_run.id
             )
-            or label_run.sequence_number
-        )
-        assembly = session.scalar(
-            select(OutputAssembly)
-            .where(OutputAssembly.generation_run_id == output_run_id)
-            .order_by(OutputAssembly.created_at.desc())
-        )
-        take_count = int(
-            session.scalar(
-                select(func.count())
-                .select_from(AudioTake)
-                .where(AudioTake.generation_run_id == output_run_id)
+            root_sequence = context["visible_sequences"].get(
+                label_history.root.id, label_history.root.sequence_number
             )
-            or 0
-        )
+            parent_label = self._run_label(
+                label_history.root,
+                display_sequence=root_sequence,
+            )
+        assembly = context["assemblies_by_run_id"].get(output_run_id)
+        take_count = context["take_counts"].get(output_run_id, 0)
         from .usage import usage_summary
 
-        usage = list(
-            session.scalars(
-                select(UsageEvent).where(UsageEvent.generation_run_id == output_run_id)
-            ).all()
-        )
+        usage = context["usage_by_run_id"].get(output_run_id, [])
         snapshot = dict(run.settings_snapshot_json or {})
         modal_snapshot = {
             key: deepcopy(snapshot[key])
             for key in ("tts", "rvc", "selected_segment_override")
             if isinstance(snapshot.get(key), dict)
         }
-        return {
+        payload = {
             "id": run.id,
             "session_id": run.session_id,
             "plan_revision_id": run.plan_revision_id,
@@ -4425,6 +4668,8 @@ class GenerationService:
             "label": self._run_label(
                 label_run,
                 display_sequence=visible_sequence,
+                parent_label=parent_label,
+                repair_number=repair_number,
             ),
             "job_id": run.job_id,
             "status": run.status,
@@ -4459,32 +4704,54 @@ class GenerationService:
             "updated_at": run.updated_at.isoformat(),
         }
 
+        is_original_root = (
+            run.output_generation_run_id is None and history.root.id == run.id
+        )
+        timing_repair = None
+        repair_active = False
+        repair_enabled = (
+            context["workflow_kind"] == "voiceover"
+            and (snapshot.get("tts") or {}).get("speech_block_early_repair_enabled") is True
+            and run.operation in {"generate", "resume"}
+        )
+        if is_original_root and (history.repair_children or repair_enabled):
+            timing_repair, repair_active = self._timing_repair_payload(
+                context,
+                history,
+                run,
+                job,
+            )
+            payload["timing_repair"] = timing_repair
+            if repair_active:
+                payload["status"] = "running"
+                payload["phase"] = "repairing_timing"
+                if job is not None and job.status in {
+                    "queued",
+                    "running",
+                    "cancel_requested",
+                }:
+                    payload["progress"] = float(job.progress)
+
+        payload["early_repair_parent_run_id"] = (
+            history.root.id if history.is_repair_child(run.id) else None
+        )
+        payload["result_generation_run_id"] = (
+            history.result.id if is_original_root else run.id
+        )
+        return payload
+
     def list_runs(self, session_id: str) -> list[dict[str, Any]]:
         with self.database.session() as session:
-            runs = list(
-                session.scalars(
-                    select(GenerationRun)
-                    .where(GenerationRun.session_id == session_id)
-                    .order_by(
-                        GenerationRun.sequence_number.desc(),
-                        GenerationRun.created_at.desc(),
-                    )
-                ).all()
-            )
-            return [self._run_payload(session, run) for run in runs]
+            context = self._run_history_context(session, session_id)
+            return [
+                self._run_payload(session, run, _context=context)
+                for run in context["runs"]
+            ]
 
     def latest_run(self, session_id: str) -> dict[str, Any] | None:
         with self.database.session() as session:
-            runs = list(
-                session.scalars(
-                    select(GenerationRun)
-                    .where(GenerationRun.session_id == session_id)
-                    .order_by(
-                        GenerationRun.sequence_number.desc(),
-                        GenerationRun.created_at.desc(),
-                    )
-                ).all()
-            )
+            context = self._run_history_context(session, session_id)
+            runs = context["runs"]
             active_grouped = next(
                 (
                     candidate
@@ -4500,10 +4767,13 @@ class GenerationService:
                     candidate
                     for candidate in runs
                     if candidate.output_generation_run_id is None
+                    and not context["histories"][candidate.id].is_repair_child(
+                        candidate.id
+                    )
                 ),
                 None,
             )
-            return self._run_payload(session, run)
+            return self._run_payload(session, run, _context=context)
 
     def delete_run(self, run_id: str) -> dict[str, Any]:
         paths_to_remove: list[Path] = []
@@ -4519,10 +4789,18 @@ class GenerationService:
                 raise ValueError("Wait for this run's job to stop before deleting it.")
             grouped_children = []
             if run.output_generation_run_id is None:
+                history = self._run_payload(session, run) or {}
+                repair_ids = {
+                    version["generation_run_id"]
+                    for version in (history.get("timing_repair") or {}).get("versions", [])
+                }
+                output_ids = {run.id, *repair_ids}
                 grouped_children = list(
                     session.scalars(
                         select(GenerationRun).where(
-                            GenerationRun.output_generation_run_id == run.id
+                            GenerationRun.session_id == run.session_id,
+                            (GenerationRun.id.in_(repair_ids))
+                            | (GenerationRun.output_generation_run_id.in_(output_ids)),
                         )
                     ).all()
                 )
@@ -4552,7 +4830,7 @@ class GenerationService:
             run_ids = [run.id, *(child.id for child in grouped_children)]
             takes = list(
                 session.scalars(
-                    select(AudioTake).where(AudioTake.generation_run_id == run.id)
+                    select(AudioTake).where(AudioTake.generation_run_id.in_(run_ids))
                 ).all()
             )
             assemblies = list(
@@ -4567,6 +4845,25 @@ class GenerationService:
             artifact_ids.update(
                 item.artifact_id for item in assemblies if item.artifact_id
             )
+            # Repair versions clone takes and share their audio artifacts. A
+            # later independent run may still use one of those same files.
+            if artifact_ids:
+                shared_take_artifacts = session.scalars(
+                    select(AudioTake.artifact_id).where(
+                        AudioTake.artifact_id.in_(artifact_ids),
+                        (AudioTake.generation_run_id.is_(None))
+                        | (AudioTake.generation_run_id.not_in(run_ids)),
+                    )
+                ).all()
+                shared_assembly_artifacts = session.scalars(
+                    select(OutputAssembly.artifact_id).where(
+                        OutputAssembly.artifact_id.in_(artifact_ids),
+                        (OutputAssembly.generation_run_id.is_(None))
+                        | (OutputAssembly.generation_run_id.not_in(run_ids)),
+                    )
+                ).all()
+                artifact_ids.difference_update(shared_take_artifacts)
+                artifact_ids.difference_update(shared_assembly_artifacts)
             artifacts = (
                 list(
                     session.scalars(
@@ -4612,12 +4909,31 @@ class GenerationService:
                     )
             for artifact in artifacts:
                 session.delete(artifact)
+            child_job_ids = {
+                child.job_id for child in grouped_children
+                if child.job_id and child.job_id != run.job_id
+            }
+            for job_id in child_job_ids:
+                outside_group = session.scalar(
+                    select(GenerationRun.id).where(
+                        GenerationRun.job_id == job_id,
+                        GenerationRun.id.not_in(run_ids),
+                    ).limit(1)
+                )
+                child_job = session.get(Job, job_id)
+                if outside_group is None and child_job is not None:
+                    session.delete(child_job)
+            # Flush output-owned tasks first so their owners' cascades do not
+            # delete the same rows again in an unordered ORM delete batch.
             for child in grouped_children:
-                if child.job_id:
-                    child_job = session.get(Job, child.job_id)
-                    if child_job is not None:
-                        session.delete(child_job)
-            # The output-owner foreign key cascades child run deletion.
+                if child.output_generation_run_id:
+                    session.delete(child)
+            session.flush()
+            # Repair lineage uses source links, not the output-owner cascade.
+            for child in grouped_children:
+                if not child.output_generation_run_id:
+                    session.delete(child)
+            session.flush()
             session.delete(run)
         for path in paths_to_remove:
             try:

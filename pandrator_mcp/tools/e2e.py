@@ -814,16 +814,26 @@ def list_generation_runs(
     for item in payload.get("items") or []:
         if not isinstance(item, dict):
             continue
+        if not arguments.include_repairs and item.get("early_repair_parent_run_id"):
+            continue
         items.append(
             {
                 key: item.get(key)
                 for key in (
                     "id",
+                    "session_id",
                     "label",
                     "status",
                     "operation",
                     "job_id",
                     "progress",
+                    "plan_revision_id",
+                    "source_generation_run_id",
+                    "output_generation_run_id",
+                    "sequence_number",
+                    "early_repair_parent_run_id",
+                    "result_generation_run_id",
+                    "timing_repair",
                     "take_count",
                     "active_take_count",
                     "created_at",
@@ -835,7 +845,11 @@ def list_generation_runs(
         )
         if len(items) >= arguments.limit:
             break
-    return {"schema_version": "1", "session_id": arguments.session_id, "items": items}
+    return {
+        "schema_version": "1",
+        "session_id": arguments.session_id,
+        "items": items,
+    }
 
 
 def plan_export_variant(
