@@ -128,7 +128,7 @@ _CLAIMED_BATCH_KEYS = (
     "cue_count",
     "valid_cue_ids",
 )
-_CUE_KEYS = ("cue_id", "text", "speaker")
+_CUE_KEYS = ("cue_id", "evidence_cue_ids", "text", "speaker")
 _BOUNDARY_CUE_KEYS = ("text", "speaker")
 _TIMING_KEYS = (
     "start_ms",

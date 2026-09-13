@@ -273,6 +273,24 @@ class DispatchHandlerTests(unittest.TestCase):
             submitted.next_actions[0].tool,
         )
 
+    def test_logical_passage_claim_retains_distinct_audio_evidence_ids(self):
+        payload = self.application.claim_dispatch_batch("run-1")
+        payload["batch"]["id_namespace"] = "logical_passage"
+        payload["batch"]["valid_cue_ids"] = [42]
+        cue = payload["batch"]["cues"][0]
+        cue.update(cue_id=42, evidence_cue_ids=[7, 8])
+        self.application.claim_dispatch_batch = lambda run_id, **kwargs: payload
+
+        claimed = claim_dispatch_batch(
+            self.runtime,
+            ClaimDispatchBatchInput(run_id="run-1", idempotency_key="claim:logical"),
+        )
+        actual = claimed.result["batch"]["cues"][0]
+        self.assertEqual("logical_passage", claimed.result["batch"]["id_namespace"])
+        self.assertEqual(42, actual["cue_id"])
+        self.assertEqual([7, 8], actual["evidence_cue_ids"])
+        self.assertNotIn("unrelated", actual)
+
     def test_claim_only_discloses_batch_content_and_completed_claim_gets_run(self):
         listed = list_dispatch_runs(
             self.runtime,
