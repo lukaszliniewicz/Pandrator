@@ -631,6 +631,79 @@ same person after all.
         self.assertEqual(1, len(segments))
         self.assertEqual({1: "Speaker 0"}, result.speaker_by_subtitle)
 
+    def test_logical_passage_merge_preserves_window_and_source_lineage(self):
+        content = """1
+00:00:00,000 --> 00:00:05,000
+First half,
+
+2
+00:00:05,500 --> 00:00:13,680
+same thought.
+"""
+        result = llm_correction.correct_srt_content(
+            content,
+            {**_settings(), "_logical_passages_version": 1},
+            completion_func=lambda **_kwargs: llm_handler.ChatCompletionResult(
+                content=(
+                    '{"operations":[{"action":"merge","cue_ids":[1,2],'
+                    '"texts":["First half, same thought."]}]}'
+                )
+            ),
+        )
+
+        self.assertEqual(
+            [
+                {
+                    "start_ms": 0,
+                    "end_ms": 13680,
+                    "text": "First half, same thought.",
+                    "speaker": "",
+                    "source_cue_ids": [1, 2],
+                }
+            ],
+            result.logical_passages,
+        )
+        segment = srt_utils.parse_srt(result.srt_content)[0]
+        self.assertEqual((0, 13680), (segment.start_ms, segment.end_ms))
+
+    def test_logical_passage_correction_rejects_split_and_invalid_merge(self):
+        block = [
+            {"index": 1, "start_ms": 0, "end_ms": 5000, "text": "one"},
+            {"index": 2, "start_ms": 7001, "end_ms": 8000, "text": "two"},
+        ]
+        with self.assertRaises(ValueError):
+            llm_correction.validate_correction_operations(
+                block,
+                [{"action": "split", "cue_ids": [1], "texts": ["a", "b"]}],
+                logical_passages=True,
+            )
+        with self.assertRaises(ValueError):
+            llm_correction.validate_correction_operations(
+                block,
+                [{"action": "merge", "cue_ids": [1, 2], "texts": ["a"]}],
+                logical_passages=True,
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_logical_correction_prompt_allows_only_atomic_outputs():
+    for dispatch in (False, True):
+        prompt = llm_correction.build_correction_task_instructions(
+            subtitle_count=5,
+            logical_passages=True,
+            dispatch_result=dispatch,
+        )
+        assert '"action":"edit|delete|merge"' in prompt
+        assert "exactly one complete corrected replacement text" in prompt
+        assert '   - "split":' not in prompt
+        assert "not display cues" in prompt
+
+
+def test_logical_correction_checkpoint_key_includes_speaker():
+    block = [{"index": 1, "text": "First.", "start": 0, "end": 5, "speaker": "A"}]
+    before = llm_correction.correction_unit_key(block, logical_passages=True)
+    block[0]["speaker"] = "B"
+    assert before != llm_correction.correction_unit_key(block, logical_passages=True)

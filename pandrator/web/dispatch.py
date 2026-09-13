@@ -5,8 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 import secrets
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
-from math import ceil
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +25,8 @@ from pandrator.logic.dubbing.llm_translation import (
     merge_glossaries,
     parse_translation_items_details,
     parse_translation_response_details,
+    parse_translation_passage_items_details,
+    parse_translation_passage_response_details,
 )
 from pandrator.logic.dubbing.models import SubtitleSegment
 from pandrator.logic.dubbing.settings import normalize_correction_style
@@ -35,11 +37,7 @@ from pandrator.logic.dubbing.srt_utils import (
     subtitle_boundary_cue,
     subtitle_task_cue,
 )
-from pandrator.logic.dubbing.subtitle_finalization import (
-    SubtitleFinalizationConfig,
-    finalize_segments,
-)
-from pandrator.logic.dubbing.subtitle_rebalancing import rebalance_display_cues
+from pandrator.logic.dubbing.subtitle_projection import project_subtitle_display
 
 from .artifact_selection import ROLE_TO_STAGE
 from .artifacts import ArtifactService, sha256_file
@@ -52,9 +50,16 @@ from .dispatch_context import (
     store_context_delta,
     wave_bounds,
 )
+from .logical_passages import (
+    attach_passages,
+    load_timing_reference,
+    map_output_passages,
+    passage_srt,
+    same_timing_language,
+    source_passages,
+)
 from .models import (
     Artifact,
-    ArtifactEdge,
     DispatchBatch,
     DispatchRun,
     Document,
@@ -66,7 +71,6 @@ from .models import (
     SessionRecord,
     SessionStageSelection,
     SubtitleEvidence,
-    TimedWord,
     utcnow,
 )
 from .workspace import WorkspaceSettingsService, adapt_runtime_settings
@@ -139,105 +143,15 @@ def _finalize_dispatch_values(
     *, timing_words: list[dict[str, Any]] | None = None,
     match_source_words: bool = False,
 ) -> list[dict[str, Any]]:
-    """Fit display text, with bounded local reflow for inherited cue fragments.
-
-    An English display boundary is not a reliable German phrase boundary.
-    Reflow at most three adjacent intervals, within three maximum cue durations,
-    only when needed for readability or contradictory same-speaker overlaps.
-    Speaker changes, substantial pauses and review metadata remain boundaries.
-    """
-    config = SubtitleFinalizationConfig.from_settings(settings)
-    if not values:
-        return []
-    groups = [(dict(item), 1) for item in sorted(values, key=lambda v: int(v["start_ms"]))]
-    timeline_end = max(int(item["end_ms"]) for item in values)
-
-    def render(item: dict[str, Any]) -> list[dict[str, Any]]:
-        source_start, source_end = int(item["start_ms"]), int(item["end_ms"])
-        cues = finalize_segments(
-            [SubtitleSegment(0, source_start, source_end, str(item["text"]),
-                             str(item.get("speaker") or ""))],
-            config,
+    try:
+        return project_subtitle_display(
+            values,
+            settings,
+            timing_words=timing_words,
+            match_source_words=match_source_words,
         )
-        result = []
-        for cue in cues:
-            end_ms = min(cue.end_ms, source_end)
-            if end_ms <= cue.start_ms:
-                raise DispatchError(
-                    "subtitle_timing_capacity",
-                    "Edited text cannot fit within its subtitle interval.",
-                    422,
-                )
-            result.append({**item, "start_ms": cue.start_ms,
-                           "end_ms": end_ms, "text": cue.text})
-        return result
-
-    def quality(items: list[dict[str, Any]]) -> tuple[int, float, int]:
-        deficits = []
-        speeds = []
-        for item in items:
-            duration = int(item["end_ms"]) - int(item["start_ms"])
-            chars = len(" ".join(str(item["text"]).split()))
-            needed = max(config.min_duration_ms,
-                         ceil(chars * 1000 / config.max_chars_per_second))
-            deficits.append(max(0, needed - duration))
-            speeds.append(chars * 1000 / duration)
-        return sum(d > 1 for d in deficits), max(speeds, default=0), sum(deficits)
-
-    def signature(item: dict[str, Any]) -> tuple[Any, ...]:
-        return (item.get("speaker"), item.get("review_state") or "clear",
-                item.get("review_note") or "", tuple(item.get("evidence_ids") or []),
-                tuple(item.get("uncertain_source_cue_ids") or []))
-
-    index = 0
-    while index < len(groups):
-        item, count = groups[index]
-        current = render(item)
-        # Reading time may use a little genuinely empty trailing space, but
-        # never a following cue's speech, or time beyond the source timeline.
-        deficit = quality(current)[2]
-        next_start = int(groups[index + 1][0]["start_ms"]) if index + 1 < len(groups) else timeline_end + config.min_gap_ms
-        available_end = min(timeline_end, next_start - config.min_gap_ms,
-                            int(item["end_ms"]) + config.phrase_gap_ms)
-        if deficit and available_end > int(item["end_ms"]):
-            candidate = {**item, "end_ms": min(available_end, int(item["end_ms"]) + deficit)}
-            if quality(render(candidate)) < quality(current):
-                item = candidate
-                groups[index] = (item, count)
-                current = render(item)
-
-        candidates = []
-        for left in (index - 1, index):
-            if left < 0 or left + 1 >= len(groups):
-                continue
-            a, ac = groups[left]
-            b, bc = groups[left + 1]
-            gap = int(b["start_ms"]) - int(a["end_ms"])
-            span = max(int(a["end_ms"]), int(b["end_ms"])) - int(a["start_ms"])
-            if (not a.get("speaker") or signature(a) != signature(b)
-                    or gap > config.phrase_gap_ms or ac + bc > 3
-                    or span > config.max_duration_ms * 3):
-                continue
-            before = quality(render(a) + render(b))
-            if gap >= 0 and not before[0]:
-                continue
-            joined = {**a, "end_ms": max(int(a["end_ms"]), int(b["end_ms"])),
-                      "text": " ".join((str(a["text"]), str(b["text"]))).strip()}
-            after = quality(render(joined))
-            if gap < 0 or after < before:
-                candidates.append((after, left, joined, ac + bc))
-        if candidates:
-            _score, left, joined, members = min(candidates, key=lambda x: (x[0], x[1]))
-            groups[left:left + 2] = [(joined, members)]
-            index = max(0, left - 1)
-        else:
-            index += 1
-
-    output = [cue for item, _count in groups for cue in render(item)]
-    return rebalance_display_cues(
-        sorted(output, key=lambda item: int(item["start_ms"])), config,
-        timing_words=timing_words, match_source_words=match_source_words,
-    )
+    except ValueError as error:
+        raise DispatchError("subtitle_timing_capacity", str(error), 422) from error
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -670,7 +584,13 @@ class DispatchRunService:
                 "Translation dispatch requires a nonblank target language.",
                 422,
             )
-        source_srt, speakers = self._subtitle_records(segments)
+        passages = source_passages(session, source, segments=segments)
+        source_srt = passage_srt(passages)
+        speakers = {
+            index + 1: str(row.get("speaker") or "")
+            for index, row in enumerate(passages)
+            if row.get("speaker")
+        }
         blocks = create_translation_blocks(
             source_srt,
             char_limit,
@@ -683,13 +603,20 @@ class DispatchRunService:
             infer_speakers=False,
         )
         if kind in {"translation", "correction"}:
-            review_metadata = self._source_review_metadata(segments)
+            review_metadata = {
+                index + 1: self._review_metadata(row)
+                for index, row in enumerate(passages)
+            }
             blocks = [
                 [
                     {
                         **item,
                         **review_metadata.get(
                             int(item["index"]), self._review_metadata(None)
+                        ),
+                        "_passage": passages[int(item["index"]) - 1],
+                        "evidence_cue_ids": passages[int(item["index"]) - 1].get(
+                            "evidence_cue_ids", []
                         ),
                     }
                     for item in block
@@ -716,6 +643,7 @@ class DispatchRunService:
             session, session_id, "subtitles"
         )["effective"]
         settings = {
+            "_logical_passages_version": 1,
             "subtitle_finalization": adapt_runtime_settings(
                 "subtitles", subtitle_settings
             ),
@@ -942,6 +870,7 @@ class DispatchRunService:
                 known_speakers=known,
                 dispatch_result=True,
                 structured_context=True,
+                logical_passages=settings.get("_logical_passages_version") == 1,
             )
             result_contract: dict[str, Any] = {
                 "kind": "correction",
@@ -978,6 +907,7 @@ class DispatchRunService:
                 known_speakers=known,
                 dispatch_result=True,
                 structured_context=True,
+                logical_passages=settings.get("_logical_passages_version") == 1,
             )
             result_contract = {
                 "kind": "translation",
@@ -994,6 +924,25 @@ class DispatchRunService:
                     ),
                 },
             }
+        logical_mode = settings.get("_logical_passages_version") == 1
+        if logical_mode:
+            if run.kind == "correction":
+                result_contract["operations"]["actions"] = ["edit", "merge"] + (
+                    [] if settings.get("no_remove_subtitles") else ["delete"]
+                )
+            else:
+                result_contract["items"] = {
+                    "identity_field": "cue_id or cue_ids",
+                    "coverage": "Every actionable passage ID exactly once, in order.",
+                    "merge": "One translated passage with the combined source window.",
+                }
+            result_contract["id_namespace"] = "logical_passage"
+            instructions += (
+                "\n\nPassage evidence policy: `cue_id` identifies an actionable logical "
+                "passage, not a display subtitle. For audio evidence requests, use one "
+                "of that passage's `evidence_cue_ids` with task.source_artifact_id. "
+                "Keep the logical passage cue_id in correction operations and uncertainties."
+            )
         instructions += (
             "\n\nBoundary context policy:\n"
             "- `batch.context.previous_output` and "
@@ -1009,10 +958,22 @@ class DispatchRunService:
             "`context_delta`; do not include secrets or arbitrary fields."
         )
         cues = [
-            subtitle_task_cue(
-                item,
-                timing_context_mode=timing_context_mode,
-            )
+            {
+                **subtitle_task_cue(
+                    item,
+                    timing_context_mode=timing_context_mode,
+                ),
+                **(
+                    {
+                        "evidence_cue_ids": list(item.get("evidence_cue_ids") or []),
+                        "timing_basis": (item.get("_passage") or {}).get(
+                            "timing_basis"
+                        ),
+                    }
+                    if logical_mode
+                    else {}
+                ),
+            }
             for item in block
         ]
         previous_output: list[dict[str, Any]] = []
@@ -1084,7 +1045,9 @@ class DispatchRunService:
                 "quality_policy": (
                     {
                         "semantic_coherence_required": True,
-                        "deletion_allowed": not bool(settings.get("no_remove_subtitles")),
+                        "deletion_allowed": not bool(
+                            settings.get("no_remove_subtitles")
+                        ),
                         "evidence_tool": "pandrator_request_subtitle_evidence",
                         "evidence_status_tool": "pandrator_get_subtitle_evidence",
                         "available_routes": [
@@ -1106,7 +1069,9 @@ class DispatchRunService:
                 ),
             },
             "batch": {
-                "id_namespace": "source_revision_cue",
+                "id_namespace": "logical_passage"
+                if logical_mode
+                else "source_revision_cue",
                 "source_revision_id": run.source_revision_id,
                 "cue_count": len(cues),
                 "valid_cue_ids": [cue["cue_id"] for cue in cues],
@@ -1331,6 +1296,7 @@ class DispatchRunService:
     ) -> tuple[list[dict[str, Any]], dict[str, str]]:
         block = list(batch.input_json or [])
         settings = dict(run.settings_json or {})
+        logical_mode = settings.get("_logical_passages_version") == 1
         known = self._known_speakers(run)
         if result is not None:
             kind = str(result.get("kind") or "").strip().lower()
@@ -1353,12 +1319,14 @@ class DispatchRunService:
                     operations,
                     no_remove_subtitles=bool(settings.get("no_remove_subtitles")),
                     known_speakers=known,
+                    logical_passages=logical_mode,
                 )
                 output = apply_correction_operations(
                     block,
                     operations,
                     no_remove_subtitles=bool(settings.get("no_remove_subtitles")),
                     known_speakers=known,
+                    logical_passages=logical_mode,
                 )
                 uncertainties = self._normalize_uncertainties(
                     session,
@@ -1375,7 +1343,9 @@ class DispatchRunService:
                     str(error),
                     422,
                     details={
-                        "id_namespace": "source_revision_cue",
+                        "id_namespace": "logical_passage"
+                        if logical_mode
+                        else "source_revision_cue",
                         "valid_cue_ids": [int(item["index"]) for item in block],
                     },
                 ) from error
@@ -1399,15 +1369,22 @@ class DispatchRunService:
                         422,
                     )
                 matched = []
-                source_id = item.get("index")
-                if source_id is not None and int(source_id) in uncertainties:
-                    matched.append(int(source_id))
-                if not matched:
-                    for cue_id, uncertainty in uncertainties.items():
-                        if min(end_ms, int(uncertainty["end_ms"])) > max(
-                            start_ms, int(uncertainty["start_ms"])
-                        ):
-                            matched.append(cue_id)
+                if logical_mode:
+                    matched = [
+                        cue_id
+                        for cue_id in item["source_cue_ids"]
+                        if cue_id in uncertainties
+                    ]
+                else:
+                    source_id = item.get("index")
+                    if source_id is not None and int(source_id) in uncertainties:
+                        matched.append(int(source_id))
+                    if not matched:
+                        for cue_id, uncertainty in uncertainties.items():
+                            if min(end_ms, int(uncertainty["end_ms"])) > max(
+                                start_ms, int(uncertainty["start_ms"])
+                            ):
+                                matched.append(cue_id)
                 evidence_ids = list(
                     dict.fromkeys(
                         evidence_id
@@ -1422,6 +1399,11 @@ class DispatchRunService:
                         "end_ms": end_ms,
                         "text": text,
                         "speaker": str(item.get("speaker") or "").strip() or None,
+                        **(
+                            {"source_cue_ids": list(item["source_cue_ids"])}
+                            if logical_mode
+                            else {}
+                        ),
                         **self._review_metadata(item),
                         **(
                             {
@@ -1437,8 +1419,27 @@ class DispatchRunService:
                 )
             return values, glossary
         expected_numbers = [int(item["index"]) for item in block]
+        source_groups = [[index] for index in expected_numbers]
+        returned_speakers: Sequence[str | None]
         try:
-            if result is not None:
+            if logical_mode and result is not None:
+                translations, glossary, returned_speakers, source_groups = (
+                    parse_translation_passage_items_details(
+                        list(result.get("translations") or []),
+                        block=block,
+                        known_speakers=known,
+                        glossary=dict(result.get("glossary_updates") or {}),
+                    )
+                )
+            elif logical_mode:
+                translations, glossary, returned_speakers, source_groups = (
+                    parse_translation_passage_response_details(
+                        str(response_text or ""),
+                        block=block,
+                        known_speakers=known,
+                    )
+                )
+            elif result is not None:
                 translations, glossary, returned_speakers = (
                     parse_translation_items_details(
                         list(result.get("translations") or []),
@@ -1461,15 +1462,22 @@ class DispatchRunService:
                 str(error),
                 422,
                 details={
-                    "id_namespace": "source_revision_cue",
+                    "id_namespace": "logical_passage"
+                    if logical_mode
+                    else "source_revision_cue",
                     "valid_cue_ids": expected_numbers,
                 },
             ) from error
         values = []
-        for item, text, returned_speaker in zip(
-            block, translations, returned_speakers, strict=True
+        by_index = {int(item["index"]): item for item in block}
+        for group, text, returned_speaker in zip(
+            source_groups, translations, returned_speakers, strict=True
         ):
-            start_ms, end_ms = self._normalize_timing(item)
+            inputs = [by_index[index] for index in group]
+            item = inputs[0]
+            windows = [self._normalize_timing(value) for value in inputs]
+            start_ms = min(window[0] for window in windows)
+            end_ms = max(window[1] for window in windows)
             normalized_text = " ".join(str(text or "").split()).strip()
             if not normalized_text:
                 raise DispatchError(
@@ -1494,10 +1502,33 @@ class DispatchRunService:
                         returned_speaker or item.get("speaker") or ""
                     ).strip()
                     or None,
-                    **self._review_metadata(item),
+                    **self._group_review_metadata(inputs),
+                    **({"source_cue_ids": list(group)} if logical_mode else {}),
                 }
             )
         return values, merge_glossaries(glossary)
+
+    @classmethod
+    def _group_review_metadata(cls, items: list[dict[str, Any]]) -> dict[str, Any]:
+        values = [cls._review_metadata(item) for item in items]
+        if len(values) == 1:
+            return values[0]
+        return {
+            "review_state": "uncertain"
+            if any(value["review_state"] == "uncertain" for value in values)
+            else "clear",
+            "review_note": " ".join(
+                dict.fromkeys(
+                    value["review_note"] for value in values if value["review_note"]
+                )
+            ),
+            **{
+                key: list(
+                    dict.fromkeys(item for value in values for item in value[key])
+                )
+                for key in ("evidence_ids", "uncertain_source_cue_ids")
+            },
+        }
 
     @staticmethod
     def _normalize_uncertainties(
@@ -1566,11 +1597,16 @@ class DispatchRunService:
                 )
             for evidence_id in evidence_ids:
                 evidence = session.get(SubtitleEvidence, evidence_id)
+                evidence_cue_ids = (
+                    valid[cue_id].get("evidence_cue_ids") or []
+                    if (run.settings_json or {}).get("_logical_passages_version") == 1
+                    else [cue_id]
+                )
                 if (
                     evidence is None
                     or evidence.session_id != run.session_id
                     or evidence.source_artifact_id != run.source_artifact_id
-                    or evidence.cue_id != cue_id
+                    or evidence.cue_id not in evidence_cue_ids
                 ):
                     raise ValueError(
                         f"Correction uncertainty {position} references evidence "
@@ -1831,72 +1867,15 @@ class DispatchRunService:
     def _timing_reference(
         session: Session, source: Artifact,
     ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
-        """Read the nearest unambiguous word revision on the pinned source path.
-
-        This is publication-only evidence, never model input. Stop at a cut
-        boundary even when its words are missing: pre-cut times are unsafe.
-        """
-        frontier = {source.id}
-        seen: set[str] = set()
-        while frontier and len(seen) < 32:
-            if len(frontier | seen) > 32:
-                return [], None
-            next_frontier: set[str] = set()
-            candidates: dict[str, tuple[list[dict[str, Any]], dict[str, Any]]] = {}
-            cut_boundary = False
-            for artifact_id in sorted(frontier):
-                if artifact_id in seen:
-                    continue
-                seen.add(artifact_id)
-                artifact = session.get(Artifact, artifact_id)
-                if (artifact is None or artifact.state == "deleted"
-                        or artifact.session_id != source.session_id):
-                    continue
-                metadata = artifact.metadata_json or {}
-                revision_id = str(metadata.get("revision_id") or "")
-                revision = session.get(DocumentRevision, revision_id) if revision_id else None
-                document = session.get(Document, revision.document_id) if revision else None
-                if (document is not None and document.session_id == source.session_id
-                        and document.stage == artifact.role):
-                    words = list(session.scalars(select(TimedWord).where(
-                        TimedWord.revision_id == revision_id,
-                    ).order_by(TimedWord.ordinal)))
-                    if words:
-                        record = session.get(SessionRecord, source.session_id)
-                        language = document.language or (record.source_language if record else None)
-                        candidates[revision_id] = ([{
-                            "text": word.text, "start_ms": word.start_ms,
-                            "end_ms": word.end_ms, "speaker": word.speaker or "",
-                        } for word in words], {"revision_id": revision_id, "language": language})
-                if artifact.role == "media_edit_subtitles":
-                    cut_boundary = True
-                    continue
-                parent_ids = set(session.scalars(select(ArtifactEdge.parent_artifact_id).where(
-                    ArtifactEdge.child_artifact_id == artifact.id,
-                )))
-                if metadata.get("source_artifact_id"):
-                    parent_id = str(metadata["source_artifact_id"])
-                    parent = session.get(Artifact, parent_id)
-                    expected_revision = metadata.get("source_revision_id")
-                    if (expected_revision and (parent is None or
-                            (parent.metadata_json or {}).get("revision_id") != expected_revision)):
-                        return [], None
-                    parent_ids.add(parent_id)
-                next_frontier.update(parent_ids - seen)
-            if candidates:
-                return next(iter(candidates.values())) if len(candidates) == 1 else ([], None)
-            if cut_boundary:
-                return [], None
-            frontier = next_frontier
-        return [], None
+        words, reference = load_timing_reference(session, source)
+        return [
+            {key: word[key] for key in ("text", "start_ms", "end_ms", "speaker")}
+            for word in words
+        ], reference
 
     @staticmethod
     def _same_timing_language(left: str | None, right: str | None) -> bool:
-        aliases = {"english": "en", "german": "de", "polish": "pl"}
-        def key(value: str | None) -> str:
-            normalized = str(value or "").strip().casefold().replace("_", "-")
-            return aliases.get(normalized, normalized.split("-")[0])
-        return key(left) not in {"", "auto"} and key(left) == key(right)
+        return same_timing_language(left, right)
 
     def _materialize(self, session: Session, run: DispatchRun) -> None:
         expected_selections = dict(run.selection_snapshot_json or {})
@@ -1996,6 +1975,15 @@ class DispatchRunService:
                 "A dispatch run cannot remove every subtitle.",
                 422,
             )
+        logical_values = None
+        if (run.settings_json or {}).get("_logical_passages_version") == 1:
+            input_passages = [
+                item["_passage"]
+                for batch in batches
+                for item in (batch.input_json or [])
+            ]
+            logical_values = map_output_passages(values, input_passages)
+            values = logical_values
         finalization_settings = (run.settings_json or {}).get("subtitle_finalization")
         timing_reference: dict[str, Any] | None = None
         # Existing durable runs keep their original publication contract.
@@ -2150,6 +2138,8 @@ class DispatchRunService:
                 ),
             },
         )
+        if logical_values is not None:
+            attach_passages(artifact, logical_values, source=source)
         run.result_artifact_id = artifact.id
         run.result_revision_id = output_revision.id
         run.status = "completed"

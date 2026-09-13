@@ -1097,9 +1097,22 @@ class DispatchCorrectionResult(StrictModel):
 
 
 class DispatchTranslationItem(StrictModel):
-    cue_id: int = Field(ge=1)
+    cue_id: int | None = Field(default=None, ge=1, strict=True)
+    cue_ids: list[Annotated[int, Field(ge=1, strict=True)]] | None = Field(
+        default=None,
+        min_length=1,
+        max_length=500,
+    )
     text: str = Field(min_length=1, max_length=16_000)
     speaker: str | None = Field(default=None, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_passage_identity(self):
+        if (self.cue_id is None) == (self.cue_ids is None):
+            raise ValueError(
+                "Provide cue_id for one passage or cue_ids for an adjacent merge."
+            )
+        return self
 
 
 class DispatchTranslationResult(StrictModel):
@@ -1159,6 +1172,8 @@ class DispatchCue(StrictModel):
     text: str
     speaker: str | None = None
     timing: DispatchCueTiming | None = None
+    evidence_cue_ids: list[int] | None = None
+    timing_basis: str | None = None
 
 
 class DispatchBoundaryCue(StrictModel):
@@ -1173,7 +1188,7 @@ class DispatchBoundaryContext(StrictModel):
 
 
 class DispatchClaimedBatch(StrictModel):
-    id_namespace: Literal["source_revision_cue"]
+    id_namespace: Literal["source_revision_cue", "logical_passage"]
     source_revision_id: str
     cue_count: int = Field(ge=1, le=500)
     valid_cue_ids: list[int]

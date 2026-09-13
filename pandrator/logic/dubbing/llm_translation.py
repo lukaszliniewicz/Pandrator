@@ -7,7 +7,7 @@ import json
 import logging
 import os
 import tempfile
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -96,13 +96,13 @@ TRANSLATION_PROMPT_TEMPLATE = """Your task: translate machine-generated subtitle
 Instructions:
 1. You will receive an array of subtitle cues in JSON format. Each cue has a stable `cue_id` and a `text` field.
 2. Translate the "text" of each subtitle.
-3. You MUST preserve each `cue_id` exactly.
+3. {identity_policy}
 4. {response_structure}
 5. {removal_policy}
 6. Use normal target-language written conventions for numbers, dates, amounts, and Roman numerals; do not spell them out mechanically.
 7. It is ok for a subtitle to not end in punctuation if the following subtitle continues the sentence/thought. You don't have to add "..." - in fact, don't do it.
-8. Choose fluent, idiomatic, concise translations designed for on-screen reading while maintaining accuracy, grammatical correctness in the target language, and the tone of the source.
-9. Speech and TTS optimization is a separate downstream, reviewable layer; do not optimize this display translation for speech generation.
+8. {phrasing_policy}
+9. {projection_policy}
 10. Do not add ANY comments, confirmations, explanations, or questions. {output_only_instruction}
 11. Before outputting your answer, validate its formatting. {validation_instruction}
 12. Do not add speaker names, speaker numbers, or bracketed speaker labels to translated text. Preserve each supplied `speaker` by default. {known_speakers_policy}
@@ -138,6 +138,7 @@ class TranslationResult:
     cost_sources: tuple[str, ...] = ()
     usage: dict[str, Any] = field(default_factory=dict)
     speaker_by_subtitle: dict[int, str] = field(default_factory=dict)
+    logical_passages: list[dict[str, Any]] | None = None
 
 
 def _report_progress(
@@ -207,6 +208,7 @@ def translate_blocks_deepl(
     translator_factory: Callable[[str], Any] | None = None,
     cancel_event: Any | None = None,
     progress_callback: ProgressCallback | None = None,
+    logical_passages: bool = False,
 ) -> list[dict[str, Any]]:
     del (
         source_language
@@ -255,13 +257,15 @@ def translate_blocks_deepl(
             translated_index : translated_index + len(block)
         ]
         translated_index += len(block)
-        translated_responses.append(
-            {
-                "translation": block_translations,
-                "new_glossary": "",
-                "original_indices": [subtitle["index"] for subtitle in block],
-            }
-        )
+        response: dict[str, Any] = {
+            "translation": block_translations,
+            "new_glossary": "",
+            "original_indices": [subtitle["index"] for subtitle in block],
+        }
+        if logical_passages:
+            response["source_groups"] = [[int(subtitle["index"])] for subtitle in block]
+            response["_logical_passages_version"] = 1
+        translated_responses.append(response)
 
     return translated_responses
 
@@ -512,6 +516,194 @@ def parse_translation_items_details(
     )
 
 
+def _source_window_ms(subtitle: Mapping[str, Any]) -> tuple[int, int]:
+    raw_start = subtitle.get("start_ms")
+    raw_end = subtitle.get("end_ms")
+    if raw_start is None:
+        raw_start = round(float(subtitle.get("start", 0.0)) * 1000)
+    if raw_end is None:
+        raw_end = round(float(subtitle.get("end", 0.0)) * 1000)
+    return int(raw_start), int(raw_end)
+
+
+def _validate_passage_group(
+    group: list[int],
+    block: list[dict[str, Any]],
+    positions_by_id: Mapping[int, int],
+) -> None:
+    positions = [positions_by_id[cue_id] for cue_id in group]
+    if positions != list(range(positions[0], positions[0] + len(positions))):
+        raise ValueError("Translation passage cue_ids must form a contiguous group.")
+    selected = [block[position] for position in positions]
+    for left, right in zip(selected, selected[1:]):
+        left_start, left_end = _source_window_ms(left)
+        right_start, _right_end = _source_window_ms(right)
+        if right_start < left_end:
+            raise ValueError("Translation passage groups cannot overlap in time.")
+        if right_start - left_end > 1500:
+            raise ValueError(
+                "Translation passage groups cannot cross a gap greater than 1500 ms."
+            )
+    source_speakers = {
+        str(subtitle.get("speaker") or "").strip().casefold() for subtitle in selected
+    }
+    if len(source_speakers) > 1:
+        raise ValueError(
+            "Translation passage groups cannot cross differing source speakers."
+        )
+
+
+def _source_speaker_for_group(
+    group: list[int],
+    block_by_id: Mapping[int, Mapping[str, Any]],
+) -> str:
+    for cue_id in group:
+        speaker = str(block_by_id[cue_id].get("speaker") or "").strip()
+        if speaker:
+            return speaker
+    return ""
+
+
+def parse_translation_passage_items_details(
+    items: list[dict[str, Any]],
+    *,
+    block: list[dict[str, Any]],
+    known_speakers: set[str] | None = None,
+    glossary: dict[str, str] | None = None,
+) -> tuple[list[str], dict[str, str], list[str], list[list[int]]]:
+    """Validate grouped translation items for logical-passage input blocks."""
+    expected_ids = [int(subtitle["index"]) for subtitle in block]
+    if not isinstance(items, list):
+        raise ValueError("Translation passage response must contain an array.")
+    positions_by_id = {cue_id: position for position, cue_id in enumerate(expected_ids)}
+    if len(positions_by_id) != len(expected_ids):
+        raise ValueError("Translation source cue identifiers must be unique.")
+
+    translations: list[str] = []
+    speakers: list[str] = []
+    source_groups: list[list[int]] = []
+    covered: list[int] = []
+    known_by_casefold = {
+        speaker.casefold(): speaker for speaker in (known_speakers or set())
+    }
+    expected_position = 0
+    for item_index, item in enumerate(items, start=1):
+        if not isinstance(item, dict) or "text" not in item:
+            raise ValueError(
+                f"Translation passage item {item_index} must contain text and a cue identifier."
+            )
+        # Web/MCP schema instances may include the unused nullable identity
+        # field with a value of None; treat that the same as an absent field.
+        has_cue_id = item.get("cue_id") is not None
+        has_cue_ids = item.get("cue_ids") is not None
+        if has_cue_id == has_cue_ids:
+            raise ValueError(
+                f"Translation passage item {item_index} must contain exactly one of cue_id or cue_ids."
+            )
+        if has_cue_id:
+            raw_id = item["cue_id"]
+            if isinstance(raw_id, bool) or not isinstance(raw_id, int):
+                raise ValueError(
+                    f"Translation passage item {item_index} cue_id must be an integer."
+                )
+            group = [raw_id]
+        else:
+            raw_ids = item["cue_ids"]
+            if not isinstance(raw_ids, list) or not raw_ids:
+                raise ValueError(
+                    f"Translation passage item {item_index} cue_ids must be a non-empty array."
+                )
+            if any(
+                isinstance(value, bool) or not isinstance(value, int)
+                for value in raw_ids
+            ):
+                raise ValueError(
+                    f"Translation passage item {item_index} cue_ids must contain integers."
+                )
+            group = list(raw_ids)
+        if len(set(group)) != len(group):
+            raise ValueError(
+                f"Translation passage item {item_index} repeats a cue identifier."
+            )
+        unknown = [cue_id for cue_id in group if cue_id not in positions_by_id]
+        if unknown:
+            raise ValueError(
+                f"Translation passage item {item_index} references unknown cue ID(s): {unknown}."
+            )
+        # Groups must be emitted in source order, with no skipped or repeated
+        # source positions.  This also rejects a later group that overlaps an
+        # earlier one before the final coverage check below.
+        if positions_by_id[group[0]] != expected_position:
+            raise ValueError(
+                "Translation passage items must cover input cues exactly once in order."
+            )
+        _validate_passage_group(group, block, positions_by_id)
+        expected_position += len(group)
+        covered.extend(group)
+
+        if not isinstance(item["text"], str):
+            raise ValueError(
+                f"Translation text for passage {item_index} must be a string."
+            )
+        translations.append(split_speaker_label(item["text"].strip())[1])
+        raw_speaker = str(item.get("speaker") or "").strip()
+        if raw_speaker:
+            if (
+                known_speakers is not None
+                and raw_speaker.casefold() not in known_by_casefold
+            ):
+                raise ValueError(
+                    f"Translation response returned unknown speaker ID {raw_speaker!r}."
+                )
+            speakers.append(known_by_casefold.get(raw_speaker.casefold(), raw_speaker))
+        else:
+            speakers.append("")
+        source_groups.append(group)
+
+    if covered != expected_ids:
+        raise ValueError(
+            "Translation passage response must cover every input cue exactly once."
+        )
+    return translations, dict(glossary or {}), speakers, source_groups
+
+
+def parse_translation_passage_response_details(
+    response_text: str,
+    *,
+    block: list[dict[str, Any]],
+    known_speakers: set[str] | None = None,
+    glossary: dict[str, str] | None = None,
+) -> tuple[list[str], dict[str, str], list[str], list[list[int]]]:
+    """Parse grouped translation JSON, including the native glossary formats."""
+    translation_text, _separator, glossary_text = str(response_text or "").partition(
+        "[GLOSSARY]"
+    )
+    payload = extract_json_payload(translation_text)
+    response_glossary = merge_glossaries(
+        glossary,
+        parse_glossary_entries(glossary_text),
+    )
+    if isinstance(payload, dict):
+        items = payload.get("translations")
+        response_glossary = merge_glossaries(
+            response_glossary,
+            payload.get("glossary_updates"),
+            payload.get("glossary"),
+        )
+    elif isinstance(payload, list):
+        items = payload
+    else:
+        raise ValueError("Translation passage response must be an array or object.")
+    if not isinstance(items, list):
+        raise ValueError("Translation passage response must contain an array.")
+    return parse_translation_passage_items_details(
+        items,
+        block=block,
+        known_speakers=known_speakers,
+        glossary=response_glossary,
+    )
+
+
 def build_translation_task_instructions(
     *,
     subtitle_count: int,
@@ -526,6 +718,7 @@ def build_translation_task_instructions(
     known_speakers: set[str] | None = None,
     dispatch_result: bool = False,
     structured_context: bool = False,
+    logical_passages: bool = False,
 ) -> str:
     """Build translation guidance without embedding source cue content."""
 
@@ -544,13 +737,40 @@ def build_translation_task_instructions(
             else 'Translate every meaningful source cue. Use "[REMOVE]" only for an explicit non-speech artifact or a clearly duplicated ASR hallucination. Do not delete fillers, hesitation, or repetition during translation; source-language editorial cleanup belongs to the separate correction stage.'
         ),
         response_structure=(
-            f"Return one typed result object with `kind` equal to `translation` "
-            f"and a `translations` array containing exactly {int(subtitle_count)} "
-            '`{"cue_id": 1, "text": "translated text"}` items. The optional '
-            "`glossary_updates` object contains only new terminology."
-            if dispatch_result
-            else f"Return EXACTLY {int(subtitle_count)} items as "
-            '`{"cue_id": 1, "text": "translated text"}` objects.'
+            (
+                "Return one typed result object with `kind` equal to `translation` and a `translations` array. "
+                "The optional `glossary_updates` object contains only new terminology. "
+                if dispatch_result
+                else "Return a JSON array. "
+            )
+            + 'Each item uses either {"cue_id": 1, "text": "translated text"} for one passage '
+            'or {"cue_ids": [1, 2], "text": "one combined translation"} for an adjacent merge. '
+            "Use exactly one of `cue_id` or `cue_ids` per item. Return fewer items when merging."
+            if logical_passages
+            else (
+                f"Return one typed result object with `kind` equal to `translation` "
+                f"and a `translations` array containing exactly {int(subtitle_count)} "
+                '`{"cue_id": 1, "text": "translated text"}` items. The optional '
+                "`glossary_updates` object contains only new terminology."
+                if dispatch_result
+                else f"Return EXACTLY {int(subtitle_count)} items as "
+                '`{"cue_id": 1, "text": "translated text"}` objects.'
+            )
+        ),
+        identity_policy=(
+            "Cover every supplied `cue_id` exactly once, in source order, either individually or in an adjacent `cue_ids` group. IDs identify logical passages in this stage's pinned input, not display cues or batch-local positions."
+            if logical_passages
+            else "You MUST preserve each `cue_id` exactly."
+        ),
+        phrasing_policy=(
+            "Translate naturally and faithfully in the target language, preserving meaning, register, detail and terminology. Read across passage boundaries for context. Keep a boundary where its translated wording can still be assigned reliably; a passage may be a clause rather than a complete sentence."
+            if logical_passages
+            else "Choose fluent, idiomatic, concise translations designed for on-screen reading while maintaining accuracy, grammatical correctness in the target language, and the tone of the source."
+        ),
+        projection_policy=(
+            "Display formatting and speech planning use these passages separately. Do not insert line breaks, compress the translation to fit subtitle cards, spell out numbers for TTS, or stretch the wording to fill a time window."
+            if logical_passages
+            else "Speech and TTS optimization is a separate downstream, reviewable layer; do not optimize this display translation for speech generation."
         ),
         output_only_instruction=(
             "Output only the typed result object described above."
@@ -558,11 +778,15 @@ def build_translation_task_instructions(
             else "Output only the translation JSON array."
         ),
         validation_instruction=(
-            f"Return exactly {int(subtitle_count)} translations inside the typed "
-            "result object, preserving every supplied `cue_id`."
-            if dispatch_result
-            else f"Return exactly {int(subtitle_count)} subtitles with the same "
-            "cue IDs as the input."
+            "Return each input ID exactly once, in order. A merged group gets one complete text; never split a passage into separately timed outputs."
+            if logical_passages
+            else (
+                f"Return exactly {int(subtitle_count)} translations inside the typed "
+                "result object, preserving every supplied `cue_id`."
+                if dispatch_result
+                else f"Return exactly {int(subtitle_count)} subtitles with the same "
+                "cue IDs as the input."
+            )
         ),
         known_speakers_policy=(
             "Known speaker IDs are provided once in `task.known_speakers`; use "
@@ -601,6 +825,13 @@ def build_translation_task_instructions(
             )
         ),
     )
+    if logical_passages:
+        prompt += (
+            "\n\nLogical passage policy:\n"
+            "- A natural adjacent merge is welcome when target-language word order or idiom makes separate assignment awkward or unreliable. Do not force fragments to stay separate at the expense of fluency.\n"
+            "- Merge only adjacent passages of the same speaker, in source order, without overlap or a gap greater than 1500 ms. Do not merge merely because several passages form one sentence.\n"
+            "- A merge becomes one passage with the combined source start/end window. Its former internal timing boundary is discarded; original IDs are retained only for traceability."
+        )
     if translation_instructions:
         prompt += (
             f"\n\nAdditional context and instructions:\n{translation_instructions}"
@@ -657,6 +888,7 @@ def build_translation_prompt(
     substantial_gap_ms: int = 2000,
     known_speakers: set[str] | None = None,
     context_after: int = 2,
+    logical_passages: bool = False,
 ) -> str:
     mode = normalize_timing_context_mode(
         timing_context_mode,
@@ -673,6 +905,7 @@ def build_translation_prompt(
         timing_context_mode=mode,
         substantial_gap_ms=substantial_gap_ms,
         known_speakers=known_speakers,
+        logical_passages=logical_passages,
     )
 
     if previous_response:
@@ -735,12 +968,36 @@ def _merge_completion_usage(totals: dict[str, Any], result: Any) -> None:
         totals[key] = int(totals.get(key) or 0) + int(normalized.get(key) or 0)
 
 
-def translation_unit_key(unit: list[dict[str, Any]]) -> str:
+def translation_unit_key(
+    unit: list[dict[str, Any]], *, logical_passages: bool = False
+) -> str:
     """Return a stable key for a translation block or recovery split leaf."""
     indices = [int(subtitle["index"]) for subtitle in unit]
+    if logical_passages:
+        digest_input: object = {
+            "logical_passages_version": 1,
+            "source": [
+                {
+                    "index": int(subtitle["index"]),
+                    "text": split_speaker_label(
+                        str(subtitle.get("text") or "").strip()
+                    )[1],
+                    "start_ms": _source_window_ms(subtitle)[0],
+                    "end_ms": _source_window_ms(subtitle)[1],
+                    "speaker": str(subtitle.get("speaker") or "").strip().casefold(),
+                }
+                for subtitle in unit
+            ],
+        }
+    else:
+        digest_input = indices
     digest = hashlib.sha256(
-        json.dumps(indices, separators=(",", ":")).encode("utf-8")
+        json.dumps(digest_input, separators=(",", ":"), ensure_ascii=False).encode(
+            "utf-8"
+        )
     ).hexdigest()[:12]
+    if logical_passages:
+        return f"translation:logical:{indices[0]}-{indices[-1]}:{digest}"
     return f"translation:{indices[0]}-{indices[-1]}:{digest}"
 
 
@@ -754,6 +1011,7 @@ class _TranslationUnitResult:
     response_count: int = 0
     cost_sources: list[str] = field(default_factory=list)
     usage: dict[str, Any] = field(default_factory=dict)
+    source_groups: list[list[int]] = field(default_factory=list)
 
     def merged_with(self, other: _TranslationUnitResult) -> _TranslationUnitResult:
         usage = dict(self.usage)
@@ -768,16 +1026,19 @@ class _TranslationUnitResult:
             response_count=self.response_count + other.response_count,
             cost_sources=list(dict.fromkeys([*self.cost_sources, *other.cost_sources])),
             usage=usage,
+            source_groups=[*self.source_groups, *other.source_groups],
         )
 
 
 def _restore_translation_unit(
     unit: list[dict[str, Any]],
     completed_units: Mapping[str, Mapping[str, Any]] | None,
+    *,
+    logical_passages: bool = False,
 ) -> _TranslationUnitResult | None:
     if not completed_units:
         return None
-    key = translation_unit_key(unit)
+    key = translation_unit_key(unit, logical_passages=logical_passages)
     raw = completed_units.get(key)
     if raw is None:
         return None
@@ -788,9 +1049,40 @@ def _restore_translation_unit(
         )
     translations = raw.get("translations")
     speakers = raw.get("speakers")
-    if not isinstance(translations, list) or len(translations) != len(unit):
+    expected_indices = [int(subtitle["index"]) for subtitle in unit]
+    raw_source_groups = raw.get("source_groups")
+    if logical_passages:
+        if not isinstance(raw_source_groups, list):
+            raise ValueError(f"Translation checkpoint {key} has invalid source groups.")
+        source_groups: list[list[int]] = []
+        for group in raw_source_groups:
+            if (
+                not isinstance(group, list)
+                or not group
+                or any(
+                    isinstance(value, bool) or not isinstance(value, int)
+                    for value in group
+                )
+            ):
+                raise ValueError(
+                    f"Translation checkpoint {key} has invalid source groups."
+                )
+            source_groups.append(list(group))
+        if [cue_id for group in source_groups for cue_id in group] != expected_indices:
+            raise ValueError(
+                f"Translation checkpoint {key} has incomplete or reordered source groups."
+            )
+        positions_by_id = {
+            cue_id: position for position, cue_id in enumerate(expected_indices)
+        }
+        for group in source_groups:
+            _validate_passage_group(group, unit, positions_by_id)
+    else:
+        source_groups = []
+    expected_count = len(source_groups) if logical_passages else len(unit)
+    if not isinstance(translations, list) or len(translations) != expected_count:
         raise ValueError(f"Translation checkpoint {key} has invalid translations.")
-    if not isinstance(speakers, list) or len(speakers) != len(unit):
+    if not isinstance(speakers, list) or len(speakers) != expected_count:
         raise ValueError(f"Translation checkpoint {key} has invalid speakers.")
     normalized_translations = [str(text or "").strip() for text in translations]
     if any(not text for text in normalized_translations):
@@ -814,18 +1106,23 @@ def _restore_translation_unit(
             str(source) for source in raw.get("cost_sources", []) if str(source or "")
         ],
         usage=dict(raw_usage) if isinstance(raw_usage, Mapping) else {},
+        source_groups=source_groups,
     )
 
 
 def _has_translation_descendant(
     unit: list[dict[str, Any]],
     completed_units: Mapping[str, Mapping[str, Any]] | None,
+    *,
+    logical_passages: bool = False,
 ) -> bool:
     if not completed_units:
         return False
     expected = [int(subtitle["index"]) for subtitle in unit]
     expected_set = set(expected)
-    for raw in completed_units.values():
+    for key, raw in completed_units.items():
+        if logical_passages and raw.get("_logical_passages_version") != 1:
+            continue
         try:
             indices = [int(value) for value in raw.get("original_indices", [])]
         except (AttributeError, TypeError, ValueError):
@@ -835,6 +1132,10 @@ def _has_translation_descendant(
             and len(indices) < len(expected)
             and set(indices).issubset(expected_set)
         ):
+            if logical_passages:
+                subunit = [item for item in unit if int(item["index"]) in set(indices)]
+                if key != translation_unit_key(subunit, logical_passages=True):
+                    continue
             return True
     return False
 
@@ -854,19 +1155,63 @@ def translation_responses_to_srt(
         translations = response.get("translation", [])
         indices = response.get("original_indices", [])
         response_speakers = response.get("speakers", [])
-        for position, (translated_text, original_index) in enumerate(
-            zip(translations, indices)
-        ):
+        explicit_groups = response.get("source_groups")
+        if explicit_groups is None:
+            groups = [[int(original_index)] for original_index in indices]
+        else:
+            if not isinstance(explicit_groups, list) or len(explicit_groups) != len(
+                translations
+            ):
+                raise ValueError(
+                    "Translation response source_groups must align with translations."
+                )
+            groups = explicit_groups
+        pairs = (
+            zip(translations, groups, strict=True)
+            if explicit_groups is not None
+            else zip(translations, groups)
+        )
+        for position, (translated_text, group) in enumerate(pairs):
             if remove_marked_subtitles and str(translated_text).strip() == "[REMOVE]":
                 continue
-            original = segments_by_index.get(int(original_index))
-            if original is None:
+            if (
+                not isinstance(group, list)
+                or not group
+                or any(isinstance(value, bool) for value in group)
+            ):
                 continue
+            originals = [
+                segments_by_index.get(int(original_index)) for original_index in group
+            ]
+            if any(original is None for original in originals):
+                continue
+            valid_originals = [
+                original for original in originals if original is not None
+            ]
+            if not valid_originals:
+                continue
+            first_original = valid_originals[0]
+            source_speaker = next(
+                (
+                    str(
+                        (speaker_by_subtitle or {}).get(original.index)
+                        or original.speaker
+                        or ""
+                    ).strip()
+                    for original in valid_originals
+                    if str(
+                        (speaker_by_subtitle or {}).get(original.index)
+                        or original.speaker
+                        or ""
+                    ).strip()
+                ),
+                "",
+            )
             translated_segments.append(
                 SubtitleSegment(
                     index=len(translated_segments) + 1,
-                    start_ms=original.start_ms,
-                    end_ms=original.end_ms,
+                    start_ms=min(original.start_ms for original in valid_originals),
+                    end_ms=max(original.end_ms for original in valid_originals),
                     text=str(translated_text).strip(),
                     speaker=str(
                         (
@@ -876,14 +1221,102 @@ def translation_responses_to_srt(
                             and response_speakers[position]
                             else None
                         )
-                        or (speaker_by_subtitle or {}).get(original.index)
-                        or original.speaker
+                        or (speaker_by_subtitle or {}).get(first_original.index)
+                        or source_speaker
+                        or first_original.speaker
                         or ""
                     ).strip(),
                 )
             )
 
     return compose_srt(translated_segments)
+
+
+def _translation_logical_passage_rows(
+    translated_responses: list[dict[str, Any]],
+    original_srt: str,
+    *,
+    speaker_by_subtitle: Mapping[int, str] | None = None,
+    remove_marked_subtitles: bool = True,
+) -> list[dict[str, Any]]:
+    """Return canonical raw translation rows with grouped source lineage."""
+    original_segments = parse_srt(original_srt)
+    segments_by_index = {segment.index: segment for segment in original_segments}
+    rows: list[dict[str, Any]] = []
+    for response in translated_responses:
+        translations = response.get("translation", [])
+        indices = response.get("original_indices", [])
+        explicit_groups = response.get("source_groups")
+        groups = (
+            [[int(original_index)] for original_index in indices]
+            if explicit_groups is None
+            else explicit_groups
+        )
+        if not isinstance(groups, list) or len(groups) != len(translations):
+            raise ValueError(
+                "Translation response source_groups must align with translations."
+            )
+        response_speakers = response.get("speakers", [])
+        for position, (translated_text, group) in enumerate(
+            zip(translations, groups, strict=True)
+        ):
+            text = str(translated_text or "").strip()
+            if remove_marked_subtitles and text == "[REMOVE]":
+                continue
+            if (
+                not isinstance(group, list)
+                or not group
+                or any(isinstance(value, bool) for value in group)
+            ):
+                continue
+            originals = [segments_by_index.get(int(value)) for value in group]
+            if any(original is None for original in originals):
+                continue
+            valid_originals = [
+                original for original in originals if original is not None
+            ]
+            if not valid_originals:
+                continue
+            first = valid_originals[0]
+            returned_speaker = (
+                str(response_speakers[position] or "").strip()
+                if isinstance(response_speakers, list)
+                and position < len(response_speakers)
+                else ""
+            )
+            source_speaker = next(
+                (
+                    str(
+                        (speaker_by_subtitle or {}).get(original.index)
+                        or original.speaker
+                        or ""
+                    ).strip()
+                    for original in valid_originals
+                    if str(
+                        (speaker_by_subtitle or {}).get(original.index)
+                        or original.speaker
+                        or ""
+                    ).strip()
+                ),
+                "",
+            )
+            speaker = (
+                returned_speaker
+                or str((speaker_by_subtitle or {}).get(first.index) or "").strip()
+                or source_speaker
+                or first.speaker
+                or ""
+            )
+            rows.append(
+                {
+                    "start_ms": min(original.start_ms for original in valid_originals),
+                    "end_ms": max(original.end_ms for original in valid_originals),
+                    "text": text,
+                    "speaker": speaker,
+                    "source_cue_ids": [int(value) for value in group],
+                }
+            )
+    return rows
 
 
 def translate_srt_content(
@@ -899,6 +1332,7 @@ def translate_srt_content(
     completed_units: Mapping[str, Mapping[str, Any]] | None = None,
     on_unit_completed: UnitCompletedCallback | None = None,
 ) -> TranslationResult:
+    logical_passages = settings.get("_logical_passages_version") == 1
     source_language = str(
         settings.get("original_language")
         or settings.get("stt_language")
@@ -973,7 +1407,14 @@ def translate_srt_content(
     )
     if not blocks:
         _report_progress(progress_callback, 1.0, "No subtitles require translation")
-        return TranslationResult("", [], active_glossary, cost=0.0, response_count=0)
+        return TranslationResult(
+            "",
+            [],
+            active_glossary,
+            cost=0.0,
+            response_count=0,
+            logical_passages=[] if logical_passages else None,
+        )
 
     total_subtitles = sum(len(block) for block in blocks)
     completed_subtitle_ids: set[int] = set()
@@ -1046,21 +1487,36 @@ def translate_srt_content(
             unit: list[dict[str, Any]],
             translations: list[str],
             speakers: list[str],
+            source_groups: list[list[int]] | None = None,
         ) -> str:
             if context_before <= 0:
                 return ""
-            context_items = [
-                cue
-                for _subtitle, translated_text, speaker in list(
-                    zip(unit, translations, speakers, strict=True)
-                )[-context_before:]
-                if (
-                    cue := subtitle_boundary_cue(
-                        {"text": translated_text, "speaker": speaker}
+            if source_groups:
+                context_items = [
+                    cue
+                    for translated_text, speaker in list(
+                        zip(translations, speakers, strict=True)
+                    )[-context_before:]
+                    if (
+                        cue := subtitle_boundary_cue(
+                            {"text": translated_text, "speaker": speaker}
+                        )
                     )
-                )
-                is not None
-            ]
+                    is not None
+                ]
+            else:
+                context_items = [
+                    cue
+                    for _subtitle, translated_text, speaker in list(
+                        zip(unit, translations, speakers, strict=True)
+                    )[-context_before:]
+                    if (
+                        cue := subtitle_boundary_cue(
+                            {"text": translated_text, "speaker": speaker}
+                        )
+                    )
+                    is not None
+                ]
             return json.dumps(context_items, ensure_ascii=False)
 
         def report_unit_complete(unit: list[dict[str, Any]], *, restored: bool) -> None:
@@ -1087,7 +1543,11 @@ def translate_srt_content(
         ) -> _TranslationUnitResult:
             if cancel_event is not None and cancel_event.is_set():
                 raise RuntimeError("LLM translation was canceled.")
-            restored = _restore_translation_unit(unit, completed_units)
+            restored = _restore_translation_unit(
+                unit,
+                completed_units,
+                logical_passages=logical_passages,
+            )
             if restored is not None:
                 unknown_speakers = [
                     speaker
@@ -1098,7 +1558,7 @@ def translate_srt_content(
                 ]
                 if unknown_speakers:
                     raise ValueError(
-                        f"Translation checkpoint {translation_unit_key(unit)} contains "
+                        f"Translation checkpoint {translation_unit_key(unit, logical_passages=logical_passages)} contains "
                         f"unknown speaker ID(s): {unknown_speakers}."
                     )
                 update_local_glossary(restored.glossary)
@@ -1117,7 +1577,9 @@ def translate_srt_content(
                 report_unit_complete(unit, restored=True)
                 return restored
 
-            if len(unit) > 1 and _has_translation_descendant(unit, completed_units):
+            if len(unit) > 1 and _has_translation_descendant(
+                unit, completed_units, logical_passages=logical_passages
+            ):
                 midpoint = len(unit) // 2
                 left = unit[:midpoint]
                 right = unit[midpoint:]
@@ -1138,7 +1600,10 @@ def translate_srt_content(
                 )
                 combined = left_result.merged_with(right_result)
                 combined.context = context_for(
-                    unit, combined.translations, combined.speakers
+                    unit,
+                    combined.translations,
+                    combined.speakers,
+                    combined.source_groups if logical_passages else None,
                 )
                 return combined
 
@@ -1156,6 +1621,7 @@ def translate_srt_content(
                 substantial_gap_ms=substantial_gap_ms,
                 known_speakers=known_speakers,
                 context_after=context_after,
+                logical_passages=logical_passages,
             )
             expected_numbers = [int(subtitle["index"]) for subtitle in unit]
             last_error: ValueError | None = None
@@ -1208,13 +1674,27 @@ def translate_srt_content(
                 try:
                     if not content:
                         raise ValueError("the model returned an empty response")
-                    translated_texts, new_glossary, returned_speakers = (
-                        parse_translation_response_details(
+                    returned_speakers: Sequence[str | None]
+                    if logical_passages:
+                        (
+                            translated_texts,
+                            new_glossary,
+                            returned_speakers,
+                            source_groups,
+                        ) = parse_translation_passage_response_details(
                             content,
-                            expected_numbers=expected_numbers,
+                            block=unit,
                             known_speakers=known_speakers,
                         )
-                    )
+                    else:
+                        translated_texts, new_glossary, returned_speakers = (
+                            parse_translation_response_details(
+                                content,
+                                expected_numbers=expected_numbers,
+                                known_speakers=known_speakers,
+                            )
+                        )
+                        source_groups = []
                     if no_remove_subtitles and any(
                         str(text or "").strip().upper() == "[REMOVE]"
                         for text in translated_texts
@@ -1236,13 +1716,30 @@ def translate_srt_content(
                     break
 
                 update_local_glossary(new_glossary)
-                speakers = [
-                    returned_speaker or str(subtitle.get("speaker") or "").strip()
-                    for subtitle, returned_speaker in zip(
-                        unit, returned_speakers, strict=True
-                    )
-                ]
-                context_response = context_for(unit, translated_texts, speakers)
+                if logical_passages:
+                    block_by_id = {
+                        int(subtitle["index"]): subtitle for subtitle in unit
+                    }
+                    speakers = [
+                        returned_speaker
+                        or _source_speaker_for_group(
+                            source_groups[position], block_by_id
+                        )
+                        for position, returned_speaker in enumerate(returned_speakers)
+                    ]
+                else:
+                    speakers = [
+                        returned_speaker or str(subtitle.get("speaker") or "").strip()
+                        for subtitle, returned_speaker in zip(
+                            unit, returned_speakers, strict=True
+                        )
+                    ]
+                context_response = context_for(
+                    unit,
+                    translated_texts,
+                    speakers,
+                    source_groups if logical_passages else None,
+                )
                 unit_result = _TranslationUnitResult(
                     translations=translated_texts,
                     speakers=speakers,
@@ -1252,6 +1749,7 @@ def translate_srt_content(
                     response_count=metrics.response_count,
                     cost_sources=metrics.cost_sources,
                     usage=metrics.usage,
+                    source_groups=source_groups,
                 )
                 if on_unit_completed is not None:
                     payload = {
@@ -1267,8 +1765,16 @@ def translate_srt_content(
                         "cost_sources": unit_result.cost_sources,
                         "usage": unit_result.usage,
                     }
+                    if logical_passages:
+                        payload["_logical_passages_version"] = 1
+                        payload["source_groups"] = source_groups
                     with checkpoint_lock:
-                        on_unit_completed(translation_unit_key(unit), payload)
+                        on_unit_completed(
+                            translation_unit_key(
+                                unit, logical_passages=logical_passages
+                            ),
+                            payload,
+                        )
                 report_unit_complete(unit, restored=False)
                 return unit_result
 
@@ -1300,7 +1806,10 @@ def translate_srt_content(
                 )
                 combined = left_result.merged_with(right_result)
                 combined.context = context_for(
-                    unit, combined.translations, combined.speakers
+                    unit,
+                    combined.translations,
+                    combined.speakers,
+                    combined.source_groups if logical_passages else None,
                 )
                 return combined
 
@@ -1340,6 +1849,11 @@ def translate_srt_content(
                 "original_indices": [subtitle["index"] for subtitle in blocks[index]],
             }
         )
+        if logical_passages:
+            translated_responses[-1]["source_groups"] = [
+                list(group) for group in result.source_groups
+            ]
+            translated_responses[-1]["_logical_passages_version"] = 1
         return result.context
 
     if workers == 1 or len(blocks) == 1:
@@ -1394,6 +1908,15 @@ def translate_srt_content(
             )
             if speaker:
                 translated_speakers[output_index] = speaker
+    logical_rows = (
+        _translation_logical_passage_rows(
+            translated_responses,
+            srt_content,
+            speaker_by_subtitle=speaker_by_subtitle,
+        )
+        if logical_passages
+        else None
+    )
     return TranslationResult(
         srt_content=translated_srt,
         block_responses=translated_responses,
@@ -1403,6 +1926,7 @@ def translate_srt_content(
         cost_sources=tuple(cost_sources),
         usage=usage,
         speaker_by_subtitle=translated_speakers,
+        logical_passages=logical_rows,
     )
 
 
@@ -1462,6 +1986,7 @@ def translate_srt_file_with_result(
         cost_sources=result.cost_sources,
         usage=result.usage,
         speaker_by_subtitle=result.speaker_by_subtitle,
+        logical_passages=result.logical_passages,
     )
     logger.info(
         "Translated subtitles written to %s (%d LLM response(s), cost %.6f).",
@@ -1509,6 +2034,7 @@ def translate_srt_content_deepl(
     cancel_event: Any | None = None,
     progress_callback: ProgressCallback | None = None,
 ) -> TranslationResult:
+    logical_passages = settings.get("_logical_passages_version") == 1
     source_language = str(
         settings.get("original_language")
         or settings.get("stt_language")
@@ -1556,6 +2082,7 @@ def translate_srt_content_deepl(
         translator_factory=translator_factory,
         cancel_event=cancel_event,
         progress_callback=progress_callback,
+        logical_passages=logical_passages,
     )
     source_segments = parse_srt(srt_content)
     return TranslationResult(
@@ -1580,6 +2107,16 @@ def translate_srt_content_deepl(
                 ).strip()
             )
         },
+        logical_passages=(
+            _translation_logical_passage_rows(
+                translated_responses,
+                srt_content,
+                speaker_by_subtitle=speaker_by_subtitle,
+                remove_marked_subtitles=False,
+            )
+            if logical_passages
+            else None
+        ),
     )
 
 
@@ -1633,6 +2170,7 @@ def translate_srt_file_deepl_with_result(
         cost_sources=result.cost_sources,
         usage=result.usage,
         speaker_by_subtitle=result.speaker_by_subtitle,
+        logical_passages=result.logical_passages,
     )
     logger.info(
         "Translated subtitles written to %s (%d DeepL response block(s)).",

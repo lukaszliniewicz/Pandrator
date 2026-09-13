@@ -2664,7 +2664,12 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                     .where(
                         DocumentRevision.document_id.in_(
                             document.id for document in documents
-                        )
+                        ),
+                        ~DocumentRevision.id.in_(
+                            select(Segment.revision_id).where(
+                                Segment.node_kind == "logical_passage"
+                            )
+                        ),
                     )
                     .group_by(*DocumentRevision.__table__.columns)
                     .order_by(

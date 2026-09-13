@@ -812,6 +812,198 @@ Three.
             result.speaker_by_subtitle,
         )
 
+    def test_logical_passage_translation_merge_uses_combined_window_and_lineage(self):
+        content = """1
+00:00:00,000 --> 00:00:05,000
+First half,
+
+2
+00:00:05,500 --> 00:00:13,680
+same thought.
+"""
+        result = llm_translation.translate_srt_content(
+            content,
+            {**_settings(), "_logical_passages_version": 1},
+            completion_func=lambda **_kwargs: llm_handler.ChatCompletionResult(
+                content='[{"cue_ids":[1,2],"text":"Pierwsza myśl."}]'
+            ),
+        )
+
+        self.assertEqual(
+            [
+                {
+                    "start_ms": 0,
+                    "end_ms": 13680,
+                    "text": "Pierwsza myśl.",
+                    "speaker": "",
+                    "source_cue_ids": [1, 2],
+                }
+            ],
+            result.logical_passages,
+        )
+        self.assertEqual(
+            [(0, 13680)],
+            [
+                (segment.start_ms, segment.end_ms)
+                for segment in srt_utils.parse_srt(result.srt_content)
+            ],
+        )
+
+    def test_logical_passage_parser_rejects_overlap_speaker_and_order_errors(self):
+        overlap = [
+            {"index": 1, "start_ms": 0, "end_ms": 6000, "text": "one"},
+            {"index": 2, "start_ms": 5000, "end_ms": 8000, "text": "two"},
+        ]
+        with self.assertRaisesRegex(ValueError, "overlap"):
+            llm_translation.parse_translation_passage_items_details(
+                [{"cue_ids": [1, 2], "text": "merged"}], block=overlap
+            )
+
+        different_speakers = [
+            {"index": 1, "start_ms": 0, "end_ms": 1000, "text": "one", "speaker": "A"},
+            {
+                "index": 2,
+                "start_ms": 1100,
+                "end_ms": 2000,
+                "text": "two",
+                "speaker": "B",
+            },
+        ]
+        with self.assertRaisesRegex(ValueError, "speakers"):
+            llm_translation.parse_translation_passage_items_details(
+                [{"cue_ids": [1, 2], "text": "merged"}], block=different_speakers
+            )
+        with self.assertRaises(ValueError):
+            llm_translation.parse_translation_passage_items_details(
+                [
+                    {"cue_id": 2, "text": "two"},
+                    {"cue_id": 1, "text": "one"},
+                ],
+                block=different_speakers,
+            )
+
+    def test_logical_translation_checkpoint_restores_group_without_request(self):
+        content = """1
+00:00:00,000 --> 00:00:05,000
+First.
+
+2
+00:00:05,500 --> 00:00:13,680
+Second.
+"""
+        settings = {**_settings(), "_logical_passages_version": 1}
+        checkpoints = {}
+        llm_translation.translate_srt_content(
+            content,
+            settings,
+            completion_func=lambda **_kwargs: llm_handler.ChatCompletionResult(
+                content='[{"cue_ids":[1,2],"text":"Razem."}]'
+            ),
+            on_unit_completed=lambda key, payload: checkpoints.__setitem__(
+                key, payload
+            ),
+        )
+        result = llm_translation.translate_srt_content(
+            content,
+            settings,
+            completed_units=checkpoints,
+            completion_func=lambda **_kwargs: (_ for _ in ()).throw(
+                AssertionError("restored logical unit made another request")
+            ),
+        )
+        self.assertEqual([[1, 2]], result.block_responses[0]["source_groups"])
+        self.assertEqual([1, 2], result.logical_passages[0]["source_cue_ids"])
+
+    def test_logical_deepl_records_singleton_source_groups(self):
+        class FakeTranslator:
+            def translate_text(self, text, target_lang):
+                return SimpleNamespace(text=text.upper())
+
+        result = llm_translation.translate_srt_content_deepl(
+            SAMPLE_SRT,
+            {**_settings(), "_logical_passages_version": 1},
+            "test-key",
+            translator_factory=lambda _key: FakeTranslator(),
+        )
+        self.assertEqual([[1], [2]], result.block_responses[0]["source_groups"])
+        self.assertEqual(
+            [[1], [2]], [row["source_cue_ids"] for row in result.logical_passages]
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_logical_checkpoint_is_invalidated_by_speaker_changes():
+    content = "1\n00:00:00,000 --> 00:00:05,000\nFirst.\n\n2\n00:00:05,500 --> 00:00:13,680\nSecond.\n"
+    settings = {**_settings(), "_logical_passages_version": 1}
+    checkpoints = {}
+    llm_translation.translate_srt_content(
+        content,
+        settings,
+        speaker_by_subtitle={1: "A", 2: "A"},
+        completion_func=lambda **_kwargs: '[{"cue_ids":[1,2],"text":"Razem."}]',
+        on_unit_completed=lambda key, payload: checkpoints.__setitem__(key, payload),
+    )
+    calls = []
+
+    def complete(**_kwargs):
+        calls.append(True)
+        return '[{"cue_id":1,"text":"Pierwszy."},{"cue_id":2,"text":"Drugi."}]'
+
+    result = llm_translation.translate_srt_content(
+        content,
+        settings,
+        speaker_by_subtitle={1: "A", 2: "B"},
+        completed_units=checkpoints,
+        completion_func=complete,
+    )
+    assert calls
+    assert [row["source_cue_ids"] for row in result.logical_passages] == [[1], [2]]
+    assert [row["speaker"] for row in result.logical_passages] == ["A", "B"]
+
+
+def test_restored_logical_groups_revalidate_speaker_and_timing_boundaries():
+    import pytest
+
+    unit = [
+        {"index": 1, "text": "First.", "start_ms": 0, "end_ms": 5000, "speaker": "A"},
+        {
+            "index": 2,
+            "text": "Second.",
+            "start_ms": 5500,
+            "end_ms": 13680,
+            "speaker": "B",
+        },
+    ]
+    key = llm_translation.translation_unit_key(unit, logical_passages=True)
+    checkpoint = {
+        key: {
+            "original_indices": [1, 2],
+            "source_groups": [[1, 2]],
+            "translations": ["Razem."],
+            "speakers": ["A"],
+        }
+    }
+    with pytest.raises(ValueError, match="differing source speakers"):
+        llm_translation._restore_translation_unit(
+            unit, checkpoint, logical_passages=True
+        )
+
+
+def test_logical_translation_prompt_allows_atomic_merges_without_display_constraints():
+    for dispatch in (False, True):
+        prompt = llm_translation.build_translation_task_instructions(
+            subtitle_count=5,
+            source_language="en",
+            target_language="de",
+            logical_passages=True,
+            dispatch_result=dispatch,
+        )
+        assert '"cue_ids": [1, 2]' in prompt
+        assert "Return fewer items when merging" in prompt
+        assert "exactly 5 translations" not in prompt
+        assert "EXACTLY 5" not in prompt
+        assert "designed for on-screen reading" not in prompt
+        assert "former internal timing boundary is discarded" in prompt

@@ -174,9 +174,20 @@ class DispatchCorrectionResultInput(ToolInput):
 
 
 class DispatchTranslationItemInput(ToolInput):
-    cue_id: int = Field(ge=1)
+    cue_id: int | None = Field(default=None, ge=1, strict=True)
+    cue_ids: list[Annotated[int, Field(ge=1, strict=True)]] | None = Field(
+        default=None,
+        min_length=1,
+        max_length=500,
+    )
     text: str = Field(min_length=1, max_length=16_000)
     speaker: str | None = Field(default=None, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_passage_identity(self):
+        if (self.cue_id is None) == (self.cue_ids is None):
+            raise ValueError("Provide cue_id for one passage or cue_ids for an adjacent merge.")
+        return self
 
 
 class DispatchTranslationResultInput(ToolInput):

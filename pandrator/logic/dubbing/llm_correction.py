@@ -55,11 +55,11 @@ Instructions:
 4. Available actions:
    - "edit": one `cue_id` and exactly one corrected text.
 {deletion_policy}
-   - "merge": two or more sequential `cue_id` values whose boundary breaks one thought, with one or more corrected replacement texts.
-   - "split": one `cue_id` and two or more replacement texts, only when semantic correction genuinely requires separate cues.
+{merge_policy}
+{split_policy}
 5. Cue timing, reading speed, visual wrapping, and line layout are handled by Pandrator after editing. Do not insert line breaks or split/merge merely to change visual layout.
 6. Every replacement must be complete, corrected plain text. Do not include IDs that are only context.
-7. If prior corrected context is provided, use it only for continuity. Operate only on the `cue_id` values present in the current array; they identify cues in the pinned source revision and are not batch-local positions.
+7. If prior corrected context is provided, use it only for continuity. Operate only on the `cue_id` values present in the current array; {identity_policy}
 8. {cue_context_policy}
 9. Overlapping cues from different speakers can be legitimate simultaneous speech. Preserve meaningful speech. You may delete a very short, inconsequential interjection only when it obscures a longer utterance, and remove one copy of clearly duplicated near-identical ASR text that occupies the same time span.
 10. Correction style policy ({correction_style}):
@@ -87,6 +87,7 @@ class CorrectionResult:
     cost_sources: tuple[str, ...] = ()
     usage: dict[str, Any] = field(default_factory=dict)
     speaker_by_subtitle: dict[int, str] = field(default_factory=dict)
+    logical_passages: list[dict[str, Any]] | None = None
 
 
 def _report_progress(
@@ -248,6 +249,7 @@ def validate_correction_operations(
     *,
     no_remove_subtitles: bool = False,
     known_speakers: set[str] | None = None,
+    logical_passages: bool = False,
 ) -> None:
     """Reject ambiguous operation sets before any subtitle mutation is applied."""
     valid_ids = {int(item["index"]) for item in block}
@@ -260,6 +262,7 @@ def validate_correction_operations(
             for raw_text in operation["texts"]
             if (text := _normalize_replacement_text(raw_text))
         ]
+        raw_texts = operation["texts"]
         speakers = [
             str(speaker or "").strip() for speaker in operation.get("speakers", [])
         ]
@@ -278,11 +281,37 @@ def validate_correction_operations(
         sequential = ids == sorted(ids) and all(
             right == left + 1 for left, right in zip(ids, ids[1:])
         )
+        positions = [
+            position
+            for position, subtitle in enumerate(block)
+            if int(subtitle["index"]) in ids
+        ]
+        adjacent = positions == list(range(min(positions), max(positions) + 1))
         valid_shape = (
-            (action == "edit" and len(ids) == 1 and len(texts) == 1)
-            or (action == "delete" and sequential and not texts)
-            or (action == "merge" and len(ids) >= 2 and sequential and bool(texts))
-            or (action == "split" and len(ids) == 1 and len(texts) >= 2)
+            (
+                action == "edit"
+                and len(ids) == 1
+                and len(texts) == 1
+                and (not logical_passages or len(raw_texts) == 1)
+            )
+            or (
+                action == "delete"
+                and (sequential if not logical_passages else adjacent)
+                and not texts
+            )
+            or (
+                action == "merge"
+                and len(ids) >= 2
+                and (sequential if not logical_passages else adjacent)
+                and bool(texts)
+                and (not logical_passages or (len(raw_texts) == 1 and len(texts) == 1))
+            )
+            or (
+                action == "split"
+                and not logical_passages
+                and len(ids) == 1
+                and len(texts) >= 2
+            )
         )
         if not valid_shape:
             raise ValueError(
@@ -307,6 +336,32 @@ def validate_correction_operations(
                 raise ValueError(
                     f"Correction operation {operation_index} returned unknown speaker "
                     f"ID(s): {unknown}."
+                )
+        if logical_passages and action == "merge":
+            if positions != list(range(min(positions), max(positions) + 1)):
+                raise ValueError(
+                    f"Correction operation {operation_index} must merge adjacent cues."
+                )
+            selected = [block[position] for position in positions]
+            for left, right in zip(selected, selected[1:]):
+                left_start, left_end = _subtitle_window_ms(left)
+                right_start, _right_end = _subtitle_window_ms(right)
+                if right_start < left_end:
+                    raise ValueError(
+                        f"Correction operation {operation_index} cannot merge overlapping cues."
+                    )
+                if right_start - left_end > 1500:
+                    raise ValueError(
+                        f"Correction operation {operation_index} cannot cross a gap greater than 1500 ms."
+                    )
+            source_speakers = {
+                str(subtitle.get("speaker") or "").strip().casefold()
+                for subtitle in selected
+                if str(subtitle.get("speaker") or "").strip()
+            }
+            if len(source_speakers) > 1 and not speakers:
+                raise ValueError(
+                    f"Correction operation {operation_index} must supply one known speaker when merging speaker boundaries."
                 )
         if action == "delete" and no_remove_subtitles:
             raise ValueError(
@@ -348,12 +403,48 @@ def _normalize_replacement_text(value: Any) -> str:
     return split_speaker_label(normalized)[1]
 
 
+def _subtitle_window_ms(subtitle: Mapping[str, Any]) -> tuple[int, int]:
+    """Read an input window while accepting the native block's legacy fields."""
+    raw_start = subtitle.get("start_ms")
+    raw_end = subtitle.get("end_ms")
+    if raw_start is None:
+        raw_start = round(float(subtitle.get("start", 0.0)) * 1000)
+    if raw_end is None:
+        raw_end = round(float(subtitle.get("end", 0.0)) * 1000)
+    return int(raw_start), int(raw_end)
+
+
+def _logical_passage_rows(
+    subtitles: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for subtitle in subtitles:
+        text = _normalize_replacement_text(subtitle.get("text"))
+        if not text:
+            continue
+        start_ms, end_ms = _subtitle_window_ms(subtitle)
+        source_cue_ids = [int(value) for value in subtitle.get("source_cue_ids", [])]
+        if not source_cue_ids:
+            source_cue_ids = [int(subtitle["index"])]
+        rows.append(
+            {
+                "start_ms": start_ms,
+                "end_ms": end_ms,
+                "text": text,
+                "speaker": str(subtitle.get("speaker") or "").strip(),
+                "source_cue_ids": source_cue_ids,
+            }
+        )
+    return rows
+
+
 def apply_correction_operations(
     block: list[dict[str, Any]],
     operations: list[dict[str, Any]],
     *,
     no_remove_subtitles: bool = False,
     known_speakers: set[str] | None = None,
+    logical_passages: bool = False,
 ) -> list[dict[str, Any]]:
     """Apply Subdub-style correction operations to a local subtitle block."""
     block_by_source_id = {int(subtitle["index"]): subtitle.copy() for subtitle in block}
@@ -374,22 +465,66 @@ def apply_correction_operations(
             for value in operation.get("texts", [])
             if (text := _normalize_replacement_text(value))
         ]
+        raw_texts = operation.get("texts", [])
         requested_speakers = [
             str(speaker or "").strip() for speaker in operation.get("speakers", [])
         ]
+        if logical_passages and requested_speakers and known_speakers is not None:
+            known_casefolds = {speaker.casefold() for speaker in known_speakers}
+            unknown = [
+                speaker
+                for speaker in requested_speakers
+                if speaker.casefold() not in known_casefolds
+            ]
+            if unknown:
+                raise ValueError(
+                    f"Correction operation returned unknown speaker ID(s): {unknown}."
+                )
         if not ids or any(item in processed_ids for item in ids):
             continue
 
         sequential = ids == sorted(ids) and all(
             right == left + 1 for left, right in zip(ids, ids[1:])
         )
+        positions = [
+            position
+            for position, subtitle in enumerate(block)
+            if int(subtitle["index"]) in ids
+        ]
+        adjacent = bool(positions) and positions == list(
+            range(min(positions), max(positions) + 1)
+        )
         valid_shape = (
-            (action == "edit" and len(ids) == 1 and len(texts) == 1)
-            or (action == "delete" and sequential and not texts)
-            or (action == "merge" and len(ids) >= 2 and sequential and bool(texts))
-            or (action == "split" and len(ids) == 1 and len(texts) >= 2)
+            (
+                action == "edit"
+                and len(ids) == 1
+                and len(texts) == 1
+                and (not logical_passages or len(raw_texts) == 1)
+            )
+            or (
+                action == "delete"
+                and (sequential if not logical_passages else adjacent)
+                and not texts
+            )
+            or (
+                action == "merge"
+                and len(ids) >= 2
+                and (sequential if not logical_passages else adjacent)
+                and bool(texts)
+                and (not logical_passages or (len(raw_texts) == 1 and len(texts) == 1))
+            )
+            or (
+                action == "split"
+                and not logical_passages
+                and len(ids) == 1
+                and len(texts) >= 2
+            )
         )
         if not valid_shape:
+            if logical_passages:
+                raise ValueError(
+                    f"Correction operation has an invalid logical-passage {action} shape."
+                )
             continue
 
         valid_subtitles = [block_by_source_id[item] for item in ids]
@@ -405,10 +540,30 @@ def apply_correction_operations(
             and len({speaker.casefold() for speaker in speakers if speaker}) > 1
             and not requested_speakers
         ):
+            if logical_passages:
+                raise ValueError(
+                    "Correction logical-passage merge must supply one known speaker "
+                    "when crossing a speaker boundary."
+                )
             logger.warning(
                 "Ignoring correction merge across a speaker boundary: %s", ids
             )
             continue
+
+        if logical_passages and action == "merge":
+            if positions != list(range(min(positions), max(positions) + 1)):
+                raise ValueError(
+                    "Correction logical-passage merge must use adjacent cues."
+                )
+            selected_windows = [block[position] for position in positions]
+            if any(
+                _subtitle_window_ms(right)[0] < _subtitle_window_ms(left)[1]
+                or _subtitle_window_ms(right)[0] - _subtitle_window_ms(left)[1] > 1500
+                for left, right in zip(selected_windows, selected_windows[1:])
+            ):
+                raise ValueError(
+                    "Correction logical-passage merge cannot overlap or cross a gap greater than 1500 ms."
+                )
 
         processed_ids.update(ids)
         primary_id = ids[0]
@@ -434,10 +589,22 @@ def apply_correction_operations(
             else [default_speaker for _ in texts]
         )
         replacement_subtitles: list[dict[str, Any]] = []
-        split_parts = _split_timing(new_start, new_end, texts)
+        split_parts = (
+            [
+                {
+                    "start": new_start,
+                    "end": new_end,
+                    "text": texts[0],
+                }
+            ]
+            if logical_passages
+            else _split_timing(new_start, new_end, texts)
+        )
         for part, speaker in zip(split_parts, output_speakers, strict=True):
             if speaker:
                 part["speaker"] = speaker
+            if logical_passages:
+                part["source_cue_ids"] = list(ids)
             replacement_subtitles.append(part)
         new_subtitles_by_primary_id[primary_id] = replacement_subtitles
 
@@ -445,7 +612,10 @@ def apply_correction_operations(
     for subtitle in block:
         source_id = int(subtitle["index"])
         if source_id not in processed_ids:
-            corrected.append(block_by_source_id[source_id])
+            unchanged = block_by_source_id[source_id]
+            if logical_passages:
+                unchanged["source_cue_ids"] = [source_id]
+            corrected.append(unchanged)
             continue
         corrected.extend(new_subtitles_by_primary_id.get(source_id, []))
 
@@ -464,6 +634,7 @@ def build_correction_task_instructions(
     known_speakers: set[str] | None = None,
     dispatch_result: bool = False,
     structured_context: bool = False,
+    logical_passages: bool = False,
 ) -> str:
     """Build correction guidance without embedding source cue content."""
 
@@ -487,18 +658,24 @@ def build_correction_task_instructions(
         if normalized_style == "publishable"
         else "Fix punctuation, capitalization, spelling, and clear transcription errors while preserving meaningful delivery, hesitation, false starts, and repetition unless clearly an ASR artifact."
     )
+    if logical_passages:
+        style_policy = style_policy.replace(
+            "   - Treat source punctuation and cue boundaries as provisional. When adjacent same-speaker cues form one grammatical thought, use a merge operation.\n",
+            "   - Treat punctuation as provisional. Short passages may intentionally contain clauses or parts of one sentence; keep those boundaries when the corrected wording still belongs to each passage.\n",
+        )
+    actions = "edit|delete|merge" if logical_passages else "edit|delete|merge|split"
     base_prompt = CORRECTION_PROMPT_TEMPLATE.format(
         correction_instructions=correction_instructions
         or "No additional instructions provided.",
         subtitle_count=int(subtitle_count),
         response_shape=(
             '{"kind":"correction","operations":['
-            '{"action":"edit|delete|merge|split","cue_ids":[1],'
+            '{"action":"' + actions + '","cue_ids":[1],'
             '"texts":["corrected text"],"speakers":["SPEAKER_00"]}],'
             '"uncertainties":[{"cue_id":1,"reason":"why the audio remains ambiguous",'
             '"evidence_ids":["evidence-request-id"]}]}'
             if dispatch_result
-            else '{"operations":[{"action":"edit|delete|merge|split",'
+            else '{"operations":[{"action":"' + actions + '",'
             '"cue_ids":[1],"texts":["corrected text"],'
             '"speakers":["SPEAKER_00"]}]}'
         ),
@@ -520,6 +697,21 @@ def build_correction_task_instructions(
         correction_style=normalized_style,
         correction_style_policy=style_policy,
         correction_baseline_policy=baseline_policy,
+        merge_policy=(
+            '   - "merge": adjacent input passages, in source order, with exactly one complete corrected replacement text. Merge naturally when correction needs to move words or meaning across the boundary, or keeping it would make the phrasing awkward.'
+            if logical_passages
+            else '   - "merge": two or more sequential `cue_id` values whose boundary breaks one thought, with one or more corrected replacement texts.'
+        ),
+        split_policy=(
+            '   - Do not use "split" or return multiple replacement texts for a passage or merge. Internal timings cannot be inferred after wording changes.'
+            if logical_passages
+            else '   - "split": one `cue_id` and two or more replacement texts, only when semantic correction genuinely requires separate cues.'
+        ),
+        identity_policy=(
+            "they identify logical passages in this stage's pinned input, not display cues or batch-local positions."
+            if logical_passages
+            else "they identify cues in the pinned source revision and are not batch-local positions."
+        ),
         deletion_policy=(
             '   - "delete": do not use this action; every input cue must be preserved.'
             if no_remove_subtitles
@@ -544,6 +736,14 @@ def build_correction_task_instructions(
             )
         ),
     )
+    if logical_passages:
+        base_prompt += (
+            "\n\nLogical passage policy:\n"
+            "- Read the whole utterance for context, then correct its passages. These are meaningful source passages, not final subtitle cards. A passage need not be a complete sentence.\n"
+            "- A merge becomes one passage with the combined source start/end window. The former internal boundary is discarded. Merge when it improves the correction; do not merge solely to create a longer sentence.\n"
+            "- Never merge overlapping passages or across a gap greater than 1500 ms.\n"
+            "- Keep faithful, natural language and meaningful detail. Do not shorten text to fit the time window, expand it to fill silence, or optimize subtitle line lengths. Display formatting and speech planning happen separately."
+        )
     if mode == "full":
         gap_reference = (
             "`task.substantial_gap_ms`"
@@ -603,6 +803,7 @@ def build_correction_prompt(
     known_speakers: set[str] | None = None,
     next_block: list[dict[str, Any]] | None = None,
     context_after: int = 2,
+    logical_passages: bool = False,
 ) -> str:
     """Build a correction prompt for one subtitle block."""
 
@@ -619,6 +820,7 @@ def build_correction_prompt(
         substantial_gap_ms=substantial_gap_ms,
         correction_style=correction_style,
         known_speakers=known_speakers,
+        logical_passages=logical_passages,
     )
     # Retained in the signature for callers using the old helper contract.
     # Layout limits intentionally do not belong in the LLM task.
@@ -694,22 +896,47 @@ def _merge_completion_usage(totals: dict[str, Any], result: Any) -> None:
         totals[key] = int(totals.get(key) or 0) + int(normalized.get(key) or 0)
 
 
-def correction_unit_key(block: list[dict[str, Any]]) -> str:
+def correction_unit_key(
+    block: list[dict[str, Any]], *, logical_passages: bool = False
+) -> str:
     """Return a stable, database-safe key for one correction block."""
     indices = [int(subtitle["index"]) for subtitle in block]
+    if logical_passages:
+        source_fingerprint = [
+            {
+                "index": int(subtitle["index"]),
+                "text": _normalize_replacement_text(subtitle.get("text")),
+                "start_ms": _subtitle_window_ms(subtitle)[0],
+                "end_ms": _subtitle_window_ms(subtitle)[1],
+                "speaker": str(subtitle.get("speaker") or "").strip().casefold(),
+            }
+            for subtitle in block
+        ]
+        digest_input: object = {
+            "logical_passages_version": 1,
+            "source": source_fingerprint,
+        }
+    else:
+        digest_input = indices
     digest = hashlib.sha256(
-        json.dumps(indices, separators=(",", ":")).encode("utf-8")
+        json.dumps(digest_input, separators=(",", ":"), ensure_ascii=False).encode(
+            "utf-8"
+        )
     ).hexdigest()[:12]
+    if logical_passages:
+        return f"correction:logical:{indices[0]}-{indices[-1]}:{digest}"
     return f"correction:{indices[0]}-{indices[-1]}:{digest}"
 
 
 def _restore_correction_unit(
     block: list[dict[str, Any]],
     completed_units: Mapping[str, Mapping[str, Any]] | None,
+    *,
+    logical_passages: bool = False,
 ) -> tuple[list[dict[str, Any]], str, float, int, list[str], dict[str, Any]] | None:
     if not completed_units:
         return None
-    key = correction_unit_key(block)
+    key = correction_unit_key(block, logical_passages=logical_passages)
     raw = completed_units.get(key)
     if raw is None:
         return None
@@ -743,6 +970,28 @@ def _restore_correction_unit(
         speaker = str(item.get("speaker") or "").strip()
         if speaker:
             subtitle["speaker"] = speaker
+        if logical_passages:
+            raw_source_ids = item.get("source_cue_ids")
+            if not isinstance(raw_source_ids, list) or not raw_source_ids:
+                raise ValueError(
+                    f"Correction checkpoint {key} contains missing logical passage provenance."
+                )
+            try:
+                source_ids = [int(value) for value in raw_source_ids]
+            except (TypeError, ValueError) as error:
+                raise ValueError(
+                    f"Correction checkpoint {key} contains invalid logical passage provenance."
+                ) from error
+            expected_set = set(expected_indices)
+            if (
+                any(isinstance(value, bool) for value in raw_source_ids)
+                or len(set(source_ids)) != len(source_ids)
+                or any(value not in expected_set for value in source_ids)
+            ):
+                raise ValueError(
+                    f"Correction checkpoint {key} contains invalid logical passage provenance."
+                )
+            subtitle["source_cue_ids"] = source_ids
         corrected.append(subtitle)
     context = str(raw.get("context") or "")
     if not context:
@@ -780,6 +1029,7 @@ def correct_srt_content(
     correction_style: str | None = None,
 ) -> CorrectionResult:
     """Correct SRT content with Pandrator's LLM provider layer."""
+    logical_passages = settings.get("_logical_passages_version") == 1
     char_limit = _coerce_int(
         settings.get("char_limit", settings.get("llm_char")),
         DEFAULT_LLM_CHAR_LIMIT,
@@ -836,7 +1086,12 @@ def correct_srt_content(
     )
     if not blocks:
         _report_progress(progress_callback, 1.0, "No subtitles require correction")
-        return CorrectionResult(srt_content="", cost=0.0, response_count=0)
+        return CorrectionResult(
+            srt_content="",
+            cost=0.0,
+            response_count=0,
+            logical_passages=[] if logical_passages else None,
+        )
 
     total_subtitles = sum(len(block) for block in blocks)
     completed_subtitles = 0
@@ -865,7 +1120,11 @@ def correct_srt_content(
         nonlocal completed_subtitles
         if cancel_event is not None and cancel_event.is_set():
             raise RuntimeError("LLM correction was canceled.")
-        restored = _restore_correction_unit(block, completed_units)
+        restored = _restore_correction_unit(
+            block,
+            completed_units,
+            logical_passages=logical_passages,
+        )
         if restored is not None:
             with progress_lock:
                 completed_subtitles += len(block)
@@ -890,6 +1149,7 @@ def correct_srt_content(
             known_speakers=known_speakers,
             next_block=following_context if use_context else None,
             context_after=context_after,
+            logical_passages=logical_passages,
         )
         last_protocol_error: ValueError | None = None
         block_cost = 0.0
@@ -954,12 +1214,14 @@ def correct_srt_content(
                     operations,
                     no_remove_subtitles=no_remove_subtitles,
                     known_speakers=known_speakers,
+                    logical_passages=logical_passages,
                 )
                 corrected_block = apply_correction_operations(
                     block,
                     operations,
                     no_remove_subtitles=no_remove_subtitles,
                     known_speakers=known_speakers,
+                    logical_passages=logical_passages,
                 )
                 context_items = [
                     cue
@@ -995,9 +1257,19 @@ def correct_srt_content(
                         "cost_sources": block_cost_sources,
                         "usage": block_usage,
                     }
+                    if logical_passages:
+                        payload["_logical_passages_version"] = 1
+                        payload["logical_passages"] = _logical_passage_rows(
+                            corrected_block
+                        )
                     with checkpoint_lock:
                         try:
-                            on_unit_completed(correction_unit_key(block), payload)
+                            on_unit_completed(
+                                correction_unit_key(
+                                    block, logical_passages=logical_passages
+                                ),
+                                payload,
+                            )
                         except Exception as error:
                             raise RuntimeError(
                                 "Could not persist the completed correction unit."
@@ -1108,6 +1380,9 @@ def correct_srt_content(
         for index, subtitle in enumerate(corrected_subtitles, start=1)
         if str(subtitle.get("text") or "").strip()
     ]
+    logical_rows = (
+        _logical_passage_rows(corrected_subtitles) if logical_passages else None
+    )
     return CorrectionResult(
         srt_content=compose_srt(segments),
         cost=total_cost,
@@ -1117,6 +1392,7 @@ def correct_srt_content(
         speaker_by_subtitle={
             segment.index: segment.speaker for segment in segments if segment.speaker
         },
+        logical_passages=logical_rows,
     )
 
 
@@ -1178,6 +1454,7 @@ def correct_srt_file_with_result(
         cost_sources=result.cost_sources,
         usage=result.usage,
         speaker_by_subtitle=result.speaker_by_subtitle,
+        logical_passages=result.logical_passages,
     )
     logger.info(
         "Corrected subtitles written to %s (%d LLM response(s), cost %.6f).",

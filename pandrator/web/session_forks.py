@@ -17,6 +17,7 @@ from pandrator.runtime import DataPaths
 
 from .artifacts import ArtifactService
 from .database import Database
+from .logical_passages import stored_passages
 from .models import (
     Artifact,
     ArtifactEdge,
@@ -435,6 +436,19 @@ class SessionForkService:
                 )
                 if previous_artifact_id:
                     metadata["source_artifact_id"] = previous_artifact_id
+                passage_rows = stored_passages(artifact)
+                if passage_rows is not None:
+                    packet = deepcopy(
+                        (artifact.metadata_json or {})["logical_passages"]
+                    )
+                    packet["display_revision_id"] = revision.id
+                    packet["copied_from_artifact_id"] = artifact.id
+                    packet.pop("speech_source_revision_id", None)
+                    # Historical source IDs remain traceability only. The fork
+                    # creates its own executable passage revision when needed.
+                    metadata["logical_passages"] = packet
+                else:
+                    metadata.pop("logical_passages", None)
                 cloned = self.artifacts.register_in_session(
                     session,
                     destination,

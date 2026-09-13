@@ -48,6 +48,17 @@ from .credentials import (
 from .database import Database
 from .export_contract import ExportContract, normalize_audio_mode
 from .jobs import JobQueue
+from .logical_passages import (
+    attach_passages,
+    load_timing_reference,
+    map_output_passages,
+    materialize_speech_source,
+    passage_review_metadata,
+    passage_srt,
+    same_timing_language,
+    source_passages,
+    stored_passages,
+)
 from .models import (
     AgentRun,
     AgentStep,
@@ -2011,6 +2022,8 @@ class WorkflowHandlers:
         display_segments = None
         speech_segments = None
         plan_by_position: dict[int, dict[str, Any]] = {}
+        logical_source_revision_id = None
+        logical_rows = None
 
         if source_artifact.role == "tts_optimized":
             display_artifact_id = str(
@@ -2060,14 +2073,40 @@ class WorkflowHandlers:
                                         row.get("speech_plan") or {}
                                     )
 
-        speaker_by_subtitle = self._subtitle_speaker_map(
-            display_artifact,
-            display_path,
+        if source_artifact.role != "tts_optimized":
+            with self.database.immediate_session() as session:
+                managed = session.get(Artifact, source_artifact.id)
+                if (
+                    managed is not None
+                    and stored_passages(managed) is not None
+                    and sha256_file(source_path) != managed.content_hash
+                ):
+                    raise ValueError(
+                        "The subtitle file changed after its passages were saved. Import the updated file before planning speech."
+                    )
+                prepared = (
+                    materialize_speech_source(session, managed) if managed else None
+                )
+                if prepared is not None:
+                    logical_rows, logical_source_revision_id = prepared
+        display_srt = (
+            passage_srt(logical_rows)
+            if logical_rows is not None
+            else display_path.read_text(encoding="utf-8-sig")
+        )
+        speaker_by_subtitle = (
+            {
+                index + 1: str(row.get("speaker") or "")
+                for index, row in enumerate(logical_rows)
+                if row.get("speaker")
+            }
+            if logical_rows is not None
+            else self._subtitle_speaker_map(display_artifact, display_path)
         )
         if display_segments is None:
-            display_segments = parse_srt(display_path.read_text(encoding="utf-8-sig"))
+            display_segments = parse_srt(display_srt)
         blocks = create_speech_blocks(
-            display_path.read_text(encoding="utf-8-sig"),
+            display_srt,
             target_language=language,
             min_chars=min_chars,
             max_chars=max_chars,
@@ -2093,6 +2132,10 @@ class WorkflowHandlers:
         }
         records: list[dict[str, Any]] = []
         for block in blocks:
+            if logical_rows is not None:
+                block["provenance"]["source_reference_namespace"] = (
+                    "logical_passage_ordinal"
+                )
             subtitle_ids = [int(value) for value in block.get("subtitles") or []]
             record = {
                 **{
@@ -2131,7 +2174,9 @@ class WorkflowHandlers:
             records.append(record)
 
         source_revision_id = (
-            str((display_artifact.metadata_json or {}).get("revision_id") or "") or None
+            logical_source_revision_id
+            or str((display_artifact.metadata_json or {}).get("revision_id") or "")
+            or None
         )
         return records, source_revision_id, display_artifact
 
@@ -2355,6 +2400,82 @@ class WorkflowHandlers:
             language,
         )
 
+    def _prepare_passage_input(
+        self,
+        artifact: Artifact,
+        source_path: Path,
+        directory: Path,
+    ) -> tuple[Path, list[dict[str, Any]], dict[int, str]]:
+        with self.database.session() as session:
+            managed = session.get(Artifact, artifact.id)
+            rows = source_passages(session, managed) if managed else []
+            if (
+                rows
+                and managed is not None
+                and sha256_file(source_path) != managed.content_hash
+            ):
+                raise ValueError(
+                    "The subtitle file changed after its revision was saved. Import the updated file before processing it."
+                )
+        if not rows:
+            return source_path, [], self._subtitle_speaker_map(artifact, source_path)
+        path = directory / f"{source_path.stem}.passages.srt"
+        path.write_text(passage_srt(rows), encoding="utf-8")
+        return (
+            path,
+            rows,
+            {
+                index + 1: str(row.get("speaker") or "")
+                for index, row in enumerate(rows)
+                if row.get("speaker")
+            },
+        )
+
+    def _passage_display_settings(self, session_id: str) -> dict[str, Any]:
+        from .workspace import WorkspaceSettingsService, adapt_runtime_settings
+
+        with self.database.session() as session:
+            effective = WorkspaceSettingsService(self.database).get_in_session(
+                session,
+                session_id,
+                "subtitles",
+            )["effective"]
+        return adapt_runtime_settings("subtitles", effective)
+
+    def _render_passage_output(
+        self,
+        source: Artifact,
+        result: Any,
+        inputs: list[dict[str, Any]],
+        settings: dict[str, Any],
+        language: str,
+    ) -> tuple[list[dict[str, Any]] | None, dict[int, str]]:
+        from pandrator.logic.dubbing.subtitle_projection import project_subtitle_display
+
+        raw_rows = getattr(result, "logical_passages", None)
+        if not inputs or raw_rows is None:
+            return None, getattr(result, "speaker_by_subtitle", {})
+        rows = map_output_passages(raw_rows, inputs)
+        with self.database.session() as session:
+            managed = session.get(Artifact, source.id)
+            words, reference = (
+                load_timing_reference(session, managed) if managed else ([], None)
+            )
+        display = project_subtitle_display(
+            rows,
+            dict(settings.get("_logical_passage_display") or {}),
+            timing_words=words,
+            match_source_words=same_timing_language(
+                language, (reference or {}).get("language")
+            ),
+        )
+        Path(result.output_path).write_text(passage_srt(display), encoding="utf-8")
+        return rows, {
+            index + 1: str(row.get("speaker") or "")
+            for index, row in enumerate(display)
+            if row.get("speaker")
+        }
+
     def _store_srt_document(
         self,
         session_id: str,
@@ -2364,6 +2485,7 @@ class WorkflowHandlers:
         language: str | None = None,
         parent_artifact: Artifact | None = None,
         speaker_overrides: dict[int, str] | None = None,
+        logical_passages: list[dict[str, Any]] | None = None,
     ) -> tuple[str, str]:
         from pandrator.logic.dubbing.srt_utils import parse_srt
 
@@ -2456,6 +2578,18 @@ class WorkflowHandlers:
                     speaker=item.speaker or None,
                     metadata_json={
                         "speaker_source": speaker_sources[ordinal],
+                        **(
+                            passage_review_metadata(
+                                [
+                                    row
+                                    for row in logical_passages
+                                    if min(item.end_ms, row["end_ms"])
+                                    > max(item.start_ms, row["start_ms"])
+                                ]
+                            )
+                            if logical_passages is not None
+                            else {}
+                        ),
                     },
                 )
                 session.add(child)
@@ -2502,6 +2636,15 @@ class WorkflowHandlers:
                     source == "model_reviewed" for source in speaker_sources
                 ),
             }
+            if logical_passages is not None and parent_artifact is not None:
+                attach_passages(managed, logical_passages, source=parent_artifact)
+                managed.metadata_json = {
+                    **managed.metadata_json,
+                    "uncertain_segment_count": sum(
+                        child.metadata_json.get("review_state") == "uncertain"
+                        for child in child_records
+                    ),
+                }
             return document.id, revision.id
 
     def _store_timed_words(
@@ -4071,9 +4214,24 @@ class WorkflowHandlers:
         source_artifact, source_path = self._resolve_input(
             str(payload.get("source_artifact_id") or "")
         )
-        speaker_by_subtitle = self._subtitle_speaker_map(source_artifact, source_path)
         session_dir = self._operation_dir(session_id, "correct")
+        processing_path, input_passages, speaker_by_subtitle = (
+            self._prepare_passage_input(
+                source_artifact,
+                source_path,
+                session_dir,
+            )
+        )
         requested_settings = dict(payload.get("settings") or {})
+        if input_passages:
+            requested_settings.update(
+                {
+                    "_logical_passages_version": 1,
+                    "_logical_passage_display": self._passage_display_settings(
+                        session_id
+                    ),
+                }
+            )
         settings = self._with_database_llm_settings(requested_settings, "correction")
         settings["correction_style"] = normalize_correction_style(
             settings.get("correction_style")
@@ -4125,7 +4283,7 @@ class WorkflowHandlers:
             progress(processing_start, "Preparing subtitle correction requests")
             result = correct_srt_file_with_result(
                 session_dir,
-                source_path,
+                processing_path,
                 settings,
                 correction_instructions=instructions,
                 cancel_event=cancel_event,
@@ -4147,6 +4305,17 @@ class WorkflowHandlers:
             if cancel_event.is_set():
                 raise RuntimeError("Subtitle correction was canceled.")
             progress(0.92, "Correction requests complete; preparing artifact")
+            logical_output, display_speakers = self._render_passage_output(
+                source_artifact,
+                result,
+                input_passages,
+                settings,
+                str(
+                    settings.get("original_language")
+                    or settings.get("source_language")
+                    or ""
+                ),
+            )
             settings_fingerprint = _stage_settings_fingerprint("correct", settings)
             artifact = self.artifacts.register(
                 Path(result.output_path),
@@ -4190,7 +4359,8 @@ class WorkflowHandlers:
                 )
                 or None,
                 parent_artifact=source_artifact,
-                speaker_overrides=result.speaker_by_subtitle,
+                speaker_overrides=display_speakers,
+                logical_passages=logical_output,
             )
             run_store.finish(agent_run.id, artifact_id=artifact.id)
         except Exception as error:
@@ -4692,9 +4862,24 @@ class WorkflowHandlers:
         source_artifact, source_path = self._resolve_input(
             str(payload.get("source_artifact_id") or "")
         )
-        speaker_by_subtitle = self._subtitle_speaker_map(source_artifact, source_path)
         session_dir = self._operation_dir(session_id, "translate")
+        processing_path, input_passages, speaker_by_subtitle = (
+            self._prepare_passage_input(
+                source_artifact,
+                source_path,
+                session_dir,
+            )
+        )
         requested_settings = dict(payload.get("settings") or {})
+        if input_passages:
+            requested_settings.update(
+                {
+                    "_logical_passages_version": 1,
+                    "_logical_passage_display": self._passage_display_settings(
+                        session_id
+                    ),
+                }
+            )
         requested_settings_hash = hashlib.sha256(
             json.dumps(
                 requested_settings,
@@ -4732,7 +4917,7 @@ class WorkflowHandlers:
             )
             result = translate_srt_file_deepl_with_result(
                 session_dir,
-                source_path,
+                processing_path,
                 settings,
                 auth_key=credential.resolved_value(),
                 speaker_by_subtitle=speaker_by_subtitle,
@@ -4813,7 +4998,7 @@ class WorkflowHandlers:
                 progress(processing_start, "Preparing subtitle translation requests")
                 result = translate_srt_file_with_result(
                     session_dir,
-                    source_path,
+                    processing_path,
                     settings,
                     translation_instructions=instructions,
                     glossary=glossary_seed,
@@ -4858,6 +5043,13 @@ class WorkflowHandlers:
             raise cancel_error
         try:
             progress(0.92, "Translation requests complete; preparing artifact")
+            logical_output, display_speakers = self._render_passage_output(
+                source_artifact,
+                result,
+                input_passages,
+                settings,
+                str(settings.get("target_language") or ""),
+            )
             settings_fingerprint = _stage_settings_fingerprint("translate", settings)
             artifact = self.artifacts.register(
                 Path(result.output_path),
@@ -4893,7 +5085,8 @@ class WorkflowHandlers:
                 "translation",
                 language=str(settings.get("target_language") or "") or None,
                 parent_artifact=source_artifact,
-                speaker_overrides=getattr(result, "speaker_by_subtitle", {}),
+                speaker_overrides=display_speakers,
+                logical_passages=logical_output,
             )
             if run_store is not None and agent_run is not None:
                 run_store.finish(agent_run.id, artifact_id=artifact.id)
