@@ -127,7 +127,7 @@ class _Application:
         )
         return {"revision": 5}
 
-    def list_generation_runs(self, session_id):
+    def list_generation_runs(self, session_id, **kwargs):
         return {
             "items": [
                 {

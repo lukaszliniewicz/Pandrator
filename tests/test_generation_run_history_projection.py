@@ -162,8 +162,11 @@ class GenerationRunHistoryProjectionTests(unittest.TestCase):
         self.assertFalse(history[cycle.id].is_repair_child(cycle.id))
 
     def test_mcp_filters_verified_children_before_limit(self):
+        requests = []
+
         class Application:
-            def list_generation_runs(self, session_id):
+            def list_generation_runs(self, session_id, **kwargs):
+                requests.append((session_id, kwargs))
                 return {
                     "items": [
                         *[
@@ -196,6 +199,13 @@ class GenerationRunHistoryProjectionTests(unittest.TestCase):
         self.assertEqual(["root", "manual"], [item["id"] for item in default["items"]])
         self.assertEqual(
             ["repair-133", "repair-132"], [item["id"] for item in raw["items"]]
+        )
+        self.assertEqual(
+            [
+                ("session-1", {"limit": 2, "include_repairs": False}),
+                ("session-1", {"limit": 2, "include_repairs": True}),
+            ],
+            requests,
         )
 
 

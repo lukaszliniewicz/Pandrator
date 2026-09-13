@@ -11,7 +11,13 @@ from sqlalchemy import select
 
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
-from pandrator.web.models import Artifact, AudioTake, GenerationRun, Job
+from pandrator.web.models import (
+    Artifact,
+    AudioTake,
+    GenerationPlanRevision,
+    GenerationRun,
+    Job,
+)
 from pandrator.web.tts_providers import (
     TtsBatchResult,
     TtsCapabilities,
@@ -99,6 +105,72 @@ class GenerationRegenerationTests(unittest.TestCase):
         )
         self.assertEqual(202, response.status_code, response.get_json())
         return response.get_json()
+
+    def test_history_groups_before_limiting_large_http_response(self):
+        root = self._start()
+        with self.database.session() as session:
+            root_run = session.get(GenerationRun, root["id"])
+            root_run.status = "completed"
+            session.get(Job, root["job_id"]).status = "succeeded"
+            revision = session.get(GenerationPlanRevision, root_run.plan_revision_id)
+            source_id = root_run.id
+            # Repeated snapshots reproduce a raw history exceeding the MCP's
+            # 8 MiB response cap without synthesizing or storing any audio.
+            for index in range(133):
+                child_revision = GenerationPlanRevision(
+                    plan_id=revision.plan_id,
+                    parent_revision_id=revision.id,
+                    revision_number=revision.revision_number + index + 1,
+                    content_hash=f"repair-{index}",
+                    operation_json={
+                        "reason": "early_timing_repair",
+                        "source_generation_run_id": root_run.id,
+                        "repair_status": "applied",
+                    },
+                )
+                session.add(child_revision)
+                session.flush()
+                child = GenerationRun(
+                    session_id=self.session_id,
+                    plan_revision_id=child_revision.id,
+                    source_generation_run_id=source_id,
+                    sequence_number=index + 2,
+                    status="completed",
+                    settings_snapshot_json={
+                        "early_repair_parent_run_id": root_run.id,
+                        "tts": {"generation_prompt": "x" * 65_536},
+                    },
+                )
+                session.add(child)
+                session.flush()
+                source_id = child.id
+            final_id = source_id
+
+        route = f"/api/v1/sessions/{self.session_id}/generation-runs"
+        raw = self.client.get(route)
+        self.assertEqual(200, raw.status_code)
+        self.assertEqual(134, len(raw.get_json()["items"]))
+        self.assertGreater(len(raw.data), 8 * 1024 * 1024)
+
+        grouped = self.client.get(route + "?include_repairs=false&limit=1")
+        self.assertEqual(200, grouped.status_code)
+        self.assertLess(len(grouped.data), 128 * 1024)
+        items = grouped.get_json()["items"]
+        self.assertEqual([root["id"]], [item["id"] for item in items])
+        self.assertEqual(final_id, items[0]["result_generation_run_id"])
+        self.assertEqual(133, items[0]["timing_repair"]["applied_count"])
+        self.assertEqual(133, len(items[0]["timing_repair"]["versions"]))
+
+        bounded_raw = self.client.get(route + "?include_repairs=true&limit=1")
+        self.assertEqual(
+            [final_id], [item["id"] for item in bounded_raw.get_json()["items"]]
+        )
+
+    def test_history_rejects_invalid_query_parameters(self):
+        route = f"/api/v1/sessions/{self.session_id}/generation-runs"
+        for query in ("limit=0", "limit=101", "limit=bad", "include_repairs=bad"):
+            with self.subTest(query=query):
+                self.assertEqual(422, self.client.get(f"{route}?{query}").status_code)
 
     @contextmanager
     def _fake_tts(self, calls, batch_calls, *, batch_size):

@@ -4740,13 +4740,20 @@ class GenerationService:
         )
         return payload
 
-    def list_runs(self, session_id: str) -> list[dict[str, Any]]:
+    def list_runs(
+        self, session_id: str, *, include_repairs: bool = True, limit: int | None = None
+    ) -> list[dict[str, Any]]:
         with self.database.session() as session:
             context = self._run_history_context(session, session_id)
-            return [
-                self._run_payload(session, run, _context=context)
-                for run in context["runs"]
-            ]
+            runs = context["runs"]
+            if not include_repairs:
+                runs = [
+                    run for run in runs
+                    if not context["histories"][run.id].is_repair_child(run.id)
+                ]
+            if limit is not None:
+                runs = runs[:limit]
+            return [self._run_payload(session, run, _context=context) for run in runs]
 
     def latest_run(self, session_id: str) -> dict[str, Any] | None:
         with self.database.session() as session:

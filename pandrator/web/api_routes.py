@@ -3214,7 +3214,25 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             sessions.get(session_id)
         except KeyError:
             return error_response("not_found", "Session not found.", 404)
-        return jsonify({"items": generation.list_runs(session_id)})
+        raw_limit = request.args.get("limit")
+        try:
+            limit = int(raw_limit) if raw_limit is not None else None
+            if limit is not None and not 1 <= limit <= 100:
+                raise ValueError
+        except ValueError:
+            return error_response(
+                "validation_error", "limit must be an integer from 1 through 100", 422
+            )
+        include_repairs = request.args.get("include_repairs", "true")
+        if include_repairs not in {"true", "false"}:
+            return error_response(
+                "validation_error", "include_repairs must be true or false", 422
+            )
+        return jsonify({
+            "items": generation.list_runs(
+                session_id, include_repairs=include_repairs == "true", limit=limit
+            )
+        })
 
     @app.post("/api/v1/sessions/<session_id>/generation-runs")
     @require_auth

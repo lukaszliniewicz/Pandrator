@@ -186,6 +186,23 @@ def create_test_ca(directory: Path) -> tuple[Path, Path, Path]:
 
 
 class ApplicationClientTests(unittest.TestCase):
+    def test_generation_history_limit_and_grouping_reach_the_http_request(self):
+        session = FakeSession([FakeResponse(200, {"items": []}) for _ in range(2)])
+        client = ApplicationClient(
+            local_registry("http://127.0.0.1:8097").bind("local"),
+            CredentialResolver(()),
+            session=session,
+            local_bootstrap=lambda _target, _session: "csrf-value",
+        )
+        client.list_generation_runs("session-1", limit=1, include_repairs=False)
+        client.list_generation_runs("session-1", limit=2, include_repairs=True)
+        self.assertEqual(
+            {"limit": 1, "include_repairs": "false"}, session.calls[0]["params"]
+        )
+        self.assertEqual(
+            {"limit": 2, "include_repairs": "true"}, session.calls[1]["params"]
+        )
+
     def test_upload_catalog_and_generation_helpers_use_bounded_routes(self):
         origin = "http://127.0.0.1:8097"
         session = FakeSession(
@@ -227,6 +244,7 @@ class ApplicationClientTests(unittest.TestCase):
         self.assertTrue(
             runs["url"].endswith("/api/v1/sessions/session-1/generation-runs")
         )
+        self.assertIsNone(runs["params"])
 
     def test_artifact_download_resumes_and_rejects_symlink_partials(self):
         origin = "http://127.0.0.1:8097"

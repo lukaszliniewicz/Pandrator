@@ -1753,8 +1753,18 @@ class ApplicationClient:
             parameters={"refresh": "true"} if refresh else None,
         )
 
-    def list_generation_runs(self, session_id: str) -> dict[str, Any]:
-        return self._request_json(f"/api/v1/sessions/{quote(session_id, safe='')}/generation-runs")
+    def list_generation_runs(
+        self, session_id: str, *, limit: int | None = None, include_repairs: bool | None = None
+    ) -> dict[str, Any]:
+        parameters: dict[str, Any] = {}
+        if limit is not None:
+            parameters["limit"] = limit
+        if include_repairs is not None:
+            parameters["include_repairs"] = "true" if include_repairs else "false"
+        return self._request_json(
+            f"/api/v1/sessions/{quote(session_id, safe='')}/generation-runs",
+            parameters=parameters or None,
+        )
 
     def list_generation_segments(
         self,

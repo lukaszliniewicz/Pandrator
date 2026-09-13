@@ -809,7 +809,10 @@ def list_generation_runs(
     runtime: McpRuntime,
     arguments: ListGenerationRunsInput,
 ) -> dict[str, Any]:
-    payload = runtime.require_application().list_generation_runs(arguments.session_id)
+    # Bound the HTTP response at the application, before the client's byte cap.
+    payload = runtime.require_application().list_generation_runs(
+        arguments.session_id, limit=arguments.limit, include_repairs=arguments.include_repairs
+    )
     items = []
     for item in payload.get("items") or []:
         if not isinstance(item, dict):
