@@ -309,12 +309,31 @@ clause boundary must also offer an estimated improvement of at least 1000 ms
 at a later cue's start. This estimate uses the spoken-text proportions; it does
 not claim word-level alignment. Invalid or stale cue spans are skipped.
 
+The thresholds are available in **Block settings → Repair thresholds**, and in
+the session's `tts` settings through MCP:
+
+| Setting | Default | Allowed range |
+| --- | --- | --- |
+| `speech_block_early_repair_min_shortfall_ms` | 1000 | 100–60000 ms |
+| `speech_block_early_repair_min_shortfall_percent` | 20 | 1–95% |
+| `speech_block_early_repair_min_advance_ms` | 1000 | 100–60000 ms |
+| `speech_block_early_repair_min_child_span_ms` | 1000 | 250–60000 ms |
+
+Generation uses its saved settings snapshot. Incoming-delay protection,
+reliable cue mappings, and meaningful text boundaries remain mandatory.
+
 At most one boundary is tried per original block. New children are generated
 in an inactive plan version; unchanged takes are reused. The version becomes
 active only if synthesis succeeds, the source plan and selected takes still
 match, and measured forward fitting shows no additional outgoing delay. Original
 takes and plan versions remain available. Cancellation or failure keeps the last accepted
 version. Individual selected-take regeneration does not trigger this pass.
+
+Speech-plan history identifies these revisions as automatic and exposes
+`repair_status` (`pending`, `applied`, `not_applied`, `failed`, `stopped`, or
+`unknown` for older entries), `repair_reason`, the source generation run ID,
+and the original block ordinal. An inactive attempted revision is not evidence
+of an applied split; the completed job's `repaired_blocks` counts accepted repairs.
 
 For timed voiceover, selected audio is mapped back through each block's source
 subtitle references. Blocks sharing an `alignment_group` are concatenated

@@ -86,6 +86,18 @@ class SettingsApiTests(unittest.TestCase):
 
         self.assertEqual("", payload["generation_prompt"])
 
+    def test_early_repair_thresholds_are_exposed_and_validate_saved_values(self):
+        key = "speech_block_early_repair_min_shortfall_ms"
+        defaults = self.client.get("/api/v1/defaults/tts").get_json()["builtin"]
+        self.assertEqual(1000, defaults[key])
+        session_id = self.client.post("/api/v1/sessions", json={"name": "Repair settings", "workflow_kind": "voiceover"}, headers=self.headers).get_json()["id"]
+        for endpoint in (f"/api/v1/sessions/{session_id}/settings/tts", "/api/v1/settings/defaults.tts"):
+            for invalid in (0, True, "1000", 100.5, 60001):
+                response = self.client.put(endpoint, json={"value": {key: invalid}}, headers={**self.headers, "If-Match": '"0"'})
+                self.assertEqual(422, response.status_code, response.get_json())
+            response = self.client.put(endpoint, json={"value": {key: 750}}, headers={**self.headers, "If-Match": '"0"'})
+            self.assertEqual(200, response.status_code, response.get_json())
+
     def test_tts_catalogue_distinguishes_required_and_keyless_credentials(self):
         catalogue = self.client.get("/api/v1/services/tts").get_json()
         services = {item["id"]: item for item in catalogue["services"]}

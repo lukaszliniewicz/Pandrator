@@ -1008,6 +1008,125 @@ test('reading mode flows segments together and separates only saved paragraphs',
   );
 });
 
+test('speech-plan history shows repair outcomes in a full dialog without changing selection', async ({
+  page
+}, testInfo) => {
+  await signIn(page);
+  const sessionId = await createGenerationPlan(page, [
+    { text: 'First complete sentence.' },
+    { text: 'Second complete sentence.' }
+  ]);
+  const endpoint = `/api/v1/sessions/${sessionId}`;
+  const plan = await (
+    await page.request.get(`${endpoint}/generation-segments`)
+  ).json();
+  const activeId = plan.plan_revision_id;
+  const common = {
+    origin: 'automatic',
+    segment_count: 2,
+    reusable_segment_count: 2,
+    stale_segment_count: 0,
+    source_artifact_id: null,
+    summary: 'Repair speech running ahead of its cues',
+    source_block_ordinal: 0
+  };
+  await page.route(`**${endpoint}/generation-plan/revisions?*`, (route) =>
+    route.fulfill({
+      json: {
+        active_revision_id: activeId,
+        next_before_revision_number: null,
+        items: [
+          {
+            ...common,
+            id: 'rejected-repair',
+            revision_number: 3,
+            parent_revision_id: activeId,
+            repair_status: 'not_applied',
+            repair_reason: 'added_delay'
+          },
+          {
+            ...common,
+            id: activeId,
+            revision_number: 2,
+            parent_revision_id: 'original-plan',
+            repair_status: 'applied'
+          },
+          {
+            ...common,
+            id: 'original-plan',
+            revision_number: 1,
+            parent_revision_id: null,
+            summary: 'Automatic speech plan',
+            repair_status: null
+          }
+        ]
+      }
+    })
+  );
+  await page.route(`**${endpoint}/generation-segments?*`, (route) => {
+    if (!route.request().url().includes('plan_revision_id=rejected-repair'))
+      return route.continue();
+    return route.fulfill({
+      json: {
+        items: [
+          {
+            id: 'attempt-child',
+            ordinal: 0,
+            text: 'Replacement from the rejected attempt.',
+            status: 'completed',
+            source_segment_ids: [1]
+          }
+        ],
+        next_cursor: null
+      }
+    });
+  });
+  await page.goto(`/sessions/${sessionId}`);
+  await page.getByRole('button', { name: 'Generation', exact: true }).click();
+  await page.getByRole('button', { name: 'Speech plans', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Versioned speech plans' });
+  await expect(dialog).toBeVisible();
+  expect(await dialog.evaluate((element) => element.matches(':modal'))).toBe(
+    true
+  );
+  const box = await dialog.boundingBox();
+  expect(box!.width).toBeGreaterThan(800);
+  expect(box!.height).toBeGreaterThan(350);
+  const preview = dialog.getByRole('region', { name: 'Version preview' });
+  await expect(
+    preview.getByText('Repair: Applied', { exact: true })
+  ).toBeVisible();
+  await dialog.getByRole('button', { name: /^Version 3:/ }).click();
+  await expect(
+    preview.getByText('Replacement from the rejected attempt.')
+  ).toBeVisible();
+  await expect(
+    preview.getByText('The replacement audio would have delayed later blocks.')
+  ).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath('speech-plan-history-desktop.png')
+  });
+  const after = await (
+    await page.request.get(`${endpoint}/generation-segments`)
+  ).json();
+  expect(after.plan_revision_id).toBe(activeId);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(
+    dialog.getByRole('navigation', { name: 'Plan versions' })
+  ).toBeVisible();
+  await expect(preview).toBeVisible();
+  expect(
+    await dialog.evaluate(
+      (element) => element.scrollWidth <= element.clientWidth
+    )
+  ).toBe(true);
+  await page.screenshot({
+    path: testInfo.outputPath('speech-plan-history-mobile.png')
+  });
+  await dialog.getByRole('button', { name: 'Close', exact: true }).click();
+  await expect(dialog).toBeHidden();
+});
+
 test('speech-block boundaries expose evidence and cursor edits are reversible', async ({
   page
 }) => {
@@ -1061,6 +1180,22 @@ test('speech-block boundaries expose evidence and cursor edits are reversible', 
     .first();
   await expect(details).toBeVisible();
   await expect(details).toContainText('Join blocks 1–2');
+  expect(
+    await details.evaluate((element) => {
+      const rect = element.getBoundingClientRect();
+      return (
+        element.matches(':popover-open') &&
+        rect.top >= 0 &&
+        rect.bottom <= innerHeight &&
+        element.contains(
+          document.elementFromPoint(
+            rect.left + rect.width / 2,
+            rect.top + rect.height / 2
+          )
+        )
+      );
+    })
+  ).toBe(true);
   await details.getByRole('button', { name: 'Join blocks 1–2' }).click();
 
   await expect(rows).toHaveCount(2);

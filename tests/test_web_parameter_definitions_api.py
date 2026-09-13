@@ -133,7 +133,10 @@ class ParameterDefinitionsApiTests(unittest.TestCase):
         self.assertEqual(200, response.status_code)
         payload = response.get_json()
         self.assertEqual(2, payload["returned_count"])
-        self.assertEqual(81, payload["matched_count"])
+        complete = self.client.get(
+            "/api/v1/parameter-definitions", query_string={"section": "tts", "limit": "300"}
+        ).get_json()
+        self.assertEqual(len(complete["items"]), payload["matched_count"])
         self.assertTrue(payload["truncated"])
         self.assertEqual(2, len(payload["items"]))
 

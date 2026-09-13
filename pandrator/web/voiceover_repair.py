@@ -51,6 +51,18 @@ from .workspace import (
 logger = logging.getLogger(__name__)
 
 
+def _record_repair_outcome(
+    session: Session, revision_id: str, status: str, reason: str | None = None
+) -> None:
+    revision = session.get(GenerationPlanRevision, revision_id)
+    if revision is not None:
+        revision.operation_json = {
+            **dict(revision.operation_json or {}),
+            "repair_status": status,
+            "repair_reason": reason,
+        }
+
+
 @dataclass
 class TimingGroup:
     segments: list[GenerationSegment]
@@ -317,6 +329,16 @@ def repair_early_blocks(
     repaired = 0
     cursor = 0
     audio_settings = dict(snapshot.get("audio") or {})
+    tts_settings = dict(snapshot.get("tts") or {})
+    thresholds = {
+        name: tts_settings.get(f"speech_block_early_repair_{name}", default)
+        for name, default in (
+            ("min_shortfall_ms", 1000),
+            ("min_shortfall_percent", 20),
+            ("min_advance_ms", 1000),
+            ("min_child_span_ms", 1000),
+        )
+    }
     with tempfile.TemporaryDirectory(prefix="voiceover-repair-") as directory:
         work = Path(directory)
         for index, group in enumerate(groups):
@@ -349,6 +371,7 @@ def repair_early_blocks(
                     duration,
                     incoming_delay_ms=max(0, cursor - group.start_ms),
                     start_delay_ms=start_delay,
+                    **thresholds,
                 )
             if boundary is None or (boundary.start_ms, boundary.end_ms) != (
                 group.start_ms,
@@ -357,6 +380,9 @@ def repair_early_blocks(
                 cursor = baseline_cursor
                 continue
             staged_run_id = None
+            staged_revision_id = None
+            repair_status = "failed"
+            repair_reason: str | None = "generation_failed"
             try:
                 with handler.database.immediate_session() as session:
                     choices, source_take_signature = _selection_state(
@@ -378,9 +404,12 @@ def repair_early_blocks(
                             "cursor": boundary.display_cursor,
                             "reason": "early_timing_repair",
                             "source_generation_run_id": run_id,
+                            "source_block_ordinal": segment.ordinal,
+                            "repair_status": "pending",
                         },
                         activate=False,
                     )
+                    staged_revision_id = proposal["plan_revision_id"]
                     children = [
                         session.get(GenerationSegment, child_id)
                         for child_id in proposal["affected_segment_ids"]
@@ -476,6 +505,11 @@ def repair_early_blocks(
                     stop,
                 )
                 if generated.get("status") != "completed" or stop.is_set():
+                    if stop.is_set() or generated.get("status") in {
+                        "paused",
+                        "canceled",
+                    }:
+                        repair_status, repair_reason = "stopped", "generation_stopped"
                     break
                 staged_groups, staged_takes = _load_groups(handler, staged_run_id)
                 child_ids = set(proposal["affected_segment_ids"])
@@ -504,6 +538,7 @@ def repair_early_blocks(
                 )
                 if child_cursor > baseline_cursor:
                     # A repair must not create new delay for subsequent original blocks.
+                    repair_status, repair_reason = "not_applied", "added_delay"
                     cursor = baseline_cursor
                     continue
                 with handler.database.immediate_session() as session:
@@ -520,12 +555,19 @@ def repair_early_blocks(
                         or _selection_state(session, current_revision_id)[1]
                         != source_take_signature
                     ):
+                        repair_status, repair_reason = (
+                            ("stopped", "generation_stopped")
+                            if stop.is_set()
+                            else ("not_applied", "selection_changed")
+                        )
                         break
                     active.active_revision_id = proposal["plan_revision_id"]
                     active.updated_at = utcnow()
                     mark_output_assemblies_stale(
                         session, session_id, cancel_active=True, jobs=handler.jobs
                     )
+                    _record_repair_outcome(session, staged_revision_id, "applied")
+                repair_status, repair_reason = "applied", None
                 current_ids = {
                     original: proposal["lineage"][current][0]
                     for original, current in current_ids.items()
@@ -537,6 +579,8 @@ def repair_early_blocks(
                 cursor = child_cursor
                 repaired += 1
             except Exception:
+                if stop.is_set():
+                    repair_status, repair_reason = "stopped", "generation_stopped"
                 logger.warning(
                     "Optional voiceover repair stopped; the last selected plan and audio remain usable.",
                     exc_info=True,
@@ -550,6 +594,12 @@ def repair_early_blocks(
                         }:
                             staged.status = "failed"
                 break
+            finally:
+                if staged_revision_id and repair_status != "applied":
+                    with handler.database.session() as session:
+                        _record_repair_outcome(
+                            session, staged_revision_id, repair_status, repair_reason
+                        )
     return {
         "repaired_blocks": repaired,
         "repaired_generation_run_id": current_run_id,

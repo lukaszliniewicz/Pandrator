@@ -230,6 +230,10 @@ def find_repair_boundary(
     *,
     incoming_delay_ms: int = 0,
     start_delay_ms: int = 0,
+    min_shortfall_ms: int = 1000,
+    min_shortfall_percent: int = 20,
+    min_advance_ms: int = 1000,
+    min_child_span_ms: int = 1000,
 ) -> RepairBoundary | None:
     """Find the strongest complete-cue boundary for early repair.
 
@@ -246,6 +250,17 @@ def find_repair_boundary(
         return None
     if not _valid_duration(incoming_delay_ms) or not _valid_duration(start_delay_ms):
         return None
+    if (
+        not _is_integer(min_shortfall_ms)
+        or not 100 <= min_shortfall_ms <= 60000
+        or not _is_integer(min_shortfall_percent)
+        or not 1 <= min_shortfall_percent <= 95
+        or not _is_integer(min_advance_ms)
+        or not 100 <= min_advance_ms <= 60000
+        or not _is_integer(min_child_span_ms)
+        or not 250 <= min_child_span_ms <= 60000
+    ):
+        return None
     if incoming_delay_ms > 0:
         return None
 
@@ -257,7 +272,10 @@ def find_repair_boundary(
     last = cues[-1]
     source_span = last.end_ms - first.start_ms
     shortfall = source_span - audio_duration_ms - start_delay_ms
-    if shortfall < 1000 or shortfall * 5 < source_span:
+    if (
+        shortfall < min_shortfall_ms
+        or shortfall * 100 < source_span * min_shortfall_percent
+    ):
         return None
 
     best: tuple[float, int, RepairBoundary] | None = None
@@ -288,7 +306,10 @@ def find_repair_boundary(
 
         left_child_span = left.end_ms - first.start_ms
         right_child_span = last.end_ms - right.start_ms
-        if left_child_span < 1000 or right_child_span < 1000:
+        if (
+            left_child_span < min_child_span_ms
+            or right_child_span < min_child_span_ms
+        ):
             continue
 
         spoken_left_length = len(speech_left.strip())
@@ -302,7 +323,7 @@ def find_repair_boundary(
         estimated_advance = (
             right.start_ms - first.start_ms - start_delay_ms - approximate_left_audio
         )
-        if estimated_advance < 1000:
+        if estimated_advance < min_advance_ms:
             continue
 
         boundary = RepairBoundary(

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { CircleHelp } from '@lucide/svelte';
-  import { onMount } from 'svelte';
+  import { helpPopover } from './help-popover';
+  import { onMount, onDestroy } from 'svelte';
   import {
     parameterDefinition,
     type ParameterDefinition
@@ -21,6 +22,14 @@
   } = $props();
   const tooltipId = $props.id();
   let definition = $state<ParameterDefinition | null>(null);
+  let trigger = $state<HTMLSpanElement>();
+  let tooltip = $state<HTMLSpanElement>();
+  const { show, hide, leave, escape } = helpPopover(
+    () => trigger,
+    () => tooltip
+  );
+
+  onDestroy(hide);
 
   const constraint = $derived.by(() => {
     if (!definition) return '';
@@ -49,21 +58,39 @@
         >{label}</span
       >{/if}<span
       role="button"
+      bind:this={trigger}
       tabindex="0"
       class:compact
       class="parameter-help"
       aria-describedby={tooltipId}
       aria-label={`About ${label}`}
-      onclick={(event) => event.stopPropagation()}
+      onmouseenter={show}
+      onmouseleave={leave}
+      onfocus={show}
+      onblur={hide}
+      onclick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        trigger?.focus();
+        show();
+      }}
+      onkeydowncapture={escape}
       onkeydown={(event) => {
         if (event.key === 'Enter' || event.key === ' ') {
           event.preventDefault();
           event.stopPropagation();
+          show();
         }
       }}
     >
       <CircleHelp size={compact ? 12 : 13} aria-hidden="true" />
-      <span id={tooltipId} role="tooltip" class="parameter-tooltip">
+      <span
+        bind:this={tooltip}
+        id={tooltipId}
+        role="tooltip"
+        popover="manual"
+        class="parameter-tooltip"
+      >
         <span>{definition.description}</span>
         {#if definition.applicability}<span class="tooltip-detail"
             >{definition.applicability}</span
@@ -108,13 +135,13 @@
     box-shadow: 0 0 0 2px var(--accent-soft);
   }
   .parameter-tooltip {
-    position: absolute;
-    z-index: 90;
-    top: calc(100% + 0.45rem);
-    right: 0;
+    position: fixed;
+    margin: 0;
+    inset: auto;
     width: max-content;
     max-width: min(22rem, 80vw);
-    visibility: hidden;
+    max-height: calc(100dvh - 16px);
+    overflow-y: auto;
     border: 1px solid #4b4650;
     border-radius: 0.65rem;
     background: #242126;
@@ -124,14 +151,8 @@
     font-weight: 500;
     line-height: 1.45;
     text-align: left;
-    opacity: 0;
-    pointer-events: none;
-    transform: translateY(-0.2rem);
+    pointer-events: auto;
     box-shadow: 0 0.7rem 1.8rem rgb(0 0 0 / 24%);
-    transition:
-      opacity 120ms ease,
-      transform 120ms ease,
-      visibility 120ms ease;
   }
   .parameter-tooltip > span {
     display: block;
@@ -143,12 +164,6 @@
   }
   .tooltip-caveat {
     color: #f1d9ff;
-  }
-  .parameter-help:hover .parameter-tooltip,
-  .parameter-help:focus .parameter-tooltip {
-    visibility: visible;
-    opacity: 1;
-    transform: translateY(0);
   }
   .compact .parameter-tooltip {
     font-size: 0.68rem;

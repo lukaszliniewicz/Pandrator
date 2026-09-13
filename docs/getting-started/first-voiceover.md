@@ -47,7 +47,10 @@ or create alternate takes rather than overwriting the subtitle track.
 
 In **Block settings**, optionally enable **Reduce speech getting ahead of subtitles**.
 After a complete generation run, Pandrator checks multi-cue blocks that finish
-at least one second and 20% early, accounting for the configured start delay.
+at least one second and 20% early by default, accounting for the configured start delay.
+Open **Repair thresholds** to adjust these two limits, the minimum timing
+improvement (1000 ms), and the minimum cue span per new block (1000 ms).
+Both early-finish limits must be met; catch-up protection always applies.
 It can split at a reliable sentence or clause boundary between source cues and
 generate the two groups separately. Blocks carrying playback delay stay intact
 so their shorter audio can help the voiceover catch up. Each original block is
@@ -55,7 +58,10 @@ considered once per pass. Uncertain text-to-cue mappings are skipped.
 
 The repair uses additional TTS calls. A new plan version becomes active only
 after replacement audio succeeds and passes timing checks; earlier versions
-and takes remain available. This pass applies to complete voiceover generation
+and takes remain available. Open **Speech plans** in the generation drawer to
+browse versions, preview their blocks, and see whether each repair was applied,
+not applied, failed, or stopped. Older repairs may have no recorded outcome.
+This pass applies to complete voiceover generation
 runs, including resumed runs, rather than individual selected-take regeneration.
 
 ## 5. Synchronize and mix

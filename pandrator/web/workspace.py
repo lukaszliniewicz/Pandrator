@@ -291,6 +291,10 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "speech_block_continuation_threshold_ms": 3000,
         "speech_block_max_internal_gap_ms": 4000,
         "speech_block_early_repair_enabled": False,
+        "speech_block_early_repair_min_shortfall_ms": 1000,
+        "speech_block_early_repair_min_shortfall_percent": 20,
+        "speech_block_early_repair_min_advance_ms": 1000,
+        "speech_block_early_repair_min_child_span_ms": 1000,
     },
     "audio": {
         "audio_verification_mode": "off",
@@ -627,6 +631,21 @@ def mark_output_assemblies_stale(
 
 class RevisionConflict(ValueError):
     pass
+
+
+def validate_voiceover_repair_settings(value: dict[str, Any]) -> None:
+    for suffix, minimum, maximum in (
+        ("min_shortfall_ms", 100, 60000),
+        ("min_shortfall_percent", 1, 95),
+        ("min_advance_ms", 100, 60000),
+        ("min_child_span_ms", 250, 60000),
+    ):
+        key = f"speech_block_early_repair_{suffix}"
+        if key not in value:
+            continue
+        number = value[key]
+        if isinstance(number, bool) or not isinstance(number, int) or not minimum <= number <= maximum:
+            raise ValueError(f"{key} must be an integer from {minimum} to {maximum}.")
 
 
 class WorkspaceSettingsService:
@@ -972,6 +991,7 @@ class WorkspaceSettingsService:
             raise KeyError(session_id)
         value = dict(value)
         if section == "tts":
+            validate_voiceover_repair_settings(value)
             previous = self.get_in_session(session, session_id, section)["effective"]
             value = prepare_tts_provider_switch(previous, value)
         if section == "output" and session_record.workflow_kind != "audiobook":

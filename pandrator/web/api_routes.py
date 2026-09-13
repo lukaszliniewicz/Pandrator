@@ -1650,6 +1650,9 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                     else payload.value
                 )
                 if setting_key == "defaults.tts":
+                    from .workspace import validate_voiceover_repair_settings
+
+                    validate_voiceover_repair_settings(prepared_value)
                     previous = {
                         **BUILTIN_DEFAULTS["tts"],
                         **(record.value_json if record is not None else {}),

@@ -5,13 +5,14 @@ from unittest.mock import patch
 from pathlib import Path
 
 from pydub.generators import Sine
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from pandrator.logic.dubbing.audio_sync import align_audio_blocks
 from pandrator.logic.dubbing.models import AudioAlignmentBlock
 from pandrator.web.voiceover_repair import _load_groups, advance_timing
 
 from pandrator.web.database import Database
+from pandrator.web.generation_review import revision_history
 from pandrator.web.models import (
     AudioTake,
     Document,
@@ -128,6 +129,7 @@ class VoiceoverRepairTests(unittest.TestCase):
         with self.database.session() as session:
             run = GenerationRun(
                 session_id=self.record.id,
+                sequence_number=int(session.scalar(select(func.max(GenerationRun.sequence_number)).where(GenerationRun.session_id == self.record.id)) or 0) + 1,
                 plan_revision_id=self.revision_id,
                 status="queued",
                 settings_snapshot_json={
@@ -171,6 +173,13 @@ class VoiceoverRepairTests(unittest.TestCase):
                     GenerationPlan.session_id == self.record.id
                 )
             )
+
+    def repairs(self):
+        return [
+            item
+            for item in revision_history(self.database, self.record.id)["items"]
+            if item["reason"] == "early_timing_repair"
+        ]
 
     def select_alternate_closing_take(self):
         segment_id = self.segment_ids[-1]
@@ -225,6 +234,8 @@ class VoiceoverRepairTests(unittest.TestCase):
         self.assertEqual(4, calls)
         self.assertNotEqual(self.revision_id, self.active())
         self.assertNotEqual(self.run_id, result["generation_run_id"])
+        self.assertEqual("automatic", self.repairs()[0]["origin"])
+        self.assertEqual("applied", self.repairs()[0]["repair_status"])
         with self.database.session() as session:
             original = list(
                 session.scalars(
@@ -280,6 +291,8 @@ class VoiceoverRepairTests(unittest.TestCase):
         self.assertEqual(0, result.get("repaired_blocks"))
         self.assertEqual(4, calls)
         self.assertEqual(self.revision_id, self.active())
+        self.assertEqual("not_applied", self.repairs()[0]["repair_status"])
+        self.assertEqual("added_delay", self.repairs()[0]["repair_reason"])
 
     def test_failure_keeps_original_plan_and_successful_original_run(self):
         self.plan()
@@ -292,6 +305,7 @@ class VoiceoverRepairTests(unittest.TestCase):
         result, _ = self.generate(synth)
         self.assertEqual("completed", result["status"])
         self.assertEqual(self.revision_id, self.active())
+        self.assertEqual("failed", self.repairs()[0]["repair_status"])
 
     def test_cancel_during_repair_keeps_original_selected(self):
         self.plan()
@@ -305,12 +319,16 @@ class VoiceoverRepairTests(unittest.TestCase):
         result, _ = self.generate(synth, event)
         self.assertEqual(0, result.get("repaired_blocks"))
         self.assertEqual(self.revision_id, self.active())
+        self.assertEqual("stopped", self.repairs()[0]["repair_status"])
 
     def test_multiple_original_blocks_are_repaired_without_recursing_on_children(self):
         self.plan(groups=2)
         result, calls = self.generate()
         self.assertEqual(2, result.get("repaired_blocks"))
         self.assertEqual(7, calls)
+        self.assertEqual(
+            ["applied", "applied"], [item["repair_status"] for item in self.repairs()]
+        )
 
     def test_timing_preview_matches_real_forward_assembly_with_slowdown(self):
         self.plan(enabled=False, previous=True, groups=2)
@@ -423,6 +441,42 @@ class VoiceoverRepairTests(unittest.TestCase):
         self.assertEqual(0, result.get("repaired_blocks"))
         self.assertEqual(self.revision_id, self.active())
         self.assert_closing_take_selected(alternate_id)
+        self.assertEqual("not_applied", self.repairs()[0]["repair_status"])
+        self.assertEqual("selection_changed", self.repairs()[0]["repair_reason"])
+
+    def test_thresholds_from_generation_snapshot_control_the_pass(self):
+        for suffix, value in (
+            ("min_shortfall_ms", 7000),
+            ("min_shortfall_percent", 80),
+            ("min_advance_ms", 5000),
+            ("min_child_span_ms", 4000),
+        ):
+            with self.subTest(threshold=suffix):
+                self.plan()
+                with self.database.session() as session:
+                    run = session.get(GenerationRun, self.run_id)
+                    run.settings_snapshot_json = {
+                        **run.settings_snapshot_json,
+                        "tts": {
+                            **run.settings_snapshot_json["tts"],
+                            f"speech_block_early_repair_{suffix}": value,
+                        },
+                    }
+                result, calls = self.generate()
+                self.assertEqual(2, calls)
+                self.assertEqual(0, result["repaired_blocks"])
+                self.assertEqual(self.revision_id, self.active())
+
+    def test_legacy_repair_history_does_not_invent_an_outcome(self):
+        self.plan()
+        self.generate()
+        with self.database.session() as session:
+            revision = session.get(GenerationPlanRevision, self.active())
+            operation = dict(revision.operation_json)
+            operation.pop("repair_status")
+            revision.operation_json = operation
+        self.assertEqual("automatic", self.repairs()[0]["origin"])
+        self.assertEqual("unknown", self.repairs()[0]["repair_status"])
 
 
 if __name__ == "__main__":

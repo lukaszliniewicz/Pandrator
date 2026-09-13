@@ -1,6 +1,8 @@
 <script lang="ts">
   import { GitMerge, TriangleAlert } from '@lucide/svelte';
   import type { GenerationSegment, SpeechBlockDecision } from './api-models';
+  import { onDestroy } from 'svelte';
+  import { helpPopover } from './help-popover';
 
   let {
     left,
@@ -15,6 +17,15 @@
     compact?: boolean;
     onmerge: (left: GenerationSegment, right: GenerationSegment) => unknown;
   } = $props();
+  let trigger = $state<HTMLButtonElement>();
+  let popup = $state<HTMLSpanElement>();
+  let scope = $state<HTMLSpanElement>();
+  const help = helpPopover(
+    () => trigger,
+    () => popup,
+    () => scope
+  );
+  onDestroy(help.hide);
 
   const boundary = $derived<SpeechBlockDecision>(
     right.speech_block_provenance?.boundary_before ?? {}
@@ -55,23 +66,39 @@
   }
 
   async function merge() {
+    help.hide();
     await onmerge(left, right);
   }
 </script>
 
-<span class:compact class:risky={risks.length > 0} class="boundary-marker">
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<span
+  bind:this={scope}
+  class:compact
+  class:risky={risks.length > 0}
+  class="boundary-marker"
+  onmouseenter={help.show}
+  onmouseleave={help.leave}
+  onfocusin={help.show}
+  onfocusout={help.focusout}
+  onkeydowncapture={help.escape}
+>
   <button
+    bind:this={trigger}
     type="button"
     class="boundary-trigger"
     aria-label={`Boundary before segment ${right.ordinal + 1}: ${summary}`}
     onclick={(event) => {
       event.stopPropagation();
+      help.show();
     }}
   >
     <span class="boundary-line"></span>
     {#if risks.length}<TriangleAlert size={compact ? 10 : 11} />{/if}
   </button>
   <span
+    bind:this={popup}
+    popover="manual"
     class="boundary-popover"
     role="group"
     aria-label="Speech block boundary details"
@@ -178,13 +205,12 @@
     outline-offset: 1px;
   }
   .boundary-popover {
-    position: absolute;
-    z-index: 35;
-    bottom: calc(100% + 0.35rem);
-    left: 50%;
-    display: none;
+    position: fixed;
+    margin: 0;
+    inset: auto;
     width: min(21rem, 78vw);
-    transform: translateX(-50%);
+    max-height: calc(100dvh - 16px);
+    overflow-y: auto;
     border: 1px solid var(--line);
     border-radius: 0.8rem;
     background: var(--paper-strong);
@@ -197,8 +223,7 @@
     line-height: 1.35;
     text-align: left;
   }
-  .boundary-marker:hover .boundary-popover,
-  .boundary-marker:focus-within .boundary-popover {
+  .boundary-popover:popover-open {
     display: grid;
     gap: 0.42rem;
   }

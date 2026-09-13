@@ -115,6 +115,134 @@ def test_incoming_delay_disables_repair() -> None:
     ) is None
 
 
+def test_default_thresholds_match_explicit_defaults() -> None:
+    text, spoken, provenance, duration = _two_cue_input()
+
+    implicit = find_repair_boundary(text, spoken, provenance, duration)
+    explicit = find_repair_boundary(
+        text,
+        spoken,
+        provenance,
+        duration,
+        min_shortfall_ms=1000,
+        min_shortfall_percent=20,
+        min_advance_ms=1000,
+        min_child_span_ms=1000,
+    )
+
+    assert explicit == implicit
+
+
+def test_min_shortfall_ms_can_admit_a_shortfall_below_default() -> None:
+    text, spoken, provenance, _ = _two_cue_input(
+        timings=[(0, 1500), (3000, 4000)],
+        audio_duration_ms=3200,
+    )
+
+    assert find_repair_boundary(text, spoken, provenance, 3200) is None
+    assert find_repair_boundary(
+        text,
+        spoken,
+        provenance,
+        3200,
+        min_shortfall_ms=800,
+    ) is not None
+
+
+def test_min_shortfall_percent_can_admit_a_ratio_below_default() -> None:
+    text, spoken, provenance, _ = _two_cue_input(
+        timings=[(0, 2000), (4000, 6000)],
+        audio_duration_ms=5000,
+    )
+
+    assert find_repair_boundary(text, spoken, provenance, 5000) is None
+    assert find_repair_boundary(
+        text,
+        spoken,
+        provenance,
+        5000,
+        min_shortfall_percent=16,
+    ) is not None
+
+
+def test_min_advance_ms_can_admit_an_advance_below_default() -> None:
+    text, spoken, provenance, _ = _two_cue_input(
+        timings=[(0, 1000), (1000, 5000)],
+    )
+
+    assert find_repair_boundary(text, spoken, provenance, 1500) is None
+    result = find_repair_boundary(
+        text,
+        spoken,
+        provenance,
+        1500,
+        min_advance_ms=100,
+    )
+
+    assert result is not None
+    assert result.estimated_advance_ms >= 100
+
+
+def test_min_child_span_ms_can_admit_a_child_span_below_default() -> None:
+    text, spoken, provenance, _ = _two_cue_input(
+        timings=[(0, 2000), (4200, 5000)],
+    )
+
+    assert find_repair_boundary(text, spoken, provenance, 1500) is None
+    assert find_repair_boundary(
+        text,
+        spoken,
+        provenance,
+        1500,
+        min_child_span_ms=800,
+    ) is not None
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"min_shortfall_ms": True},
+        {"min_shortfall_ms": 99},
+        {"min_shortfall_ms": 60001},
+        {"min_shortfall_percent": False},
+        {"min_shortfall_percent": 0},
+        {"min_shortfall_percent": 96},
+        {"min_advance_ms": True},
+        {"min_advance_ms": 99},
+        {"min_advance_ms": 60001},
+        {"min_child_span_ms": False},
+        {"min_child_span_ms": 249},
+        {"min_child_span_ms": 60001},
+    ],
+)
+def test_invalid_threshold_arguments_fail_closed(kwargs: dict[str, object]) -> None:
+    text, spoken, provenance, duration = _two_cue_input()
+
+    assert find_repair_boundary(
+        text,
+        spoken,
+        provenance,
+        duration,
+        **kwargs,
+    ) is None
+
+
+def test_permissive_thresholds_do_not_override_incoming_delay() -> None:
+    text, spoken, provenance, duration = _two_cue_input()
+
+    assert find_repair_boundary(
+        text,
+        spoken,
+        provenance,
+        duration,
+        incoming_delay_ms=1,
+        min_shortfall_ms=100,
+        min_shortfall_percent=1,
+        min_advance_ms=100,
+        min_child_span_ms=250,
+    ) is None
+
+
 @pytest.mark.parametrize(
     ("duration", "start_delay"),
     [

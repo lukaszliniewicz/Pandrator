@@ -926,6 +926,12 @@ export function settingLabel(key: string): string {
     azure_speech_output_format: 'Azure audio format',
     silero_stress_mode: 'Stress handling',
     silero_sample_rate: 'Sample rate',
+    speech_block_early_repair_min_shortfall_ms: 'Finish early by at least (ms)',
+    speech_block_early_repair_min_shortfall_percent:
+      'Finish early by at least (%)',
+    speech_block_early_repair_min_advance_ms: 'Minimum timing improvement (ms)',
+    speech_block_early_repair_min_child_span_ms:
+      'Minimum cue span per new block (ms)',
     synchronization_delay_ms: 'Maximum voiceover start delay',
     synchronization_speed: 'Maximum synchronization speed-up',
     synchronization_slowdown_enabled:

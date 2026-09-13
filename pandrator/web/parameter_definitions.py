@@ -305,7 +305,11 @@ _DESCRIPTIONS: dict[str, dict[str, str]] = {
         "speech_block_merge_threshold": "Sets the largest source pause across which Pandrator's deterministic speech planner may pack compatible same-speaker utterances when their combined display and speech text fits the character cap. It is not sent to a model and does not change subtitle cues.",
         "speech_block_continuation_threshold_ms": "Sets how many milliseconds of pause a local speech-block builder may bridge when an utterance appears to continue; it affects segmentation only, not displayed subtitle boundaries.",
         "speech_block_max_internal_gap_ms": "Sets the maximum internal silent gap, in milliseconds, permitted inside one local TTS speech block; it prevents a block from spanning a long pause.",
-        "speech_block_early_repair_enabled": "After voiceover generation, splits and regenerates substantially short multi-cue blocks at suitable cue boundaries. Requires at least one second and twenty percent of shortfall; blocks carrying playback delay stay together to preserve catch-up. Original plan versions remain available.",
+        "speech_block_early_repair_enabled": "After voiceover generation, splits and regenerates substantially short multi-cue blocks at suitable cue boundaries. Uses the configured early-finish and timing-improvement thresholds; blocks carrying playback delay stay together to preserve catch-up. Original plan versions remain available.",
+        "speech_block_early_repair_min_shortfall_ms": "Minimum spare time after accounting for audio duration and start delay. This and the percentage threshold must both be met before a combined block is considered for splitting.",
+        "speech_block_early_repair_min_shortfall_percent": "Minimum percentage of the source cue span left unused by speech and start delay. Both early-finish thresholds must be met.",
+        "speech_block_early_repair_min_advance_ms": "Minimum estimated improvement at a later cue boundary. The estimate uses spoken-text proportions rather than word timestamps.",
+        "speech_block_early_repair_min_child_span_ms": "Minimum span of source cues on each side of a proposed split. This limits tiny fragments; it does not require the generated audio to fill that span.",
     },
     "audio": {
         "audio_verification_mode": "Selects whether generated speech takes receive the optional raw-signal screen; off disables checks and signal records RMS, clipping, DC offset, tails, and duration anomalies.",
@@ -788,6 +792,10 @@ _METADATA: dict[str, dict[str, dict[str, object]]] = {
             "unit": "milliseconds",
             "applicability": "Local Pandrator speech-block segmentation only.",
         },
+        "speech_block_early_repair_min_shortfall_ms": {"minimum": 100, "maximum": 60000, "unit": "milliseconds", "applicability": "Optional voiceover timing repair only."},
+        "speech_block_early_repair_min_shortfall_percent": {"minimum": 1, "maximum": 95, "unit": "percent", "applicability": "Optional voiceover timing repair only."},
+        "speech_block_early_repair_min_advance_ms": {"minimum": 100, "maximum": 60000, "unit": "milliseconds", "applicability": "Optional voiceover timing repair only."},
+        "speech_block_early_repair_min_child_span_ms": {"minimum": 250, "maximum": 60000, "unit": "milliseconds", "applicability": "Optional voiceover timing repair only."},
         "speech_block_early_repair_enabled": {
             "applicability": "Subtitle-timed voiceover generation only.",
             "caveat": "Optional and off by default. Repair generates additional speech takes.",

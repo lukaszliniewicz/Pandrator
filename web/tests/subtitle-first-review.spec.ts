@@ -146,17 +146,82 @@ test('early voiceover repair is optional and persists in block settings', async 
   });
   await expect(repair).not.toBeChecked();
   await repair.check();
+  await dialog.getByText('Repair thresholds', { exact: true }).click();
+  const earlyTime = dialog.getByRole('spinbutton', {
+    name: /^Finish early by at least \(ms\)/
+  });
+  await earlyTime.fill('750');
+  await dialog
+    .getByRole('spinbutton', { name: /^Finish early by at least \(%\)/ })
+    .fill('15');
+  await dialog
+    .getByRole('spinbutton', { name: /^Minimum timing improvement/ })
+    .fill('800');
+  await dialog
+    .getByRole('spinbutton', { name: /^Minimum cue span per new block/ })
+    .fill('1200');
   await dialog.getByRole('button', { name: 'Save block settings' }).click();
   await expect(dialog).toBeHidden();
   const settings = await (
     await page.request.get(`${endpoint}/settings/tts`)
   ).json();
   expect(settings.effective.speech_block_early_repair_enabled).toBe(true);
+  expect(settings.effective.speech_block_early_repair_min_shortfall_ms).toBe(
+    750
+  );
+  expect(
+    settings.effective.speech_block_early_repair_min_shortfall_percent
+  ).toBe(15);
+  expect(settings.effective.speech_block_early_repair_min_advance_ms).toBe(800);
+  expect(settings.effective.speech_block_early_repair_min_child_span_ms).toBe(
+    1200
+  );
   await page.reload();
   await page
     .getByRole('button', { name: 'Block settings', exact: true })
     .click();
   await expect(repair).toBeChecked();
+  await dialog.getByText('Repair thresholds', { exact: true }).click();
+  await expect(earlyTime).toHaveValue('750');
+  const help = dialog.getByRole('button', {
+    name: /^About Minimum cue span per new block/
+  });
+  await help.scrollIntoViewIfNeeded();
+  await help.focus();
+  const tooltip = help.getByRole('tooltip');
+  await expect(tooltip).toBeVisible();
+  expect(
+    await tooltip.evaluate((element) => {
+      const rect = element.getBoundingClientRect();
+      return (
+        element.matches(':popover-open') &&
+        rect.top >= 0 &&
+        rect.bottom <= innerHeight &&
+        rect.left >= 0 &&
+        rect.right <= innerWidth &&
+        element.contains(
+          document.elementFromPoint(
+            rect.left + rect.width / 2,
+            rect.top + rect.height / 2
+          )
+        )
+      );
+    })
+  ).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath('repair-help-popup.png') });
+  await help.press('Escape');
+  await expect(tooltip).toBeHidden();
+  await expect(dialog).toBeVisible();
+  expect(
+    await dialog.evaluate((element) => {
+      const rect = element.getBoundingClientRect();
+      return (
+        rect.top >= 0 &&
+        rect.bottom <= innerHeight &&
+        Math.abs(rect.left + rect.width / 2 - innerWidth / 2) < 2
+      );
+    })
+  ).toBe(true);
   await page.screenshot({
     path: testInfo.outputPath('early-repair-settings.png')
   });
