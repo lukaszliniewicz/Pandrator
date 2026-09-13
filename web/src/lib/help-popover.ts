@@ -5,12 +5,14 @@ export function helpPopover(
   scope: () => HTMLElement | undefined = anchor
 ) {
   let hideTimer: ReturnType<typeof setTimeout> | undefined;
+  let anchorRect: DOMRect | undefined;
 
   function hide() {
     clearTimeout(hideTimer);
     if (typeof window === 'undefined') return;
     const node = popup();
     if (node?.matches(':popover-open')) node.hidePopover();
+    anchorRect = undefined;
     window.removeEventListener('scroll', onScroll, true);
     window.removeEventListener('resize', hide);
     document.removeEventListener('pointerdown', outside);
@@ -23,6 +25,17 @@ export function helpPopover(
 
   function onScroll(event: Event) {
     if (event.target instanceof Node && popup()?.contains(event.target)) return;
+    const rect = anchor()?.getBoundingClientRect();
+    // A scroll queued before opening, or in another panel, need not dismiss help.
+    if (
+      rect &&
+      anchorRect &&
+      rect.top === anchorRect.top &&
+      rect.left === anchorRect.left &&
+      rect.bottom === anchorRect.bottom &&
+      rect.right === anchorRect.right
+    )
+      return;
     hide();
   }
 
@@ -33,6 +46,7 @@ export function helpPopover(
     if (!node || !trigger || node.matches(':popover-open')) return;
     node.showPopover();
     const rect = trigger.getBoundingClientRect();
+    anchorRect = rect;
     const size = node.getBoundingClientRect();
     node.style.left = `${Math.max(8, Math.min(rect.right - size.width, window.innerWidth - size.width - 8))}px`;
     node.style.top = `${Math.max(8, Math.min(rect.bottom + size.height + 8 <= window.innerHeight ? rect.bottom + 6 : rect.top - size.height - 6, window.innerHeight - size.height - 8))}px`;

@@ -1111,6 +1111,9 @@ test('speech-plan history shows repair outcomes in a full dialog without changin
   ).json();
   expect(after.plan_revision_id).toBe(activeId);
   await page.setViewportSize({ width: 390, height: 844 });
+  await expect(dialog).toHaveCSS('width', '390px');
+  await expect(dialog).toHaveCSS('height', '844px');
+  expect(await dialog.boundingBox()).toMatchObject({ x: 0, y: 0 });
   await expect(
     dialog.getByRole('navigation', { name: 'Plan versions' })
   ).toBeVisible();
@@ -1125,6 +1128,75 @@ test('speech-plan history shows repair outcomes in a full dialog without changin
   });
   await dialog.getByRole('button', { name: 'Close', exact: true }).click();
   await expect(dialog).toBeHidden();
+});
+
+test('narrow screens use the full viewport for dialogs and the generation drawer', async ({
+  page
+}, testInfo) => {
+  await signIn(page);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page
+    .getByRole('button', { name: /Create subtitles/ })
+    .first()
+    .click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toHaveCSS('width', '390px');
+  await expect(dialog).toHaveCSS('height', '844px');
+  expect(await dialog.boundingBox()).toMatchObject({ x: 0, y: 0 });
+  await page.screenshot({
+    path: testInfo.outputPath('mobile-session-dialog.png')
+  });
+  await dialog.getByRole('button', { name: 'Close', exact: true }).click();
+
+  const sessionId = await createGenerationPlan(page, [
+    { text: 'The generation drawer should use the available screen space.' },
+    { text: 'Its controls and speech blocks must remain reachable.' }
+  ]);
+  await page.goto(`/sessions/${sessionId}`);
+  const drawer = page.locator('.generation-drawer');
+  await drawer.getByRole('button', { name: 'Generation', exact: true }).click();
+  for (const viewport of [
+    { width: 390, height: 844 },
+    { width: 700, height: 600 },
+    { width: 700, height: 390 }
+  ]) {
+    await page.setViewportSize(viewport);
+    await expect(drawer).toHaveCSS('width', `${viewport.width}px`);
+    await expect(drawer).toHaveCSS('height', `${viewport.height}px`);
+    expect(await drawer.boundingBox()).toMatchObject({ x: 0, y: 0 });
+    await expect(
+      drawer.getByRole('button', { name: 'Use half height' })
+    ).toBeHidden();
+    await expect(
+      drawer.getByRole('button', { name: 'Generation', exact: true })
+    ).toBeInViewport();
+    await expect(page.locator('body')).toHaveCSS('overflow', 'hidden');
+    await page.screenshot({
+      path: testInfo.outputPath(
+        `drawer-${viewport.width}-${viewport.height}.png`
+      )
+    });
+  }
+  await drawer.getByRole('button', { name: 'Generation', exact: true }).click();
+  await expect(drawer).toHaveAttribute('data-generation-layout', 'collapsed');
+  await expect(page.locator('body')).not.toHaveCSS('overflow', 'hidden');
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await drawer.getByRole('button', { name: 'Generation', exact: true }).click();
+  await drawer.getByRole('button', { name: 'Use half height' }).click();
+  await expect(drawer).toHaveAttribute('data-generation-layout', 'half');
+  await expect
+    .poll(async () => Math.round((await drawer.boundingBox())!.height))
+    .toBe(374);
+  await page.setViewportSize({ width: 700, height: 600 });
+  await expect(drawer).toHaveAttribute('data-generation-layout', 'half');
+  await expect(drawer).toHaveCSS('height', '600px');
+  await expect(
+    drawer.getByRole('button', { name: 'Use full height' })
+  ).toBeHidden();
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await expect
+    .poll(async () => Math.round((await drawer.boundingBox())!.height))
+    .toBe(374);
 });
 
 test('speech-block boundaries expose evidence and cursor edits are reversible', async ({
@@ -1486,8 +1558,6 @@ test('generation drawer layout survives segment regeneration refreshes', async (
   const drawer = page.locator('[data-generation-layout]');
   await expect(drawer).toHaveAttribute('data-generation-layout', 'collapsed');
   await page.getByRole('button', { name: 'Generation', exact: true }).click();
-  await expect(drawer).toHaveAttribute('data-generation-layout', 'half');
-  await page.getByRole('button', { name: 'Use full height' }).click();
   await expect(drawer).toHaveAttribute('data-generation-layout', 'full');
 
   const regenerate = page.getByRole('button', {
@@ -1583,7 +1653,7 @@ test('generation drawer layout survives segment regeneration refreshes', async (
   await page.goto(`/sessions/${unrelatedSessionId}`);
   await expect(drawer).toHaveAttribute('data-generation-layout', 'collapsed');
   await page.getByRole('button', { name: 'Generation', exact: true }).click();
-  await expect(drawer).toHaveAttribute('data-generation-layout', 'half');
+  await expect(drawer).toHaveAttribute('data-generation-layout', 'full');
 });
 
 test('selecting a take from history returns to Active mix without changing another row', async ({

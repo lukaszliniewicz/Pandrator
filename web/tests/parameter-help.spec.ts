@@ -28,6 +28,8 @@ test('technical setting names expose pipeline help on hover and keyboard focus',
   await expect(help).toBeVisible();
 
   await help.hover();
+  // Browsers can deliver a queued scroll event after scrolling the trigger into view.
+  await page.evaluate(() => document.dispatchEvent(new Event('scroll')));
   await expect(tooltip).toBeVisible();
   await expect(tooltip).toContainText(/transcription|recognition|engine/i);
   await expect(tooltip).toContainText(/Choices:/);

@@ -225,6 +225,19 @@ test('early voiceover repair is optional and persists in block settings', async 
   await page.screenshot({
     path: testInfo.outputPath('early-repair-settings.png')
   });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(dialog).toHaveCSS('width', '390px');
+  await expect(dialog).toHaveCSS('height', '844px');
+  expect(await dialog.boundingBox()).toMatchObject({ x: 0, y: 0 });
+  await dialog
+    .getByRole('button', { name: 'Save block settings' })
+    .scrollIntoViewIfNeeded();
+  await expect(
+    dialog.getByRole('button', { name: 'Save block settings' })
+  ).toBeInViewport();
+  await page.screenshot({
+    path: testInfo.outputPath('mobile-block-settings.png')
+  });
 });
 
 test('gentle voiceover slowdown is optional and persists in audio settings', async ({

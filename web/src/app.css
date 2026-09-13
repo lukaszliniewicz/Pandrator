@@ -107,6 +107,29 @@ body::-webkit-scrollbar-thumb:hover,
   border-color: transparent;
   background-clip: padding-box;
 }
+@media (width < 48rem) {
+  :root :is(dialog:modal, [role='dialog'][aria-modal='true'], .modal-panel) {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    max-width: none;
+    height: 100dvh;
+    max-height: 100dvh;
+    margin: 0;
+    border-radius: 0;
+    background: var(--paper-strong);
+    overflow: auto;
+    overscroll-behavior: contain;
+  }
+  body:has(
+    dialog:modal,
+    [role='dialog'][aria-modal='true'],
+    .modal-panel,
+    .generation-drawer:is(.half, .full)
+  ) {
+    overflow: hidden;
+  }
+}
 .scrollbar-on-demand {
   scrollbar-color: transparent transparent;
 }

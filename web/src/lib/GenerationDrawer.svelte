@@ -1620,7 +1620,7 @@
   >
     <header
       class:border-b={mode !== 'collapsed'}
-      class="generation-header flex flex-wrap items-center gap-3 border-[var(--line)] px-4 py-3 lg:flex-nowrap"
+      class="generation-header flex shrink-0 flex-wrap items-center gap-3 border-[var(--line)] px-4 py-3 lg:flex-nowrap"
     >
       <button
         onclick={() => (mode = mode === 'collapsed' ? 'full' : 'collapsed')}
@@ -1879,7 +1879,7 @@
         {#if mode !== 'collapsed'}
           <button
             onclick={() => (mode = mode === 'full' ? 'half' : 'full')}
-            class="action icon-action"
+            class="action icon-action drawer-height-toggle"
             title={mode === 'full' ? 'Use half height' : 'Use full height'}
             aria-label={mode === 'full' ? 'Use half height' : 'Use full height'}
             >{#if mode === 'full'}<Minimize2 size={14} />{:else}<Maximize2
@@ -1891,7 +1891,7 @@
     </header>
 
     {#if mode !== 'collapsed'}
-      <div class="flex h-[calc(100%-3.8rem)] min-h-0 flex-col overflow-y-auto">
+      <div class="flex min-h-0 flex-1 flex-col overflow-y-auto">
         <div
           class="flex flex-wrap items-center justify-end gap-2 border-b border-[var(--line)] p-3"
         >
@@ -2638,6 +2638,8 @@
 
 <style>
   .generation-drawer {
+    display: flex;
+    flex-direction: column;
     height: 3.9rem;
     border: 1px solid var(--line);
     background: var(--paper-strong);
@@ -2649,6 +2651,19 @@
   }
   .generation-drawer.full {
     height: calc(100vh - 1.5rem);
+  }
+  @media (width < 48rem) {
+    .generation-drawer:is(.half, .full) {
+      inset: 0;
+      height: 100dvh;
+      border-radius: 0;
+    }
+    .run-picker .mini {
+      max-width: calc(100vw - 8rem);
+    }
+    .generation-drawer .drawer-height-toggle {
+      display: none;
+    }
   }
   .run-progress {
     height: 0.34rem;
