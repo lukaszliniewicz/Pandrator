@@ -13,6 +13,7 @@ An editorial edit creates an immutable descendant of a plan already used by a ge
 - Preserve immutable run inputs. Editing alone does not pause generation. Publish late results into the active editorial descendant, matching text, voice, language, source references and other input fields. Mismatched old wording remains stale rather than current. Actual split, merge, restore and unrelated branches stop propagation.
 - Reconcile pre-fix missing links during explicit edit/generation mutations, not GET requests. Shared audio artifacts are linked rather than duplicated on disk.
 - Keep scheduling ownership separate from output-plan ownership. Targeted regeneration on an edited descendant requests a checkpoint pause of its running ancestor, then resumes it without manual Pause/Resume. Explicit user pauses and cancellation remain authoritative. Canceling a queued replacement releases the temporary pause or transfers resume responsibility to another waiting replacement.
+- Preserve the original requested segment IDs on both automatic and manual resume. Interrupting an independent targeted regeneration must not expand it into a whole-plan run.
 - Guard take selection so an in-flight result does not replace a user's later explicit selection.
 - Serialize drawer saves, resolve changed IDs after editorial copying, wait for pending saves before regeneration, and block generation after a failed save until it is corrected. Use the returned ID for save-and-regenerate.
 - Add Regenerate all stale in the drawer header. Enumerate the whole pinned active plan, independent of viewport/search. Exclude removed and never-generated rows, reject revision changes, and never turn an empty result into a full run.
@@ -30,5 +31,7 @@ An editorial edit creates an immutable descendant of a plan already used by a ge
 ```
 
 Svelte check: zero errors and zero warnings. Production frontend build succeeded. The seven focused browser/helper checks in `web/tests/generation-edit-regeneration.spec.ts` passed in Chromium and Firefox. Browser testing used the disposable test workspace, not the user's live session. Its unrelated mock Silero catalogue probe returned 404; tests passed. Backend runs emitted the existing Python audioop deprecation warning.
+
+A final additional regression covers an interrupted two-block targeted output and verifies that its resume never synthesizes the unrequested third block. The 31-test edit/regeneration subset passed after this guard was added, bringing distinct backend coverage in these focused runs to 193 tests.
 
 The tests simulate controlled synthesis to exercise in-flight edits, retained stale audio, compatible and incompatible late results, repeated standalone regeneration, temporary scheduling pauses, failure, cancellation, and explicit selections. They do not claim a new full-session TTS generation or listening assessment.

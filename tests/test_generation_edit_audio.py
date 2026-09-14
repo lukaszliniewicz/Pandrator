@@ -302,3 +302,40 @@ def test_cancel_replacement_does_not_undo_explicit_pause(case):
     generation.cancel(child["id"])
     with case.database.session() as session:
         assert session.get(GenerationRun, original["id"]).pause_requested
+
+
+def test_interrupting_a_targeted_output_does_not_expand_resume_to_full_plan(case):
+    original = case._start()
+    execute(case, original)
+    edit(case, 0, "Edited one")
+    current = page(case)
+    requested = [row["id"] for row in current["items"][:2]]
+    targeted = case._start(operation="regenerate", segment_ids=requested,
+                          speech_plan_revision_id=current["plan_revision_id"])
+    handlers = case.app.extensions["pandrator"]["workflow_handlers"]
+    child = None
+
+    def synth(text, *_args, **_kwargs):
+        nonlocal child
+        if child is None:
+            child = case._start(operation="regenerate", segment_ids=[requested[0]],
+                                speech_plan_revision_id=current["plan_revision_id"])
+        return AudioSegment.silent(duration=20)
+
+    with case.database.session() as session:
+        payload = dict(session.get(Job, targeted["job_id"]).payload_json)
+    with patch.object(handlers.tts_providers, "synthesize", side_effect=synth):
+        result = case._run_job(handlers, payload)
+    assert result["status"] == "paused"
+    with case.database.session() as session:
+        child_payload = dict(session.get(Job, child["job_id"]).payload_json)
+    with case._fake_tts([], [], batch_size=1) as handlers:
+        result = case._run_job(handlers, child_payload)
+    assert result["resumed_source_job_id"]
+    with case.database.session() as session:
+        resume_payload = dict(session.get(Job, result["resumed_source_job_id"]).payload_json)
+    assert resume_payload["segment_ids"] == requested
+    calls = []
+    with case._fake_tts(calls, [], batch_size=1) as handlers:
+        case._run_job(handlers, resume_payload)
+    assert calls == ["Two"], "The unrequested third block must not be synthesized"

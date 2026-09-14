@@ -4229,6 +4229,7 @@ class GenerationService:
 
         inherit_edit_copy_audio(session, plan_revision_id)
         snapshot["generation_selection_guards"] = capture_selection_guards(session, plan_revision_id)
+        snapshot["generation_request_segment_ids"] = list(requested_segment_ids)
         freeze_speech_snapshot(session, plan_revision_id, snapshot, explicit=bool(prepared.get("explicit_speech_plan_revision_id")))
         from .generation_audio_identity import plan_audio_identities, take_reuse_reason
 
@@ -4364,9 +4365,12 @@ class GenerationService:
             run.updated_at = utcnow()
             session_id = run.session_id
             snapshot = dict(run.settings_snapshot_json or {})
+            from .generation_edit_audio import resume_segment_ids
+
+            selected_ids = resume_segment_ids(session, run)
         job = self.jobs.enqueue(
             "generation.run",
-            {"generation_run_id": run_id, "segment_ids": [], "operation": "resume"},
+            {"generation_run_id": run_id, "segment_ids": selected_ids, "operation": "resume"},
             session_id=session_id,
             resource_keys=self._resource_keys(session_id, snapshot),
         )

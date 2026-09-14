@@ -72,6 +72,17 @@ def running_edit_ancestor(session: Any, revision_id: str) -> GenerationRun | Non
     return None
 
 
+def resume_segment_ids(session: Any, run: GenerationRun) -> list[str]:
+    """Resume the original request, not every row of a targeted output plan."""
+    from .models import Job
+
+    snapshot = run.settings_snapshot_json or {}
+    if "generation_request_segment_ids" in snapshot:
+        return list(snapshot["generation_request_segment_ids"] or [])
+    job = session.get(Job, run.job_id) if run.job_id else None
+    return list((job.payload_json or {}).get("segment_ids") or []) if job else []
+
+
 def release_interrupted_run(session: Any, jobs: Any, child: GenerationRun) -> str | None:
     """Release a temporary pause, even if a queued replacement is canceled.
 
@@ -125,7 +136,7 @@ def release_interrupted_run(session: Any, jobs: Any, child: GenerationRun) -> st
     source.updated_at = utcnow()
     job = jobs.enqueue_in_session(
         session, "generation.run",
-        {"generation_run_id": source.id, "segment_ids": [], "operation": "resume"},
+        {"generation_run_id": source.id, "segment_ids": resume_segment_ids(session, source), "operation": "resume"},
         session_id=source.session_id,
         resource_keys=GenerationService._resource_keys(source.session_id, dict(source.settings_snapshot_json or {})),
     )
