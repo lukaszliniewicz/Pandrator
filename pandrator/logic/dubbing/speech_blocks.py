@@ -840,6 +840,8 @@ def _partition_variant_exact(
     part_count: int,
     min_chars: int,
     max_chars: int,
+    source_boundaries_only: bool = False,
+    prefer_linguistic_boundaries: bool = False,
 ) -> list[tuple[str, int, int, list[int]]] | None:
     """Partition one text variant into an exact number of balanced ranges.
 
@@ -854,11 +856,12 @@ def _partition_variant_exact(
         return None
     preferred_breaks = {end for _start, end, _subtitle in spans}
     positions = {0, len(text), *preferred_breaks}
-    positions.update(match.start() for match in re.finditer(r"\s+", text))
-    positions.update(
-        match.end()
-        for match in re.finditer(r"[.!?,;:\u2026\u3002\uff01\uff1f\u2014\u2013]", text)
-    )
+    if not source_boundaries_only:
+        positions.update(match.start() for match in re.finditer(r"\s+", text))
+        positions.update(
+            match.end()
+            for match in re.finditer(r"[.!?,;:\u2026\u3002\uff01\uff1f\u2014\u2013]", text)
+        )
 
     break_costs: dict[int, float] = {}
 
@@ -906,8 +909,17 @@ def _partition_variant_exact(
     candidates = sorted(
         position for position in positions if 0 <= position <= len(text)
     )
-    boundaries = solve(candidates)
+    boundaries = None
+    if prefer_linguistic_boundaries:
+        linguistic = {0, len(text)}
+        linguistic.update(
+            match.end()
+            for match in re.finditer(r"[.!?,;:\u2026\u3002\uff01\uff1f\u2014\u2013](?:[\"'»”’)]*)", text)
+        )
+        boundaries = solve(sorted(linguistic))
     if boundaries is None:
+        boundaries = solve(candidates)
+    if boundaries is None and not source_boundaries_only:
         # Unspaced scripts and unexpectedly long tokens still need to respect
         # the synthesis engine's hard cap.
         boundaries = solve(list(range(len(text) + 1)))
@@ -982,14 +994,49 @@ def _split_utterance(
     max_chars: int,
     *,
     reviewed_speech: bool,
+    preserve_source_boundaries: bool = False,
+    prefer_linguistic_boundaries: bool = False,
 ) -> list[_SpeechPart]:
+    if preserve_source_boundaries and any(
+        end - start > max_chars for start, end, _ref in utterance.optimized_spans
+    ):
+        # Oversized passages are isolated before reconstruction. Only this
+        # exceptional case may cut within a source passage. Keep the shared
+        # alignment group so assembly still fits its real, combined window.
+        parts = _split_utterance(
+            utterance, language_code, min_chars, max_chars,
+            reviewed_speech=reviewed_speech,
+            prefer_linguistic_boundaries=True,
+        )
+        total = sum(len(part.optimized_text) for part in parts)
+        duration = utterance.end_ms - utterance.start_ms
+        consumed = 0
+        for part in parts:
+            start = utterance.start_ms + round(duration * consumed / total)
+            consumed += len(part.optimized_text)
+            end = utterance.start_ms + round(duration * consumed / total)
+            part.risk_flags.append("estimated_internal_timing")
+            part.formation_events.append(_event(
+                "split_oversized_passage", "estimated_passage_capacity_split",
+                "Oversized passage split with character-proportional timing estimates; "
+                "audio remains grouped within the original passage window.",
+                measurements={
+                    "estimated_start_ms": start, "estimated_end_ms": end,
+                    "source_start_ms": utterance.start_ms,
+                    "source_end_ms": utterance.end_ms,
+                    "timing_basis": "character_count_estimate",
+                    "max_chars": max_chars,
+                },
+                source_references=part.subtitles,
+            ))
+        return parts
     # SentenceSplitter remains useful for estimating a natural lower bound,
     # while the exact paired partition below is responsible for preserving
     # display/speech correspondence and provenance.
-    display_hint = _split_subtitle_text(
+    display_hint = [] if preserve_source_boundaries else _split_subtitle_text(
         utterance.text, language_code, min_chars, max_chars
     )
-    speech_hint = _split_subtitle_text(
+    speech_hint = [] if preserve_source_boundaries else _split_subtitle_text(
         utterance.optimized_text, language_code, min_chars, max_chars
     )
     # The hard limit protects the text sent to TTS.  When a reviewed speech
@@ -1010,11 +1057,13 @@ def _split_utterance(
     # A subtitle can itself contain several complete thoughts. Prefer their
     # sentence boundaries instead of making every block nearly the hard cap.
     sentence_count = len(re.findall(r"[.!?。！？](?:[\"'»”’)]*)\s+", utterance.optimized_text)) + 1
-    if sentence_count > 1 and len(utterance.optimized_text) > max_chars * 0.8:
+    if not preserve_source_boundaries and sentence_count > 1 and len(utterance.optimized_text) > max_chars * 0.8:
         part_count = max(part_count, min(sentence_count, _minimum_part_count(
             utterance.optimized_text, max(1, int(max_chars * 0.8))
         )))
     maximum_parts = max(len(utterance.text), len(utterance.optimized_text), part_count)
+    if preserve_source_boundaries:
+        maximum_parts = len(utterance.optimized_spans)
     display_parts = None
     speech_parts = None
     while part_count <= maximum_parts:
@@ -1024,6 +1073,8 @@ def _split_utterance(
             part_count=part_count,
             min_chars=min_chars,
             max_chars=(max(len(utterance.text), 1) if reviewed_speech else max_chars),
+            source_boundaries_only=preserve_source_boundaries,
+            prefer_linguistic_boundaries=prefer_linguistic_boundaries,
         )
         speech_parts = _partition_variant_exact(
             utterance.optimized_text,
@@ -1031,7 +1082,19 @@ def _split_utterance(
             part_count=part_count,
             min_chars=min_chars,
             max_chars=max_chars,
+            source_boundaries_only=preserve_source_boundaries,
+            prefer_linguistic_boundaries=prefer_linguistic_boundaries,
         )
+        if preserve_source_boundaries and speech_parts is not None:
+            # The speech partition chooses whole source references. Project
+            # those same groups onto the display variant, never independently
+            # choose a different cut for a longer or shorter reviewed variant.
+            display_parts = []
+            for _text, _start, _end, refs in speech_parts:
+                spans = [span for span in utterance.text_spans if span[2] in refs]
+                start = display_parts[-1][2] if display_parts else 0
+                end = spans[-1][1]
+                display_parts.append((utterance.text[start:end].strip(), start, end, refs))
         if display_parts is not None and speech_parts is not None:
             break
         part_count += 1
@@ -1243,6 +1306,7 @@ def create_speech_blocks(
     max_internal_gap_ms: int | None = None,
     speaker_by_subtitle: Mapping[int, str] | None = None,
     speech_srt_content: str | None = None,
+    preserve_source_boundaries: bool = False,
 ) -> list[dict[str, object]]:
     """Create natural, speaker-safe Pandrator/Subdub speech blocks.
 
@@ -1253,6 +1317,10 @@ def create_speech_blocks(
     never spans a larger silent interval even if the sentence is unfinished.
     When ``speech_srt_content`` is supplied, display and reviewed speech text
     are partitioned together and neither variant is repeated.
+    With ``preserve_source_boundaries``, each input is an atomic timed passage:
+    capacity cuts group whole passages. Only an oversized individual passage
+    uses internal linguistic cuts, with explicitly estimated timing metadata
+    and a shared alignment group retaining its original timing window.
     """
     max_chars = max(1, int(max_chars))
     min_chars = max(1, min(int(min_chars), max_chars))
@@ -1274,9 +1342,10 @@ def create_speech_blocks(
         ),
     )
     language_code = normalize_language_code(target_language)
-    subtitles = parse_srt(srt_content)
+    subtitles = parse_srt(srt_content, infer_speakers=not preserve_source_boundaries)
     optimized_subtitles = (
-        parse_srt(speech_srt_content) if speech_srt_content is not None else None
+        parse_srt(speech_srt_content, infer_speakers=not preserve_source_boundaries)
+        if speech_srt_content is not None else None
     )
     if optimized_subtitles is not None and [item.index for item in subtitles] != [
         item.index for item in optimized_subtitles
@@ -1321,6 +1390,16 @@ def create_speech_blocks(
             and not _sentence_is_complete(previous.text)
             and -SAME_SPEAKER_OVERLAP_TOLERANCE_MS <= gap_ms <= continuation_threshold
             and gap_ms <= maximum_internal_gap
+            and (
+                not preserve_source_boundaries
+                or (
+                    len(part.optimized_text) <= max_chars
+                    and all(
+                        end - start <= max_chars
+                        for start, end, _ref in previous.optimized_spans
+                    )
+                )
+            )
         ):
             combined = _combine_parts(previous, part)
             combined.formation_events.append(
@@ -1401,6 +1480,7 @@ def create_speech_blocks(
             min_chars,
             max_chars,
             reviewed_speech=optimized_subtitles is not None,
+            preserve_source_boundaries=preserve_source_boundaries,
         )
     ]
 

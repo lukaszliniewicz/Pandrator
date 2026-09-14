@@ -2107,6 +2107,7 @@ class WorkflowHandlers:
             display_segments = parse_srt(display_srt)
         blocks = create_speech_blocks(
             display_srt,
+            preserve_source_boundaries=logical_rows is not None,
             target_language=language,
             min_chars=min_chars,
             max_chars=max_chars,
