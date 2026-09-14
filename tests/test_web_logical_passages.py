@@ -692,3 +692,33 @@ def test_unfinished_pause_merge_survives_real_dispatch_routes(app_case, merge_st
     cues = [cue for block in records for cue in block["provenance"]["source_cues"]]
     assert [(cue["start_ms"], cue["end_ms"]) for cue in cues] == [(0, 9160), (9360, 12000)]
     assert all(cue["start_ms"] != 4560 for cue in cues)
+
+
+@pytest.mark.parametrize("confidence,expected_count", [(0.1, 1), (0.9, 2)])
+def test_word_confidence_reaches_source_boundary_builder(app_case, confidence, expected_count):
+    case = app_case
+    _, source_id = case._source(texts=("First sentence. Second sentence.",))
+    with case.extension["database"].session() as session:
+        artifact = session.get(Artifact, source_id)
+        cue = session.scalar(select(Segment).where(
+            Segment.revision_id == artifact.metadata_json["revision_id"]))
+        for index, text in enumerate(cue.text.split()):
+            session.add(TimedWord(revision_id=cue.revision_id, segment_id=cue.id,
+                                  ordinal=index, text=text, start_ms=index * 250,
+                                  end_ms=(index + 1) * 250,
+                                  confidence=confidence if index == 1 else 1.0))
+    with case.extension["database"].session() as session:
+        result = source_passages(session, session.get(Artifact, source_id))
+        assert len(result) == expected_count
+        assert ' '.join(p['text'] for p in result) == "First sentence. Second sentence."
+
+
+def test_preserved_ledger_is_not_resegmented_by_new_policy(app_case):
+    _, original, _ = source(app_case)
+    with app_case.extension["database"].session() as session:
+        managed = session.get(Artifact, original.id)
+        rows = source_passages(session, managed)
+        attach_passages(managed, rows, source=managed)
+        with patch('pandrator.web.logical_passages.build_source_passages',
+                   side_effect=AssertionError('Saved passages must stay saved')):
+            assert source_passages(session, managed) == rows

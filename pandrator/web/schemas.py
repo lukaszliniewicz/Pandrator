@@ -670,6 +670,7 @@ class GenerationPlanTopologyRequest(StrictModel):
     segment_id: str | None = Field(default=None, min_length=1, max_length=80)
     cursor: StrictInt | None = None
     text_layer: Literal["display", "speech"] | None = None
+    passage_boundary_id: str | None = Field(default=None, pattern=r"^pb-[0-9a-f]{24}$")
     left_segment_id: str | None = Field(default=None, min_length=1, max_length=80)
     right_segment_id: str | None = Field(default=None, min_length=1, max_length=80)
     target_revision_id: str | None = Field(default=None, min_length=1, max_length=80)
@@ -683,6 +684,7 @@ class GenerationPlanTopologyRequest(StrictModel):
             "left_segment_id": self.left_segment_id,
             "right_segment_id": self.right_segment_id,
             "target_revision_id": self.target_revision_id,
+            "passage_boundary_id": self.passage_boundary_id,
         }
         required: set[str]
         if self.action == "split":
@@ -696,6 +698,7 @@ class GenerationPlanTopologyRequest(StrictModel):
             key
             for key, value in fields.items()
             if key not in required and value is not None
+            and not (self.action == "split" and key == "passage_boundary_id")
         )
         if missing or forbidden:
             details = []

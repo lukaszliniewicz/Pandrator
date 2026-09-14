@@ -2322,6 +2322,8 @@ class GenerationService:
                             select(Artifact).where(Artifact.id.in_(artifact_ids))
                         ).all()
                     }
+            from .passage_markers import describe_passages
+
             items = [
                 {
                     "id": item.id,
@@ -2334,6 +2336,8 @@ class GenerationService:
                     "speech_block_provenance": dict(
                         item.speech_block_provenance_json or {}
                     ),
+                    **({"passage_structure": describe_passages(item)}
+                       if (view == "full" and fields is None) or (fields and "passage_structure" in fields) else {}),
                     "alignment_group": item.alignment_group,
                     "optimized_text": item.optimized_text,
                     "speech_plan": dict(item.speech_plan_json or {}),
@@ -2469,7 +2473,10 @@ class GenerationService:
 
     @staticmethod
     def _updated_segment_payload(segment: GenerationSegment) -> dict[str, Any]:
+        from .passage_markers import describe_passages
+
         return {
+            "passage_structure": describe_passages(segment),
             "id": segment.id,
             "ordinal": segment.ordinal,
             "node_kind": segment.node_kind,
@@ -3391,13 +3398,22 @@ class GenerationService:
                 if layer == "speech"
                 else segment.optimized_text or segment.text
             )
-            companion_cursor, mapping_rule = self._companion_offset(
-                selected_text,
-                companion_text,
-                cursor,
-                selected_layer=layer,
-                provenance=provenance,
-            )
+            if operation.get("passage_boundary_id"):
+                from .passage_markers import validate_passage_split
+
+                verified_display, verified_speech = validate_passage_split(
+                    segment, operation["passage_boundary_id"], layer, cursor,
+                )
+                companion_cursor = verified_speech if layer == "display" else verified_display
+                mapping_rule = "verified_passage_boundary"
+            else:
+                companion_cursor, mapping_rule = self._companion_offset(
+                    selected_text,
+                    companion_text,
+                    cursor,
+                    selected_layer=layer,
+                    provenance=provenance,
+                )
             if layer == "display":
                 display_cursor, speech_cursor = cursor, companion_cursor
             else:

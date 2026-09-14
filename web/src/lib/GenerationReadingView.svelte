@@ -4,6 +4,8 @@
   import type { GenerationSegmentChanges } from './domain-api';
   import type { ReadingBlock } from './generation-view-models';
   import SpeechBoundaryMarker from './SpeechBoundaryMarker.svelte';
+  import PassageText from './PassageText.svelte';
+  import type { PassageBoundary, PassageTextLayer } from './passage-structure';
   import SegmentRegenerationMenu from './SegmentRegenerationMenu.svelte';
 
   let {
@@ -25,6 +27,8 @@
     onregeneratewith,
     onpatch,
     onmerge,
+    showPassageBoundaries = false,
+    onpassage,
     topologyDisabled = false
   }: {
     blocks: ReadingBlock[];
@@ -51,6 +55,12 @@
       changes: GenerationSegmentChanges
     ) => unknown;
     onmerge: (left: GenerationSegment, right: GenerationSegment) => unknown;
+    showPassageBoundaries?: boolean;
+    onpassage?: (
+      item: GenerationSegment,
+      layer: PassageTextLayer,
+      boundary: PassageBoundary
+    ) => void;
     topologyDisabled?: boolean;
   } = $props();
 </script>
@@ -110,16 +120,25 @@
             class:removed={item.removed}
             class="reading-segment"
           >
-            <span
-              role="button"
-              tabindex="0"
-              onclick={(event) => onactivate(event, item)}
-              onkeydown={(event) => onactivatekeyboard(event, item)}
-              class="reading-sentence"
-              title={onhasaudio(item)
-                ? `Play segment ${item.ordinal + 1}`
-                : 'Select segment actions'}>{ontext(item)}</span
-            >
+            {#if showPassageBoundaries}
+              <PassageText
+                {item}
+                layer={textMode}
+                oninspect={(segment, layer, boundary) =>
+                  onpassage?.(segment, layer, boundary)}
+              />
+            {:else}
+              <span
+                role="button"
+                tabindex="0"
+                onclick={(event) => onactivate(event, item)}
+                onkeydown={(event) => onactivatekeyboard(event, item)}
+                class="reading-sentence"
+                title={onhasaudio(item)
+                  ? `Play segment ${item.ordinal + 1}`
+                  : 'Select segment actions'}>{ontext(item)}</span
+              >
+            {/if}
             <span
               class="reading-actions"
               aria-label={`Actions for segment ${item.ordinal + 1}`}

@@ -7,6 +7,8 @@
   import type { VoiceDescriptor } from './voice-catalog';
   import AudioPlayer from './AudioPlayer.svelte';
   import SpeechBoundaryMarker from './SpeechBoundaryMarker.svelte';
+  import PassageText from './PassageText.svelte';
+  import type { PassageBoundary, PassageTextLayer } from './passage-structure';
   import SegmentRegenerationMenu from './SegmentRegenerationMenu.svelte';
   import WaveformPeaks from './WaveformPeaks.svelte';
 
@@ -35,6 +37,8 @@
     onregeneratewith,
     onmerge,
     onsplit,
+    showPassageBoundaries = false,
+    onpassage,
     topologyDisabled = false,
     textMode = 'display'
   }: {
@@ -69,6 +73,12 @@
       textLayer: 'display' | 'speech',
       cursor: number
     ) => unknown;
+    showPassageBoundaries?: boolean;
+    onpassage?: (
+      item: GenerationSegment,
+      layer: PassageTextLayer,
+      boundary: PassageBoundary
+    ) => void;
     topologyDisabled?: boolean;
     textMode?: 'display' | 'speech';
   } = $props();
@@ -80,6 +90,7 @@
   };
 
   let cursorBySegment = $state<Record<string, CursorState>>({});
+  let editingPassageId = $state('');
 
   function codePointOffset(value: string, codeUnitOffset: number) {
     return Array.from(value.slice(0, codeUnitOffset)).length;
@@ -211,89 +222,119 @@
               >{item.speaker}</span
             >
           {/if}
-          {#if textMode === 'speech'}
-            <div
-              class="mb-1 flex items-center gap-1.5 text-[.65rem] font-medium text-[var(--accent)]"
-            >
-              <span class="rounded bg-[var(--accent-soft)] px-1.5 py-0.5"
-                >Spoken override (TTS only)</span
+          {#if showPassageBoundaries && editingPassageId !== item.id}
+            <div class="p-2 text-sm leading-relaxed">
+              <PassageText
+                {item}
+                layer={textMode}
+                oninspect={(segment, layer, boundary) =>
+                  onpassage?.(segment, layer, boundary)}
+              />
+              <button
+                type="button"
+                class="muted mt-2 text-xs underline underline-offset-2"
+                aria-label={`Edit text for segment ${item.ordinal + 1}`}
+                onclick={(event) => {
+                  event.stopPropagation();
+                  editingPassageId = item.id;
+                }}>Edit text</button
               >
-              <span class="muted max-w-md truncate">
-                {item.optimized_text
-                  ? 'Subtitles stay unchanged.'
-                  : 'Starts from the script; edits affect speech only.'}
-              </span>
-              {#if item.optimized_text}
-                <button
-                  type="button"
-                  class="muted ml-auto underline decoration-dotted underline-offset-2"
-                  onclick={(event) => {
-                    event.stopPropagation();
-                    onpatch(item, { optimized_text: null });
-                  }}>Reset to script</button
-                >
-              {/if}
             </div>
-            <textarea
-              use:autoExpand
-              value={item.optimized_text ?? item.text}
-              aria-label={`Spoken override for segment ${item.ordinal + 1}`}
-              data-generation-search-index={itemIndex}
-              onselect={(event) =>
-                rememberCursor(item, 'speech', event.currentTarget)}
-              onkeyup={(event) =>
-                rememberCursor(item, 'speech', event.currentTarget)}
-              oninput={(event) =>
-                rememberCursor(item, 'speech', event.currentTarget)}
-              onclick={(event) => {
-                event.stopPropagation();
-                rememberCursor(item, 'speech', event.currentTarget);
-              }}
-              onblur={(event) => {
-                const text = event.currentTarget.value.trim();
-                if (!text) {
-                  event.currentTarget.value = item.text;
-                  if (item.optimized_text)
-                    onpatch(item, { optimized_text: null });
-                  return;
-                }
-                const current = (item.optimized_text ?? item.text).trim();
-                if (text !== current) onpatch(item, { optimized_text: text });
-              }}
-              rows="1"
-              class="segment-text w-full rounded-lg border border-[var(--accent-soft)] bg-transparent p-2 focus:border-[var(--accent)]"
-            ></textarea>
           {:else}
-            <textarea
-              use:autoExpand
-              value={item.text}
-              aria-label={`Script text for segment ${item.ordinal + 1}`}
-              data-generation-search-index={itemIndex}
-              onselect={(event) =>
-                rememberCursor(item, 'display', event.currentTarget)}
-              onkeyup={(event) =>
-                rememberCursor(item, 'display', event.currentTarget)}
-              oninput={(event) =>
-                rememberCursor(item, 'display', event.currentTarget)}
-              onclick={(event) => {
-                event.stopPropagation();
-                rememberCursor(item, 'display', event.currentTarget);
-              }}
-              onblur={(event) => {
-                const text = event.currentTarget.value.trim();
-                if (text !== item.text.trim()) onpatch(item, { text });
-              }}
-              rows="1"
-              class="segment-text w-full rounded-lg border border-transparent bg-transparent p-2 focus:border-[var(--line)]"
-            ></textarea>
-            {#if item.optimized_text && item.optimized_text !== item.text}
-              <p
-                class="muted mt-0.5 mb-1 truncate text-[.65rem]"
-                title={`Spoken: ${item.optimized_text}`}
+            {#if textMode === 'speech'}
+              <div
+                class="mb-1 flex items-center gap-1.5 text-[.65rem] font-medium text-[var(--accent)]"
               >
-                <span class="font-medium text-[var(--accent)]">Spoken:</span>
-                {item.optimized_text}
-              </p>
+                <span class="rounded bg-[var(--accent-soft)] px-1.5 py-0.5"
+                  >Spoken override (TTS only)</span
+                >
+                <span class="muted max-w-md truncate">
+                  {item.optimized_text
+                    ? 'Subtitles stay unchanged.'
+                    : 'Starts from the script; edits affect speech only.'}
+                </span>
+                {#if item.optimized_text}
+                  <button
+                    type="button"
+                    class="muted ml-auto underline decoration-dotted underline-offset-2"
+                    onclick={(event) => {
+                      event.stopPropagation();
+                      onpatch(item, { optimized_text: null });
+                    }}>Reset to script</button
+                  >
+                {/if}
+              </div>
+              <textarea
+                use:autoExpand
+                value={item.optimized_text ?? item.text}
+                aria-label={`Spoken override for segment ${item.ordinal + 1}`}
+                data-generation-search-index={itemIndex}
+                onselect={(event) =>
+                  rememberCursor(item, 'speech', event.currentTarget)}
+                onkeyup={(event) =>
+                  rememberCursor(item, 'speech', event.currentTarget)}
+                oninput={(event) =>
+                  rememberCursor(item, 'speech', event.currentTarget)}
+                onclick={(event) => {
+                  event.stopPropagation();
+                  rememberCursor(item, 'speech', event.currentTarget);
+                }}
+                onblur={(event) => {
+                  const text = event.currentTarget.value.trim();
+                  if (!text) {
+                    event.currentTarget.value = item.text;
+                    if (item.optimized_text)
+                      onpatch(item, { optimized_text: null });
+                    return;
+                  }
+                  const current = (item.optimized_text ?? item.text).trim();
+                  if (text !== current) onpatch(item, { optimized_text: text });
+                }}
+                rows="1"
+                class="segment-text w-full rounded-lg border border-[var(--accent-soft)] bg-transparent p-2 focus:border-[var(--accent)]"
+              ></textarea>
+            {:else}
+              <textarea
+                use:autoExpand
+                value={item.text}
+                aria-label={`Script text for segment ${item.ordinal + 1}`}
+                data-generation-search-index={itemIndex}
+                onselect={(event) =>
+                  rememberCursor(item, 'display', event.currentTarget)}
+                onkeyup={(event) =>
+                  rememberCursor(item, 'display', event.currentTarget)}
+                oninput={(event) =>
+                  rememberCursor(item, 'display', event.currentTarget)}
+                onclick={(event) => {
+                  event.stopPropagation();
+                  rememberCursor(item, 'display', event.currentTarget);
+                }}
+                onblur={(event) => {
+                  const text = event.currentTarget.value.trim();
+                  if (text !== item.text.trim()) onpatch(item, { text });
+                }}
+                rows="1"
+                class="segment-text w-full rounded-lg border border-transparent bg-transparent p-2 focus:border-[var(--line)]"
+              ></textarea>
+              {#if item.optimized_text && item.optimized_text !== item.text}
+                <p
+                  class="muted mt-0.5 mb-1 truncate text-[.65rem]"
+                  title={`Spoken: ${item.optimized_text}`}
+                >
+                  <span class="font-medium text-[var(--accent)]">Spoken:</span>
+                  {item.optimized_text}
+                </p>
+              {/if}
+            {/if}
+            {#if showPassageBoundaries}
+              <button
+                type="button"
+                class="muted mb-2 text-xs underline underline-offset-2"
+                onclick={(event) => {
+                  event.stopPropagation();
+                  editingPassageId = '';
+                }}>Return to passage view</button
+              >
             {/if}
           {/if}
           {#if item.optimized_text || selectedTake?.llm_optimized}

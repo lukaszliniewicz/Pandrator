@@ -867,6 +867,7 @@ export type SpeechBlockTopologyOperation = {
   right_segment_id?: string;
   cursor?: number;
   text_layer?: 'display' | 'speech';
+  passage_boundary_id?: string;
   target_revision_id?: string;
 };
 

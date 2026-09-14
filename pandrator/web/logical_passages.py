@@ -110,6 +110,7 @@ def load_timing_reference(
                                 "start_ms": word.start_ms,
                                 "end_ms": word.end_ms,
                                 "speaker": word.speaker or "",
+                                "confidence": word.confidence,
                             }
                             for word in words
                         ],
@@ -262,7 +263,7 @@ def source_passages(
         language = document.language or (record.source_language if record else None)
         if not same_timing_language(language, (reference or {}).get("language")):
             words = []
-        passages = build_source_passages(cues, words)
+        passages = build_source_passages(cues, words, language_code=language or "")
     for row in passages:
         # Evidence tools still address real display cues in the selected artifact.
         # These are explicitly separate from model-visible passage ordinals.

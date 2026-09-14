@@ -1042,6 +1042,7 @@ type SpeechBlockProvenance = {
 };
 
 export type GenerationSegment = {
+  passage_structure?: import('./passage-structure').PassageStructure;
   search_matches?: { start: number; end: number }[];
   audio_reuse_reason?: string;
   has_reusable_take?: boolean;

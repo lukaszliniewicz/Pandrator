@@ -1,8 +1,94 @@
 from copy import deepcopy
-
 import pytest
-
 from pandrator.logic.dubbing.logical_passages import build_source_passages
+
+
+def _timed_fixture(parts, gaps=None, speaker="A"):
+    cues, words = [], []
+    now = 100
+    for ordinal, text in enumerate(parts):
+        start = now
+        for token in text.split():
+            words.append(_word(f"w{len(words)}", len(words), token, now, now + 100,
+                               segment_id=f"c{ordinal}", speaker=speaker))
+            now += 150
+        cues.append(_cue(f"c{ordinal}", ordinal, text, start, now - 50, speaker))
+        now += (gaps[ordinal] if gaps and ordinal < len(gaps) else 200) - 50
+    return cues, words
+
+
+def test_word_evidence_rejoins_zoom_adjective_noun_seam():
+    cues, words = _timed_fixture([
+        "Blum helped transform a local religious",
+        "controversy into a public national issue.",
+        "A new complete sentence."
+    ], gaps=[2160, 200])
+    result = build_source_passages(cues, words)
+    assert len(result) == 2
+    assert result[0]["text"] == cues[0]["text"] + " " + cues[1]["text"]
+    assert result[0]["source_cue_ids"] == ["c0", "c1"]
+    assert result[0]["source_word_ids"] == [w["id"] for w in words[:12]]
+    assert result[0]["start_ms"] == words[0]["start_ms"]
+    assert result[0]["end_ms"] == cues[1]["end_ms"]
+    assert "source_token_range" not in result[0]
+    assert len(result[0]["source_token_ranges"]) == 2
+    assert result[0]["bridged_pause_ms"] == 2160
+    assert result == build_source_passages(cues, words)
+
+
+def test_midphrase_word_pause_and_soft_capacity_do_not_force_cut():
+    cues, words = _timed_fixture(["We discussed an important local religious controversy together."])
+    for word in words[6:]:
+        word["start_ms"] += 2160
+        word["end_ms"] += 2160
+    cues[0]["end_ms"] += 2160
+    result = build_source_passages(cues, words, max_chars=12, max_span_ms=500)
+    assert [r["text"] for r in result] == [cues[0]["text"]]
+    assert result[0]["source_word_ids"] == [w["id"] for w in words]
+
+
+@pytest.mark.parametrize("issue", ["speaker", "unknown_speaker", "missing", "confidence", "overlap", "long_pause"])
+def test_source_seam_requires_reliable_complete_nonoverlapping_evidence(issue):
+    cues, words = _timed_fixture(["A local religious", "controversy became public."], gaps=[2160])
+    if issue == "speaker":
+        cues[1]["speaker"] = "B"
+    elif issue == "unknown_speaker":
+        for cue in cues:
+            cue["speaker"] = ""
+        for word in words:
+            word["speaker"] = ""
+    elif issue == "missing":
+        words.pop(1)
+    elif issue == "confidence":
+        words[1]["confidence"] = .1
+    elif issue == "overlap":
+        cues[0]["end_ms"] = cues[1]["start_ms"] + 50
+    elif issue == "long_pause":
+        for word in words[3:]:
+            word["start_ms"] += 3200
+            word["end_ms"] += 3200
+        cues[1]["start_ms"] += 3200
+        cues[1]["end_ms"] += 3200
+    result = build_source_passages(cues, words)
+    assert len(result) == 2
+    assert [r["text"] for r in result] == [c["text"] for c in cues]
+    assert "unresolved_source_seam" in result[0]["boundary_flags"]
+
+
+def test_source_seam_does_not_chain_moderate_hesitations():
+    cues, words = _timed_fixture(["The most important", "local religious", "controversy continued."], gaps=[1700, 1700])
+    result = build_source_passages(cues, words)
+    assert len(result) == 2
+    assert result[0]["source_cue_ids"] == ["c0", "c1"]
+    assert " ".join(r["text"] for r in result) == " ".join(c["text"] for c in cues)
+    assert [w for r in result for w in r["source_word_ids"]] == [w["id"] for w in words]
+
+
+def test_shared_punctuation_rules_handle_quote_and_abbreviation():
+    cues, words = _timed_fixture(['Professor Dr. Smith said “Hello world.” Another sentence.'])
+    result = build_source_passages(cues, words, max_chars=20)
+    assert [r["text"] for r in result] == ['Professor Dr. Smith said “Hello world.”', 'Another sentence.']
+
 
 
 def _cue(

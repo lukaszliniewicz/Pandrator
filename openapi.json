@@ -726,7 +726,10 @@
             "type": "array"
           },
           "id_namespace": {
-            "const": "source_revision_cue",
+            "enum": [
+              "source_revision_cue",
+              "logical_passage"
+            ],
             "title": "Id Namespace",
             "type": "string"
           },
@@ -1011,6 +1014,21 @@
             "title": "Cue Id",
             "type": "integer"
           },
+          "evidence_cue_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Evidence Cue Ids"
+          },
           "speaker": {
             "anyOf": [
               {
@@ -1037,6 +1055,18 @@
               }
             ],
             "default": null
+          },
+          "timing_basis": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Timing Basis"
           }
         },
         "required": [
@@ -1474,9 +1504,35 @@
         "additionalProperties": false,
         "properties": {
           "cue_id": {
-            "minimum": 1,
-            "title": "Cue Id",
-            "type": "integer"
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cue Id"
+          },
+          "cue_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "maxItems": 500,
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cue Ids"
           },
           "speaker": {
             "anyOf": [
@@ -1499,7 +1555,6 @@
           }
         },
         "required": [
-          "cue_id",
           "text"
         ],
         "title": "DispatchTranslationItem",
@@ -1701,6 +1756,19 @@
             ],
             "default": null,
             "title": "Left Segment Id"
+          },
+          "passage_boundary_id": {
+            "anyOf": [
+              {
+                "pattern": "^pb-[0-9a-f]{24}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Passage Boundary Id"
           },
           "right_segment_id": {
             "anyOf": [

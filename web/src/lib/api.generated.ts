@@ -3475,9 +3475,9 @@ export interface components {
             cues: components["schemas"]["DispatchCue"][];
             /**
              * Id Namespace
-             * @constant
+             * @enum {string}
              */
-            id_namespace: "source_revision_cue";
+            id_namespace: "source_revision_cue" | "logical_passage";
             /** Source Revision Id */
             source_revision_id: string;
             /** Valid Cue Ids */
@@ -3568,6 +3568,11 @@ export interface components {
             /** Cue Id */
             cue_id: number;
             /**
+             * Evidence Cue Ids
+             * @default null
+             */
+            evidence_cue_ids?: number[] | null;
+            /**
              * Speaker
              * @default null
              */
@@ -3576,6 +3581,11 @@ export interface components {
             text: string;
             /** @default null */
             timing?: components["schemas"]["DispatchCueTiming"] | null;
+            /**
+             * Timing Basis
+             * @default null
+             */
+            timing_basis?: string | null;
         };
         /** DispatchCueTiming */
         DispatchCueTiming: {
@@ -3779,8 +3789,16 @@ export interface components {
         };
         /** DispatchTranslationItem */
         DispatchTranslationItem: {
-            /** Cue Id */
-            cue_id: number;
+            /**
+             * Cue Id
+             * @default null
+             */
+            cue_id?: number | null;
+            /**
+             * Cue Ids
+             * @default null
+             */
+            cue_ids?: number[] | null;
             /**
              * Speaker
              * @default null
@@ -3875,6 +3893,11 @@ export interface components {
              * @default null
              */
             left_segment_id?: string | null;
+            /**
+             * Passage Boundary Id
+             * @default null
+             */
+            passage_boundary_id?: string | null;
             /**
              * Right Segment Id
              * @default null

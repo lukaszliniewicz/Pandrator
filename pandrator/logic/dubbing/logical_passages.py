@@ -9,6 +9,14 @@ it retains the complete cue window.
 from __future__ import annotations
 
 import heapq
+import hashlib
+
+from .natural_boundaries import classify_boundary
+from .pause_policy import DEFAULT_CONTINUATION_GAP_MS, MAX_CONTINUATION_SPAN_MS, may_bridge_unfinished_pause
+from .source_passage_policy import (
+    DEFAULT_MIN_CHARS, DEFAULT_PREFERRED_CHARS, DEFAULT_SENTENCE_LOOKAHEAD_CHARS,
+    select_boundaries,
+)
 import re
 from dataclasses import dataclass
 from difflib import SequenceMatcher
@@ -152,8 +160,9 @@ def _boundary_reason(
     max_chars: int,
     max_span_ms: int,
     pause_ms: int,
+    language_code: str = "en",
 ) -> str | None:
-    """Return the first eligible greedy boundary reason after a token."""
+    """Identify a timed candidate, not a decision to split immediately."""
 
     next_index = end_exclusive
     previous_index = end_exclusive - 1
@@ -183,25 +192,26 @@ def _boundary_reason(
     if left_end < left_start or right_end < right_start or left_end > right_start:
         return None
 
-    text = _join_text([token.text for token in tokens[start:end_exclusive]])
-    word_count = end_exclusive - start
-    char_count = len(text)
-    last = matched.get(previous_index)
-    start_ms = first.start_ms if first is not None and first.valid_timing else cue_start
-    end_ms = last.end_ms if last is not None and last.valid_timing else cue_end
-    span_ms = max(0, end_ms - start_ms)
-
-    if _sentence_boundary(tokens[previous_index].text):
-        return "sentence"
-    if _clause_boundary(tokens[previous_index].text) and (
-        char_count >= 30 or word_count >= 4
-    ):
-        return "clause"
+    previous_speaker = _speaker(previous.row)
+    following_speaker = _speaker(following.row)
+    if previous_speaker and following_speaker and previous_speaker != following_speaker:
+        return "speaker"
     gap_ms = following.start_ms - previous.end_ms
-    if gap_ms >= pause_ms and word_count >= 4:
-        return "pause"
-    if (char_count >= max_chars or span_ms >= max_span_ms) and word_count >= 3:
-        return "capacity"
+    # Timing and size suggest where to look; they do not make a random word
+    # boundary suitable. Use the same conservative grammar rules as TTS planning.
+    rank = classify_boundary(
+        _join_text([token.text for token in tokens[max(start, end_exclusive - 16):end_exclusive]]),
+        _join_text([token.text for token in tokens[end_exclusive:end_exclusive + 16]]),
+        language_code=language_code,
+    )
+    if gap_ms > DEFAULT_CONTINUATION_GAP_MS:
+        return "long_pause"
+    if rank == 0:
+        return "sentence"
+    if rank in {1, 2}:
+        return "strong_clause" if rank == 1 else "clause"
+    if rank == 3:
+        return "conjunction"
     return None
 
 
@@ -388,6 +398,11 @@ def _fallback_candidates(
 
 def _word_for_cue(word: dict[str, Any], cue_start: int, cue_end: int) -> _Word:
     word_start, word_end, _ = _word_timing(word)
+    confidence = word.get("confidence")
+    confidence_ok = confidence is None or (
+        isinstance(confidence, (int, float)) and not isinstance(confidence, bool)
+        and .5 <= confidence <= 1
+    )
     clamped = dict(word)
     clamped["start_ms"] = max(cue_start, word_start)
     clamped["end_ms"] = min(cue_end, word_end)
@@ -396,24 +411,71 @@ def _word_for_cue(word: dict[str, Any], cue_start: int, cue_end: int) -> _Word:
         _lexeme(word["text"]),
         clamped["start_ms"],
         clamped["end_ms"],
-        clamped["end_ms"] > clamped["start_ms"],
+        confidence_ok and cue_start <= word_start < word_end <= cue_end,
     )
+
+
+def _match_cue_tokens(tokens: list[_Token], cue_words: list[_Word]) -> dict[int, _Word]:
+    """Match the authoritative text without changing or duplicating word IDs."""
+    cue_lexical = [
+        (index, token.lexeme) for index, token in enumerate(tokens) if token.lexeme
+    ]
+    word_lexical = [
+        (index, word.lexeme) for index, word in enumerate(cue_words) if word.lexeme
+    ]
+    matched: dict[int, _Word] = {}
+    matcher = SequenceMatcher(
+        a=[value for _, value in cue_lexical],
+        b=[value for _, value in word_lexical],
+        autojunk=False,
+    )
+    cue_indices = [index for index, _ in cue_lexical]
+    word_indices = [index for index, _ in word_lexical]
+    for (
+        tag,
+        cue_start_index,
+        cue_end_index,
+        word_start_index,
+        word_end_index,
+    ) in matcher.get_opcodes():
+        if tag != "equal":
+            continue
+        for cue_position, word_position in zip(
+            range(cue_start_index, cue_end_index),
+            range(word_start_index, word_end_index),
+        ):
+            matched[cue_indices[cue_position]] = cue_words[
+                word_indices[word_position]
+            ]
+
+    return matched
 
 
 def build_source_passages(
     cues: list[dict[str, Any]],
     words: list[dict[str, Any]],
     *,
-    max_chars: int = 90,
+    min_chars: int = DEFAULT_MIN_CHARS,
+    max_chars: int = DEFAULT_PREFERRED_CHARS,
+    sentence_lookahead_chars: int = DEFAULT_SENTENCE_LOOKAHEAD_CHARS,
     max_span_ms: int = 8000,
     pause_ms: int = 650,
+    language_code: str = "en",
 ) -> list[dict[str, Any]]:
-    """Build deterministic source passages from cue text and optional words."""
+    """Build natural passages from word evidence, not imported cue formatting.
 
+    Size and duration are soft preferences at meaningful boundaries. A long
+    unpunctuated phrase is retained rather than cut at an arbitrary word.
+    Verified unfinished phrases may span adjacent same-speaker source cues;
+    missing/uncertain word evidence keeps its original cue window instead.
+    """
+
+    min_chars = _require_int(min_chars, "min_chars")
+    sentence_lookahead_chars = _require_int(sentence_lookahead_chars, "sentence_lookahead_chars")
     max_chars = _require_int(max_chars, "max_chars")
     max_span_ms = _require_int(max_span_ms, "max_span_ms")
     pause_ms = _require_int(pause_ms, "pause_ms")
-    if max_chars <= 0 or max_span_ms <= 0 or pause_ms < 0:
+    if min_chars <= 0 or max_chars <= 0 or max_span_ms <= 0 or pause_ms < 0 or sentence_lookahead_chars < 0:
         raise ValueError(
             "source-passage limits must be positive (pause_ms may be zero)"
         )
@@ -427,7 +489,20 @@ def build_source_passages(
     owned_ids = {cue["id"] for cue in ordered_cues if cue["id"] in owned_by_segment}
     fallback_by_index = _fallback_candidates(ordered_cues, ordered_words, owned_ids)
 
-    output: list[dict[str, Any]] = []
+    # Resolve authoritative lexical ownership before any temporal fallback.
+    # Words left unused by their old cue association may support an adjacent
+    # matching cue, but an already matched word must never be claimed twice.
+    owned_matches = {}
+    for cue in ordered_cues:
+        if cue["id"] in owned_ids:
+            owned_matches[cue["id"]] = _match_cue_tokens(
+                _tokens(_normalize_text(cue["text"])),
+                [_word_for_cue(w, cue["start_ms"], cue["end_ms"])
+                 for w in owned_by_segment[cue["id"]]],
+            )
+    reserved_word_ids = {w.row["id"] for matches in owned_matches.values() for w in matches.values()}
+    fallback_claimed: set[str] = set()
+    aligned: list[tuple[dict[str, Any], list[_Token], dict[int, _Word]]] = []
     for cue_index, cue in enumerate(ordered_cues):
         text = _normalize_text(cue["text"])
         tokens = _tokens(text)
@@ -440,110 +515,183 @@ def build_source_passages(
             candidate_rows = [
                 word
                 for word in fallback_by_index.get(cue_index, [])
-                if not (
+                if word["id"] not in reserved_word_ids
+                and word["id"] not in fallback_claimed
+                and not (
                     cue_speaker and _speaker(word) and _speaker(word) != cue_speaker
                 )
             ]
 
-        cue_words = [_word_for_cue(word, cue_start, cue_end) for word in candidate_rows]
-        cue_lexical = [
-            (index, token.lexeme) for index, token in enumerate(tokens) if token.lexeme
-        ]
-        word_lexical = [
-            (index, word.lexeme) for index, word in enumerate(cue_words) if word.lexeme
-        ]
-        matched: dict[int, _Word] = {}
-        matcher = SequenceMatcher(
-            a=[value for _, value in cue_lexical],
-            b=[value for _, value in word_lexical],
-            autojunk=False,
-        )
-        cue_indices = [index for index, _ in cue_lexical]
-        word_indices = [index for index, _ in word_lexical]
-        for (
-            tag,
-            cue_start_index,
-            cue_end_index,
-            word_start_index,
-            word_end_index,
-        ) in matcher.get_opcodes():
-            if tag != "equal":
-                continue
-            for cue_position, word_position in zip(
-                range(cue_start_index, cue_end_index),
-                range(word_start_index, word_end_index),
-            ):
-                matched[cue_indices[cue_position]] = cue_words[
-                    word_indices[word_position]
-                ]
+        matched = owned_matches.get(cue["id"])
+        if matched is None:
+            cue_words = [_word_for_cue(word, cue_start, cue_end) for word in candidate_rows]
+            matched = _match_cue_tokens(tokens, cue_words)
 
-        if not tokens:
-            cue_ordinal = _require_int(cue["ordinal"], "cue ordinal")
-            unit_id = f"u{cue_ordinal + 1:04d}-000-000"
-            output.append(
-                {
-                    "id": unit_id,
-                    "text": "",
-                    "speaker": _speaker(cue),
-                    "start_ms": cue_start,
-                    "end_ms": cue_end,
-                    "source_cue_ids": [cue["id"]],
-                    "source_token_range": [0, 0],
-                    "source_word_ids": [],
-                    "word_match_coverage": 0.0,
-                    "timing_basis": "cue_window",
-                    "boundary_after": "cue",
-                    "source_unit_ids": [unit_id],
-                }
-            )
-            continue
+        if cue["id"] not in owned_ids:
+            # Orphan/ancestor timing can support one cue, not two overlapping
+            # copies of the same words. Known ownership always takes priority.
+            fallback_claimed.update(word.row["id"] for word in matched.values())
+        aligned.append((cue, tokens, matched))
 
-        boundaries: list[tuple[int, str]] = []
-        start = 0
-        for end_exclusive in range(1, len(tokens)):
-            reason = _boundary_reason(
-                tokens,
-                start,
-                end_exclusive,
-                matched,
-                cue_start,
-                cue_end,
-                max_chars=max_chars,
-                max_span_ms=max_span_ms,
-                pause_ms=pause_ms,
-            )
-            if reason is not None:
-                boundaries.append((end_exclusive, reason))
-                start = end_exclusive
-        boundaries.append((len(tokens), "cue"))
-
-        previous = 0
-        cue_units = []
-        for end_exclusive, reason in boundaries:
-            cue_units.append(
-                _unit_from_tokens(
-                    cue,
-                    tokens,
-                    matched,
-                    previous,
-                    end_exclusive,
-                    reason,
-                )
-            )
-            previous = end_exclusive
-        if any(
-            left["end_ms"] > right["start_ms"]
-            for left, right in zip(cue_units, cue_units[1:])
-        ):
-            fallback = _unit_from_tokens(cue, tokens, matched, 0, len(tokens), "cue")
-            fallback.update(
-                start_ms=cue_start,
-                end_ms=cue_end,
-                timing_basis="cue_window",
-            )
-            cue_units = [fallback]
-        output.extend(cue_units)
+    output: list[dict[str, Any]] = []
+    for group in _aligned_runs(aligned, language_code=language_code, pause_ms=pause_ms):
+        output.extend(_project_run(group, min_chars=min(min_chars, max_chars),
+                                   max_chars=max_chars, max_span_ms=max_span_ms,
+                                   pause_ms=pause_ms, lookahead_chars=sentence_lookahead_chars,
+                                   language_code=language_code))
     return output
+
+
+def _reliable_cue(record: tuple) -> bool:
+    cue, tokens, matched = record
+    if not tokens or len(matched) != len(tokens):
+        return False
+    previous_end = None
+    for index in range(len(tokens)):
+        word = matched[index]
+        if not word.valid_timing or (previous_end is not None and word.start_ms < previous_end):
+            return False
+        if _speaker(word.row) and _speaker(word.row) != _speaker(cue):
+            return False
+        previous_end = word.end_ms
+    return True
+
+
+def _aligned_runs(aligned: list[tuple], *, language_code: str, pause_ms: int) -> list[list[tuple]]:
+    """Remove verified cue-container edges before looking for sentence endings.
+
+    Never flatten an uncertain cue, overlapping evidence, or a speaker change.
+    A real sentence boundary already ends a run, including a short sentence.
+    The bounded hesitation policy still protects long source interruptions.
+    """
+    runs: list[list[tuple]] = []
+    budget = 0
+    for raw_record in aligned:
+        # Local copies only: source metadata and word times are never modified.
+        cue, tokens, matched = raw_record
+        record = ({**cue}, tokens, matched)
+        if not runs:
+            runs.append([record])
+            continue
+        previous = runs[-1][-1]
+        left_cue, left_tokens, left_matched = previous
+        left_text = _join_text([t.text for t in left_tokens])
+        right_text = _join_text([t.text for t in tokens])
+        rank = classify_boundary(left_text, right_text, language_code=language_code)
+        if rank == 0 or not left_tokens or not tokens:
+            runs.append([record])
+            budget = 0
+            continue
+        reliable = _reliable_cue(previous) and _reliable_cue(record)
+        same_speaker = bool(_speaker(left_cue).strip()) and _speaker(left_cue) == _speaker(cue)
+        gap = (matched[0].start_ms - left_matched[len(left_tokens)-1].end_ms) if reliable else 0
+        first_cue, first_tokens, first_matched = runs[-1][0]
+        span = (matched[len(tokens)-1].end_ms - first_matched[0].start_ms) if reliable else 0
+        ordinary = max(1, min(pause_ms, DEFAULT_CONTINUATION_GAP_MS))
+        gap_ok = 0 <= gap <= ordinary or may_bridge_unfinished_pause(
+            left_text, right_text, gap, ordinary_gap_ms=ordinary,
+            continuation_gap_ms=DEFAULT_CONTINUATION_GAP_MS, language_code=language_code,
+            bridged_pause_ms=budget, combined_span_ms=span,
+        )
+        if (reliable and same_speaker and left_cue['end_ms'] <= cue['start_ms']
+                and gap_ok and 0 < span <= MAX_CONTINUATION_SPAN_MS):
+            record[0]['_bridged_pause_ms'] = gap if gap > ordinary else 0
+            budget += record[0]['_bridged_pause_ms']
+            runs[-1].append(record)
+        else:
+            if rank is None:
+                left_cue['_unresolved_source_seam'] = True
+            runs.append([record])
+            budget = 0
+    return runs
+
+
+def _project_run(group: list[tuple], *, min_chars: int, max_chars: int,
+                 max_span_ms: int, pause_ms: int, lookahead_chars: int,
+                 language_code: str) -> list[dict[str, Any]]:
+    """Project chosen word ranges back onto their original cue/word identities."""
+    tokens: list[_Token] = []
+    matched: dict[int, _Word] = {}
+    ranges = []
+    for cue, local_tokens, local_matched in group:
+        base = len(tokens)
+        tokens.extend(_Token(base + t.index, t.text, t.lexeme) for t in local_tokens)
+        matched.update({base + index: word for index, word in local_matched.items()})
+        ranges.append((base, len(tokens), cue, local_tokens, local_matched))
+    if not tokens:
+        cue = group[0][0]
+        return [_unit_from_tokens(cue, [], {}, 0, 0, 'cue')]
+    candidates = {}
+    for position in range(1, len(tokens)):
+        reason = _boundary_reason(tokens, 0, position, matched, group[0][0]['start_ms'],
+                                  group[-1][0]['end_ms'], max_chars=max_chars,
+                                  max_span_ms=max_span_ms, pause_ms=pause_ms,
+                                  language_code=language_code)
+        if reason:
+            candidates[position] = reason
+    candidates[len(tokens)] = ('sentence' if matched.get(len(tokens)-1) is not None and matched[len(tokens)-1].valid_timing and classify_boundary(
+        _join_text([t.text for t in tokens[-16:]]), '', language_code=language_code) == 0 else 'cue')
+    boundaries = select_boundaries([t.text for t in tokens], candidates, min_chars=min_chars,
+                                   preferred_chars=max_chars, lookahead_chars=lookahead_chars)
+    result = []
+    start = 0
+    for boundary in boundaries:
+        end = boundary.offset
+        pieces = []
+        token_ranges = []
+        bridged = 0
+        for base, stop, cue, local_tokens, local_matched in ranges:
+            if stop <= start or base >= end:
+                continue
+            local_start, local_end = max(start, base) - base, min(end, stop) - base
+            piece = _unit_from_tokens(cue, local_tokens, local_matched,
+                                      local_start, local_end, boundary.reason)
+            pieces.append(piece)
+            token_ranges.append({'source_cue_id': cue['id'], 'range': [local_start, local_end]})
+            if base > start:
+                bridged += int(cue.get('_bridged_pause_ms') or 0)
+        row = dict(pieces[0])
+        if len(pieces) > 1:
+            unit_ids = [u for piece in pieces for u in piece['source_unit_ids']]
+            row.update(id='joined-' + hashlib.sha256('\0'.join(unit_ids).encode()).hexdigest()[:16],
+                       text=_join_text([p['text'] for p in pieces]), end_ms=pieces[-1]['end_ms'],
+                       source_cue_ids=[p['source_cue_ids'][0] for p in pieces],
+                       source_word_ids=[w for p in pieces for w in p['source_word_ids']],
+                       source_unit_ids=unit_ids, source_token_ranges=token_ranges,
+                       construction_reason='natural_passage_across_source_cues', bridged_pause_ms=bridged)
+            row.pop('source_token_range', None)
+        speakers = {_speaker(matched[i].row) for i in range(start, end) if i in matched}
+        if len(speakers) == 1 and next(iter(speakers)):
+            row['speaker'] = next(iter(speakers))
+        flags = []
+        if end == len(tokens) and group[-1][0].get('_unresolved_source_seam'):
+            flags.append('unresolved_source_seam')
+        if boundary.reason in {'speaker', 'long_pause'}:
+            flags.append('source_boundary_guard')
+        if boundary.preferred_length_exceeded:
+            flags.append('passage_length_preference_exceeded')
+        if flags:
+            row['boundary_flags'] = flags
+        # Unknown evidence remains a plain cue window with no claimed precision.
+        if row['timing_basis'] == 'word_boundaries':
+            row['boundary_selection'] = {
+                'policy': 'sentence_preferred_v1', 'reason': boundary.selection_reason,
+                'soft_min_chars': min_chars, 'preferred_chars': max_chars,
+                'sentence_lookahead_chars': lookahead_chars, 'actual_chars': len(row['text']),
+                'length_preference_exceeded': boundary.preferred_length_exceeded,
+                'span_preference_exceeded': row['end_ms'] - row['start_ms'] > max_span_ms,
+            }
+        result.append(row)
+        start = end
+    if any(a['end_ms'] > b['start_ms'] for a, b in zip(result, result[1:])):
+        # An unmatched edge must never fabricate overlapping child windows.
+        fallbacks = []
+        for cue, local_tokens, local_matched in group:
+            fallback = _unit_from_tokens(cue, local_tokens, local_matched, 0, len(local_tokens), 'cue')
+            fallback.update(start_ms=cue['start_ms'], end_ms=cue['end_ms'], timing_basis='cue_window')
+            fallbacks.append(fallback)
+        return fallbacks
+    return result
 
 
 __all__ = ["AnchorContractError", "build_source_passages"]

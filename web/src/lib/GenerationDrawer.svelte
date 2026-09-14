@@ -7,6 +7,8 @@
   } from './generation-history';
   import { selectableTtsServices } from './tts-provider-policy';
   import { errorMessage } from './errors';
+  import PassageSplitDialog from './PassageSplitDialog.svelte';
+  import type { PassageBoundary, PassageTextLayer } from './passage-structure';
   import {
     GenerationEditQueue,
     collectStaleSegmentIds
@@ -133,6 +135,65 @@
   let viewMode = $state<'segments' | 'reading'>('segments');
   let textMode = $state<'display' | 'speech'>('display');
   let displayMenuOpen = $state(false);
+  let showPassageBoundaries = $state(false);
+  let passagePreview = $state<{
+    item: GenerationSegment;
+    layer: PassageTextLayer;
+    boundary: PassageBoundary;
+    planRevisionId: string | null;
+  } | null>(null);
+  const passageDisabledReason = $derived.by(() => {
+    if (!passagePreview) return '';
+    if (selectedRunId)
+      return 'History is read-only. Select the active mix to split.';
+    if (pendingSegmentUpdates > 0)
+      return 'Wait for the current text edit to finish saving.';
+    if (payload.plan_revision_id !== passagePreview.planRevisionId)
+      return 'The plan changed. Close this preview and inspect the boundary again.';
+    const current = payload.items.find(
+      (item) => item.id === passagePreview?.item.id
+    );
+    if (
+      !current ||
+      current.revision !== passagePreview.item.revision ||
+      !current.passage_structure?.layers[passagePreview.layer].boundaries.some(
+        (boundary) => boundary.id === passagePreview?.boundary.id
+      )
+    )
+      return 'The text or passage mapping changed. Close this preview and inspect it again.';
+    return error || '';
+  });
+
+  function inspectPassage(
+    item: GenerationSegment,
+    layer: PassageTextLayer,
+    boundary: PassageBoundary
+  ) {
+    error = '';
+    passagePreview = {
+      item,
+      layer,
+      boundary,
+      planRevisionId: payload.plan_revision_id
+    };
+  }
+
+  async function splitPassageBoundary() {
+    await editQueue.settledIds([]).catch((caught) => {
+      error = errorMessage(caught);
+    });
+    if (!passagePreview || passageDisabledReason || topologyBusy || error)
+      return;
+    const preview = passagePreview;
+    const succeeded = await reviseSpeechBlocks({
+      action: 'split',
+      segment_id: preview.item.id,
+      text_layer: preview.layer,
+      cursor: preview.boundary.offset,
+      passage_boundary_id: preview.boundary.id
+    });
+    if (succeeded) passagePreview = null;
+  }
   let settingsMenuOpen = $state(false);
   let regenerateMenuOpen = $state(false);
   let rvcModels = $state<string[]>([]);
@@ -890,6 +951,7 @@
     right_segment_id?: string;
     cursor?: number;
     text_layer?: 'display' | 'speech';
+    passage_boundary_id?: string;
     target_revision_id?: string;
   }) {
     if (!payload.plan_revision_id || topologyBusy || selectedRunId) return;
@@ -908,6 +970,7 @@
       notifySessionFlowChange(sessionId);
       await load(true, false);
       await refreshAssembly();
+      return true;
     } catch (caught) {
       error = errorMessage(caught);
       await load(true, true);
@@ -1930,6 +1993,20 @@
               >
                 Spoken override (TTS only)
               </button>
+              <div class="dropdown-divider"></div>
+              <button
+                type="button"
+                class="dropdown-item"
+                aria-pressed={showPassageBoundaries}
+                onclick={() => {
+                  showPassageBoundaries = !showPassageBoundaries;
+                  displayMenuOpen = false;
+                }}
+              >
+                {showPassageBoundaries
+                  ? 'Hide passage boundaries'
+                  : 'Show passage boundaries'}
+              </button>
             </div>
           {/if}
         </div>
@@ -2320,6 +2397,8 @@
         <div class="min-h-[12rem] shrink-0 flex-1 overflow-auto">
           {#if viewMode === 'segments'}
             <GenerationSegmentTable
+              {showPassageBoundaries}
+              onpassage={inspectPassage}
               items={payload.items}
               {selectedRows}
               {loading}
@@ -2349,6 +2428,8 @@
             />
           {:else}
             <GenerationReadingView
+              {showPassageBoundaries}
+              onpassage={inspectPassage}
               blocks={readingBlocks}
               selectedRunLabel={selectedHistoryRun?.label ?? 'Active mix'}
               {textMode}
@@ -2379,6 +2460,19 @@
       </div>
     {/if}
   </aside>
+{/if}
+{#if passagePreview}
+  <PassageSplitDialog
+    item={passagePreview.item}
+    layer={passagePreview.layer}
+    boundary={passagePreview.boundary}
+    disabledReason={passageDisabledReason}
+    busy={topologyBusy}
+    onclose={() => {
+      passagePreview = null;
+    }}
+    onsplit={splitPassageBoundary}
+  />
 {/if}
 {#if showRvc}
   <div
