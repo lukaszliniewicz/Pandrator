@@ -488,6 +488,15 @@ def repair_early_blocks(
                     session.add(staged)
                     session.flush()
                     staged_run_id = staged.id
+                    preserved_clones = {
+                        (take.generation_segment_id, take.parent_take_id): take
+                        for take in session.scalars(
+                            select(AudioTake).join(
+                                GenerationSegment,
+                                GenerationSegment.id == AudioTake.generation_segment_id,
+                            ).where(GenerationSegment.plan_revision_id == staged_revision_id)
+                        )
+                    }
                     for old_id, descendants in proposal["lineage"].items():
                         if len(descendants) != 1:
                             continue
@@ -496,12 +505,7 @@ def repair_early_blocks(
                             raise ValueError(
                                 "The original audio selection changed during repair."
                             )
-                        clone = session.scalar(
-                            select(AudioTake).where(
-                                AudioTake.generation_segment_id == descendants[0],
-                                AudioTake.parent_take_id == original_take_id,
-                            )
-                        )
+                        clone = preserved_clones.get((descendants[0], original_take_id))
                         if clone is None:
                             raise ValueError(
                                 "The original audio take cannot be preserved."

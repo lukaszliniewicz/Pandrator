@@ -51,13 +51,13 @@
     },
     {
       key: 'speech_block_continuation_threshold_ms',
-      label: 'Unfinished-sentence pause (ms)',
+      label: 'Maximum unfinished-phrase pause (ms)',
       fallback: 3000,
       min: 0
     },
     {
       key: 'speech_block_max_internal_gap_ms',
-      label: 'Maximum silence inside a block (ms)',
+      label: 'Normal silence limit inside a block (ms)',
       fallback: 4000,
       min: 0
     }

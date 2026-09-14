@@ -194,6 +194,51 @@ class GenerationTopologyTests(unittest.TestCase):
             self.queued_assembly_id = queued_assembly.id
             self.running_assembly_id = running_assembly.id
 
+    def test_large_inactive_repair_batches_unchanged_audio_copies(self):
+        from sqlalchemy import event
+        import time
+
+        with self.database.session() as session:
+            artifact_id = session.get(AudioTake, self.initial_take_ids[1]).artifact_id
+            extras = [GenerationSegment(
+                plan_revision_id=self.initial_revision_id, ordinal=i,
+                text=f"A complete unchanged sentence number {i}.",
+                source_segment_ids_json=[f"source-{i}"], status="completed",
+            ) for i in range(2, 542)]
+            session.add_all(extras)
+            session.flush()
+            session.add_all([AudioTake(
+                generation_segment_id=segment.id, artifact_id=artifact_id,
+                status="completed", is_active=True,
+            ) for segment in extras])
+        reads = []
+        def inspect_sql(_connection, _cursor, statement, _params, _context, _many):
+            if statement.lstrip().upper().startswith("SELECT") and "FROM audio_takes" in statement:
+                reads.append(statement)
+        event.listen(self.database.engine, "before_cursor_execute", inspect_sql)
+        started = time.monotonic()
+        try:
+            service = self.app.extensions["pandrator"]["generation"]
+            with self.database.immediate_session() as session:
+                result = service.revise_topology_in_session(
+                    session, self.session_id, self.initial_revision_id,
+                    {"action": "split", "segment_id": self.initial_segment_ids[0],
+                     "cursor": 2, "text_layer": "display"}, activate=False,
+                )
+        finally:
+            event.remove(self.database.engine, "before_cursor_execute", inspect_sql)
+        print(f"542-block topology staging: {time.monotonic() - started:.3f}s; {len(reads)} take reads")
+        self.assertLessEqual(len(reads), 2)
+        self.assertEqual(543, len(result["segment_ids"]))
+        with self.database.session() as session:
+            active = session.scalar(select(GenerationPlan.active_revision_id).where(GenerationPlan.session_id == self.session_id))
+            clones = list(session.scalars(select(AudioTake).where(AudioTake.generation_segment_id.in_(result["segment_ids"]))))
+            self.assertEqual(self.initial_revision_id, active)
+            self.assertEqual(541, len(clones))
+            self.assertTrue(all(take.parent_take_id and take.is_active for take in clones))
+            self.assertTrue(all(take.generation_segment_id not in result["affected_segment_ids"] for take in clones))
+            self.assertEqual(541, len({take.parent_take_id for take in clones}))
+
     def tearDown(self):
         self.database.dispose()
         self.temporary.cleanup()

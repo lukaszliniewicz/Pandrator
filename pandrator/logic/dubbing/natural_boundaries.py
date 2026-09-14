@@ -318,7 +318,7 @@ SENTENCE_TERMINALS = frozenset(".!?…。！？")
 STRONG_CLAUSE_MARKS = frozenset(";:\u2014\u2013；：")
 WEAK_CLAUSE_MARKS = frozenset(",\u060c\uff0c\u3001")
 
-_CLOSING_MARKS = frozenset("\"'”’»›)]}」』》〟〕〕）］｝〉〉")
+_CLOSING_MARKS = frozenset("\"'”’“‘»›«‹)]}」』》〟〕）］｝〉")
 
 _CLOSING_PATTERN = "[" + re.escape("".join(sorted(_CLOSING_MARKS))) + "]*"
 _SENTENCE_END_RE = re.compile(

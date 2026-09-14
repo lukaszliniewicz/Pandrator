@@ -558,8 +558,7 @@ after the cue boundary.
     def test_maximum_internal_gap_is_a_hard_utterance_boundary(self):
         content = """1
 00:00:00,000 --> 00:00:01,000
-This thought continues
-
+This thought continues,\n
 2
 00:00:01,500 --> 00:00:02,500
 after a noticeable pause.

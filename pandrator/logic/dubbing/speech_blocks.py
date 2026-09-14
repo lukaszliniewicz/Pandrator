@@ -23,6 +23,7 @@ from .natural_boundaries import (
     period_is_non_boundary,
     resolve_speech_language,
 )
+from .pause_policy import MAX_CONTINUATION_SPAN_MS, may_bridge_unfinished_pause
 from .srt_utils import parse_srt
 
 logger = logging.getLogger(__name__)
@@ -305,6 +306,10 @@ def _should_merge_parts(
         _sentence_is_complete(previous.text) and _sentence_is_complete(current.text)
     ):
         return False
+    # A rescued phrase already spans a notable source hesitation. Do not then
+    # pack another complete thought into it merely because characters fit.
+    if "hesitation_bridged" in {*previous.risk_flags, *current.risk_flags}:
+        return False
     display_length = len(previous.text) + len(current.text) + 1
     speech_length = len(previous.optimized_text) + len(current.optimized_text) + 1
     if max(display_length, speech_length) > max_chars:
@@ -332,7 +337,7 @@ def _should_merge_parts(
 
 
 def _sentence_is_complete(text: str) -> bool:
-    return _TERMINAL_SENTENCE_RE.search(str(text or "").rstrip()) is not None
+    return classify_boundary(str(text or ""), "") == 0
 
 
 def _repair_diarization_flicker(
@@ -1080,8 +1085,9 @@ def create_speech_blocks(
     ``merge_threshold`` controls optional packing of complete utterances.
     ``continuation_threshold_ms`` may be larger so an unfinished sentence is
     not stranded merely because a subtitle cue boundary contains a pause.
-    ``max_internal_gap_ms`` is an independent hard timing guard: a TTS chunk
-    never spans a larger silent interval even if the sentence is unfinished.
+    ``max_internal_gap_ms`` guards ordinary pauses. A bounded, same-speaker
+    hesitation inside an unfinished phrase may use ``continuation_threshold_ms``
+    instead; its cumulative exceptional pauses and source span remain bounded.
     When ``speech_srt_content`` is supplied, display and reviewed speech text
     are partitioned together and neither variant is repeated.
     With ``preserve_source_boundaries``, prefer grouping whole timed passages
@@ -1155,13 +1161,45 @@ def create_speech_blocks(
             continue
         previous = utterances[-1] if utterances else None
         gap_ms = part.start_ms - previous.end_ms if previous is not None else None
+        bridged_pause_ms = sum(
+            int(event.get("measurements", {}).get("gap_ms", 0))
+            for event in (previous.formation_events if previous else [])
+            if event.get("reason_code") == "unfinished_pause_bridged"
+        )
+        combined_span_ms = (
+            max(previous.end_ms, part.end_ms) - previous.start_ms
+            if previous is not None else 0
+        )
+        bridge_pause = bool(
+            previous is not None
+            and gap_ms is not None
+            and all(
+                may_bridge_unfinished_pause(
+                    left, right, gap_ms,
+                    ordinary_gap_ms=maximum_internal_gap,
+                    continuation_gap_ms=continuation_threshold,
+                    language_code=language_code,
+                    bridged_pause_ms=bridged_pause_ms,
+                    combined_span_ms=combined_span_ms,
+                )
+                for left, right in (
+                    (previous.text, part.text),
+                    (previous.optimized_text, part.optimized_text),
+                )
+            )
+        )
+        within_bridge_span = (
+            not bridged_pause_ms or combined_span_ms <= MAX_CONTINUATION_SPAN_MS
+        )
         if (
             previous is not None
             and gap_ms is not None
             and previous.speaker_key == part.speaker_key
             and not _sentence_is_complete(previous.text)
+            and not _sentence_is_complete(previous.optimized_text)
             and -SAME_SPEAKER_OVERLAP_TOLERANCE_MS <= gap_ms <= continuation_threshold
-            and gap_ms <= maximum_internal_gap
+            and (gap_ms <= maximum_internal_gap or bridge_pause)
+            and within_bridge_span
             and (
                 not preserve_source_boundaries
                 or (
@@ -1189,6 +1227,21 @@ def create_speech_blocks(
                     source_references=sorted({*previous.subtitles, *part.subtitles}),
                 )
             )
+            if bridge_pause:
+                combined.formation_events.append(_event(
+                    "bridge_unfinished_pause", "unfinished_pause_bridged",
+                    "Source hesitation bridged to keep an unfinished phrase intact.",
+                    measurements={
+                        "gap_ms": gap_ms,
+                        "ordinary_gap_ms": maximum_internal_gap,
+                        "continuation_threshold_ms": continuation_threshold,
+                        "bridged_pause_total_ms": bridged_pause_ms + gap_ms,
+                        "combined_span_ms": combined_span_ms,
+                        "timing_basis": "source_passage_windows",
+                    },
+                    source_references=sorted({*previous.subtitles, *part.subtitles}),
+                ))
+                combined.risk_flags.append("hesitation_bridged")
             if gap_ms is not None and gap_ms < 0:
                 combined.risk_flags.append("timing_overlap")
             utterances[-1] = combined
@@ -1207,7 +1260,11 @@ def create_speech_blocks(
                     reason_code = "speaker_boundary"
                     summary = "Speaker boundary retained."
                 elif not _sentence_is_complete(previous.text) and gap_ms is not None:
-                    if gap_ms > maximum_internal_gap:
+                    if not within_bridge_span:
+                        reason_code = "continuation_span_limit"
+                        summary = "Extended hesitation would exceed the bounded phrase window."
+                        part.risk_flags.append("continuation_span_exceeded")
+                    elif gap_ms > maximum_internal_gap:
                         reason_code = "internal_gap_limit"
                         summary = "Internal gap exceeded the reconstruction limit."
                         part.risk_flags.append("internal_gap_exceeded")
@@ -1225,6 +1282,12 @@ def create_speech_blocks(
                 else:
                     reason_code = "complete_utterance_boundary"
                     summary = "Complete utterance boundary retained."
+                if (
+                    reason_code in {"internal_gap_limit", "continuation_gap_limit", "continuation_span_limit"}
+                    and classify_boundary(previous.optimized_text, part.optimized_text, language_code=language_code) is None
+                ):
+                    part.risk_flags.append("timing_forced_fragment")
+                    summary += " No natural speech seam was found; review this forced boundary."
                 part.boundary_before = _boundary(
                     "keep_boundary",
                     reason_code,

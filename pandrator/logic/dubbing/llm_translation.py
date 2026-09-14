@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .pause_policy import logical_pause_instructions, validate_logical_merge_pauses
+
 import hashlib
 import json
 import logging
@@ -535,15 +537,7 @@ def _validate_passage_group(
     if positions != list(range(positions[0], positions[0] + len(positions))):
         raise ValueError("Translation passage cue_ids must form a contiguous group.")
     selected = [block[position] for position in positions]
-    for left, right in zip(selected, selected[1:]):
-        left_start, left_end = _source_window_ms(left)
-        right_start, _right_end = _source_window_ms(right)
-        if right_start < left_end:
-            raise ValueError("Translation passage groups cannot overlap in time.")
-        if right_start - left_end > 1500:
-            raise ValueError(
-                "Translation passage groups cannot cross a gap greater than 1500 ms."
-            )
+    validate_logical_merge_pauses(selected)
     source_speakers = {
         str(subtitle.get("speaker") or "").strip().casefold() for subtitle in selected
     }
@@ -829,7 +823,8 @@ def build_translation_task_instructions(
         prompt += (
             "\n\nLogical passage policy:\n"
             "- A natural adjacent merge is welcome when target-language word order or idiom makes separate assignment awkward or unreliable. Do not force fragments to stay separate at the expense of fluency.\n"
-            "- Merge only adjacent passages of the same speaker, in source order, without overlap or a gap greater than 1500 ms. Do not merge merely because several passages form one sentence.\n"
+            "- Merge only adjacent passages of the same speaker, in source order, without overlap. Do not merge merely because several passages form one sentence.\n"
+            f"{logical_pause_instructions()}"
             "- A merge becomes one passage with the combined source start/end window. Its former internal timing boundary is discarded; original IDs are retained only for traceability."
         )
     if translation_instructions:
@@ -848,8 +843,9 @@ def build_translation_task_instructions(
             "- Each cue's optional `timing` object contains `start_ms`, `end_ms`, "
             "and its gap from or overlap with the preceding cue.\n"
             f"- A gap of at least {gap_reference} is a "
-            "substantial audible pause: preserve the rhetorical boundary in "
-            "punctuation and phrasing even when the thought continues.\n"
+            "substantial audible pause: normally preserve a real clause or utterance boundary. "
+            "Do not invent a rhetorical boundary from hesitation alone. "
+            f"{'For logical passages, the bounded unfinished-phrase exception above takes precedence. ' if logical_passages else ''}\n"
             "- A shorter gap is not by itself a new utterance. Keep coherent "
             "same-speaker phrasing natural across ordinary cue boundaries."
         )

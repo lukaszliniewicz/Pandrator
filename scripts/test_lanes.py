@@ -28,6 +28,7 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_dubbing_cloud_stt.py",
         "tests/test_dubbing_credentials.py",
         "tests/test_dubbing_early_repair.py",
+        "tests/test_dubbing_pause_policy.py",
         "tests/test_dubbing_llm_correction.py",
         "tests/test_dubbing_llm_translation.py",
         "tests/test_dubbing_manual_timing.py",

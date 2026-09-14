@@ -652,3 +652,43 @@ def test_overlapping_passages_keep_uncertainty_and_audio_evidence_ownership(app_
     assert result[0]["evidence_ids"] == []
     assert result[1]["review_state"] == "uncertain"
     assert result[1]["evidence_ids"] == [evidence_id]
+
+
+@pytest.mark.parametrize("merge_stage", ["correction", "translation"])
+def test_unfinished_pause_merge_survives_real_dispatch_routes(app_case, merge_stage):
+    case = app_case
+    session_id, _, _ = source(case)
+    input_rows = [
+        {"text": "A local religious", "start_ms": 0, "end_ms": 2400, "speaker": "SPEAKER_00"},
+        {"text": "controversy becomes a national issue.", "start_ms": 4560, "end_ms": 9160, "speaker": "SPEAKER_00"},
+        {"text": "An independent final thought.", "start_ms": 9360, "end_ms": 12000, "speaker": "SPEAKER_00"},
+    ]
+    original, _ = register_rows(case, session_id, input_rows, name="unfinished-pause.srt")
+    correction = case._create(session_id, source_artifact_id=original.id)
+    claim = case._claim(correction["id"])
+    operations = (
+        [{"action": "merge", "cue_ids": [1, 2], "texts": ["A local religious controversy becomes a national issue."]}]
+        if merge_stage == "correction"
+        else [{"action": "edit", "cue_ids": [1], "texts": ["A local religious"]}]
+    )
+    corrected, _ = submit(case, claim, {"kind": "correction", "operations": operations})
+    translation = case._create(session_id, kind="translation", source_artifact_id=corrected.id)
+    translated_claim = case._claim(translation["id"], key="claim-pause-translation")
+    first = {"text": "Eine lokale religiöse Kontroverse wird zu einer nationalen Angelegenheit."}
+    first.update({"cue_id": 1} if merge_stage == "correction" else {"cue_ids": [1, 2]})
+    translated, path = submit(case, translated_claim, {
+        "kind": "translation", "translations": [
+            first, {"cue_id": 2 if merge_stage == "correction" else 3,
+                    "text": "Ein unabhängiger letzter Gedanke."},
+        ],
+    })
+    passages = stored_passages(translated)
+    assert len(passages) == 2
+    assert (passages[0]["start_ms"], passages[0]["end_ms"]) == (0, 9160)
+    assert passages[0]["text"] == first["text"]
+    records, _, _ = case.extension["workflow_handlers"]._subtitle_generation_records(
+        translated, path, {"speech_block_max_chars": 300}, "de"
+    )
+    cues = [cue for block in records for cue in block["provenance"]["source_cues"]]
+    assert [(cue["start_ms"], cue["end_ms"]) for cue in cues] == [(0, 9160), (9360, 12000)]
+    assert all(cue["start_ms"] != 4560 for cue in cues)

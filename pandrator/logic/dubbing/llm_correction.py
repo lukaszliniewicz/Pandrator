@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .pause_policy import logical_pause_instructions, validate_logical_merge_pauses
+
 import hashlib
 import json
 import logging
@@ -343,17 +345,7 @@ def validate_correction_operations(
                     f"Correction operation {operation_index} must merge adjacent cues."
                 )
             selected = [block[position] for position in positions]
-            for left, right in zip(selected, selected[1:]):
-                left_start, left_end = _subtitle_window_ms(left)
-                right_start, _right_end = _subtitle_window_ms(right)
-                if right_start < left_end:
-                    raise ValueError(
-                        f"Correction operation {operation_index} cannot merge overlapping cues."
-                    )
-                if right_start - left_end > 1500:
-                    raise ValueError(
-                        f"Correction operation {operation_index} cannot cross a gap greater than 1500 ms."
-                    )
+            validate_logical_merge_pauses(selected)
             source_speakers = {
                 str(subtitle.get("speaker") or "").strip().casefold()
                 for subtitle in selected
@@ -556,14 +548,7 @@ def apply_correction_operations(
                     "Correction logical-passage merge must use adjacent cues."
                 )
             selected_windows = [block[position] for position in positions]
-            if any(
-                _subtitle_window_ms(right)[0] < _subtitle_window_ms(left)[1]
-                or _subtitle_window_ms(right)[0] - _subtitle_window_ms(left)[1] > 1500
-                for left, right in zip(selected_windows, selected_windows[1:])
-            ):
-                raise ValueError(
-                    "Correction logical-passage merge cannot overlap or cross a gap greater than 1500 ms."
-                )
+            validate_logical_merge_pauses(selected_windows)
 
         processed_ids.update(ids)
         primary_id = ids[0]
@@ -741,7 +726,7 @@ def build_correction_task_instructions(
             "\n\nLogical passage policy:\n"
             "- Read the whole utterance for context, then correct its passages. These are meaningful source passages, not final subtitle cards. A passage need not be a complete sentence.\n"
             "- A merge becomes one passage with the combined source start/end window. The former internal boundary is discarded. Merge when it improves the correction; do not merge solely to create a longer sentence.\n"
-            "- Never merge overlapping passages or across a gap greater than 1500 ms.\n"
+            f"{logical_pause_instructions()}"
             "- Keep faithful, natural language and meaningful detail. Do not shorten text to fit the time window, expand it to fill silence, or optimize subtitle line lengths. Display formatting and speech planning happen separately."
         )
     if mode == "full":
@@ -756,7 +741,8 @@ def build_correction_task_instructions(
             "and its gap from or overlap with the preceding cue.\n"
             f"- A gap of at least {gap_reference} is a "
             "substantial audible pause: normally preserve a cue boundary there "
-            "even when the text is semantically related.\n"
+            "even when the text is semantically related. "
+            f"{'For logical passages, the bounded unfinished-phrase exception above takes precedence. ' if logical_passages else ''}\n"
             "- A shorter gap is not by itself a reason to split a coherent "
             "same-speaker utterance. Use semantics, punctuation, and the timing "
             "evidence together."

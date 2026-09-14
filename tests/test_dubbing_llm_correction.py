@@ -669,7 +669,7 @@ same thought.
     def test_logical_passage_correction_rejects_split_and_invalid_merge(self):
         block = [
             {"index": 1, "start_ms": 0, "end_ms": 5000, "text": "one"},
-            {"index": 2, "start_ms": 7001, "end_ms": 8000, "text": "two"},
+            {"index": 2, "start_ms": 9001, "end_ms": 10000, "text": "two"},
         ]
         with self.assertRaises(ValueError):
             llm_correction.validate_correction_operations(

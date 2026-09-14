@@ -3231,6 +3231,44 @@ class GenerationService:
         return new_ids
 
     @staticmethod
+    def _clone_available_takes_batch(
+        session: Session, pairs: list[tuple[str, str]]
+    ) -> None:
+        """Preserve unchanged audio without one SELECT/flush per segment.
+
+        This runs inside the immutable topology transaction. Keeping its write
+        lock brief matters: the generation worker renews its lease through the
+        same SQLite database while an early-timing repair is staged.
+        """
+        target_by_source = dict(pairs)
+        source_ids = list(target_by_source)
+        with session.no_autoflush:
+            for offset in range(0, len(source_ids), 400):
+                sources = session.scalars(
+                    select(AudioTake).where(
+                        AudioTake.generation_segment_id.in_(source_ids[offset:offset + 400]),
+                        AudioTake.status == "completed",
+                        AudioTake.artifact_id.is_not(None),
+                    ).order_by(AudioTake.created_at, AudioTake.id)
+                ).all()
+                session.add_all([
+                    AudioTake(
+                        generation_segment_id=target_by_source[source.generation_segment_id],
+                        generation_run_id=None,
+                        artifact_id=source.artifact_id,
+                        parent_take_id=source.id,
+                        kind=source.kind,
+                        status=source.status,
+                        settings_hash=source.settings_hash,
+                        duration_ms=source.duration_ms,
+                        is_active=source.is_active,
+                        revision=source.revision,
+                    )
+                    for source in sources
+                ])
+        session.flush()
+
+    @staticmethod
     def _recompute_alignment_groups(segments: list[GenerationSegment]) -> None:
         previous_refs: set[str] = set()
         group_number = 0
@@ -3667,8 +3705,9 @@ class GenerationService:
         for values in persisted_values:
             new_segment = GenerationSegment(plan_revision_id=revision.id, **values)
             session.add(new_segment)
-            session.flush()
             new_segments.append(new_segment)
+        # One flush, not a growing-unit-of-work flush for every speech block.
+        session.flush()
         if action != "restore":
             self._recompute_alignment_groups(new_segments)
         session.flush()
@@ -3676,11 +3715,12 @@ class GenerationService:
         # Reuse takes only for byte-for-byte unchanged segments and exact
         # restore copies.  Split/merge replacements intentionally have no
         # source take mapping.
+        take_copy_pairs: list[tuple[str, str]] = []
         if action == "restore":
-            for source, target_segment in zip(
-                target_segments, new_segments, strict=True
-            ):
-                self._clone_available_takes(session, source.id, target_segment.id)
+            take_copy_pairs.extend(
+                (source.id, target_segment.id)
+                for source, target_segment in zip(target_segments, new_segments, strict=True)
+            )
         else:
             new_index = 0
             for source in current_segments:
@@ -3698,10 +3738,9 @@ class GenerationService:
                     target_values.pop(ignored_key, None)
                 unchanged = source_values == target_values
                 if unchanged:
-                    self._clone_available_takes(
-                        session, source.id, new_segments[new_index].id
-                    )
+                    take_copy_pairs.append((source.id, new_segments[new_index].id))
                 new_index += 1
+        self._clone_available_takes_batch(session, take_copy_pairs)
         if activate:
             plan.active_revision_id = revision.id
             plan.updated_at = utcnow()

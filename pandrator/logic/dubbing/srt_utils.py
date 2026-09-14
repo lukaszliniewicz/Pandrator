@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from .natural_boundaries import classify_boundary
+from .pause_policy import DEFAULT_CONTINUATION_GAP_MS, may_bridge_unfinished_pause
+
 import logging
 import re
 from collections.abc import Mapping
@@ -433,7 +436,7 @@ def create_translation_blocks(
         endings = (".", "!", "?")
 
     def is_sentence_ending(text: str) -> bool:
-        return any(str(text or "").strip().endswith(ending) for ending in endings)
+        return classify_boundary(str(text or ""), "", language_code=source_language) == 0
 
     records: list[dict[str, Any]] = []
     previous_segment: SubtitleSegment | None = None
@@ -455,6 +458,7 @@ def create_translation_blocks(
             "end": segment.end_ms / 1000,
             "start_ms": segment.start_ms,
             "end_ms": segment.end_ms,
+            "_source_language": source_language,
             "speaker": str(
                 (speaker_by_subtitle or {}).get(segment.index)
                 or segment.speaker
@@ -471,6 +475,18 @@ def create_translation_blocks(
     def safe_boundary(left: dict[str, Any], right: dict[str, Any]) -> bool:
         if int(right.get("overlap_with_previous_ms") or 0) > 0:
             return False
+        gap = int(right.get("gap_from_previous_ms") or 0)
+        same_speaker = str(left.get("speaker") or "").casefold() == str(right.get("speaker") or "").casefold()
+        # Do not deliberately choose a batch seam that prevents the model
+        # from repairing an unfinished phrase. Character/count limits remain
+        # hard request-size limits; this is a choice among feasible seams.
+        unfinished_pause = substantial_gap_ms is not None and same_speaker and may_bridge_unfinished_pause(
+            str(left.get("text") or ""), str(right.get("text") or ""), gap,
+            ordinary_gap_ms=max(0, substantial_gap_ms - 1),
+            continuation_gap_ms=DEFAULT_CONTINUATION_GAP_MS,
+            language_code=source_language,
+            combined_span_ms=int(right["end_ms"]) - int(left["start_ms"]),
+        )
         return bool(
             is_sentence_ending(str(left.get("text") or ""))
             or (
@@ -481,6 +497,7 @@ def create_translation_blocks(
             )
             or (
                 substantial_gap_ms is not None
+                and not unfinished_pause
                 and int(right.get("gap_from_previous_ms") or 0)
                 >= substantial_gap_ms
             )

@@ -225,7 +225,7 @@ First fragment
 
 2
 00:00:01,100 --> 00:00:02,000
-second fragment
+second fragment,
 
 3
 00:00:04,500 --> 00:00:05,500

@@ -31,7 +31,10 @@ class SpeechBlockProsodyRegressionTests(unittest.TestCase):
         joined = create_speech_blocks(content, continuation_threshold_ms=3000, max_internal_gap_ms=4000)
         guarded = create_speech_blocks(content, continuation_threshold_ms=3000, max_internal_gap_ms=1800)
         self.assertEqual([block["text"] for block in joined], ["Something that can help in every aspect of living here."])
-        self.assertEqual(len(guarded), 2)
+        self.assertEqual(len(guarded), 1)
+        self.assertIn("hesitation_bridged", guarded[0]["provenance"]["risk_flags"])
+        strict = create_speech_blocks(content, continuation_threshold_ms=2000, max_internal_gap_ms=1800)
+        self.assertEqual(len(strict), 2)
 
     def test_near_capacity_complete_thoughts_keep_natural_boundary(self):
         first = "This first thought is already long enough to stand on its own without another sentence being packed into the same block."
