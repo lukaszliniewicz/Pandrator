@@ -82,10 +82,6 @@ def prepare_segment_edit_targets(
         if revision is None:
             continue
         approved = session.get(m.SpeechPlanReview, revision.id) is not None
-        if not approved and not (revision.settings_json or {}).get(
-            "_prepared_for_review"
-        ):
-            continue
         plan = session.get(m.GenerationPlan, revision.plan_id)
         if plan.active_revision_id != revision.id:
             raise RevisionConflict(
@@ -112,6 +108,9 @@ def prepare_segment_edit_targets(
     if len({segment.plan_revision_id for segment in segments.values()}) != 1:
         raise ValueError("Edit one speech-plan revision at a time.")
     plan, revision = frozen[0]
+    from .generation_edit_audio import inherit_edit_copy_audio
+
+    inherit_edit_copy_audio(session, revision.id)
     result = service.revise_topology_in_session(
         session,
         plan.session_id,

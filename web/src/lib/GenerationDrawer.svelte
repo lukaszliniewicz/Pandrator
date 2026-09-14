@@ -8,6 +8,10 @@
   import { selectableTtsServices } from './tts-provider-policy';
   import { errorMessage } from './errors';
   import {
+    GenerationEditQueue,
+    collectStaleSegmentIds
+  } from './generation-edit-queue';
+  import {
     ChevronDown,
     ChevronUp,
     BookOpenText,
@@ -175,6 +179,9 @@
   let libraryVoices = $state<VoiceRecord[]>([]);
   let alternateOpen = $state(false);
   let pendingSegmentUpdates = $state(0);
+  const editQueue = new GenerationEditQueue();
+  const savedEditRows = new Map<string, GenerationSegment>();
+  let regenerationNotice = $state('');
   let alternateSegmentIds = $state<string[]>([]);
   let alternateTts = $state<Record<string, unknown>>({});
   let alternateRvc = $state<Record<string, unknown>>({ enabled: false });
@@ -787,16 +794,57 @@
     item: GenerationSegment,
     changes: GenerationSegmentChanges
   ) {
+    try {
+      return await editQueue.save(item.id, async (currentId) => {
+        const current =
+          savedEditRows.get(currentId) ??
+          (currentId !== item.id
+            ? payload.items.find((row) => row.id === currentId)
+            : item);
+        if (!current)
+          throw new Error(
+            'The segment changed. Refresh before saving this edit.'
+          );
+        const updated = await performSegmentPatch(current, changes);
+        if (!updated)
+          throw new Error(error || 'The segment edit could not be saved.');
+        return updated;
+      });
+    } catch (caught) {
+      error = errorMessage(caught);
+    }
+  }
+
+  async function performSegmentPatch(
+    item: GenerationSegment,
+    changes: GenerationSegmentChanges
+  ) {
     pendingSegmentUpdates += 1;
     regenerateMenuOpen = false;
     try {
+      const previousRows = payload.items;
       const updated = await generationStore.updateSegment(item, changes);
+      savedEditRows.set(updated.id, { ...item, ...updated });
       if (updated.id !== item.id) {
         selectedRunId = '';
         selectedRow = '';
         selectedRows = [];
         filter = 'all';
-        await load(true, false);
+        await load(true, true);
+        const byOrdinal = new Map(
+          payload.items.map((row) => [row.ordinal, row])
+        );
+        for (const old of previousRows) {
+          const current = byOrdinal.get(old.ordinal);
+          if (
+            current &&
+            JSON.stringify(current.source_segment_ids) ===
+              JSON.stringify(old.source_segment_ids)
+          ) {
+            editQueue.recordReplacements([[old.id, current.id]]);
+            savedEditRows.set(current.id, current);
+          }
+        }
       }
       if (
         'node_kind' in changes ||
@@ -832,7 +880,7 @@
     });
     if (!updated) return;
     comparisonItem = null;
-    if (regenerateAfterReview) await start('regenerate', [item.id]);
+    if (regenerateAfterReview) await start('regenerate', [updated.id]);
   }
 
   async function reviseSpeechBlocks(operation: {
@@ -953,11 +1001,43 @@
     }
   }
 
+  async function regenerateAllStale() {
+    regenerateMenuOpen = false;
+    loading = true;
+    error = '';
+    regenerationNotice = '';
+    try {
+      await editQueue.settledIds([]);
+      const revisionId = payload.plan_revision_id;
+      if (!revisionId || selectedRunId)
+        throw new Error('Select the active speech plan first.');
+      const ids = await collectStaleSegmentIds(revisionId, (query) =>
+        generationApi.segments(sessionId, query)
+      );
+      if (payload.plan_revision_id !== revisionId || selectedRunId) {
+        throw new Error(
+          'The speech plan changed. Refresh before regenerating stale segments.'
+        );
+      }
+      if (!ids.length) {
+        regenerationNotice =
+          'No stale segments in the active plan. Ungenerated segments were left alone.';
+        return;
+      }
+      await start('regenerate', ids, {}, false, revisionId);
+    } catch (caught) {
+      error = errorMessage(caught);
+    } finally {
+      loading = false;
+    }
+  }
+
   async function start(
     operation: 'generate' | 'regenerate' | 'rvc' = 'generate',
     ids: string[] = [],
     selectedSegmentOverride: Record<string, unknown> = {},
-    staleOnly = false
+    staleOnly = false,
+    pinnedRevisionId: string | null = null
   ) {
     if (operation === 'rvc' && !rvcModel) {
       showRvc = true;
@@ -967,7 +1047,22 @@
     }
     loading = true;
     error = '';
+    regenerationNotice = '';
     try {
+      ids = await editQueue.settledIds(ids);
+      if (
+        pinnedRevisionId &&
+        (payload.plan_revision_id !== pinnedRevisionId || selectedRunId)
+      ) {
+        throw new Error(
+          'The speech plan changed. Refresh before regenerating stale segments.'
+        );
+      }
+      if (operation === 'regenerate' && !ids.length) {
+        throw new Error(
+          'Choose stale, selected, or marked segments to regenerate.'
+        );
+      }
       const run_override =
         operation === 'rvc'
           ? {
@@ -993,6 +1088,11 @@
         staleOnly
       );
       generationStore.upsertRun(started);
+      if (operation === 'regenerate') {
+        regenerationNotice = started.resume_source_on_completion
+          ? 'Replacement generation queued after the current block. The main run resumes automatically.'
+          : 'Replacement generation requested. New takes will appear in the active mix.';
+      }
       if (operation === 'rvc') showRvc = false;
       // New generation should be visible in the live Active mix while it
       // runs; history remains an explicit comparison view.
@@ -1989,11 +2089,15 @@
                 displayMenuOpen = false;
                 settingsMenuOpen = false;
               }}
-              disabled={pendingSegmentUpdates > 0 ||
-                (!selectedSegmentIds.length && !marked.length)}
+              disabled={loading ||
+                topologyBusy ||
+                pendingSegmentUpdates > 0 ||
+                (!payload.plan_revision_id &&
+                  !selectedSegmentIds.length &&
+                  !marked.length)}
               class="action icon-action"
               class:active={regenerateMenuOpen}
-              title="Regenerate selected or marked takes"
+              title="Regenerate stale, selected, or marked takes"
               aria-label="Regeneration options"
               aria-expanded={regenerateMenuOpen}
             >
@@ -2002,6 +2106,15 @@
             {#if regenerateMenuOpen}
               <div class="dropdown-menu">
                 <span class="dropdown-section-title">Standard settings</span>
+                {#if !selectedRunId}
+                  <button
+                    type="button"
+                    class="dropdown-item"
+                    onclick={regenerateAllStale}
+                  >
+                    <RefreshCw size={13} /> Regenerate all stale
+                  </button>
+                {/if}
                 {#if selectedSegmentIds.length}
                   <button
                     type="button"
@@ -2038,6 +2151,7 @@
                       selectedSegmentIds.length ? selectedSegmentIds : marked
                     );
                   }}
+                  disabled={!selectedSegmentIds.length && !marked.length}
                 >
                   <WandSparkles size={13} />
                   Different settings / provider…
@@ -2193,7 +2307,15 @@
           </div>
         {/if}
 
-        {#if error}<p class="p-3 text-sm text-red-500">{error}</p>{/if}
+        {#if error}<p class="p-3 text-sm text-red-500" role="alert">
+            {error}
+          </p>{/if}
+        {#if regenerationNotice}<p
+            class="p-3 text-sm text-[var(--muted)]"
+            role="status"
+          >
+            {regenerationNotice}
+          </p>{/if}
 
         <div class="min-h-[12rem] shrink-0 flex-1 overflow-auto">
           {#if viewMode === 'segments'}

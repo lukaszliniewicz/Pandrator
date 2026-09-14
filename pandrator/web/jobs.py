@@ -323,7 +323,11 @@ class JobQueue:
             )
         )
         if run is not None:
-            self._apply_generation_job_status(run, job)
+            transitioned = self._apply_generation_job_status(run, job)
+            if transitioned and run.resume_source_on_completion:
+                from .generation_edit_audio import release_interrupted_run
+
+                release_interrupted_run(session, self, run)
 
     def _reconcile_generation_runs_for_jobs_locked(
         self,

@@ -273,10 +273,26 @@ export class GenerationStore {
     changes: GenerationSegmentChanges
   ) {
     const updated = await generationApi.updateSegment(item, changes);
+    // An immutable copy has different take IDs. Keep the old row playable
+    // until the drawer reloads the authoritative new revision.
+    if (updated.id !== item.id) return updated;
     this.payload = {
       ...this.payload,
       items: this.payload.items.map((candidate) =>
-        candidate.id === updated.id ? { ...candidate, ...updated } : candidate
+        candidate.id === item.id || candidate.id === updated.id
+          ? {
+              ...candidate,
+              ...updated,
+              takes:
+                updated.id !== item.id
+                  ? []
+                  : candidate.takes.map((take) =>
+                      updated.status === 'stale' && take.status === 'completed'
+                        ? { ...take, status: 'stale' }
+                        : take
+                    )
+            }
+          : candidate
       )
     };
     return updated;

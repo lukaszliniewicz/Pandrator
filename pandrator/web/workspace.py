@@ -3205,7 +3205,7 @@ class GenerationService:
                 select(AudioTake)
                 .where(
                     AudioTake.generation_segment_id == source_segment_id,
-                    AudioTake.status == "completed",
+                    AudioTake.status.in_(("completed", "stale")),
                     AudioTake.artifact_id.is_not(None),
                 )
                 .order_by(AudioTake.created_at, AudioTake.id)
@@ -3247,7 +3247,7 @@ class GenerationService:
                 sources = session.scalars(
                     select(AudioTake).where(
                         AudioTake.generation_segment_id.in_(source_ids[offset:offset + 400]),
-                        AudioTake.status == "completed",
+                        AudioTake.status.in_(("completed", "stale")),
                         AudioTake.artifact_id.is_not(None),
                     ).order_by(AudioTake.created_at, AudioTake.id)
                 ).all()
@@ -3704,6 +3704,9 @@ class GenerationService:
         new_segments: list[GenerationSegment] = []
         for values in persisted_values:
             new_segment = GenerationSegment(plan_revision_id=revision.id, **values)
+            if new_segment.status == "running":
+                # The worker owns the source row, not this new editorial copy.
+                new_segment.status = "ready"
             session.add(new_segment)
             new_segments.append(new_segment)
         # One flush, not a growing-unit-of-work flush for every speech block.
@@ -3984,9 +3987,9 @@ class GenerationService:
             visited.add(current.id)
             parent_id = str(current.source_generation_run_id or "")
             if not parent_id:
-                raise ValueError(
-                    "The selected regeneration run has no source generation run."
-                )
+                # Regeneration on an edited plan can legitimately be an
+                # independent output with no same-plan full-generation root.
+                break
             parent = session.get(GenerationRun, parent_id)
             if (
                 parent is None
@@ -4050,7 +4053,12 @@ class GenerationService:
             descendants = list(
                 session.scalars(
                     select(GenerationRun).where(
-                        GenerationRun.source_generation_run_id.in_(parent_ids),
+                        (
+                            GenerationRun.source_generation_run_id.in_(parent_ids)
+                            | GenerationRun.settings_snapshot_json[
+                                "interrupted_generation_run_id"
+                            ].as_string().in_(parent_ids)
+                        ),
                         GenerationRun.operation == "regenerate",
                     )
                 ).all()
@@ -4171,30 +4179,32 @@ class GenerationService:
                     plan_revision_id,
                 )
         auto_resume_source_id = None
-        if source_run is not None:
+        scheduling_run = source_run
+        if requested_segment_ids and operation == "regenerate" and not generation_run_id:
+            from .generation_edit_audio import running_edit_ancestor
+
+            scheduling_run = running_edit_ancestor(session, plan_revision_id) or source_run
+        if scheduling_run is not None:
             if operation == "regenerate":
-                # The short immediate transaction used by both the route and
-                # direct service callers serializes baton replacement with a
-                # child's completion transaction.  A child can therefore
-                # never observe a baton that was reassigned to a sibling.
-                live_batons = self._regeneration_baton_descendants(
-                    session, source_run.id
-                )
-                if source_run.status in {"queued", "running"}:
-                    self._revoke_regeneration_batons(session, source_run.id)
-                    source_run.pause_requested = True
-                    source_run.status = "pausing"
-                    source_run.updated_at = utcnow()
-                    auto_resume_source_id = source_run.id
-                elif source_run.status in {"pausing", "paused"} and live_batons:
-                    self._revoke_regeneration_batons(session, source_run.id)
-                    source_run.pause_requested = True
-                    source_run.updated_at = utcnow()
-                    auto_resume_source_id = source_run.id
-            elif source_run.status in {"queued", "running"}:
-                source_run.pause_requested = True
-                source_run.status = "pausing"
-                source_run.updated_at = utcnow()
+                # A descendant edit has independent output ownership, but must
+                # still yield the single worker at the original run's checkpoint.
+                live_batons = self._regeneration_baton_descendants(session, scheduling_run.id)
+                if scheduling_run.status in {"queued", "running"}:
+                    self._revoke_regeneration_batons(session, scheduling_run.id)
+                    scheduling_run.pause_requested = True
+                    scheduling_run.status = "pausing"
+                    scheduling_run.updated_at = utcnow()
+                    auto_resume_source_id = scheduling_run.id
+                elif scheduling_run.status in {"pausing", "paused"} and live_batons:
+                    self._revoke_regeneration_batons(session, scheduling_run.id)
+                    scheduling_run.pause_requested = True
+                    scheduling_run.updated_at = utcnow()
+                    auto_resume_source_id = scheduling_run.id
+            elif scheduling_run.status in {"queued", "running"}:
+                scheduling_run.pause_requested = True
+                scheduling_run.status = "pausing"
+                scheduling_run.updated_at = utcnow()
+        if source_run is not None:
             source_snapshot = dict(source_run.settings_snapshot_json or {})
             # A previous alternate take is a useful source for ordinary
             # settings, but its *selected-only* precedence must not leak
@@ -4210,9 +4220,15 @@ class GenerationService:
                 settings_hash = stable_hash(snapshot)
         if selected_segment_override:
             snapshot["selected_segment_override"] = deepcopy(selected_segment_override)
+        snapshot.pop("interrupted_generation_run_id", None)
+        if auto_resume_source_id and (source_run is None or source_run.id != auto_resume_source_id):
+            snapshot["interrupted_generation_run_id"] = auto_resume_source_id
         snapshot["speech_plan_revision_id"] = plan_revision_id
         from .speech_plan_workspace import freeze_speech_snapshot
+        from .generation_edit_audio import capture_selection_guards, inherit_edit_copy_audio
 
+        inherit_edit_copy_audio(session, plan_revision_id)
+        snapshot["generation_selection_guards"] = capture_selection_guards(session, plan_revision_id)
         freeze_speech_snapshot(session, plan_revision_id, snapshot, explicit=bool(prepared.get("explicit_speech_plan_revision_id")))
         from .generation_audio_identity import plan_audio_identities, take_reuse_reason
 

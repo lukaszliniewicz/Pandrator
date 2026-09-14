@@ -234,10 +234,12 @@ class GenerationTopologyTests(unittest.TestCase):
             active = session.scalar(select(GenerationPlan.active_revision_id).where(GenerationPlan.session_id == self.session_id))
             clones = list(session.scalars(select(AudioTake).where(AudioTake.generation_segment_id.in_(result["segment_ids"]))))
             self.assertEqual(self.initial_revision_id, active)
-            self.assertEqual(541, len(clones))
-            self.assertTrue(all(take.parent_take_id and take.is_active for take in clones))
+            self.assertEqual(542, len(clones))
+            self.assertTrue(all(take.parent_take_id for take in clones))
+            self.assertEqual(541, sum(take.is_active for take in clones))
+            self.assertEqual(1, sum(take.status == "stale" for take in clones))
             self.assertTrue(all(take.generation_segment_id not in result["affected_segment_ids"] for take in clones))
-            self.assertEqual(541, len({take.parent_take_id for take in clones}))
+            self.assertEqual(542, len({take.parent_take_id for take in clones}))
 
     def tearDown(self):
         self.database.dispose()
@@ -415,11 +417,12 @@ class GenerationTopologyTests(unittest.TestCase):
             "manual_split",
             right["speech_block_provenance"]["boundary_before"]["reason_code"],
         )
-        self.assertEqual(
-            self.initial_take_ids[1], unchanged["takes"][0]["parent_take_id"]
-        )
-        self.assertEqual(1, len(unchanged["takes"]))
-        self.assertNotEqual(self.stale_take_id, unchanged["takes"][0]["parent_take_id"])
+        self.assertEqual(2, len(unchanged["takes"]))
+        selected = next(take for take in unchanged["takes"] if take["is_active"])
+        self.assertEqual(self.initial_take_ids[1], selected["parent_take_id"])
+        self.assertTrue(any(take["parent_take_id"] == self.stale_take_id
+                            and take["status"] == "stale"
+                            for take in unchanged["takes"]))
 
         historical = self._segments(generation_run_id=self.run_id)
         self.assertEqual(self.initial_revision_id, historical["plan_revision_id"])
@@ -510,10 +513,11 @@ class GenerationTopologyTests(unittest.TestCase):
         )
         self.assertEqual(
             self.initial_take_ids,
-            [item["takes"][0]["parent_take_id"] for item in restored_page["items"]],
+            [next(take for take in item["takes"] if take["is_active"])["parent_take_id"]
+             for item in restored_page["items"]],
         )
         self.assertEqual(
-            [1, 1], [len(item["takes"]) for item in restored_page["items"]]
+            [1, 2], [len(item["takes"]) for item in restored_page["items"]]
         )
         with self.database.session() as session:
             revisions = list(

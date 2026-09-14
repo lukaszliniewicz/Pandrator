@@ -681,46 +681,19 @@ class WorkflowHandlers:
         with self.database.immediate_session() as session:
             child_run = session.get(GenerationRun, child_run_id)
             source_run = session.get(GenerationRun, source_run_id)
+            from .generation_edit_audio import interrupted_run_id
+
             if (
                 child_run is None
-                or child_run.source_generation_run_id != source_run_id
+                or interrupted_run_id(child_run) != source_run_id
                 or not child_run.resume_source_on_completion
+                or source_run is None
+                or child_run.session_id != source_run.session_id
             ):
                 return None
-            from .workspace import GenerationService
+            from .generation_edit_audio import release_interrupted_run
 
-            GenerationService._clear_regeneration_baton(
-                session, child_run, source_run_id
-            )
-            if (
-                source_run is None
-                or source_run.status != "paused"
-                or not source_run.pause_requested
-                or source_run.cancel_requested
-            ):
-                return None
-            snapshot = dict(source_run.settings_snapshot_json or {})
-            source_run.pause_requested = False
-            source_run.cancel_requested = False
-            source_run.status = "queued"
-            source_run.updated_at = utcnow()
-            resource_keys = GenerationService._resource_keys(
-                source_run.session_id,
-                snapshot,
-            )
-            job = self.jobs.enqueue_in_session(
-                session,
-                "generation.run",
-                {
-                    "generation_run_id": source_run.id,
-                    "segment_ids": [],
-                    "operation": "resume",
-                },
-                session_id=source_run.session_id,
-                resource_keys=resource_keys,
-            )
-            source_run.job_id = job.id
-            return job.id
+            return release_interrupted_run(session, self.jobs, child_run)
 
     @staticmethod
     def _verification_metadata(
@@ -8222,6 +8195,24 @@ class WorkflowHandlers:
             raise
 
     def run_generation(self, payload, progress, cancel_event):
+        """Run synthesis and release any temporary scheduling interruption."""
+        try:
+            return self._run_generation(payload, progress, cancel_event)
+        finally:
+            source_id = str(payload.get("auto_resume_source_generation_run_id") or "")
+            if source_id:
+                try:
+                    with self.database.session() as session:
+                        child = session.get(GenerationRun, str(payload.get("generation_run_id") or ""))
+                        terminal = child is not None and child.status in {
+                            "completed", "partial", "failed", "canceled", "cancelled"
+                        }
+                    if terminal:
+                        self._resume_generation_after_regeneration(child.id, source_id)
+                except Exception:
+                    logger.exception("Could not release the temporary regeneration pause.")
+
+    def _run_generation(self, payload, progress, cancel_event):
         """Generate immutable per-segment takes with safe pause and resume boundaries."""
         from pydub import AudioSegment
 
@@ -8870,7 +8861,7 @@ class WorkflowHandlers:
                     take_path,
                     settings=stored_take_settings,
                 )
-                with self.database.session() as session:
+                with self.database.immediate_session() as session:
                     segment = session.get(GenerationSegment, segment_id)
                     artifact = self.artifacts.register_in_session(
                         session,
@@ -8917,30 +8908,42 @@ class WorkflowHandlers:
                         )
                         if usage_event is not None:
                             session.add(usage_event)
-                    deactivate = update(AudioTake).where(
+                    from .generation_edit_audio import selection_is_unchanged
+
+                    selected_before = session.scalar(select(AudioTake).where(
                         AudioTake.generation_segment_id == segment_id,
                         AudioTake.is_active.is_(True),
-                    )
-                    session.execute(
-                        deactivate.values(
-                            is_active=False,
-                            revision=AudioTake.revision + 1,
-                        ).execution_options(synchronize_session=False)
-                    )
-                    session.add(
-                        AudioTake(
-                            generation_segment_id=segment_id,
-                            generation_run_id=output_run_id,
-                            artifact_id=artifact.id,
-                            parent_take_id=parent_take_id,
-                            kind=take_kind,
-                            status="completed",
-                            settings_hash=artifact.settings_hash,
-                            duration_ms=len(audio),
-                            is_active=True,
+                    ))
+                    expected_selection = (settings_snapshot.get("generation_selection_guards") or {}).get(segment_id)
+                    activate_new = selection_is_unchanged(selected_before, expected_selection)
+                    if activate_new:
+                        deactivate = update(AudioTake).where(
+                            AudioTake.generation_segment_id == segment_id,
+                            AudioTake.is_active.is_(True),
                         )
+                        session.execute(
+                            deactivate.values(
+                                is_active=False,
+                                revision=AudioTake.revision + 1,
+                            ).execution_options(synchronize_session=False)
+                        )
+                    new_take = AudioTake(
+                        generation_segment_id=segment_id,
+                        generation_run_id=output_run_id,
+                        artifact_id=artifact.id,
+                        parent_take_id=parent_take_id,
+                        kind=take_kind,
+                        status="completed",
+                        settings_hash=artifact.settings_hash,
+                        duration_ms=len(audio),
+                        is_active=activate_new,
                     )
-                    segment.status = "completed"
+                    session.add(new_take)
+                    session.flush()
+                    from .generation_edit_audio import publish_to_edit_copy
+
+                    publish_to_edit_copy(session, segment, new_take, artifact, expected_selection)
+                    segment.status = "completed" if activate_new else (selected_before.status if selected_before else "ready")
                     if (
                         verification is not None
                         and verification.get("status") != "passed"
