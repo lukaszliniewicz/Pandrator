@@ -9090,7 +9090,11 @@ class WorkflowHandlers:
         """Assemble the current selected takes in plan order into an immutable artifact."""
         import tempfile
 
-        from pandrator.logic.dubbing.audio_sync import align_audio_blocks
+        from pandrator.logic.dubbing.audio_sync import (
+            align_audio_blocks,
+            sentence_gap_ms_from_settings,
+            slowdown_enabled_from_settings,
+        )
         from pandrator.logic.dubbing.models import AudioAlignmentBlock
 
         from .audio_assembly import (
@@ -9500,7 +9504,7 @@ class WorkflowHandlers:
                         raw_speed * 100 if raw_speed <= 10 else raw_speed
                     )
                     logger.info(
-                        "Assembling %s with subtitle timing: blocks=%d max_speed=%.3fx max_delay=%dms sentence_gap=%dms",
+                        "Assembling %s with subtitle timing: blocks=%d max_speed=%.3fx max_delay=%dms sentence_gap=%dms slowdown=%s",
                         assembly_id,
                         len(alignment_blocks),
                         max(1.0, speed_up_percent / 100.0),
@@ -9508,13 +9512,8 @@ class WorkflowHandlers:
                             0,
                             int(audio_settings.get("synchronization_delay_ms") or 0),
                         ),
-                        max(
-                            0,
-                            int(
-                                audio_settings.get("synchronization_sentence_gap_ms")
-                                or 100
-                            ),
-                        ),
+                        sentence_gap_ms_from_settings(audio_settings),
+                        slowdown_enabled_from_settings(audio_settings),
                     )
                     progress(
                         0.48,
@@ -9531,16 +9530,8 @@ class WorkflowHandlers:
                                 ),
                             ),
                             speed_up_percent=max(100, speed_up_percent),
-                            allow_slowdown=bool(audio_settings.get("synchronization_slowdown_enabled", False)),
-                            sentence_gap_ms=max(
-                                0,
-                                int(
-                                    audio_settings.get(
-                                        "synchronization_sentence_gap_ms"
-                                    )
-                                    or 100
-                                ),
-                            ),
+                            allow_slowdown=slowdown_enabled_from_settings(audio_settings),
+                            sentence_gap_ms=sentence_gap_ms_from_settings(audio_settings),
                             output_path=temporary_path / "aligned.wav",
                             diagnostics=alignment_diagnostics,
                             backend=backend,

@@ -309,7 +309,7 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "fade_out_ms": 0,
         "synchronization_delay_ms": 800,
         "synchronization_speed": 1.2,
-        "synchronization_slowdown_enabled": False,
+        "synchronization_slowdown_enabled": True,
         "synchronization_sentence_gap_ms": 100,
     },
     "rvc": {

@@ -19,7 +19,11 @@ from sqlalchemy.orm import Session
 from pandrator.logic.dubbing.audio_sync import (
     _speed_up_wav_streaming,
     _streaming_audio_duration_ms,
+    NATURAL_OVERRUN_TOLERANCE_MS,
+    NATURAL_OVERRUN_TOLERANCE_RATIO,
     alignment_adjustment,
+    sentence_gap_ms_from_settings,
+    slowdown_enabled_from_settings,
 )
 from pandrator.logic.dubbing.early_repair import find_repair_boundary
 
@@ -211,6 +215,8 @@ def advance_timing(
     settings: dict[str, Any],
     work: Path,
     cancel_event: Any,
+    *,
+    diagnostics: dict[str, int] | None = None,
 ) -> tuple[int, int, int]:
     """Measure forward placement, including FFmpeg rounding, without a full mix.
 
@@ -220,7 +226,7 @@ def advance_timing(
     sample_rate, channels = preferred_pcm_format(
         group.paths[0], cancel_event=cancel_event
     )
-    gap = max(0, min(5000, int(settings.get("synchronization_sentence_gap_ms") or 100)))
+    gap = sentence_gap_ms_from_settings(settings)
     parts = [
         AudioAssemblyPart(
             path=path,
@@ -247,7 +253,7 @@ def advance_timing(
         cursor - start,
         delay_start_ms=max(0, int(settings.get("synchronization_delay_ms") or 0)),
         max_speed_factor=maximum,
-        allow_slowdown=bool(settings.get("synchronization_slowdown_enabled", False)),
+        allow_slowdown=slowdown_enabled_from_settings(settings),
         speech_window_duration_ms=max(1, group.end_ms - start),
     )
     processed = duration
@@ -276,6 +282,8 @@ def advance_timing(
             factor = min(
                 maximum, factor * processed / max(1, adjustment.available_ms - 1)
             )
+    if diagnostics is not None:
+        diagnostics.update(original_audio_ms=duration, processed_audio_ms=processed)
     return (
         max(slot_end, cursor + adjustment.start_delay_ms + processed),
         duration,
@@ -351,9 +359,11 @@ def repair_early_blocks(
             slot_end = (
                 groups[index + 1].start_ms if index + 1 < len(groups) else group.end_ms
             )
+            timing_details: dict[str, int] = {}
             try:
                 baseline_cursor, duration, start_delay = advance_timing(
-                    group, cursor, slot_end, audio_settings, work, stop
+                    group, cursor, slot_end, audio_settings, work, stop,
+                    diagnostics=timing_details,
                 )
             except Exception:
                 logger.warning(
@@ -363,14 +373,21 @@ def repair_early_blocks(
                 break
             segment = group.segments[0]
             boundary = None
-            if len(group.segments) == 1:
+            provenance = dict(segment.speech_block_provenance_json or {})
+            if (
+                len(group.segments) == 1
+                and "estimated_internal_timing" not in (provenance.get("risk_flags") or [])
+            ):
                 boundary = find_repair_boundary(
                     segment.text,
                     segment.optimized_text or segment.text,
-                    dict(segment.speech_block_provenance_json or {}),
-                    duration,
+                    provenance,
+                    # Judge the rendered take after gentle tempo adjustment,
+                    # not the shorter unprocessed source audio.
+                    timing_details.get("processed_audio_ms", duration),
                     incoming_delay_ms=max(0, cursor - group.start_ms),
                     start_delay_ms=start_delay,
+                    language_code=str(tts_settings.get("language") or "en"),
                     **thresholds,
                 )
             if boundary is None or (boundary.start_ms, boundary.end_ms) != (
@@ -533,12 +550,24 @@ def repair_early_blocks(
                     work,
                     stop,
                 )
+                first_child_drift = max(0, child_cursor - replacement[1].start_ms)
                 child_cursor, _, _ = advance_timing(
                     replacement[1], child_cursor, slot_end, audio_settings, work, stop
                 )
                 if child_cursor > baseline_cursor:
                     # A repair must not create new delay for subsequent original blocks.
                     repair_status, repair_reason = "not_applied", "added_delay"
+                    cursor = baseline_cursor
+                    continue
+                anchor_tolerance = min(
+                    NATURAL_OVERRUN_TOLERANCE_MS,
+                    int((replacement[1].start_ms - replacement[0].start_ms)
+                        * NATURAL_OVERRUN_TOLERANCE_RATIO),
+                )
+                if first_child_drift > anchor_tolerance:
+                    # Final catch-up is not enough: the new internal cue
+                    # anchor must not itself be substantially missed.
+                    repair_status, repair_reason = "not_applied", "missed_repair_anchor"
                     cursor = baseline_cursor
                     continue
                 with handler.database.immediate_session() as session:

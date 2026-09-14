@@ -12,8 +12,17 @@ from dataclasses import dataclass, field
 from itertools import pairwise
 from pathlib import Path
 
-from .languages import normalize_language_code
 from .models import SpeechBlock, SubtitleSegment
+from .natural_boundaries import (
+    CONJUNCTIONS,
+    MIN_NATURAL_FRAGMENT_CHARS,
+    classify_boundary,
+    conjunction_split_positions,
+    conjunction_tiers,
+    natural_split_candidates,
+    period_is_non_boundary,
+    resolve_speech_language,
+)
 from .srt_utils import parse_srt
 
 logger = logging.getLogger(__name__)
@@ -51,271 +60,8 @@ SENTENCE_SPLITTER_LANGUAGES = {
     "sv",
 }
 
-CONJUNCTIONS = {
-    "en": [
-        "and",
-        "but",
-        "or",
-        "because",
-        "although",
-        "so",
-        "while",
-        "if",
-        "then",
-        "that",
-        "as",
-        "for",
-        "since",
-        "until",
-        "whether",
-    ],
-    "es": [
-        "y",
-        "pero",
-        "o",
-        "porque",
-        "aunque",
-        "así",
-        "mientras",
-        "si",
-        "entonces",
-        "que",
-        "como",
-        "pues",
-        "desde",
-        "hasta",
-    ],
-    "fr": [
-        "et",
-        "mais",
-        "ou",
-        "parce que",
-        "bien que",
-        "donc",
-        "pendant que",
-        "si",
-        "alors",
-        "que",
-        "comme",
-        "car",
-        "depuis",
-        "jusqu'à",
-    ],
-    "de": [
-        "und",
-        "aber",
-        "oder",
-        "weil",
-        "obwohl",
-        "also",
-        "während",
-        "wenn",
-        "dann",
-        "dass",
-        "als",
-        "denn",
-        "seit",
-        "bis",
-        "ob",
-    ],
-    "it": [
-        "e",
-        "ma",
-        "o",
-        "perché",
-        "sebbene",
-        "quindi",
-        "mentre",
-        "se",
-        "allora",
-        "che",
-        "come",
-        "poiché",
-        "da quando",
-        "fino a",
-    ],
-    "pt": [
-        "e",
-        "mas",
-        "ou",
-        "porque",
-        "embora",
-        "então",
-        "enquanto",
-        "se",
-        "logo",
-        "que",
-        "como",
-        "pois",
-        "desde",
-        "até",
-    ],
-    "pl": [
-        "i",
-        "ale",
-        "lub",
-        "ponieważ",
-        "chociaż",
-        "więc",
-        "podczas gdy",
-        "jeśli",
-        "wtedy",
-        "że",
-        "jak",
-        "gdyż",
-        "od",
-        "aż",
-        "czy",
-    ],
-    "tr": [
-        "ve",
-        "ama",
-        "veya",
-        "çünkü",
-        "rağmen",
-        "bu yüzden",
-        "iken",
-        "eğer",
-        "o zaman",
-        "ki",
-        "gibi",
-        "zira",
-    ],
-    "ru": [
-        "и",
-        "но",
-        "или",
-        "потому что",
-        "хотя",
-        "так что",
-        "пока",
-        "если",
-        "тогда",
-        "что",
-        "как",
-        "ибо",
-        "с",
-        "до",
-        "ли",
-    ],
-    "nl": [
-        "en",
-        "maar",
-        "of",
-        "omdat",
-        "hoewel",
-        "dus",
-        "terwijl",
-        "als",
-        "dan",
-        "dat",
-        "zoals",
-        "want",
-        "sinds",
-        "tot",
-    ],
-    "cs": [
-        "a",
-        "ale",
-        "nebo",
-        "protože",
-        "ačkoli",
-        "takže",
-        "zatímco",
-        "jestli",
-        "pak",
-        "že",
-        "jako",
-        "neboť",
-        "od",
-        "až",
-        "zda",
-    ],
-    "hu": [
-        "és",
-        "de",
-        "vagy",
-        "mert",
-        "bár",
-        "tehát",
-        "míg",
-        "ha",
-        "akkor",
-        "hogy",
-        "mint",
-        "hiszen",
-        "óta",
-        "ameddig",
-        "vajon",
-    ],
-    "ar": [
-        "و",
-        "لكن",
-        "أو",
-        "لأن",
-        "رغم أن",
-        "لذلك",
-        "بينما",
-        "إذا",
-        "ثم",
-        "أن",
-        "كما",
-        "ف",
-        "منذ",
-        "حتى",
-        "هل",
-    ],
-    "zh-cn": [
-        "和",
-        "但是",
-        "或者",
-        "因为",
-        "虽然",
-        "所以",
-        "当",
-        "如果",
-        "那么",
-        "的",
-        "作为",
-        "由于",
-        "从",
-        "直到",
-        "是否",
-    ],
-    "ja": [
-        "そして",
-        "しかし",
-        "または",
-        "なぜなら",
-        "にもかかわらず",
-        "だから",
-        "もし",
-        "その時",
-        "と",
-        "ように",
-        "から",
-        "以来",
-        "まで",
-        "かどうか",
-    ],
-    "ko": [
-        "그리고",
-        "하지만",
-        "또는",
-        "왜냐하면",
-        "비록",
-        "그래서",
-        "동안",
-        "만약",
-        "그때",
-        "것",
-        "처럼",
-        "때문에",
-        "이후",
-        "까지",
-        "인지",
-    ],
-}
+# CONJUNCTIONS is the shared language-aware table from natural_boundaries.
+# It is re-exported here for backward compatibility.
 
 _FALLBACK_SENTENCE_RE = re.compile(r"(?<=[.!?\u3002\uff01\uff1f])\s+")
 _SPEAKER_PREFIX_RE = re.compile(r"^\[(?P<speaker>SPEAKER[^\]]*)\]:\s*", re.IGNORECASE)
@@ -323,6 +69,20 @@ _TERMINAL_SENTENCE_RE = re.compile(
     r"[.!?\u2026\u3002\uff01\uff1f][\"'\u201d\u2019)\]}]*$"
 )
 SAME_SPEAKER_OVERLAP_TOLERANCE_MS = 120
+
+
+class UnsplittableSpeechBlockError(ValueError):
+    """Text cannot fit the engine cap at any natural boundary.
+
+    Raised instead of emitting an over-limit block or cutting mid-word.
+    ``details`` carries the failing cue references, variant lengths, and
+    the configured cap so callers can suggest raising
+    ``speech_block_max_chars`` or shortening the sentence.
+    """
+
+    def __init__(self, message: str, *, details: dict[str, object] | None = None):
+        super().__init__(message)
+        self.details: dict[str, object] = dict(details or {})
 
 
 def _event(
@@ -405,107 +165,25 @@ def _check_split_validity(
 def _split_further(
     text: str, language_code: str, max_chars: int, min_chars: int
 ) -> list[str]:
+    """Suggest only complete natural fragments, never arbitrary word cuts.
+
+    An unsplittable sentence stays whole here. The public planner then
+    reports the hard-cap conflict rather than sending over-limit text to TTS.
+    """
     text = str(text or "").strip()
     if not text:
         return []
     if len(text) <= max_chars:
         return [text]
-
-    midpoint = len(text) // 2
-    for punctuation_set in (".!?", ",;:"):
-        best_index = -1
-        best_distance = float("inf")
-        for idx in range(len(text) - 1, min_chars - 1, -1):
-            if text[idx] not in punctuation_set:
-                continue
-            split_index = idx + 1
-            if not _check_split_validity(text, split_index, max_chars, min_chars):
-                continue
-            distance = abs(split_index - midpoint)
-            if distance < best_distance or (
-                distance == best_distance and split_index > best_index
-            ):
-                best_distance = distance
-                best_index = split_index
-        if best_index >= 0:
-            return [
-                part
-                for segment in (
-                    text[:best_index].strip(),
-                    *_split_further(
-                        text[best_index:].strip(), language_code, max_chars, min_chars
-                    ),
-                )
-                for part in ([segment] if segment else [])
-            ]
-
-    best_index = -1
-    best_distance = float("inf")
-    for conjunction in CONJUNCTIONS.get(language_code, []):
-        for match in re.finditer(
-            r"\b" + re.escape(conjunction) + r"\b", text, re.IGNORECASE
-        ):
-            split_index = match.start()
-            if not _check_split_validity(text, split_index, max_chars, min_chars):
-                continue
-            distance = abs(split_index - midpoint)
-            if distance < best_distance or (
-                distance == best_distance and split_index > best_index
-            ):
-                best_distance = distance
-                best_index = split_index
-    if best_index >= 0:
-        return [
-            part
-            for segment in (
-                text[:best_index].strip(),
-                *_split_further(
-                    text[best_index:].strip(), language_code, max_chars, min_chars
-                ),
-            )
-            for part in ([segment] if segment else [])
-        ]
-
-    best_index = -1
-    best_distance = float("inf")
-    for idx in range(min(len(text) - 1, max_chars), min_chars - 1, -1):
-        if not text[idx].isspace():
-            continue
-        first = text[:idx].strip()
-        second = text[idx + 1 :].strip()
-        if not (min_chars <= len(first) <= max_chars and len(second) >= min_chars):
-            continue
-        distance = abs(len(first) - midpoint)
-        if distance < best_distance or (distance == best_distance and idx > best_index):
-            best_distance = distance
-            best_index = idx
-    if best_index >= 0:
-        return [
-            part
-            for segment in (
-                text[:best_index].strip(),
-                *_split_further(
-                    text[best_index + 1 :].strip(), language_code, max_chars, min_chars
-                ),
-            )
-            for part in ([segment] if segment else [])
-        ]
-
-    hard_cut = max_chars
-    cut_text = text[:hard_cut]
-    last_space = cut_text.rfind(" ")
-    if last_space >= min_chars:
-        hard_cut = last_space
-    return [
-        part
-        for segment in (
-            text[:hard_cut].strip(),
-            *_split_further(
-                text[hard_cut:].strip(), language_code, max_chars, min_chars
-            ),
+    maximum_parts = 1 + len(natural_split_candidates(text, language_code))
+    for count in range(_minimum_part_count(text, max_chars), maximum_parts + 1):
+        parts = _partition_variant_exact(
+            text, [], part_count=count, min_chars=min_chars,
+            max_chars=max_chars, language_code=language_code,
         )
-        for part in ([segment] if segment else [])
-    ]
+        if parts is not None:
+            return [part[0] for part in parts]
+    return [text]
 
 
 def _split_subtitle_text(
@@ -518,6 +196,7 @@ def _split_subtitle_text(
         return []
     if len(text) <= max_chars:
         return [text]
+    language_code = resolve_speech_language(language_code)
 
     if SentenceSplitter is not None and language_code in SENTENCE_SPLITTER_LANGUAGES:
         try:
@@ -798,11 +477,25 @@ def _combine_parts(previous: _SpeechPart, current: _SpeechPart) -> _SpeechPart:
     )
 
 
-def _break_cost(text: str, position: int, preferred_breaks: set[int]) -> float:
+def _break_cost(
+    text: str,
+    position: int,
+    preferred_breaks: set[int],
+    conjunction_breaks: frozenset[int] = frozenset(),
+    cue_bonus: float = 2.0,
+    strong_conjunction_breaks: frozenset[int] = frozenset(),
+) -> float:
     """Prefer complete thoughts over subtitle boundaries or balanced packing.
 
     This is a deterministic multilingual heuristic, not a syntactic parser.
-    The partitioner still enforces the synthesis engine's hard character cap.
+    Conjunction onsets are tiered conservatively: a comma-led onset
+    (``…, and …``) carries an explicit author breath mark, while a bare
+    onset may merely coordinate a noun phrase (``fish and chips``) and earns
+    only a small bonus with substantial text before it.  Source-cue ends
+    keep a small bonus unless the caller deprefers them (reviewed
+    translations and corrections rewrite the wording, so stale cue seams
+    must not attract cuts).  The partitioner still enforces the synthesis
+    engine's hard character cap.
     """
     if position >= len(text):
         return 0.0
@@ -813,14 +506,25 @@ def _break_cost(text: str, position: int, preferred_breaks: set[int]) -> float:
     terminal = before.rstrip('\"\'»”’)]}')
     last = terminal[-1:] or before[-1]
     complete = last in ".!?\u2026\u3002\uff01\uff1f"
+    if last == "." and period_is_non_boundary(before, after):
+        # A decimal point or abbreviation is not a finished thought.
+        complete = False
     cost = -24.0 if complete else 6.0
-    if last in ";:\u2014\u2013":
+    if last in ";:\u2014\u2013\uff1b\uff1a":
         cost -= 5.0
-    elif last in ",\u060c\uff0c":
+    elif last in ",\u060c\uff0c\u3001":
         # A comma often introduces an apposition, not a complete thought.
         cost += 10.0
     if position in preferred_breaks:
-        cost -= 2.0
+        cost -= cue_bonus
+    if position in strong_conjunction_breaks:
+        # A comma-led conjunction onset leads the next clause: a natural
+        # breath point that beats a comma yet never outranks a sentence.
+        cost -= 8.0
+    elif position in conjunction_breaks and len(before) >= MIN_NATURAL_FRAGMENT_CHARS:
+        # A bare onset may join a noun phrase, so it earns only a small
+        # bonus and only with substantial text behind it.
+        cost -= 3.0
     last_word = re.findall(r"[^\W\d_]+", terminal.casefold())
     function_words = {word for words in CONJUNCTIONS.values() for word in words}
     function_words.update({"a", "an", "the", "to", "of", "in", "with", "from", "can", "could", "would", "should", "der", "die", "das", "ein", "eine", "mit", "von", "zu", "w", "z", "na", "do"})
@@ -828,7 +532,12 @@ def _break_cost(text: str, position: int, preferred_breaks: set[int]) -> float:
         cost += 20.0
     if not complete and after[:1].islower():
         cost += 5.0
-    if position < len(text) and not text[position].isspace() and not complete:
+    if (
+        position < len(text)
+        and not text[position].isspace()
+        and not complete
+        and position not in conjunction_breaks
+    ):
         cost += 18.0
     return cost
 
@@ -840,35 +549,66 @@ def _partition_variant_exact(
     part_count: int,
     min_chars: int,
     max_chars: int,
+    language_code: str = "en",
     source_boundaries_only: bool = False,
     prefer_linguistic_boundaries: bool = False,
+    deprefer_source_boundaries: bool = False,
 ) -> list[tuple[str, int, int, list[int]]] | None:
     """Partition one text variant into an exact number of balanced ranges.
 
-    Cue ends, sentence endings, and clause punctuation are preferred, but
-    ``min_chars`` remains a soft quality target.  A character-level fallback
-    exists solely for languages without spaces and single tokens longer than
-    an engine's hard limit.
+    Cue ends, sentence endings, clause punctuation, and conservative
+    language-aware conjunction onsets are preferred, and ``min_chars`` is
+    enforced strictly whenever a solution exists, so the planner never
+    manufactures tiny fragments merely to balance packing. Reviewed wording
+    is cut on its own linguistic merits: a source-cue seam is legal only if
+    it is also a natural boundary. ``deprefer_source_boundaries`` removes its
+    scoring bonus. There is no character-level fallback: unspaced scripts
+    use their native punctuation, and a single token longer than the engine
+    cap returns ``None`` so the caller raises an actionable error instead of
+    cutting mid-word.
     """
 
     text = str(text or "").strip()
     if not text or part_count < 1:
         return None
+    language_code = resolve_speech_language(language_code)
     preferred_breaks = {end for _start, end, _subtitle in spans}
-    positions = {0, len(text), *preferred_breaks}
-    if not source_boundaries_only:
-        positions.update(match.start() for match in re.finditer(r"\s+", text))
+    tiers = (
+        {}
+        if source_boundaries_only
+        else conjunction_tiers(text, language_code=language_code)
+    )
+    conjunction_breaks = frozenset(tiers)
+    strong_conjunction_breaks = frozenset(
+        offset for offset, tier in tiers.items() if tier == "comma_led"
+    )
+    # Existing logical passages are atomic author-reviewed units. Group their
+    # original edges, but never invent an internal cut at arbitrary whitespace
+    # or at a stale display-cue seam in rewritten speech.
+    positions = {0, len(text)}
+    if source_boundaries_only:
         positions.update(
-            match.end()
-            for match in re.finditer(r"[.!?,;:\u2026\u3002\uff01\uff1f\u2014\u2013]", text)
+            end for end in preferred_breaks
+            if classify_boundary(text[:end], text[end:], language_code=language_code)
+            is not None
         )
+    else:
+        positions.update(offset for offset, _kind in natural_split_candidates(text, language_code))
 
+    cue_bonus = 0.0 if deprefer_source_boundaries else 2.0
     break_costs: dict[int, float] = {}
 
-    def solve(candidates: list[int]) -> list[int] | None:
+    def solve(candidates: list[int], *, strict_min: bool) -> list[int] | None:
         for position in candidates:
             if position not in break_costs:
-                break_costs[position] = _break_cost(text, position, preferred_breaks)
+                break_costs[position] = _break_cost(
+                    text,
+                    position,
+                    preferred_breaks,
+                    conjunction_breaks,
+                    cue_bonus,
+                    strong_conjunction_breaks,
+                )
         target = len(text) / part_count
         states: dict[int, tuple[float, list[int]]] = {0: (0.0, [0])}
         for part_index in range(part_count):
@@ -886,6 +626,17 @@ def _partition_variant_exact(
                     if not segment or len(segment) > max_chars:
                         if len(segment) > max_chars:
                             break
+                        continue
+                    if (
+                        part_count > 1
+                        and not source_boundaries_only
+                        and len(segment) < min(
+                            4 if language_code in {"zh-cn", "ja", "ko"} else 10,
+                            max_chars,
+                        )
+                    ):
+                        continue
+                    if strict_min and len(segment) < min_chars:
                         continue
                     remaining = text[end:].strip()
                     if parts_left and len(remaining) < parts_left:
@@ -906,23 +657,18 @@ def _partition_variant_exact(
         result = states.get(len(text))
         return result[1] if result is not None else None
 
+    def attempt(candidate_positions: list[int]) -> list[int] | None:
+        return solve(candidate_positions, strict_min=True) or solve(
+            candidate_positions, strict_min=False
+        )
+
     candidates = sorted(
         position for position in positions if 0 <= position <= len(text)
     )
-    boundaries = None
-    if prefer_linguistic_boundaries:
-        linguistic = {0, len(text)}
-        linguistic.update(
-            match.end()
-            for match in re.finditer(r"[.!?,;:\u2026\u3002\uff01\uff1f\u2014\u2013](?:[\"'»”’)]*)", text)
-        )
-        boundaries = solve(sorted(linguistic))
-    if boundaries is None:
-        boundaries = solve(candidates)
-    if boundaries is None and not source_boundaries_only:
-        # Unspaced scripts and unexpectedly long tokens still need to respect
-        # the synthesis engine's hard cap.
-        boundaries = solve(list(range(len(text) + 1)))
+    # Linguistic boundaries are mandatory for new cuts, not merely a first
+    # attempt before falling back to words. In atomic-passage mode the candidate
+    # set must also stay restricted when a reviewed speech variant is supplied.
+    boundaries = attempt(candidates)
     if boundaries is None:
         return None
 
@@ -971,14 +717,19 @@ def _rebase_partition_spans(
 
 
 def _partition_break_rule(
-    text: str, offset: int, spans: list[tuple[int, int, int]]
+    text: str,
+    offset: int,
+    spans: list[tuple[int, int, int]],
+    conjunction_breaks: frozenset[int] = frozenset(),
 ) -> str:
     if any(end == offset for _start, end, _subtitle in spans):
         return "cue"
+    if offset in conjunction_breaks:
+        return "conjunction"
     before = str(text or "")[:offset].rstrip()
     if before and before[-1] in ".!?\u2026\u3002\uff01\uff1f":
         return "sentence"
-    if before and before[-1] in ",;:\u2014\u2013":
+    if before and before[-1] in ",;:\u2014\u2013\uff0c\u3001\uff1b\uff1a":
         return "clause"
     if (offset > 0 and str(text or "")[offset - 1].isspace()) or (
         offset < len(str(text or "")) and str(text or "")[offset].isspace()
@@ -997,71 +748,59 @@ def _split_utterance(
     preserve_source_boundaries: bool = False,
     prefer_linguistic_boundaries: bool = False,
 ) -> list[_SpeechPart]:
-    if preserve_source_boundaries and any(
-        end - start > max_chars for start, end, _ref in utterance.optimized_spans
-    ):
-        # Oversized passages are isolated before reconstruction. Only this
-        # exceptional case may cut within a source passage. Keep the shared
-        # alignment group so assembly still fits its real, combined window.
+    language_code = resolve_speech_language(language_code)
+    # Reviewed translations and corrections rewrite the wording, so stale
+    # source-cue seams must not dictate where the new text is cut.  Cut the
+    # authored text on its own linguistic boundaries instead.
+    prefer_linguistic = prefer_linguistic_boundaries or reviewed_speech
+    display_conjunctions = frozenset(
+        conjunction_split_positions(utterance.text, language_code)
+    )
+    speech_conjunctions = frozenset(
+        conjunction_split_positions(utterance.optimized_text, language_code)
+    )
+    def split_with_shared_window() -> list[_SpeechPart]:
+        # A capacity limit may require a natural seam inside a passage. These
+        # are independent TTS requests, not new measured subtitle timings.
+        # Shared source references keep their audio in one alignment window.
         parts = _split_utterance(
             utterance, language_code, min_chars, max_chars,
             reviewed_speech=reviewed_speech,
             prefer_linguistic_boundaries=True,
         )
-        total = sum(len(part.optimized_text) for part in parts)
-        duration = utterance.end_ms - utterance.start_ms
-        consumed = 0
         for part in parts:
-            start = utterance.start_ms + round(duration * consumed / total)
-            consumed += len(part.optimized_text)
-            end = utterance.start_ms + round(duration * consumed / total)
-            part.risk_flags.append("estimated_internal_timing")
+            part.risk_flags.append("shared_passage_timing")
             part.formation_events.append(_event(
-                "split_oversized_passage", "estimated_passage_capacity_split",
-                "Oversized passage split with character-proportional timing estimates; "
-                "audio remains grouped within the original passage window.",
+                "split_for_natural_speech", "shared_passage_capacity_split",
+                "Natural TTS chunks retain their source passage timing envelope; "
+                "no internal cue timestamps are inferred.",
                 measurements={
-                    "estimated_start_ms": start, "estimated_end_ms": end,
                     "source_start_ms": utterance.start_ms,
                     "source_end_ms": utterance.end_ms,
-                    "timing_basis": "character_count_estimate",
+                    "timing_basis": "shared_source_window",
                     "max_chars": max_chars,
                 },
                 source_references=part.subtitles,
             ))
         return parts
-    # SentenceSplitter remains useful for estimating a natural lower bound,
-    # while the exact paired partition below is responsible for preserving
-    # display/speech correspondence and provenance.
-    display_hint = [] if preserve_source_boundaries else _split_subtitle_text(
-        utterance.text, language_code, min_chars, max_chars
-    )
-    speech_hint = [] if preserve_source_boundaries else _split_subtitle_text(
-        utterance.optimized_text, language_code, min_chars, max_chars
-    )
+
+    if preserve_source_boundaries and any(
+        end - start > max_chars for start, end, _ref in utterance.optimized_spans
+    ):
+        return split_with_shared_window()
     # The hard limit protects the text sent to TTS.  When a reviewed speech
     # variant exists, its display subtitle may legitimately be longer; forcing
     # the display copy under the TTS cap would manufacture tiny speech chunks.
-    part_count = max(
-        _minimum_part_count(utterance.optimized_text, max_chars),
-        len(speech_hint),
-        *(
-            ()
-            if reviewed_speech
-            else (
-                _minimum_part_count(utterance.text, max_chars),
-                len(display_hint),
-            )
-        ),
+    part_count = _minimum_part_count(utterance.optimized_text, max_chars)
+    if not reviewed_speech:
+        part_count = max(part_count, _minimum_part_count(utterance.text, max_chars))
+    # Character/sentence-count hints can demand unnecessary extra fragments.
+    # Search only feasible natural partitions, starting with the minimum needed
+    # by the engine cap. This also bounds work for a long unpunctuated passage.
+    maximum_parts = min(
+        1 + len(natural_split_candidates(utterance.text, language_code)),
+        1 + len(natural_split_candidates(utterance.optimized_text, language_code)),
     )
-    # A subtitle can itself contain several complete thoughts. Prefer their
-    # sentence boundaries instead of making every block nearly the hard cap.
-    sentence_count = len(re.findall(r"[.!?。！？](?:[\"'»”’)]*)\s+", utterance.optimized_text)) + 1
-    if not preserve_source_boundaries and sentence_count > 1 and len(utterance.optimized_text) > max_chars * 0.8:
-        part_count = max(part_count, min(sentence_count, _minimum_part_count(
-            utterance.optimized_text, max(1, int(max_chars * 0.8))
-        )))
-    maximum_parts = max(len(utterance.text), len(utterance.optimized_text), part_count)
     if preserve_source_boundaries:
         maximum_parts = len(utterance.optimized_spans)
     display_parts = None
@@ -1073,8 +812,10 @@ def _split_utterance(
             part_count=part_count,
             min_chars=min_chars,
             max_chars=(max(len(utterance.text), 1) if reviewed_speech else max_chars),
+            language_code=language_code,
             source_boundaries_only=preserve_source_boundaries,
-            prefer_linguistic_boundaries=prefer_linguistic_boundaries,
+            prefer_linguistic_boundaries=prefer_linguistic,
+            deprefer_source_boundaries=reviewed_speech,
         )
         speech_parts = _partition_variant_exact(
             utterance.optimized_text,
@@ -1082,8 +823,10 @@ def _split_utterance(
             part_count=part_count,
             min_chars=min_chars,
             max_chars=max_chars,
+            language_code=language_code,
             source_boundaries_only=preserve_source_boundaries,
-            prefer_linguistic_boundaries=prefer_linguistic_boundaries,
+            prefer_linguistic_boundaries=prefer_linguistic,
+            deprefer_source_boundaries=reviewed_speech,
         )
         if preserve_source_boundaries and speech_parts is not None:
             # The speech partition chooses whole source references. Project
@@ -1099,7 +842,29 @@ def _split_utterance(
             break
         part_count += 1
     if display_parts is None or speech_parts is None:
-        raise ValueError("Could not create a bounded paired speech-block partition.")
+        if preserve_source_boundaries:
+            # A source-passage seam is not automatically a breath boundary.
+            # Prefer natural subchunks sharing the real envelope over forcing
+            # an awkward cut just to keep passage references disjoint.
+            return split_with_shared_window()
+        raise UnsplittableSpeechBlockError(
+            "Speech text cannot be split into blocks of at most "
+            f"{max_chars} characters at a natural boundary "
+            f"(subtitle cues {sorted(set(utterance.subtitles))}; "
+            f"display length {len(utterance.text)}, "
+            f"speech length {len(utterance.optimized_text)}). "
+            "Raise speech_block_max_chars, shorten the sentence, or split it "
+            "at a clause boundary instead of cutting mid-word.",
+            details={
+                "subtitles": sorted(set(utterance.subtitles)),
+                "display_length": len(utterance.text),
+                "speech_length": len(utterance.optimized_text),
+                "max_chars": max_chars,
+                "min_chars": min_chars,
+                "language_code": language_code,
+                "part_count": part_count,
+            },
+        )
 
     result: list[_SpeechPart] = []
     for part_index, (display, speech) in enumerate(
@@ -1137,11 +902,13 @@ def _split_utterance(
             utterance.text,
             display_boundary_offset,
             utterance.text_spans,
+            display_conjunctions,
         )
         speech_rule = _partition_break_rule(
             utterance.optimized_text,
             speech_boundary_offset,
             utterance.optimized_spans,
+            speech_conjunctions,
         )
         break_rule = display_rule if display_rule == speech_rule else "paired"
         split_event = (
@@ -1317,10 +1084,15 @@ def create_speech_blocks(
     never spans a larger silent interval even if the sentence is unfinished.
     When ``speech_srt_content`` is supplied, display and reviewed speech text
     are partitioned together and neither variant is repeated.
-    With ``preserve_source_boundaries``, each input is an atomic timed passage:
-    capacity cuts group whole passages. Only an oversized individual passage
-    uses internal linguistic cuts, with explicitly estimated timing metadata
-    and a shared alignment group retaining its original timing window.
+    With ``preserve_source_boundaries``, prefer grouping whole timed passages
+    at natural speech seams. When the cap makes that impossible, use natural
+    internal cuts whose chunks share the original passage timing envelope.
+    No character-proportional cue timestamps are fabricated.
+    Capacity cuts fall only on natural boundaries (sentence, clause, or
+    conservative conjunction onsets); text that cannot fit the cap at any
+    natural boundary raises :class:`UnsplittableSpeechBlockError` instead of
+    being cut mid-word.  Reviewed speech variants are cut on their own
+    linguistic boundaries rather than redivided by stale cue seams.
     """
     max_chars = max(1, int(max_chars))
     min_chars = max(1, min(int(min_chars), max_chars))
@@ -1341,7 +1113,7 @@ def create_speech_blocks(
             else max_internal_gap_ms
         ),
     )
-    language_code = normalize_language_code(target_language)
+    language_code = resolve_speech_language(target_language)
     subtitles = parse_srt(srt_content, infer_speakers=not preserve_source_boundaries)
     optimized_subtitles = (
         parse_srt(speech_srt_content, infer_speakers=not preserve_source_boundaries)

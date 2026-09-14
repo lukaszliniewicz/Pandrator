@@ -1,3 +1,4 @@
+import inspect
 import json
 import math
 import os
@@ -304,7 +305,7 @@ Wrong.
         self.assertEqual(1.0, relaxed.speed_factor)
         self.assertEqual(420, relaxed.start_delay_ms)
 
-    def test_tiny_overrun_is_not_ignored_by_tempo_filter(self):
+    def test_tiny_overrun_keeps_natural_tempo_until_drift_needs_catchup(self):
         decision = audio_sync.alignment_adjustment(
             1005,
             1000,
@@ -313,8 +314,12 @@ Wrong.
             max_speed_factor=1.15,
         )
 
-        self.assertGreater(decision.speed_factor, 1.0)
-        self.assertIn("atempo=1.006", audio_sync._atempo_filter_chain(decision.speed_factor))
+        self.assertEqual(1.0, decision.speed_factor)
+        caught_up = audio_sync.alignment_adjustment(
+            1005, 1000, 60, delay_start_ms=0, max_speed_factor=1.15,
+        )
+        self.assertGreater(caught_up.speed_factor, 1.0)
+        self.assertEqual(0, caught_up.start_delay_ms)
 
     def test_optional_slowdown_is_bounded_and_requires_its_eligibility_window(self):
         baseline = audio_sync.alignment_adjustment(
@@ -548,7 +553,7 @@ Wrong.
                 self.assertEqual(float("-inf"), aligned[2200:2900].max_dBFS)
 
     @unittest.skipUnless(shutil.which("ffmpeg"), "FFmpeg qualification requires ffmpeg")
-    def test_real_alignment_applies_sub_percent_speedup_to_avoid_drift(self):
+    def test_real_alignment_preserves_natural_audio_for_a_tiny_overrun(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             source = Path(temp_dir, "slightly-long.wav")
             Sine(440).to_audio_segment(duration=1005).export(source, format="wav").close()
@@ -562,11 +567,11 @@ Wrong.
                 diagnostics=diagnostics,
             )
 
-            self.assertLessEqual(len(AudioSegment.from_wav(output)), 1000)
+            self.assertEqual(len(AudioSegment.from_wav(output)), 1005)
             self.assertEqual("subtitle_timed", diagnostics["mode"])
-            self.assertEqual(1, diagnostics["speed_adjusted_block_count"])
-            self.assertGreater(diagnostics["max_effective_speed_factor"], 1.0)
-            self.assertEqual(0, diagnostics["final_drift_ms"])
+            self.assertEqual(0, diagnostics["speed_adjusted_block_count"])
+            self.assertEqual(diagnostics["max_effective_speed_factor"], 1.0)
+            self.assertEqual(5, diagnostics["final_drift_ms"])
 
     def test_alignment_pads_to_timeline_and_recovers_without_accumulating_shift(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -585,6 +590,9 @@ Wrong.
                 delay_start_ms=0,
                 speed_up_percent=100,
                 output_path=Path(temp_dir, "aligned.wav"),
+                # Padding/recovery only: keep slowdown out of this fixture now
+                # that the fitter defaults to gentle slowdown ON.
+                allow_slowdown=False,
             )
 
             self.assertEqual(2000, len(AudioSegment.from_wav(output)))
@@ -942,6 +950,124 @@ Wrong.
             self.assertIn("0:v:0", captured_commands[0])
             self.assertIn("1:a:0", captured_commands[0])
             self.assertIn("-shortest", captured_commands[0])
+
+
+class DubbingSlowdownDefaultTests(unittest.TestCase):
+    """Gentle slowdown is ON by default; catch-up and cue fit still win."""
+
+    def test_missing_slowdown_setting_defaults_to_true(self):
+        self.assertTrue(audio_sync.slowdown_enabled_from_settings({}))
+        self.assertTrue(audio_sync.slowdown_enabled_from_settings(None))
+        self.assertTrue(
+            audio_sync.slowdown_enabled_from_settings(
+                {"synchronization_slowdown_enabled": None}
+            )
+        )
+        self.assertTrue(
+            audio_sync.slowdown_enabled_from_settings(
+                {"synchronization_slowdown_enabled": True}
+            )
+        )
+
+    def test_explicit_false_slowdown_setting_is_preserved(self):
+        self.assertFalse(
+            audio_sync.slowdown_enabled_from_settings(
+                {"synchronization_slowdown_enabled": False}
+            )
+        )
+
+    def test_builtin_default_enables_slowdown(self):
+        from pandrator.web.workspace import BUILTIN_DEFAULTS
+
+        self.assertTrue(
+            BUILTIN_DEFAULTS["audio"]["synchronization_slowdown_enabled"]
+        )
+
+    def test_streamed_and_legacy_fitter_default_to_slowdown_on(self):
+        for function in (
+            audio_sync.alignment_adjustment,
+            audio_sync.align_audio_blocks,
+            audio_sync._align_audio_blocks_streaming,
+        ):
+            with self.subTest(function=function.__name__):
+                self.assertTrue(
+                    inspect.signature(function)
+                    .parameters["allow_slowdown"]
+                    .default
+                )
+
+    def test_no_slowdown_while_catching_up_with_accumulated_delay(self):
+        # Short speech must not be stretched while playback carries delay:
+        # catch-up (drift recovery) takes precedence over naturalness.
+        for drift_ms in (1, 400):
+            with self.subTest(drift_ms=drift_ms):
+                decision = audio_sync.alignment_adjustment(
+                    600,
+                    2000,
+                    drift_ms,
+                    delay_start_ms=0,
+                    max_speed_factor=1.0,
+                    speech_window_duration_ms=2000,
+                )
+                self.assertEqual(1.0, decision.speed_factor)
+
+    def test_no_slowdown_when_audio_needs_catch_up_speed(self):
+        decision = audio_sync.alignment_adjustment(
+            2500,
+            2000,
+            0,
+            delay_start_ms=0,
+            max_speed_factor=1.15,
+            speech_window_duration_ms=2000,
+        )
+        self.assertGreater(decision.speed_factor, 1.0)
+
+    def test_slowdown_preserves_own_cue_gap_before_next_block(self):
+        # The next block starts far later (window 4000ms) but the block's
+        # own cue span is only 2000ms: stretched speech must fit the own
+        # span, never the gap before the next block.
+        decision = audio_sync.alignment_adjustment(
+            1000,
+            4000,
+            0,
+            delay_start_ms=0,
+            max_speed_factor=1.0,
+            speech_window_duration_ms=2000,
+        )
+        self.assertEqual(0.9, decision.speed_factor)
+        self.assertLessEqual(
+            int(math.ceil(1000 / decision.speed_factor))
+            + decision.start_delay_ms,
+            2000,
+        )
+        self.assertGreaterEqual(decision.speed_factor, 0.9)
+
+    def test_explicit_false_disables_slowdown_for_short_speech(self):
+        decision = audio_sync.alignment_adjustment(
+            1000,
+            3000,
+            0,
+            delay_start_ms=0,
+            max_speed_factor=1.0,
+            allow_slowdown=False,
+            speech_window_duration_ms=3000,
+        )
+        self.assertEqual(1.0, decision.speed_factor)
+
+    def test_zero_sentence_gap_is_preserved(self):
+        self.assertEqual(
+            0,
+            audio_sync.sentence_gap_ms_from_settings(
+                {"synchronization_sentence_gap_ms": 0}
+            ),
+        )
+        self.assertEqual(100, audio_sync.sentence_gap_ms_from_settings({}))
+        self.assertEqual(
+            100,
+            audio_sync.sentence_gap_ms_from_settings(
+                {"synchronization_sentence_gap_ms": None}
+            ),
+        )
 
 
 if __name__ == "__main__":

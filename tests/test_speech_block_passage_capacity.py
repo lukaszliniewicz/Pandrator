@@ -41,7 +41,7 @@ def test_pascal_capacity_uses_whole_passages():
 
 
 def test_atomic_partition_can_require_more_than_character_lower_bound():
-    texts = ["a" * 60, "b" * 60, "c" * 60]
+    texts = ["a" * 59 + ".", "b" * 59 + ".", "c" * 59 + "."]
     blocks = plan(texts, cap=100)
     assert [block["text"] for block in blocks] == texts
 
@@ -57,29 +57,30 @@ def test_repeated_introductory_phrases_are_not_inferred_as_speakers():
     assert " ".join(block["text"] for block in blocks) == " ".join(texts)
 
 
-def test_oversized_passage_uses_linguistic_cuts_and_marked_estimates():
+def test_oversized_passage_uses_linguistic_cuts_and_shared_window():
     first = "The opening clause has enough words to stand alone,"
     second = "the next clause completes the same logical passage."
     blocks = plan([f"{first} {second}", "A separate next passage."], cap=70)
     assert [block["text"] for block in blocks] == [first, second, "A separate next passage."]
     assert blocks[0]["alignment_group"] == blocks[1]["alignment_group"]
     assert blocks[1]["alignment_group"] != blocks[2]["alignment_group"]
-    estimates = []
     for block in blocks[:2]:
-        assert "estimated_internal_timing" in block["provenance"]["risk_flags"]
+        assert "shared_passage_timing" in block["provenance"]["risk_flags"]
+        assert "estimated_internal_timing" not in block["provenance"]["risk_flags"]
         event = block["provenance"]["formation_events"][-1]
-        assert event["reason_code"] == "estimated_passage_capacity_split"
-        estimates.append(event["measurements"])
-    assert estimates[0]["estimated_start_ms"] == 0
-    assert estimates[0]["estimated_end_ms"] == estimates[1]["estimated_start_ms"]
-    assert estimates[1]["estimated_end_ms"] == 4000
-    assert estimates[0]["estimated_end_ms"] == round(4000 * len(first) / (len(first) + len(second)))
-    assert "estimated_internal_timing" not in blocks[2]["provenance"]["risk_flags"]
+        assert event["reason_code"] == "shared_passage_capacity_split"
+        measurements = event["measurements"]
+        assert measurements["timing_basis"] == "shared_source_window"
+        assert measurements["source_start_ms"] == 0
+        assert measurements["source_end_ms"] == 4000
+        assert "estimated_start_ms" not in measurements
+        assert "estimated_end_ms" not in measurements
+    assert "shared_passage_timing" not in blocks[2]["provenance"]["risk_flags"]
 
 
 def test_reviewed_variant_uses_the_same_whole_reference_groups():
     texts = ["Long display wording " * 4, "More display wording " * 4, "Closing display wording."]
-    speech = ["a" * 60, "b" * 60, "c" * 60]
+    speech = ["a" * 59 + ".", "b" * 59 + ".", "c" * 59 + "."]
     speech_srt = passage_srt([
         {"text": text, "start_ms": i * 4000, "end_ms": (i + 1) * 4000}
         for i, text in enumerate(speech)
@@ -88,6 +89,31 @@ def test_reviewed_variant_uses_the_same_whole_reference_groups():
     assert [block["text"] for block in blocks] == [text.strip() for text in texts]
     assert [block["_optimized_text"] for block in blocks] == speech
     assert [block["subtitles"] for block in blocks] == [[1], [2], [3]]
+
+
+def test_unnatural_source_seam_uses_natural_chunks_in_shared_window():
+    from pandrator.logic.dubbing.natural_boundaries import classify_boundary
+
+    texts = [
+        "We introduced several people: names such as",
+        "Alice, Beatrice, Charlie and Daniel were important to the discussion.",
+    ]
+    blocks = plan(texts, cap=80)
+    assert len(blocks) == 2
+    assert " ".join(block["text"] for block in blocks) == " ".join(texts)
+    assert all(len(block["text"]) <= 80 for block in blocks)
+    assert classify_boundary(blocks[0]["text"], blocks[1]["text"]) is not None
+    assert not blocks[0]["text"].endswith("such as")
+    assert blocks[0]["alignment_group"] == blocks[1]["alignment_group"]
+    assert all("shared_passage_timing" in block["provenance"]["risk_flags"] for block in blocks)
+    assert {ref for block in blocks for ref in block["subtitles"]} == {1, 2}
+
+
+def test_unnatural_source_seam_is_not_an_escape_from_unsplittable_error():
+    from pandrator.logic.dubbing.speech_blocks import UnsplittableSpeechBlockError
+
+    with pytest.raises(UnsplittableSpeechBlockError):
+        plan(["a" * 60, "b" * 60], cap=100)
 
 
 @pytest.mark.parametrize("gap, count", [(1499, 1), (1500, 1), (1501, 2)])

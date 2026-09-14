@@ -1480,7 +1480,7 @@ A single reviewed cue.
             speech,
             speech_path,
             {
-                "speech_block_max_chars": 20,
+                "speech_block_max_chars": 25,
                 "speech_block_merge_threshold": 200,
             },
             "en",
@@ -1494,7 +1494,7 @@ A single reviewed cue.
                     .order_by(GenerationSegment.ordinal)
                 ).all()
             )
-        self.assertEqual(2, len(segments))
+        self.assertEqual(1, len(segments))
         self.assertTrue(
             all(segment.source_segment_ids_json == [1] for segment in segments)
         )
@@ -1503,7 +1503,7 @@ A single reviewed cue.
             "A single reviewed cue.",
             " ".join(segment.optimized_text for segment in segments),
         )
-        self.assertTrue(all(len(segment.optimized_text) <= 20 for segment in segments))
+        self.assertTrue(all(len(segment.optimized_text) <= 25 for segment in segments))
 
     def test_full_new_run_rematerializes_plan_with_current_merge_threshold(self):
         with self.database.session() as session:

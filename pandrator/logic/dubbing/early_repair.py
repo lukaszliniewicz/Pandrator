@@ -7,9 +7,17 @@ text layers and their source mappings are internally consistent.
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from typing import Any, TypeGuard
+
+from .natural_boundaries import (
+    MIN_NATURAL_FRAGMENT_CHARS,
+    classify_boundary,
+    period_is_non_boundary,
+    resolve_speech_language,
+    starts_with_safe_conjunction,
+    strip_closing_marks,
+)
 
 
 @dataclass(frozen=True)
@@ -36,32 +44,6 @@ class _SourceCue:
 
 
 _BOUNDARY_PUNCTUATION = set(".!?;:,。！？；：，—")
-_CLOSING_MARKS = set(
-    "\"'\u201d\u2019\u00bb\u203a)]}"
-    "\u300d\u300f\uff09\u3010\u3011\uff5d\uff3d\u3009\u300b"
-)
-_ABBREVIATIONS = {
-    "a.m",
-    "approx",
-    "asst",
-    "dept",
-    "dr",
-    "e.g",
-    "etc",
-    "fig",
-    "i.e",
-    "jr",
-    "mr",
-    "mrs",
-    "ms",
-    "no",
-    "prof",
-    "rev",
-    "sr",
-    "st",
-    "u.s",
-    "vs",
-}
 
 
 def _is_integer(value: Any) -> TypeGuard[int]:
@@ -192,23 +174,11 @@ def _load_cues(
 
 
 def _without_closing_marks(value: str) -> str:
-    result = value.rstrip()
-    while result and result[-1] in _CLOSING_MARKS:
-        result = result[:-1].rstrip()
-    return result
+    return strip_closing_marks(value)
 
 
 def _period_is_non_boundary(value: str, following: str) -> bool:
-    before_period = value[:-1].rstrip()
-    next_character = following.lstrip()[:1]
-    if before_period and before_period[-1].isdigit() and next_character.isdigit():
-        return True
-
-    match = re.search(r"(?<!\w)([A-Za-z](?:[A-Za-z.]*[A-Za-z])?)$", before_period)
-    if match is None:
-        return False
-    token = match.group(1).casefold()
-    return token in _ABBREVIATIONS or len(token) == 1
+    return period_is_non_boundary(value, following)
 
 
 def _has_boundary_punctuation(left: str, right: str) -> bool:
@@ -216,6 +186,20 @@ def _has_boundary_punctuation(left: str, right: str) -> bool:
     if not candidate or candidate[-1] not in _BOUNDARY_PUNCTUATION:
         return False
     return candidate[-1] != "." or not _period_is_non_boundary(candidate, right)
+
+
+def _layer_rank(
+    cue_text: str, following_text: str, language_code: str
+) -> int | None:
+    """Rank one text layer at a cue seam, if the seam is usable.
+
+    A punctuated cue ranks by its terminal mark (sentence 0, strong clause
+    1, comma 2).  Without punctuation, only a safe clause-conjunction
+    continuation (``because``, ``weil``, … — never blanket ``and``/``und``)
+    licenses the seam, ranking 3.  Anything else is unusable.
+    """
+
+    return classify_boundary(cue_text, following_text, language_code=language_code)
 
 
 def _valid_duration(value: Any, *, positive: bool = False) -> bool:
@@ -234,12 +218,18 @@ def find_repair_boundary(
     min_shortfall_percent: int = 20,
     min_advance_ms: int = 1000,
     min_child_span_ms: int = 1000,
+    language_code: str = "en",
 ) -> RepairBoundary | None:
     """Find the strongest complete-cue boundary for early repair.
 
     The returned boundary is deliberately conservative.  Any malformed or
     stale provenance invalidates the complete block, since guessing a cursor
-    could create text/audio mismatches in the repair flow.
+    could create text/audio mismatches in the repair flow.  Only complete
+    cue boundaries are considered and the authored canonical text is never
+    rewritten: the result carries cursors, not edited wording.
+    ``language_code`` selects the conjunction policy used when preferring a
+    conjunction-led continuation among equally strong anchors; the runtime
+    wires the real target language through it.
     """
 
     if not isinstance(text, str) or not isinstance(spoken_text, str):
@@ -263,6 +253,9 @@ def find_repair_boundary(
         return None
     if incoming_delay_ms > 0:
         return None
+    if not isinstance(language_code, str):
+        return None
+    language_code = resolve_speech_language(language_code)
 
     cues = _load_cues(text, spoken_text, provenance)
     if cues is None:
@@ -278,7 +271,7 @@ def find_repair_boundary(
     ):
         return None
 
-    best: tuple[float, int, RepairBoundary] | None = None
+    best: tuple[int, float, int, int, RepairBoundary] | None = None
     for left, right in zip(cues, cues[1:], strict=False):
         display_left = text[: left.display_span[1]]
         display_right = text[right.display_span[0] :]
@@ -291,7 +284,7 @@ def find_repair_boundary(
                 len(speech_left.strip()),
                 len(speech_right.strip()),
             )
-            < 10
+            < MIN_NATURAL_FRAGMENT_CHARS
         ):
             continue
 
@@ -299,9 +292,9 @@ def find_repair_boundary(
         display_following = text[right.display_span[0] : right.display_span[1]]
         speech_cue = spoken_text[left.speech_span[0] : left.speech_span[1]]
         speech_following = spoken_text[right.speech_span[0] : right.speech_span[1]]
-        if not _has_boundary_punctuation(display_cue, display_following):
-            continue
-        if not _has_boundary_punctuation(speech_cue, speech_following):
+        display_rank = _layer_rank(display_cue, display_following, language_code)
+        speech_rank = _layer_rank(speech_cue, speech_following, language_code)
+        if display_rank is None or speech_rank is None:
             continue
 
         left_child_span = left.end_ms - first.start_ms
@@ -334,12 +327,24 @@ def find_repair_boundary(
             end_ms=last.end_ms,
             estimated_advance_ms=round(estimated_advance),
         )
-        candidate = (estimated_advance, right.start_ms, boundary)
-        if (
-            best is None
-            or estimated_advance > best[0]
-            or (estimated_advance == best[0] and right.start_ms < best[1])
-        ):
+        # Prefer a finished sentence over a clause pause, a clause pause over
+        # a bare comma, and any punctuation over a safe-conjunction seam,
+        # regardless of which anchor saves more time.  A safe-conjunction
+        # continuation ("…, because …") is a natural discourse seam and wins
+        # ties without ever rewriting the authored text.
+        rank = max(display_rank, speech_rank)
+        conjunction_led = (
+            starts_with_safe_conjunction(display_following, language_code=language_code)
+            or starts_with_safe_conjunction(speech_following, language_code=language_code)
+        )
+        candidate = (
+            rank,
+            -estimated_advance,
+            0 if conjunction_led else 1,
+            right.start_ms,
+            boundary,
+        )
+        if best is None or candidate[:-1] < best[:-1]:
             best = candidate
 
-    return best[2] if best is not None else None
+    return best[4] if best is not None else None

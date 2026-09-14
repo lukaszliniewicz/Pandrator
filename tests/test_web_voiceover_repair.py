@@ -267,6 +267,37 @@ class VoiceoverRepairTests(unittest.TestCase):
                 session.get(GenerationPlanRevision, self.active()).parent_revision_id,
             )
 
+    def test_german_clause_conjunction_regenerates_children_in_target_language(self):
+        self.first = "Wir lassen den ganzen Gedanken zunächst zusammen"
+        self.second = "weil natürliche Sprache hier wichtiger ist."
+        self.plan()
+        with self.database.session() as session:
+            run = session.get(GenerationRun, self.run_id)
+            run.settings_snapshot_json = {
+                **run.settings_snapshot_json,
+                "tts": {**run.settings_snapshot_json["tts"], "language": "de"},
+            }
+        result, calls = self.generate()
+        self.assertEqual(1, result.get("repaired_blocks"))
+        self.assertEqual(4, calls)
+        self.assertNotEqual(self.revision_id, self.active())
+        self.assertEqual("applied", self.repairs()[0]["repair_status"])
+
+    def test_bare_german_noun_coordination_does_not_trigger_timing_repair(self):
+        self.first = "Die Sammlung enthält eine große Zahl gedruckter Bücher"
+        self.second = "und handgeschriebene Briefe aus mehreren Jahrhunderten."
+        self.plan()
+        with self.database.session() as session:
+            run = session.get(GenerationRun, self.run_id)
+            run.settings_snapshot_json = {
+                **run.settings_snapshot_json,
+                "tts": {**run.settings_snapshot_json["tts"], "language": "de"},
+            }
+        result, calls = self.generate()
+        self.assertEqual(0, result.get("repaired_blocks"))
+        self.assertEqual(2, calls)
+        self.assertEqual(self.revision_id, self.active())
+
     def test_carried_delay_preserves_short_block_for_catchup(self):
         self.plan(previous=True)
 
@@ -278,6 +309,51 @@ class VoiceoverRepairTests(unittest.TestCase):
         result, calls = self.generate(synth)
         self.assertEqual(0, result.get("repaired_blocks"))
         self.assertEqual(3, calls)
+        self.assertEqual(self.revision_id, self.active())
+
+    def test_slowdown_can_resolve_shortfall_without_splitting(self):
+        self.plan()
+
+        def synth(text, *_args, **_kwargs):
+            return Sine(440).to_audio_segment(
+                duration=6000 if self.first in text and self.second in text else 1000
+            )
+
+        result, calls = self.generate(synth)
+        # 6 s in an 8 s cue exceeds the raw 20% shortfall threshold, but
+        # gentle slowdown leaves less than 20%: do not regenerate good speech.
+        self.assertEqual(2, calls)
+        self.assertEqual(0, result.get("repaired_blocks"))
+        self.assertEqual(self.revision_id, self.active())
+
+    def test_replacement_must_reach_its_new_internal_anchor(self):
+        self.plan()
+
+        def synth(text, *_args, **_kwargs):
+            return Sine(440).to_audio_segment(
+                duration=7000 if text == self.first else 2000
+                if self.first in text and self.second in text else 1000
+            )
+
+        result, calls = self.generate(synth)
+        # Both children finish before the next original block, but the first
+        # overruns the new second-child anchor even at the speed cap.
+        self.assertEqual(4, calls)
+        self.assertEqual(0, result.get("repaired_blocks"))
+        self.assertEqual(self.revision_id, self.active())
+        self.assertEqual("missed_repair_anchor", self.repairs()[0]["repair_reason"])
+
+    def test_estimated_internal_timing_is_not_a_trusted_repair_anchor(self):
+        self.plan()
+        with self.database.session() as session:
+            segment = session.get(GenerationSegment, self.segment_ids[0])
+            segment.speech_block_provenance_json = {
+                **segment.speech_block_provenance_json,
+                "risk_flags": ["estimated_internal_timing"],
+            }
+        result, calls = self.generate()
+        self.assertEqual(2, calls)
+        self.assertEqual(0, result.get("repaired_blocks"))
         self.assertEqual(self.revision_id, self.active())
 
     def test_replacement_overrun_does_not_activate_new_plan(self):

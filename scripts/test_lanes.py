@@ -46,6 +46,7 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_sentence_segmenter.py",
         "tests/test_source_cleaning.py",
         "tests/test_speech_block_prosody_regressions.py",
+        "tests/test_speech_block_natural_splitting.py",
         "tests/test_subtitle_finalization.py",
         "tests/test_subtitle_rebalancing.py",
         "tests/test_test_lanes.py",
@@ -109,6 +110,7 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
     ),
     "system-media-serial": (
         "tests/test_dubbing_audio_sync.py",
+        "tests/test_voiceover_natural_timing.py",
         "tests/test_frontend_architecture.py",
         "tests/test_soundtrack_export.py",
         "tests/test_media_edit_video_muxing.py",

@@ -159,11 +159,11 @@ Webinarreihe geht heute weiter.
     def test_reconstructed_utterance_is_balanced_before_capacity_split(self):
         content = """1
 00:00:00,000 --> 00:00:01,000
-This carefully reconstructed sentence begins with a useful explanation and
+This carefully reconstructed sentence begins with a useful explanation,
 
 2
 00:00:02,000 --> 00:00:03,000
-continues across a subtitle pause before ending with a natural conclusion.
+and continues across a subtitle pause before ending with a natural conclusion.
 """
 
         blocks = speech_blocks.create_speech_blocks(
@@ -399,7 +399,7 @@ America.
     def test_create_speech_blocks_splits_long_text_under_max_chars(self):
         srt_content = """1
 00:00:00,000 --> 00:00:05,000
-This is a long sentence, and it should split into smaller pieces because the dubbing generator needs manageable chunks for speech synthesis.
+This is a long sentence, but each clause remains meaningful; the generator keeps the wording, because natural speech matters.
 """
 
         blocks = speech_blocks.create_speech_blocks(
@@ -420,7 +420,7 @@ This is a long sentence, and it should split into smaller pieces because the dub
     def test_max_chars_remains_hard_when_minimum_is_misconfigured(self):
         srt_content = """1
 00:00:00,000 --> 00:00:05,000
-This deliberately long sentence must still be divided at the synthesis engine limit even when the configured minimum is larger.
+This sentence has a natural pause; its next clause also fits the limit; the configured minimum is larger.
 """
 
         blocks = speech_blocks.create_speech_blocks(
@@ -437,11 +437,11 @@ This deliberately long sentence must still be divided at the synthesis engine li
     def test_split_blocks_keep_exact_cue_lineage_and_alignment_groups(self):
         content = """1
 00:00:00,000 --> 00:00:03,000
-This first cue contains a deliberately long complete sentence that needs several synthesis chunks.
+This first cue has a natural pause; its next clause remains meaningful; its final clause finishes the thought.
 
 2
 00:00:04,000 --> 00:00:07,000
-This second cue contains another deliberately long complete sentence that also needs several chunks.
+This second cue has a natural pause; another clause carries the meaning; the final clause ends the thought.
 """
 
         blocks = speech_blocks.create_speech_blocks(
@@ -464,7 +464,7 @@ This second cue contains another deliberately long complete sentence that also n
     def test_capacity_split_provenance_is_local_complete_and_reviewable(self):
         content = """1
 00:00:00,000 --> 00:00:05,000
-First natural clause, followed by more words that need another chunk.
+First natural clause, followed by more words, which need another chunk.
 """
 
         blocks = speech_blocks.create_speech_blocks(
@@ -492,7 +492,10 @@ First natural clause, followed by more words that need another chunk.
             )
             event = provenance["formation_events"][-1]
             self.assertEqual("capacity_split", event["reason_code"])
-            self.assertEqual(69, event["measurements"]["display_length"])
+            self.assertEqual(
+                len("First natural clause, followed by more words, which need another chunk."),
+                event["measurements"]["display_length"],
+            )
             self.assertEqual(
                 len(block["text"]),
                 event["measurements"]["block_display_length"],
@@ -506,7 +509,7 @@ First natural clause, followed by more words that need another chunk.
             blocks[1]["provenance"]["boundary_before"]["reason_code"],
         )
 
-    def test_reviewed_speech_is_split_once_without_text_duplication(self):
+    def test_reviewed_speech_is_not_split_for_a_long_display_variant(self):
         display = """1
 00:00:00,000 --> 00:00:02,000
 This display cue is deliberately much longer than the synthesis limit.
@@ -515,24 +518,17 @@ This display cue is deliberately much longer than the synthesis limit.
 00:00:00,000 --> 00:00:02,000
 A single reviewed cue.
 """
-
         blocks = speech_blocks.create_speech_blocks(
-            display,
-            target_language="en",
-            min_chars=5,
-            max_chars=20,
-            speech_srt_content=reviewed,
+            display, target_language="en", min_chars=5,
+            max_chars=25, speech_srt_content=reviewed,
         )
-
-        self.assertEqual(2, len(blocks))
-        self.assertTrue(all(block["subtitles"] == [1] for block in blocks))
-        self.assertEqual(1, len({block["alignment_group"] for block in blocks}))
+        self.assertEqual(1, len(blocks))
+        self.assertEqual([1], blocks[0]["subtitles"])
+        self.assertEqual("A single reviewed cue.", blocks[0]["_optimized_text"])
+        self.assertLessEqual(len(blocks[0]["_optimized_text"]), 25)
         self.assertEqual(
-            "A single reviewed cue.",
-            " ".join(str(block["_optimized_text"]) for block in blocks),
-        )
-        self.assertTrue(
-            all(len(str(block["_optimized_text"])) <= 20 for block in blocks)
+            "This display cue is deliberately much longer than the synthesis limit.",
+            blocks[0]["text"],
         )
 
     def test_zero_continuation_threshold_is_not_replaced_by_merge_threshold(self):

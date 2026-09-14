@@ -181,15 +181,16 @@ def test_model_merges_remain_atomic_through_translation_and_speech(app_case):
         (14000, 19000),
     ]
     assert all(cue["start_ms"] != 6500 for cue in cues)
-    # An oversized merged passage permits a marked estimate, but its original
-    # shared timing group survives; no obsolete pre-merge anchor is revived.
+    # An oversized merged passage uses natural chunks sharing the original
+    # window; no internal estimates or obsolete pre-merge anchors are revived.
     limited, _, _ = case.extension["workflow_handlers"]._subtitle_generation_records(
         translated, path, {"speech_block_max_chars": 40}, "de"
     )
     pieces = [row for row in limited if row["source_segment_ids"] == [1]]
     assert len(pieces) > 1
     assert len({row["alignment_group"] for row in pieces}) == 1
-    assert all("estimated_internal_timing" in row["provenance"]["risk_flags"] for row in pieces)
+    assert all("shared_passage_timing" in row["provenance"]["risk_flags"] for row in pieces)
+    assert all("estimated_internal_timing" not in row["provenance"]["risk_flags"] for row in pieces)
     assert all(
         (cue["start_ms"], cue["end_ms"]) == (0, 13680)
         for row in pieces for cue in row["provenance"]["source_cues"]

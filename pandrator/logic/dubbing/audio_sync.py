@@ -60,6 +60,59 @@ def _coerce_int(value: Any, default: int = 0) -> int:
         return default
 
 
+#: Gentle slowdown floor: speech is never stretched slower than this factor.
+SLOWDOWN_FLOOR = 0.9
+#: Fallback gap between sentence files inside one speech block.
+DEFAULT_SENTENCE_GAP_MS = 100
+#: Do not process an entire take to remove an inaudible timing discrepancy.
+#: The relative limit also protects very short cues; carried drift counts too.
+NATURAL_OVERRUN_TOLERANCE_MS = 150
+NATURAL_OVERRUN_TOLERANCE_RATIO = 0.05
+
+
+def slowdown_enabled_from_settings(settings: Any) -> bool:
+    """Return whether gentle slowdown applies for a settings mapping.
+
+    Slowdown is ON unless explicitly disabled: a missing key (legacy
+    sessions predating the setting) or ``None`` resolves to ``True``,
+    while an explicit ``False`` is preserved.
+    """
+    if not isinstance(settings, dict):
+        return True
+    if "synchronization_slowdown_enabled" not in settings:
+        return True
+    value = settings.get("synchronization_slowdown_enabled")
+    if value is None:
+        return True
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"", "none", "null"}:
+            return True
+        return normalized in {"1", "true", "yes", "y", "on"}
+    return bool(value)
+
+
+def sentence_gap_ms_from_settings(settings: Any, default: int = DEFAULT_SENTENCE_GAP_MS) -> int:
+    """Return the clamped sentence gap, preserving an explicit zero.
+
+    A missing key, ``None`` or ``""`` resolves to ``default``; unlike the
+    previous ``settings.get(...) or 100`` pattern, an explicit ``0`` stays
+    ``0`` instead of silently becoming ``100``.
+    """
+    raw: Any = default
+    if isinstance(settings, dict):
+        if "synchronization_sentence_gap_ms" not in settings:
+            raw = default
+        else:
+            raw = settings.get("synchronization_sentence_gap_ms")
+            if raw is None or raw == "":
+                raw = default
+    try:
+        return max(0, min(5000, int(raw)))
+    except (TypeError, ValueError):
+        return max(0, min(5000, int(default)))
+
+
 def _load_speech_blocks(speech_blocks_file: str | os.PathLike[str]) -> list[dict[str, Any]]:
     with Path(speech_blocks_file).open("r", encoding="utf-8-sig") as handle:
         payload = json.load(handle)
@@ -250,7 +303,7 @@ def alignment_adjustment(
     *,
     delay_start_ms: int,
     max_speed_factor: float,
-    allow_slowdown: bool = False,
+    allow_slowdown: bool = True,
     speech_window_duration_ms: int | None = None,
 ) -> AudioAlignmentAdjustment:
     """Plan speed and placement against the *remaining* timing window.
@@ -258,19 +311,36 @@ def alignment_adjustment(
     Subdub calculated catch-up speed from the current clip length alone. That
     could let accumulated drift grow when a later clip was also longer than its
     subtitle window. This calculation accounts for both conditions together.
+
+    Gentle slowdown is ON by default, like catch-up speedup: when speech is
+    substantially shorter than its own cue span it is stretched down to a
+    0.9x floor for naturalness. Blocks carrying playback delay (drift) are
+    never slowed, and speech is never stretched across the gap before the
+    next block -- the stretch target is capped at the block's own cue span.
     """
     duration = max(0, int(audio_duration_ms))
     window = max(1, int(window_duration_ms))
     drift = max(0, int(drift_ms))
     available = max(1, window - drift)
     maximum = min(4.0, max(1.0, float(max_speed_factor)))
-    # Aim one millisecond inside the slot so codec/filter frame rounding does
-    # not turn an exact calculation back into a small overrun.
+    # Tolerate a small *total* overrun rather than resampling for a few
+    # milliseconds. Once carried delay consumes this budget, catch up against
+    # the remaining slot, not a fresh per-block allowance.
+    tolerance = min(
+        NATURAL_OVERRUN_TOLERANCE_MS,
+        int(window * NATURAL_OVERRUN_TOLERANCE_RATIO),
+    )
+    total_overrun = drift + duration - window
     target_duration = max(1, available - 1)
-    needed = (duration / target_duration) if duration > available else 1.0
+    needed = duration / target_duration if total_overrun > tolerance else 1.0
     speed_factor = min(maximum, max(1.0, needed))
     estimated_duration = int(math.ceil(duration / speed_factor)) if duration else 0
-    slack = max(0, available - estimated_duration)
+    # A gap before the next speaker is catch-up room, not permission to delay
+    # this utterance beyond its own cue. Keep placement within its real span.
+    placement_window = available
+    if speech_window_duration_ms is not None and speech_window_duration_ms > 0:
+        placement_window = min(available, int(speech_window_duration_ms))
+    slack = max(0, placement_window - estimated_duration)
     start_delay = 0
     if drift == 0 and slack:
         start_delay = min(max(0, int(delay_start_ms)), int(slack * 0.7))
@@ -288,7 +358,7 @@ def alignment_adjustment(
             if remaining_slack >= 500 and remaining_slack >= remaining_target * 0.05:
                 speed_factor = min(
                     1.0,
-                    max(0.9, duration / max(1, remaining_target - 1)),
+                    max(SLOWDOWN_FLOOR, duration / max(1, remaining_target - 1)),
                 )
     return AudioAlignmentAdjustment(
         available_ms=available,
@@ -364,7 +434,7 @@ def _align_audio_blocks_streaming(
     output_path: str | os.PathLike[str] | None,
     diagnostics: dict[str, Any] | None,
     cancel_event: threading.Event | None,
-    allow_slowdown: bool = False,
+    allow_slowdown: bool = True,
 ) -> str:
     from pandrator.web.audio_assembly import (
         AudioAssemblyPart,
@@ -576,7 +646,7 @@ def _align_audio_blocks_streaming(
             {
                 "mode": "subtitle_timed",
                 "configured_max_speed_factor": maximum_speed,
-                "configured_min_speed_factor": 0.9 if allow_slowdown else 1.0,
+                "configured_min_speed_factor": SLOWDOWN_FLOOR if allow_slowdown else 1.0,
                 "configured_max_start_delay_ms": max(0, int(delay_start_ms)),
                 "configured_sentence_gap_ms": sentence_gap,
                 "block_count": len(alignment_details),
@@ -626,7 +696,7 @@ def align_audio_blocks(
     diagnostics: dict[str, Any] | None = None,
     backend: str | None = None,
     cancel_event: threading.Event | None = None,
-    allow_slowdown: bool = False,
+    allow_slowdown: bool = True,
 ) -> str:
     from pandrator.web.audio_assembly import PYDUB_BACKEND, resolve_assembly_backend
 
@@ -777,7 +847,7 @@ def align_audio_blocks(
             {
                 "mode": "subtitle_timed",
                 "configured_max_speed_factor": maximum_speed,
-                "configured_min_speed_factor": 0.9 if allow_slowdown else 1.0,
+                "configured_min_speed_factor": SLOWDOWN_FLOOR if allow_slowdown else 1.0,
                 "configured_max_start_delay_ms": max(0, int(delay_start_ms)),
                 "configured_sentence_gap_ms": sentence_gap,
                 "block_count": len(alignment_details),
