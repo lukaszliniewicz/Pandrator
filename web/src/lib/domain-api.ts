@@ -764,12 +764,14 @@ export const artifactApi = {
       sessionId?: string;
       limit?: number;
       includeDeleted?: boolean;
+      outputOnly?: boolean;
     } = {}
   ) => {
     const query = new URLSearchParams();
     if (options.sessionId) query.set('session_id', options.sessionId);
     if (options.limit) query.set('limit', String(options.limit));
     if (options.includeDeleted) query.set('include_deleted', 'true');
+    if (options.outputOnly) query.set('output_only', 'true');
     return typedApiJson<'/api/v1/artifacts', 'get', ItemPage<ArtifactRecord>>(
       '/api/v1/artifacts',
       'get',

@@ -96,15 +96,21 @@ test('completed subtitle exports can be removed from Output', async ({
   const captured = new Promise<void>((resolve) => {
     snapshotCaptured = resolve;
   });
-  await page.route(
-    `**/api/v1/artifacts?session_id=${session.id}&limit=300`,
-    async (route) => {
-      const response = await route.fetch();
-      snapshotCaptured();
-      await snapshotGate;
-      await route.fulfill({ response });
+  await page.route('**/api/v1/artifacts?**', async (route) => {
+    const url = new URL(route.request().url());
+    if (
+      url.searchParams.get('session_id') !== session.id ||
+      url.searchParams.get('limit') !== '300'
+    ) {
+      await route.fallback();
+      return;
     }
-  );
+    expect(url.searchParams.get('output_only')).toBe('true');
+    const response = await route.fetch();
+    snapshotCaptured();
+    await snapshotGate;
+    await route.fulfill({ response });
+  });
   await page.route(
     `**/api/v1/sessions/${session.id}/stages/export/run`,
     (route) =>

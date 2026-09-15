@@ -141,6 +141,32 @@ class ArtifactService:
             settings_hash=settings_hash,
         )
 
+    def next_available_path(self, path: Path) -> Path:
+        """Allocate a managed path that has never been registered before.
+
+        Finalized outputs are immutable records. A missing or deleted file must
+        not cause a later export to reuse its historical Artifact row merely
+        because the relative path is free on disk.
+        """
+        with self.database.session() as session:
+            for version in range(1, 100_000):
+                candidate = (
+                    path
+                    if version == 1
+                    else path.with_name(f"{path.stem}-{version}{path.suffix}")
+                )
+                if candidate.exists():
+                    continue
+                relative_path = self.paths.relative_managed_path(candidate)
+                registered = session.scalar(
+                    select(Artifact.id)
+                    .where(Artifact.relative_path == relative_path)
+                    .limit(1)
+                )
+                if registered is None:
+                    return candidate
+        raise RuntimeError(f"Could not allocate a new managed path for {path.name}.")
+
     def register_in_session(
         self,
         session: Session,

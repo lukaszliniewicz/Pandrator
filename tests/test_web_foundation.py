@@ -1715,6 +1715,72 @@ class WebApiTests(unittest.TestCase):
         self.assertEqual("current", restored.state)
         self.assertNotIn("deleted_at", restored.metadata_json)
 
+    def test_artifact_path_allocator_never_reuses_historical_registration(self):
+        csrf = self.authenticate()
+        record = self.client.post(
+            "/api/v1/sessions",
+            json={"name": "Immutable output path", "workflow_kind": "voiceover"},
+            headers={"X-CSRF-Token": csrf},
+        ).get_json()
+        extension = self.app.extensions["pandrator"]
+        output_path = (
+            extension["paths"].sessions
+            / record["storage_key"]
+            / "exports"
+            / "finished.mp4"
+        )
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"historical export")
+        historical = extension["artifacts"].register(
+            output_path,
+            kind="export",
+            role="export",
+            session_id=record["id"],
+        )
+        output_path.unlink()
+
+        allocated = extension["artifacts"].next_available_path(output_path)
+
+        self.assertEqual(output_path.with_name("finished-2.mp4"), allocated)
+        with extension["database"].session() as db_session:
+            self.assertEqual("current", db_session.get(Artifact, historical.id).state)
+
+    def test_output_only_artifact_list_filters_before_limit(self):
+        csrf = self.authenticate()
+        record = self.client.post(
+            "/api/v1/sessions",
+            json={"name": "Output-only listing", "workflow_kind": "voiceover"},
+            headers={"X-CSRF-Token": csrf},
+        ).get_json()
+        extension = self.app.extensions["pandrator"]
+        output_dir = extension["paths"].sessions / record["storage_key"] / "exports"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        export_path = output_dir / "finished.mp4"
+        export_path.write_bytes(b"finished")
+        exported = extension["artifacts"].register(
+            export_path,
+            kind="export",
+            role="export",
+            session_id=record["id"],
+        )
+        for index in range(5):
+            noise_path = output_dir / f"take-{index}.wav"
+            noise_path.write_bytes(f"noise-{index}".encode())
+            extension["artifacts"].register(
+                noise_path,
+                kind="audio",
+                role="generation_take",
+                session_id=record["id"],
+            )
+
+        response = self.client.get(
+            f"/api/v1/artifacts?session_id={record['id']}&output_only=true&limit=1"
+        )
+
+        self.assertEqual(200, response.status_code)
+        items = response.get_json()["items"]
+        self.assertEqual([exported.id], [item["id"] for item in items])
+
     def test_workflow_is_source_aware_and_stage_run_queues_durable_job(self):
         csrf = self.authenticate()
         created = self.client.post(

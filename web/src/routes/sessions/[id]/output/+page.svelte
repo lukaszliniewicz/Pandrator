@@ -80,17 +80,36 @@
   );
   const hasSourceVideo = $derived(Boolean(outputContext.has_source_video));
   const hasSourceAudio = $derived(Boolean(outputContext.has_source_audio));
+  const assemblyRoles = new Set([
+    'assembled_audio',
+    'audiobook_audio',
+    'dubbing_audio',
+    'output_assembly',
+    'rvc_audio'
+  ]);
   const outputGroups = $derived([
     {
-      label: 'Audio and video',
-      items: artifacts.filter((item) =>
-        /^(audio|video)\//.test(String(item.mime_type ?? ''))
+      label: 'Completed audio and video exports',
+      description: '',
+      items: artifacts.filter(
+        (item) =>
+          !assemblyRoles.has(item.role) &&
+          /^(audio|video)\//.test(String(item.mime_type ?? ''))
       )
     },
     {
+      label: 'Audio assemblies',
+      description:
+        'Intermediate/current audio used to build exports. A finished assembly does not mean a video export has finished.',
+      items: artifacts.filter((item) => assemblyRoles.has(item.role))
+    },
+    {
       label: 'Subtitles and documents',
+      description: '',
       items: artifacts.filter(
-        (item) => !/^(audio|video)\//.test(String(item.mime_type ?? ''))
+        (item) =>
+          !assemblyRoles.has(item.role) &&
+          !/^(audio|video)\//.test(String(item.mime_type ?? ''))
       )
     }
   ]);
@@ -108,7 +127,7 @@
       settingsPayload,
       jobPayload
     ] = await Promise.all([
-      artifactApi.list({ sessionId, limit: 300 }),
+      artifactApi.list({ sessionId, limit: 300, outputOnly: true }),
       generationApi.runs(sessionId),
       sessionApi.get(sessionId),
       sessionApi.settings(sessionId, 'output'),
@@ -583,6 +602,9 @@
               >
                 {group.label}
               </h3>
+              {#if group.description}<p class="muted mb-3 text-xs">
+                  {group.description}
+                </p>{/if}
               <div class="space-y-2">
                 {#each group.items as artifact}<article
                     class="w-full rounded-xl border border-[var(--line)] px-4 py-3"

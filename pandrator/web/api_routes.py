@@ -4832,7 +4832,24 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     @require_auth
     def artifact_list():
         with database.session() as db_session:
-            statement = select(Artifact).order_by(Artifact.created_at.desc())
+            output_only = request.args.get("output_only") == "true"
+            statement = select(Artifact)
+            if output_only:
+                statement = statement.where(
+                    (Artifact.role == "export")
+                    | Artifact.role.startswith("export_")
+                    | Artifact.role.in_(
+                        (
+                            "assembled_audio",
+                            "audiobook_audio",
+                            "dubbing_audio",
+                            "output_assembly",
+                            "rvc_audio",
+                        )
+                    )
+                ).order_by(Artifact.updated_at.desc(), Artifact.created_at.desc())
+            else:
+                statement = statement.order_by(Artifact.created_at.desc())
             if request.args.get("include_deleted") != "true":
                 statement = statement.where(Artifact.state != "deleted")
             requested_session = str(request.args.get("session_id") or "")

@@ -10676,7 +10676,7 @@ class WorkflowHandlers:
             if audio is None:
                 raise ValueError("Audiobook export requires generated audio.")
             _audio_record, audio_path = self._resolve_input(audio.id)
-            destination = _next_available_path(
+            destination = self.artifacts.next_available_path(
                 output_dir / f"{export_name}{audio_path.suffix.lower()}"
             )
             progress(0.25, "Copying assembled audiobook")
@@ -10931,7 +10931,7 @@ class WorkflowHandlers:
             for index, item in enumerate(selected_subtitles, start=1):
                 _subtitle_record, subtitle_path = self._resolve_input(item.id)
                 track_name = "translation" if item.role == "translation" else "source"
-                finalized_path = _next_available_path(
+                finalized_path = self.artifacts.next_available_path(
                     output_dir / f"{record.storage_key}_{track_name}_final.srt"
                 )
                 finalize_srt_file(subtitle_path, finalized_path, settings)
@@ -11005,7 +11005,7 @@ class WorkflowHandlers:
                     _artifact, subtitle_path = self._resolve_input(item.id)
                     track_name, language, title, _default = track_details(item)
                     if export_mode == "text":
-                        destination = _next_available_path(
+                        destination = self.artifacts.next_available_path(
                             output_dir / f"{export_name}_{track_name}.txt"
                         )
                         destination.write_text(
@@ -11017,7 +11017,7 @@ class WorkflowHandlers:
                         kind = "text"
                         role = f"export_text_{track_name}"
                     else:
-                        destination = _next_available_path(
+                        destination = self.artifacts.next_available_path(
                             output_dir / f"{export_name}_{track_name}.{subtitle_format}"
                         )
                         if subtitle_format == "vtt":
@@ -11065,7 +11065,7 @@ class WorkflowHandlers:
                     cancel_event=cancel_event,
                 )
                 format_name = str(settings.get("format") or "wav").lower()
-                destination = _next_available_path(output_dir / f"{export_name}_{audio_mode}.{format_name}")
+                destination = self.artifacts.next_available_path(output_dir / f"{export_name}_{audio_mode}.{format_name}")
                 produced.append(export_soundtrack_file(
                     self, session_id=session_id, master=master, destination=destination,
                     settings=settings, cancel_event=cancel_event,
@@ -11154,7 +11154,7 @@ class WorkflowHandlers:
                     if subtitle_mode in {"soft", "burned"} and selected_subtitles
                     else ""
                 )
-                destination = _next_available_path(
+                destination = self.artifacts.next_available_path(
                     output_dir / f"{export_name}{variant}.mp4"
                 )
                 render_destination = (
@@ -11177,7 +11177,7 @@ class WorkflowHandlers:
                                     "default": is_default,
                                 }
                             )
-                            vtt_path = _next_available_path(
+                            vtt_path = self.artifacts.next_available_path(
                                 output_dir
                                 / f"{record.storage_key}_{track_name}_player.vtt"
                             )
@@ -11250,7 +11250,7 @@ class WorkflowHandlers:
                                     str(subtitle_paths[0]),
                                     str(subtitle_paths[1]),
                                     str(
-                                        _next_available_path(
+                                        self.artifacts.next_available_path(
                                             output_dir / "bilingual_subtitles.ass"
                                         )
                                     ),
@@ -11422,7 +11422,7 @@ class WorkflowHandlers:
                     )
                     _artifact, item_path = self._resolve_input(item.id)
                     track_name, language, title, _default = track_details(item)
-                    destination = _next_available_path(
+                    destination = self.artifacts.next_available_path(
                         output_dir / f"{export_name}_{track_name}.srt"
                     )
                     shutil.copy2(item_path, destination)
@@ -11452,7 +11452,7 @@ class WorkflowHandlers:
                     _source_record, source_audio_path = self._resolve_input(
                         upload_audio.id
                     )
-                    destination = _next_available_path(
+                    destination = self.artifacts.next_available_path(
                         output_dir / f"{export_name}{source_audio_path.suffix.lower()}"
                     )
                     shutil.copy2(source_audio_path, destination)
@@ -11475,7 +11475,7 @@ class WorkflowHandlers:
                         output_format = str(settings.get("format") or "wav").lower()
                         if output_format not in {"wav", "mp3", "opus", "flac"}:
                             output_format = "wav"
-                        destination = _next_available_path(
+                        destination = self.artifacts.next_available_path(
                             output_dir / f"{export_name}_mixed.{output_format}"
                         )
                         ffmpeg_executable = str(
@@ -11503,7 +11503,7 @@ class WorkflowHandlers:
                         role = "export_mixed_audio"
                     else:
                         progress(0.7, "Copying generated speech audio")
-                        destination = _next_available_path(
+                        destination = self.artifacts.next_available_path(
                             output_dir / f"{export_name}{item_path.suffix.lower()}"
                         )
                         shutil.copy2(item_path, destination)
