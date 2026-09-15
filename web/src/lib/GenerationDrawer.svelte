@@ -142,6 +142,7 @@
   let textMode = $state<'display' | 'speech'>('display');
   let displayMenuOpen = $state(false);
   let showPassageBoundaries = $state(readPassageVisibility());
+  let showRepairHistory = $state(false);
   type PassageTarget = {
     item: GenerationSegment;
     layer: PassageTextLayer;
@@ -2048,6 +2049,23 @@
                   ? 'Hide passage boundaries'
                   : 'Show passage boundaries'}
               </button>
+              <button
+                type="button"
+                class="dropdown-item"
+                aria-pressed={showRepairHistory}
+                disabled={!repairHistoryRun?.timing_repair}
+                title={repairHistoryRun?.timing_repair
+                  ? 'Show or hide automatic split and timing-repair history'
+                  : 'No timing-repair history is available for this audio view'}
+                onclick={() => {
+                  showRepairHistory = !showRepairHistory;
+                  displayMenuOpen = false;
+                }}
+              >
+                {showRepairHistory
+                  ? 'Hide split / repair history'
+                  : 'Show split / repair history'}
+              </button>
             </div>
           {/if}
         </div>
@@ -2344,24 +2362,16 @@
             {/if}
           </div>
         </div>
-        {#if repairHistoryRun?.timing_repair}
-          <details class="border-b border-[var(--line)] px-3 py-2">
-            <summary class="cursor-pointer text-xs font-semibold">
-              Split / repair history
-              <span class="font-normal text-[var(--muted)]"
-                >· {repairHistoryRun.timing_repair.applied_count} applied</span
-              >
-            </summary>
-            <div class="pt-2">
-              <GenerationRunHistory
-                run={repairHistoryRun}
-                versionId={selectedRunId ? selectedRunVersionId : ''}
-                activeMix={!selectedRunId}
-                disabled={loading}
-                onSelectVersion={selectRepairVersion}
-              />
-            </div>
-          </details>
+        {#if showRepairHistory && repairHistoryRun?.timing_repair}
+          <div class="border-b border-[var(--line)] p-3">
+            <GenerationRunHistory
+              run={repairHistoryRun}
+              versionId={selectedRunId ? selectedRunVersionId : ''}
+              activeMix={!selectedRunId}
+              disabled={loading}
+              onSelectVersion={selectRepairVersion}
+            />
+          </div>
         {/if}
         <div class="border-b border-[var(--line)] px-3 py-2">
           <SearchReplaceBar

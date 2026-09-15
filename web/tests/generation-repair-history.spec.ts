@@ -147,15 +147,51 @@ test('drawer groups repairs and selects final, original and intermediate audio',
   expect(segmentRequests.at(-1)).toBe('repair-133');
   await expect(page.getByText('$1.3000', { exact: true })).toBeVisible();
   const history = page.getByRole('region', { name: 'Timing repair history' });
-  await expect(history).not.toBeVisible();
+  // Hidden means unmounted: not even a collapsed summary consumes drawer space.
+  await expect(history).toHaveCount(0);
+  await expect(
+    page.locator('summary').filter({ hasText: 'Split / repair history' })
+  ).toHaveCount(0);
   await page
-    .locator('summary')
-    .filter({ hasText: 'Split / repair history' })
+    .getByRole('button', { name: 'Display options', exact: true })
     .click();
+  const showHistory = page.getByRole('button', {
+    name: 'Show split / repair history',
+    exact: true
+  });
+  await expect(showHistory).toHaveAttribute('aria-pressed', 'false');
+  await showHistory.click();
   await expect(
     history.getByText('133 blocks split', { exact: false })
   ).toBeVisible();
   await history.getByRole('button', { name: 'View original' }).click();
+  await expect(row.locator('audio')).toHaveAttribute(
+    'src',
+    '/api/v1/artifacts/audio-root/content'
+  );
+  await page
+    .getByRole('button', { name: 'Display options', exact: true })
+    .click();
+  const hideHistory = page.getByRole('button', {
+    name: 'Hide split / repair history',
+    exact: true
+  });
+  await expect(hideHistory).toHaveAttribute('aria-pressed', 'true');
+  await hideHistory.click();
+  await expect(history).toHaveCount(0);
+  await expect(row.locator('audio')).toHaveAttribute(
+    'src',
+    '/api/v1/artifacts/audio-root/content'
+  );
+  await page.screenshot({
+    path: testInfo.outputPath('repair-history-hidden-desktop.png')
+  });
+  await page
+    .getByRole('button', { name: 'Display options', exact: true })
+    .click();
+  await page
+    .getByRole('button', { name: 'Show split / repair history', exact: true })
+    .click();
   await expect(row.locator('audio')).toHaveAttribute(
     'src',
     '/api/v1/artifacts/audio-root/content'
@@ -189,6 +225,57 @@ test('drawer groups repairs and selects final, original and intermediate audio',
   await page.screenshot({
     path: testInfo.outputPath('repair-history-mobile.png')
   });
+});
+
+test('repair history starts hidden again after reloading the workspace', async ({
+  page
+}) => {
+  const { session } = await fixture(page);
+  await page.goto(`/sessions/${session.id}`);
+  await page.getByRole('button', { name: 'Generation', exact: true }).click();
+  const history = page.getByRole('region', { name: 'Timing repair history' });
+  await expect(history).toHaveCount(0);
+  await page
+    .getByRole('button', { name: 'Display options', exact: true })
+    .click();
+  await page
+    .getByRole('button', { name: 'Show split / repair history', exact: true })
+    .click();
+  await expect(history).toBeVisible();
+  await page.reload();
+  await page.getByRole('button', { name: 'Generation', exact: true }).click();
+  await expect(history).toHaveCount(0);
+  await expect(
+    page.locator('summary').filter({ hasText: 'Split / repair history' })
+  ).toHaveCount(0);
+});
+
+test('repair history toggle is unavailable when the selected audio has no repairs', async ({
+  page
+}) => {
+  const { session, endpoint, root } = await fixture(page);
+  const unrepaired = { ...root };
+  delete unrepaired.timing_repair;
+  await page.route(`**${endpoint}/generation-runs`, (route) =>
+    route.fulfill({ json: { items: [unrepaired] } })
+  );
+  await page.goto(`/sessions/${session.id}`);
+  await page.getByRole('button', { name: 'Generation', exact: true }).click();
+  await page
+    .getByRole('combobox', { name: 'Audio view', exact: true })
+    .selectOption('root');
+  await page
+    .getByRole('button', { name: 'Display options', exact: true })
+    .click();
+  await expect(
+    page.getByRole('button', {
+      name: 'Show split / repair history',
+      exact: true
+    })
+  ).toBeDisabled();
+  await expect(
+    page.getByRole('region', { name: 'Timing repair history' })
+  ).toHaveCount(0);
 });
 
 test('output defaults to accepted repair and can export the original', async ({
