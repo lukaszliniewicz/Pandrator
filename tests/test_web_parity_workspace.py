@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from sqlalchemy import select
 
+from pandrator.logic import tts_handler
 from pandrator.web.api import create_app
 from pandrator.web.artifacts import ArtifactService
 from pandrator.web.auth import BootstrapTokenStore
@@ -774,7 +775,11 @@ class WebParityWorkspaceTests(unittest.TestCase):
                 settings = response.get_json()["payload_json"]["settings"]
                 self.assertEqual("Custom", settings["service"])
                 self.assertEqual(service_id.replace("-", "_"), settings["preview_service_id"])
-                self.assertEqual(service_id.replace("-", "_"), settings["openai_audio_endpoint"])
+                self.assertEqual(service_id, settings["openai_audio_endpoint"])
+                endpoint, error = tts_handler.resolve_openai_audio_endpoint(settings)
+                self.assertEqual("", error)
+                self.assertIsNotNone(endpoint)
+                self.assertEqual(service_id, endpoint["name"])
                 self.assertEqual(adapter, settings["preview_adapter"])
                 self.assertEqual(model, settings["model"])
                 self.assertEqual(voice, settings["voice"])

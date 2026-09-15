@@ -1945,5 +1945,5 @@ class TtsCatalogueService:
             if is_audio_cpp:
                 settings["audio_cpp_seed"] = int(seed)
         if service.get("is_custom"):
-            settings["openai_audio_endpoint"] = resolved_id
+            settings["openai_audio_endpoint"] = str(service.get("id") or service_id).strip()
         return settings
