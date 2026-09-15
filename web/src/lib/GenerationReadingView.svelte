@@ -59,7 +59,9 @@
     onpassage?: (
       item: GenerationSegment,
       layer: PassageTextLayer,
-      boundary: PassageBoundary
+      boundary: PassageBoundary,
+      anchor?: HTMLButtonElement,
+      activate?: boolean
     ) => void;
     topologyDisabled?: boolean;
   } = $props();
@@ -120,12 +122,11 @@
             class:removed={item.removed}
             class="reading-segment"
           >
-            {#if showPassageBoundaries}
+            {#if showPassageBoundaries && item.passage_structure?.layers[textMode].boundaries.length}
               <PassageText
                 {item}
                 layer={textMode}
-                oninspect={(segment, layer, boundary) =>
-                  onpassage?.(segment, layer, boundary)}
+                oninspect={onpassage ?? (() => {})}
               />
             {:else}
               <span

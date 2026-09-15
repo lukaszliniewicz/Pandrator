@@ -29,9 +29,11 @@ from ..components.audiocpp import (
     server_config,
     source_markers_for,
 )
+from ..components.audiocpp_reuse import reuse_verified_package
 from ..components.crispasr import CRISPASR_VERSION
 from ..components.runtime_bootstrap import generated_runtime_files
 from ..components.slots import (
+    active_component_path,
     component_container,
     component_pointer,
 )
@@ -726,11 +728,23 @@ class FilesystemTaskHandler:
         else:
             python_executable = shutil.which("python3") or shutil.which("python") or sys.executable
         invocations: list[list[str]] = []
+        active_slot = active_component_path(execution.context.layout, definition.id)
+        reused_models: dict[str, str] = {}
         model_installer_environment = {
             "SSL_CERT_FILE": str(select_ca_bundle(execution.context.environment).path)
         }
         for package in packages:
             execution.check_cancelled()
+            reuse_mode = reuse_verified_package(
+                active_slot, models_root, package,
+                self._sha256_file, execution.check_cancelled,
+            )
+            if reuse_mode is not None:
+                reused_models[package.id] = reuse_mode
+                self._merge_model_package_provenance(
+                    package.marker_path(models_root), package,
+                )
+                continue
             invocation = [
                 python_executable,
                 str(target / "tools" / "model_manager_v2.py"),
@@ -789,6 +803,7 @@ class FilesystemTaskHandler:
                 "models": [package.id for package in packages],
                 "model_revision": AUDIO_CPP_MODEL_REVISION,
                 "model_digest_verification": "sha256",
+                "model_reuse": reused_models,
             },
         )
         shutil.rmtree(unpacked)
@@ -799,6 +814,7 @@ class FilesystemTaskHandler:
             "models": [package.id for package in packages],
             "assets": selected_assets,
             "model_manager": invocations,
+            "reused_models": reused_models,
             "reused": False,
         }
 

@@ -580,7 +580,7 @@ class AudioCppComponentDriver(MarkerComponentDriver):
                     }
                     for asset in assets
                 ],
-                "version": AUDIO_CPP_VERSION,
+                "version": assets[0].version,
                 "requested_compute": desired.compute.value,
                 "effective_compute": effective.value,
                 "models": list(resolved.options["models"]),

@@ -1,11 +1,18 @@
 <script lang="ts">
-  import { RotateCcw, Scissors, Trash2, WandSparkles } from '@lucide/svelte';
+  import {
+    Pencil,
+    RotateCcw,
+    Scissors,
+    Trash2,
+    WandSparkles
+  } from '@lucide/svelte';
   import type { GenerationSegment } from './api-models';
   import type { GenerationSegmentChanges } from './domain-api';
   import type { PlayableTake } from './generation-view-models';
   import type { SettingOption } from './settings-fields';
   import type { VoiceDescriptor } from './voice-catalog';
   import AudioPlayer from './AudioPlayer.svelte';
+  import { tick } from 'svelte';
   import SpeechBoundaryMarker from './SpeechBoundaryMarker.svelte';
   import PassageText from './PassageText.svelte';
   import type { PassageBoundary, PassageTextLayer } from './passage-structure';
@@ -77,7 +84,9 @@
     onpassage?: (
       item: GenerationSegment,
       layer: PassageTextLayer,
-      boundary: PassageBoundary
+      boundary: PassageBoundary,
+      anchor?: HTMLButtonElement,
+      activate?: boolean
     ) => void;
     topologyDisabled?: boolean;
     textMode?: 'display' | 'speech';
@@ -182,6 +191,9 @@
   <tbody>
     {#each items as item, itemIndex (item.id)}
       {@const selectedTake = onactivetake(item)}
+      {@const hasPassages = Boolean(
+        item.passage_structure?.layers[textMode].boundaries.length
+      )}
       {#if itemIndex > 0}
         <tr class="boundary-row">
           <td colspan="6">
@@ -215,29 +227,32 @@
           />
         </td>
         <td class="muted font-mono text-xs">{item.ordinal + 1}</td>
-        <td>
+        <td class="narrative-cell">
           {#if item.speaker}
             <span
               class="mb-1 inline-flex rounded-full bg-[var(--accent-soft)] px-2 py-0.5 text-[.62rem] font-semibold text-[var(--accent)]"
               >{item.speaker}</span
             >
           {/if}
-          {#if showPassageBoundaries && editingPassageId !== item.id}
-            <div class="p-2 text-sm leading-relaxed">
+          {#if showPassageBoundaries && hasPassages && editingPassageId !== item.id}
+            <div class="passage-row p-2 text-sm leading-relaxed">
               <PassageText
                 {item}
                 layer={textMode}
-                oninspect={(segment, layer, boundary) =>
-                  onpassage?.(segment, layer, boundary)}
+                oninspect={onpassage ?? (() => {})}
               />
               <button
                 type="button"
-                class="muted mt-2 text-xs underline underline-offset-2"
+                class="passage-edit"
                 aria-label={`Edit text for segment ${item.ordinal + 1}`}
-                onclick={(event) => {
+                title="Edit text"
+                onclick={async (event) => {
                   event.stopPropagation();
+                  const cell = event.currentTarget.closest('td');
                   editingPassageId = item.id;
-                }}>Edit text</button
+                  await tick();
+                  cell?.querySelector('textarea')?.focus();
+                }}><Pencil size={14} /></button
               >
             </div>
           {:else}
@@ -326,7 +341,7 @@
                 </p>
               {/if}
             {/if}
-            {#if showPassageBoundaries}
+            {#if showPassageBoundaries && hasPassages && editingPassageId === item.id}
               <button
                 type="button"
                 class="muted mb-2 text-xs underline underline-offset-2"
@@ -539,6 +554,37 @@
     padding: 0.55rem;
     text-align: center;
     vertical-align: middle;
+  }
+  td.narrative-cell,
+  th:nth-child(3) {
+    text-align: start;
+  }
+  .passage-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+  }
+  .passage-row :global(.passage-text) {
+    flex: 1;
+    min-width: 0;
+  }
+  .passage-edit {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    padding: 0.35rem;
+    border-radius: 0.4rem;
+    color: var(--muted);
+  }
+  .passage-edit:hover,
+  .passage-edit:focus-visible {
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+  .passage-edit:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
   }
   tr.boundary-row td {
     height: 0.8rem;

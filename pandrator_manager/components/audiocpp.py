@@ -9,7 +9,7 @@ from ..context import ManagerContext
 from ..models import ComputeVariant
 from .host import compute_choices, normalized_architecture, resolve_auto_compute
 
-AUDIO_CPP_VERSION = "0.7.2"
+AUDIO_CPP_VERSION = "0.7.4"
 AUDIO_CPP_RELEASE_BASE = (
     f"https://github.com/0xShug0/audio.cpp/releases/download/v{AUDIO_CPP_VERSION}"
 )
@@ -32,6 +32,9 @@ class AudioCppAsset:
     runtime_variant: ComputeVariant
     kind: str = "runtime"
     release_base: str = AUDIO_CPP_RELEASE_BASE
+    # Some platforms intentionally retain a separately pinned older runtime.
+    # Never label that archive with the newest global catalogue version.
+    version: str = AUDIO_CPP_VERSION
 
     @property
     def url(self) -> str:
@@ -178,21 +181,25 @@ MODEL_PACKAGES: dict[str, AudioCppModelPackage] = {
 }
 
 # Public alias matching the naming used by the other native driver.
+# Digests: upstream v0.7.4 release assets, published 2026-09-13.
+# Portable Linux builds avoid requiring the release runner's CPU instruction set.
 ASSETS: dict[tuple[str, str, ComputeVariant], tuple[AudioCppAsset, ...]] = {
     ("linux", "x86_64", ComputeVariant.CPU): (
         AudioCppAsset(
-            "audio-v0.7.2-bin-ubuntu-x64-cpu.tar.gz",
-            "6f5e43dd7b80e8ddf688ef84b411fadcd1f934d2c83963178bc4e2d9c4f07736",
+            "audio-v0.7.4-bin-ubuntu-x64-cpu-portable.tar.gz",
+            "8a93751b832c533e3261e760b4fd24af2397af3a193c862315653afd0dccc6ad",
             ComputeVariant.CPU,
         ),
     ),
     ("linux", "x86_64", ComputeVariant.VULKAN): (
         AudioCppAsset(
-            "audio-v0.7.2-bin-ubuntu-x64-vulkan.tar.gz",
-            "fee1f978cee76453cf17f00196554bc2ee294645739538af0726a143b6a69a23",
+            "audio-v0.7.4-bin-ubuntu-x64-vulkan-portable.tar.gz",
+            "34a46387c4151bf8bd0bbbaac46fc6de57df539a177ab23d52ecd5aa940173b1",
             ComputeVariant.VULKAN,
         ),
     ),
+    # No new Linux CUDA build is published by Pandrator yet. Keep the verified
+    # 0.7.2 package available, with its true version, rather than claim 0.7.4.
     ("linux", "x86_64", ComputeVariant.CUDA): (
         AudioCppAsset(
             "audio.cpp-v0.7.2-linux-x86_64-cuda12.tar.gz",
@@ -200,32 +207,33 @@ ASSETS: dict[tuple[str, str, ComputeVariant], tuple[AudioCppAsset, ...]] = {
             ComputeVariant.CUDA,
             kind="cuda_binary",
             release_base=PANDRATOR_AUDIO_CPP_RELEASE_BASE,
+            version="0.7.2",
         ),
     ),
     ("windows", "x86_64", ComputeVariant.CPU): (
         AudioCppAsset(
-            "audio-v0.7.2-bin-windows-x64-cpu-portable.zip",
-            "0b1f4bd78c5226ee3fa0eb24d95d603a429439cdf5dab45872d44a87412dd8c1",
+            "audio-v0.7.4-bin-windows-x64-cpu-portable.zip",
+            "d241c56ba78fd3c1b28bf289792fb8ec258d36586b4e0c8d667080ec248c0d2f",
             ComputeVariant.CPU,
         ),
     ),
     ("windows", "x86_64", ComputeVariant.VULKAN): (
         AudioCppAsset(
-            "audio-v0.7.2-bin-windows-x64-vulkan.zip",
-            "15b8232eae740e21e507d87f827a89966de9451b085a45932d9e214e032962c1",
+            "audio-v0.7.4-bin-windows-x64-vulkan.zip",
+            "057332f9e3fb37706a8ecb5075ac1797efcd85fdccd739f7b65761a5920f2828",
             ComputeVariant.VULKAN,
         ),
     ),
     ("windows", "x86_64", ComputeVariant.CUDA): (
         AudioCppAsset(
-            "audio-v0.7.2-bin-windows-x64-cuda12.4.zip",
-            "06c426095008022a2984ff1c75de4c9fab463c4201c0ff0a5dc4e14043f52326",
+            "audio-v0.7.4-bin-windows-x64-cuda12.4.zip",
+            "83fdd5b6e7bd4362604c10cc88d7d3564ef82030dc1d21c693a62cdcbe2e5e38",
             ComputeVariant.CUDA,
             kind="cuda_binary",
         ),
         AudioCppAsset(
-            "audio-v0.7.2-cudart-windows-x64-cuda12.4.zip",
-            "7115be4d462817ad293f7932a8ac436d51023128e6728af09bba92a85593f393",
+            "audio-v0.7.4-cudart-windows-x64-cuda12.4.zip",
+            "88d8943a2a8011f02c2a4efa7dbbe258608362615cce51e7f0e0e3a0c62f5a43",
             ComputeVariant.CUDA,
             kind="cuda_runtime",
         ),

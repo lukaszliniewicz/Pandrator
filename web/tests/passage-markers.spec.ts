@@ -120,13 +120,7 @@ async function setup(page: Page, item = segment()) {
   );
   await page.goto(`/sessions/${id}`);
   await page.getByRole('button', { name: 'Generation', exact: true }).click();
-  await page
-    .getByRole('button', { name: 'Display options', exact: true })
-    .click();
-  await page
-    .getByRole('button', { name: 'Show passage boundaries', exact: true })
-    .click();
-  return { getSplit: () => splitBody };
+  return { getSplit: () => splitBody, sessionId: id };
 }
 
 test('table dots are not text; an unfinished-phrase split needs deliberate confirmation', async ({
@@ -139,6 +133,7 @@ test('table dots are not text; an unfinished-phrase split needs deliberate confi
   const dot = passage.getByRole('button', { name: /Passages 173 \/ 174/ });
   await dot.focus();
   await page.keyboard.press('Enter');
+  await page.getByRole('menuitem', { name: 'Preview', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'Inspect passage boundary' });
   await expect(dialog).toBeVisible();
   await expect(dialog).toContainText('2.16 s source gap');
@@ -146,19 +141,17 @@ test('table dots are not text; an unfinished-phrase split needs deliberate confi
   await expect(
     dialog.getByRole('button', { name: 'Split here', exact: true })
   ).toBeDisabled();
-  await page.screenshot({
+  await dialog.screenshot({
     path: `../tmp/passage-preview-${info.project.name}.png`
   });
   await dialog.getByLabel('Split this unfinished phrase deliberately.').check();
   await dialog.getByRole('button', { name: 'Split here', exact: true }).click();
-  await expect
-    .poll(state.getSplit)
-    .toMatchObject({
-      passage_boundary_id: boundary.id,
-      cursor: Array.from(left).length,
-      text_layer: 'display',
-      expected_revision_id: 'plan-a'
-    });
+  await expect.poll(state.getSplit).toMatchObject({
+    passage_boundary_id: boundary.id,
+    cursor: Array.from(left).length,
+    text_layer: 'display',
+    expected_revision_id: 'plan-a'
+  });
   await expect(dialog).not.toBeVisible();
 });
 
@@ -186,6 +179,7 @@ test('reading view shares markers; Escape restores focus and native editing neve
   await expect(dot).toHaveCount(1);
   await dot.focus();
   await page.keyboard.press('Enter');
+  await page.getByRole('menuitem', { name: 'Preview', exact: true }).click();
   await expect(
     page.getByRole('dialog', { name: 'Inspect passage boundary' })
   ).toBeVisible();
@@ -212,4 +206,111 @@ test('stale text mappings have no clickable anchors', async ({ page }) => {
       { exact: true }
     )
   ).toBeVisible();
+});
+
+test('hover offers direct natural split without changing text or opening a modal', async ({
+  page
+}, info) => {
+  const item = segment();
+  for (const mapping of Object.values(item.passage_structure!.layers)) {
+    mapping.boundaries[0].natural = true;
+    mapping.boundaries[0].warning = null;
+  }
+  const state = await setup(page, item);
+  const dot = page.getByRole('button', { name: /Passages 173 \/ 174/ });
+  await dot.hover();
+  const menu = page.getByRole('menu', { name: 'Passage boundary actions' });
+  await expect(menu).toBeVisible();
+  expect(state.getSplit()).toBeUndefined();
+  expect(
+    await page.locator('[data-passage-segment="passage-segment"]').textContent()
+  ).toBe(text);
+  await menu.screenshot({
+    path: `../tmp/passage-menu-${info.project.name}.png`
+  });
+  await menu.getByRole('menuitem', { name: 'Split here', exact: true }).click();
+  await expect.poll(state.getSplit).toMatchObject({
+    passage_boundary_id: boundary.id,
+    expected_revision_id: 'plan-a'
+  });
+  await expect(
+    page.getByRole('dialog', { name: 'Inspect passage boundary' })
+  ).not.toBeVisible();
+});
+
+test('a single passage stays left-aligned and directly editable without an extra note', async ({
+  page
+}) => {
+  const item = segment();
+  for (const mapping of Object.values(item.passage_structure!.layers))
+    mapping.boundaries = [];
+  await setup(page, item);
+  const editor = page.getByRole('textbox', {
+    name: 'Script text for segment 54',
+    exact: true
+  });
+  await expect(editor).toBeVisible();
+  await expect(editor).toHaveValue(text);
+  expect(['left', 'start']).toContain(
+    await editor.evaluate((node) => getComputedStyle(node).textAlign)
+  );
+  await expect(
+    page.getByText('One timed passage; no internal timing anchors.', {
+      exact: true
+    })
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole('button', { name: 'Edit text for segment 54', exact: true })
+  ).toHaveCount(0);
+});
+
+test('passage markers default on and remember a hidden preference after reload', async ({
+  page
+}) => {
+  const state = await setup(page);
+  const dot = page.getByRole('button', { name: /Passages 173 \/ 174/ });
+  await expect(dot).toBeVisible();
+  await page
+    .getByRole('button', { name: 'Display options', exact: true })
+    .click();
+  await page
+    .getByRole('button', { name: 'Hide passage boundaries', exact: true })
+    .click();
+  await expect(dot).toHaveCount(0);
+  await page.reload();
+  await page.getByRole('button', { name: 'Generation', exact: true }).click();
+  await expect(dot).toHaveCount(0);
+  await page
+    .getByRole('button', { name: 'Display options', exact: true })
+    .click();
+  await page
+    .getByRole('button', { name: 'Show passage boundaries', exact: true })
+    .click();
+  await expect(dot).toBeVisible();
+  expect(state.getSplit()).toBeUndefined();
+});
+
+test('blocked boundaries retain preview but cannot split and Escape returns focus', async ({
+  page
+}) => {
+  const item = segment();
+  for (const mapping of Object.values(item.passage_structure!.layers)) {
+    mapping.boundaries[0].natural = true;
+    mapping.boundaries[0].split_allowed = false;
+    mapping.boundaries[0].split_blocked_reason = 'The timing windows overlap.';
+  }
+  const state = await setup(page, item);
+  const dot = page.getByRole('button', { name: /Passages 173 \/ 174/ });
+  await dot.focus();
+  await page.keyboard.press('ArrowDown');
+  const menu = page.getByRole('menu', { name: 'Passage boundary actions' });
+  await expect(menu).toBeVisible();
+  await expect(
+    menu.getByRole('menuitem', { name: 'Split here', exact: true })
+  ).toBeDisabled();
+  await expect(menu).toContainText('The timing windows overlap.');
+  await page.keyboard.press('Escape');
+  await expect(menu).not.toBeVisible();
+  await expect(dot).toBeFocused();
+  expect(state.getSplit()).toBeUndefined();
 });

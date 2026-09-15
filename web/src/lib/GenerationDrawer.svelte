@@ -8,7 +8,13 @@
   import { selectableTtsServices } from './tts-provider-policy';
   import { errorMessage } from './errors';
   import PassageSplitDialog from './PassageSplitDialog.svelte';
-  import type { PassageBoundary, PassageTextLayer } from './passage-structure';
+  import PassageActionsPopover from './PassageActionsPopover.svelte';
+  import {
+    readPassageVisibility,
+    savePassageVisibility,
+    type PassageBoundary,
+    type PassageTextLayer
+  } from './passage-structure';
   import {
     GenerationEditQueue,
     collectStaleSegmentIds
@@ -135,64 +141,97 @@
   let viewMode = $state<'segments' | 'reading'>('segments');
   let textMode = $state<'display' | 'speech'>('display');
   let displayMenuOpen = $state(false);
-  let showPassageBoundaries = $state(false);
-  let passagePreview = $state<{
+  let showPassageBoundaries = $state(readPassageVisibility());
+  type PassageTarget = {
     item: GenerationSegment;
     layer: PassageTextLayer;
     boundary: PassageBoundary;
     planRevisionId: string | null;
-  } | null>(null);
-  const passageDisabledReason = $derived.by(() => {
-    if (!passagePreview) return '';
+  };
+  let passagePreview = $state<PassageTarget | null>(null);
+  let passageActions = $state<
+    | (PassageTarget & {
+        anchor: HTMLButtonElement;
+        activate: boolean;
+      })
+    | null
+  >(null);
+
+  function passageTargetDisabledReason(target: PassageTarget | null) {
+    if (!target) return '';
     if (selectedRunId)
       return 'History is read-only. Select the active mix to split.';
     if (pendingSegmentUpdates > 0)
       return 'Wait for the current text edit to finish saving.';
-    if (payload.plan_revision_id !== passagePreview.planRevisionId)
+    if (payload.plan_revision_id !== target.planRevisionId)
       return 'The plan changed. Close this preview and inspect the boundary again.';
-    const current = payload.items.find(
-      (item) => item.id === passagePreview?.item.id
-    );
+    const current = payload.items.find((item) => item.id === target.item.id);
     if (
       !current ||
-      current.revision !== passagePreview.item.revision ||
-      !current.passage_structure?.layers[passagePreview.layer].boundaries.some(
-        (boundary) => boundary.id === passagePreview?.boundary.id
+      current.revision !== target.item.revision ||
+      !current.passage_structure?.layers[target.layer].boundaries.some(
+        (boundary) => boundary.id === target.boundary.id
       )
     )
       return 'The text or passage mapping changed. Close this preview and inspect it again.';
     return error || '';
-  });
+  }
+  const passageDisabledReason = $derived(
+    passageTargetDisabledReason(passagePreview)
+  );
 
   function inspectPassage(
     item: GenerationSegment,
     layer: PassageTextLayer,
-    boundary: PassageBoundary
+    boundary: PassageBoundary,
+    anchor?: HTMLButtonElement,
+    activate = false
   ) {
-    error = '';
-    passagePreview = {
+    if (passagePreview) return;
+    const target = {
       item,
       layer,
       boundary,
       planRevisionId: payload.plan_revision_id
     };
+    if (anchor) passageActions = { ...target, anchor, activate };
+    else passagePreview = target;
   }
 
-  async function splitPassageBoundary() {
+  function previewPassageAction() {
+    if (!passageActions) return;
+    passagePreview = passageActions;
+    passageActions = null;
+  }
+
+  async function splitPassageBoundary(target = passagePreview) {
     await editQueue.settledIds([]).catch((caught) => {
       error = errorMessage(caught);
     });
-    if (!passagePreview || passageDisabledReason || topologyBusy || error)
+    if (
+      !target ||
+      passageTargetDisabledReason(target) ||
+      topologyBusy ||
+      !target.boundary.split_allowed ||
+      target.boundary.split_blocked_reason
+    )
       return;
-    const preview = passagePreview;
     const succeeded = await reviseSpeechBlocks({
       action: 'split',
-      segment_id: preview.item.id,
-      text_layer: preview.layer,
-      cursor: preview.boundary.offset,
-      passage_boundary_id: preview.boundary.id
+      segment_id: target.item.id,
+      text_layer: target.layer,
+      cursor: target.boundary.offset,
+      passage_boundary_id: target.boundary.id
     });
     if (succeeded) passagePreview = null;
+  }
+
+  function quickSplitPassage() {
+    const target = passageActions;
+    if (!target) return;
+    if (!target.boundary.natural) return previewPassageAction();
+    passageActions = null;
+    void splitPassageBoundary(target);
   }
   let settingsMenuOpen = $state(false);
   let regenerateMenuOpen = $state(false);
@@ -2000,6 +2039,8 @@
                 aria-pressed={showPassageBoundaries}
                 onclick={() => {
                   showPassageBoundaries = !showPassageBoundaries;
+                  savePassageVisibility(showPassageBoundaries);
+                  passageActions = null;
                   displayMenuOpen = false;
                 }}
               >
@@ -2304,15 +2345,23 @@
           </div>
         </div>
         {#if repairHistoryRun?.timing_repair}
-          <div class="border-b border-[var(--line)] p-3">
-            <GenerationRunHistory
-              run={repairHistoryRun}
-              versionId={selectedRunId ? selectedRunVersionId : ''}
-              activeMix={!selectedRunId}
-              disabled={loading}
-              onSelectVersion={selectRepairVersion}
-            />
-          </div>
+          <details class="border-b border-[var(--line)] px-3 py-2">
+            <summary class="cursor-pointer text-xs font-semibold">
+              Split / repair history
+              <span class="font-normal text-[var(--muted)]"
+                >· {repairHistoryRun.timing_repair.applied_count} applied</span
+              >
+            </summary>
+            <div class="pt-2">
+              <GenerationRunHistory
+                run={repairHistoryRun}
+                versionId={selectedRunId ? selectedRunVersionId : ''}
+                activeMix={!selectedRunId}
+                disabled={loading}
+                onSelectVersion={selectRepairVersion}
+              />
+            </div>
+          </details>
         {/if}
         <div class="border-b border-[var(--line)] px-3 py-2">
           <SearchReplaceBar
@@ -2461,6 +2510,20 @@
     {/if}
   </aside>
 {/if}
+{#if passageActions}
+  <PassageActionsPopover
+    anchor={passageActions.anchor}
+    activate={passageActions.activate}
+    boundary={passageActions.boundary}
+    disabledReason={passageTargetDisabledReason(passageActions)}
+    busy={topologyBusy}
+    onclose={() => {
+      passageActions = null;
+    }}
+    onpreview={previewPassageAction}
+    onsplit={quickSplitPassage}
+  />
+{/if}
 {#if passagePreview}
   <PassageSplitDialog
     item={passagePreview.item}
@@ -2471,7 +2534,7 @@
     onclose={() => {
       passagePreview = null;
     }}
-    onsplit={splitPassageBoundary}
+    onsplit={() => splitPassageBoundary()}
   />
 {/if}
 {#if showRvc}

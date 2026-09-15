@@ -17,7 +17,9 @@
     oninspect: (
       item: GenerationSegment,
       layer: PassageTextLayer,
-      boundary: PassageBoundary
+      boundary: PassageBoundary,
+      anchor?: HTMLButtonElement,
+      activate?: boolean
     ) => void;
   } = $props();
   const text = $derived(
@@ -39,14 +41,22 @@
           class:unfinished={!boundary.natural}
           class:informational={!boundary.split_allowed}
           aria-label={boundaryLabel(boundary)}
-          title={boundaryLabel(boundary)}
+          aria-haspopup="menu"
+          aria-expanded="false"
+          onpointerenter={(event) => {
+            if (event.pointerType === 'mouse') oninspect(item, layer, boundary, event.currentTarget, false);
+          }}
+          onkeydown={(event) => {
+            if (event.key !== 'ArrowDown') return;
+            event.preventDefault();
+            event.stopPropagation();
+            oninspect(item, layer, boundary, event.currentTarget, true);
+          }}
           onclick={(event) => {
             event.stopPropagation();
-            oninspect(item, layer, boundary);
+            oninspect(item, layer, boundary, event.currentTarget, true);
           }}
-        ></button>{/if}{/each}{#if !mapping?.boundaries.length}<span class="passage-note"
-        >One timed passage; no internal timing anchors.</span
-      >{/if}
+        ></button>{/if}{/each}
   {:else}
     {text}<span class="passage-note" role="status"
       >{mapping?.status === 'mapped'

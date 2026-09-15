@@ -150,3 +150,44 @@
     </footer>
   </div>
 </div>
+
+<style>
+  .action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.45rem;
+    min-height: 2.4rem;
+    padding: 0.5rem 0.85rem;
+    border: 1px solid var(--line);
+    border-radius: 0.55rem;
+    background: var(--paper-strong);
+    color: var(--ink);
+    font-size: 0.8rem;
+    font-weight: 650;
+    cursor: pointer;
+  }
+  .action:hover:not(:disabled) {
+    background: var(--accent-soft);
+  }
+  .action.primary {
+    background: var(--action-bg);
+    border-color: var(--action-bg);
+    color: white;
+  }
+  .action.primary:hover:not(:disabled) {
+    background: var(--action-hover);
+  }
+  .action:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+  .action:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+  }
+  .icon-action {
+    padding: 0.45rem;
+    min-width: 2.4rem;
+  }
+</style>

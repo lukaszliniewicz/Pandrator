@@ -71,6 +71,17 @@ remain available. Changing a global or generic session service setting also
 clears stale selections, so choose a valid target model and voice before
 starting generation.
 
+## audio.cpp runtime versions
+
+The Manager pins audio.cpp **0.7.4** for Linux CPU/Vulkan and Windows
+CPU/Vulkan/CUDA, with SHA-256-verified upstream archives. Linux CPU and Vulkan
+use the portable builds. The existing Pandrator Linux CUDA archive remains
+explicitly pinned to **0.7.2** until a new CUDA build is published; its installed
+version must not be reported as 0.7.4. The CUDA workflow is manual-only.
+
+Updating the runtime does not replace selected models, voices, or generation
+settings. Model package revisions and digests remain independently pinned.
+
 ## Language and capability checks
 
 Language support differs by model and sometimes by voice. Pandrator filters

@@ -74,3 +74,27 @@ export function passagePieces(text: string, layer?: PassageLayer) {
   pieces.push({ text: points.slice(previous).join(''), boundary: null });
   return pieces;
 }
+
+/** Display preference only. Unavailable browser storage must never block editing. */
+export function readPassageVisibility(): boolean {
+  try {
+    return (
+      globalThis.localStorage?.getItem(
+        'pandrator.generation.passage-boundaries'
+      ) !== 'hidden'
+    );
+  } catch {
+    return true;
+  }
+}
+
+export function savePassageVisibility(visible: boolean): void {
+  try {
+    globalThis.localStorage?.setItem(
+      'pandrator.generation.passage-boundaries',
+      visible ? 'shown' : 'hidden'
+    );
+  } catch {
+    /* The current drawer preference still works without storage. */
+  }
+}

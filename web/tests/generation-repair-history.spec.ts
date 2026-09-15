@@ -147,6 +147,11 @@ test('drawer groups repairs and selects final, original and intermediate audio',
   expect(segmentRequests.at(-1)).toBe('repair-133');
   await expect(page.getByText('$1.3000', { exact: true })).toBeVisible();
   const history = page.getByRole('region', { name: 'Timing repair history' });
+  await expect(history).not.toBeVisible();
+  await page
+    .locator('summary')
+    .filter({ hasText: 'Split / repair history' })
+    .click();
   await expect(
     history.getByText('133 blocks split', { exact: false })
   ).toBeVisible();

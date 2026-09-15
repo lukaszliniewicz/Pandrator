@@ -636,6 +636,14 @@ class AudioCppManagerTests(unittest.TestCase):
                 ),
             ):
                 staged = handler.execute(execution, stage)
+                self.assertEqual(
+                    {"qwen3_tts_1_7b_base_q8_0": "hardlink"},
+                    staged["reused_models"],
+                )
+                self.assertEqual(
+                    ["voxcpm2_q8_0"],
+                    [command[3] for command in staged["model_manager"]],
+                )
                 execution.prior_results[stage.id] = staged
                 activated = handler.execute(execution, activate)
                 repeated = handler.execute(execution, activate)
@@ -649,6 +657,9 @@ class AudioCppManagerTests(unittest.TestCase):
             )
             config = json.loads((active / "server.json").read_text(encoding="utf-8"))
             self.assertEqual(package_ids, [item["id"] for item in config["models"]])
+            self.assertTrue(old_model.samefile(
+                MODEL_PACKAGES["qwen3_tts_1_7b_base_q8_0"].required_paths(active / "models")[0]
+            ))
             for package_id in package_ids:
                 for required in MODEL_PACKAGES[package_id].required_paths(active / "models"):
                     self.assertTrue(required.is_file())
