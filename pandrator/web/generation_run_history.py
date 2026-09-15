@@ -1,14 +1,26 @@
 """Pure grouping metadata for generation-run history projections.
 
 The database keeps every generation run immutable.  This module only verifies
-the explicit metadata used by optional early timing repair and returns an
-in-memory view that callers can use for display or cleanup decisions.
+the explicit metadata used by optional automatic second passes (early timing
+repair, which splits one block, and passage regroup, which regenerates
+adjacent passages as one merged group with the same provider and no new word
+alignment) and returns an in-memory view that callers can use for display or
+cleanup decisions.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
+
+
+EARLY_REPAIR_MARKER_KEY = "early_repair_parent_run_id"
+REGROUP_MARKER_KEY = "regroup_parent_run_id"
+SECOND_PASS_MARKER_KEYS = (EARLY_REPAIR_MARKER_KEY, REGROUP_MARKER_KEY)
+
+EARLY_REPAIR_REASON = "early_timing_repair"
+REGROUP_REASON = "passage_regroup"
+SECOND_PASS_REASONS = frozenset({EARLY_REPAIR_REASON, REGROUP_REASON})
 
 
 @dataclass(frozen=True)
@@ -37,10 +49,17 @@ def _repair_marker(run: Any) -> str:
     snapshot = run.settings_snapshot_json
     if not isinstance(snapshot, dict):
         return ""
-    value = snapshot.get("early_repair_parent_run_id")
-    if not isinstance(value, str):
+    values = set()
+    for key in SECOND_PASS_MARKER_KEYS:
+        value = snapshot.get(key)
+        if isinstance(value, str) and value.strip():
+            values.add(value.strip())
+    # Either second pass marks its staged children with the original root run
+    # ID.  Both markers are accepted so mixed marker chains stay grouped;
+    # conflicting markers are malformed and keep the run standalone.
+    if len(values) != 1:
         return ""
-    return value.strip()
+    return next(iter(values))
 
 
 def _repair_operation(
@@ -52,7 +71,7 @@ def _repair_operation(
     operation = getattr(revision, "operation_json", None)
     if not isinstance(operation, dict):
         return None
-    if operation.get("reason") != "early_timing_repair":
+    if operation.get("reason") not in SECOND_PASS_REASONS:
         return None
     if str(operation.get("source_generation_run_id") or "") != root_id:
         return None
@@ -73,11 +92,14 @@ def build_generation_run_history(
 ) -> dict[str, GenerationRunHistory]:
     """Build verified logical groups for a batch of session-scoped runs.
 
-    A repair child is accepted only when its snapshot marker names an existing
-    unmarked run in the same session, its output owner is empty, it is an
-    ordinary ``generate`` run, and its plan revision records the exact repair
-    reason and source root.  This intentionally does not infer groups from
-    generic source links, which are used by targeted regeneration.
+    A second-pass child is accepted only when its snapshot marker names an
+    existing unmarked run in the same session, its output owner is empty, it
+    is an ordinary ``generate`` run, and its plan revision records a
+    supported second-pass reason (early timing repair or passage regroup)
+    with the exact source root.  Either marker key is accepted, so an early
+    repair child and a regroup child of the same root group together.  This
+    intentionally does not infer groups from generic source links, which are
+    used by targeted regeneration.
     """
 
     by_id = {str(run.id): run for run in runs if getattr(run, "id", None)}
@@ -181,4 +203,13 @@ def build_generation_run_history(
     return histories
 
 
-__all__ = ["GenerationRunHistory", "build_generation_run_history"]
+__all__ = [
+    "EARLY_REPAIR_MARKER_KEY",
+    "EARLY_REPAIR_REASON",
+    "REGROUP_MARKER_KEY",
+    "REGROUP_REASON",
+    "SECOND_PASS_MARKER_KEYS",
+    "SECOND_PASS_REASONS",
+    "GenerationRunHistory",
+    "build_generation_run_history",
+]

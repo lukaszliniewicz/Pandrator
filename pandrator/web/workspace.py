@@ -308,6 +308,13 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "speech_block_early_repair_min_shortfall_percent": 20,
         "speech_block_early_repair_min_advance_ms": 1000,
         "speech_block_early_repair_min_child_span_ms": 1000,
+        "speech_block_generation_mode": "passage",
+        "speech_block_regroup_enabled": False,
+        "speech_block_regroup_max_mismatch_ms": 500,
+        "speech_block_regroup_max_mismatch_percent": 15,
+        "speech_block_regroup_max_gap_ms": 300,
+        "speech_block_regroup_max_passages": 3,
+        "speech_block_regroup_max_boundary_shift_ms": 500,
     },
     "audio": {
         "audio_verification_mode": "off",
@@ -671,6 +678,13 @@ def validate_voiceover_repair_settings(value: dict[str, Any]) -> None:
         number = value[key]
         if isinstance(number, bool) or not isinstance(number, int) or not minimum <= number <= maximum:
             raise ValueError(f"{key} must be an integer from {minimum} to {maximum}.")
+    # Passage-first planning (default) plus the optional second-pass regroup
+    # share this TTS-section validator. Bounds live next to the pure
+    # selection logic in pandrator.logic.dubbing.passage_regroup so stored
+    # values and runtime normalization cannot drift apart.
+    from pandrator.logic.dubbing.passage_regroup import validate_regroup_settings
+
+    validate_regroup_settings(value)
 
 
 class WorkspaceSettingsService:
@@ -4831,11 +4845,18 @@ class GenerationService:
         )
         timing_repair = None
         repair_active = False
-        repair_enabled = (
-            context["workflow_kind"] == "voiceover"
-            and (snapshot.get("tts") or {}).get("speech_block_early_repair_enabled") is True
-            and run.operation in {"generate", "resume"}
+        from pandrator.logic.dubbing.passage_regroup import select_second_pass
+
+        second_pass = select_second_pass(
+            snapshot,
+            operation=str(run.operation or ""),
+            has_selected_ids=False,
+            workflow_kind=str(context["workflow_kind"] or ""),
         )
+        repair_enabled = second_pass == "repair" and run.operation in {
+            "generate",
+            "resume",
+        }
         if is_original_root and (history.repair_children or repair_enabled):
             timing_repair, repair_active = self._timing_repair_payload(
                 context,
@@ -4857,6 +4878,9 @@ class GenerationService:
         payload["early_repair_parent_run_id"] = (
             history.root.id if history.is_repair_child(run.id) else None
         )
+        # Which optional second pass this run's mode selects (repair for
+        # legacy planning, regroup for passage-first planning, else None).
+        payload["second_pass"] = second_pass
         payload["result_generation_run_id"] = (
             history.result.id if is_original_root else run.id
         )

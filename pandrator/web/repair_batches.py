@@ -1,8 +1,14 @@
-"""User-level repair batches over immutable generation checkpoints.
+"""User-level second-pass batches over immutable generation checkpoints.
 
 Internal candidates remain immutable and available to historical audio runs.
 Grouping precedes pagination; full audio statistics are inspected only for
 visible rows. Undo appends one restore revision and never rewrites history.
+
+This covers both automatic second passes, which share the same guard
+snapshot: early timing repair (one block split and regenerated) and passage
+regroup (adjacent passages merged and regenerated as one group with the same
+provider and no new word alignment).  Regroup batches are labelled as such
+and never described as splitting or alignment.
 """
 
 from __future__ import annotations
@@ -18,6 +24,11 @@ from .source_management import assert_session_idle
 from .workspace import RevisionConflict, stable_hash
 
 REPAIR_REASON = "early_timing_repair"
+REGROUP_REASON = "passage_regroup"
+MIXED_REASON = "mixed"
+SECOND_PASS_REASONS = frozenset({REPAIR_REASON, REGROUP_REASON})
+UNDO_REPAIR_REASON = "undo_timing_repairs"
+UNDO_REGROUP_REASON = "undo_passage_regroup"
 GUARD_KEY = "repair_batch_snapshot"
 GUARD_VERSION = 1
 
@@ -92,7 +103,7 @@ def _history_metadata(session, session_id: str):
         operation["source_block_ordinal"].as_integer().label("source_block_ordinal"),
         operation[GUARD_KEY].label("guard"),
     ).where(revision.plan_id == plan.id).order_by(revision.revision_number)).mappings()]
-    root_ids = {row["batch_id"] for row in rows if row["reason"] == REPAIR_REASON and row["batch_id"]}
+    root_ids = {row["batch_id"] for row in rows if row["reason"] in SECOND_PASS_REASONS and row["batch_id"]}
     roots = {}
     for offset in range(0, len(root_ids), 400):
         chunk = sorted(root_ids)[offset:offset + 400]
@@ -110,7 +121,7 @@ def _groups(plan, rows, roots):
     entries = []
     for row in rows:
         root = roots.get(row["batch_id"])
-        if row["reason"] == REPAIR_REASON and root and root["plan_revision_id"] in by_id:
+        if row["reason"] in SECOND_PASS_REASONS and root and root["plan_revision_id"] in by_id:
             batches[row["batch_id"]].append(row)
         else:
             entries.append({"entry_id": row["id"], "row": row,
@@ -128,6 +139,26 @@ def _groups(plan, rows, roots):
                       "result": result, "applied": applied},
         })
     return sorted(entries, key=lambda entry: entry["sort_number"], reverse=True)
+
+
+def _batch_reason(batch) -> str:
+    """Classify a batch without mislabelling regroup as splitting/alignment."""
+    reasons = {row.get("reason") for row in batch["attempts"] if row.get("reason")}
+    if reasons == {REGROUP_REASON}:
+        return REGROUP_REASON
+    if reasons == {REPAIR_REASON}:
+        return REPAIR_REASON
+    if not reasons:
+        return REPAIR_REASON
+    return MIXED_REASON
+
+
+def _batch_summary_text(batch_reason: str, applied_count: int, attempt_count: int) -> str:
+    if batch_reason == REGROUP_REASON:
+        return f"Automatic passage regroup · {applied_count} accepted / {attempt_count} attempted"
+    if batch_reason == MIXED_REASON:
+        return f"Automatic second-pass repair · {applied_count} accepted / {attempt_count} attempted"
+    return f"Automatic timing repair · {applied_count} accepted / {attempt_count} attempted"
 
 
 def _batch_state(session, batch) -> str:
@@ -178,6 +209,7 @@ def _batch_summary(session, session_id, active_id, batch, *, check_guard=True):
         "status": status, "can_undo": not reason, "undo_disabled_reason": reason or None,
         "expected_revision_id": result["id"],
         "expected_state_hash": guard.get("result_state_hash"),
+        "reason": _batch_reason(batch),
     }
 
 
@@ -211,7 +243,7 @@ def grouped_revision_history(database, session_id: str, *, limit=50, before_revi
         item.update(entry_id=entry["entry_id"], history_revision_number=entry["sort_number"])
         if entry["batch"]:
             summary = summaries[entry["entry_id"]]
-            item.update(repair_batch=summary, summary=f"Automatic timing repair · {summary['applied_count']} accepted / {summary['attempt_count']} attempted", origin="automatic")
+            item.update(repair_batch=summary, summary=_batch_summary_text(summary["reason"], summary["applied_count"], summary["attempt_count"]), origin="automatic")
             item["repair_status"] = None  # The batch has its own aggregate status.
             item["is_repair_checkpoint"] = item["id"] != summary["result_revision_id"]
             if item["is_repair_checkpoint"]:
@@ -237,7 +269,7 @@ def repair_batch_detail(database, session_id, batch_id, *, limit=50, before_revi
         has_more = len(attempts) > limit
         attempts = attempts[:limit]
         return {"repair_batch": summary, "active_revision_id": plan.active_revision_id,
-                "items": [{key: row[key] for key in ("id", "revision_number", "repair_status", "repair_reason", "source_block_ordinal")} for row in attempts],
+                "items": [{key: row[key] for key in ("id", "revision_number", "reason", "repair_status", "repair_reason", "source_block_ordinal")} for row in attempts],
                 "next_before_revision_number": attempts[-1]["revision_number"] if attempts and has_more else None}
 
 
@@ -256,7 +288,8 @@ def undo_repair_batch_in_session(service, session, session_id, batch_id, *, expe
         raise RevisionConflict("The repair snapshot changed. Refresh history before undoing.")
     result = service.revise_topology_in_session(session, session_id, expected_revision_id, {
         "action": "restore", "target_revision_id": summary["base_revision_id"],
-        "reason": "undo_timing_repairs", "repair_batch_id": batch_id,
+        "reason": UNDO_REGROUP_REASON if summary["reason"] == REGROUP_REASON else UNDO_REPAIR_REASON,
+        "repair_batch_id": batch_id,
     })
     return {**result, "undone_repair_batch_id": batch_id,
             "restored_from_revision_id": summary["base_revision_id"]}

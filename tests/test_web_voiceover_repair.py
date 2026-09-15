@@ -135,6 +135,7 @@ class VoiceoverRepairTests(unittest.TestCase):
                 settings_snapshot_json={
                     "tts": {
                         "service": "XTTS",
+                        "speech_block_generation_mode": "legacy",
                         "speech_block_early_repair_enabled": enabled,
                     },
                     "audio": {

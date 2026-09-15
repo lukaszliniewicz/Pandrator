@@ -7,6 +7,13 @@
   import { modalDialog } from './modal-dialog';
   import ParameterLabel from './ParameterLabel.svelte';
   import {
+    SPEECH_BLOCK_GENERATION_DEFAULTS,
+    SPEECH_BLOCK_REGROUP_CONTROLS,
+    coerceSpeechBlockGenerationValues,
+    isSpeechBlockGenerationMode,
+    type SpeechBlockGenerationMode
+  } from './speech-block-generation';
+  import {
     sessionFlowAction,
     speechPlanState,
     type SpeechPlanState
@@ -39,7 +46,7 @@
     },
     {
       key: 'speech_block_max_chars',
-      label: 'Maximum characters',
+      label: 'Maximum characters per request',
       fallback: 220,
       min: 1
     },
@@ -93,9 +100,23 @@
     }
   ];
   const allControls = [...controls, ...repairControls];
+  const regroupControls: NumericControl[] = SPEECH_BLOCK_REGROUP_CONTROLS.map(
+    ({ key, label, min, max }) => ({
+      key,
+      label,
+      fallback: SPEECH_BLOCK_GENERATION_DEFAULTS[
+        key as keyof typeof SPEECH_BLOCK_GENERATION_DEFAULTS
+      ] as number,
+      min,
+      max
+    })
+  );
+  const allNumericControls = [...allControls, ...regroupControls];
   let stored = $state<SettingsPayload | null>(null);
   let values = $state<Record<string, number>>({});
   let earlyRepairEnabled = $state(false);
+  let generationMode = $state<SpeechBlockGenerationMode>('passage');
+  let regroupEnabled = $state(false);
   let saving = $state(false);
   let error = $state('');
   let step = $state<'edit' | 'unsaved' | 'prepare'>('edit');
@@ -106,15 +127,31 @@
   const changed = (control: NumericControl) =>
     values[control.key] !==
     Number(stored?.effective[control.key] ?? control.fallback);
+  const storedGenerationMode = $derived.by<SpeechBlockGenerationMode>(() => {
+    const raw = stored?.effective.speech_block_generation_mode;
+    return isSpeechBlockGenerationMode(raw)
+      ? raw
+      : SPEECH_BLOCK_GENERATION_DEFAULTS.speech_block_generation_mode;
+  });
+  const storedRegroupEnabled = $derived(
+    stored?.effective.speech_block_regroup_enabled === true
+  );
+  const isPassageMode = $derived(generationMode === 'passage');
   const blockBuildingChanged = $derived(
-    Boolean(stored && controls.some(changed))
+    Boolean(
+      stored &&
+      (controls.some(changed) || generationMode !== storedGenerationMode)
+    )
   );
   const dirty = $derived(
     Boolean(
       stored &&
       (allControls.some(changed) ||
+        regroupControls.some(changed) ||
         earlyRepairEnabled !==
-          (stored.effective.speech_block_early_repair_enabled === true))
+          (stored.effective.speech_block_early_repair_enabled === true) ||
+        generationMode !== storedGenerationMode ||
+        regroupEnabled !== storedRegroupEnabled)
     )
   );
   const title = $derived(
@@ -124,13 +161,19 @@
         ? 'Prepare a new speech plan?'
         : 'Speech-block settings'
   );
-  const valid = $derived(
-    allControls.every(
+  const numericValid = (list: NumericControl[]) =>
+    list.every(
       ({ key, min, max }) =>
         Number.isInteger(values[key]) &&
         values[key] >= min &&
         (max === undefined || values[key] <= max)
-    ) && values.speech_block_max_chars >= values.speech_block_min_chars
+    );
+  const valid = $derived(
+    numericValid(controls) &&
+      (isPassageMode
+        ? !regroupEnabled || numericValid(regroupControls)
+        : numericValid(repairControls)) &&
+      values.speech_block_max_chars >= values.speech_block_min_chars
   );
   onMount(() => {
     void sessionApi
@@ -140,8 +183,13 @@
         stored = result;
         earlyRepairEnabled =
           result.effective.speech_block_early_repair_enabled === true;
+        const coerced = coerceSpeechBlockGenerationValues(
+          result.effective as Record<string, unknown>
+        );
+        generationMode = coerced.speech_block_generation_mode;
+        regroupEnabled = coerced.speech_block_regroup_enabled;
         values = Object.fromEntries(
-          allControls.map(({ key, fallback }) => [
+          allNumericControls.map(({ key, fallback }) => [
             key,
             Number(result.effective[key] ?? fallback)
           ])
@@ -181,7 +229,9 @@
         {
           ...stored.override,
           ...values,
-          speech_block_early_repair_enabled: earlyRepairEnabled
+          speech_block_early_repair_enabled: earlyRepairEnabled,
+          speech_block_generation_mode: generationMode,
+          speech_block_regroup_enabled: regroupEnabled
         }
       );
       stored = {
@@ -190,7 +240,9 @@
         effective: {
           ...stored.effective,
           ...values,
-          speech_block_early_repair_enabled: earlyRepairEnabled
+          speech_block_early_repair_enabled: earlyRepairEnabled,
+          speech_block_generation_mode: generationMode,
+          speech_block_regroup_enabled: regroupEnabled
         }
       };
       await onsaved();
@@ -253,8 +305,8 @@
         </h2>
         {#if step === 'edit'}<p class="muted mt-2 text-sm">
             Control how subtitle text becomes speech blocks. Block sizes apply
-            when you prepare a new plan. Repair settings apply to the next full
-            generation run, including with the current plan.
+            when you prepare a new plan. Generation settings apply to the next
+            full generation run, including with the current plan.
           </p>{/if}
       </div>
       <button
@@ -351,6 +403,55 @@
           disabled={!stored || saving}
           class="mt-5 grid gap-4 sm:grid-cols-2"
         >
+          <fieldset class="sm:col-span-2">
+            <legend class="text-sm font-semibold">
+              <ParameterLabel
+                section="tts"
+                name="speech_block_generation_mode"
+                label="Generation mode"
+                compact
+              />
+            </legend>
+            <div class="mt-2 grid gap-2">
+              <label
+                class="flex items-start gap-3 rounded-xl border border-[var(--line)] p-4 text-sm"
+              >
+                <input
+                  type="radio"
+                  name="speech-block-generation-mode"
+                  value="passage"
+                  checked={generationMode === 'passage'}
+                  onchange={() => (generationMode = 'passage')}
+                  class="mt-1"
+                />
+                <span>
+                  <span class="font-semibold">Separate passages (default)</span>
+                  <span class="muted mt-1 block">
+                    Just generate passages, one TTS request per passage.
+                  </span>
+                </span>
+              </label>
+              <label
+                class="flex items-start gap-3 rounded-xl border border-[var(--line)] p-4 text-sm"
+              >
+                <input
+                  type="radio"
+                  name="speech-block-generation-mode"
+                  value="legacy"
+                  checked={generationMode === 'legacy'}
+                  onchange={() => (generationMode = 'legacy')}
+                  class="mt-1"
+                />
+                <span>
+                  <span class="font-semibold">Legacy grouping</span>
+                  <span class="muted mt-1 block">
+                    Previous combined-block grouping with recursive split
+                    repair.
+                  </span>
+                </span>
+              </label>
+            </div>
+          </fieldset>
           {#each controls as control}
             <label class="text-sm font-semibold"
               ><ParameterLabel
@@ -366,65 +467,133 @@
                 required
                 bind:value={values[control.key]}
                 class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2.5 font-normal"
-              /></label
+              />{#if control.key === 'speech_block_max_chars'}<span
+                  class="muted mt-1 block text-xs font-normal"
+                >
+                  Cap applies to individual passages and second-pass combined
+                  groups.
+                </span>{/if}</label
             >
           {/each}
-          <label
-            class="flex items-start gap-3 rounded-xl border border-[var(--line)] p-4 text-sm sm:col-span-2"
-          >
-            <input
-              type="checkbox"
-              bind:checked={earlyRepairEnabled}
-              class="mt-1"
-              aria-describedby="early-repair-description"
-            />
-            <span>
-              <span class="font-semibold"
-                >Reduce speech getting ahead of subtitles</span
-              >
-              <span id="early-repair-description" class="muted mt-1 block">
-                Regenerate combined blocks as smaller parts when later phrases
-                are spoken before their subtitles. Keep short blocks together
-                when they help playback catch up.
-              </span>
-              <span class="muted mt-2 block text-xs">
-                Uses extra speech generation. You can return to the original
-                version.
-              </span>
-            </span>
-          </label>
-          <details
-            class="rounded-xl border border-[var(--line)] p-4 sm:col-span-2"
-          >
-            <summary class="cursor-pointer text-sm font-semibold"
-              >Repair thresholds</summary
+          {#if isPassageMode}
+            <label
+              class="flex items-start gap-3 rounded-xl border border-[var(--line)] p-4 text-sm sm:col-span-2"
             >
-            <p class="muted my-3 text-sm">
-              Both early-finish thresholds must be met. Lower values allow more
-              splits. Blocks needed for catch-up always stay together.
-            </p>
-            <div class="grid gap-4 sm:grid-cols-2">
-              {#each repairControls as control}
-                <label class="text-sm font-semibold">
-                  <ParameterLabel
-                    section="tts"
-                    name={control.key}
-                    label={control.label}
-                    compact
-                  />
-                  <input
-                    type="number"
-                    min={control.min}
-                    max={control.max}
-                    step="1"
-                    required
-                    bind:value={values[control.key]}
-                    class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2.5 font-normal"
-                  />
-                </label>
-              {/each}
-            </div>
-          </details>
+              <input
+                type="checkbox"
+                bind:checked={regroupEnabled}
+                class="mt-1"
+                aria-describedby="regroup-description"
+              />
+              <span>
+                <span class="font-semibold"
+                  >Second pass: combine timing-compatible passages</span
+                >
+                <span id="regroup-description" class="muted mt-1 block">
+                  Regenerates short same-voice groups with the same TTS model.
+                  Additional generation cost; first-pass audio is kept if a
+                  group is unsuitable. Duration-based, not measured internal
+                  alignment.
+                </span>
+                <span class="muted mt-2 block text-xs">
+                  Groups crossing overlap, cut, speaker, or user boundaries are
+                  excluded. Maximum characters still applies. No recursive
+                  grouping.
+                </span>
+              </span>
+            </label>
+            {#if regroupEnabled}
+              <details
+                class="rounded-xl border border-[var(--line)] p-4 sm:col-span-2"
+              >
+                <summary class="cursor-pointer text-sm font-semibold"
+                  >Regroup limits</summary
+                >
+                <p class="muted my-3 text-sm">
+                  Both mismatch limits must pass. Lower values combine fewer
+                  passages. Original takes stay as fallback.
+                </p>
+                <div class="grid gap-4 sm:grid-cols-2">
+                  {#each regroupControls as control}
+                    <label class="text-sm font-semibold">
+                      <ParameterLabel
+                        section="tts"
+                        name={control.key}
+                        label={control.label}
+                        compact
+                      />
+                      <input
+                        type="number"
+                        min={control.min}
+                        max={control.max}
+                        step="1"
+                        required
+                        bind:value={values[control.key]}
+                        class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2.5 font-normal"
+                      />
+                    </label>
+                  {/each}
+                </div>
+              </details>
+            {/if}
+          {:else}
+            <label
+              class="flex items-start gap-3 rounded-xl border border-[var(--line)] p-4 text-sm sm:col-span-2"
+            >
+              <input
+                type="checkbox"
+                bind:checked={earlyRepairEnabled}
+                class="mt-1"
+                aria-describedby="early-repair-description"
+              />
+              <span>
+                <span class="font-semibold"
+                  >Reduce speech getting ahead of subtitles</span
+                >
+                <span id="early-repair-description" class="muted mt-1 block">
+                  Regenerate combined blocks as smaller parts when later phrases
+                  are spoken before their subtitles. Keep short blocks together
+                  when they help playback catch up.
+                </span>
+                <span class="muted mt-2 block text-xs">
+                  Uses extra speech generation. You can return to the original
+                  version.
+                </span>
+              </span>
+            </label>
+            <details
+              class="rounded-xl border border-[var(--line)] p-4 sm:col-span-2"
+            >
+              <summary class="cursor-pointer text-sm font-semibold"
+                >Repair thresholds</summary
+              >
+              <p class="muted my-3 text-sm">
+                Both early-finish thresholds must be met. Lower values allow
+                more splits. Blocks needed for catch-up always stay together.
+              </p>
+              <div class="grid gap-4 sm:grid-cols-2">
+                {#each repairControls as control}
+                  <label class="text-sm font-semibold">
+                    <ParameterLabel
+                      section="tts"
+                      name={control.key}
+                      label={control.label}
+                      compact
+                    />
+                    <input
+                      type="number"
+                      min={control.min}
+                      max={control.max}
+                      step="1"
+                      required
+                      bind:value={values[control.key]}
+                      class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2.5 font-normal"
+                    />
+                  </label>
+                {/each}
+              </div>
+            </details>
+          {/if}
         </fieldset>
         <footer
           class="mt-6 flex flex-wrap items-center justify-end gap-2 border-t border-[var(--line)] pt-4"

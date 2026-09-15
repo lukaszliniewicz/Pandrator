@@ -118,6 +118,8 @@ def test_unnatural_source_seam_is_not_an_escape_from_unsplittable_error():
 
 @pytest.mark.parametrize("gap, count", [(1499, 1), (1500, 1), (1501, 2)])
 def test_whole_passages_still_obey_merge_threshold(gap, count):
+    # Legacy packing behavior: passage-first planning (the default) never
+    # merges whole passages, so this threshold test pins the legacy mode.
     content = passage_srt([
         {"text": "First thought.", "start_ms": 0, "end_ms": 4000},
         {"text": "Next thought.", "start_ms": 4000 + gap, "end_ms": 8000 + gap},
@@ -125,5 +127,6 @@ def test_whole_passages_still_obey_merge_threshold(gap, count):
     blocks = create_speech_blocks(
         content, max_chars=300, merge_threshold=1500,
         max_internal_gap_ms=1800, preserve_source_boundaries=True,
+        generation_mode="legacy",
     )
     assert len(blocks) == count

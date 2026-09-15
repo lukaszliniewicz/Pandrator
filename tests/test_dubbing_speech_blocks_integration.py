@@ -22,7 +22,9 @@ Later
 
 
 class DubbingSpeechBlocksIntegrationTests(unittest.TestCase):
-    def test_default_packs_complete_utterances_up_to_fifteen_hundred_ms(self):
+    def test_legacy_packs_complete_utterances_up_to_fifteen_hundred_ms(self):
+        # Legacy packing behavior: passage-first planning (the default) keeps
+        # adjacent complete utterances as independent blocks.
         content = """1
 00:00:00,000 --> 00:00:01,000
 First sentence.
@@ -41,6 +43,7 @@ Third sentence.
             target_language="en",
             min_chars=10,
             max_chars=100,
+            generation_mode="legacy",
         )
 
         self.assertEqual(
@@ -329,6 +332,7 @@ Second sentence.
             min_chars=10,
             max_chars=100,
             merge_threshold=200,
+            generation_mode="legacy",
         )
         separate = speech_blocks.create_speech_blocks(
             content,
@@ -363,6 +367,7 @@ America.
             max_chars=100,
             merge_threshold=250,
             speaker_by_subtitle={1: "Speaker 1", 2: "Speaker 1"},
+            generation_mode="legacy",
         )
 
         self.assertEqual(["Great. America."], [block["text"] for block in blocks])

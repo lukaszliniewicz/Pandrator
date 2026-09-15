@@ -431,6 +431,52 @@ def _repair_diarization_flicker(
     return repaired
 
 
+def _pack_complete_utterances(
+    sized_parts: list[_SpeechPart],
+    *,
+    max_chars: int,
+    merge_threshold: int,
+    maximum_internal_gap: int,
+) -> list[_SpeechPart]:
+    """Legacy packing: combine nearby complete utterances while they fit.
+
+    Retained only for ``generation_mode="legacy"``. Passage-first planning
+    never calls this: adjacent timed passages stay independent.
+    """
+
+    merged_parts: list[_SpeechPart] = []
+    for part in sized_parts:
+        if merged_parts and _should_merge_parts(
+            merged_parts[-1],
+            part,
+            max_chars=max_chars,
+            merge_threshold=merge_threshold,
+            max_internal_gap_ms=maximum_internal_gap,
+        ):
+            previous = merged_parts[-1]
+            gap_ms = part.start_ms - previous.end_ms
+            combined = _combine_parts(previous, part)
+            combined.formation_events.append(
+                _event(
+                    "pack_complete_utterances",
+                    "nearby_complete_utterances_packed",
+                    "Nearby complete utterances packed into one speech block.",
+                    measurements={
+                        "gap_ms": gap_ms,
+                        "merge_threshold_ms": merge_threshold,
+                        "display_length": len(combined.text),
+                        "speech_length": len(combined.optimized_text),
+                        "max_chars": max_chars,
+                    },
+                    source_references=sorted({*previous.subtitles, *part.subtitles}),
+                )
+            )
+            merged_parts[-1] = combined
+        else:
+            merged_parts.append(part)
+    return merged_parts
+
+
 def _join_variant(
     previous_text: str,
     previous_spans: list[tuple[int, int, int]],
@@ -1079,10 +1125,17 @@ def create_speech_blocks(
     speaker_by_subtitle: Mapping[int, str] | None = None,
     speech_srt_content: str | None = None,
     preserve_source_boundaries: bool = False,
+    generation_mode: str = "passage",
 ) -> list[dict[str, object]]:
     """Create natural, speaker-safe Pandrator/Subdub speech blocks.
 
-    ``merge_threshold`` controls optional packing of complete utterances.
+    ``merge_threshold`` controls optional packing of complete utterances, but
+    only in ``generation_mode="legacy"``. In the default ``"passage"`` mode
+    every timed passage stays an independent block: the character cap is a
+    maximum, never an encouragement to combine adjacent passages. Overlong
+    passages still split at natural boundaries (capacity splits inside one
+    source window share that window's timing envelope and are flagged, never
+    fabricated as independently anchored passages).
     ``continuation_threshold_ms`` may be larger so an unfinished sentence is
     not stranded merely because a subtitle cue boundary contains a pause.
     ``max_internal_gap_ms`` guards ordinary pauses. A bounded, same-speaker
@@ -1103,6 +1156,9 @@ def create_speech_blocks(
     max_chars = max(1, int(max_chars))
     min_chars = max(1, min(int(min_chars), max_chars))
     merge_threshold = max(0, int(merge_threshold))
+    from .passage_regroup import normalize_generation_mode
+
+    generation_mode = normalize_generation_mode(generation_mode)
     continuation_threshold = max(
         0,
         int(
@@ -1320,37 +1376,19 @@ def create_speech_blocks(
     ]
 
     # Finally pack nearby complete utterances when the ordinary timing rule
-    # and the TTS size cap permit it.
-    merged_parts: list[_SpeechPart] = []
-    for part in sized_parts:
-        if merged_parts and _should_merge_parts(
-            merged_parts[-1],
-            part,
+    # and the TTS size cap permit it. Passage-first planning (the default)
+    # deliberately skips this packing: adjacent timed passages stay
+    # independent blocks and the character cap remains a maximum. Legacy mode
+    # retains the historical packing behavior.
+    if generation_mode == "passage":
+        merged_parts = sized_parts
+    else:
+        merged_parts = _pack_complete_utterances(
+            sized_parts,
             max_chars=max_chars,
             merge_threshold=merge_threshold,
-            max_internal_gap_ms=maximum_internal_gap,
-        ):
-            previous = merged_parts[-1]
-            gap_ms = part.start_ms - previous.end_ms
-            combined = _combine_parts(previous, part)
-            combined.formation_events.append(
-                _event(
-                    "pack_complete_utterances",
-                    "nearby_complete_utterances_packed",
-                    "Nearby complete utterances packed into one speech block.",
-                    measurements={
-                        "gap_ms": gap_ms,
-                        "merge_threshold_ms": merge_threshold,
-                        "display_length": len(combined.text),
-                        "speech_length": len(combined.optimized_text),
-                        "max_chars": max_chars,
-                    },
-                    source_references=sorted({*previous.subtitles, *part.subtitles}),
-                )
-            )
-            merged_parts[-1] = combined
-        else:
-            merged_parts.append(part)
+            maximum_internal_gap=maximum_internal_gap,
+        )
 
     return [
         block.to_dict()
@@ -1391,6 +1429,7 @@ def generate_speech_blocks_file(
     max_internal_gap_ms: int | None = None,
     speaker_by_subtitle: Mapping[int, str] | None = None,
     speech_srt_content: str | None = None,
+    generation_mode: str = "passage",
 ) -> str:
     """Generate a speech-block JSON file next to a dubbing run/session."""
     session_path = Path(session_dir)
@@ -1408,6 +1447,7 @@ def generate_speech_blocks_file(
         max_internal_gap_ms=max_internal_gap_ms,
         speaker_by_subtitle=speaker_by_subtitle,
         speech_srt_content=speech_srt_content,
+        generation_mode=generation_mode,
     )
 
     output_path = session_path / f"{srt_path.stem}_speech_blocks.json"

@@ -268,6 +268,34 @@ def migrate_dubbing_payload(
     migrated.setdefault("speech_block_max_chars", 220)
     migrated.setdefault("speech_block_continuation_threshold_ms", 3000)
     migrated.setdefault("speech_block_max_internal_gap_ms", 4000)
+    # Coordinated passage-first contract: planning mode plus the optional
+    # second-pass regroup. Defaults keep legacy payloads on passage planning
+    # with regroup off; stored invalid values are normalized, never widened.
+    from .passage_regroup import REGROUP_SPEC, normalize_generation_mode
+
+    for regroup_key, spec in REGROUP_SPEC.items():
+        if regroup_key == "speech_block_generation_mode":
+            try:
+                migrated["speech_block_generation_mode"] = normalize_generation_mode(
+                    migrated.get(regroup_key, spec["default"])
+                )
+            except ValueError:
+                migrated["speech_block_generation_mode"] = spec["default"]
+        elif regroup_key == "speech_block_regroup_enabled":
+            candidate = migrated.get(regroup_key, spec["default"])
+            migrated[regroup_key] = (
+                candidate if isinstance(candidate, bool) else spec["default"]
+            )
+        else:
+            candidate = migrated.get(regroup_key, spec["default"])
+            if (
+                isinstance(candidate, bool)
+                or not isinstance(candidate, int)
+                or not spec["minimum"] <= candidate <= spec["maximum"]
+            ):
+                migrated[regroup_key] = spec["default"]
+            else:
+                migrated[regroup_key] = candidate
     migrated.setdefault("timing_context_enabled", True)
     migrated.setdefault("timing_context_gap_ms", 2000)
 
@@ -371,6 +399,13 @@ def normalize_dubbing_state(
         "speech_block_merge_threshold",
         "speech_block_continuation_threshold_ms",
         "speech_block_max_internal_gap_ms",
+        "speech_block_generation_mode",
+        "speech_block_regroup_enabled",
+        "speech_block_regroup_max_mismatch_ms",
+        "speech_block_regroup_max_mismatch_percent",
+        "speech_block_regroup_max_gap_ms",
+        "speech_block_regroup_max_passages",
+        "speech_block_regroup_max_boundary_shift_ms",
         "timing_context_enabled",
         "timing_context_gap_ms",
         "correction_model",

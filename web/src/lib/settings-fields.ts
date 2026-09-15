@@ -131,6 +131,10 @@ const CHOICES: Record<string, SettingOption[]> = {
     option('guarded', 'Guarded speech plan (recommended)'),
     option('flexible', 'Flexible contextual rewrite')
   ],
+  speech_block_generation_mode: [
+    option('passage', 'Separate passages (default)'),
+    option('legacy', 'Legacy grouping')
+  ],
   web_research_provider: [option('jina', 'Jina Reader')],
   web_research_mode: [
     option('global', 'Research the whole stage once'),
@@ -850,6 +854,11 @@ export function numberPresentation(key: string): NumberPresentation {
     mix_voice_lufs: { min: -30, max: -8, step: 0.5 },
     mix_attack_ms: { min: 1, max: 2000, step: 1 },
     mix_release_ms: { min: 10, max: 5000, step: 10 },
+    speech_block_regroup_max_mismatch_ms: { min: 0, max: 2000, step: 10 },
+    speech_block_regroup_max_mismatch_percent: { min: 0, max: 50, step: 1 },
+    speech_block_regroup_max_gap_ms: { min: 0, max: 2000, step: 10 },
+    speech_block_regroup_max_passages: { min: 2, max: 8, step: 1 },
+    speech_block_regroup_max_boundary_shift_ms: { min: 0, max: 2000, step: 10 },
     temperature: { min: 0, max: 2, step: 0.05 },
     fishs2_temperature: { min: 0, max: 2, step: 0.05 },
     chatterbox_temperature: { min: 0, max: 2, step: 0.05 },
@@ -944,6 +953,13 @@ export function settingLabel(key: string): string {
     speech_block_early_repair_min_advance_ms: 'Minimum timing improvement (ms)',
     speech_block_early_repair_min_child_span_ms:
       'Minimum cue span per new block (ms)',
+    speech_block_generation_mode: 'Generation mode',
+    speech_block_regroup_enabled: 'Second-pass regrouping',
+    speech_block_regroup_max_mismatch_ms: 'Maximum duration mismatch (ms)',
+    speech_block_regroup_max_mismatch_percent: 'Maximum duration mismatch (%)',
+    speech_block_regroup_max_gap_ms: 'Maximum source pause (ms)',
+    speech_block_regroup_max_passages: 'Maximum passages per group',
+    speech_block_regroup_max_boundary_shift_ms: 'Maximum boundary shift (ms)',
     synchronization_delay_ms: 'Maximum voiceover start delay',
     synchronization_speed: 'Maximum synchronization speed-up',
     synchronization_slowdown_enabled:
@@ -987,7 +1003,7 @@ export function settingLabel(key: string): string {
     speech_block_continuation_threshold_ms:
       'Unfinished-sentence pause tolerance (ms)',
     speech_block_min_chars: 'Preferred minimum split size',
-    speech_block_max_chars: 'Maximum TTS chunk size',
+    speech_block_max_chars: 'Maximum characters per request',
     speech_block_merge_threshold: 'Speech-block merge gap (ms)',
     speech_block_max_internal_gap_ms:
       'Maximum silence inside one TTS chunk (ms)'

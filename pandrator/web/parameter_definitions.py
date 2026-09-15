@@ -319,6 +319,13 @@ _DESCRIPTIONS: dict[str, dict[str, str]] = {
         "speech_block_early_repair_min_shortfall_percent": "Minimum percentage of the source cue span left unused by speech and start delay. Both early-finish thresholds must be met.",
         "speech_block_early_repair_min_advance_ms": "Minimum estimated improvement at a later cue boundary. The estimate uses spoken-text proportions rather than word timestamps.",
         "speech_block_early_repair_min_child_span_ms": "Minimum span of source cues on each side of a proposed split. This limits tiny fragments; it does not require the generated audio to fill that span.",
+        "speech_block_generation_mode": "Selects passage-first planning (default), where each timed passage is generated independently and the character cap is only a maximum, or legacy cue packing, which may combine adjacent complete utterances. The old early split repair runs in legacy mode only.",
+        "speech_block_regroup_enabled": "Optional second pass (off by default) that regenerates selected adjacent same-voice passages as one candidate group with the same TTS provider and model. Original takes remain the fallback; there is no guaranteed internal synchronization inside a regenerated group.",
+        "speech_block_regroup_max_mismatch_ms": "Maximum absolute take-to-span difference accepted for regroup candidates and regenerated groups, combined with the percentage limit as the smaller of the two. Applies symmetrically to short and long audio.",
+        "speech_block_regroup_max_mismatch_percent": "Maximum take-to-span difference as a percentage of the source span. Both the millisecond and percentage limits must be satisfied.",
+        "speech_block_regroup_max_gap_ms": "Maximum source gap between adjacent passages in one regroup candidate group. Overlapping source windows are never eligible.",
+        "speech_block_regroup_max_passages": "Maximum passages in one regroup candidate group. Groups are disjoint and selected only from first-pass measurements; regenerated groups are never regrouped again. Selection never exceeds 8 passages per group.",
+        "speech_block_regroup_max_boundary_shift_ms": "Maximum cumulative internal boundary displacement estimated from first-pass durations. Every internal boundary is checked, so an early violation cannot be hidden by later drift cancellation.",
     },
     "audio": {
         "audio_verification_mode": "Selects whether generated speech takes receive the optional raw-signal screen; off disables checks and signal records RMS, clipping, DC offset, tails, and duration anomalies.",
@@ -816,6 +823,19 @@ _METADATA: dict[str, dict[str, dict[str, object]]] = {
             "applicability": "Subtitle-timed voiceover generation only.",
             "caveat": "Optional and off by default. Repair generates additional speech takes.",
         },
+        "speech_block_generation_mode": {
+            "choices": ["passage", "legacy"],
+            "applicability": "Local Pandrator speech-block segmentation only.",
+        },
+        "speech_block_regroup_enabled": {
+            "applicability": "Subtitle-timed voiceover generation only.",
+            "caveat": "Optional and off by default. Regeneration uses the same TTS provider and model; original takes remain the fallback.",
+        },
+        "speech_block_regroup_max_mismatch_ms": {"minimum": 0, "maximum": 2000, "unit": "milliseconds", "applicability": "Optional voiceover regroup only."},
+        "speech_block_regroup_max_mismatch_percent": {"minimum": 0, "maximum": 50, "unit": "percent", "applicability": "Optional voiceover regroup only. Zero requires an exact fit."},
+        "speech_block_regroup_max_gap_ms": {"minimum": 0, "maximum": 2000, "unit": "milliseconds", "applicability": "Optional voiceover regroup only."},
+        "speech_block_regroup_max_passages": {"minimum": 2, "maximum": 8, "unit": "passages", "applicability": "Optional voiceover regroup only.", "caveat": "Selection never exceeds 8 passages per group."},
+        "speech_block_regroup_max_boundary_shift_ms": {"minimum": 0, "maximum": 2000, "unit": "milliseconds", "applicability": "Optional voiceover regroup only."},
     },
     "audio": {
         "audio_verification_mode": {"choices": ["off", "signal"]},

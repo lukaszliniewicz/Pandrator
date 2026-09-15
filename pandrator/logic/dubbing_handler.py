@@ -210,6 +210,7 @@ def generate_speech_blocks_with_result(
     min_chars: int = 10,
     max_chars: int = 220,
     merge_threshold: int = 1500,
+    generation_mode: str = "passage",
 ) -> str:
     """Generates speech blocks from an SRT file and returns the JSON path."""
     try:
@@ -220,6 +221,7 @@ def generate_speech_blocks_with_result(
             min_chars=min_chars,
             max_chars=max_chars,
             merge_threshold=merge_threshold,
+            generation_mode=generation_mode,
         )
         logging.info("Speech block generation completed: %s", output_path)
         return output_path

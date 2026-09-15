@@ -460,6 +460,40 @@ def _speech_block_settings(settings: dict[str, Any]) -> tuple[int, int, int, int
     )
 
 
+def _speech_block_generation_mode(settings: dict[str, Any]) -> str:
+    """Planning mode for dubbing speech blocks (passage-first by default)."""
+
+    from pandrator.logic.dubbing.passage_regroup import normalize_generation_mode
+
+    try:
+        return normalize_generation_mode(settings.get("speech_block_generation_mode"))
+    except ValueError:
+        return "passage"
+
+
+def _voiceover_second_pass(
+    settings_snapshot: dict[str, Any],
+    *,
+    operation: str,
+    has_selected_ids: bool,
+    workflow_kind: str,
+) -> str | None:
+    """Select the optional post-generation pass: repair, regroup, or neither.
+
+    Thin wrapper over the logic-layer helper so the runner, status
+    reporting, and tests share one wiring point.
+    """
+
+    from pandrator.logic.dubbing.passage_regroup import select_second_pass
+
+    return select_second_pass(
+        settings_snapshot,
+        operation=operation,
+        has_selected_ids=has_selected_ids,
+        workflow_kind=workflow_kind,
+    )
+
+
 def _generation_segmentation_settings(settings: dict[str, Any]) -> dict[str, Any]:
     """Subset of generation settings that can change stored plan segments.
 
@@ -2088,6 +2122,7 @@ class WorkflowHandlers:
             merge_threshold=merge_threshold,
             continuation_threshold_ms=continuation_threshold,
             max_internal_gap_ms=max_internal_gap,
+            generation_mode=_speech_block_generation_mode(settings),
             speech_srt_content=(
                 source_path.read_text(encoding="utf-8-sig")
                 if speech_segments is not None
@@ -8145,6 +8180,7 @@ class WorkflowHandlers:
                 merge_threshold=merge_threshold,
                 continuation_threshold_ms=continuation_threshold,
                 max_internal_gap_ms=max_internal_gap,
+                generation_mode=_speech_block_generation_mode(settings),
                 **speaker_options,
             )
         )
@@ -8422,18 +8458,27 @@ class WorkflowHandlers:
         if audio_identity_changed:
             raise ValueError("A voice reference changed after generation was queued. Start a new run to use the current voice consistently.")
         completion_progress = progress
-        repair_requested = bool(
-            operation in {"generate", "resume"}
-            and not selected_ids
-            and not settings_snapshot.get("early_repair_parent_run_id")
-            and (settings_snapshot.get("tts") or {}).get("speech_block_early_repair_enabled") is True
-            and self._session_record(session_id).workflow_kind == "voiceover"
+        second_pass = _voiceover_second_pass(
+            settings_snapshot,
+            operation=operation,
+            has_selected_ids=bool(selected_ids),
+            workflow_kind=self._session_record(session_id).workflow_kind,
         )
+        # Passage-first planning never runs the old early split repair: a
+        # split pass followed by a regroup pass could undo each other in a
+        # loop. The optional regroup second pass runs in passage mode only.
+        repair_requested = second_pass == "repair"
+        regroup_requested = second_pass == "regroup"
         if repair_requested:
             def generation_progress(value, detail=None):
                 completion_progress(0.85 * value, detail)
 
             progress = generation_progress
+        elif regroup_requested:
+            def regroup_generation_progress(value, detail=None):
+                completion_progress(0.85 * value, detail)
+
+            progress = regroup_generation_progress
         statement = (
             select(GenerationSegment)
             .where(
@@ -9250,6 +9295,26 @@ class WorkflowHandlers:
                 result["generation_run_id"] = result["repaired_generation_run_id"]
         if repair_requested:
             completion_progress(1.0, f"Voiceover timing checked; {result.get('repaired_blocks', 0)} block(s) repaired")
+        if final_status == "completed" and regroup_requested:
+            from .voiceover_regroup import repair_regroup_blocks
+
+            try:
+                result.update(repair_regroup_blocks(
+                    self, run_id,
+                    lambda value, detail=None: completion_progress(0.85 + 0.14 * value, detail),
+                    cancel_event,
+                ))
+            except Exception:
+                logger.warning("Optional voiceover regroup could not finish; the generated audio remains available.", exc_info=True)
+                result["regroup_status"] = "failed"
+            finally:
+                with self.database.session() as session:
+                    session.get(GenerationRun, run_id).status = final_status
+            if result.get("regrouped_groups"):
+                result["source_generation_run_id"] = run_id
+                result["generation_run_id"] = result["regrouped_generation_run_id"]
+        if regroup_requested:
+            completion_progress(1.0, f"Voiceover regroup checked; {result.get('regrouped_groups', 0)} group(s) regenerated")
         return result
 
     def assemble_generation_output(self, payload, progress, cancel_event):

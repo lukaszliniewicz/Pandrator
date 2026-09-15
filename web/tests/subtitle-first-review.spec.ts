@@ -161,6 +161,10 @@ test('early voiceover repair is optional and persists in block settings', async 
     .getByRole('button', { name: 'Block settings', exact: true })
     .click();
   const dialog = page.getByRole('dialog', { name: 'Speech-block settings' });
+  await expect(
+    dialog.getByRole('radio', { name: /Separate passages/ })
+  ).toBeChecked();
+  await dialog.getByRole('radio', { name: /Legacy grouping/ }).check();
   const repair = dialog.getByRole('checkbox', {
     name: /Reduce speech getting ahead of subtitles/
   });
@@ -185,6 +189,7 @@ test('early voiceover repair is optional and persists in block settings', async 
   const settings = await (
     await page.request.get(`${endpoint}/settings/tts`)
   ).json();
+  expect(settings.effective.speech_block_generation_mode).toBe('legacy');
   expect(settings.effective.speech_block_early_repair_enabled).toBe(true);
   expect(settings.effective.speech_block_early_repair_min_shortfall_ms).toBe(
     750
@@ -200,6 +205,9 @@ test('early voiceover repair is optional and persists in block settings', async 
   await page
     .getByRole('button', { name: 'Block settings', exact: true })
     .click();
+  await expect(
+    dialog.getByRole('radio', { name: /Legacy grouping/ })
+  ).toBeChecked();
   await expect(repair).toBeChecked();
   await dialog.getByText('Repair thresholds', { exact: true }).click();
   await expect(earlyTime).toHaveValue('750');
@@ -280,13 +288,14 @@ test('closing unsaved block settings offers save, discard, and continued editing
     name: /Reduce speech getting ahead/
   });
   await open.click();
-  await expect(repair).toBeEnabled();
   await edit
     .getByRole('button', { name: 'Close speech-block settings' })
     .click();
   await expect(edit).toBeHidden();
   await expect(prompt).toBeHidden();
   await open.click();
+  await edit.getByRole('radio', { name: /Legacy grouping/ }).check();
+  await expect(repair).toBeEnabled();
   await repair.check();
   await repair.press('Escape');
   await expect(prompt).toBeVisible();
@@ -310,6 +319,7 @@ test('closing unsaved block settings offers save, discard, and continued editing
   ).json();
   expect(settings.effective.speech_block_early_repair_enabled).toBe(false);
   await open.click();
+  await edit.getByRole('radio', { name: /Legacy grouping/ }).check();
   await repair.check();
   await edit.getByRole('button', { name: 'Cancel', exact: true }).click();
   await page.setViewportSize({ width: 390, height: 844 });
@@ -445,9 +455,25 @@ test('repair-only changes save without prompting to rebuild an existing plan', a
   page
 }) => {
   const { session, endpoint, headers } = await setup(page);
-  await prepareInitialPlan(page, endpoint, headers);
   await page.goto(`/sessions/${session.id}`);
   const card = page.getByRole('region', { name: 'Speech plan', exact: true });
+  const dialog = page.getByRole('dialog', {
+    name: 'Speech-block settings',
+    exact: true
+  });
+  // Establish legacy grouping before the plan exists so the later repair
+  // edit is repair-only (no topology change) and must not prompt.
+  await card
+    .getByRole('button', { name: 'Block settings', exact: true })
+    .click();
+  await dialog.getByRole('radio', { name: /Legacy grouping/ }).check();
+  await dialog.getByRole('button', { name: 'Save block settings' }).click();
+  await expect(dialog).toBeHidden();
+  await expect(
+    page.getByRole('dialog', { name: 'Prepare a new speech plan?' })
+  ).toBeHidden();
+  await prepareInitialPlan(page, endpoint, headers);
+  await page.goto(`/sessions/${session.id}`);
   await expect(
     card.getByRole('button', { name: 'Review plan', exact: true })
   ).toBeEnabled();
@@ -455,10 +481,9 @@ test('repair-only changes save without prompting to rebuild an existing plan', a
   await card
     .getByRole('button', { name: 'Block settings', exact: true })
     .click();
-  const dialog = page.getByRole('dialog', {
-    name: 'Speech-block settings',
-    exact: true
-  });
+  await expect(
+    dialog.getByRole('radio', { name: /Legacy grouping/ })
+  ).toBeChecked();
   await dialog
     .getByRole('checkbox', { name: /Reduce speech getting ahead/ })
     .check();
@@ -474,8 +499,82 @@ test('repair-only changes save without prompting to rebuild an existing plan', a
   const settings = await (
     await page.request.get(`${endpoint}/settings/tts`)
   ).json();
+  expect(settings.effective.speech_block_generation_mode).toBe('legacy');
   expect(settings.effective.speech_block_early_repair_enabled).toBe(true);
   expect(settings.effective.speech_block_early_repair_min_advance_ms).toBe(900);
+  const updated = await speechState(page, endpoint);
+  expect(updated.total).toBe(1);
+  expect(updated.selected_revision_id).toBe(original.selected_revision_id);
+});
+
+test('generation mode change prompts for a new plan while regroup toggle does not', async ({
+  page
+}, testInfo) => {
+  const { session, endpoint, headers } = await setup(page);
+  await prepareInitialPlan(page, endpoint, headers);
+  await page.goto(`/sessions/${session.id}`);
+  const card = page.getByRole('region', { name: 'Speech plan', exact: true });
+  const dialog = page.getByRole('dialog', {
+    name: 'Speech-block settings',
+    exact: true
+  });
+  const prompt = page.getByRole('dialog', {
+    name: 'Prepare a new speech plan?'
+  });
+  const original = await speechState(page, endpoint);
+  // Default is separate passages; second pass is off.
+  await card
+    .getByRole('button', { name: 'Block settings', exact: true })
+    .click();
+  await expect(
+    dialog.getByRole('radio', { name: /Separate passages/ })
+  ).toBeChecked();
+  await expect(
+    dialog.getByRole('checkbox', {
+      name: /Second pass: combine timing-compatible passages/
+    })
+  ).not.toBeChecked();
+  await page.screenshot({
+    path: testInfo.outputPath('passage-default.png')
+  });
+  // Regroup-only change must not force preparation.
+  await dialog
+    .getByRole('checkbox', {
+      name: /Second pass: combine timing-compatible passages/
+    })
+    .check();
+  await dialog.getByText('Regroup limits', { exact: true }).click();
+  await dialog
+    .getByRole('spinbutton', { name: /^Maximum passages per group/ })
+    .fill('2');
+  await page.screenshot({
+    path: testInfo.outputPath('passage-regroup-expanded.png')
+  });
+  await dialog.getByRole('button', { name: 'Save block settings' }).click();
+  await expect(dialog).toBeHidden();
+  await expect(prompt).toBeHidden();
+  let settings = await (
+    await page.request.get(`${endpoint}/settings/tts`)
+  ).json();
+  expect(settings.effective.speech_block_generation_mode).toBe('passage');
+  expect(settings.effective.speech_block_regroup_enabled).toBe(true);
+  expect(settings.effective.speech_block_regroup_max_passages).toBe(2);
+  expect((await speechState(page, endpoint)).selected_revision_id).toBe(
+    original.selected_revision_id
+  );
+  // Switching first-pass topology must offer preparation without rebuilding.
+  await card
+    .getByRole('button', { name: 'Block settings', exact: true })
+    .click();
+  await dialog.getByRole('radio', { name: /Legacy grouping/ }).check();
+  await page.screenshot({
+    path: testInfo.outputPath('legacy-grouping.png')
+  });
+  await dialog.getByRole('button', { name: 'Save block settings' }).click();
+  await expect(prompt).toBeVisible();
+  await prompt.getByRole('button', { name: 'Keep current plan' }).click();
+  settings = await (await page.request.get(`${endpoint}/settings/tts`)).json();
+  expect(settings.effective.speech_block_generation_mode).toBe('legacy');
   const updated = await speechState(page, endpoint);
   expect(updated.total).toBe(1);
   expect(updated.selected_revision_id).toBe(original.selected_revision_id);
