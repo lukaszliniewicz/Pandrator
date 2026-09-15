@@ -13,7 +13,10 @@ from sqlalchemy import func, select, text as sql_text
 from sqlalchemy.orm import Session
 
 from pandrator.logic.tts_provider_policy import DEFAULT_TTS_SERVICE_ID
-from pandrator.logic.tts_provider_switch import prepare_tts_provider_switch
+from pandrator.logic.tts_provider_switch import (
+    normalize_tts_voice_aliases,
+    prepare_tts_provider_switch,
+)
 
 from .artifact_selection import select_source_path
 from .database import Database
@@ -429,7 +432,7 @@ RUNTIME_SETTING_ALIASES: dict[str, dict[str, str]] = {
 
 
 def adapt_runtime_settings(section: str, values: dict[str, Any]) -> dict[str, Any]:
-    """Add legacy runtime aliases without overwriting explicit expert values."""
+    """Adapt runtime aliases; a selected UI voice overrides a stale speaker."""
     result = deepcopy(values or {})
     for web_key, runtime_key in RUNTIME_SETTING_ALIASES.get(section, {}).items():
         if runtime_key not in result and web_key in result:
@@ -439,6 +442,11 @@ def adapt_runtime_settings(section: str, values: dict[str, Any]) -> dict[str, An
         if mode and "timing_context_enabled" not in result:
             result["timing_context_enabled"] = mode != "none"
     if section == "tts":
+        # The run label and UI use voice; legacy adapters consume speaker.
+        # Repair old conflicting snapshots without mutating them. An empty
+        # built-in voice must not erase a speaker-only legacy configuration.
+        if str(result.get("voice") or "").strip():
+            result["speaker"] = deepcopy(result["voice"])
         # Web settings persist stable service IDs (for example ``kokoro``), while
         # the legacy synthesis boundary still dispatches on canonical labels.
         # Adapt both current and already-frozen run snapshots at that boundary.
@@ -913,9 +921,9 @@ class WorkspaceSettingsService:
                 session_context["language"] = speech_language
         effective = _merge(
             BUILTIN_DEFAULTS[section],
-            global_value,
+            normalize_tts_voice_aliases(global_value) if section == "tts" else global_value,
             session_context,
-            override_value,
+            normalize_tts_voice_aliases(override_value) if section == "tts" else override_value,
         )
         if section == "output" and session_record.workflow_kind == "subtitles":
             if str(effective.get("export_mode") or "").lower() not in {
@@ -1010,7 +1018,9 @@ class WorkspaceSettingsService:
         if section == "tts":
             validate_voiceover_repair_settings(value)
             previous = self.get_in_session(session, session_id, section)["effective"]
-            value = prepare_tts_provider_switch(previous, value)
+            value = normalize_tts_voice_aliases(
+                prepare_tts_provider_switch(previous, value)
+            )
         if section == "source_passages":
             from pandrator.logic.dubbing.source_passage_settings import (
                 SOURCE_PASSAGE_DEFAULTS,

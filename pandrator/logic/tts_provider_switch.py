@@ -27,6 +27,21 @@ def _service(values: dict[str, Any]) -> str:
     return _ALIASES.get(key, key)
 
 
+def normalize_tts_voice_aliases(values: dict[str, Any]) -> dict[str, Any]:
+    """Keep one settings layer's UI voice and legacy speaker in agreement.
+
+    An explicit UI choice (including an empty value to clear it) is canonical.
+    Speaker-only legacy clients remain supported. Apply before layering so a
+    session speaker override cannot be hidden by a global voice default.
+    """
+    result = deepcopy(values)
+    if "voice" in result:
+        result["speaker"] = deepcopy(result["voice"])
+    elif "speaker" in result:
+        result["voice"] = deepcopy(result["speaker"])
+    return result
+
+
 def prepare_tts_provider_switch(
     previous: dict[str, Any], value: dict[str, Any]
 ) -> dict[str, Any]:

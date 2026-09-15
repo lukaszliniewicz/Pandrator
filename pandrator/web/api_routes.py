@@ -31,7 +31,10 @@ from sqlalchemy import func, select
 from werkzeug.utils import secure_filename
 
 from pandrator.logic.tts_provider_profiles import AUDIO_CPP_VOICE_DESIGN_MODELS
-from pandrator.logic.tts_provider_switch import prepare_tts_provider_switch
+from pandrator.logic.tts_provider_switch import (
+    normalize_tts_voice_aliases,
+    prepare_tts_provider_switch,
+)
 from pandrator.runtime import DataPaths
 from pandrator.version import PANDRATOR_VERSION
 
@@ -1657,7 +1660,9 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                         **BUILTIN_DEFAULTS["tts"],
                         **(record.value_json if record is not None else {}),
                     }
-                    prepared_value = prepare_tts_provider_switch(previous, prepared_value)
+                    prepared_value = normalize_tts_voice_aliases(
+                        prepare_tts_provider_switch(previous, prepared_value)
+                    )
                 if setting_key == "defaults.source_passages":
                     from pandrator.logic.dubbing.source_passage_settings import (
                         SOURCE_PASSAGE_DEFAULTS,
