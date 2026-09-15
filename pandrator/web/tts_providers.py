@@ -1914,7 +1914,7 @@ class TtsCatalogueService:
                 or str(service.get("default_voice") or "")
             )
         service_name = (
-            "OpenAI Compatible"
+            tts_handler.OPENAI_COMPAT_SERVICE
             if service.get("is_custom")
             else str(service.get("name") or service_id)
         )

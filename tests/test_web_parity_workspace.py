@@ -715,6 +715,70 @@ class WebParityWorkspaceTests(unittest.TestCase):
         self.assertEqual(21, settings["audio_cpp_seed"])
         self.assertEqual("audio_cpp", settings["preview_adapter"])
 
+    def test_custom_openai_compatible_previews_use_canonical_runtime_service(self):
+        database = self.app.extensions["pandrator"]["database"]
+        with database.session() as session:
+            session.add(
+                AppSetting(
+                    key="services.tts",
+                    value_json={
+                        "provider_configs": [
+                            {
+                                "id": "azure-speech-mai-test",
+                                "name": "MAI preview test",
+                                "provider": "azure",
+                                "adapter": "azure_speech",
+                                "api_base": "https://example.invalid",
+                                "default_model": "MAI-Voice-2",
+                                "default_voice": "en-US-AvaMultilingualNeural",
+                                "models": ["MAI-Voice-2"],
+                                "voices": ["en-US-AvaMultilingualNeural"],
+                            },
+                            {
+                                "id": "openai-gpt-tts-test",
+                                "name": "GPT TTS preview test",
+                                "provider": "openai",
+                                "api_base": "https://api.openai.com/v1",
+                                "default_model": "gpt-4o-mini-tts",
+                                "default_voice": "onyx",
+                                "models": ["gpt-4o-mini-tts"],
+                                "voices": ["onyx"],
+                            },
+                        ]
+                    },
+                )
+            )
+
+        cases = (
+            (
+                "azure-speech-mai-test",
+                "MAI-Voice-2",
+                "en-US-AvaMultilingualNeural",
+                "azure_speech",
+            ),
+            ("openai-gpt-tts-test", "gpt-4o-mini-tts", "onyx", "openai_compatible"),
+        )
+        for service_id, model, voice, adapter in cases:
+            with self.subTest(service_id=service_id):
+                response = self.client.post(
+                    f"/api/v1/services/tts/{service_id}/preview",
+                    json={
+                        "text": "A short custom preview.",
+                        "model": model,
+                        "voice": voice,
+                        "language": "en",
+                    },
+                    headers=self.headers,
+                )
+                self.assertEqual(202, response.status_code, response.get_json())
+                settings = response.get_json()["payload_json"]["settings"]
+                self.assertEqual("Custom", settings["service"])
+                self.assertEqual(service_id.replace("-", "_"), settings["preview_service_id"])
+                self.assertEqual(service_id.replace("-", "_"), settings["openai_audio_endpoint"])
+                self.assertEqual(adapter, settings["preview_adapter"])
+                self.assertEqual(model, settings["model"])
+                self.assertEqual(voice, settings["voice"])
+
     def test_qwen_preview_preserves_the_selected_voice_cloning_model(self):
         response = self.client.post(
             "/api/v1/services/tts/kobold_qwen/preview",
