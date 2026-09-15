@@ -1638,8 +1638,8 @@ class WorkflowService:
 
         section_map: dict[str, tuple[str, ...]] = {
             "transcribe": ("stt", "subtitles"),
-            "correct": ("correction", "subtitles"),
-            "translate": ("translation", "subtitles"),
+            "correct": ("correction", "subtitles", "source_passages"),
+            "translate": ("translation", "subtitles", "source_passages"),
             "optimize_document": ("text",),
             "optimize_tts": ("text",),
             "clean_source": ("source_cleaning", "text"),

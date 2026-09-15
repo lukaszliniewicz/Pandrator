@@ -579,6 +579,7 @@ export type WorkflowStage = {
 };
 
 export type WorkflowSnapshot = {
+  subtitle_source?: { subtitle_artifact_id?: string | null } | null;
   session_id: string;
   workflow_kind: string;
   workflow_preset: string;

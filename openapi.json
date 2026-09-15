@@ -5818,6 +5818,59 @@
         "title": "SourceCleaningDispatchRunCreateRequest",
         "type": "object"
       },
+      "SourcePassagePreviewRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "source_passages": {
+            "additionalProperties": true,
+            "title": "Source Passages",
+            "type": "object"
+          }
+        },
+        "title": "SourcePassagePreviewRequest",
+        "type": "object"
+      },
+      "SourcePassageRebuildRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_settings_hash": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Expected Settings Hash",
+            "type": "string"
+          },
+          "expected_settings_revision": {
+            "minimum": 0,
+            "title": "Expected Settings Revision",
+            "type": "integer"
+          },
+          "expected_source_content_hash": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Expected Source Content Hash",
+            "type": "string"
+          },
+          "expected_source_revision_id": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Expected Source Revision Id",
+            "type": "string"
+          },
+          "source_passages": {
+            "additionalProperties": true,
+            "title": "Source Passages",
+            "type": "object"
+          }
+        },
+        "required": [
+          "expected_source_revision_id",
+          "expected_source_content_hash",
+          "expected_settings_revision",
+          "expected_settings_hash"
+        ],
+        "title": "SourcePassageRebuildRequest",
+        "type": "object"
+      },
       "SourceReuseRequest": {
         "additionalProperties": false,
         "properties": {
@@ -13440,6 +13493,160 @@
             "description": "Queued"
           }
         }
+      }
+    },
+    "/api/v1/sessions/{sessionId}/sources/{artifactId}/passages": {
+      "get": {
+        "operationId": "getSourcePassages",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "artifactId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "getSourcePassages"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/sessions/{sessionId}/sources/{artifactId}/passages/preview": {
+      "post": {
+        "operationId": "previewSourcePassages",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "artifactId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SourcePassagePreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "previewSourcePassages"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/sessions/{sessionId}/sources/{artifactId}/passages/rebuild": {
+      "post": {
+        "operationId": "rebuildSourcePassages",
+        "parameters": [
+          {
+            "description": "Automation principals require it; browser writes may omit it. Use it for safe retries.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "artifactId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SourcePassageRebuildRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "rebuildSourcePassages"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.run"
+            ]
+          }
+        ]
       }
     },
     "/api/v1/sessions/{sessionId}/sources/{attachmentId}": {

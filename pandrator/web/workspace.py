@@ -57,10 +57,15 @@ from .tts_optimization import (
     DEFAULT_THIRD_PROMPT,
 )
 
+from pandrator.logic.dubbing.source_passage_settings import (
+    SOURCE_PASSAGE_DEFAULTS as _SOURCE_PASSAGE_DEFAULTS,
+)
+
 SETTING_SECTIONS = (
     "text",
     "stt",
     "subtitles",
+    "source_passages",
     "correction",
     "translation",
     "tts",
@@ -137,7 +142,7 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
     },
     "subtitles": {
         "max_lines": 2,
-        "max_chars_per_line": 48,
+        "max_chars_per_line": 60,
         "max_cps": 20.0,
         "min_duration_ms": 833,
         "max_duration_ms": 7000,
@@ -147,6 +152,7 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "sentence_boundary_threshold": 0.25,
         "boundary_correction_enabled": False,
     },
+    "source_passages": dict(_SOURCE_PASSAGE_DEFAULTS),
     "correction": {
         "enabled": False,
         "correction_style": "publishable",
@@ -401,6 +407,13 @@ RUNTIME_SETTING_ALIASES: dict[str, dict[str, str]] = {
         "char_limit": "llm_char",
         "max_segments_per_batch": "max_subtitles_per_call",
         "substantial_gap_ms": "timing_context_gap_ms",
+    },
+    "source_passages": {
+        "min_chars": "source_passage_min_chars",
+        "preferred_chars": "source_passage_preferred_chars",
+        "sentence_lookahead_chars": "source_passage_sentence_lookahead_chars",
+        "cue_join_gap_ms": "source_passage_cue_join_gap_ms",
+        "diagnostic_span_ms": "source_passage_diagnostic_span_ms",
     },
     "translation": {
         "enabled": "translation_enabled",
@@ -998,6 +1011,30 @@ class WorkspaceSettingsService:
             validate_voiceover_repair_settings(value)
             previous = self.get_in_session(session, session_id, section)["effective"]
             value = prepare_tts_provider_switch(previous, value)
+        if section == "source_passages":
+            from pandrator.logic.dubbing.source_passage_settings import (
+                SOURCE_PASSAGE_DEFAULTS,
+                normalize_source_passage_settings,
+            )
+
+            unknown = set(value) - set(SOURCE_PASSAGE_DEFAULTS)
+            if unknown:
+                raise ValueError(
+                    f"Unknown source_passages keys: {sorted(unknown)}"
+                )
+            # PUT replaces the override, including {} to restore inheritance.
+            # Validate the effective candidate without storing inherited values.
+            snapshot = self.get_in_session(session, session_id, section)
+            candidate = {
+                **snapshot["builtin"],
+                **snapshot["global"],
+                **snapshot.get("session_context", {}),
+                **value,
+            }
+            try:
+                normalize_source_passage_settings(candidate)
+            except TypeError as error:
+                raise ValueError(str(error)) from error
         if section == "output" and session_record.workflow_kind != "audiobook":
             for key in (
                 "title",

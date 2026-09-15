@@ -3191,6 +3191,17 @@ def build_openapi_document() -> dict:
         definition = operation(name, name, schema, status)
         definition["security"] = [{"cookieAuth": []}, {"bearerToken": []}, {"nativeOAuth": ["app.read" if method == "get" else "app.write"]}]
         paths.setdefault(path, {})[method] = definition
+    passage_operations = [
+        ("/api/v1/sessions/{sessionId}/sources/{artifactId}/passages", "get", "getSourcePassages", None, "200", "app.read", False),
+        ("/api/v1/sessions/{sessionId}/sources/{artifactId}/passages/preview", "post", "previewSourcePassages", "SourcePassagePreviewRequest", "200", "app.read", False),
+        ("/api/v1/sessions/{sessionId}/sources/{artifactId}/passages/rebuild", "post", "rebuildSourcePassages", "SourcePassageRebuildRequest", "201", "app.run", True),
+    ]
+    for path, method, name, schema, status, scope, idempotent in passage_operations:
+        definition = operation(name, name, schema, status)
+        definition["security"] = [{"cookieAuth": []}, {"bearerToken": []}, {"nativeOAuth": [scope]}]
+        if idempotent:
+            definition["parameters"] = [idempotency_header(required=False)]
+        paths.setdefault(path, {})[method] = definition
     batch = paths["/api/v1/sessions/{sessionId}/generation-plan/topology/batch"]["post"]
     batch["parameters"] = [
         {"name": name, "in": "header", "required": True, "schema": {"type": "string"}}

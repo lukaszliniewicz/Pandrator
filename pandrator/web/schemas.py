@@ -500,6 +500,18 @@ class SubtitleAlignRequest(StrictModel):
     expected_revision: int = Field(ge=0)
 
 
+class SourcePassagePreviewRequest(StrictModel):
+    source_passages: dict[str, Any] = Field(default_factory=dict)
+
+
+class SourcePassageRebuildRequest(StrictModel):
+    expected_source_revision_id: str = Field(min_length=1, max_length=80)
+    expected_source_content_hash: str = Field(min_length=1, max_length=256)
+    expected_settings_revision: int = Field(ge=0)
+    expected_settings_hash: str = Field(min_length=1, max_length=256)
+    source_passages: dict[str, Any] = Field(default_factory=dict)
+
+
 class SourceUpdateRequest(StrictModel):
     display_name: str = Field(min_length=1, max_length=255)
 
@@ -1734,6 +1746,8 @@ SCHEMA_MODELS = {
         OutcomePlanUpdate,
         SourceAttachRequest,
         SubtitleAlignRequest,
+        SourcePassagePreviewRequest,
+        SourcePassageRebuildRequest,
         GenerationPlanBatchRequest,
         SourceUpdateRequest,
         MediaEditPrepareRequest,

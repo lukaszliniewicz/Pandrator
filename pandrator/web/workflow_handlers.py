@@ -55,6 +55,7 @@ from .logical_passages import (
     materialize_speech_source,
     passage_review_metadata,
     passage_srt,
+    pin_raw_source_passages,
     same_timing_language,
     source_passages,
     stored_passages,
@@ -2374,23 +2375,113 @@ class WorkflowHandlers:
             language,
         )
 
+    @staticmethod
+    def _resolve_run_passage_settings(
+        session_id: str,
+        payload_settings: dict[str, Any] | None,
+        *,
+        database=None,
+    ) -> tuple[dict[str, int], int]:
+        """Resolve the exact effective settings one run constructs with.
+
+        Payload-provided values (resolved job settings or per-run overrides)
+        win; otherwise the live session effective settings are read once.
+        Invalid values raise instead of silently falling back to defaults.
+        """
+        from pandrator.logic.dubbing.source_passage_settings import (
+            RUNTIME_TO_WEB,
+            effective_source_passage_settings,
+            from_runtime_keys,
+            normalize_source_passage_settings,
+        )
+
+        from .workspace import WorkspaceSettingsService
+
+        payload = dict(payload_settings or {})
+        has_nested = isinstance(payload.get("source_passages"), dict)
+        has_prefixed = any(key in payload for key in RUNTIME_TO_WEB)
+        if has_nested or has_prefixed:
+            effective = from_runtime_keys(payload)
+            try:
+                revision = int(payload.get("source_passage_settings_revision") or 0)
+            except (TypeError, ValueError) as error:
+                raise ValueError(
+                    "source_passage_settings_revision must be an integer."
+                ) from error
+            if revision == 0 and database is not None:
+                # Provenance only: values stay exactly as the payload resolved
+                # them; the live revision is recorded when readable.
+                try:
+                    with database.session() as session:
+                        live = WorkspaceSettingsService(database).get_in_session(
+                            session, session_id, "source_passages"
+                        )
+                    revision = int(live.get("revision") or 0)
+                except (KeyError, TypeError, ValueError):
+                    revision = 0
+            return effective, revision
+        if database is None:
+            raise ValueError(
+                "Source-passage settings are unavailable for this session."
+            )
+        with database.session() as session:
+            snapshot = WorkspaceSettingsService(database).get_in_session(
+                session, session_id, "source_passages"
+            )
+        return (
+            normalize_source_passage_settings(snapshot["effective"]),
+            int(snapshot.get("revision") or 0),
+        )
+
     def _prepare_passage_input(
         self,
         artifact: Artifact,
         source_path: Path,
         directory: Path,
+        *,
+        source_passage_settings: dict[str, Any] | None = None,
+        source_passage_settings_revision: int | None = None,
     ) -> tuple[Path, list[dict[str, Any]], dict[int, str]]:
         with self.database.session() as session:
             managed = session.get(Artifact, artifact.id)
-            rows = source_passages(session, managed) if managed else []
             if (
-                rows
-                and managed is not None
+                managed is not None
+                and managed.content_hash
                 and sha256_file(source_path) != managed.content_hash
             ):
                 raise ValueError(
                     "The subtitle file changed after its revision was saved. Import the updated file before processing it."
                 )
+            if source_passage_settings is None:
+                # Resolved once here so construction matches the run ledger;
+                # never a second live read mid-job.
+                effective, revision = self._resolve_run_passage_settings(
+                    managed.session_id if managed is not None else "",
+                    None,
+                    database=self.database,
+                )
+            else:
+                from pandrator.logic.dubbing.source_passage_settings import (
+                    normalize_source_passage_settings,
+                )
+
+                effective = normalize_source_passage_settings(
+                    source_passage_settings
+                )
+                revision = (
+                    0
+                    if source_passage_settings_revision is None
+                    else int(source_passage_settings_revision)
+                )
+            rows = (
+                pin_raw_source_passages(
+                    session,
+                    managed,
+                    effective=effective,
+                    settings_revision=revision,
+                )
+                if managed else []
+            )
         if not rows:
             return source_path, [], self._subtitle_speaker_map(artifact, source_path)
         path = directory / f"{source_path.stem}.passages.srt"
@@ -2415,6 +2506,50 @@ class WorkflowHandlers:
                 "subtitles",
             )["effective"]
         return adapt_runtime_settings("subtitles", effective)
+
+    def _source_passage_run_ledger(
+        self,
+        session_id: str,
+        requested_settings: dict[str, Any],
+        *,
+        effective: dict[str, int] | None = None,
+        settings_revision: int | None = None,
+    ) -> dict[str, Any]:
+        """Pin effective source-passage settings into a run ledger (no writes).
+
+        The caller resolves ``(effective, revision)`` once via
+        :meth:`_resolve_run_passage_settings` and shares it with construction,
+        so the ledger always describes what was actually built. Existing
+        explicit keys (e.g. per-run overrides) are preserved.
+        """
+        from pandrator.logic.dubbing.source_passage_settings import (
+            SOURCE_PASSAGE_POLICY_VERSION,
+            normalize_source_passage_settings,
+            source_passage_settings_hash,
+            to_runtime_keys,
+        )
+
+        if effective is None or settings_revision is None:
+            effective, settings_revision = self._resolve_run_passage_settings(
+                session_id, requested_settings, database=self.database
+            )
+        live_effective = normalize_source_passage_settings(effective)
+        live_revision = int(settings_revision)
+        ledger = dict(requested_settings)
+        # Flattened payloads carry only the prefixed runtime keys (never bare
+        # min_chars-style names) plus the nested web-key snapshot.
+        for key, value in to_runtime_keys(live_effective).items():
+            ledger.setdefault(key, value)
+        ledger.setdefault(
+            "source_passage_policy_version", SOURCE_PASSAGE_POLICY_VERSION
+        )
+        ledger.setdefault(
+            "source_passage_settings_hash",
+            source_passage_settings_hash(live_effective),
+        )
+        ledger.setdefault("source_passage_settings_revision", live_revision)
+        ledger.setdefault("source_passages", deepcopy(live_effective))
+        return ledger
 
     def _render_passage_output(
         self,
@@ -4189,11 +4324,19 @@ class WorkflowHandlers:
             str(payload.get("source_artifact_id") or "")
         )
         session_dir = self._operation_dir(session_id, "correct")
+        # Resolve once: construction and the run ledger share these exact values.
+        run_passage_effective, run_passage_revision = (
+            self._resolve_run_passage_settings(
+                session_id, payload.get("settings"), database=self.database
+            )
+        )
         processing_path, input_passages, speaker_by_subtitle = (
             self._prepare_passage_input(
                 source_artifact,
                 source_path,
                 session_dir,
+                source_passage_settings=run_passage_effective,
+                source_passage_settings_revision=run_passage_revision,
             )
         )
         requested_settings = dict(payload.get("settings") or {})
@@ -4205,6 +4348,12 @@ class WorkflowHandlers:
                         session_id
                     ),
                 }
+            )
+            requested_settings = self._source_passage_run_ledger(
+                session_id,
+                requested_settings,
+                effective=run_passage_effective,
+                settings_revision=run_passage_revision,
             )
         settings = self._with_database_llm_settings(requested_settings, "correction")
         settings["correction_style"] = normalize_correction_style(
@@ -4837,11 +4986,19 @@ class WorkflowHandlers:
             str(payload.get("source_artifact_id") or "")
         )
         session_dir = self._operation_dir(session_id, "translate")
+        # Resolve once: construction and the run ledger share these exact values.
+        run_passage_effective, run_passage_revision = (
+            self._resolve_run_passage_settings(
+                session_id, payload.get("settings"), database=self.database
+            )
+        )
         processing_path, input_passages, speaker_by_subtitle = (
             self._prepare_passage_input(
                 source_artifact,
                 source_path,
                 session_dir,
+                source_passage_settings=run_passage_effective,
+                source_passage_settings_revision=run_passage_revision,
             )
         )
         requested_settings = dict(payload.get("settings") or {})
@@ -4853,6 +5010,12 @@ class WorkflowHandlers:
                         session_id
                     ),
                 }
+            )
+            requested_settings = self._source_passage_run_ledger(
+                session_id,
+                requested_settings,
+                effective=run_passage_effective,
+                settings_revision=run_passage_revision,
             )
         requested_settings_hash = hashlib.sha256(
             json.dumps(

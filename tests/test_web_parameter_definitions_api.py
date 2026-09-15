@@ -155,6 +155,7 @@ class ParameterDefinitionsApiTests(unittest.TestCase):
                 "text",
                 "stt",
                 "subtitles",
+                "source_passages",
                 "correction",
                 "translation",
                 "tts",

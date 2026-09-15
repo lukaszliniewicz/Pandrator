@@ -23,6 +23,7 @@
     X
   } from '@lucide/svelte';
   import { jobApi, sessionApi } from './domain-api';
+  import { isSourcePassageConflict } from './source-passages';
   import { speechRecognitionApi, voiceApi } from './admin-api';
   import type {
     OutcomePlan,
@@ -76,6 +77,21 @@
   import { modalFocus } from './modal-focus';
   import ParameterLabel from './ParameterLabel.svelte';
   import type { StageArtifact } from './stage-artifacts';
+  import {
+    SOURCE_PASSAGE_CONTROLS,
+    SOURCE_PASSAGE_DEFAULTS,
+    SOURCE_PASSAGE_SECTION,
+    coerceSourcePassageValues,
+    previewSourcePassages,
+    rebuildSourcePassages,
+    sourcePassagePayload,
+    sourcePassageStatus,
+    validateSourcePassageValues,
+    type SourcePassagePreviewResponse,
+    type SourcePassageRebuildResponse,
+    type SourcePassageStatus,
+    type SourcePassageValues
+  } from './source-passages';
 
   type Stage = WorkflowStage;
 
@@ -314,7 +330,7 @@
   let vadMinSilence = $state(800);
   let vadMaxSpeech = $state(300);
   let vadSpeechPad = $state(30);
-  let subtitleChars = $state(48);
+  let subtitleChars = $state(60);
   let subtitleLines = $state(2);
   let subtitleMinDuration = $state(833);
   let subtitleMaxDuration = $state(7000);
@@ -323,6 +339,52 @@
   let subtitlePhraseGap = $state(900);
   let subtitleHardGap = $state(1500);
   let subtitleSentenceBoundaryThreshold = $state(0.25);
+  let sourcePassageMinChars = $state(SOURCE_PASSAGE_DEFAULTS.min_chars);
+  let sourcePassagePreferredChars = $state(
+    SOURCE_PASSAGE_DEFAULTS.preferred_chars
+  );
+  let sourcePassageLookaheadChars = $state(
+    SOURCE_PASSAGE_DEFAULTS.sentence_lookahead_chars
+  );
+  let sourcePassageJoinGapMs = $state(SOURCE_PASSAGE_DEFAULTS.cue_join_gap_ms);
+  let sourcePassageDiagnosticSpanMs = $state(
+    SOURCE_PASSAGE_DEFAULTS.diagnostic_span_ms
+  );
+  let sourcePassagesAvailable = $state(true);
+  let sourcePassageOverrideCount = $state(0);
+  let sourcePassagesTouched = $state(false);
+  let sourcePassageSettingsRevision = $state(0);
+  let passageStatus = $state<SourcePassageStatus | null>(null);
+  let passageStatusLoading = $state(false);
+  let passageStatusError = $state('');
+  let passagePreview = $state<SourcePassagePreviewResponse | null>(null);
+  let passagePreviewLoading = $state(false);
+  let passagePreviewError = $state('');
+  let passageRebuildLoading = $state(false);
+  let passageRebuildError = $state('');
+  let passageRebuildResult = $state<SourcePassageRebuildResponse | null>(null);
+  const sourcePassageForm = $derived({
+    min_chars: sourcePassageMinChars,
+    preferred_chars: sourcePassagePreferredChars,
+    sentence_lookahead_chars: sourcePassageLookaheadChars,
+    cue_join_gap_ms: sourcePassageJoinGapMs,
+    diagnostic_span_ms: sourcePassageDiagnosticSpanMs
+  });
+  const sourcePassageErrors = $derived(
+    validateSourcePassageValues(sourcePassageForm)
+  );
+  const sourcePassagesValid = $derived(
+    Object.keys(sourcePassageErrors).length === 0
+  );
+  const sourcePassagesCustomized = $derived(
+    sourcePassagesTouched || sourcePassageOverrideCount > 0
+  );
+  const passageSourceArtifactId = $derived(
+    snapshot?.stages.find((stage) => stage.key === 'transcribe')
+      ?.selected_artifact_id ??
+      snapshot?.subtitle_source?.subtitle_artifact_id ??
+      ''
+  );
   let correctionStyle = $state<'publishable' | 'faithful'>('publishable');
   let instructions = $state('');
   let optimizationPrompt = $state('');
@@ -1078,7 +1140,7 @@
     vadMinSilence = Number(saved.crispasr_vad_min_silence_ms ?? 800);
     vadMaxSpeech = Number(saved.crispasr_vad_max_speech_seconds ?? 300);
     vadSpeechPad = Number(saved.crispasr_vad_speech_pad_ms ?? 30);
-    subtitleChars = Number(saved.subtitle_max_chars_per_line ?? 48);
+    subtitleChars = Number(saved.subtitle_max_chars_per_line ?? 60);
     subtitleLines = Number(saved.subtitle_max_lines ?? 2);
     subtitleMinDuration = Number(saved.subtitle_min_duration_ms ?? 833);
     subtitleMaxDuration = Number(saved.subtitle_max_duration_ms ?? 7000);
@@ -1089,6 +1151,38 @@
     subtitleSentenceBoundaryThreshold = Number(
       saved.subtitle_sentence_boundary_threshold ?? 0.25
     );
+    try {
+      const passages = await sessionApi.settings(
+        session.id,
+        SOURCE_PASSAGE_SECTION
+      );
+      const coerced = coerceSourcePassageValues(passages.effective);
+      sourcePassageMinChars = coerced.min_chars;
+      sourcePassagePreferredChars = coerced.preferred_chars;
+      sourcePassageLookaheadChars = coerced.sentence_lookahead_chars;
+      sourcePassageJoinGapMs = coerced.cue_join_gap_ms;
+      sourcePassageDiagnosticSpanMs = coerced.diagnostic_span_ms;
+      sourcePassageOverrideCount = Object.keys(passages.override ?? {}).length;
+      sourcePassageSettingsRevision = passages.revision;
+      sourcePassagesAvailable = true;
+    } catch {
+      const fallback = { ...SOURCE_PASSAGE_DEFAULTS };
+      sourcePassageMinChars = fallback.min_chars;
+      sourcePassagePreferredChars = fallback.preferred_chars;
+      sourcePassageLookaheadChars = fallback.sentence_lookahead_chars;
+      sourcePassageJoinGapMs = fallback.cue_join_gap_ms;
+      sourcePassageDiagnosticSpanMs = fallback.diagnostic_span_ms;
+      sourcePassageOverrideCount = 0;
+      sourcePassageSettingsRevision = 0;
+      sourcePassagesAvailable = false;
+    }
+    sourcePassagesTouched = false;
+    passageStatus = null;
+    passageStatusError = '';
+    passagePreview = null;
+    passagePreviewError = '';
+    passageRebuildError = '';
+    passageRebuildResult = null;
     correctionStyle =
       String(saved.correction_style ?? 'publishable') === 'faithful'
         ? 'faithful'
@@ -2256,11 +2350,22 @@
     });
   }
 
+  function sourcePassageUpdate(): {
+    section: string;
+    value: Record<string, unknown>;
+  } | null {
+    if (!sourcePassagesValid || !sourcePassagesCustomized) return null;
+    return {
+      section: SOURCE_PASSAGE_SECTION,
+      value: sourcePassagePayload(sourcePassageForm)
+    };
+  }
+
   function stageSectionUpdates(
     key: string
   ): { section: string; value: Record<string, unknown> }[] {
-    if (key === 'transcribe')
-      return [
+    if (key === 'transcribe') {
+      const updates: { section: string; value: Record<string, unknown> }[] = [
         { section: 'stt', value: stageSettings[key] },
         {
           section: 'subtitles',
@@ -2277,8 +2382,12 @@
           }
         }
       ];
-    if (key === 'correct')
-      return [
+      const passages = sourcePassageUpdate();
+      if (passages) updates.push(passages);
+      return updates;
+    }
+    if (key === 'correct') {
+      const updates: { section: string; value: Record<string, unknown> }[] = [
         {
           section: 'correction',
           value: {
@@ -2302,6 +2411,10 @@
           }
         }
       ];
+      const passages = sourcePassageUpdate();
+      if (passages) updates.push(passages);
+      return updates;
+    }
     if (key === 'translate')
       return [
         {
@@ -2574,6 +2687,132 @@
     else stageSettings[key] = common;
   }
 
+  function markSourcePassagesTouched() {
+    sourcePassagesTouched = true;
+    passagePreview = null;
+    passagePreviewError = '';
+  }
+
+  async function loadPassageStatus() {
+    if (!passageSourceArtifactId || passageStatusLoading) return;
+    passageStatusLoading = true;
+    passageStatusError = '';
+    try {
+      passageStatus = await sourcePassageStatus(
+        session.id,
+        passageSourceArtifactId
+      );
+    } catch (caught) {
+      passageStatus = null;
+      passageStatusError = errorMessage(caught);
+    } finally {
+      passageStatusLoading = false;
+    }
+  }
+
+  async function runPassagePreview() {
+    if (!passageSourceArtifactId || passagePreviewLoading) return;
+    if (!sourcePassagesValid) {
+      passagePreviewError =
+        'Correct the highlighted source-passage values before previewing.';
+      return;
+    }
+    passagePreviewLoading = true;
+    passagePreviewError = '';
+    try {
+      passagePreview = await previewSourcePassages(
+        session.id,
+        passageSourceArtifactId,
+        sourcePassagePayload(sourcePassageForm)
+      );
+      await loadPassageStatus();
+    } catch (caught) {
+      passagePreview = null;
+      passagePreviewError = errorMessage(caught);
+    } finally {
+      passagePreviewLoading = false;
+    }
+  }
+
+  async function runPassageRebuild() {
+    if (!passageSourceArtifactId || passageRebuildLoading) return;
+    if (!passagePreview) {
+      passageRebuildError =
+        'Run a fresh preview first. Rebuild uses that preview’s settings hash as a guard.';
+      return;
+    }
+    if (!passageStatus) {
+      passageRebuildError =
+        'Reload the passage status first so the rebuild guards match the live source.';
+      return;
+    }
+    passageRebuildLoading = true;
+    passageRebuildError = '';
+    try {
+      passageRebuildResult = await rebuildSourcePassages(
+        session.id,
+        passageSourceArtifactId,
+        {
+          expected_source_revision_id: passagePreview.revision_id,
+          expected_source_content_hash: passagePreview.content_hash,
+          expected_settings_revision: passagePreview.settings_revision,
+          expected_settings_hash: passagePreview.settings_hash,
+          source_passages: sourcePassagePayload(sourcePassageForm)
+        }
+      );
+      // The new branch is discoverable through the existing source picker;
+      // the current selection stays untouched and nothing navigates away.
+      await load({ initial: false });
+      await loadPassageStatus();
+      passagePreview = null;
+    } catch (caught) {
+      passageRebuildResult = null;
+      const message = errorMessage(caught);
+      const conflict =
+        isSourcePassageConflict(caught) ||
+        /revision_conflict|source_changed|stale/i.test(message);
+      if (conflict) {
+        passageRebuildError = `${message} Status and settings were refreshed; run a fresh preview, then rebuild again. No silent retry was attempted.`;
+        passagePreview = null;
+        await loadPassageStatus();
+        try {
+          const refreshed = await sessionApi.settings(
+            session.id,
+            SOURCE_PASSAGE_SECTION
+          );
+          const coerced = coerceSourcePassageValues(refreshed.effective);
+          sourcePassageMinChars = coerced.min_chars;
+          sourcePassagePreferredChars = coerced.preferred_chars;
+          sourcePassageLookaheadChars = coerced.sentence_lookahead_chars;
+          sourcePassageJoinGapMs = coerced.cue_join_gap_ms;
+          sourcePassageDiagnosticSpanMs = coerced.diagnostic_span_ms;
+          sourcePassageOverrideCount = Object.keys(
+            refreshed.override ?? {}
+          ).length;
+          sourcePassageSettingsRevision = refreshed.revision;
+          sourcePassagesAvailable = true;
+        } catch {
+          sourcePassagesAvailable = false;
+        }
+      } else {
+        passageRebuildError = message;
+      }
+    } finally {
+      passageRebuildLoading = false;
+    }
+  }
+
+  function setSourcePassage(key: keyof typeof sourcePassageForm, raw: string) {
+    const value = raw === '' ? Number.NaN : Number(raw);
+    if (key === 'min_chars') sourcePassageMinChars = value;
+    else if (key === 'preferred_chars') sourcePassagePreferredChars = value;
+    else if (key === 'sentence_lookahead_chars')
+      sourcePassageLookaheadChars = value;
+    else if (key === 'cue_join_gap_ms') sourcePassageJoinGapMs = value;
+    else sourcePassageDiagnosticSpanMs = value;
+    markSourcePassagesTouched();
+  }
+
   async function openFullSettingsFromStage() {
     if (!settingsStage) return;
     const stage = settingsStage;
@@ -2661,6 +2900,14 @@
       !translationSourceArtifactId
     ) {
       error = 'Choose the exact transcription or correction to translate.';
+      return;
+    }
+    if (
+      (key === 'transcribe' || key === 'correct') &&
+      sourcePassagesCustomized &&
+      !sourcePassagesValid
+    ) {
+      error = 'Correct the highlighted source-passage values before saving.';
       return;
     }
     captureStageSettings(settingsStage);
@@ -4230,6 +4477,178 @@
               </div>
             </div>
           {/if}
+          {#if settingsStage.key === 'transcribe' || settingsStage.key === 'correct'}
+            <fieldset class="rounded-xl border border-[var(--line)] p-4">
+              <legend class="px-1 text-sm font-semibold">
+                Source logical passages
+              </legend>
+              <p class="muted text-xs leading-relaxed">
+                Control how source cues become logical passages for dubbing.
+                Saving changes these settings only. Pinned passages, accepted
+                corrections and translations, speech plans, and audio takes stay
+                unchanged until you explicitly rebuild as a new branch.
+              </p>
+              {#if !sourcePassagesAvailable}<p
+                  role="status"
+                  class="mt-2 rounded-lg bg-amber-500/10 p-2 text-xs text-amber-700"
+                >
+                  The source-passage settings section is not available on this
+                  backend yet. Built-in defaults are shown; saving them will be
+                  retried once the backend update lands.
+                </p>{/if}
+              <div class="mt-3 grid grid-cols-2 gap-3">
+                {#each SOURCE_PASSAGE_CONTROLS as control}
+                  <div class="text-xs font-semibold">
+                    <ParameterLabel
+                      section={SOURCE_PASSAGE_SECTION}
+                      name={control.key}
+                      label={control.label}
+                      controlId={`sp-${control.key}`}
+                      compact
+                    /><input
+                      id={`sp-${control.key}`}
+                      type="number"
+                      min={control.min}
+                      max={control.max}
+                      step={control.step}
+                      value={sourcePassageForm[control.key]}
+                      oninput={(event) =>
+                        setSourcePassage(
+                          control.key,
+                          event.currentTarget.value
+                        )}
+                      aria-invalid={Boolean(sourcePassageErrors[control.key])}
+                      aria-describedby={`sp-help-${control.key}`}
+                      class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                    /><span
+                      id={`sp-help-${control.key}`}
+                      class="muted mt-1 block font-normal">{control.help}</span
+                    >
+                    {#if sourcePassageErrors[control.key]}<span
+                        role="alert"
+                        class="mt-1 block font-normal text-red-600"
+                        >{sourcePassageErrors[control.key]}</span
+                      >{/if}
+                  </div>
+                {/each}
+              </div>
+              <details class="mt-3 rounded-xl border border-[var(--line)] p-4">
+                <summary class="cursor-pointer text-sm font-semibold">
+                  Preview &amp; rebuild (optional)
+                </summary>
+                <p class="muted mt-2 text-xs leading-relaxed">
+                  Preview builds a bounded, read-only passage count from these
+                  values without writing anything. Rebuild creates a new source
+                  branch guarded by the live source revision, content hash, and
+                  the fresh preview’s settings hash. The original source,
+                  downstream work, and your current selection are preserved; the
+                  new branch is not auto-selected.
+                </p>
+                {#if !passageSourceArtifactId}<p
+                    role="status"
+                    class="muted mt-2 text-xs"
+                  >
+                    Select or produce a transcribed source first; preview and
+                    rebuild act on the current transcription artifact.
+                  </p>{:else}
+                  <div class="mt-3 flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onclick={loadPassageStatus}
+                      disabled={passageStatusLoading}
+                      class="rounded-lg border border-[var(--line)] px-3 py-2 text-xs font-semibold disabled:opacity-40"
+                      >{passageStatusLoading
+                        ? 'Loading status…'
+                        : 'Reload status'}</button
+                    >
+                    <button
+                      type="button"
+                      onclick={runPassagePreview}
+                      disabled={passagePreviewLoading || !sourcePassagesValid}
+                      class="rounded-lg border border-[var(--line)] px-3 py-2 text-xs font-semibold disabled:opacity-40"
+                      >{passagePreviewLoading
+                        ? 'Previewing…'
+                        : 'Preview passages'}</button
+                    >
+                    <button
+                      type="button"
+                      onclick={runPassageRebuild}
+                      disabled={passageRebuildLoading ||
+                        !passagePreview ||
+                        !passageStatus}
+                      title={passagePreview
+                        ? 'Rebuild as a new branch'
+                        : 'Run a fresh preview first'}
+                      class="rounded-lg bg-[var(--accent)] px-3 py-2 text-xs font-semibold text-white disabled:opacity-40"
+                      >{passageRebuildLoading
+                        ? 'Rebuilding…'
+                        : 'Rebuild as new branch'}</button
+                    >
+                  </div>
+                  {#if passageStatusError}<p
+                      role="alert"
+                      class="mt-2 text-xs text-red-600"
+                    >
+                      {passageStatusError}
+                    </p>{/if}
+                  {#if passageStatus}<p
+                      role="status"
+                      class="muted mt-2 text-xs"
+                    >
+                      {passageStatus.pinned
+                        ? `Pinned passages: ${passageStatus.passage_count ?? 'unknown'} · policy ${passageStatus.policy_version ?? 'unknown'}`
+                        : 'No pinned passages for this source yet.'}
+                    </p>{/if}
+                  {#if passagePreviewError}<p
+                      role="alert"
+                      class="mt-2 text-xs text-red-600"
+                    >
+                      {passagePreviewError}
+                    </p>{/if}
+                  {#if passagePreview}<div
+                      role="status"
+                      class="mt-2 rounded-lg bg-[var(--accent-soft)] p-2 text-xs"
+                    >
+                      <p>
+                        Preview: {passagePreview.passage_count} passages{' '}{#if passageStatus?.passage_count != null}
+                          {@const delta =
+                            passagePreview.passage_count -
+                            (passageStatus.passage_count ?? 0)}
+                          · pinned: {passageStatus.passage_count} · difference
+                          {delta >= 0 ? `+${delta}` : delta}{/if}
+                      </p>
+                      {#if passagePreview.warnings.length}<ul
+                          class="mt-1 list-disc pl-4"
+                        >
+                          {#each passagePreview.warnings as warning}<li>
+                              {warning}
+                            </li>{/each}
+                        </ul>{/if}
+                    </div>{/if}
+                  {#if passageRebuildError}<p
+                      role="alert"
+                      class="mt-2 text-xs text-red-600"
+                    >
+                      {passageRebuildError}
+                    </p>{/if}
+                  {#if passageRebuildResult}<div
+                      role="status"
+                      class="mt-2 rounded-lg bg-[var(--accent-soft)] p-2 text-xs"
+                    >
+                      <p>
+                        New branch: {passageRebuildResult.passage_count} passages
+                        · {passageRebuildResult.branch_artifact_id}
+                      </p>
+                      <p class="muted mt-1">
+                        The original source and downstream work are unchanged,
+                        and your current selection is unchanged. Find the new
+                        branch in the existing source picker.
+                      </p>
+                    </div>{/if}
+                {/if}
+              </details>
+            </fieldset>
+          {/if}
           {#if settingsStage.key === 'correct'}<label
               class="text-sm font-semibold"
               ><ParameterLabel
@@ -5269,6 +5688,12 @@
           >
             {stageMessage}
           </p>{/if}
+        {#if error}<p
+            role="alert"
+            class="mt-5 rounded-xl border border-red-400/40 bg-red-500/10 p-3 text-xs"
+          >
+            {error}
+          </p>{/if}
         <div class="mt-7 flex flex-wrap justify-end gap-3">
           <button
             onclick={openFullSettingsFromStage}
@@ -5284,6 +5709,10 @@
             onclick={() => saveSettings('defaults')}
             disabled={settingsLoading ||
               Boolean(publishingLibraryVoiceId) ||
+              ((settingsStage.key === 'transcribe' ||
+                settingsStage.key === 'correct') &&
+                sourcePassagesCustomized &&
+                !sourcePassagesValid) ||
               (settingsStage.key === 'generate_audio' &&
                 (!selectedTtsServiceAvailable ||
                   selectedVoiceLanguageMismatch ||
@@ -5306,6 +5735,10 @@
               )}
             disabled={settingsLoading ||
               Boolean(publishingLibraryVoiceId) ||
+              ((settingsStage.key === 'transcribe' ||
+                settingsStage.key === 'correct') &&
+                sourcePassagesCustomized &&
+                !sourcePassagesValid) ||
               (settingsStage.key === 'translate' &&
                 !translationSourceArtifactId) ||
               (settingsStage.key === 'generate_audio' &&

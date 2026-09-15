@@ -100,6 +100,7 @@ def test_each_filter_and_intersection_restricts_results():
     assert {item["section"] for item in _items(workflow_kind="subtitles")} == {
         "stt",
         "subtitles",
+        "source_passages",
         "correction",
         "translation",
         "output",

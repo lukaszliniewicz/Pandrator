@@ -55,6 +55,7 @@ from .logical_passages import (
     load_timing_reference,
     map_output_passages,
     passage_srt,
+    pin_raw_source_passages,
     same_timing_language,
     source_passages,
 )
@@ -584,6 +585,72 @@ class DispatchRunService:
                 "Translation dispatch requires a nonblank target language.",
                 422,
             )
+        from pandrator.logic.dubbing.source_passage_settings import (
+            SOURCE_PASSAGE_POLICY_VERSION,
+            normalize_source_passage_settings,
+            source_passage_settings_hash,
+            to_runtime_keys,
+        )
+
+        # Strict resolve: invalid session configuration fails the run instead
+        # of secretly altering segmentation with fallback defaults.
+        _passage_snapshot = WorkspaceSettingsService(
+            self.database
+        ).get_in_session(session, session_id, "source_passages")
+        _passage_effective = normalize_source_passage_settings(
+            _passage_snapshot["effective"]
+        )
+        _passage_revision = int(_passage_snapshot.get("revision") or 0)
+        _passage_hash = source_passage_settings_hash(_passage_effective)
+        _requested_effective = dict(_passage_effective)
+        _requested_hash = _passage_hash
+        _pre_packet = (source.metadata_json or {}).get("logical_passages")
+        _had_packet = isinstance(_pre_packet, dict) and bool(
+            _pre_packet.get("items")
+        )
+        pin_raw_source_passages(
+            session,
+            source,
+            effective=_passage_effective,
+            settings_revision=_passage_revision,
+            segments=segments,
+        )
+        # Provenance is the actually pinned construction, not the live request:
+        # when an older ledger already binds this source, the run records that
+        # ledger rather than the newer live settings. A legacy ledger that
+        # predates settings provenance is marked legacy/unknown instead of
+        # asserting newly-built provenance; the live request is recorded
+        # separately and the reused rows stay untouched.
+        _bound_packet = (source.metadata_json or {}).get("logical_passages") or {}
+        _provenance_settings = _bound_packet.get("source_passage_settings")
+        _passage_known = True
+        if isinstance(_provenance_settings, dict):
+            _passage_effective = normalize_source_passage_settings(
+                _provenance_settings
+            )
+            _passage_hash = str(
+                _bound_packet.get("source_passage_settings_hash")
+                or source_passage_settings_hash(_passage_effective)
+            )
+            _bound_revision = _bound_packet.get("source_passage_settings_revision")
+            if isinstance(_bound_revision, bool):
+                pass
+            elif isinstance(_bound_revision, int):
+                _passage_revision = _bound_revision
+            elif (
+                isinstance(_bound_revision, str)
+                and _bound_revision.lstrip("-").isdigit()
+            ):
+                _passage_revision = int(_bound_revision)
+            _passage_policy = str(
+                _bound_packet.get("policy_version") or SOURCE_PASSAGE_POLICY_VERSION
+            )
+        elif _had_packet:
+            _passage_policy = "legacy_unknown"
+            _passage_known = False
+            _passage_hash = ""
+        else:
+            _passage_policy = SOURCE_PASSAGE_POLICY_VERSION
         passages = source_passages(session, source, segments=segments)
         source_srt = passage_srt(passages)
         speakers = {
@@ -647,6 +714,19 @@ class DispatchRunService:
             "subtitle_finalization": adapt_runtime_settings(
                 "subtitles", subtitle_settings
             ),
+            "source_passages": (
+                dict(_passage_effective) if _passage_known else None
+            ),
+            **(
+                to_runtime_keys(_passage_effective) if _passage_known else {}
+            ),
+            "source_passage_policy_version": _passage_policy,
+            "source_passage_settings_hash": _passage_hash or None,
+            "source_passage_settings_revision": (
+                _passage_revision if _passage_known else None
+            ),
+            "requested_source_passages": dict(_requested_effective),
+            "requested_source_passage_settings_hash": _requested_hash,
             "instructions": str(instructions or ""),
             "char_limit": int(char_limit),
             "max_segments_per_batch": int(max_segments_per_batch),

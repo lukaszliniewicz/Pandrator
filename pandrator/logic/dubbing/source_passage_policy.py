@@ -9,9 +9,35 @@ from dataclasses import dataclass
 import re
 from typing import Mapping, Sequence
 
+from .source_sentence_assessment import (
+    SOURCE_PASSAGE_POLICY_VERSION,
+    hold_short_sentence_reason,
+    token_ends_ellipsis,
+)
+
 DEFAULT_MIN_CHARS = 60
 DEFAULT_PREFERRED_CHARS = 160
 DEFAULT_SENTENCE_LOOKAHEAD_CHARS = 20
+#: Ordinary cue-joining allowance in ms.  Zero disables ordinary joining
+#: (only zero-width seams join ordinarily); the bounded unfinished-phrase
+#: continuation below still applies.  Defined here (never imported from a
+#: settings helper) so settings metadata can share it without a cycle.
+DEFAULT_CUE_JOIN_GAP_MS = 650
+#: Soft diagnostic span in ms.  Guarded joining/diagnostic signal, never a
+#: hard cap: longer spans are kept and flagged, not cut.
+DEFAULT_DIAGNOSTIC_SPAN_MS = 8000
+
+__all__ = [
+    "DEFAULT_CUE_JOIN_GAP_MS",
+    "DEFAULT_DIAGNOSTIC_SPAN_MS",
+    "DEFAULT_MIN_CHARS",
+    "DEFAULT_PREFERRED_CHARS",
+    "DEFAULT_SENTENCE_LOOKAHEAD_CHARS",
+    "SOURCE_PASSAGE_POLICY_VERSION",
+    "PassageBoundary",
+    "select_boundaries",
+    "unsafe_clause_offsets",
+]
 _HARD_REASONS = frozenset({"speaker", "long_pause"})
 _WORD = re.compile(r"[^\W\d_]+", re.UNICODE)
 # Conservative protection, not a grammatical parser. Commas surrounding a
@@ -28,6 +54,11 @@ class PassageBoundary:
     selection_reason: str
     length: int
     preferred_length_exceeded: bool
+    # Suppressed provisional-sentence offsets skipped while this segment was
+    # chosen (e.g. a short "Yes." held before an unfinished "Yes…"). Empty
+    # when nothing was suppressed; surfaced per row as
+    # boundary_selection.suppressed_sentence_splits.
+    suppressed: tuple = ()
 
 
 def unsafe_clause_offsets(tokens: Sequence[str]) -> set[int]:
@@ -64,12 +95,20 @@ def select_boundaries(
     min_chars: int = DEFAULT_MIN_CHARS,
     preferred_chars: int = DEFAULT_PREFERRED_CHARS,
     lookahead_chars: int = DEFAULT_SENTENCE_LOOKAHEAD_CHARS,
+    language_code: str = "en",
 ) -> list[PassageBoundary]:
-    """Prefer the first sentence, then the best substantial clause, then overflow.
+    """Prefer the first genuine sentence, then substantial clauses, then overflow.
 
-    Short complete sentences remain independent. Equal-quality clause candidates
-    choose the earlier boundary, not the fullest block. Mandatory speaker/long
-    interruption boundaries end the search and can never be jumped over.
+    Short complete sentences remain independent (``Hello world. Next
+    phrase.``, rhetorical ``Never. Never again.``).  A short leader joins
+    its follower only for bounded structures: exact repetition into an
+    ellipsis hesitation (``Yes. Yes…``) or a filler-only leader before a
+    tiny scrap (``Yeah. Goal.''); content leaders and substantial or
+    different followers never join.  Held offsets are recorded on
+    ``PassageBoundary.suppressed``.  Ellipsis labels are demoted to cue
+    ends.  Equal-quality clause candidates choose the earlier boundary,
+    not the fullest block.  Mandatory speaker/long interruption boundaries
+    end the search and can never be jumped over.
     """
     if not tokens:
         return []
@@ -79,6 +118,9 @@ def select_boundaries(
 
     def length(start: int, end: int) -> int:
         return max(0, prefix[end] - prefix[start] - 1)
+
+    def window_text(begin: int, end: int) -> str:
+        return " ".join(tokens[begin:end])
 
     count = len(tokens)
     available = {**candidates}
@@ -91,8 +133,45 @@ def select_boundaries(
         barrier = next((p for p in ordered if p > start and
                         (p == count or available[p] in _HARD_REASONS)), count)
         nearby = [p for p in ordered if start < p <= barrier]
-        sentences = [p for p in nearby if available[p] == "sentence"]
-        first_sentence = sentences[0] if sentences else None
+        # Demote caller-supplied "sentence" labels that are unambiguously
+        # ellipsis hesitations.  Abbreviation/initial/decimal filtering
+        # stays at candidate-generation time.  Suppressed offsets are kept
+        # as assessment diagnostics.
+        suppressed: list[dict] = []
+        genuine_sentences: list[int] = []
+        demoted: set[int] = set()
+        for position in nearby:
+            if available[position] != "sentence":
+                continue
+            if token_ends_ellipsis(tokens, position):
+                demoted.add(position)
+                suppressed.append({"offset": position,
+                                   "reason": "ellipsis_or_non_genuine_sentence"})
+            else:
+                genuine_sentences.append(position)
+        sentences = genuine_sentences
+        # Hold a short leading sentence only for bounded structures (exact
+        # repetition into ellipsis, filler leader before a tiny scrap).
+        # Genuine followers ("Next phrase.", "Never again."), content
+        # leaders ("And that's quite a progressive."), and substantial or
+        # different followers never join.  Hard barriers are never jumped.
+        held: list[dict] = []
+        index = 0
+        while index < len(sentences):
+            first = sentences[index]
+            if first == barrier or length(start, first) >= min_chars:
+                break
+            horizon = sentences[index + 1] if index + 1 < len(sentences) else barrier
+            reason = hold_short_sentence_reason(
+                window_text(start, first), window_text(first, horizon),
+                language_code, min_chars)
+            if reason is None:
+                break
+            held.append({"offset": first, "reason": reason,
+                         "length": length(start, first)})
+            index += 1
+        suppressed.extend(held)
+        first_sentence = sentences[index] if index < len(sentences) else None
         sentence_horizon = first_sentence or barrier
 
         def good_clause(p: int) -> bool:
@@ -123,12 +202,28 @@ def select_boundaries(
                 # genuinely usable candidate beyond it is allowed to be longer.
                 future = clauses + ([first_sentence] if first_sentence else [])
                 end = min(future) if future else barrier
-                decision = ("natural_boundary_overflow" if length(start, end) > preferred_chars
-                            else "source_boundary_guard")
+                if held and end == barrier and available.get(end, "cue") not in _HARD_REASONS:
+                    # Short fragments joined onto unfinished material: the
+                    # split was held provisionally, not overflowed by size.
+                    decision = "sentence_provisional_hold"
+                else:
+                    decision = ("natural_boundary_overflow" if length(start, end) > preferred_chars
+                                else "source_boundary_guard")
         reason = available.get(end, "cue")
+        if end in demoted and reason == "sentence":
+            # A demoted ellipsis/non-genuine label must not be reported as a
+            # sentence boundary_after; the wording is unchanged.
+            reason = "cue"
         if reason in _HARD_REASONS:
             decision = "source_boundary_guard"
+        # Diagnostics for this segment only: demoted non-genuine labels plus
+        # held short fragments.  Emitted per row as
+        # boundary_selection.suppressed_sentence_splits.
+        held_offsets = {entry["offset"] for entry in held}
+        segment_suppressed = [entry for entry in suppressed if entry["offset"] <= end
+                              or entry["offset"] in held_offsets]
         result.append(PassageBoundary(end, "clause" if reason == "strong_clause" else reason,
-                                      decision, length(start, end), length(start, end) > preferred_chars))
+                                      decision, length(start, end), length(start, end) > preferred_chars,
+                                      suppressed=tuple(segment_suppressed)))
         start = end
     return result

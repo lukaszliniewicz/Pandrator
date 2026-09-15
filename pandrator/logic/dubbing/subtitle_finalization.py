@@ -56,7 +56,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class SubtitleFinalizationConfig:
-    max_chars_per_line: int = 48
+    max_chars_per_line: int = 60
     max_lines: int = 2
     min_duration_ms: int = 833
     max_duration_ms: int = 7000
@@ -74,7 +74,7 @@ class SubtitleFinalizationConfig:
             return default if configured is None or configured == "" else configured
 
         return cls(
-            max_chars_per_line=max(20, min(100, int(value("subtitle_max_chars_per_line", 48)))),
+            max_chars_per_line=max(20, min(100, int(value("subtitle_max_chars_per_line", 60)))),
             max_lines=max(1, min(3, int(value("subtitle_max_lines", 2)))),
             min_duration_ms=max(250, min(3000, int(value("subtitle_min_duration_ms", 833)))),
             max_duration_ms=max(1000, min(15000, int(value("subtitle_max_duration_ms", 7000)))),

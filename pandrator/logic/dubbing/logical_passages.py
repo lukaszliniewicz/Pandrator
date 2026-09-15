@@ -11,11 +11,19 @@ from __future__ import annotations
 import heapq
 import hashlib
 
-from .natural_boundaries import classify_boundary
 from .pause_policy import DEFAULT_CONTINUATION_GAP_MS, MAX_CONTINUATION_SPAN_MS, may_bridge_unfinished_pause
 from .source_passage_policy import (
+    DEFAULT_CUE_JOIN_GAP_MS, DEFAULT_DIAGNOSTIC_SPAN_MS,
     DEFAULT_MIN_CHARS, DEFAULT_PREFERRED_CHARS, DEFAULT_SENTENCE_LOOKAHEAD_CHARS,
+    SOURCE_PASSAGE_POLICY_VERSION,
     select_boundaries,
+)
+from .source_sentence_assessment import (
+    head_until_genuine,
+    hold_short_sentence_reason,
+    is_genuine_source_sentence,
+    is_supported_source_language,
+    source_clause_rank,
 )
 import re
 from dataclasses import dataclass
@@ -198,16 +206,19 @@ def _boundary_reason(
         return "speaker"
     gap_ms = following.start_ms - previous.end_ms
     # Timing and size suggest where to look; they do not make a random word
-    # boundary suitable. Use the same conservative grammar rules as TTS planning.
-    rank = classify_boundary(
-        _join_text([token.text for token in tokens[max(start, end_exclusive - 16):end_exclusive]]),
-        _join_text([token.text for token in tokens[end_exclusive:end_exclusive + 16]]),
-        language_code=language_code,
-    )
+    # boundary suitable. Clause/conjunction ranks reuse the shared TTS
+    # grammar; sentence terminals use the SOURCE-only provisional assessment
+    # instead, so ellipsis hesitations ("It's…") never count as complete.
+    left_window = _join_text([token.text for token in tokens[max(start, end_exclusive - 16):end_exclusive]])
+    right_window = _join_text([token.text for token in tokens[end_exclusive:end_exclusive + 16]])
     if gap_ms > DEFAULT_CONTINUATION_GAP_MS:
         return "long_pause"
-    if rank == 0:
+    # SOURCE-only assessment (never the shared TTS classifier): ellipsis
+    # hesitations are unfinished, clause punctuation ranks locally, and
+    # conjunction onsets apply only for supported languages.
+    if is_genuine_source_sentence(left_window, right_window, language_code):
         return "sentence"
+    rank = source_clause_rank(left_window, right_window, language_code)
     if rank in {1, 2}:
         return "strong_clause" if rank == 1 else "clause"
     if rank == 3:
@@ -458,8 +469,8 @@ def build_source_passages(
     min_chars: int = DEFAULT_MIN_CHARS,
     max_chars: int = DEFAULT_PREFERRED_CHARS,
     sentence_lookahead_chars: int = DEFAULT_SENTENCE_LOOKAHEAD_CHARS,
-    max_span_ms: int = 8000,
-    pause_ms: int = 650,
+    max_span_ms: int = DEFAULT_DIAGNOSTIC_SPAN_MS,
+    pause_ms: int = DEFAULT_CUE_JOIN_GAP_MS,
     language_code: str = "en",
 ) -> list[dict[str, Any]]:
     """Build natural passages from word evidence, not imported cue formatting.
@@ -534,7 +545,8 @@ def build_source_passages(
         aligned.append((cue, tokens, matched))
 
     output: list[dict[str, Any]] = []
-    for group in _aligned_runs(aligned, language_code=language_code, pause_ms=pause_ms):
+    for group in _aligned_runs(aligned, language_code=language_code, pause_ms=pause_ms,
+                               min_chars=min(min_chars, max_chars)):
         output.extend(_project_run(group, min_chars=min(min_chars, max_chars),
                                    max_chars=max_chars, max_span_ms=max_span_ms,
                                    pause_ms=pause_ms, lookahead_chars=sentence_lookahead_chars,
@@ -557,12 +569,16 @@ def _reliable_cue(record: tuple) -> bool:
     return True
 
 
-def _aligned_runs(aligned: list[tuple], *, language_code: str, pause_ms: int) -> list[list[tuple]]:
+def _aligned_runs(aligned: list[tuple], *, language_code: str, pause_ms: int,
+                 min_chars: int = DEFAULT_MIN_CHARS) -> list[list[tuple]]:
     """Remove verified cue-container edges before looking for sentence endings.
 
     Never flatten an uncertain cue, overlapping evidence, or a speaker change.
-    A real sentence boundary already ends a run, including a short sentence.
-    The bounded hesitation policy still protects long source interruptions.
+    A real sentence boundary already ends a run, including a short sentence,
+    except for bounded hold structures (exact repetition into ellipsis, or a
+    filler leader before a tiny scrap) assessed with the same SOURCE-only
+    rules as in-run selection.  The bounded hesitation policy still protects
+    long source interruptions.
     """
     runs: list[list[tuple]] = []
     budget = 0
@@ -577,22 +593,54 @@ def _aligned_runs(aligned: list[tuple], *, language_code: str, pause_ms: int) ->
         left_cue, left_tokens, left_matched = previous
         left_text = _join_text([t.text for t in left_tokens])
         right_text = _join_text([t.text for t in tokens])
-        rank = classify_boundary(left_text, right_text, language_code=language_code)
-        if rank == 0 or not left_tokens or not tokens:
+        # SOURCE-only ranks, consistent with _boundary_reason: an ellipsis
+        # seam ("And…") never splits a run as a sentence, and unknown/mixed
+        # languages never inherit shared English conjunction grammar.
+        rank = source_clause_rank(left_text, right_text, language_code)
+        genuine = is_genuine_source_sentence(left_text, right_text, language_code)
+        if not left_tokens or not tokens:
             runs.append([record])
             budget = 0
             continue
         reliable = _reliable_cue(previous) and _reliable_cue(record)
         same_speaker = bool(_speaker(left_cue).strip()) and _speaker(left_cue) == _speaker(cue)
         gap = (matched[0].start_ms - left_matched[len(left_tokens)-1].end_ms) if reliable else 0
+        # Hold a short genuine seam only for bounded structures, assessed
+        # with the same rule as in-run selection against the follower head
+        # (up to the right cue's first genuine sentence, so "Yes…" heads
+        # hold even when the cue continues).  Genuine followers, speaker
+        # changes, overlaps, and long interruptions still split; a held but
+        # unbridgeable seam also stays split conservatively below.
+        # Zero preserves a zero ordinary joining allowance (only zero-width
+        # seams join ordinarily); longer gaps still use the bounded
+        # unfinished-phrase continuation below.
+        ordinary_hold = max(0, min(pause_ms, DEFAULT_CONTINUATION_GAP_MS))
+        hold_short_sentence = (
+            genuine and reliable and same_speaker
+            and hold_short_sentence_reason(
+                left_text, head_until_genuine(right_text, language_code),
+                language_code, min_chars) is not None
+            and 0 <= gap <= ordinary_hold
+            and left_cue['end_ms'] <= cue['start_ms']
+        )
+        if genuine and not hold_short_sentence:
+            runs.append([record])
+            budget = 0
+            continue
         first_cue, first_tokens, first_matched = runs[-1][0]
         span = (matched[len(tokens)-1].end_ms - first_matched[0].start_ms) if reliable else 0
-        ordinary = max(1, min(pause_ms, DEFAULT_CONTINUATION_GAP_MS))
-        gap_ok = 0 <= gap <= ordinary or may_bridge_unfinished_pause(
-            left_text, right_text, gap, ordinary_gap_ms=ordinary,
-            continuation_gap_ms=DEFAULT_CONTINUATION_GAP_MS, language_code=language_code,
-            bridged_pause_ms=budget, combined_span_ms=span,
-        )
+        ordinary = max(0, min(pause_ms, DEFAULT_CONTINUATION_GAP_MS))
+        # Unknown/mixed languages bypass the shared hesitation classifier
+        # (which would apply English conjunction grammar); only an ordinary
+        # pause may join there.
+        if is_supported_source_language(language_code):
+            gap_ok = 0 <= gap <= ordinary or may_bridge_unfinished_pause(
+                left_text, right_text, gap, ordinary_gap_ms=ordinary,
+                continuation_gap_ms=DEFAULT_CONTINUATION_GAP_MS, language_code=language_code,
+                bridged_pause_ms=budget, combined_span_ms=span,
+            )
+        else:
+            gap_ok = 0 <= gap <= ordinary
         if (reliable and same_speaker and left_cue['end_ms'] <= cue['start_ms']
                 and gap_ok and 0 < span <= MAX_CONTINUATION_SPAN_MS):
             record[0]['_bridged_pause_ms'] = gap if gap > ordinary else 0
@@ -629,10 +677,12 @@ def _project_run(group: list[tuple], *, min_chars: int, max_chars: int,
                                   language_code=language_code)
         if reason:
             candidates[position] = reason
-    candidates[len(tokens)] = ('sentence' if matched.get(len(tokens)-1) is not None and matched[len(tokens)-1].valid_timing and classify_boundary(
-        _join_text([t.text for t in tokens[-16:]]), '', language_code=language_code) == 0 else 'cue')
+    tail_window = _join_text([t.text for t in tokens[-16:]])
+    candidates[len(tokens)] = ('sentence' if matched.get(len(tokens)-1) is not None and matched[len(tokens)-1].valid_timing and is_genuine_source_sentence(
+        tail_window, '', language_code=language_code) else 'cue')
     boundaries = select_boundaries([t.text for t in tokens], candidates, min_chars=min_chars,
-                                   preferred_chars=max_chars, lookahead_chars=lookahead_chars)
+                                   preferred_chars=max_chars, lookahead_chars=lookahead_chars,
+                                   language_code=language_code)
     result = []
     start = 0
     for boundary in boundaries:
@@ -675,11 +725,19 @@ def _project_run(group: list[tuple], *, min_chars: int, max_chars: int,
         # Unknown evidence remains a plain cue window with no claimed precision.
         if row['timing_basis'] == 'word_boundaries':
             row['boundary_selection'] = {
-                'policy': 'sentence_preferred_v1', 'reason': boundary.selection_reason,
+                'policy': SOURCE_PASSAGE_POLICY_VERSION, 'reason': boundary.selection_reason,
+                'policy_version': SOURCE_PASSAGE_POLICY_VERSION,
                 'soft_min_chars': min_chars, 'preferred_chars': max_chars,
                 'sentence_lookahead_chars': lookahead_chars, 'actual_chars': len(row['text']),
+                'max_span_ms': max_span_ms, 'pause_ms': pause_ms,
+                'language_code': language_code,
                 'length_preference_exceeded': boundary.preferred_length_exceeded,
                 'span_preference_exceeded': row['end_ms'] - row['start_ms'] > max_span_ms,
+                'suppressed_sentence_splits': [
+                    {'offset': entry.get('offset'), 'reason': entry.get('reason'),
+                     'length': entry.get('length')}
+                    for entry in (boundary.suppressed or ())
+                ],
             }
         result.append(row)
         start = end

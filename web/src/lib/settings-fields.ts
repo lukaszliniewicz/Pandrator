@@ -366,6 +366,13 @@ const SETTING_ORDER: Record<string, string[]> = {
     'hard_gap_ms',
     'sentence_boundary_threshold'
   ],
+  source_passages: [
+    'min_chars',
+    'preferred_chars',
+    'sentence_lookahead_chars',
+    'cue_join_gap_ms',
+    'diagnostic_span_ms'
+  ],
   correction: [
     'enabled',
     'model_name',
@@ -829,6 +836,11 @@ export function numberPresentation(key: string): NumberPresentation {
     moss_max_chunk_seconds: { min: 30, max: 120, step: 1 },
     moss_ctc_padding_seconds: { min: 0, max: 2, step: 0.1 },
     max_lines: { min: 1, max: 3, step: 1 },
+    min_chars: { min: 1, max: 500, step: 1 },
+    preferred_chars: { min: 1, max: 1000, step: 1 },
+    sentence_lookahead_chars: { min: 0, max: 200, step: 1 },
+    cue_join_gap_ms: { min: 0, max: 10000, step: 50 },
+    diagnostic_span_ms: { min: 1000, max: 60000, step: 500 },
     max_cps: { min: 1, step: 0.5 },
     synchronization_delay_ms: { min: 0, max: 10000, step: 50 },
     synchronization_speed: { min: 1, max: 4, step: 0.01 },
@@ -963,6 +975,11 @@ export function settingLabel(key: string): string {
     crispasr_vad_max_speech_seconds: 'Maximum detected speech (seconds)',
     crispasr_vad_speech_pad_ms: 'Speech-edge padding (ms)',
     subtitle_hard_gap_ms: 'Hard subtitle boundary after silence (ms)',
+    min_chars: 'Minimum substantial-clause size',
+    preferred_chars: 'Preferred passage size (soft)',
+    sentence_lookahead_chars: 'Sentence fit window (soft)',
+    cue_join_gap_ms: 'Cue join gap (guarded joining)',
+    diagnostic_span_ms: 'Diagnostic span (not a cap)',
     subtitle_sentence_boundary_threshold: 'Sentence boundary sensitivity',
     phrase_gap_ms: 'Subtitle grouping gap (ms)',
     hard_gap_ms: 'Hard subtitle boundary after silence (ms)',

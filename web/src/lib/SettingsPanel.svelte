@@ -97,6 +97,13 @@
       'sentence_boundary_threshold',
       'boundary_correction_enabled'
     ],
+    source_passages: [
+      'min_chars',
+      'preferred_chars',
+      'sentence_lookahead_chars',
+      'cue_join_gap_ms',
+      'diagnostic_span_ms'
+    ],
     correction: [
       'enabled',
       'model_name',

@@ -2182,6 +2182,54 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{sessionId}/sources/{artifactId}/passages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getSourcePassages"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/sources/{artifactId}/passages/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["previewSourcePassages"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/sources/{artifactId}/passages/rebuild": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["rebuildSourcePassages"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{sessionId}/sources/{attachmentId}": {
         parameters: {
             query?: never;
@@ -5522,6 +5570,28 @@ export interface components {
              * @default null
              */
             source_artifact_id?: string | null;
+        };
+        /** SourcePassagePreviewRequest */
+        SourcePassagePreviewRequest: {
+            /** Source Passages */
+            source_passages?: {
+                [key: string]: unknown;
+            };
+        };
+        /** SourcePassageRebuildRequest */
+        SourcePassageRebuildRequest: {
+            /** Expected Settings Hash */
+            expected_settings_hash: string;
+            /** Expected Settings Revision */
+            expected_settings_revision: number;
+            /** Expected Source Content Hash */
+            expected_source_content_hash: string;
+            /** Expected Source Revision Id */
+            expected_source_revision_id: string;
+            /** Source Passages */
+            source_passages?: {
+                [key: string]: unknown;
+            };
         };
         /** SourceReuseRequest */
         SourceReuseRequest: {
@@ -10376,6 +10446,80 @@ export interface operations {
         responses: {
             /** @description Queued */
             202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getSourcePassages: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+                artifactId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description getSourcePassages */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    previewSourcePassages: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+                artifactId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SourcePassagePreviewRequest"];
+            };
+        };
+        responses: {
+            /** @description previewSourcePassages */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    rebuildSourcePassages: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                sessionId: string;
+                artifactId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SourcePassageRebuildRequest"];
+            };
+        };
+        responses: {
+            /** @description rebuildSourcePassages */
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };

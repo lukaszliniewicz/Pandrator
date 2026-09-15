@@ -1658,6 +1658,27 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                         **(record.value_json if record is not None else {}),
                     }
                     prepared_value = prepare_tts_provider_switch(previous, prepared_value)
+                if setting_key == "defaults.source_passages":
+                    from pandrator.logic.dubbing.source_passage_settings import (
+                        SOURCE_PASSAGE_DEFAULTS,
+                        normalize_source_passage_settings,
+                    )
+
+                    if not isinstance(prepared_value, dict):
+                        raise ValueError(
+                            "source_passages defaults must be an object."
+                        )
+                    unknown = set(prepared_value) - set(SOURCE_PASSAGE_DEFAULTS)
+                    if unknown:
+                        raise ValueError(
+                            f"Unknown source_passages keys: {sorted(unknown)}"
+                        )
+                    # Like other settings, PUT replaces the sparse defaults.
+                    # In particular, {} restores built-in defaults.
+                    try:
+                        normalize_source_passage_settings(prepared_value)
+                    except TypeError as error:
+                        raise ValueError(str(error)) from error
                 if setting_key not in {
                     "services.tts",
                     "services.stt",
@@ -2582,6 +2603,9 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     from .subtitle_source_routes import register_subtitle_source_routes
 
     register_subtitle_source_routes(app, services, require_auth, error_response)
+    from .source_passage_routes import register_source_passage_routes
+
+    register_source_passage_routes(app, context)
     from .session_flow_routes import register_session_flow_routes
 
     register_session_flow_routes(app, services, require_auth, error_response, context.guards.principal)

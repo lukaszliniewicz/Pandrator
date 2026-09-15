@@ -17,11 +17,12 @@ WORKFLOW_SECTIONS = {
     "audiobook": frozenset(
         {"text", "source_cleaning", "tts", "audio", "rvc", "output"}
     ),
-    "subtitles": frozenset({"stt", "subtitles", "correction", "translation", "output"}),
+    "subtitles": frozenset({"stt", "subtitles", "source_passages", "correction", "translation", "output"}),
     "voiceover": frozenset(
         {
             "stt",
             "subtitles",
+            "source_passages",
             "correction",
             "translation",
             "tts",
@@ -34,6 +35,7 @@ WORKFLOW_SECTIONS = {
         {
             "stt",
             "subtitles",
+            "source_passages",
             "correction",
             "translation",
             "tts",
@@ -207,6 +209,13 @@ _DESCRIPTIONS: dict[str, dict[str, str]] = {
         "hard_gap_ms": "Sets a hard pause boundary for Pandrator's deterministic word-timed subtitle composer. It will never create a cue across a gap this long; this value is not sent to a model.",
         "sentence_boundary_threshold": "Sets the sentence-boundary probability threshold used by subtitle finalization when scoring semantic cue breaks; the compositor bounds it to 0.01 through 0.99.",
         "boundary_correction_enabled": "Would enable a boundary-correction pass for subtitle timings, but this setting currently has no consumer in the finalization or workflow runtime.",
+    },
+    "source_passages": {
+        "min_chars": "Sets the minimum characters applied to fallback clause selection only. Short genuine sentences stay independent; validation enforces min_chars at or below preferred_chars.",
+        "preferred_chars": "Sets the soft preferred passage length in characters. Passage lengths are preferences and never force a cut at an arbitrary word.",
+        "sentence_lookahead_chars": "Sets the sentence fit window beyond preferred_chars when preferring a genuine sentence boundary.",
+        "cue_join_gap_ms": "Sets the ordinary guarded joining allowance in milliseconds. Verified unfinished same-speaker phrases may bridge gaps up to this; bounded unfinished-phrase bridging can still allow more, up to a 3000 ms cumulative budget enforced by the builder, which also clamps larger values to 3000. Never an automatic split; 0 keeps a zero ordinary gap.",
+        "diagnostic_span_ms": "Sets the diagnostic span in milliseconds. It only flags span_preference_exceeded and never imposes a hard cap.",
     },
     "correction": {
         **_TRANSFORMATION_DESCRIPTIONS,
@@ -550,6 +559,13 @@ _METADATA: dict[str, dict[str, dict[str, object]]] = {
         "boundary_correction_enabled": {
             "caveat": "No current consumer is wired for this setting; changing it does not currently run boundary correction."
         },
+    },
+    "source_passages": {
+        "min_chars": {"minimum": 1, "maximum": 500, "unit": "characters"},
+        "preferred_chars": {"minimum": 1, "maximum": 1000, "unit": "characters"},
+        "sentence_lookahead_chars": {"minimum": 0, "maximum": 200, "unit": "characters"},
+        "cue_join_gap_ms": {"minimum": 0, "maximum": 3000, "unit": "milliseconds"},
+        "diagnostic_span_ms": {"minimum": 1000, "maximum": 60000, "unit": "milliseconds"},
     },
     "correction": {
         **_TRANSFORMATION_METADATA,

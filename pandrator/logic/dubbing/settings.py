@@ -6,6 +6,7 @@ import math
 import re
 from typing import Any
 
+from .source_passage_settings import normalize_source_passage_settings
 from .stt_backends import normalize_stt_backend
 
 TRANSLATION_BACKEND_LLM = "llm"
@@ -255,6 +256,14 @@ def migrate_dubbing_payload(
     migrated["correction_style"] = normalize_correction_style(
         migrated.get("correction_style")
     )
+    # BACKEND source logical passages: validate/normalize when present, never
+    # alter algorithm behavior. Canonical defaults live in
+    # source_passage_settings.py so baseline 60/160/20 comparisons hold.
+    raw_passages = migrated.get("source_passages")
+    if raw_passages is not None:
+        migrated["source_passages"] = normalize_source_passage_settings(
+            raw_passages
+        )
     migrated.setdefault("speech_block_min_chars", 10)
     migrated.setdefault("speech_block_max_chars", 220)
     migrated.setdefault("speech_block_continuation_threshold_ms", 3000)

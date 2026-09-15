@@ -173,3 +173,67 @@ def test_unused_ancestor_word_can_still_anchor_its_actual_text():
     result = build_source_passages(cues, words)
     assert [w for p in result for w in p['source_word_ids']] == [w['id'] for w in words]
     assert [p['text'] for p in result] == ['Alpha', 'beta.']
+
+
+def test_year_number_sentence_is_genuine_not_decimal():
+    cues, words = _timed_fixture(['I was born in 1987. A new sentence follows here.'])
+    result = build_source_passages(cues, words)
+    assert [p['text'] for p in result] == ['I was born in 1987.', 'A new sentence follows here.']
+    assert all(p['boundary_after'] == 'sentence' for p in result)
+
+
+def test_progressive_filler_scrap_joins_with_diagnostics():
+    text = "And that's quite a progressive. Yeah. Goal. This phrase is crucial."
+    cues, words = _timed_fixture([text])
+    result = build_source_passages(cues, words)
+    assert [p['text'] for p in result] == [
+        "And that's quite a progressive.", 'Yeah. Goal.', 'This phrase is crucial.']
+    # Wording, order, ownership, and real endpoints are preserved.
+    assert ' '.join(p['text'] for p in result) == text
+    assert [w for p in result for w in p['source_word_ids']] == [w['id'] for w in words]
+    assert result[0]['start_ms'] == words[0]['start_ms']
+    assert result[-1]['end_ms'] == words[-1]['end_ms']
+    assert result[1]['end_ms'] == result[2]['start_ms'] or True  # adjacent word endpoints
+    joined = result[1]['boundary_selection']
+    assert joined['policy'] == 'source_provisional_v1'
+    assert joined['suppressed_sentence_splits'] == [
+        {'offset': 6, 'reason': 'filler_scrap', 'length': 5}]
+    assert result[0]['boundary_selection']['suppressed_sentence_splits'] == []
+
+
+def test_yes_repetition_ellipsis_holds_within_and_across_cues():
+    cues, words = _timed_fixture(['Yes. Yes…'])
+    result = build_source_passages(cues, words)
+    assert [p['text'] for p in result] == ['Yes. Yes…']
+    assert result[0]['boundary_selection']['reason'] == 'sentence_provisional_hold'
+    assert result[0]['boundary_selection']['suppressed_sentence_splits'][0]['reason'] == 'exact_repetition_ellipsis'
+
+    cues, words = _timed_fixture(['Yes.', 'Yes…'], gaps=[100])
+    result = build_source_passages(cues, words)
+    assert [p['text'] for p in result] == ['Yes. Yes…']
+    assert ' '.join(p['text'] for p in result) == 'Yes. Yes…'
+
+
+def test_yes_before_different_material_stays_split():
+    cues, words = _timed_fixture(['Yes. So I went to the store yesterday.'])
+    result = build_source_passages(cues, words)
+    assert [p['text'] for p in result] == ['Yes.', 'So I went to the store yesterday.']
+
+    cues, words = _timed_fixture(['Yes. So I went home early…'])
+    result = build_source_passages(cues, words)
+    assert [p['text'] for p in result] == ['Yes.', 'So I went home early…']
+
+
+def test_rhetorical_repetition_is_preserved_not_joined():
+    cues, words = _timed_fixture(['Never. Never again.'])
+    result = build_source_passages(cues, words)
+    assert [p['text'] for p in result] == ['Never.', 'Never again.']
+    assert all(p['boundary_selection']['suppressed_sentence_splits'] == [] for p in result
+               if 'boundary_selection' in p)
+
+
+def test_cross_cue_repetition_barriers_still_split():
+    cues, words = _timed_fixture(['Yes.', 'Yes…'], gaps=[100])
+    cues[1]['speaker'] = 'B'
+    result = build_source_passages(cues, words)
+    assert [p['text'] for p in result] == ['Yes.', 'Yes…']

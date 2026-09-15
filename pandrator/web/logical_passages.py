@@ -16,6 +16,14 @@ from sqlalchemy.orm import Session
 
 from pandrator.logic.dubbing.logical_passages import build_source_passages
 from pandrator.logic.dubbing.models import SubtitleSegment
+from pandrator.logic.dubbing.source_passage_settings import (
+    SOURCE_PASSAGE_DEFAULTS,
+    SOURCE_PASSAGE_POLICY_VERSION,
+    effective_source_passage_settings,
+    normalize_source_passage_settings,
+    source_passage_settings_hash,
+    to_build_kwargs,
+)
 from pandrator.logic.dubbing.srt_utils import compose_srt
 
 from .models import (
@@ -31,6 +39,11 @@ from .models import (
 
 PASSAGE_VERSION = 1
 PASSAGE_NODE_KIND = "logical_passage"
+# Raw source roles eligible for passage pinning, preview, and explicit rebuild.
+# Derived correction/translation artifacts are never rebuilt in place.
+RAW_SOURCE_PASSAGE_ROLES = ("transcription", "media_edit_subtitles")
+# Bounded preview payload so large sources stay cheap over HTTP.
+PREVIEW_ITEM_LIMIT = 50
 
 
 def _hash(value: Any) -> str:
@@ -219,8 +232,19 @@ def source_passages(
     artifact: Artifact,
     *,
     segments: list[Segment] | None = None,
+    source_passage_settings: dict[str, Any] | None = None,
+    reuse_stored: bool = True,
 ) -> list[dict[str, Any]]:
-    """Prefer preserved passages; otherwise use existing source-word evidence."""
+    """Prefer preserved passages; otherwise use existing source-word evidence.
+
+    Read-only: never pins or rebuilds. When no bound packet exists (or
+    ``reuse_stored`` is false, as used by preview/rebuild paths that must
+    construct from candidate settings rather than return the existing
+    ledger), fresh rows are built with ``source_passage_settings`` when
+    supplied, else the shared defaults. Callers on write paths should use
+    :func:`pin_raw_source_passages` so the first construction is pinned in
+    their transaction.
+    """
     revision_id = str((artifact.metadata_json or {}).get("revision_id") or "")
     revision = session.get(DocumentRevision, revision_id) if revision_id else None
     document = session.get(Document, revision.document_id) if revision else None
@@ -231,6 +255,7 @@ def source_passages(
         or document.stage != artifact.role
     ):
         return []
+    passages = stored_passages(artifact) if reuse_stored else None
     if segments is None:
         segments = list(
             session.scalars(
@@ -241,7 +266,6 @@ def source_passages(
                 .order_by(Segment.ordinal)
             )
         )
-    passages = stored_passages(artifact)
     if passages is None:
         cues = [
             {
@@ -263,7 +287,19 @@ def source_passages(
         language = document.language or (record.source_language if record else None)
         if not same_timing_language(language, (reference or {}).get("language")):
             words = []
-        passages = build_source_passages(cues, words, language_code=language or "")
+        build_kwargs = {"language_code": language or ""}
+        if source_passage_settings is not None:
+            build_kwargs.update(
+                {
+                    key: value
+                    for key, value in to_build_kwargs(
+                        source_passage_settings,
+                        language_code=language or "",
+                    ).items()
+                    if key != "language_code"
+                }
+            )
+        passages = build_source_passages(cues, words, **build_kwargs)
     for row in passages:
         # Evidence tools still address real display cues in the selected artifact.
         # These are explicitly separate from model-visible passage ordinals.
@@ -367,18 +403,32 @@ def attach_passages(
     rows: list[dict[str, Any]],
     *,
     source: Artifact,
+    source_passage_settings: dict[str, Any] | None = None,
+    source_passage_settings_revision: int | None = None,
+    policy_version: str | None = None,
 ) -> None:
     if not _valid_rows(rows):
         raise ValueError("Cannot store invalid logical passages.")
     metadata = dict(artifact.metadata_json or {})
     if not metadata.get("revision_id") or not artifact.content_hash:
         raise ValueError("Logical passages require a materialized display artifact.")
+    effective = normalize_source_passage_settings(
+        source_passage_settings if source_passage_settings is not None else {}
+    )
     metadata["logical_passages"] = {
         "schema_version": PASSAGE_VERSION,
         "display_revision_id": metadata["revision_id"],
         "display_content_hash": artifact.content_hash,
         "source_artifact_id": source.id,
         "source_revision_id": (source.metadata_json or {}).get("revision_id"),
+        "policy_version": policy_version or SOURCE_PASSAGE_POLICY_VERSION,
+        "source_passage_settings": effective,
+        "source_passage_settings_hash": source_passage_settings_hash(effective),
+        "source_passage_settings_revision": (
+            None
+            if source_passage_settings_revision is None
+            else int(source_passage_settings_revision)
+        ),
         "items": deepcopy(rows),
     }
     artifact.metadata_json = metadata
@@ -497,3 +547,493 @@ def materialize_speech_source(
     metadata["logical_passages"] = packet
     artifact.metadata_json = metadata
     return rows, revision.id
+
+
+class PassageRevisionConflict(ValueError):
+    """Optimistic-concurrency guard for passage preview/rebuild requests."""
+
+
+class PassageIneligibleSource(ValueError):
+    """The selected artifact is not a raw source eligible for passages."""
+
+
+def source_passage_effective_snapshot(
+    session: Session,
+    session_id: str,
+) -> dict[str, Any]:
+    """Read the live `source_passages` effective settings (read-only)."""
+    from .workspace import WorkspaceSettingsService
+
+    fetched = WorkspaceSettingsService.get_in_session(
+        WorkspaceSettingsService.__new__(WorkspaceSettingsService),
+        session,
+        session_id,
+        "source_passages",
+    )
+    effective = normalize_source_passage_settings(fetched["effective"])
+    return {
+        "effective": effective,
+        "revision": int(fetched.get("revision") or 0),
+        "global_revision": int(fetched.get("global_revision") or 0),
+        "settings_hash": source_passage_settings_hash(effective),
+        "policy_version": SOURCE_PASSAGE_POLICY_VERSION,
+    }
+
+
+def _require_raw_source(session: Session, session_id: str, artifact_id: str) -> Artifact:
+    artifact = session.get(Artifact, artifact_id)
+    if artifact is None or artifact.session_id != session_id:
+        raise KeyError(artifact_id)
+    if artifact.state == "deleted":
+        raise PassageIneligibleSource("The source artifact was deleted.")
+    if artifact.role not in RAW_SOURCE_PASSAGE_ROLES:
+        raise PassageIneligibleSource(
+            "Only raw transcription or media-edit subtitle sources can have "
+            "passages pinned or rebuilt. Adopt the subtitle file first."
+        )
+    return artifact
+
+
+def _source_document_revision(
+    session: Session, artifact: Artifact
+) -> tuple[Document, DocumentRevision, list[Segment]]:
+    revision_id = str((artifact.metadata_json or {}).get("revision_id") or "")
+    if not revision_id:
+        raise PassageIneligibleSource(
+            "The source artifact has no materialized subtitle revision."
+        )
+    revision = session.get(DocumentRevision, revision_id)
+    if revision is None:
+        raise PassageIneligibleSource("The source revision was not found.")
+    document = session.get(Document, revision.document_id)
+    if (
+        document is None
+        or document.session_id != artifact.session_id
+        or document.stage != artifact.role
+    ):
+        raise PassageIneligibleSource(
+            "The source artifact and revision stages do not match."
+        )
+    segments = list(
+        session.scalars(
+            select(Segment)
+            .where(Segment.revision_id == revision.id)
+            .order_by(Segment.ordinal)
+        ).all()
+    )
+    return document, revision, segments
+
+
+def pin_raw_source_passages(
+    session: Session,
+    artifact: Artifact,
+    *,
+    effective: dict[str, Any] | None = None,
+    settings_revision: int | None = None,
+    segments: list[Segment] | None = None,
+) -> list[dict[str, Any]]:
+    """Pin first-use raw passages on the artifact inside the caller txn.
+
+    Returns stored rows unchanged when a bound packet already exists, so
+    settings/default changes never rebuild them. Otherwise builds with the
+    supplied effective settings (or shared defaults) and attaches the packet
+    with policy version and settings provenance. Never touches downstream
+    correction/translation ledgers, plans, or takes.
+    """
+    existing = stored_passages(artifact)
+    if existing is not None:
+        return existing
+    if artifact.role not in RAW_SOURCE_PASSAGE_ROLES:
+        return source_passages(
+            session, artifact, segments=segments, source_passage_settings=effective
+        )
+    rows = source_passages(
+        session, artifact, segments=segments, source_passage_settings=effective
+    )
+    if not rows:
+        # Legacy imported subtitles may not yet have a materialized revision.
+        # Preserve the existing file-based processing fallback without pinning
+        # an empty packet or manufacturing source timing evidence.
+        return []
+    attach_passages(
+        artifact,
+        rows,
+        source=artifact,
+        source_passage_settings=effective,
+        source_passage_settings_revision=settings_revision,
+    )
+    return rows
+
+
+def passage_status(
+    session: Session,
+    session_id: str,
+    artifact_id: str,
+) -> dict[str, Any]:
+    """Read-only passage pin state plus the live effective settings."""
+    artifact = _require_raw_source(session, session_id, artifact_id)
+    revision_id = str((artifact.metadata_json or {}).get("revision_id") or "")
+    snapshot = source_passage_effective_snapshot(session, session_id)
+    packet = (artifact.metadata_json or {}).get("logical_passages")
+    pinned = stored_passages(artifact) is not None
+    return {
+        "artifact_id": artifact.id,
+        "revision_id": revision_id or None,
+        "content_hash": artifact.content_hash,
+        "pinned": pinned,
+        "policy_version": (
+            str((packet or {}).get("policy_version") or "")
+            if pinned
+            else SOURCE_PASSAGE_POLICY_VERSION
+        ),
+        "source_passage_settings": (
+            deepcopy((packet or {}).get("source_passage_settings"))
+            if pinned
+            else snapshot["effective"]
+        ),
+        "source_passage_settings_hash": (
+            str((packet or {}).get("source_passage_settings_hash") or "")
+            if pinned
+            else snapshot["settings_hash"]
+        ),
+        "source_passage_settings_revision": (
+            (packet or {}).get("source_passage_settings_revision")
+            if pinned
+            else snapshot["revision"]
+        ),
+        "passage_count": (
+            len((packet or {}).get("items") or []) if pinned else None
+        ),
+        "display_content_hash": (
+            str((packet or {}).get("display_content_hash") or "")
+            if pinned
+            else None
+        ),
+        "live_effective_settings": snapshot["effective"],
+        "live_settings_hash": snapshot["settings_hash"],
+        "live_settings_revision": snapshot["revision"],
+    }
+
+
+def preview_source_passages(
+    session: Session,
+    session_id: str,
+    artifact_id: str,
+    *,
+    override: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build a bounded, read-only preview without mutating any artifact."""
+    artifact = _require_raw_source(session, session_id, artifact_id)
+    _document, _revision, segments = _source_document_revision(session, artifact)
+    snapshot = source_passage_effective_snapshot(session, session_id)
+    candidate = effective_source_passage_settings(
+        snapshot["effective"], override or {}
+    )
+    rows = source_passages(
+        session,
+        artifact,
+        segments=segments,
+        source_passage_settings=candidate,
+        reuse_stored=False,
+    )
+    settings_hash = source_passage_settings_hash(candidate)
+    return {
+        "artifact_id": artifact.id,
+        "revision_id": str((artifact.metadata_json or {}).get("revision_id") or ""),
+        "content_hash": artifact.content_hash,
+        "policy_version": SOURCE_PASSAGE_POLICY_VERSION,
+        "effective_settings": candidate,
+        "settings_hash": settings_hash,
+        "settings_revision": snapshot["revision"],
+        "passage_count": len(rows),
+        "items": deepcopy(rows[:PREVIEW_ITEM_LIMIT]),
+        "truncated": len(rows) > PREVIEW_ITEM_LIMIT,
+        "pinned": stored_passages(artifact) is not None,
+        "warnings": (
+            ["Stored passages remain unchanged; this preview built no writes."]
+            if stored_passages(artifact) is not None
+            else []
+        ),
+    }
+
+
+def rebuild_source_passages_branch(
+    session: Session,
+    session_id: str,
+    artifact_id: str,
+    *,
+    expected_source_revision_id: str,
+    expected_source_content_hash: str,
+    expected_settings_revision: int,
+    expected_settings_hash: str,
+    override: dict[str, Any] | None = None,
+    write_artifact_file=None,
+) -> dict[str, Any]:
+    """Create a NEW selectable source branch with rebuilt passages.
+
+    Guard order is load-bearing: ownership/role/state, then expected source
+    revision/hash, then expected settings revision/hash are all verified
+    BEFORE building anything, so a stale request never mutates the original.
+    The original artifact, its revision, and all downstream artifacts,
+    selections, plans, and takes are preserved; the branch is registered with
+    ``state="current"`` but is never auto-selected.
+    """
+
+    def _fail_conflict(message: str) -> PassageRevisionConflict:
+        return PassageRevisionConflict(message)
+
+    # 1. Ownership, role, state. No writes before every stale check passes.
+    artifact = _require_raw_source(session, session_id, artifact_id)
+    live_revision_id = str((artifact.metadata_json or {}).get("revision_id") or "")
+    live_content_hash = str(artifact.content_hash or "")
+    if (
+        not expected_source_revision_id
+        or expected_source_revision_id != live_revision_id
+    ):
+        raise _fail_conflict(
+            "The source revision changed; refresh passage status before rebuilding."
+        )
+    if (
+        not expected_source_content_hash
+        or expected_source_content_hash != live_content_hash
+    ):
+        raise _fail_conflict(
+            "The source content changed; refresh passage status before rebuilding."
+        )
+    snapshot = source_passage_effective_snapshot(session, session_id)
+    try:
+        live_revision = int(snapshot["revision"])
+        wanted_revision = int(expected_settings_revision)
+    except (TypeError, ValueError) as error:
+        raise PassageRevisionConflict(
+            "A current settings revision is required to rebuild."
+        ) from error
+    if wanted_revision != live_revision:
+        raise _fail_conflict(
+            "Source-passage settings changed; refresh preview before rebuilding."
+        )
+    candidate = effective_source_passage_settings(
+        snapshot["effective"], override or {}
+    )
+    candidate_hash = source_passage_settings_hash(candidate)
+    if not expected_settings_hash or expected_settings_hash != candidate_hash:
+        raise _fail_conflict(
+            "Source-passage settings changed (including global defaults); "
+            "refresh preview before rebuilding."
+        )
+
+    # 2. Gather inputs directly (never via a pinning path) and build.
+    document, revision, segments = _source_document_revision(session, artifact)
+    if revision.id != live_revision_id:
+        raise _fail_conflict(
+            "The source revision changed; refresh passage status before rebuilding."
+        )
+    rows = source_passages(
+        session,
+        artifact,
+        segments=segments,
+        source_passage_settings=candidate,
+        reuse_stored=False,
+    )
+    if not _valid_rows(rows):
+        raise ValueError("The rebuilt passages are invalid.")
+
+    # 3. New branch: new Document + revision + copied segments/words + artifact.
+    record = session.get(SessionRecord, session_id)
+    if record is None:
+        raise KeyError(session_id)
+    branch_document = Document(
+        session_id=session_id,
+        stage=document.stage,
+        language=document.language,
+    )
+    session.add(branch_document)
+    session.flush()
+    branch_revision = DocumentRevision(
+        document_id=branch_document.id,
+        parent_revision_id=revision.id,
+        revision_number=1,
+        content_hash=_hash(
+            [
+                {
+                    "ordinal": item.ordinal,
+                    "text": item.text,
+                    "start_ms": item.start_ms,
+                    "end_ms": item.end_ms,
+                    "speaker": item.speaker,
+                }
+                for item in segments
+            ]
+        ),
+        reviewed=False,
+        settings_hash=candidate_hash,
+    )
+    session.add(branch_revision)
+    session.flush()
+    old_to_new_segment: dict[str, str] = {}
+    for item in segments:
+        copied = Segment(
+            revision_id=branch_revision.id,
+            ordinal=item.ordinal,
+            node_kind=item.node_kind,
+            start_ms=item.start_ms,
+            end_ms=item.end_ms,
+            text=item.text,
+            speaker=item.speaker,
+            metadata_json={
+                **(dict(item.metadata_json or {})),
+                "passage_branch_of_revision_id": revision.id,
+            },
+        )
+        session.add(copied)
+        session.flush()
+        old_to_new_segment[item.id] = copied.id
+    referenced_word_ids = {
+        word_id for row in rows for word_id in row.get("source_word_ids", [])
+    }
+    old_to_new_word: dict[str, str] = {}
+    if referenced_word_ids:
+        for word in session.scalars(
+            select(TimedWord).where(
+                TimedWord.revision_id == revision.id,
+                TimedWord.id.in_(sorted(referenced_word_ids)),
+            )
+        ).all():
+            copied_word = TimedWord(
+                revision_id=branch_revision.id,
+                segment_id=old_to_new_segment.get(word.segment_id or ""),
+                ordinal=word.ordinal,
+                text=word.text,
+                start_ms=word.start_ms,
+                end_ms=word.end_ms,
+                speaker=word.speaker,
+                confidence=word.confidence,
+                metadata_json={
+                    **(dict(word.metadata_json or {})),
+                    "passage_branch_of_revision_id": revision.id,
+                },
+            )
+            session.add(copied_word)
+            session.flush()
+            old_to_new_word[word.id] = copied_word.id
+        session.flush()
+    # Remap branch rows onto the new segment/word identities so the pinned
+    # ledger references evidence that actually exists in the branch revision.
+    # Original identities are preserved explicitly in branch_ancestry.
+    remapped_rows = []
+    for row in rows:
+        rebuilt = deepcopy(row)
+        rebuilt["source_cue_ids"] = [
+            old_to_new_segment.get(value, value)
+            for value in row.get("source_cue_ids", [])
+        ]
+        rebuilt["source_word_ids"] = [
+            old_to_new_word.get(value, value)
+            for value in row.get("source_word_ids", [])
+        ]
+        rebuilt["source_unit_ids"] = list(row.get("source_unit_ids", []))
+        if isinstance(row.get("source_token_ranges"), list):
+            rebuilt["source_token_ranges"] = [
+                {
+                    **entry,
+                    "source_cue_id": old_to_new_segment.get(
+                        entry.get("source_cue_id"), entry.get("source_cue_id")
+                    ),
+                }
+                if isinstance(entry, dict)
+                else entry
+                for entry in row["source_token_ranges"]
+            ]
+        remapped_rows.append(rebuilt)
+    rows = remapped_rows
+    branch_document.active_revision_id = branch_revision.id
+    session.flush()
+
+    srt_text = passage_srt(
+        [
+            {
+                "start_ms": item.start_ms,
+                "end_ms": item.end_ms,
+                "text": item.text,
+                "speaker": item.speaker or "",
+            }
+            for item in segments
+        ]
+    )
+    digest = hashlib.sha256(srt_text.encode("utf-8")).hexdigest()
+    # Unique managed path per branch (branch document id): no digest-based
+    # sharing, so branches can never collide on one file.
+    relative_path = (
+        f"sessions/{session_id}/passage-branches/{branch_document.id}.srt"
+    )
+    if write_artifact_file is None:
+        raise ValueError("An artifact file writer is required to branch passages.")
+    write_artifact_file(relative_path, srt_text)
+    branch = Artifact(
+        session_id=session_id,
+        kind="srt",
+        role=artifact.role,
+        relative_path=relative_path,
+        mime_type="application/x-subrip",
+        size_bytes=len(srt_text.encode("utf-8")),
+        content_hash=digest,
+        settings_hash=candidate_hash,
+        # Non-current by design: the legacy current-artifact fallback and
+        # newest-current consumers keep resolving the original until the new
+        # branch is explicitly selected. choose_artifact accepts any
+        # non-deleted artifact, so the branch stays selectable.
+        state="stale",
+        metadata_json={
+            "document_id": branch_document.id,
+            "revision_id": branch_revision.id,
+            "stage": document.stage,
+            "language": document.language,
+            "passage_branch_of_artifact_id": artifact.id,
+            "passage_branch_of_revision_id": revision.id,
+        },
+    )
+    session.add(branch)
+    session.flush()
+    session.add(
+        ArtifactEdge(
+            parent_artifact_id=artifact.id,
+            child_artifact_id=branch.id,
+            relation="passage_rebuild",
+        )
+    )
+    session.flush()
+    attach_passages(
+        branch,
+        rows,
+        source=artifact,
+        source_passage_settings=candidate,
+        source_passage_settings_revision=snapshot["revision"],
+    )
+    packet = dict(branch.metadata_json.get("logical_passages") or {})
+    packet["branch_ancestry"] = {
+        "segment_ids": dict(old_to_new_segment),
+        "word_ids": dict(old_to_new_word),
+        "source_artifact_id": artifact.id,
+        "source_revision_id": revision.id,
+    }
+    metadata = dict(branch.metadata_json or {})
+    metadata["logical_passages"] = packet
+    branch.metadata_json = metadata
+    session.flush()
+    return {
+        "branch_artifact_id": branch.id,
+        "branch_revision_id": branch_revision.id,
+        "branch_document_id": branch_document.id,
+        "branch_state": branch.state,
+        "passage_count": len(rows),
+        "policy_version": SOURCE_PASSAGE_POLICY_VERSION,
+        "effective_settings": candidate,
+        "settings_hash": candidate_hash,
+        "settings_revision": snapshot["revision"],
+        "preserved": {
+            "original_artifact_id": artifact.id,
+            "original_revision_id": revision.id,
+            "downstream_untouched": True,
+            "selection_unchanged": True,
+        },
+    }
