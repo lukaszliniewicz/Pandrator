@@ -49,7 +49,7 @@ def project_segments(payload: dict[str, Any], *, view: str = "full", fields: lis
     return {**payload, "items": rows, "view": view, "fields": selected}
 
 
-def revision_history(database, session_id: str, *, limit: int = 50, before_revision_number: int | None = None) -> dict[str, Any]:
+def revision_history(database, session_id: str, *, limit: int = 50, before_revision_number: int | None = None, revision_ids: list[str] | None = None) -> dict[str, Any]:
     from .generation_audio_identity import AudioIdentityContext, take_reuse_reason
     from .workspace import WorkspaceSettingsService
 
@@ -62,6 +62,10 @@ def revision_history(database, session_id: str, *, limit: int = 50, before_revis
         if plan is None:
             return {"items": [], "active_revision_id": None, "total": 0, "next_before_revision_number": None}
         query = select(GenerationPlanRevision).where(GenerationPlanRevision.plan_id == plan.id)
+        # Internal grouped-history callers request only visible checkpoints;
+        # expensive block/audio identity inspection must not visit hidden attempts.
+        if revision_ids is not None:
+            query = query.where(GenerationPlanRevision.id.in_(revision_ids))
         if before_revision_number is not None:
             query = query.where(GenerationPlanRevision.revision_number < before_revision_number)
         revisions = list(session.scalars(query.order_by(GenerationPlanRevision.revision_number.desc()).limit(limit + 1)))
@@ -97,6 +101,8 @@ def revision_history(database, session_id: str, *, limit: int = 50, before_revis
             summary = {"automatic": "Automatic speech plan", "split": "Split speech block", "merge": "Merge adjacent speech blocks", "restore": "Restore earlier speech plan"}.get(action, action.replace("_", " ").capitalize())
             if operation.get("reason") == "early_timing_repair":
                 summary = "Repair speech running ahead of its cues"
+            if operation.get("reason") == "undo_timing_repairs":
+                summary = "Undo automatic timing repairs"
             if operation.get("reason") == "edit_copy":
                 summary = "Editable copy of reviewed or historical speech plan"
             if batch:

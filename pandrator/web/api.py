@@ -17,6 +17,7 @@ from .http_lifecycle import (
     load_or_create_flask_secret,
 )
 from .route_context import RouteContext
+from .repair_batch_routes import register_repair_batch_routes
 
 
 def create_app(
@@ -81,6 +82,10 @@ def create_app(
             guards=guards,
             static_dir=static_dir,
         ),
+    )
+
+    register_repair_batch_routes(
+        app, RouteContext(services=services, guards=guards, static_dir=static_dir)
     )
 
     maintenance_enabled = (

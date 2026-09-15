@@ -266,6 +266,11 @@ class VoiceoverRepairTests(unittest.TestCase):
                 self.revision_id,
                 session.get(GenerationPlanRevision, self.active()).parent_revision_id,
             )
+            from pandrator.web.repair_batches import GUARD_KEY, repair_state_hash
+            accepted = session.get(GenerationPlanRevision, self.active())
+            guard = accepted.operation_json[GUARD_KEY]
+            self.assertEqual(guard["base_state_hash"], repair_state_hash(session, self.revision_id))
+            self.assertEqual(guard["result_state_hash"], repair_state_hash(session, self.active()))
 
     def test_german_clause_conjunction_regenerates_children_in_target_language(self):
         self.first = "Wir lassen den ganzen Gedanken zunächst zusammen"

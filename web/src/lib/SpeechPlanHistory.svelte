@@ -3,9 +3,14 @@
   import { errorMessage } from './errors';
   import { modalDialog } from './modal-dialog';
   import AudioReuseNotice from './AudioReuseNotice.svelte';
+  import RepairBatchPanel from './RepairBatchPanel.svelte';
+  import type { RepairBatch } from './repair-batches';
 
   type Revision = {
     id: string;
+    entry_id?: string;
+    is_repair_checkpoint?: boolean;
+    repair_batch?: RepairBatch;
     revision_number: number;
     parent_revision_id: string | null;
     summary: string;
@@ -51,7 +56,22 @@
   let blocks = $state<Block[]>([]);
   let nextCursor = $state<number | null>(null);
   let nextRevision = $state<number | null>(null);
-  const current = $derived(revisions.find((item) => item.id === selected));
+  let selectedEntry = $state('');
+  let serverActiveRevisionId = $state<string | null | undefined>(undefined);
+  const effectiveActiveRevisionId = $derived(
+    serverActiveRevisionId ?? activeRevisionId
+  );
+  const current = $derived(
+    revisions.find((item) => (item.entry_id ?? item.id) === selectedEntry)
+  );
+  const inspectingCheckpoint = $derived(
+    Boolean(current && selected !== current.id)
+  );
+
+  function chooseRevision(revision: Revision) {
+    selectedEntry = revision.entry_id ?? revision.id;
+    return preview(revision.id);
+  }
   const parentRevision = $derived(
     revisions.find((item) => item.id === current?.parent_revision_id)
   );
@@ -97,11 +117,23 @@
         query.set('before_revision_number', String(nextRevision));
       const result = await apiJson<{
         items: Revision[];
+        active_revision_id: string | null;
         next_before_revision_number: number | null;
-      }>(`${base}/generation-plan/revisions?${query}`);
+      }>(`${base}/generation-plan/history?${query}`);
       revisions = append ? [...revisions, ...result.items] : result.items;
+      serverActiveRevisionId = result.active_revision_id;
       nextRevision = result.next_before_revision_number;
-      if (!append) await preview(activeRevisionId ?? revisions[0]?.id ?? '');
+      if (!append) {
+        const active =
+          revisions.find((item) => item.id === result.active_revision_id) ??
+          revisions[0];
+        if (active) await chooseRevision(active);
+        else {
+          selected = '';
+          selectedEntry = '';
+          blocks = [];
+        }
+      }
     } catch (caught) {
       error = errorMessage(caught);
     } finally {
@@ -110,7 +142,8 @@
   }
 
   async function restore(copy = true) {
-    if (!selected || selected === activeRevisionId || previewLoading) return;
+    if (!selected || selected === effectiveActiveRevisionId || previewLoading)
+      return;
     busy = true;
     try {
       if (copy || !onselect) await onrestore(selected);
@@ -201,19 +234,26 @@
           >
             Loading versions…
           </p>{/if}
-        {#each revisions as revision (revision.id)}
+        {#each revisions as revision (revision.entry_id ?? revision.id)}
           <button
             type="button"
             class="version-card"
-            class:selected={revision.id === selected}
-            aria-pressed={revision.id === selected}
-            aria-label={`Version ${revision.revision_number}: ${revision.summary}`}
+            class:selected={(revision.entry_id ?? revision.id) ===
+              selectedEntry}
+            aria-pressed={(revision.entry_id ?? revision.id) === selectedEntry}
+            aria-label={revision.repair_batch
+              ? revision.summary
+              : `Version ${revision.revision_number}: ${revision.summary}`}
             disabled={busy}
-            onclick={() => void preview(revision.id)}
+            onclick={() => void chooseRevision(revision)}
           >
             <span class="flex flex-wrap items-center gap-2">
-              <strong>Version {revision.revision_number}</strong>
-              {#if revision.id === activeRevisionId}<span
+              <strong
+                >{revision.repair_batch
+                  ? 'Automatic timing repair'
+                  : `Version ${revision.revision_number}`}</strong
+              >
+              {#if revision.id === effectiveActiveRevisionId}<span
                   class="version-badge active-badge">Active</span
                 >{/if}
             </span>
@@ -243,9 +283,33 @@
         aria-busy={previewLoading}
       >
         {#if current}
+          {#if current.repair_batch}
+            {#key current.entry_id}
+              <RepairBatchPanel
+                {sessionId}
+                batch={current.repair_batch}
+                disabled={disabled || busy || previewLoading}
+                onpreview={(revisionId) => void preview(revisionId)}
+                onundone={async (revisionId) => {
+                  serverActiveRevisionId = revisionId;
+                  await loadHistory();
+                }}
+              />
+            {/key}
+          {/if}
           <div class="mb-5 border-b border-[var(--line)] pb-4">
             <h3 class="text-lg font-semibold">
-              Version {current.revision_number}
+              {inspectingCheckpoint
+                ? selected === current.repair_batch?.base_revision_id
+                  ? 'Original plan before repairs'
+                  : 'Repair checkpoint preview'
+                : current.repair_batch
+                  ? current.is_repair_checkpoint
+                    ? 'Selected repair checkpoint'
+                    : current.repair_batch.applied_count
+                      ? 'Repaired plan'
+                      : 'Original plan — no repairs applied'
+                  : `Version ${current.revision_number}`}
             </h3>
             <p class="mt-1 text-sm">{current.summary}</p>
             {#if current.repair_status}
@@ -263,18 +327,20 @@
                   This older version has no recorded repair outcome.
                 </p>{/if}
             {/if}
-            <p class="muted mt-3 text-xs">
-              {current.reusable_segment_count} reusable · {current.stale_segment_count}
-              missing or stale
-              {#if parentRevision}
-                · Based on version {parentRevision.revision_number}{/if}
-            </p>
-            <AudioReuseNotice
-              settingsStale={current.audio_settings_stale_segment_count}
-              identityUnknown={current.audio_identity_unknown_segment_count}
-            />
+            {#if !inspectingCheckpoint}
+              <p class="muted mt-3 text-xs">
+                {current.reusable_segment_count} reusable · {current.stale_segment_count}
+                missing or stale
+                {#if parentRevision}
+                  · Based on version {parentRevision.revision_number}{/if}
+              </p>
+              <AudioReuseNotice
+                settingsStale={current.audio_settings_stale_segment_count}
+                identityUnknown={current.audio_identity_unknown_segment_count}
+              />
+            {/if}
             <div class="mt-4 flex flex-wrap gap-2">
-              {#if selected !== activeRevisionId}
+              {#if selected !== effectiveActiveRevisionId}
                 {#if onselect}<button
                     type="button"
                     class="btn btn-primary"
@@ -315,7 +381,7 @@
             </div>
             <details class="muted mt-4 text-xs">
               <summary class="cursor-pointer">Revision details</summary>
-              <p class="mt-2 break-all">Revision ID: {current.id}</p>
+              <p class="mt-2 break-all">Revision ID: {selected}</p>
               {#if current.parent_revision_id}<p class="mt-1 break-all">
                   Parent ID: {current.parent_revision_id}
                 </p>{/if}

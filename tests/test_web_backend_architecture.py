@@ -47,9 +47,9 @@ class BackendArchitectureTests(unittest.TestCase):
 
     def test_route_contract_is_partitioned_without_losing_rules(self):
         rules = list(self.app.url_map.iter_rules())
-        self.assertEqual(247, len(rules))
+        self.assertEqual(250, len(rules))
         self.assertEqual(
-            240,
+            243,
             sum(rule.rule.startswith("/api/") for rule in rules),
         )
         self.assertTrue({
@@ -58,6 +58,9 @@ class BackendArchitectureTests(unittest.TestCase):
             "/api/v1/sessions/<session_id>/sources/adopt-subtitles",
             "/api/v1/sessions/<session_id>/generation-plan/revisions",
             "/api/v1/sessions/<session_id>/generation-plan/topology/batch",
+            "/api/v1/sessions/<session_id>/generation-plan/history",
+            "/api/v1/sessions/<session_id>/generation-plan/repair-batches/<batch_id>",
+            "/api/v1/sessions/<session_id>/generation-plan/repair-batches/<batch_id>/undo",
         }.issubset({rule.rule for rule in rules}))
         self.assertEqual(set(DOMAIN_ORDER), set(self.app.blueprints))
         for rule in rules:

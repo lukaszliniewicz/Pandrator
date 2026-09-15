@@ -40,6 +40,14 @@ export type SourceChangeImpact = {
 };
 export type SpeechPlanRevision = {
   id: string;
+  entry_id?: string;
+  is_repair_checkpoint?: boolean;
+  repair_batch?: {
+    id: string;
+    applied_count: number;
+    attempt_count: number;
+    status: string;
+  } | null;
   revision_number: number;
   summary: string;
   origin: string;

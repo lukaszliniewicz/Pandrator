@@ -26,12 +26,12 @@
       >{/if}
     {#each plan?.items ?? [] as item (item.id)}
       <option value={item.id}
-        >v{item.revision_number} · {item.reviewed
-          ? 'Reviewed'
-          : item.origin === 'manual'
-            ? 'Edited'
-            : 'Automatic'} · {item.active_segment_count} blocks{item.id ===
-        plan?.latest_revision_id
+        >{item.repair_batch
+          ? `Automatic repair · ${item.repair_batch.applied_count} accepted`
+          : `v${item.revision_number} · ${item.reviewed ? 'Reviewed' : item.origin === 'manual' ? 'Edited' : 'Automatic'}`}
+        · {item.active_segment_count} blocks{item.is_repair_checkpoint
+          ? ' · selected checkpoint'
+          : ''}{item.id === plan?.latest_revision_id
           ? ' · latest'
           : ''}{!item.compatible ? ' · different text' : ''}</option
       >

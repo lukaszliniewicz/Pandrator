@@ -9,6 +9,8 @@ from .schemas import SCHEMA_MODELS
 from .work import EventBounds, WorkError, WorkEvent, WorkEventPage, WorkView
 from .quick_transcription_schemas import TranscriptionCreate, TranscriptionWait, TranscriptionSnapshot, TranscriptionResultPage
 from .quick_transcription_openapi import transcription_paths
+from .repair_batch_openapi import repair_batch_paths
+from .repair_batch_schemas import RepairBatchUndoRequest
 from .session_flow_routes import FLOW_SCHEMAS, session_flow_paths
 
 
@@ -18,6 +20,7 @@ def build_openapi_document() -> dict:
         **SCHEMA_MODELS,
         **FLOW_SCHEMAS,
         "ApplicationIdentityDocument": ApplicationIdentityDocument,
+        "RepairBatchUndoRequest": RepairBatchUndoRequest,
         "EventBounds": EventBounds,
         "WorkError": WorkError,
         "WorkEvent": WorkEvent,
@@ -3178,6 +3181,7 @@ def build_openapi_document() -> dict:
         ]
 
     paths.update(transcription_paths())
+    paths.update(repair_batch_paths())
     paths.update(session_flow_paths())
     # Subtitle-first media and immutable speech-plan review operations.
     extra_operations = [

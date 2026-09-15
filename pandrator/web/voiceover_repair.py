@@ -312,6 +312,8 @@ def repair_early_blocks(
     handler: Any, run_id: str, progress: Any, cancel_event: Any
 ) -> dict[str, Any]:
     """One pass over original blocks; never recursively repair new children."""
+    from .repair_batches import GUARD_KEY, capture_repair_base, record_accepted_repair
+
     with handler.database.session() as session:
         source_run = session.get(GenerationRun, run_id)
         snapshot = deepcopy(source_run.settings_snapshot_json or {})
@@ -322,6 +324,7 @@ def repair_early_blocks(
         )
         if active is None or active.active_revision_id != source_revision_id:
             return {"repaired_blocks": 0}
+        batch_snapshot = capture_repair_base(session, source_revision_id)
     groups, take_ids = _load_groups(handler, run_id)
     if not groups:
         return {"repaired_blocks": 0}
@@ -421,6 +424,7 @@ def repair_early_blocks(
                             "cursor": boundary.display_cursor,
                             "reason": "early_timing_repair",
                             "source_generation_run_id": run_id,
+                            GUARD_KEY: deepcopy(batch_snapshot),
                             "source_block_ordinal": segment.ordinal,
                             "repair_status": "pending",
                         },
@@ -600,6 +604,7 @@ def repair_early_blocks(
                         session, session_id, cancel_active=True, jobs=handler.jobs
                     )
                     _record_repair_outcome(session, staged_revision_id, "applied")
+                    record_accepted_repair(session, staged_revision_id)
                 repair_status, repair_reason = "applied", None
                 current_ids = {
                     original: proposal["lineage"][current][0]

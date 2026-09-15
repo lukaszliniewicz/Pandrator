@@ -8,7 +8,6 @@ from typing import Any
 from sqlalchemy import select
 
 from . import models as m
-from .generation_review import revision_history
 from .source_management import assert_session_idle
 from .workspace import RevisionConflict, adapt_runtime_settings, stable_hash
 
@@ -153,7 +152,21 @@ def planning_settings(services, session_id: str) -> dict[str, Any]:
 
 def speech_plan_status(services, session_id: str) -> dict[str, Any]:
     source = selected_text(services, session_id)
-    history = revision_history(services.database, session_id, limit=100)
+    from .repair_batches import grouped_revision_history
+
+    history = grouped_revision_history(services.database, session_id, limit=100)
+    # An all-rejected batch is an operation, not an additional selectable plan.
+    # Explicitly selected internal checkpoints remain in the grouped result.
+    seen: set[str] = set()
+    selectable = []
+    for item in history["items"]:
+        batch = item.get("repair_batch")
+        if batch and not batch["applied_count"] and item["id"] == batch["base_revision_id"]:
+            continue
+        if item["id"] not in seen:
+            selectable.append(item)
+            seen.add(item["id"])
+    history["items"] = selectable
     settings = planning_settings(services, session_id)
     with services.database.session() as session:
         record = session.get(m.SessionRecord, session_id)
