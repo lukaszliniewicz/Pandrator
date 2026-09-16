@@ -343,9 +343,12 @@ class ExportChainingAndTailIntegrationTests(unittest.TestCase):
                 if audio_mode == "mixed":
                     # Content guard: the mixed master must carry real speech
                     # past the reference length, not apad silence backfill
-                    # after an amix duration=first cut. Read the 24-bit master
-                    # WAV tail directly (no decode); silence RMS is 0 while
-                    # the normalized sine tail is ~1M, so 100000 is robust.
+                    # after an amix duration=first cut. The master tail is
+                    # decoded to float32 via FFmpeg because stdlib wave
+                    # cannot parse WAVE_FORMAT_EXTENSIBLE headers; silence
+                    # RMS is 0 while the normalized sine tail is ~0.12, so
+                    # 0.01 preserves the previous int24 threshold of 100000
+                    # (100000 / 2**23 ~= 0.0119) in float units.
                     from sqlalchemy import select
 
                     from pandrator.web.models import Artifact
@@ -364,28 +367,37 @@ class ExportChainingAndTailIntegrationTests(unittest.TestCase):
                         master_path = self.services.paths.managed_path(
                             master.relative_path
                         )
-                    with wave.open(str(master_path), "rb") as wav:
-                        width = wav.getsampwidth()
-                        channels = wav.getnchannels()
-                        frames = wav.getnframes()
-                        wav.setpos(max(0, frames - 4800))
-                        raw = wav.readframes(4800)
-                    step = width * channels
-                    count = len(raw) // step
-                    energy = 0
-                    for index in range(count):
-                        for channel in range(channels):
-                            offset = (index * channels + channel) * width
-                            energy += (
-                                int.from_bytes(
-                                    raw[offset : offset + width],
-                                    "little",
-                                    signed=True,
-                                )
-                                ** 2
-                            )
-                    rms = (energy / max(1, count * channels)) ** 0.5
-                    self.assertGreater(rms, 100000)
+                    tail_info = probe_soundtrack_media(master_path)
+                    tail_start = max(0.0, tail_info["duration"] - 0.1)
+                    raw = subprocess.run(
+                        [
+                            "ffmpeg",
+                            "-v",
+                            "error",
+                            "-nostdin",
+                            "-ss",
+                            str(tail_start),
+                            "-i",
+                            str(master_path),
+                            "-t",
+                            "0.1",
+                            "-f",
+                            "f32le",
+                            "-ac",
+                            "1",
+                            "-ar",
+                            "48000",
+                            "-",
+                        ],
+                        check=True,
+                        capture_output=True,
+                    ).stdout
+                    samples = struct.unpack("<" + "f" * (len(raw) // 4), raw)
+                    rms = (
+                        sum(sample * sample for sample in samples)
+                        / max(1, len(samples))
+                    ) ** 0.5
+                    self.assertGreater(rms, 0.01)
 
     def test_no_overrun_keeps_stream_copy_fast_path(self):
         sid = self._voiceover_session()
