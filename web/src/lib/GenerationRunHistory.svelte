@@ -1,5 +1,17 @@
 <script lang="ts">
   import type { GenerationRun } from './api-models';
+  import {
+    historyAriaLabel,
+    historyCounts,
+    historyDetailsSummary,
+    historyHeading,
+    historyHelper,
+    historyInspectLabel,
+    historyVersionOutcome,
+    historyVersionReason,
+    historyVersionTitle,
+    secondPassKind
+  } from './generation-history';
 
   let {
     run,
@@ -15,6 +27,12 @@
     onSelectVersion: (versionId: string) => void;
   } = $props();
   const repair = $derived(run.timing_repair);
+  const kind = $derived(secondPassKind(run));
+  const counts = $derived(repair ? historyCounts(repair) : null);
+  const heading = $derived(historyHeading(run));
+  const helper = $derived(historyHelper(run));
+  const ariaLabel = $derived(historyAriaLabel(run));
+  const detailsSummary = $derived(historyDetailsSummary(run));
   const selected = $derived(
     activeMix
       ? 'Active mix'
@@ -22,47 +40,34 @@
         ? 'Final audio'
         : versionId === run.id
           ? 'Original audio'
-          : `Repair ${Math.max(0, repair?.versions.findIndex((version) => version.generation_run_id === versionId) ?? -1) + 1}`
+          : `${kind === 'regroup' ? 'Group' : kind === 'repair' ? 'Repair' : 'Attempt'} ${Math.max(0, repair?.versions.findIndex((version) => version.generation_run_id === versionId) ?? -1) + 1}`
   );
-  const outcome = (status: string) =>
-    ({
-      applied: 'Split applied',
-      not_applied: 'Kept previous audio',
-      pending: 'Checking timing',
-      stopped: 'Stopped',
-      failed: 'Repair failed'
-    })[status] ?? 'Outcome unavailable';
-  const reason = (value?: string | null) =>
-    ({
-      added_delay: 'The split would have added delay.',
-      selection_changed: 'The selected plan or audio changed.',
-      generation_stopped: 'Generation was stopped.'
-    })[value ?? ''] ?? '';
+  const outcome = (status: string) => historyVersionOutcome(run, status);
+  const reason = (value?: string | null) => historyVersionReason(value);
 </script>
 
 {#if repair}
-  <section class="repair-history" aria-label="Timing repair history">
+  <section class="repair-history" aria-label={ariaLabel}>
     <div class="repair-heading">
       <div class="min-w-0">
         <p class="font-semibold">
-          {#if repair.status === 'running'}Repairing timing
-          {:else}{repair.applied_count}
-            {repair.applied_count === 1 ? 'block' : 'blocks'} split{/if}
+          {heading}
           <span class="font-normal text-[var(--muted)]">
             · {run.label.split(':')[0]}</span
           >
         </p>
         <p class="mt-1 text-[var(--muted)]">
-          {#if repair.status === 'running'}Accepted splits become part of this
-            run as they finish.
-          {:else if repair.status === 'stopped' || repair.status === 'failed'}Timing
-            repair stopped. The last accepted audio remains available.
-          {:else if !repair.attempt_count}No split was needed. The original
-            audio is retained.
-          {:else}Automatic timing repairs are saved together in this run.{/if}
+          {helper}
         </p>
       </div>
-      <div class="repair-choices" aria-label="Repair audio version">
+      <div
+        class="repair-choices"
+        aria-label={kind === 'regroup'
+          ? 'Regroup audio version'
+          : kind === 'repair'
+            ? 'Repair audio version'
+            : 'Second-pass audio version'}
+      >
         <button
           type="button"
           class:chosen={!activeMix && !versionId}
@@ -81,19 +86,26 @@
     </div>
     <details class="mt-3">
       <summary
-        >Repair details · {repair.attempt_count}
-        {repair.attempt_count === 1 ? 'attempt' : 'attempts'}<span
-          class="ml-2 font-normal text-[var(--muted)]">Viewing: {selected}</span
+        >{detailsSummary}<span class="ml-2 font-normal text-[var(--muted)]"
+          >Viewing: {selected}</span
         ></summary
       >
-      <ol class="repair-versions mt-2" aria-label="Individual timing repairs">
+      <ol
+        class="repair-versions mt-2"
+        aria-label={kind === 'regroup'
+          ? 'Individual regrouped groups'
+          : kind === 'repair'
+            ? 'Individual timing repairs'
+            : 'Individual second-pass attempts'}
+      >
         {#each repair.versions as version, index (version.generation_run_id)}
           <li>
             <div class="min-w-0">
               <p class="font-semibold">
-                Repair {index + 1}{version.source_block_ordinal != null
-                  ? ` · Block ${version.source_block_ordinal + 1}`
-                  : ''}
+                {historyVersionTitle(
+                  run,
+                  index
+                )}{#if kind === 'repair' && version.source_block_ordinal != null}{` · Block ${version.source_block_ordinal + 1}`}{:else if kind === 'regroup' && version.member_count != null}{` · ${version.member_count} ${version.member_count === 1 ? 'passage' : 'passages'}`}{/if}
               </p>
               <p class="mt-0.5 text-[var(--muted)]">
                 {outcome(version.repair_status)}{reason(version.repair_reason)
@@ -107,12 +119,19 @@
               aria-pressed={versionId === version.generation_run_id}
               disabled={disabled || version.status !== 'completed'}
               onclick={() => onSelectVersion(version.generation_run_id)}
-              aria-label={`Inspect repair ${index + 1} audio`}
-              >Inspect audio</button
+              aria-label={historyInspectLabel(run, index)}>Inspect audio</button
             >
           </li>
         {/each}
       </ol>
+      {#if counts}
+        <p class="mt-2 text-[var(--muted)]">
+          {counts.attempted}
+          {counts.attempted === 1 ? 'group' : 'groups'} regenerated: {counts.applied}
+          accepted, {counts.rejected} rejected{#if counts.pending}
+            · {counts.pending} checking{/if}
+        </p>
+      {/if}
     </details>
   </section>
 {/if}

@@ -1758,11 +1758,11 @@
   async function openSearch() {
     searchOpen = true;
     await tick();
-    document
-      .querySelector<HTMLInputElement>(
-        '#generation-search-panel input[aria-label^="Find in"]'
-      )
-      ?.focus();
+    const field = document.querySelector<HTMLInputElement>(
+      '#generation-search-panel input[aria-label^="Find in"]'
+    );
+    field?.focus({ preventScroll: true });
+    field?.select();
   }
 
   function closeSearch() {
@@ -1847,7 +1847,31 @@
   }
 
   function onGlobalDrawerKeydown(event: KeyboardEvent) {
-    if (mode === 'collapsed') return;
+    if (mode === 'collapsed' || event.defaultPrevented || event.isComposing)
+      return;
+    // Search is reachable from an editor too, but never steal shortcuts from
+    // a modal or intercept browser shortcuts while this drawer is collapsed.
+    if (
+      (event.ctrlKey || event.metaKey) &&
+      !event.altKey &&
+      !event.shiftKey &&
+      event.key.toLowerCase() === 'k'
+    ) {
+      if (
+        alternateOpen ||
+        ttsServicesOpen ||
+        comparisonItem ||
+        passagePreview ||
+        document.querySelector('[role="dialog"], dialog[open]')
+      )
+        return;
+      event.preventDefault();
+      displayMenuOpen = false;
+      settingsMenuOpen = false;
+      regenerateMenuOpen = false;
+      void openSearch();
+      return;
+    }
     const target = event.target as HTMLElement | null;
     if (
       target &&
@@ -2116,8 +2140,9 @@
           onclick={() => (searchOpen ? closeSearch() : openSearch())}
           class="action icon-action"
           class:active={searchOpen}
-          title="Search and replace"
+          title="Search and replace (Ctrl+K)"
           aria-label="Search and replace"
+          aria-keyshortcuts="Control+k Meta+k"
           aria-expanded={searchOpen}
           aria-controls="generation-search-panel"
         >
@@ -2326,7 +2351,7 @@
     </header>
 
     {#if mode !== 'collapsed'}
-      <div class="flex min-h-0 flex-1 flex-col overflow-y-auto">
+      <div class="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto">
         <div
           class="flex flex-wrap items-center justify-end gap-2 border-b border-[var(--line)] p-3"
         >

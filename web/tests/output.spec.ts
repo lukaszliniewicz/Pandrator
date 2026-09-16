@@ -25,36 +25,46 @@ async function createSession(page: Page, workflowKind: string) {
   return { session: await response.json(), headers };
 }
 
-test('output tab renders the actual running export status and progress', async ({
-  page
-}) => {
-  await signIn(page);
-  const { session } = await createSession(page, 'voiceover');
-  await page.route('**/api/v1/jobs?limit=500', async (route) => {
-    await route.fulfill({
-      contentType: 'application/json',
-      body: JSON.stringify({
-        items: [
-          {
-            id: '12345678-running-export-job',
-            kind: 'export.create',
-            session_id: session.id,
-            status: 'running',
-            progress: 0.42,
-            progress_detail: 'Prepared subtitle track 1 of 2',
-            created_at: new Date().toISOString()
-          }
-        ]
-      })
+for (const kind of ['export.create', 'export.variant']) {
+  test(`output retains ${kind} status and progress after reload`, async ({
+    page
+  }) => {
+    await signIn(page);
+    const { session } = await createSession(page, 'voiceover');
+    await page.route('**/api/v1/jobs?limit=500', async (route) => {
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          items: [
+            {
+              id: '12345678-running-export-job',
+              kind,
+              session_id: session.id,
+              status: 'running',
+              progress: 0.42,
+              progress_detail: 'Prepared subtitle track 1 of 2',
+              created_at: new Date().toISOString()
+            }
+          ]
+        })
+      });
     });
+    await page.goto(`/sessions/${session.id}/output`);
+    await expect(page.getByText('Export activity')).toBeVisible();
+    await expect(page.getByText('Running export')).toBeVisible();
+    await expect(
+      page.getByRole('progressbar', { name: 'Export 12345678 progress' })
+    ).toHaveAttribute('aria-valuenow', '42');
+    await page.reload();
+    await expect(page.getByText('Running export')).toBeVisible();
+    await expect(
+      page.getByText('Prepared subtitle track 1 of 2')
+    ).toBeVisible();
+    await expect(
+      page.getByRole('progressbar', { name: 'Export 12345678 progress' })
+    ).toHaveAttribute('aria-valuenow', '42');
   });
-
-  await page.goto(`/sessions/${session.id}/output`);
-  await expect(page.getByText('Export activity')).toBeVisible();
-  await expect(page.getByText('Running export')).toBeVisible();
-  await expect(page.getByText('42%')).toBeVisible();
-  await expect(page.getByText('Prepared subtitle track 1 of 2')).toBeVisible();
-});
+}
 
 test('completed subtitle exports can be removed from Output', async ({
   page
@@ -724,7 +734,7 @@ test('Create export submits ONE durable export request with the pinned run', asy
         contentType: 'application/json',
         body: JSON.stringify({
           id: 'single-export-job',
-          kind: 'export.create',
+          kind: 'export.variant',
           session_id: session.id,
           status: 'queued',
           progress: 0,
@@ -1016,4 +1026,95 @@ test('Frozen-tail limit is saved with the video output profile', async ({
   expect(savedSettings.override.video_tail_extension_max_ms).toBe(1500);
   expect(tailAssemblyCalls).toBe(0);
   expect(tailExportCalls).toBe(1);
+});
+
+test('Run 8 displays merged groups and preserves original/final audio choices', async ({
+  page
+}) => {
+  await signIn(page);
+  const { session } = await createSession(page, 'voiceover');
+  const versions = Array.from({ length: 19 }, (_, index) => ({
+    generation_run_id: `group-${index + 1}`,
+    plan_revision_id: `plan-${index + 1}`,
+    sequence_number: index + 2,
+    status: 'completed',
+    reason: 'passage_regroup',
+    repair_status: index < 9 ? 'applied' : 'not_applied',
+    repair_reason: index < 9 ? null : 'duration_misfit'
+  }));
+  await page.route(
+    `**/api/v1/sessions/${session.id}/generation-runs`,
+    (route) =>
+      route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          items: [
+            {
+              id: 'run-8',
+              session_id: session.id,
+              plan_revision_id: 'original-plan',
+              status: 'completed',
+              progress: 1,
+              operation: 'generate',
+              sequence_number: 1,
+              label: 'Run 8: German Voiceover',
+              second_pass: 'regroup',
+              timing_repair: {
+                kind: 'regroup',
+                result_generation_run_id: 'group-9',
+                result_plan_revision_id: 'plan-9',
+                result_sequence_number: 10,
+                applied_count: 9,
+                attempt_count: 19,
+                status: 'completed',
+                versions
+              }
+            },
+            {
+              id: 'group-9',
+              session_id: session.id,
+              plan_revision_id: 'plan-9',
+              status: 'completed',
+              progress: 1,
+              operation: 'generate',
+              sequence_number: 10,
+              label: 'Accepted group 9',
+              early_repair_parent_run_id: 'run-8'
+            }
+          ]
+        })
+      })
+  );
+  await page.goto(`/sessions/${session.id}/output`);
+  const history = page.getByRole('region', { name: 'Passage regroup history' });
+  await expect(history).toBeVisible();
+  await expect(history.getByText(/9 groups merged/)).toBeVisible();
+  await expect(
+    history.getByText('19 groups regenerated: 9 accepted, 10 rejected.')
+  ).toBeVisible();
+  await expect(page.getByText(/blocks split/)).toHaveCount(0);
+  await expect(
+    history.getByRole('button', { name: 'Final audio', exact: true })
+  ).toHaveAttribute('aria-pressed', 'true');
+  await history.getByRole('button', { name: 'View original' }).click();
+  await expect(
+    history.getByRole('button', { name: 'View original' })
+  ).toHaveAttribute('aria-pressed', 'true');
+  await history.getByText(/Regroup details/).click();
+  await expect(history.getByText(/Viewing: Original audio/)).toBeVisible();
+  await expect(
+    history.getByRole('button', { name: 'Inspect group 1 audio', exact: true })
+  ).toBeVisible();
+  await expect(history.getByText('Merge applied', { exact: true })).toHaveCount(
+    9
+  );
+  await expect(
+    history.getByText(/The regenerated group did not fit/)
+  ).toHaveCount(10);
+  await history
+    .getByRole('button', { name: 'Final audio', exact: true })
+    .click();
+  await expect(
+    history.getByRole('button', { name: 'Final audio', exact: true })
+  ).toHaveAttribute('aria-pressed', 'true');
 });

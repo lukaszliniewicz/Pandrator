@@ -177,7 +177,7 @@
   }
 </script>
 
-<table class="w-full border-collapse text-sm">
+<table class="w-full table-fixed border-collapse text-sm">
   <thead class="sticky top-0 z-10 bg-[var(--paper-strong)]">
     <tr>
       <th class="w-12">Mark</th>
@@ -478,7 +478,7 @@
           {/if}
         </td>
         <td>
-          <div class="flex justify-center gap-1">
+          <div class="flex flex-wrap justify-center gap-1">
             <button
               onmousedown={(event) => event.preventDefault()}
               onclick={(event) => {
@@ -557,7 +557,12 @@
   }
   td.narrative-cell,
   th:nth-child(3) {
+    min-width: 0;
+    overflow-wrap: anywhere;
     text-align: start;
+  }
+  td {
+    overflow-wrap: anywhere;
   }
   .passage-row {
     display: flex;
@@ -645,6 +650,10 @@
     padding: 0.42rem;
   }
   .segment-text {
+    /* Content-sized textareas must grow vertically, not widen the table. */
+    min-width: 0;
+    max-width: 100%;
+    overflow-wrap: anywhere;
     field-sizing: content;
     resize: none;
     overflow-y: hidden;

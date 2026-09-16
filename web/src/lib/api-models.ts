@@ -1142,6 +1142,7 @@ export type GenerationRun = {
   output_generation_run_id?: string | null;
   early_repair_parent_run_id?: string | null;
   phase?: string;
+  second_pass?: string | null;
   timing_repair?: {
     result_generation_run_id: string;
     result_plan_revision_id: string;
@@ -1150,6 +1151,9 @@ export type GenerationRun = {
     attempt_count: number;
     usage?: UsageSummary;
     status: string;
+    kind?: string | null;
+    reason?: string | null;
+    no_eligible_groups?: boolean | null;
     versions: {
       generation_run_id: string;
       plan_revision_id: string;
@@ -1157,6 +1161,8 @@ export type GenerationRun = {
       status: string;
       repair_status: string;
       repair_reason?: string | null;
+      reason?: string | null;
+      member_count?: number | null;
       source_block_ordinal?: number | null;
       created_at?: string;
     }[];

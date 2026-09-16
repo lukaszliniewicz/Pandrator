@@ -21,6 +21,8 @@ from pandrator.logic.tts_provider_switch import (
 from .artifact_selection import select_source_path
 from .database import Database
 from .generation_run_history import (
+    EARLY_REPAIR_REASON,
+    REGROUP_REASON,
     GenerationRunHistory,
     build_generation_run_history,
 )
@@ -4766,10 +4768,52 @@ class GenerationService:
                     "status": child.status,
                     "repair_status": operation.get("repair_status") or "unknown",
                     "repair_reason": operation.get("repair_reason"),
+                    # Persisted operation reason (early_timing_repair vs
+                    # passage_regroup); additive and authoritative for kind.
+                    "reason": operation.get("reason"),
                     "source_block_ordinal": operation.get("source_block_ordinal"),
                     "created_at": child.created_at.isoformat(),
                 }
             )
+        reasons = {
+            str(history.repair_operations.get(str(child.id), {}).get("reason") or "")
+            for child in history.repair_children
+        }
+        if REGROUP_REASON in reasons and EARLY_REPAIR_REASON in reasons:
+            kind = "mixed"
+        elif REGROUP_REASON in reasons:
+            kind = "regroup"
+        elif EARLY_REPAIR_REASON in reasons:
+            kind = "repair"
+        elif not versions:
+            # Zero children (e.g. repair enabled but nothing staged yet):
+            # fall back to the immutable root snapshot's second-pass
+            # selection. With children present the persisted reasons above
+            # stay authoritative; never infer the operation from counts.
+            from pandrator.logic.dubbing.passage_regroup import (
+                select_second_pass,
+            )
+
+            snapshot = (
+                root.settings_snapshot_json
+                if isinstance(getattr(root, "settings_snapshot_json", None), dict)
+                else {}
+            )
+            second_pass = select_second_pass(
+                snapshot,
+                operation=str(getattr(root, "operation", "") or ""),
+                has_selected_ids=False,
+                workflow_kind=str(context.get("workflow_kind") or ""),
+            )
+            kind = (
+                "regroup"
+                if second_pass == "regroup"
+                else "repair"
+                if second_pass == "repair"
+                else "unknown"
+            )
+        else:
+            kind = "unknown"
         usage_events = self._logical_usage_events(context, history)
         from .usage import usage_summary
 
@@ -4780,6 +4824,7 @@ class GenerationService:
             "applied_count": len(history.applied_children),
             "attempt_count": len(history.repair_children),
             "status": status,
+            "kind": kind,
             "versions": versions,
             "usage": usage_summary(usage_events),
         }

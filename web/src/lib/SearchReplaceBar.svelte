@@ -278,8 +278,9 @@
   .find-field,
   .replace-field {
     display: flex;
-    min-width: 15rem;
-    flex: 1;
+    min-width: min(15rem, 100%);
+    max-width: 100%;
+    flex: 1 1 15rem;
     align-items: center;
     gap: 0.25rem;
     border: 1px solid var(--line);
@@ -292,7 +293,7 @@
     color: var(--muted);
   }
   input {
-    min-width: 4rem;
+    min-width: 0;
     flex: 1;
     background: transparent;
     padding: 0.3rem 0.25rem;
@@ -343,6 +344,8 @@
     margin-right: 0.25rem;
   }
   p {
+    min-width: 0;
+    overflow-wrap: anywhere;
     flex-basis: 100%;
     padding: 0.1rem 0.35rem;
     font-size: 0.68rem;

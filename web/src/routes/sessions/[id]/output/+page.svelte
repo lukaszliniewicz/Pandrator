@@ -117,6 +117,13 @@
     audio: Record<string, unknown>;
   }>;
   let saveOutputProfile = $state<SaveOutputProfile | null>(null);
+  // Both the original direct exports and the durable assemble/export workflow
+  // belong in this view. Use the same predicate for reloads and live events.
+  function isExportJobKind(
+    kind: unknown
+  ): kind is 'export.create' | 'export.variant' {
+    return kind === 'export.create' || kind === 'export.variant';
+  }
   async function load() {
     const revision = ++loadRevision;
     const [
@@ -152,7 +159,7 @@
     runs = runPayload.items ?? [];
     exportJobs = (jobPayload.items ?? [])
       .filter(
-        (item) => item.session_id === sessionId && item.kind === 'export.create'
+        (item) => item.session_id === sessionId && isExportJobKind(item.kind)
       )
       .slice(0, 8);
     session = sessionPayload;
@@ -327,7 +334,7 @@
     for (const event of batch.events) {
       if (
         event.session_id !== sessionId ||
-        event.job_kind !== 'export.create' ||
+        !isExportJobKind(event.job_kind) ||
         !event.job_id
       )
         continue;
@@ -336,7 +343,7 @@
       const next: JobRecord = {
         ...(current ?? {
           id: String(event.job_id),
-          kind: 'export.create',
+          kind: event.job_kind,
           session_id: sessionId,
           status: isJobStatus(event.status) ? event.status : 'queued',
           progress: Number(event.progress ?? 0),
