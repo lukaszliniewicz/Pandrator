@@ -1443,6 +1443,7 @@ test('generation segment search and replace preserves partial words and saves ev
 
   await page.goto(`/sessions/${sessionId}`);
   await page.getByRole('button', { name: 'Generation', exact: true }).click();
+  await page.getByRole('button', { name: 'Search and replace' }).click();
   await page.getByLabel('Find in generation segments').fill('cat');
   await page.getByLabel('Replace in generation segments').fill('dog');
   await page.getByRole('button', { name: 'Match whole word' }).click();

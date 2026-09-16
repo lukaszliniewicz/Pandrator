@@ -25,7 +25,12 @@
     label = 'editable text',
     onsearch,
     searching = false,
-    serverMatches
+    serverMatches,
+    showScopeSelector = false,
+    searchScope = 'cue',
+    onScopeChange,
+    onclose,
+    autoFocus = false
   }: {
     texts: string[];
     onreplace: (updates: TextReplacement[]) => void | Promise<void>;
@@ -39,6 +44,11 @@
     ) => void;
     searching?: boolean;
     serverMatches?: TextSearchMatch[];
+    showScopeSelector?: boolean;
+    searchScope?: 'cue' | 'tts';
+    onScopeChange?: (scope: 'cue' | 'tts') => void;
+    onclose?: () => void;
+    autoFocus?: boolean;
   } = $props();
 
   let query = $state('');
@@ -48,6 +58,27 @@
   let activeIndex = $state(0);
   let replacing = $state(false);
   let error = $state('');
+  let findInput: HTMLInputElement | undefined = $state();
+  let focusedOnMount = false;
+
+  // Focus the find field once when the panel mounts (it remounts on open).
+  $effect(() => {
+    if (autoFocus && !focusedOnMount && findInput) {
+      focusedOnMount = true;
+      findInput.focus();
+    }
+  });
+
+  // A scope switch must not carry a stale match selection: the match list,
+  // counter, and navigation all re-resolve against the newly selected field.
+  $effect(() => {
+    void searchScope;
+    void showScopeSelector;
+    untrack(() => {
+      activeIndex = 0;
+      error = '';
+    });
+  });
 
   const matches = $derived(
     serverMatches ?? findTextMatches(texts, query, { matchCase, wholeWord })
@@ -78,9 +109,21 @@
   }
 
   function searchKeydown(event: KeyboardEvent) {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      onclose?.();
+      return;
+    }
     if (event.key !== 'Enter') return;
     event.preventDefault();
     navigate(event.shiftKey ? -1 : 1);
+  }
+
+  function replaceKeydown(event: KeyboardEvent) {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      onclose?.();
+    }
   }
 
   async function apply(updates: TextReplacement[]) {
@@ -121,6 +164,7 @@
   <div class="find-field">
     <Search class="search-icon" size={15} />
     <input
+      bind:this={findInput}
       value={query}
       onfocus={activate}
       oninput={(event) => {
@@ -157,6 +201,7 @@
     <input
       bind:value={replacement}
       onfocus={activate}
+      onkeydown={replaceKeydown}
       placeholder="Replace with"
       aria-label={`Replace in ${label}`}
     />
@@ -172,6 +217,28 @@
     >
   </div>
   <div class="options">
+    {#if showScopeSelector}
+      <div class="scope-switch" role="radiogroup" aria-label="Search scope">
+        <button
+          type="button"
+          role="radio"
+          aria-checked={searchScope === 'cue'}
+          class:active={searchScope === 'cue'}
+          title="Search and replace cue text"
+          aria-label="Cue text"
+          onclick={() => onScopeChange?.('cue')}>Cue text</button
+        >
+        <button
+          type="button"
+          role="radio"
+          aria-checked={searchScope === 'tts'}
+          class:active={searchScope === 'tts'}
+          title="Search and replace TTS text"
+          aria-label="TTS text"
+          onclick={() => onScopeChange?.('tts')}>TTS text</button
+        >
+      </div>
+    {/if}
     <button
       onclick={() => {
         matchCase = !matchCase;
@@ -265,6 +332,15 @@
     align-items: center;
     gap: 0.15rem;
     color: var(--muted);
+  }
+  .scope-switch {
+    display: flex;
+    align-items: center;
+    gap: 0.15rem;
+    border: 1px solid var(--line);
+    border-radius: 0.55rem;
+    padding: 0.15rem;
+    margin-right: 0.25rem;
   }
   p {
     flex-basis: 100%;

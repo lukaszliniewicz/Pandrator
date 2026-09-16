@@ -289,6 +289,7 @@
   </p>{/if}
 {#if Boolean(contextState.session) && GenerationDrawerComponent && contextState.session?.workflow_kind !== 'subtitles'}<GenerationDrawerComponent
     sessionId={page.params.id ?? ''}
+    workflowKind={contextState.session?.workflow_kind ?? 'audiobook'}
   />{/if}
 
 <style>

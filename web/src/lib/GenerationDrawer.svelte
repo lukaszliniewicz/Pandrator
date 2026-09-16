@@ -31,6 +31,7 @@
     Pause,
     Play,
     RefreshCw,
+    Search,
     Settings,
     Sparkles,
     Square,
@@ -86,7 +87,14 @@
   const hasArtifact = (take: AudioTake): take is PlayableTake =>
     Boolean(take.artifact_id);
 
-  let { sessionId }: { sessionId: string } = $props();
+  let {
+    sessionId,
+    workflowKind = 'audiobook'
+  }: {
+    sessionId: string;
+    workflowKind?: string;
+  } = $props();
+  const isVoiceover = $derived(workflowKind === 'voiceover');
   const generationStore = new GenerationStore(untrack(() => sessionId));
   let mode = $state<'collapsed' | 'half' | 'full'>('collapsed');
   const payload = $derived(generationStore.payload);
@@ -250,6 +258,12 @@
   let searchLoading = $state(false);
   let searchQuery = $state('');
   let searchOptions = $state({ matchCase: false, wholeWord: false });
+  // The search panel is hidden by default behind a toolbar magnifier toggle.
+  // While hidden, searchQuery stays empty so no filter affects the visible
+  // list and no full-plan scan runs.
+  let searchOpen = $state(false);
+  // Voiceover-only search/replace target. Audiobook keeps following textMode.
+  let searchScope = $state<'cue' | 'tts'>('cue');
   let searchItems = $state<
     Pick<
       GenerationSegment,
@@ -262,13 +276,25 @@
     >[]
   >([]);
   let searchController: AbortController | undefined;
+  // Effective searched/replaced field. Voiceover uses the explicit scope
+  // selector (Cue text -> text, TTS text -> spoken); other workflows keep
+  // following the display text layer. Matches the backend text_field contract.
+  const searchField = $derived<'text' | 'spoken'>(
+    isVoiceover
+      ? searchScope === 'tts'
+        ? 'spoken'
+        : 'text'
+      : textMode === 'speech'
+        ? 'spoken'
+        : 'text'
+  );
   const searchParams = $derived.by(() => {
     const params = new URLSearchParams();
     if (searchQuery) {
       params.set('q', searchQuery);
       params.set('match_case', String(searchOptions.matchCase));
       params.set('whole_word', String(searchOptions.wholeWord));
-      params.set('text_field', textMode === 'speech' ? 'spoken' : 'text');
+      params.set('text_field', searchField);
     }
     return params;
   });
@@ -614,7 +640,7 @@
   const editableTexts = $derived(
     searchItems.map((item) =>
       String(
-        textMode === 'speech' ? item.optimized_text || item.text : item.text
+        searchField === 'spoken' ? item.optimized_text || item.text : item.text
       )
     )
   );
@@ -926,6 +952,17 @@
       const previousRows = payload.items;
       const updated = await generationStore.updateSegment(item, changes);
       savedEditRows.set(updated.id, { ...item, ...updated });
+      // Record the ID mapping directly from the mutation response so an
+      // aborted post-save reload cannot drop it; the ordinal rematch below
+      // only adds sibling mappings and refreshes saved rows.
+      if (
+        updated.previous_segment_id &&
+        updated.previous_segment_id !== updated.id
+      ) {
+        editQueue.recordReplacements([
+          [updated.previous_segment_id, updated.id]
+        ]);
+      }
       if (updated.id !== item.id) {
         selectedRunId = '';
         selectedRow = '';
@@ -1514,6 +1551,13 @@
       await load(true, false);
       return;
     }
+    // The full-plan scan below only runs for a live query. A hidden panel
+    // always clears its query on close, so it never triggers this path.
+    if (!searchOpen) {
+      searchLoading = false;
+      await load(true, false);
+      return;
+    }
     searchLoading = true;
     const query = new URLSearchParams(searchParams);
     query.set('limit', '250');
@@ -1581,9 +1625,58 @@
     await load(true, false);
   }
 
+  // Adopt an edit-copy (R1 -> R2) returned by a bulk save: remap
+  // selection/search state to the new segment IDs, record the mapping for
+  // later ID resolution, and reload the authoritative plan for takes
+  // freshness (the store pre-adopts rows/pin synchronously). A post-save load
+  // that was aborted or superseded by a delayed stale response must not
+  // silently count as success: re-check the adopted revision, retry once,
+  // then surface instead of proceeding on stale state.
+  async function adoptEditCopy(
+    updated: GenerationSegment[]
+  ): Promise<string | null> {
+    const idMap = new Map<string, string>();
+    let copiedRevision: string | null = null;
+    for (const item of updated) {
+      const previous = item.previous_segment_id;
+      if (typeof previous === 'string' && previous && previous !== item.id)
+        idMap.set(previous, item.id);
+      if (typeof item.plan_revision_id === 'string' && item.plan_revision_id)
+        copiedRevision = item.plan_revision_id;
+    }
+    if (
+      idMap.size > 0 ||
+      (copiedRevision && copiedRevision !== payload.plan_revision_id)
+    ) {
+      const remap = (id: string) => idMap.get(id) ?? id;
+      editQueue.recordReplacements(idMap);
+      selectedRows = selectedRows.map(remap);
+      if (selectedRow) selectedRow = remap(selectedRow);
+      if (selectionAnchor) selectionAnchor = remap(selectionAnchor);
+      const freshById = new Map(updated.map((item) => [item.id, item]));
+      searchItems = searchItems.map((item) => {
+        const fresh = freshById.get(idMap.get(item.id) ?? item.id);
+        return fresh
+          ? { ...item, ...fresh, id: idMap.get(item.id) ?? item.id }
+          : item;
+      });
+      await load(true, true);
+      if (copiedRevision && payload.plan_revision_id !== copiedRevision) {
+        await load(true, true);
+      }
+      if (copiedRevision && payload.plan_revision_id !== copiedRevision) {
+        throw new Error(
+          'The speech plan changed during save. Search again before regenerating.'
+        );
+      }
+    }
+    return copiedRevision;
+  }
+
   async function applySearchReplacements(updates: TextReplacement[]) {
     error = '';
     try {
+      const voiceoverCueScope = isVoiceover && searchField === 'text';
       const changes = updates.flatMap((update) => {
         const item = searchItems[update.index];
         if (!item || update.text === editableTexts[update.index]) return [];
@@ -1591,18 +1684,26 @@
           throw new Error(
             'Replacement would leave a generation segment blank. Remove that segment instead.'
           );
+        // Voiceover cue-scope replacement promises the TTS field untouched.
+        // The backend honors an explicitly supplied optimized_text alongside
+        // a text change, so send the existing override in the same batch.
+        // Null/inherited TTS is omitted and keeps following the cue.
+        // Audiobook keeps the legacy single-field behavior.
         return [
           {
             segment: item,
             changes:
-              textMode === 'speech'
+              searchField === 'spoken'
                 ? { optimized_text: update.text }
-                : { text: update.text }
+                : voiceoverCueScope && item.optimized_text != null
+                  ? { text: update.text, optimized_text: item.optimized_text }
+                  : { text: update.text }
           }
         ];
       });
       if (!changes.length) return;
-      await generationStore.updateSegments(changes);
+      const updated = await generationStore.updateSegments(changes);
+      await adoptEditCopy(updated);
       await refreshAssembly();
       searchController?.abort();
       searchController = new AbortController();
@@ -1636,12 +1737,49 @@
     if (viewMode !== 'segments') viewMode = 'segments';
     await tick();
     const itemIndex = payload.items.findIndex((row) => row.id === item.id);
-    const field = document.querySelector<HTMLTextAreaElement>(
-      `[data-generation-search-index="${itemIndex}"]`
+    // Match offsets address the searched field, so prefer the textarea that
+    // renders it. When the display layer shows the other field, fall back to
+    // scrolling to the row without applying foreign offsets.
+    const scopePrefix =
+      searchField === 'spoken' ? 'Spoken override' : 'Script text';
+    const scopedField = document.querySelector<HTMLTextAreaElement>(
+      `[data-generation-search-index="${itemIndex}"][aria-label^="${scopePrefix}"]`
     );
+    const field =
+      scopedField ??
+      document.querySelector<HTMLTextAreaElement>(
+        `[data-generation-search-index="${itemIndex}"]`
+      );
     field?.scrollIntoView({ block: 'center', behavior: 'smooth' });
     field?.focus({ preventScroll: true });
-    field?.setSelectionRange(match.start, match.end);
+    if (scopedField) field?.setSelectionRange(match.start, match.end);
+  }
+
+  async function openSearch() {
+    searchOpen = true;
+    await tick();
+    document
+      .querySelector<HTMLInputElement>(
+        '#generation-search-panel input[aria-label^="Find in"]'
+      )
+      ?.focus();
+  }
+
+  function closeSearch() {
+    if (!searchOpen) return;
+    searchOpen = false;
+    searchController?.abort();
+    searchController = undefined;
+    searchItems = [];
+    searchLoading = false;
+    // Clearing the query lifts the list filter so no hidden filter survives.
+    // Segment texts and the pending replacement draft are untouched.
+    if (searchQuery) searchQuery = '';
+    requestAnimationFrame(() => {
+      document
+        .querySelector<HTMLButtonElement>('[data-generation-search-toggle]')
+        ?.focus();
+    });
   }
 
   function selectSegment(
@@ -1806,6 +1944,9 @@
     void textMode;
     void searchQuery;
     void searchOptions;
+    void searchOpen;
+    void searchScope;
+    void searchField;
     searchLoading = Boolean(searchQuery);
     const controller = new AbortController();
     searchController = controller;
@@ -1969,6 +2110,19 @@
         {/if}
       </div>
       {#if mode !== 'collapsed'}
+        <button
+          type="button"
+          data-generation-search-toggle
+          onclick={() => (searchOpen ? closeSearch() : openSearch())}
+          class="action icon-action"
+          class:active={searchOpen}
+          title="Search and replace"
+          aria-label="Search and replace"
+          aria-expanded={searchOpen}
+          aria-controls="generation-search-panel"
+        >
+          <Search size={14} />
+        </button>
         <div class="dropdown-wrapper">
           <button
             onclick={() => {
@@ -2373,31 +2527,43 @@
             />
           </div>
         {/if}
-        <div class="border-b border-[var(--line)] px-3 py-2">
-          <SearchReplaceBar
-            texts={editableTexts}
-            onreplace={applySearchReplacements}
-            onnavigate={navigateSearchMatch}
-            disabled={searchLoading || loading}
-            label={searchScopeLabel}
-            onsearch={changeSearch}
-            searching={searchLoading}
-            serverMatches={searchItems.flatMap((item, itemIndex) =>
-              (item.search_matches ?? []).map((match) => ({
-                ...match,
-                itemIndex
-              }))
-            )}
-          />
-          {#if searchQuery}<p
-              class="muted mt-1 px-1 text-[.65rem]"
-              aria-live="polite"
-            >
-              {searchLoading
-                ? 'Searching the complete plan…'
-                : `${searchItems.length} matching segments across the complete plan · ${textMode === 'speech' ? 'spoken overrides' : 'script text'}`}
-            </p>{/if}
-        </div>
+        {#if searchOpen}
+          <div
+            id="generation-search-panel"
+            class="border-b border-[var(--line)] px-3 py-2"
+          >
+            <SearchReplaceBar
+              texts={editableTexts}
+              onreplace={applySearchReplacements}
+              onnavigate={navigateSearchMatch}
+              disabled={searchLoading || loading}
+              label={searchScopeLabel}
+              onsearch={changeSearch}
+              searching={searchLoading}
+              showScopeSelector={isVoiceover}
+              {searchScope}
+              onScopeChange={(scope) => {
+                searchScope = scope;
+              }}
+              onclose={closeSearch}
+              autoFocus
+              serverMatches={searchItems.flatMap((item, itemIndex) =>
+                (item.search_matches ?? []).map((match) => ({
+                  ...match,
+                  itemIndex
+                }))
+              )}
+            />
+            {#if searchQuery}<p
+                class="muted mt-1 px-1 text-[.65rem]"
+                aria-live="polite"
+              >
+                {searchLoading
+                  ? 'Searching the complete plan…'
+                  : `${searchItems.length} matching segments across the complete plan · ${isVoiceover ? (searchField === 'spoken' ? 'TTS text' : 'Cue text') : searchField === 'spoken' ? 'spoken overrides' : 'script text'}`}
+              </p>{/if}
+          </div>
+        {/if}
 
         {#if selectedAssembly?.status === 'completed' && selectedAssembly.artifact_id}
           <div

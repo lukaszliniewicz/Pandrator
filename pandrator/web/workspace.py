@@ -2539,6 +2539,7 @@ class GenerationService:
         return {
             "passage_structure": describe_passages(segment),
             "id": segment.id,
+            "plan_revision_id": segment.plan_revision_id,
             "ordinal": segment.ordinal,
             "node_kind": segment.node_kind,
             "paragraph_break_after": segment.paragraph_break_after,
@@ -2609,6 +2610,8 @@ class GenerationService:
                 silence_after_ms=segment.silence_after_ms,
             )
         )
+        old_effective_speech = segment.optimized_text or segment.text
+        explicit_optimized = "optimized_text" in changes
         text_changed = (
             "text" in changes and str(changes["text"]).strip() != segment.text
         )
@@ -2638,7 +2641,33 @@ class GenerationService:
             }:
                 raise ValueError("Unsupported generation segment type.")
             setattr(segment, key, value)
-        if text_changed:
+        if explicit_optimized:
+            # A combined PATCH honors its explicit optimized_text instead of
+            # the legacy text-change clear. Voiceover cue-only replacement
+            # sends {text: newCue, optimized_text: existingSpoken} to keep a
+            # TTS override while editing display text.
+            if text_changed or optimized_changed:
+                if text_changed:
+                    segment.optimization_model = None
+                segment.optimization_status = (
+                    "reviewed" if segment.optimized_text else "pending"
+                )
+                segment.optimization_source_hash = hashlib.sha256(
+                    segment.text.encode("utf-8")
+                ).hexdigest()
+                segment.optimization_reviewed = bool(segment.optimized_text)
+                speech_plan = dict(segment.speech_plan_json or {})
+                if segment.optimized_text:
+                    segment.speech_plan_json = {
+                        **speech_plan,
+                        "version": int(speech_plan.get("version") or 1),
+                        "status": "manual_override",
+                        "compiled_text": segment.optimized_text,
+                        "reviewed": True,
+                    }
+                else:
+                    segment.speech_plan_json = {}
+        elif text_changed:
             segment.optimized_text = None
             segment.speech_plan_json = {}
             segment.optimization_status = "stale"
@@ -2664,9 +2693,9 @@ class GenerationService:
                 }
             else:
                 segment.speech_plan_json = {}
+        new_effective_speech = segment.optimized_text or segment.text
         audio_stale = (
-            text_changed
-            or optimized_changed
+            new_effective_speech != old_effective_speech
             or any(key in changes for key in ("voice_id", "voice", "language"))
         )
         if audio_stale:

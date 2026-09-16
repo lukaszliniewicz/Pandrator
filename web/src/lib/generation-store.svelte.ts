@@ -13,6 +13,11 @@ import type {
   OutputAssembly
 } from './api-models';
 import {
+  adoptUpdatedSegment,
+  adoptUpdatedSegments,
+  isStaleLoad
+} from './generation-segment-adoption';
+import {
   invalidates,
   invalidationBus,
   type InvalidationBatch,
@@ -97,6 +102,11 @@ export class GenerationStore {
   private loadedThroughOrdinal = -1;
   private initialized = false;
   private controller?: AbortController;
+  // Mutation epoch: every adopted save bumps this. A load that started
+  // earlier must not apply its payload afterwards (see isStaleLoad); the
+  // in-flight request is aborted too, but an already-resolved response can
+  // still have a pending continuation.
+  private loadEpoch = 0;
   private unsubscribe?: () => void;
   private refreshTimer?: number;
   private refreshInFlight = false;
@@ -113,6 +123,7 @@ export class GenerationStore {
     this.controller?.abort();
     const controller = new AbortController();
     this.controller = controller;
+    const epoch = this.loadEpoch;
     this.status = this.payload.total ? 'stale' : 'loading';
     this.error = '';
     try {
@@ -223,6 +234,12 @@ export class GenerationStore {
           next_cursor: nextCursor
         };
       }
+      if (isStaleLoad(epoch, this.loadEpoch)) {
+        // A mutation was adopted after this load started: the loaded page
+        // is older than the authoritative store state. Discard it instead
+        // of overwriting the adopted revision/rows.
+        return { selectedRunId, shouldExpand: false };
+      }
       this.payload = payload;
       this.runs = runs;
       this.activeRun = activeRun;
@@ -268,45 +285,55 @@ export class GenerationStore {
     }
   }
 
+  /** Abort older in-flight loads and invalidate their late responses. */
+  private invalidateLoadsForAdoption() {
+    this.controller?.abort();
+    this.loadEpoch += 1;
+  }
+
   async updateSegment(
     item: GenerationSegment,
     changes: GenerationSegmentChanges
   ) {
     const updated = await generationApi.updateSegment(item, changes);
-    // An immutable copy has different take IDs. Keep the old row playable
-    // until the drawer reloads the authoritative new revision.
-    if (updated.id !== item.id) return updated;
+    // Adopt the authoritative mutation response atomically: an edit-copy
+    // save returns a new segment ID plus its new plan_revision_id, and the
+    // follow-up reload can lose a race with event-driven refreshes.
+    // Regenerate correctness must never depend on that reload winning, and
+    // a delayed older response must not overwrite this adoption.
+    this.invalidateLoadsForAdoption();
+    const next = adoptUpdatedSegment(
+      {
+        items: this.payload.items,
+        plan_revision_id: this.payload.plan_revision_id
+      },
+      item.id,
+      updated
+    );
     this.payload = {
       ...this.payload,
-      items: this.payload.items.map((candidate) =>
-        candidate.id === item.id || candidate.id === updated.id
-          ? {
-              ...candidate,
-              ...updated,
-              takes:
-                updated.id !== item.id
-                  ? []
-                  : candidate.takes.map((take) =>
-                      updated.status === 'stale' && take.status === 'completed'
-                        ? { ...take, status: 'stale' }
-                        : take
-                    )
-            }
-          : candidate
-      )
+      items: next.items,
+      plan_revision_id: next.plan_revision_id
     };
     return updated;
   }
 
   async updateSegments(updates: GenerationSegmentBatchChange[]) {
     const result = await generationApi.updateSegments(this.sessionId, updates);
-    const byId = new Map(result.items.map((item) => [item.id, item]));
+    // Same authoritative adoption as updateSegment; inconsistent mixed-plan
+    // responses throw instead of being partially adopted.
+    this.invalidateLoadsForAdoption();
+    const next = adoptUpdatedSegments(
+      {
+        items: this.payload.items,
+        plan_revision_id: this.payload.plan_revision_id
+      },
+      result.items
+    );
     this.payload = {
       ...this.payload,
-      items: this.payload.items.map((candidate) => {
-        const updated = byId.get(candidate.id);
-        return updated ? { ...candidate, ...updated } : candidate;
-      })
+      items: next.items,
+      plan_revision_id: next.plan_revision_id
     };
     return result.items;
   }

@@ -1048,6 +1048,8 @@ export type GenerationSegment = {
   audio_reuse_reason?: string;
   has_reusable_take?: boolean;
   id: string;
+  plan_revision_id?: string | null;
+  previous_segment_id?: string | null;
   ordinal: number;
   node_kind: 'paragraph' | 'heading' | 'chapter_marker' | 'subtitle_cue';
   paragraph_break_after: boolean;
