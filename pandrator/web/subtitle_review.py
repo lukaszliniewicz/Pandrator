@@ -658,6 +658,32 @@ class SubtitleReviewService:
                     ).all()
                 )
             for index, reviewed in enumerate(normalized, start=1):
+                # Genuine crosstalk can make an existing cue overlap another speaker.
+                # Preserve that inherited overlap when the reviewed cue keeps the same
+                # timing, while still rejecting newly created cues whose timing spans
+                # multiple speakers. Exact-timing cues may also correct speaker labels.
+                exact_speakers: dict[str, str] = {}
+                for previous_segment in previous_segments:
+                    if (
+                        previous_segment.start_ms != reviewed["start_ms"]
+                        or previous_segment.end_ms != reviewed["end_ms"]
+                    ):
+                        continue
+                    speaker, _text = _speaker_and_text(previous_segment)
+                    if speaker:
+                        exact_speakers.setdefault(speaker.casefold(), speaker)
+
+                reviewed_speaker = str(reviewed["speaker"] or "").strip()
+                exact_timing_match = len(exact_speakers) == 1
+                if not reviewed_speaker and exact_timing_match:
+                    reviewed["speaker"] = next(iter(exact_speakers.values()))
+
+                # Exact inherited timing proves this is the same cue, even if the
+                # editor is correcting its speaker label. Crosstalk validation is
+                # only needed when timing is widened, merged, or otherwise changed.
+                if exact_timing_match:
+                    continue
+
                 overlapping_speakers: dict[str, str] = {}
                 for previous_segment in previous_segments:
                     if (

@@ -557,6 +557,78 @@ class SubtitleReviewTests(unittest.TestCase):
                 ],
             )
 
+    def test_review_allows_existing_crosstalk_when_timing_and_speaker_are_preserved(self):
+        self._artifact(
+            "speaker-crosstalk.srt",
+            "transcription",
+            "1\n00:00:00,000 --> 00:00:02,000\n[SPEAKER_0]: Hello.\n\n"
+            "2\n00:00:01,000 --> 00:00:03,000\n[SPEAKER_1]: Welcome.\n",
+        )
+        payload = self.service.documents(self.session.id)
+
+        result = self.service.save_review(
+            self.session.id,
+            "transcription",
+            payload["stages"]["transcription"]["revision"],
+            [
+                {
+                    "start_ms": 0,
+                    "end_ms": 2000,
+                    "text": "Hello there.",
+                    "speaker": "SPEAKER_0",
+                },
+                {
+                    "start_ms": 1000,
+                    "end_ms": 3000,
+                    "text": "Welcome.",
+                    "speaker": "SPEAKER_1",
+                },
+            ],
+        )
+
+        self.assertEqual(2, result["revision"])
+        reviewed = self.service.documents(self.session.id)["stages"]["transcription"]
+        self.assertEqual(
+            ["Hello there.", "Welcome."],
+            [item["text"] for item in reviewed["segments"]],
+        )
+
+    def test_review_allows_speaker_label_correction_on_existing_crosstalk_cue(self):
+        self._artifact(
+            "speaker-crosstalk-label.srt",
+            "transcription",
+            "1\n00:00:00,000 --> 00:00:02,000\n[wytsk]: Hello.\n\n"
+            "2\n00:00:01,000 --> 00:00:03,000\n[SPEAKER_1]: Welcome.\n",
+        )
+        payload = self.service.documents(self.session.id)
+
+        result = self.service.save_review(
+            self.session.id,
+            "transcription",
+            payload["stages"]["transcription"]["revision"],
+            [
+                {
+                    "start_ms": 0,
+                    "end_ms": 2000,
+                    "text": "Hello.",
+                    "speaker": "Wytske Dijkstra",
+                },
+                {
+                    "start_ms": 1000,
+                    "end_ms": 3000,
+                    "text": "Welcome.",
+                    "speaker": "SPEAKER_1",
+                },
+            ],
+        )
+
+        self.assertEqual(2, result["revision"])
+        reviewed = self.service.documents(self.session.id)["stages"]["transcription"]
+        self.assertEqual(
+            ["Wytske Dijkstra", "SPEAKER_1"],
+            [item["speaker"] for item in reviewed["segments"]],
+        )
+
     def test_reviewed_upstream_revision_stales_only_derived_artifacts(self):
         source = self._artifact(
             "source-for-descendants.srt",
