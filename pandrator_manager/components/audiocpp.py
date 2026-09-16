@@ -9,7 +9,7 @@ from ..context import ManagerContext
 from ..models import ComputeVariant
 from .host import compute_choices, normalized_architecture, resolve_auto_compute
 
-AUDIO_CPP_VERSION = "0.7.4"
+AUDIO_CPP_VERSION = "0.8.0"
 AUDIO_CPP_RELEASE_BASE = (
     f"https://github.com/0xShug0/audio.cpp/releases/download/v{AUDIO_CPP_VERSION}"
 )
@@ -181,25 +181,25 @@ MODEL_PACKAGES: dict[str, AudioCppModelPackage] = {
 }
 
 # Public alias matching the naming used by the other native driver.
-# Digests: upstream v0.7.4 release assets, published 2026-09-13.
+# Digests: upstream v0.8.0 release assets, published 2026-09-15 (release 389456794).
 # Portable Linux builds avoid requiring the release runner's CPU instruction set.
 ASSETS: dict[tuple[str, str, ComputeVariant], tuple[AudioCppAsset, ...]] = {
     ("linux", "x86_64", ComputeVariant.CPU): (
         AudioCppAsset(
-            "audio-v0.7.4-bin-ubuntu-x64-cpu-portable.tar.gz",
-            "8a93751b832c533e3261e760b4fd24af2397af3a193c862315653afd0dccc6ad",
+            "audio-v0.8.0-bin-ubuntu-x64-cpu-portable.tar.gz",
+            "273678101638072dfec69e6c01c75a050ce5d69554e5d6376062e67d99ae95a4",
             ComputeVariant.CPU,
         ),
     ),
     ("linux", "x86_64", ComputeVariant.VULKAN): (
         AudioCppAsset(
-            "audio-v0.7.4-bin-ubuntu-x64-vulkan-portable.tar.gz",
-            "34a46387c4151bf8bd0bbbaac46fc6de57df539a177ab23d52ecd5aa940173b1",
+            "audio-v0.8.0-bin-ubuntu-x64-vulkan-portable.tar.gz",
+            "2566b1c5d5fa9cebebf7d77ae7e955aa07c45052dd3f3a3ab635a1f3a27c2823",
             ComputeVariant.VULKAN,
         ),
     ),
     # No new Linux CUDA build is published by Pandrator yet. Keep the verified
-    # 0.7.2 package available, with its true version, rather than claim 0.7.4.
+    # 0.7.2 package available, with its true version, rather than claim 0.8.0.
     ("linux", "x86_64", ComputeVariant.CUDA): (
         AudioCppAsset(
             "audio.cpp-v0.7.2-linux-x86_64-cuda12.tar.gz",
@@ -212,28 +212,28 @@ ASSETS: dict[tuple[str, str, ComputeVariant], tuple[AudioCppAsset, ...]] = {
     ),
     ("windows", "x86_64", ComputeVariant.CPU): (
         AudioCppAsset(
-            "audio-v0.7.4-bin-windows-x64-cpu-portable.zip",
-            "d241c56ba78fd3c1b28bf289792fb8ec258d36586b4e0c8d667080ec248c0d2f",
+            "audio-v0.8.0-bin-windows-x64-cpu-portable.zip",
+            "7c562e5008ec39be3758554d08ef3abfa890ecdc1218c57b130ea8a2bbbf7b68",
             ComputeVariant.CPU,
         ),
     ),
     ("windows", "x86_64", ComputeVariant.VULKAN): (
         AudioCppAsset(
-            "audio-v0.7.4-bin-windows-x64-vulkan.zip",
-            "057332f9e3fb37706a8ecb5075ac1797efcd85fdccd739f7b65761a5920f2828",
+            "audio-v0.8.0-bin-windows-x64-vulkan.zip",
+            "76ead7b2c9d268e2b1a17168815b491de784b817da40f7eb7415140b580da717",
             ComputeVariant.VULKAN,
         ),
     ),
     ("windows", "x86_64", ComputeVariant.CUDA): (
         AudioCppAsset(
-            "audio-v0.7.4-bin-windows-x64-cuda12.4.zip",
-            "83fdd5b6e7bd4362604c10cc88d7d3564ef82030dc1d21c693a62cdcbe2e5e38",
+            "audio-v0.8.0-bin-windows-x64-cuda12.4.zip",
+            "54cec128eb0df4b74a06737e39868c5fe1bd551231dce1f96b9ab61b2dbc6b53",
             ComputeVariant.CUDA,
             kind="cuda_binary",
         ),
         AudioCppAsset(
-            "audio-v0.7.4-cudart-windows-x64-cuda12.4.zip",
-            "88d8943a2a8011f02c2a4efa7dbbe258608362615cce51e7f0e0e3a0c62f5a43",
+            "audio-v0.8.0-cudart-windows-x64-cuda12.4.zip",
+            "8ded289fada63d9357557429362791c05e7ca94ac5890a66e8f763752388016e",
             ComputeVariant.CUDA,
             kind="cuda_runtime",
         ),
