@@ -350,6 +350,7 @@ export type AgentStep = {
 export type ResolvedSettings = {
   value: Record<string, unknown>;
   settings_hash: string;
+  assembly_settings_hash?: string | null;
 };
 
 export type JobLogRecord = {

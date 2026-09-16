@@ -8,7 +8,7 @@
   import { isJobStatus } from '$lib/job-status';
   import { errorMessage } from '$lib/errors';
   import { page } from '$app/state';
-  import { onDestroy, onMount } from 'svelte';
+  import { onMount } from 'svelte';
   import {
     Check,
     CheckCircle2,
@@ -71,7 +71,6 @@
   let preview = $state<ArtifactRecord | null>(null);
   let deleting = $state<Record<string, boolean>>({});
   let copiedPath = $state('');
-  let assemblyController: AbortController | undefined;
   let loadRevision = 0;
   const outputContext = $derived(
     outputProfile?.context && typeof outputProfile.context === 'object'
@@ -167,49 +166,12 @@
       selectedRunVersionId = '';
     }
   }
-  function waitForAssemblyPoll(signal: AbortSignal) {
-    return new Promise<void>((resolve, reject) => {
-      if (signal.aborted) {
-        reject(new DOMException('Aborted', 'AbortError'));
-        return;
-      }
-      const timer = window.setTimeout(() => {
-        signal.removeEventListener('abort', abort);
-        resolve();
-      }, 800);
-      const abort = () => {
-        window.clearTimeout(timer);
-        reject(new DOMException('Aborted', 'AbortError'));
-      };
-      signal.addEventListener('abort', abort, { once: true });
-    });
-  }
-  async function waitForAssembly(runId: string, signal: AbortSignal) {
-    for (let attempt = 0; attempt < 300; attempt += 1) {
-      await waitForAssemblyPoll(signal);
-      const result = await generationApi.runs(sessionId, signal);
-      runs = result.items ?? [];
-      const assembly = runs.find((item) => item.id === runId)?.assembly;
-      if (assembly?.status === 'completed') return assembly;
-      if (['failed', 'canceled'].includes(assembly?.status ?? ''))
-        throw new Error(
-          assembly?.error_message ||
-            'The selected version could not be assembled.'
-        );
-    }
-    throw new Error(
-      'Assembly is still running. You can return later and export this version.'
-    );
-  }
   async function assemble() {
     const saveProfile = saveOutputProfile;
     if (!saveProfile) {
       error = 'Output settings are still loading. Please try again.';
       return;
     }
-    assemblyController?.abort();
-    const controller = new AbortController();
-    assemblyController = controller;
     busy = true;
     error = '';
     try {
@@ -219,7 +181,7 @@
       const effective = savedProfile.output ?? {};
       // The API can omit inherited defaults from `effective`; resolve the same
       // workflow-aware fallbacks used by OutputSettingsPanel before deciding
-      // whether a generation run must be assembled.
+      // whether the export needs generated audio.
       const exportMode = String(
         effective.export_mode ??
           (session?.workflow_kind === 'subtitles' ? 'subtitles' : 'media')
@@ -227,9 +189,12 @@
       const audioMode = String(
         effective.audio_mode ?? (hasSourceAudio ? 'mixed' : 'dubbing_only')
       );
-      // Carry the displayed choice across every async boundary. Persisted
-      // settings remain the profile, while this override is the immutable
-      // contract for this particular assembly and export request.
+      // Pin the export intent at click time. The single runStage POST below is
+      // the whole request: the export stage routes to the durable
+      // export.variant job server-side and assembles from this same pinned
+      // generation run when needed. No separate createAssembly/wait here, so a
+      // second click can never build a duplicate assembly and navigation after
+      // the accepted job never strands or repeats the server export.
       const runOverride = {
         output: {
           export_mode: exportMode,
@@ -246,34 +211,7 @@
           'Select a completed audio version for this media export.'
         );
       const needsAssembly = usesGeneratedAudio && Boolean(exportRunId);
-      const resolvedAssemblySettings = needsAssembly
-        ? await sessionApi.resolveSettings(
-            sessionId,
-            ['audio', 'output'],
-            runOverride
-          )
-        : null;
-      const assemblyMatchesSettings =
-        selected?.assembly?.settings_hash ===
-        resolvedAssemblySettings?.settings_hash;
-      const assemblyIsCurrent = Boolean(
-        needsAssembly &&
-        selected?.assembly?.status === 'completed' &&
-        assemblyMatchesSettings
-      );
-      if (needsAssembly && !assemblyIsCurrent) {
-        message = `Assembling ${selected?.label ?? 'the selected version'}…`;
-        if (
-          !assemblyMatchesSettings ||
-          !['queued', 'running'].includes(selected?.assembly?.status ?? '')
-        )
-          await generationApi.createAssembly(
-            sessionId,
-            exportRunId,
-            runOverride
-          );
-        await waitForAssembly(exportRunId, controller.signal);
-      }
+      const label = selected?.label ?? 'the selected version';
       const job = await sessionApi.runStage(sessionId, 'export', {
         ...runOverride,
         ...(needsAssembly ? { generation_run_id: exportRunId } : {})
@@ -282,18 +220,14 @@
         job,
         ...exportJobs.filter((item) => item.id !== job.id)
       ].slice(0, 8);
-      message = `Export ${job.id.slice(0, 8)} was submitted${needsAssembly && selected?.label ? ` from ${selected.label}` : ''}. Live progress is shown below.`;
+      message = `Export ${job.id.slice(0, 8)} was submitted${needsAssembly ? ` from ${label}` : ''}. Live progress is shown below.`;
       await load();
     } catch (caught) {
-      if (!controller.signal.aborted) error = errorMessage(caught);
+      error = errorMessage(caught);
     } finally {
-      if (assemblyController === controller) {
-        assemblyController = undefined;
-        busy = false;
-      }
+      busy = false;
     }
   }
-  onDestroy(() => assemblyController?.abort());
   function canRemove(artifact: ArtifactRecord) {
     return (
       artifact.kind === 'export' ||

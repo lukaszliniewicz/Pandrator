@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 from pathlib import Path
 
@@ -428,8 +429,14 @@ def build_replace_video_audio_command(
     ffmpeg_executable: str = "ffmpeg",
     audio_codec: str = "aac",
     audio_bitrate: str = "192k",
+    shortest: bool = True,
 ) -> list[str]:
-    """Build the FFmpeg command for replacing a video's audio stream."""
+    """Build the FFmpeg command for replacing a video's audio stream.
+
+    ``shortest`` keeps the historical fast path where the output ends with
+    the shorter input. Callers covering generated speech with an extended
+    video tail must pass ``shortest=False`` so the audio tail is preserved.
+    """
     command = [
         ffmpeg_executable,
         "-y",
@@ -448,8 +455,81 @@ def build_replace_video_audio_command(
     ]
     if str(audio_codec or "aac").strip().lower() == "aac":
         command.extend(["-b:a", str(audio_bitrate or "192k")])
-    command.extend(["-shortest", temp_output_path])
+    if shortest:
+        command.extend(["-shortest", temp_output_path])
+    else:
+        command.append(temp_output_path)
     return command
+
+
+def video_tail_extension_seconds(overrun_seconds: float, fps: float | None) -> float:
+    """Return the frozen-tail duration covering a small terminal overrun.
+
+    The tail clones the last video frame; every existing timeline position is
+    preserved. Frame rounding plus one extra frame guarantees coverage without
+    trusting fractional-second muxing precision.
+    """
+
+    if not overrun_seconds > 0:
+        raise ValueError("Tail extension requires a positive overrun.")
+    rate = float(fps) if fps is not None else 0.0
+    if math.isfinite(rate) and rate > 0:
+        return (math.ceil(overrun_seconds * rate) + 1) / rate
+    return overrun_seconds + 0.12
+
+
+def build_video_tail_extension_command(
+    video_path: str,
+    output_path: str,
+    extra_seconds: float,
+    *,
+    ffmpeg_executable: str = "ffmpeg",
+    video_encoder: str = "libx264",
+    video_quality: int = 18,
+    video_speed: str = "balanced",
+    audio_codec: str = "copy",
+    audio_bitrate: str = "192k",
+    hardware_device: str | None = None,
+    video_resolution: str | int | None = "source",
+) -> list[str]:
+    """Freeze the last video frame to cover a small terminal speech overrun.
+
+    Only the tail is synthesized via ``tpad=stop_mode=clone``; every existing
+    timeline position is preserved. Filtering requires a video reencode, so
+    callers must mark the render as transcoded and never claim stream copy.
+    """
+
+    if not extra_seconds > 0:
+        raise ValueError("Tail extension requires a positive duration.")
+    before_input, arguments = _video_transcode_arguments(
+        video_encoder=video_encoder,
+        video_quality=video_quality,
+        video_speed=video_speed,
+        audio_codec=audio_codec,
+        audio_bitrate=audio_bitrate,
+        hardware_device=hardware_device,
+        video_resolution=video_resolution,
+        extra_filters=(
+            f"tpad=stop_mode=clone:stop_duration={float(extra_seconds):.3f}",
+        ),
+    )
+    return [
+        ffmpeg_executable,
+        "-y",
+        *before_input,
+        "-i",
+        video_path,
+        "-map",
+        "0:v:0",
+        "-map",
+        "0:a?",
+        "-map_metadata",
+        "0",
+        *arguments,
+        "-movflags",
+        "+faststart",
+        output_path,
+    ]
 
 
 def build_multi_soft_subtitle_command(

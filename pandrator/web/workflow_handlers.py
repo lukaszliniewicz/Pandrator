@@ -9314,7 +9314,14 @@ class WorkflowHandlers:
                 result["source_generation_run_id"] = run_id
                 result["generation_run_id"] = result["regrouped_generation_run_id"]
         if regroup_requested:
-            completion_progress(1.0, f"Voiceover regroup checked; {result.get('regrouped_groups', 0)} group(s) regenerated")
+            # Frozen wrapper contract: skipped_active_plan_changed carries
+            # regroup_status/regroup_reason zero attempt/group counts plus
+            # source/active plan IDs via result.update above; surface the skip
+            # instead of "0 groups regenerated".
+            if result.get("regroup_status") == "skipped_active_plan_changed":
+                completion_progress(1.0, "Regroup skipped: speech plan was edited during generation")
+            else:
+                completion_progress(1.0, f"Voiceover regroup checked; {result.get('regrouped_groups', 0)} group(s) regenerated")
         return result
 
     def assemble_generation_output(self, payload, progress, cancel_event):
@@ -10568,6 +10575,7 @@ class WorkflowHandlers:
             build_add_subtitles_command,
             build_multi_soft_subtitle_command,
             build_replace_video_audio_command,
+            build_video_tail_extension_command,
             build_video_transcode_command,
             normalize_video_resolution,
         )
@@ -11142,6 +11150,8 @@ class WorkflowHandlers:
                 working_video = media_path
                 audio_parent_ids: list[str] = [upload_media.id]
                 temporary_video: Path | None = None
+                tail_video: Path | None = None
+                tail_extension_ms = 0
                 ffmpeg_executable = str(
                     os.environ.get("PANDRATOR_FFMPEG_EXE")
                     or shutil.which("ffmpeg")
@@ -11160,34 +11170,112 @@ class WorkflowHandlers:
                     video_audio_bitrate,
                 ):
                     raise ValueError("Video AAC bitrate must look like 192k or 2M.")
+                video_encoder = (
+                    str(settings.get("burn_video_encoder") or "libx264").strip().lower()
+                )
                 if dubbing_audio and audio_mode in {"dubbed", "mixed"}:
+                    from .soundtrack_export import (
+                        ensure_soundtrack_master,
+                        probe_soundtrack_media,
+                        resolve_video_tail_extension_ms,
+                    )
+
+                    reference_info = probe_soundtrack_media(media_path)
+                    _speech_record, speech_probe_path = self._resolve_input(
+                        dubbing_audio.id
+                    )
+                    speech_info = probe_soundtrack_media(speech_probe_path)
+                    # Freeze math runs against the VIDEO stream duration (not the
+                    # container duration). resolve_video_tail_extension_ms is the
+                    # single shared computation: 0 when the timeline fits, the
+                    # frame-ceiled extension when bounded, otherwise a clear
+                    # actionable error. Its result is passed to both the video
+                    # tail step and the soundtrack master below so neither
+                    # double-extends nor clips.
+                    reference_duration = reference_info.get(
+                        "video_duration"
+                    ) or reference_info["duration"]
+                    # Any true-positive speech overrun must survive the final
+                    # mux: sub-tolerance overruns ride the full audio track
+                    # (shortest=False, no freeze/reencode), larger ones use the
+                    # shared frozen-tail extension or raise. The -shortest fast
+                    # path is only kept when the audio cannot exceed the video.
+                    overrun = speech_info["duration"] - reference_duration
+                    tail_extension_ms = 0
+                    if (
+                        reference_info["has_video"]
+                        and bool(settings.get("audio_match_source_duration", True))
+                    ):
+                        tail_extension_ms = resolve_video_tail_extension_ms(
+                            reference_duration=reference_duration,
+                            generated_duration=speech_info["duration"],
+                            fps=reference_info.get("fps"),
+                            settings=settings,
+                        )
+                    preserve_audio_tail = tail_extension_ms > 0 or overrun > 0
+                    if tail_extension_ms:
+                        if video_encoder not in ffmpeg_video_encoder_ids(
+                            ffmpeg_executable
+                        ):
+                            raise RuntimeError(
+                                f"The selected FFmpeg build does not provide the {video_encoder} video encoder."
+                            )
+                        tail_video = (
+                            output_dir / f".{record.storage_key}-tail-{new_id()}.mp4"
+                        )
+                        tail_command = build_video_tail_extension_command(
+                            str(media_path),
+                            str(tail_video),
+                            tail_extension_ms / 1000,
+                            ffmpeg_executable=ffmpeg_executable,
+                            video_encoder=video_encoder,
+                            video_quality=settings.get("burn_video_quality", 18),
+                            video_speed=str(
+                                settings.get("burn_video_speed") or "balanced"
+                            ),
+                            audio_codec="copy",
+                            audio_bitrate=video_audio_bitrate,
+                            video_resolution=settings.get(
+                                "burn_video_resolution", "source"
+                            ),
+                        )
+                        progress(
+                            0.38,
+                            f"Extending the final video frame by {tail_extension_ms} ms "
+                            "to cover the voiceover tail",
+                        )
+                        subprocess.run(
+                            tail_command, check=True, capture_output=True, text=True
+                        )
+                        working_video = tail_video
                     _audio_record, audio_path = self._resolve_input(dubbing_audio.id)
                     audio_video = (
                         output_dir / f".{record.storage_key}-audio-{new_id()}.mp4"
                     )
                     if audio_mode == "dubbed":
                         command = build_replace_video_audio_command(
-                            str(media_path),
+                            str(working_video),
                             str(audio_path),
                             str(audio_video),
                             ffmpeg_executable=ffmpeg_executable,
                             audio_bitrate=video_audio_bitrate,
+                            shortest=not preserve_audio_tail,
                         )
                         progress(0.4, "Replacing source audio with generated speech")
                     else:
-                        from .soundtrack_export import ensure_soundtrack_master
-
                         master = ensure_soundtrack_master(
                             self, session_id=session_id, source=upload_media,
                             speech=dubbing_audio, audio_mode="mixed", settings=settings,
                             cancel_event=cancel_event,
+                            tail_extension_ms=tail_extension_ms,
                         )
                         _master, master_path = self._resolve_input(master.id)
                         audio_parent_ids.append(master.id)
                         command = build_replace_video_audio_command(
-                            str(media_path), str(master_path), str(audio_video),
+                            str(working_video), str(master_path), str(audio_video),
                             ffmpeg_executable=ffmpeg_executable,
                             audio_bitrate=video_audio_bitrate,
+                            shortest=not preserve_audio_tail,
                         )
                         progress(0.4, "Using the selected mixed soundtrack")
                     subprocess.run(command, check=True, capture_output=True, text=True)
@@ -11195,12 +11283,13 @@ class WorkflowHandlers:
                     working_video = audio_video
                     temporary_video = audio_video
                     audio_parent_ids.append(dubbing_audio.id)
-                video_transcode = bool(settings.get("video_transcode")) or (
+                user_video_transcode = bool(settings.get("video_transcode")) or (
                     subtitle_mode == "burned" and bool(selected_subtitles)
                 )
-                video_encoder = (
-                    str(settings.get("burn_video_encoder") or "libx264").strip().lower()
-                )
+                # A frozen tail already reencoded the video with the selected
+                # encoder. Force the transcoded flag/metadata without paying
+                # for a second full transcode when the user did not request one.
+                video_transcode = user_video_transcode or tail_extension_ms > 0
                 output_video_resolution = (
                     normalize_video_resolution(
                         settings.get("burn_video_resolution", "source")
@@ -11272,7 +11361,7 @@ class WorkflowHandlers:
                                 f"Prepared selectable subtitle track {index} of {len(selected_subtitles)}",
                             )
                         if (
-                            video_transcode
+                            user_video_transcode
                             and video_encoder
                             not in ffmpeg_video_encoder_ids(ffmpeg_executable)
                         ):
@@ -11284,7 +11373,7 @@ class WorkflowHandlers:
                             tracks,
                             str(render_destination),
                             ffmpeg_executable=ffmpeg_executable,
-                            transcode_video=video_transcode,
+                            transcode_video=user_video_transcode,
                             video_encoder=video_encoder,
                             video_resolution=output_video_resolution,
                             video_quality=settings.get("burn_video_quality", 18),
@@ -11297,7 +11386,7 @@ class WorkflowHandlers:
                         progress(
                             0.65,
                             "Transcoding media with selectable subtitles"
-                            if video_transcode
+                            if user_video_transcode
                             else "Rendering media with selectable subtitles",
                         )
                         subprocess.run(
@@ -11375,7 +11464,7 @@ class WorkflowHandlers:
                             raise RuntimeError(
                                 f"Burned-subtitle transcoding with {video_encoder} failed: {reason}"
                             ) from error
-                    elif video_transcode:
+                    elif user_video_transcode:
                         if video_encoder not in ffmpeg_video_encoder_ids(
                             ffmpeg_executable
                         ):
@@ -11415,15 +11504,29 @@ class WorkflowHandlers:
                                 f"Video transcoding with {video_encoder} failed: {reason}"
                             ) from error
                     else:
-                        progress(0.65, "Copying prepared media output")
+                        if tail_extension_ms > 0:
+                            progress(
+                                0.65,
+                                f"Copying media output with frozen tail (+{tail_extension_ms} ms)",
+                            )
+                        else:
+                            progress(0.65, "Copying prepared media output")
                         shutil.copy2(working_video, render_destination)
                     os.replace(render_destination, destination)
-                    progress(0.9, "Rendered media output ready")
+                    if tail_extension_ms > 0:
+                        progress(
+                            0.9,
+                            f"Rendered media output ready (last frame frozen +{tail_extension_ms} ms)",
+                        )
+                    else:
+                        progress(0.9, "Rendered media output ready")
                 finally:
                     if render_destination.exists():
                         render_destination.unlink()
                     if temporary_video is not None and temporary_video.exists():
                         temporary_video.unlink()
+                    if tail_video is not None and tail_video.exists():
+                        tail_video.unlink()
                 subtitle_track_metadata = [
                     {
                         "artifact_id": item.id,
@@ -11455,6 +11558,7 @@ class WorkflowHandlers:
                             "video_resolution": output_video_resolution,
                             "video_transcoded": video_transcode,
                             "video_encoder": video_encoder if video_transcode else None,
+                            "tail_extension_ms": tail_extension_ms,
                             "audio_bitrate": (
                                 video_audio_bitrate
                                 if audio_mode in {"dubbed", "mixed"}

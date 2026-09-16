@@ -542,7 +542,14 @@ def repair_regroup_blocks(
     with handler.database.session() as session:
         source_run = session.get(GenerationRun, run_id)
         if source_run is None:
-            return {"regrouped_groups": 0}
+            return {
+                "regrouped_groups": 0,
+                "regroup_attempted_groups": 0,
+                "regroup_status": "skipped_no_source_run",
+                "regroup_reason": "no_source_run",
+                "source_plan_revision_id": None,
+                "active_plan_revision_id": None,
+            }
         snapshot = deepcopy(source_run.settings_snapshot_json or {})
         source_revision_id = source_run.plan_revision_id
         session_id = source_run.session_id
@@ -551,7 +558,20 @@ def repair_regroup_blocks(
             select(GenerationPlan).where(GenerationPlan.session_id == session_id)
         )
         if active is None or active.active_revision_id != source_revision_id:
-            return {"regrouped_groups": 0}
+            # Safety guard (kept): never rebase/retarget an old snapshot onto
+            # newer edits and never overwrite the active edit copy. A 0-attempt
+            # skip is distinct from "no eligible groups": report it explicitly
+            # so progress/result messaging can say the pass was skipped.
+            return {
+                "regrouped_groups": 0,
+                "regroup_attempted_groups": 0,
+                "regroup_status": "skipped_active_plan_changed",
+                "regroup_reason": "active_plan_changed",
+                "source_plan_revision_id": source_revision_id,
+                "active_plan_revision_id": (
+                    active.active_revision_id if active is not None else None
+                ),
+            }
         already_attempted = session.scalar(
             select(GenerationRun.id)
             .where(
@@ -572,7 +592,11 @@ def repair_regroup_blocks(
                 "Voiceover regroup already attempted for run %s; not staging again.",
                 run_id,
             )
-            return {"regrouped_groups": 0, "regroup_status": "already_attempted"}
+            return {
+                "regrouped_groups": 0,
+                "regroup_attempted_groups": 0,
+                "regroup_status": "already_attempted",
+            }
         batch_snapshot = capture_repair_base(session, source_revision_id)
 
     tts_settings = dict(snapshot.get("tts") or {})
@@ -582,9 +606,19 @@ def repair_regroup_blocks(
         logger.warning(
             "Voiceover regroup skipped; the stored regroup settings are invalid."
         )
-        return {"regrouped_groups": 0}
+        return {
+            "regrouped_groups": 0,
+            "regroup_attempted_groups": 0,
+            "regroup_status": "skipped_invalid_regroup_settings",
+            "regroup_reason": "invalid_regroup_settings",
+        }
     if regroup["speech_block_generation_mode"] != "passage":
-        return {"regrouped_groups": 0}
+        return {
+            "regrouped_groups": 0,
+            "regroup_attempted_groups": 0,
+            "regroup_status": "skipped_not_passage_mode",
+            "regroup_reason": "not_passage_mode",
+        }
     try:
         max_chars = max(1, int(tts_settings.get("speech_block_max_chars") or 220))
     except (TypeError, ValueError):
@@ -592,7 +626,12 @@ def repair_regroup_blocks(
 
     first_pass = _load_first_pass(handler, run_id)
     if first_pass is None:
-        return {"regrouped_groups": 0}
+        return {
+            "regrouped_groups": 0,
+            "regroup_attempted_groups": 0,
+            "regroup_status": "skipped_first_pass_evidence_missing",
+            "regroup_reason": "first_pass_evidence_missing",
+        }
     source_cuts, edited_known = _load_source_cuts(
         handler, session_id, source_revision_id
     )
@@ -605,6 +644,7 @@ def repair_regroup_blocks(
         )
         return {
             "regrouped_groups": 0,
+            "regroup_attempted_groups": 0,
             "regroup_rejected": len(first_pass.passages),
             "regroup_status": "edited_source_cuts_unknown",
         }
@@ -625,7 +665,12 @@ def repair_regroup_blocks(
             selection.rejected,
         )
     if not selection.groups:
-        return {"regrouped_groups": 0, "regroup_rejected": len(selection.rejected)}
+        return {
+            "regrouped_groups": 0,
+            "regroup_attempted_groups": 0,
+            "regroup_rejected": len(selection.rejected),
+            "regroup_status": "no_eligible_groups",
+        }
 
     stop = RepairCancellation(handler, run_id, cancel_event)
     current_ids = {passage.key: passage.key for passage in first_pass.passages}
@@ -854,6 +899,8 @@ def repair_regroup_blocks(
                     )
     return {
         "regrouped_groups": regrouped,
+        "regroup_attempted_groups": len(selection.groups),
+        "regroup_status": "completed",
         "regrouped_generation_run_id": current_run_id,
         "regrouped_plan_revision_id": current_revision_id,
         "regroup_rejected": rejected,

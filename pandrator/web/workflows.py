@@ -15,7 +15,11 @@ from .artifact_selection import (
     stage_histories,
 )
 from .database import Database
-from .export_contract import build_export_contract, normalize_export_mode
+from .export_contract import (
+    build_export_contract,
+    normalize_audio_mode,
+    normalize_export_mode,
+)
 from .jobs import JobQueue
 from .models import (
     AgentRun,
@@ -2009,8 +2013,27 @@ class WorkflowService:
                 source_content_hash=(source.content_hash if source else None),
                 outcome_revision=outcome.revision if outcome else 0,
             )
+        # Direct one-click export must assemble first when the selected
+        # generation run needs it. The frontend submits a single runStage call;
+        # routing to export.variant keeps assembly and export pinned to the
+        # same resolved intent instead of requiring a second click.
+        job_kind = definition.job_kind
+        if stage_key == "export":
+            export_generation_run_id = str(
+                flattened.get("generation_run_id") or ""
+            ).strip()
+            export_mode_name = str(flattened.get("export_mode") or "media").lower()
+            export_audio_mode = normalize_audio_mode(flattened.get("audio_mode"))
+            if bool(export_generation_run_id) and (
+                record.workflow_kind == "audiobook"
+                or (
+                    export_mode_name in {"media", "audio"}
+                    and export_audio_mode in {"mixed", "dubbing_only"}
+                )
+            ):
+                job_kind = "export.variant"
         return ResolvedWorkflowStage(
-            job_kind=definition.job_kind,
+            job_kind=job_kind,
             payload=payload,
             resource_keys=tuple(
                 self._resource_keys(

@@ -2333,7 +2333,25 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             return error_response("not_found", "Session not found.", 404)
         except ValueError as error:
             return error_response("validation_error", str(error), 422)
-        return jsonify({"value": value, "settings_hash": digest})
+        # Output assemblies hash only the assembly-material subset (audio plus
+        # a few output keys). Expose that comparable digest so callers can tell
+        # a current assembly from a stale one; the full resolve digest never
+        # equals an assembly settings_hash.
+        assembly_digest = None
+        try:
+            from .workspace import output_assembly_settings_hash
+
+            if sections is None or {"audio", "output"}.issubset(set(sections)):
+                assembly_digest = output_assembly_settings_hash(value)
+        except (TypeError, ValueError, AttributeError):
+            assembly_digest = None
+        return jsonify(
+            {
+                "value": value,
+                "settings_hash": digest,
+                "assembly_settings_hash": assembly_digest,
+            }
+        )
 
     @app.get("/api/v1/sessions/<session_id>/outcome-plan")
     @require_auth

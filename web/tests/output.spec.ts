@@ -168,6 +168,18 @@ test('Create export saves the visible burned-subtitle selection before submittin
 
   const requests: string[] = [];
   let exportPayload: Record<string, unknown> | null = null;
+  let assemblyCalls = 0;
+  await page.route(
+    `**/api/v1/sessions/${session.id}/output-assemblies`,
+    async (route) => {
+      assemblyCalls += 1;
+      await route.fulfill({
+        status: 202,
+        contentType: 'application/json',
+        body: JSON.stringify({ id: 'unexpected-assembly', status: 'queued' })
+      });
+    }
+  );
   page.on('request', (request) => {
     if (
       request.method() === 'PUT' &&
@@ -207,6 +219,7 @@ test('Create export saves the visible burned-subtitle selection before submittin
   await expect(page.getByText(/Export burned-e was submitted/)).toBeVisible();
 
   expect(requests).toEqual(['save', 'export']);
+  expect(assemblyCalls).toBe(0);
   const saved = await page.request.get(
     `/api/v1/sessions/${session.id}/settings/output`
   );
@@ -239,9 +252,23 @@ test('advanced video encoding can be enabled without subtitles', async ({
     }
   });
   expect(uploaded.ok()).toBeTruthy();
+  let advancedAssemblyCalls = 0;
+  let advancedExportCalls = 0;
+  await page.route(
+    `**/api/v1/sessions/${session.id}/output-assemblies`,
+    async (route) => {
+      advancedAssemblyCalls += 1;
+      await route.fulfill({
+        status: 202,
+        contentType: 'application/json',
+        body: JSON.stringify({ id: 'unexpected-assembly', status: 'queued' })
+      });
+    }
+  );
   await page.route(
     `**/api/v1/sessions/${session.id}/stages/export/run`,
     async (route) => {
+      advancedExportCalls += 1;
       await route.fulfill({
         contentType: 'application/json',
         body: JSON.stringify({
@@ -272,6 +299,8 @@ test('advanced video encoding can be enabled without subtitles', async ({
   expect(savedSettings.override.video_transcode).toBe(true);
   expect(savedSettings.override.subtitle_mode).toBeUndefined();
   expect(savedSettings.override.burn_video_resolution).toBe('1080p');
+  expect(advancedAssemblyCalls).toBe(0);
+  expect(advancedExportCalls).toBe(1);
 });
 
 test('Create export keeps the selected audio version when saved effective defaults are omitted', async ({
@@ -351,9 +380,23 @@ test('Create export keeps the selected audio version when saved effective defaul
     }
   );
   let exportPayload: Record<string, unknown> | null = null;
+  let selectedAssemblyCalls = 0;
+  let selectedExportCalls = 0;
+  await page.route(
+    `**/api/v1/sessions/${session.id}/output-assemblies`,
+    async (route) => {
+      selectedAssemblyCalls += 1;
+      await route.fulfill({
+        status: 202,
+        contentType: 'application/json',
+        body: JSON.stringify({ id: 'unexpected-assembly', status: 'queued' })
+      });
+    }
+  );
   await page.route(
     `**/api/v1/sessions/${session.id}/stages/export/run`,
     async (route) => {
+      selectedExportCalls += 1;
       exportPayload = route.request().postDataJSON() as Record<string, unknown>;
       await route.fulfill({
         contentType: 'application/json',
@@ -387,6 +430,8 @@ test('Create export keeps the selected audio version when saved effective defaul
     },
     generation_run_id: 'selected-completed-run'
   });
+  expect(selectedAssemblyCalls).toBe(0);
+  expect(selectedExportCalls).toBe(1);
 });
 
 test('soundtrack mix preview uses the selected version and current unsaved controls', async ({
@@ -567,9 +612,23 @@ test('Create export sends an explicit voiceover-only contract when no source is 
     }
   );
   let exportPayload: Record<string, unknown> | null = null;
+  let voiceoverAssemblyCalls = 0;
+  let voiceoverExportCalls = 0;
+  await page.route(
+    `**/api/v1/sessions/${session.id}/output-assemblies`,
+    async (route) => {
+      voiceoverAssemblyCalls += 1;
+      await route.fulfill({
+        status: 202,
+        contentType: 'application/json',
+        body: JSON.stringify({ id: 'unexpected-assembly', status: 'queued' })
+      });
+    }
+  );
   await page.route(
     `**/api/v1/sessions/${session.id}/stages/export/run`,
     async (route) => {
+      voiceoverExportCalls += 1;
       exportPayload = route.request().postDataJSON() as Record<string, unknown>;
       await route.fulfill({
         contentType: 'application/json',
@@ -597,9 +656,11 @@ test('Create export sends an explicit voiceover-only contract when no source is 
     },
     generation_run_id: 'voiceover-only-run'
   });
+  expect(voiceoverAssemblyCalls).toBe(0);
+  expect(voiceoverExportCalls).toBe(1);
 });
 
-test('Create export rebuilds a completed assembly when synchronization settings changed', async ({
+test('Create export submits ONE durable export request with the pinned run', async ({
   page
 }) => {
   await signIn(page);
@@ -618,9 +679,9 @@ test('Create export rebuilds a completed assembly when synchronization settings 
   });
   expect(uploaded.ok()).toBeTruthy();
 
-  let assemblyRequested = false;
-  let assemblyPayload: Record<string, unknown> | null = null;
-  const requests: string[] = [];
+  let assemblyCalls = 0;
+  let exportCalls = 0;
+  let exportPayload: Record<string, unknown> | null = null;
   await page.route(
     `**/api/v1/sessions/${session.id}/generation-runs`,
     async (route) => {
@@ -633,9 +694,9 @@ test('Create export rebuilds a completed assembly when synchronization settings 
               status: 'completed',
               label: 'Run 1: Test voice',
               assembly: {
-                id: assemblyRequested ? 'fresh-assembly' : 'stale-assembly',
+                id: 'stale-assembly',
                 status: 'completed',
-                settings_hash: assemblyRequested ? 'fresh' : 'stale'
+                settings_hash: 'stale'
               }
             }
           ]
@@ -646,37 +707,23 @@ test('Create export rebuilds a completed assembly when synchronization settings 
   await page.route(
     `**/api/v1/sessions/${session.id}/output-assemblies`,
     async (route) => {
-      assemblyRequested = true;
-      assemblyPayload = route.request().postDataJSON() as Record<
-        string,
-        unknown
-      >;
-      requests.push('assembly');
+      assemblyCalls += 1;
       await route.fulfill({
         status: 202,
         contentType: 'application/json',
-        body: JSON.stringify({ id: 'fresh-assembly', status: 'queued' })
-      });
-    }
-  );
-  await page.route(
-    `**/api/v1/sessions/${session.id}/settings/resolve`,
-    async (route) => {
-      requests.push('resolve');
-      await route.fulfill({
-        contentType: 'application/json',
-        body: JSON.stringify({ value: {}, settings_hash: 'current-settings' })
+        body: JSON.stringify({ id: 'unexpected-assembly', status: 'queued' })
       });
     }
   );
   await page.route(
     `**/api/v1/sessions/${session.id}/stages/export/run`,
     async (route) => {
-      requests.push('export');
+      exportCalls += 1;
+      exportPayload = route.request().postDataJSON() as Record<string, unknown>;
       await route.fulfill({
         contentType: 'application/json',
         body: JSON.stringify({
-          id: 'rebuilt-export-job',
+          id: 'single-export-job',
           kind: 'export.create',
           session_id: session.id,
           status: 'queued',
@@ -692,19 +739,281 @@ test('Create export rebuilds a completed assembly when synchronization settings 
   await page.getByLabel('Audio result').selectOption('mixed');
   await page.getByLabel('Maximum speed-up').fill('1.25');
   await page.getByRole('button', { name: 'Create export' }).click();
-  await expect(page.getByText(/Export rebuilt- was submitted/)).toBeVisible({
+  await expect(page.getByText(/Export single-e was submitted/)).toBeVisible({
     timeout: 10_000
   });
 
-  expect(assemblyRequested).toBeTruthy();
-  expect(assemblyPayload).toEqual({
-    generation_run_id: 'completed-run',
-    run_override: {
-      output: {
-        export_mode: 'media',
-        audio_mode: 'mixed'
+  // The export stage owns assembly server-side: exactly one export POST and
+  // zero separate frontend assembly requests, with the pinned run attached.
+  expect(exportCalls).toBe(1);
+  expect(assemblyCalls).toBe(0);
+  expect(exportPayload).toEqual({
+    output: {
+      export_mode: 'media',
+      audio_mode: 'mixed'
+    },
+    generation_run_id: 'completed-run'
+  });
+});
+
+test('Navigation after an accepted export job does not resubmit the export', async ({
+  page
+}) => {
+  await signIn(page);
+  const { session, headers } = await createSession(page, 'voiceover');
+  const uploaded = await page.request.post('/api/v1/uploads', {
+    headers,
+    multipart: {
+      session_id: session.id,
+      purpose: 'source',
+      file: {
+        name: 'source-video.mp4',
+        mimeType: 'video/mp4',
+        buffer: Buffer.from('media fixture')
       }
     }
   });
-  expect(requests).toEqual(['resolve', 'assembly', 'export']);
+  expect(uploaded.ok()).toBeTruthy();
+
+  let assemblyCalls = 0;
+  let exportCalls = 0;
+  await page.route(
+    `**/api/v1/sessions/${session.id}/generation-runs`,
+    async (route) => {
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          items: [
+            {
+              id: 'completed-run',
+              status: 'completed',
+              label: 'Run 1: Test voice',
+              assembly: {
+                id: 'finished-assembly',
+                status: 'completed',
+                settings_hash: 'current-settings'
+              }
+            }
+          ]
+        })
+      });
+    }
+  );
+  await page.route(
+    `**/api/v1/sessions/${session.id}/output-assemblies`,
+    async (route) => {
+      assemblyCalls += 1;
+      await route.fulfill({
+        status: 202,
+        contentType: 'application/json',
+        body: JSON.stringify({ id: 'finished-assembly', status: 'queued' })
+      });
+    }
+  );
+  await page.route(
+    `**/api/v1/sessions/${session.id}/stages/export/run`,
+    async (route) => {
+      exportCalls += 1;
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          id: 'durable-export-job',
+          kind: 'export.create',
+          session_id: session.id,
+          status: 'queued',
+          progress: 0,
+          created_at: new Date().toISOString()
+        })
+      });
+    }
+  );
+
+  await page.goto(`/sessions/${session.id}/output`);
+  await expect(page.getByLabel('Audio version')).toHaveValue('completed-run');
+  await page.getByLabel('Audio result').selectOption('mixed');
+  await page.getByRole('button', { name: 'Create export' }).click();
+  await expect(page.getByText(/Export durable- was submitted/)).toBeVisible({
+    timeout: 10_000
+  });
+  expect(exportCalls).toBe(1);
+
+  // Leaving the page after the job was accepted must not repeat the request:
+  // the durable server job continues on its own (mock contract here; the real
+  // durable behavior is covered backend-side).
+  await page.goto('/');
+  await page.goto(`/sessions/${session.id}/output`);
+  await expect(
+    page.getByRole('button', { name: 'Create export' })
+  ).toBeVisible();
+  expect(exportCalls).toBe(1);
+  expect(assemblyCalls).toBe(0);
+});
+
+test('Create export requires a completed audio version for a mixed media export', async ({
+  page
+}) => {
+  await signIn(page);
+  const { session, headers } = await createSession(page, 'voiceover');
+  const uploaded = await page.request.post('/api/v1/uploads', {
+    headers,
+    multipart: {
+      session_id: session.id,
+      purpose: 'source',
+      file: {
+        name: 'source-video.mp4',
+        mimeType: 'video/mp4',
+        buffer: Buffer.from('media fixture')
+      }
+    }
+  });
+  expect(uploaded.ok()).toBeTruthy();
+
+  let exportCalls = 0;
+  let assemblyCalls = 0;
+  await page.route(
+    `**/api/v1/sessions/${session.id}/generation-runs`,
+    async (route) => {
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ items: [] })
+      });
+    }
+  );
+  await page.route(
+    `**/api/v1/sessions/${session.id}/output-assemblies`,
+    async (route) => {
+      assemblyCalls += 1;
+      await route.fulfill({
+        status: 202,
+        contentType: 'application/json',
+        body: JSON.stringify({ id: 'unexpected-assembly', status: 'queued' })
+      });
+    }
+  );
+  await page.route(
+    `**/api/v1/sessions/${session.id}/stages/export/run`,
+    async (route) => {
+      exportCalls += 1;
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          id: 'guard-export-job',
+          kind: 'export.create',
+          session_id: session.id,
+          status: 'queued',
+          progress: 0,
+          created_at: new Date().toISOString()
+        })
+      });
+    }
+  );
+
+  await page.goto(`/sessions/${session.id}/output`);
+  await page.getByLabel('Audio result').selectOption('mixed');
+  await page.getByRole('button', { name: 'Create export' }).click();
+  await expect(
+    page.getByText('Select a completed audio version for this media export.')
+  ).toBeVisible({ timeout: 10_000 });
+
+  expect(exportCalls).toBe(0);
+  expect(assemblyCalls).toBe(0);
+});
+
+test('Frozen-tail limit is saved with the video output profile', async ({
+  page
+}) => {
+  await signIn(page);
+  const { session, headers } = await createSession(page, 'voiceover');
+  const uploaded = await page.request.post('/api/v1/uploads', {
+    headers,
+    multipart: {
+      session_id: session.id,
+      purpose: 'source',
+      file: {
+        name: 'source-video.mp4',
+        mimeType: 'video/mp4',
+        buffer: Buffer.from('media fixture')
+      }
+    }
+  });
+  expect(uploaded.ok()).toBeTruthy();
+
+  await page.route(
+    `**/api/v1/sessions/${session.id}/generation-runs`,
+    async (route) => {
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          items: [
+            {
+              id: 'completed-run',
+              status: 'completed',
+              label: 'Run 1: Test voice',
+              assembly: {
+                id: 'finished-assembly',
+                status: 'completed',
+                settings_hash: 'tail-settings'
+              }
+            }
+          ]
+        })
+      });
+    }
+  );
+  await page.route(
+    `**/api/v1/sessions/${session.id}/settings/resolve`,
+    async (route) => {
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ value: {}, settings_hash: 'tail-settings' })
+      });
+    }
+  );
+  let tailAssemblyCalls = 0;
+  let tailExportCalls = 0;
+  await page.route(
+    `**/api/v1/sessions/${session.id}/output-assemblies`,
+    async (route) => {
+      tailAssemblyCalls += 1;
+      await route.fulfill({
+        status: 202,
+        contentType: 'application/json',
+        body: JSON.stringify({ id: 'unexpected-assembly', status: 'queued' })
+      });
+    }
+  );
+  await page.route(
+    `**/api/v1/sessions/${session.id}/stages/export/run`,
+    async (route) => {
+      tailExportCalls += 1;
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          id: 'tail-export-job',
+          kind: 'export.create',
+          session_id: session.id,
+          status: 'queued',
+          progress: 0,
+          created_at: new Date().toISOString()
+        })
+      });
+    }
+  );
+
+  await page.goto(`/sessions/${session.id}/output`);
+  await page.getByLabel('Audio result').selectOption('mixed');
+  await page.getByText('Advanced video encoding').click();
+  await page.getByLabel('Frozen-tail limit (ms)').fill('1500');
+  await page.getByRole('button', { name: 'Create export' }).click();
+  await expect(page.getByText(/Export tail-exp was submitted/)).toBeVisible({
+    timeout: 10_000
+  });
+
+  const saved = await page.request.get(
+    `/api/v1/sessions/${session.id}/settings/output`
+  );
+  const savedSettings = await saved.json();
+  expect(savedSettings.override.video_tail_extension_max_ms).toBe(1500);
+  expect(tailAssemblyCalls).toBe(0);
+  expect(tailExportCalls).toBe(1);
 });
