@@ -185,7 +185,6 @@
       <th class="text-left">Generation text and delivery</th>
       <th class="w-52">Audio take</th>
       <th class="w-24">Status</th>
-      <th class="w-24"></th>
     </tr>
   </thead>
   <tbody>
@@ -196,7 +195,7 @@
       )}
       {#if itemIndex > 0}
         <tr class="boundary-row">
-          <td colspan="6">
+          <td colspan="5">
             <SpeechBoundaryMarker
               left={items[itemIndex - 1]}
               right={item}
@@ -380,7 +379,7 @@
               {/if}
             </button>
           {/if}
-          <div class="flex flex-wrap gap-2">
+          <div class="flex min-w-0 flex-wrap items-center gap-2">
             <select
               value={item.node_kind ?? 'paragraph'}
               onchange={(event) =>
@@ -429,6 +428,45 @@
                 <option value={language.value}>{language.label}</option>
               {/each}
             </select>
+            <div
+              class="inline-flex shrink-0 items-center gap-1"
+              role="group"
+              aria-label={`Actions for segment ${item.ordinal + 1}`}
+            >
+              <button
+                onmousedown={(event) => event.preventDefault()}
+                onclick={(event) => {
+                  event.stopPropagation();
+                  const cursor = cursorBySegment[item.id];
+                  if (cursor && validCursor(item))
+                    onsplit(item, cursor.layer, cursor.offset);
+                }}
+                disabled={loading || topologyDisabled || !validCursor(item)}
+                class="action icon-action"
+                title={splitTitle(item)}
+                aria-label={`Split segment ${item.ordinal + 1} at text cursor`}
+              >
+                <Scissors size={14} />
+              </button>
+              <SegmentRegenerationMenu
+                segmentNumber={item.ordinal + 1}
+                disabled={loading || item.removed}
+                onregenerate={() => onregenerate(item)}
+                onregeneratewith={() => onregeneratewith(item)}
+              />
+              <button
+                onclick={(event) => {
+                  event.stopPropagation();
+                  onpatch(item, { removed: !item.removed });
+                }}
+                class="action icon-action"
+                aria-label={item.removed ? 'Restore segment' : 'Remove segment'}
+              >
+                {#if item.removed}<RotateCcw size={14} />{:else}<Trash2
+                    size={14}
+                  />{/if}
+              </button>
+            </div>
           </div>
         </td>
         <td>
@@ -476,43 +514,6 @@
               >Older audio · regenerate to reuse</span
             >
           {/if}
-        </td>
-        <td>
-          <div class="flex flex-wrap justify-center gap-1">
-            <button
-              onmousedown={(event) => event.preventDefault()}
-              onclick={(event) => {
-                event.stopPropagation();
-                const cursor = cursorBySegment[item.id];
-                if (cursor && validCursor(item))
-                  onsplit(item, cursor.layer, cursor.offset);
-              }}
-              disabled={loading || topologyDisabled || !validCursor(item)}
-              class="action icon-action"
-              title={splitTitle(item)}
-              aria-label={`Split segment ${item.ordinal + 1} at text cursor`}
-            >
-              <Scissors size={14} />
-            </button>
-            <SegmentRegenerationMenu
-              segmentNumber={item.ordinal + 1}
-              disabled={loading || item.removed}
-              onregenerate={() => onregenerate(item)}
-              onregeneratewith={() => onregeneratewith(item)}
-            />
-            <button
-              onclick={(event) => {
-                event.stopPropagation();
-                onpatch(item, { removed: !item.removed });
-              }}
-              class="action icon-action"
-              aria-label={item.removed ? 'Restore segment' : 'Remove segment'}
-            >
-              {#if item.removed}<RotateCcw size={14} />{:else}<Trash2
-                  size={14}
-                />{/if}
-            </button>
-          </div>
         </td>
       </tr>
     {/each}

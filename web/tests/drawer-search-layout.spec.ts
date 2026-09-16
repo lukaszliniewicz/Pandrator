@@ -389,3 +389,94 @@ test.describe('drawer search Ctrl+K', () => {
     await expect(dialog).toBeHidden();
   });
 });
+
+for (const workflowKind of ['audiobook', 'voiceover'] as const) {
+  test(`segment actions share the delivery row in ${workflowKind} mode`, async ({
+    page
+  }, testInfo) => {
+    await page.setViewportSize({ width: 1600, height: 900 });
+    await signIn(page);
+    const sessionId = await createSession(page, workflowKind, 'Inline actions');
+    await createPlan(page, sessionId, [
+      { text: 'A first passage with room for editing.' },
+      { text: 'A second passage keeps its own controls.' }
+    ]);
+    await openDrawer(page, sessionId);
+
+    const table = page.locator('aside.generation-drawer table');
+    const row = table.locator('tr[data-segment-id]').first();
+    const narrative = row.locator('td.narrative-cell');
+    const actions = narrative.getByRole('group', {
+      name: 'Actions for segment 1'
+    });
+    await expect(table.locator('thead th')).toHaveCount(5);
+    await expect(row.locator(':scope > td')).toHaveCount(5);
+    await expect(table.locator('tr.boundary-row td').first()).toHaveAttribute(
+      'colspan',
+      '5'
+    );
+    await expect(actions).toBeVisible();
+    await expect(
+      actions.getByRole('button', { name: 'Remove segment', exact: true })
+    ).toBeVisible();
+    const split = actions.getByRole('button', {
+      name: 'Split segment 1 at text cursor'
+    });
+    const regenerate = actions.getByRole('button', {
+      name: 'Regenerate segment 1',
+      exact: true
+    });
+    await expect(split).toBeDisabled();
+    await expect(regenerate).toBeEnabled();
+
+    // The three delivery dropdowns and the action group are siblings in one
+    // flexible row. At desktop width they share a vertical centre line.
+    const alignment = await actions.evaluate((group) => {
+      const rect = group.getBoundingClientRect();
+      return Array.from(
+        group.parentElement!.querySelectorAll(':scope > select')
+      ).map((select) => {
+        const box = select.getBoundingClientRect();
+        return Math.abs(box.y + box.height / 2 - rect.y - rect.height / 2);
+      });
+    });
+    expect(alignment).toHaveLength(3);
+    for (const offset of alignment) expect(offset).toBeLessThanOrEqual(2);
+
+    // Moving the controls must preserve the text-cursor guard and menu access.
+    const text = narrative.locator('textarea').first();
+    await text.focus();
+    await text.evaluate((node: HTMLTextAreaElement) => {
+      node.setSelectionRange(8, 8);
+      node.dispatchEvent(new Event('select', { bubbles: true }));
+    });
+    await expect(split).toBeEnabled();
+    await regenerate.click();
+    const menu = page.getByRole('menu', {
+      name: 'Regeneration options for segment 1'
+    });
+    await expect(menu).toBeVisible();
+    await expect(
+      menu.getByRole('menuitem', { name: 'Regenerate', exact: true })
+    ).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(menu).toBeHidden();
+    await expect(regenerate).toBeFocused();
+
+    await page.screenshot({
+      path: testInfo.outputPath('inline-actions-desktop.png')
+    });
+    await page.setViewportSize({ width: 1100, height: 800 });
+    await expect(actions).toBeVisible();
+    expectContained(await measure(page));
+    const contained = await actions.evaluate((group) => {
+      const cell = group.closest('td')!.getBoundingClientRect();
+      const rect = group.getBoundingClientRect();
+      return rect.left >= cell.left && rect.right <= cell.right;
+    });
+    expect(contained).toBe(true);
+    await page.screenshot({
+      path: testInfo.outputPath('inline-actions-narrow.png')
+    });
+  });
+}
