@@ -4912,13 +4912,13 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         try:
             result = artifacts.remove_output(session_id, artifact_id)
         except KeyError:
-            return error_response("not_found", "Export not found.", 404)
+            return error_response("not_found", "Output not found.", 404)
         except ValueError as error:
             return error_response("invalid_artifact", str(error), 409)
         except OSError as error:
             return error_response(
                 "artifact_delete_failed",
-                f"The export file could not be removed: {error}",
+                f"The output file could not be removed: {error}",
                 409,
             )
         return jsonify(result)

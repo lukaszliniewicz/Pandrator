@@ -1,6 +1,14 @@
 <script lang="ts">
   import { errorMessage } from '$lib/errors';
-  import { FileAudio, FileText, History, Plus, Trash2 } from '@lucide/svelte';
+  import {
+    Check,
+    Copy,
+    FileAudio,
+    FileText,
+    History,
+    Plus,
+    Trash2
+  } from '@lucide/svelte';
   import { page } from '$app/state';
   import { onMount } from 'svelte';
   import { sessionApi } from '$lib/domain-api';
@@ -24,6 +32,7 @@
   let pdf = $state<{ id: string; filename: string } | null>(null);
   let preview = $state<PreviewableArtifact | null>(null);
   let sourceDialog = $state(false);
+  let copiedSourceId = $state('');
 
   async function load() {
     const [sourcePage, session] = await Promise.all([
@@ -73,6 +82,49 @@
   async function sourceAdded(value: string) {
     message = value;
     await load();
+  }
+  // `path` is the absolute managed file; older payloads may only carry the
+  // original `external_path`.
+  function sourceFilePath(source: SessionSource) {
+    const managed = String(source.path ?? '').trim();
+    if (managed) return managed;
+    return String(source.external_path ?? '').trim();
+  }
+  function sourceOriginalPath(source: SessionSource) {
+    const preferred = sourceFilePath(source);
+    const external = String(source.external_path ?? '').trim();
+    return external && external !== preferred ? external : '';
+  }
+  async function copySourcePath(source: SessionSource) {
+    const path = sourceFilePath(source);
+    if (!path) return;
+    let field: HTMLTextAreaElement | null = null;
+    try {
+      let copied = false;
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(path);
+        copied = true;
+      } else {
+        field = document.createElement('textarea');
+        field.value = path;
+        field.style.position = 'fixed';
+        field.style.opacity = '0';
+        document.body.append(field);
+        field.select();
+        copied = document.execCommand('copy');
+      }
+      if (!copied)
+        throw new Error('Clipboard copy was rejected by the browser.');
+      copiedSourceId = source.id;
+      message = `Source path copied for ${source.display_name}.`;
+      window.setTimeout(() => {
+        if (copiedSourceId === source.id) copiedSourceId = '';
+      }, 1800);
+    } catch (caught) {
+      error = errorMessage(caught);
+    } finally {
+      field?.remove();
+    }
   }
 
   onMount(() => {
@@ -140,6 +192,28 @@
                   : 's'}</span
               >
             </div>
+            {#if sourceFilePath(source)}{@const filePath =
+                sourceFilePath(source)}{@const originalPath =
+                sourceOriginalPath(source)}
+              <div class="mt-2 flex min-w-0 items-center gap-1.5 text-xs">
+                <code class="min-w-0 flex-1 truncate font-mono" title={filePath}
+                  >{filePath}</code
+                ><button
+                  onclick={() => copySourcePath(source)}
+                  class="action shrink-0"
+                  title="Copy source file path"
+                  aria-label={`Copy source path for ${source.display_name}`}
+                  >{#if copiedSourceId === source.id}<Check
+                      size={14}
+                    />{:else}<Copy size={14} />{/if}</button
+                >
+              </div>
+              {#if originalPath}<p
+                  class="muted mt-1 min-w-0 truncate text-xs"
+                  title={originalPath}
+                >
+                  Original file: {originalPath}
+                </p>{/if}{/if}
           </div>
           <History size={16} />
         </div>

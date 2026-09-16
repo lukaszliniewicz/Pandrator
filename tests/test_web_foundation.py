@@ -1672,12 +1672,26 @@ class WebApiTests(unittest.TestCase):
             session_id=record["id"],
         )
 
+        source_path = output_path.parent.parent / "original.wav"
+        source_path.write_bytes(b"protected source")
+        source = extension["artifacts"].register(
+            source_path, kind="source", role="upload", session_id=record["id"]
+        )
         rejected = self.client.delete(
-            f"/api/v1/sessions/{record['id']}/outputs/{assembly.id}",
+            f"/api/v1/sessions/{record['id']}/outputs/{source.id}",
             headers=headers,
         )
         self.assertEqual(409, rejected.status_code)
-        self.assertTrue(assembly_path.is_file())
+        self.assertTrue(source_path.is_file())
+
+        removed_assembly = self.client.delete(
+            f"/api/v1/sessions/{record['id']}/outputs/{assembly.id}",
+            headers=headers,
+        )
+        self.assertEqual(200, removed_assembly.status_code, removed_assembly.get_json())
+        self.assertFalse(assembly_path.exists())
+        self.assertTrue(output_path.is_file())
+        self.assertTrue(source_path.is_file())
 
         removed = self.client.delete(
             f"/api/v1/sessions/{record['id']}/outputs/{exported.id}",

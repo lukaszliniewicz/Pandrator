@@ -97,12 +97,6 @@
       )
     },
     {
-      label: 'Audio assemblies',
-      description:
-        'Intermediate/current audio used to build exports. A finished assembly does not mean a video export has finished.',
-      items: artifacts.filter((item) => assemblyRoles.has(item.role))
-    },
-    {
       label: 'Subtitles and documents',
       description: '',
       items: artifacts.filter(
@@ -110,6 +104,12 @@
           !assemblyRoles.has(item.role) &&
           !/^(audio|video)\//.test(String(item.mime_type ?? ''))
       )
+    },
+    {
+      label: 'Intermediate audio assemblies',
+      description:
+        'Intermediate/current audio used to build exports. A finished assembly does not mean a video export has finished.',
+      items: artifacts.filter((item) => assemblyRoles.has(item.role))
     }
   ]);
   type SaveOutputProfile = () => Promise<{
@@ -235,11 +235,17 @@
       busy = false;
     }
   }
+  function isAssemblyArtifact(artifact: ArtifactRecord) {
+    return assemblyRoles.has(artifact.role);
+  }
   function canRemove(artifact: ArtifactRecord) {
     return (
       artifact.kind === 'export' ||
       artifact.role === 'export' ||
-      artifact.role.startsWith('export_')
+      artifact.role.startsWith('export_') ||
+      ['assembled_audio', 'audiobook_audio', 'dubbing_audio'].includes(
+        artifact.role
+      )
     );
   }
   function outputName(artifact: ArtifactRecord) {
@@ -263,32 +269,42 @@
   async function copyAbsolutePath(artifact: ArtifactRecord) {
     const path = String(artifact.path ?? '').trim();
     if (!path) return;
+    let field: HTMLTextAreaElement | null = null;
     try {
-      if (navigator.clipboard?.writeText)
+      let copied = false;
+      if (navigator.clipboard?.writeText) {
         await navigator.clipboard.writeText(path);
-      else {
-        const field = document.createElement('textarea');
+        copied = true;
+      } else {
+        field = document.createElement('textarea');
         field.value = path;
         field.style.position = 'fixed';
         field.style.opacity = '0';
         document.body.append(field);
         field.select();
-        document.execCommand('copy');
-        field.remove();
+        copied = document.execCommand('copy');
       }
+      if (!copied)
+        throw new Error('Clipboard copy was rejected by the browser.');
       copiedPath = artifact.id;
       window.setTimeout(() => {
         if (copiedPath === artifact.id) copiedPath = '';
       }, 1800);
     } catch (caught) {
       error = errorMessage(caught);
+    } finally {
+      field?.remove();
     }
   }
   async function removeExport(artifact: ArtifactRecord) {
+    const assembly = isAssemblyArtifact(artifact);
+    const filename = artifact.relative_path.split('/').at(-1) ?? 'this output';
     if (
       deleting[artifact.id] ||
       !window.confirm(
-        `Remove ${artifact.relative_path.split('/').at(-1) ?? 'this export'}? This deletes the exported file but leaves its source artifacts intact.`
+        assembly
+          ? `Remove intermediate assembly ${filename}? This deletes the assembled audio file but leaves source takes and final exports intact.`
+          : `Remove ${filename}? This deletes the exported file but leaves its source artifacts intact.`
       )
     )
       return;
@@ -296,11 +312,11 @@
     error = '';
     try {
       await sessionApi.removeOutput(sessionId, artifact.id);
-      // A refresh started before removal may still contain the deleted export.
+      // A refresh started before removal may still contain the deleted output.
       loadRevision += 1;
       artifacts = artifacts.filter((item) => item.id !== artifact.id);
       if (preview?.id === artifact.id) preview = null;
-      message = 'Export removed.';
+      message = assembly ? 'Assembly removed.' : 'Export removed.';
     } catch (caught) {
       error = errorMessage(caught);
     } finally {
@@ -616,8 +632,12 @@
                         >{#if canRemove(artifact)}<button
                             onclick={() => removeExport(artifact)}
                             disabled={deleting[artifact.id]}
-                            aria-label={`Remove export ${outputName(artifact)}`}
-                            title="Remove export"
+                            aria-label={isAssemblyArtifact(artifact)
+                              ? `Remove assembly ${outputName(artifact)}`
+                              : `Remove export ${outputName(artifact)}`}
+                            title={isAssemblyArtifact(artifact)
+                              ? 'Remove intermediate assembly'
+                              : 'Remove export'}
                             class="rounded-lg p-2 text-red-500 hover:bg-red-500/10 disabled:opacity-50"
                             >{#if deleting[artifact.id]}<LoaderCircle
                                 class="animate-spin"

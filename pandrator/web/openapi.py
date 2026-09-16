@@ -879,8 +879,8 @@ def build_openapi_document() -> dict:
                 "delete": {
                     "operationId": "deleteOutputArtifact",
                     "responses": {
-                        "200": {"description": "Export removed"},
-                        "409": {"description": "Artifact is not a removable export"},
+                        "200": {"description": "Output removed"},
+                        "409": {"description": "Artifact is not a removable output"},
                     },
                 }
             },

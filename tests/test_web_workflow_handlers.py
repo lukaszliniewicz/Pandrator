@@ -3006,9 +3006,12 @@ A single reviewed cue.
             edge = session.scalar(
                 select(ArtifactEdge).where(ArtifactEdge.child_artifact_id == exported.id)
             )
-            finalized = session.get(Artifact, edge.parent_artifact_id)
-            self.assertEqual(finalized.role, "final_subtitle_source")
+            # The finalized export points directly to its source; a separate
+            # byte-identical final_subtitle artifact is no longer created.
+            self.assertEqual(uploaded.id, edge.parent_artifact_id)
             final_path = self.paths.root / exported.relative_path
+            self.assertEqual(subtitle_session_dir / "exports" / "subtitles", final_path.parent)
+            self.assertEqual([final_path], list((subtitle_session_dir / "exports").rglob("*.srt")))
             self.assertIn("00:00:00,000 --> 00:00:01,000", final_path.read_text(encoding="utf-8"))
 
     def test_subtitle_workspace_with_video_defaults_to_a_subtitle_file(self):

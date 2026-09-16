@@ -176,10 +176,22 @@
     <div class="eyebrow animate-pulse">Loading session…</div>
   </div>
 {:else if contextState.session}
-  <div class="session-shell mx-auto min-w-0 max-w-[100rem] overflow-x-hidden">
+  <div class="session-shell mx-auto min-w-0 max-w-[100rem] overflow-x-clip">
+    <nav
+      aria-label="Session sections"
+      class="session-tabs scrollbar-on-demand -mx-1 flex gap-1 overflow-x-auto border-b border-[var(--line)] px-1"
+    >
+      {#each tabs as tab}{@const Icon = tab.icon}<a
+          href={`/sessions/${page.params.id}${tab.href}`}
+          class:active={active(tab.href)}
+          aria-current={active(tab.href) ? 'page' : undefined}
+          class="session-tab flex shrink-0 items-center gap-2 px-3 py-3 text-sm font-semibold"
+          ><Icon size={16} />{tab.label}</a
+        >{/each}
+    </nav>
     <a
       href="/sessions"
-      class="muted flex items-center gap-1 text-sm font-semibold"
+      class="muted mt-4 flex items-center gap-1 text-sm font-semibold"
       ><ChevronLeft size={16} /> Sessions</a
     >
     <header class="mt-5 flex flex-wrap items-end justify-between gap-5">
@@ -267,17 +279,9 @@
         ><Settings2 size={16} /> Customize workflow</button
       >
     </header>
-    <nav
-      class="scrollbar-on-demand mt-7 flex gap-1 overflow-x-auto border-b border-[var(--line)]"
-    >
-      {#each tabs as tab}{@const Icon = tab.icon}<a
-          href={`/sessions/${page.params.id}${tab.href}`}
-          class:active={active(tab.href)}
-          class="session-tab flex shrink-0 items-center gap-2 px-3 py-3 text-sm font-semibold"
-          ><Icon size={16} />{tab.label}</a
-        >{/each}
-    </nav>
-    <div class="min-w-0 max-w-full py-7">{@render children()}</div>
+    <div class="session-content min-w-0 max-w-full py-7">
+      {@render children()}
+    </div>
   </div>
   {#if customizeOpen && WorkflowCustomizerComponent}<WorkflowCustomizerComponent
       sessionId={contextState.session.id}
@@ -293,6 +297,23 @@
   />{/if}
 
 <style>
+  .session-tabs {
+    position: sticky;
+    /* Below md the global hamburger (fixed left-4 top-4) floats above this
+       bar, so the stuck tabs sit one button-height lower and can never slide
+       underneath it, whatever the horizontal scroll position. */
+    top: 4rem;
+    z-index: 30;
+    background: var(--paper);
+  }
+  @media (min-width: 768px) {
+    .session-tabs {
+      top: 0;
+    }
+  }
+  .session-content {
+    scroll-margin-top: 4.5rem;
+  }
   .session-tab {
     border-bottom: 2px solid transparent;
     color: var(--muted);

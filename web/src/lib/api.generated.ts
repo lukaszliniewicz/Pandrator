@@ -7626,14 +7626,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Export removed */
+            /** @description Output removed */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description Artifact is not a removable export */
+            /** @description Artifact is not a removable output */
             409: {
                 headers: {
                     [name: string]: unknown;

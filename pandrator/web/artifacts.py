@@ -9,14 +9,26 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, or_, select, text
 from sqlalchemy.orm import Session
 
 from pandrator.runtime import DataPaths
 
 from .artifact_selection import activate_registered_artifact
 from .database import Database
-from .models import Artifact, ArtifactEdge, ExportRecord, utcnow
+from .models import (
+    Artifact,
+    ArtifactEdge,
+    AudioTake,
+    ExportRecord,
+    Job,
+    OutputAssembly,
+    SessionRecord,
+    SessionStageSelection,
+    SourceAsset,
+    VoiceSample,
+    utcnow,
+)
 
 SINGLETON_SESSION_ROLES = {
     "transcription",
@@ -36,6 +48,25 @@ SINGLETON_SESSION_ROLES = {
     "audiobook_audio",
     "bilingual_subtitle_overlay",
 }
+
+#: Generated-audio outputs removable through the session Output tab alongside
+#: finalized exports. ``output_assembly`` is deliberately absent: it names the
+#: planning row, never an artifact role, so there is nothing to delete.
+#: ``rvc_audio`` is deliberately absent: voice-conversion intermediates feed
+#: take chains and stay under their own stage tooling.
+REMOVABLE_GENERATED_AUDIO_ROLES = frozenset(
+    {
+        "assembled_audio",
+        "audiobook_audio",
+        "dubbing_audio",
+    }
+)
+
+OUTPUT_JOB_KIND_PREFIXES = ("generation.assemble", "export.")
+OUTPUT_JOB_ACTIVE_STATUSES = frozenset({"queued", "running", "cancel_requested"})
+OUTPUT_ASSEMBLY_ACTIVE_STATUSES = frozenset(
+    {"queued", "running", "cancel_requested"}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -321,18 +352,57 @@ class ArtifactService:
         return artifact, path
 
     def remove_output(self, session_id: str, artifact_id: str) -> dict[str, str]:
-        """Remove a finalized export without exposing arbitrary artifact deletion."""
+        """Remove a finalized export or generated-audio output.
+
+        Generated audio (``assembled_audio`` plus the legacy
+        ``audiobook_audio``/``dubbing_audio`` roles) is only removed when
+        nothing still depends on it: protected take/source/voice references,
+        cross-session sharing, active assembly/export jobs, in-flight
+        assemblies, and dependent intermediates all refuse with a ValueError.
+        Independently materialized final exports and their provenance are kept.
+        Referencing assemblies are retired to stale with their artifact link
+        cleared so latest-assembly and export selection never resolve a
+        deleted file; stage selections pointing at the file are cleared.
+        """
         with self.database.session() as session:
+            # Keep validation and retirement serialized with job submissions.
+            if session.get_bind().dialect.name == "sqlite":
+                session.execute(text("BEGIN IMMEDIATE"))
             artifact = session.get(Artifact, artifact_id)
             if artifact is None or artifact.state == "deleted" or artifact.session_id != session_id:
                 raise KeyError(artifact_id)
-            if not (
+            is_export = (
                 artifact.kind == "export"
                 or artifact.role == "export"
                 or artifact.role.startswith("export_")
-            ):
-                raise ValueError("Only finalized exports can be removed from the Output tab.")
-            path = self.paths.managed_path(artifact.relative_path)
+            )
+            if not is_export and artifact.role not in REMOVABLE_GENERATED_AUDIO_ROLES:
+                raise ValueError("Only finalized exports and generated audio can be removed from the Output tab.")
+            if not is_export:
+                self._ensure_generated_audio_removable(session, session_id, artifact)
+            try:
+                path = self.paths.managed_path(artifact.relative_path)
+            except ValueError as error:
+                raise ValueError(
+                    f"The output file is outside managed storage: {error}"
+                ) from error
+            if not is_export:
+                self._ensure_within_session_storage(
+                    session, session_id, artifact, path
+                )
+                alias_id = session.scalar(
+                    select(Artifact.id).where(
+                        Artifact.id != artifact.id,
+                        Artifact.state != "deleted",
+                        Artifact.relative_path.in_(
+                            [artifact.relative_path, path.relative_to(self.paths.root).as_posix()]
+                        ),
+                    ).limit(1)
+                )
+                if alias_id is not None:
+                    raise ValueError(
+                        "Another artifact uses this same file; it cannot be removed safely."
+                    )
             if path.exists():
                 path.unlink()
             removed_at = utcnow()
@@ -346,7 +416,213 @@ class ArtifactService:
                 select(ExportRecord).where(ExportRecord.artifact_id == artifact.id)
             ).all():
                 export.status = "deleted"
+            if not is_export:
+                self._retire_generated_audio_references(
+                    session, session_id, artifact, removed_at
+                )
         return {"artifact_id": artifact_id, "state": "deleted"}
+
+    def _ensure_within_session_storage(
+        self,
+        session: Session,
+        session_id: str,
+        artifact: Artifact,
+        path: Path,
+    ) -> None:
+        """Confine generated-audio deletion to its own session directory.
+
+        Legacy layouts (assemblies/, stage-runs/, session root) all resolve
+        inside the session directory, so older files stay removable without a
+        migration; anything outside refuses instead of unlinking blindly.
+        """
+
+        record = session.get(SessionRecord, session_id)
+        if record is None:
+            raise ValueError(
+                "Generated audio cannot be removed without its session record."
+            )
+        storage_root = (self.paths.sessions / record.storage_key).resolve()
+        try:
+            path.relative_to(storage_root)
+        except ValueError:
+            raise ValueError(
+                "Generated audio can only be removed from its own session storage."
+            ) from None
+
+    @staticmethod
+    def _ensure_generated_audio_removable(
+        session: Session,
+        session_id: str,
+        artifact: Artifact,
+    ) -> None:
+        """Refuse generated-audio deletion while anything depends on the file."""
+
+        artifact_id = artifact.id
+        take_id = session.scalar(
+            select(AudioTake.id)
+            .where(AudioTake.artifact_id == artifact_id)
+            .limit(1)
+        )
+        if take_id is not None:
+            raise ValueError(
+                "This audio is still referenced by a generation take and cannot be removed."
+            )
+        source_id = session.scalar(
+            select(SourceAsset.id)
+            .where(
+                SourceAsset.artifact_id == artifact_id,
+                SourceAsset.state != "deleted",
+            )
+            .limit(1)
+        )
+        if source_id is not None:
+            raise ValueError(
+                "This audio is still attached as a session source and cannot be removed."
+            )
+        sample_id = session.scalar(
+            select(VoiceSample.id)
+            .where(VoiceSample.artifact_id == artifact_id)
+            .limit(1)
+        )
+        if sample_id is not None:
+            raise ValueError(
+                "This audio is still used as a voice sample and cannot be removed."
+            )
+        shared_selection = session.scalar(
+            select(SessionStageSelection.session_id).where(
+                SessionStageSelection.session_id != session_id,
+                SessionStageSelection.artifact_id == artifact_id,
+            ).limit(1)
+        )
+        if shared_selection is not None:
+            raise ValueError(
+                "This audio is selected in another session and cannot be removed."
+            )
+        shared_assembly_id = session.scalar(
+            select(OutputAssembly.id)
+            .where(
+                OutputAssembly.session_id != session_id,
+                OutputAssembly.artifact_id == artifact_id,
+            )
+            .limit(1)
+        )
+        if shared_assembly_id is not None:
+            raise ValueError(
+                "This audio is still referenced by another session and cannot be removed."
+            )
+        shared_child_id = session.scalar(
+            select(Artifact.id)
+            .join(
+                ArtifactEdge,
+                ArtifactEdge.child_artifact_id == Artifact.id,
+            )
+            .where(
+                ArtifactEdge.parent_artifact_id == artifact_id,
+                Artifact.session_id != session_id,
+                Artifact.state != "deleted",
+            )
+            .limit(1)
+        )
+        if shared_child_id is not None:
+            raise ValueError(
+                "This audio is still referenced by another session and cannot be removed."
+            )
+        active_job_id = session.scalar(
+            select(Job.id)
+            .where(
+                Job.session_id == session_id,
+                Job.status.in_(OUTPUT_JOB_ACTIVE_STATUSES),
+                or_(
+                    *[
+                        Job.kind.startswith(prefix)
+                        for prefix in OUTPUT_JOB_KIND_PREFIXES
+                    ]
+                ),
+            )
+            .limit(1)
+        )
+        if active_job_id is not None:
+            raise ValueError(
+                "An assembly or export job is still running for this session; "
+                "remove this audio after it finishes."
+            )
+        live_assembly_id = session.scalar(
+            select(OutputAssembly.id)
+            .where(
+                OutputAssembly.session_id == session_id,
+                OutputAssembly.artifact_id == artifact_id,
+                OutputAssembly.status.in_(OUTPUT_ASSEMBLY_ACTIVE_STATUSES),
+            )
+            .limit(1)
+        )
+        if live_assembly_id is not None:
+            raise ValueError(
+                "An assembly using this audio has not finished; "
+                "remove this audio after it completes."
+            )
+        pending = [artifact_id]
+        visited: set[str] = set()
+        while pending:
+            current = pending.pop()
+            if current in visited:
+                continue
+            visited.add(current)
+            for child_id in session.scalars(
+                select(ArtifactEdge.child_artifact_id).where(
+                    ArtifactEdge.parent_artifact_id == current
+                )
+            ).all():
+                if child_id in visited:
+                    continue
+                child = session.get(Artifact, child_id)
+                if child is None:
+                    continue
+                if child.state != "deleted":
+                    if (
+                        child.kind == "export"
+                        or child.role == "export"
+                        or child.role.startswith("export_")
+                        or child.role == "soundtrack_master"
+                    ):
+                        # Finished exports and cached soundtrack masters are
+                        # independently materialized files, not consumers of
+                        # the assembly at playback time. Keep their provenance
+                        # edge to this artifact's tombstone.
+                        continue
+                    raise ValueError(
+                        "This audio still has intermediate results that depend "
+                        "on it; remove those results first."
+                    )
+                pending.append(child_id)
+
+    @staticmethod
+    def _retire_generated_audio_references(
+        session: Session,
+        session_id: str,
+        artifact: Artifact,
+        removed_at,
+    ) -> None:
+        """Retire assembly rows and selections that pointed at the removed file."""
+
+        for assembly in session.scalars(
+            select(OutputAssembly).where(
+                OutputAssembly.session_id == session_id,
+                OutputAssembly.artifact_id == artifact.id,
+            )
+        ).all():
+            if assembly.status == "completed":
+                assembly.status = "stale"
+            assembly.artifact_id = None
+            assembly.updated_at = removed_at
+        for selection in session.scalars(
+            select(SessionStageSelection).where(
+                SessionStageSelection.session_id == session_id,
+                SessionStageSelection.artifact_id == artifact.id,
+            )
+        ).all():
+            selection.artifact_id = None
+            selection.revision += 1
+            selection.updated_at = removed_at
 
     def reconcile(self, session_id: str | None = None) -> list[dict]:
         reports: list[dict] = []

@@ -1444,10 +1444,10 @@
         "operationId": "deleteOutputArtifact",
         "responses": {
           "200": {
-            "description": "Export removed"
+            "description": "Output removed"
           },
           "409": {
-            "description": "Artifact is not a removable export"
+            "description": "Artifact is not a removable output"
           }
         },
         "parameters": [

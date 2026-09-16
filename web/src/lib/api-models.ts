@@ -280,6 +280,7 @@ export type SourceAsset = {
   kind: string;
   mime_type: string | null;
   external_path?: string | null;
+  path?: string | null;
   size_bytes: number;
   content_hash: string;
   state: string;

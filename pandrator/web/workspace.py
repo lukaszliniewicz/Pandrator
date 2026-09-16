@@ -1516,10 +1516,20 @@ class SourceLibraryService:
         self.database = database
         self.artifacts = artifacts
 
+    def _managed_source_path(self, relative_path: str | None) -> str | None:
+        if not relative_path or self.artifacts is None:
+            return None
+        try:
+            return str(self.artifacts.paths.managed_path(relative_path))
+        except (OSError, ValueError):
+            # Invalid legacy paths must not break the entire Sources tab.
+            return None
+
     @staticmethod
     def _asset_payload(
         asset: SourceAsset,
         *,
+        managed_path: str | None = None,
         reference_count: int = 0,
         current_reference_count: int = 0,
     ) -> dict[str, Any]:
@@ -1530,6 +1540,7 @@ class SourceLibraryService:
             "kind": asset.kind,
             "mime_type": asset.mime_type,
             "external_path": asset.external_path,
+            "path": managed_path,
             "size_bytes": asset.size_bytes,
             "content_hash": asset.content_hash,
             "state": asset.state,
@@ -1843,12 +1854,13 @@ class SourceLibraryService:
         with self.database.session() as session:
             if session_id:
                 rows = session.execute(
-                    select(SessionSource, SourceAsset)
+                    select(SessionSource, SourceAsset, Artifact.relative_path)
                     .join(SourceAsset, SourceAsset.id == SessionSource.source_asset_id)
+                    .outerjoin(Artifact, Artifact.id == SourceAsset.artifact_id)
                     .where(SessionSource.session_id == session_id)
                     .order_by(SessionSource.updated_at.desc())
                 ).all()
-                asset_ids = {asset.id for _link, asset in rows}
+                asset_ids = {asset.id for _link, asset, _path in rows}
                 counts = (
                     dict(
                         session.execute(
@@ -1877,6 +1889,7 @@ class SourceLibraryService:
                 return [
                     self._asset_payload(
                         asset,
+                        managed_path=self._managed_source_path(relative_path),
                         reference_count=int(counts.get(asset.id, 0)),
                         current_reference_count=int(current_counts.get(asset.id, 0)),
                     )
@@ -1888,7 +1901,7 @@ class SourceLibraryService:
                             "revision": link.revision,
                         }
                     }
-                    for link, asset in rows
+                    for link, asset, relative_path in rows
                 ]
             statement = select(SourceAsset).order_by(SourceAsset.updated_at.desc())
             if not include_trashed:

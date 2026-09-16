@@ -10736,9 +10736,20 @@ class WorkflowHandlers:
             by_role[item.role] = item
         output_dir = self._session_dir(session_id) / "exports"
         output_dir.mkdir(parents=True, exist_ok=True)
+        # New exports are grouped by kind so the Output tab stays readable.
+        # Legacy files keep their recorded flat paths; only destinations
+        # allocated below use these subfolders.
+        audio_dir = output_dir / "audio"
+        video_dir = output_dir / "video"
+        subtitle_dir = output_dir / "subtitles"
         export_name = secure_filename(record.name) or record.storage_key
         progress(0.1, "Preparing export")
         produced: list[Artifact] = []
+        # Finalized-then-converted subtitle scratch files (VTT/text mux
+        # inputs). Text/VTT conversions remove their own scratch in a
+        # branch-local try/finally; video-mux scratch is finalized inside
+        # the render try so its finally sweeps every failure path.
+        scratch_subtitle_paths: list[Path] = []
 
         if record.workflow_kind == "audiobook":
             audio = (
@@ -10749,8 +10760,9 @@ class WorkflowHandlers:
             if audio is None:
                 raise ValueError("Audiobook export requires generated audio.")
             _audio_record, audio_path = self._resolve_input(audio.id)
+            audio_dir.mkdir(parents=True, exist_ok=True)
             destination = self.artifacts.next_available_path(
-                output_dir / f"{export_name}{audio_path.suffix.lower()}"
+                audio_dir / f"{export_name}{audio_path.suffix.lower()}"
             )
             progress(0.25, "Copying assembled audiobook")
             shutil.copy2(audio_path, destination)
@@ -10991,54 +11003,29 @@ class WorkflowHandlers:
                     )
             if export_mode == "audio":
                 selected_subtitles = []
-            finalized_subtitles: list[Artifact] = []
-            progress(
-                0.12,
-                (
-                    f"Preparing {len(selected_subtitles)} subtitle track"
-                    f"{'s' if len(selected_subtitles) != 1 else ''}"
-                    if selected_subtitles
-                    else "Subtitle selection complete"
-                ),
-            )
-            for index, item in enumerate(selected_subtitles, start=1):
-                _subtitle_record, subtitle_path = self._resolve_input(item.id)
-                track_name = "translation" if item.role == "translation" else "source"
-                finalized_path = self.artifacts.next_available_path(
-                    output_dir / f"{record.storage_key}_{track_name}_final.srt"
-                )
-                finalize_srt_file(subtitle_path, finalized_path, settings)
-                finalized = self.artifacts.register(
-                    finalized_path,
-                    kind="srt",
-                    role=f"final_subtitle_{track_name}",
-                    session_id=session_id,
-                    parent_ids=[item.id],
-                    settings=settings,
-                    metadata={
-                        "language": _effective_subtitle_language(
-                            (item.metadata_json or {}).get("language"),
-                            (
-                                record.target_language
-                                if track_name == "translation"
-                                else record.source_language
-                            ),
-                            (
-                                settings.get("target_language")
-                                if track_name == "translation"
-                                else settings.get("original_language")
-                                or settings.get("source_language")
-                            ),
-                        ),
-                        "source_role": item.role,
-                    },
-                )
-                finalized_subtitles.append(finalized)
+            # Subtitle finalization runs inside each branch below so every
+            # scratch file lives in a bounded try/finally: conversions and
+            # mux inputs can never strand hidden duplicates when they fail.
+            # Branches producing an SRT export finalize directly into the
+            # export destination and only register it: no second
+            # byte-identical copy is ever created. Exports keep the source
+            # artifact as their direct parent so provenance survives
+            # without an intermediate row.
+            if not selected_subtitles:
+                progress(0.12, "Subtitle selection complete")
+            for index in range(1, len(selected_subtitles) + 1):
                 progress(
                     0.12 + 0.18 * (index / len(selected_subtitles)),
                     f"Prepared subtitle track {index} of {len(selected_subtitles)}",
                 )
-            selected_subtitles = finalized_subtitles
+
+            def _finalize_track_scratch(track_name: str) -> Path:
+                scratch = (
+                    output_dir
+                    / f".{record.storage_key}-{track_name}-final-{new_id()}.srt"
+                )
+                scratch_subtitle_paths.append(scratch)
+                return scratch
 
             def is_translation_track(item: Artifact) -> bool:
                 return (
@@ -11070,57 +11057,91 @@ class WorkflowHandlers:
                     raise ValueError(
                         "No subtitle artifact is available for this export."
                     )
+                subtitle_dir.mkdir(parents=True, exist_ok=True)
                 for index, item in enumerate(selected_subtitles, start=1):
                     progress(
                         0.35 + 0.5 * ((index - 1) / len(selected_subtitles)),
                         f"Writing export track {index} of {len(selected_subtitles)}",
                     )
-                    _artifact, subtitle_path = self._resolve_input(item.id)
                     track_name, language, title, _default = track_details(item)
-                    if export_mode == "text":
-                        destination = self.artifacts.next_available_path(
-                            output_dir / f"{export_name}_{track_name}.txt"
-                        )
-                        destination.write_text(
-                            concatenate_subtitle_text(
-                                subtitle_path.read_text(encoding="utf-8-sig")
-                            ),
-                            encoding="utf-8",
-                        )
-                        kind = "text"
-                        role = f"export_text_{track_name}"
-                    else:
-                        destination = self.artifacts.next_available_path(
-                            output_dir / f"{export_name}_{track_name}.{subtitle_format}"
-                        )
-                        if subtitle_format == "vtt":
-                            destination.write_text(
-                                srt_to_vtt(
-                                    subtitle_path.read_text(encoding="utf-8-sig")
-                                ),
-                                encoding="utf-8",
+                    source_role = (item.metadata_json or {}).get(
+                        "source_role"
+                    ) or item.role
+                    _subtitle_record, subtitle_path = self._resolve_input(item.id)
+                    if export_mode == "text" or subtitle_format == "vtt":
+                        # Converted outputs finalize into a scratch file whose
+                        # try/finally below guarantees removal even when the
+                        # conversion, write, or registration fails.
+                        scratch = _finalize_track_scratch(track_name)
+                        try:
+                            finalize_srt_file(subtitle_path, scratch, settings)
+                            if export_mode == "text":
+                                destination = self.artifacts.next_available_path(
+                                    subtitle_dir / f"{export_name}_{track_name}.txt"
+                                )
+                                destination.write_text(
+                                    concatenate_subtitle_text(
+                                        scratch.read_text(encoding="utf-8-sig")
+                                    ),
+                                    encoding="utf-8",
+                                )
+                                kind = "text"
+                                role = f"export_text_{track_name}"
+                            else:
+                                destination = self.artifacts.next_available_path(
+                                    subtitle_dir / f"{export_name}_{track_name}.vtt"
+                                )
+                                destination.write_text(
+                                    srt_to_vtt(
+                                        scratch.read_text(encoding="utf-8-sig")
+                                    ),
+                                    encoding="utf-8",
+                                )
+                                kind = subtitle_format
+                                role = f"export_subtitle_{track_name}"
+                            produced.append(
+                                self.artifacts.register(
+                                    destination,
+                                    kind=kind,
+                                    role=role,
+                                    session_id=session_id,
+                                    parent_ids=[item.id],
+                                    settings=settings,
+                                    metadata={
+                                        "language": language,
+                                        "title": title,
+                                        "source_role": source_role,
+                                    },
+                                )
                             )
-                        else:
-                            shutil.copy2(subtitle_path, destination)
+                        finally:
+                            scratch.unlink(missing_ok=True)
+                            if scratch in scratch_subtitle_paths:
+                                scratch_subtitle_paths.remove(scratch)
+                    else:
+                        # SRT exports finalize directly into the export
+                        # destination: one physical file, registered once.
+                        destination = self.artifacts.next_available_path(
+                            subtitle_dir / f"{export_name}_{track_name}.srt"
+                        )
+                        finalize_srt_file(subtitle_path, destination, settings)
                         kind = subtitle_format
                         role = f"export_subtitle_{track_name}"
-                    produced.append(
-                        self.artifacts.register(
-                            destination,
-                            kind=kind,
-                            role=role,
-                            session_id=session_id,
-                            parent_ids=[item.id],
-                            settings=settings,
-                            metadata={
-                                "language": language,
-                                "title": title,
-                                "source_role": (item.metadata_json or {}).get(
-                                    "source_role"
-                                ),
-                            },
+                        produced.append(
+                            self.artifacts.register(
+                                destination,
+                                kind=kind,
+                                role=role,
+                                session_id=session_id,
+                                parent_ids=[item.id],
+                                settings=settings,
+                                metadata={
+                                    "language": language,
+                                    "title": title,
+                                    "source_role": source_role,
+                                },
+                            )
                         )
-                    )
                     progress(
                         0.35 + 0.55 * (index / len(selected_subtitles)),
                         f"Exported track {index} of {len(selected_subtitles)}",
@@ -11138,7 +11159,8 @@ class WorkflowHandlers:
                     cancel_event=cancel_event,
                 )
                 format_name = str(settings.get("format") or "wav").lower()
-                destination = self.artifacts.next_available_path(output_dir / f"{export_name}_{audio_mode}.{format_name}")
+                audio_dir.mkdir(parents=True, exist_ok=True)
+                destination = self.artifacts.next_available_path(audio_dir / f"{export_name}_{audio_mode}.{format_name}")
                 produced.append(export_soundtrack_file(
                     self, session_id=session_id, master=master, destination=destination,
                     settings=settings, cancel_event=cancel_event,
@@ -11308,18 +11330,35 @@ class WorkflowHandlers:
                     if subtitle_mode in {"soft", "burned"} and selected_subtitles
                     else ""
                 )
+                video_dir.mkdir(parents=True, exist_ok=True)
                 destination = self.artifacts.next_available_path(
-                    output_dir / f"{export_name}{variant}.mp4"
+                    video_dir / f"{export_name}{variant}.mp4"
                 )
                 render_destination = (
                     output_dir / f".{record.storage_key}-render-{new_id()}.mp4"
                 )
                 video_track_artifacts: list[Artifact] = []
+                # Playback/render helpers (player VTT sidecars, bilingual ASS
+                # overlays) are registered but kept out of the deliverable
+                # export folders; only the mp4 and explicit subtitle/text
+                # exports land under exports/.
+                intermediates_subtitle_dir = (
+                    output_dir.parent / "intermediates" / "subtitles"
+                )
                 try:
+                    finalized_subtitle_paths: dict[str, Path] = {}
+                    for item in selected_subtitles:
+                        track_name = track_details(item)[0]
+                        _subtitle_record, subtitle_path = self._resolve_input(
+                            item.id
+                        )
+                        scratch = _finalize_track_scratch(track_name)
+                        finalize_srt_file(subtitle_path, scratch, settings)
+                        finalized_subtitle_paths[item.id] = scratch
                     if subtitle_mode == "soft" and selected_subtitles:
                         tracks = []
                         for index, item in enumerate(selected_subtitles, start=1):
-                            _subtitle, subtitle_path = self._resolve_input(item.id)
+                            subtitle_path = finalized_subtitle_paths[item.id]
                             track_name, language, title, is_default = track_details(
                                 item
                             )
@@ -11331,8 +11370,11 @@ class WorkflowHandlers:
                                     "default": is_default,
                                 }
                             )
+                            intermediates_subtitle_dir.mkdir(
+                                parents=True, exist_ok=True
+                            )
                             vtt_path = self.artifacts.next_available_path(
-                                output_dir
+                                intermediates_subtitle_dir
                                 / f"{record.storage_key}_{track_name}_player.vtt"
                             )
                             vtt_path.write_text(
@@ -11394,18 +11436,22 @@ class WorkflowHandlers:
                         )
                     elif subtitle_mode == "burned" and selected_subtitles:
                         subtitle_paths = [
-                            self._resolve_input(item.id)[1]
+                            finalized_subtitle_paths[item.id]
                             for item in selected_subtitles
                         ]
                         burn_path = subtitle_paths[-1]
                         if len(subtitle_paths) == 2:
+                            intermediates_subtitle_dir.mkdir(
+                                parents=True, exist_ok=True
+                            )
                             burn_path = Path(
                                 write_bilingual_ass(
                                     str(subtitle_paths[0]),
                                     str(subtitle_paths[1]),
                                     str(
                                         self.artifacts.next_available_path(
-                                            output_dir / "bilingual_subtitles.ass"
+                                            intermediates_subtitle_dir
+                                            / "bilingual_subtitles.ass"
                                         )
                                     ),
                                 )
@@ -11527,6 +11573,9 @@ class WorkflowHandlers:
                         temporary_video.unlink()
                     if tail_video is not None and tail_video.exists():
                         tail_video.unlink()
+                    for scratch_subtitle in scratch_subtitle_paths:
+                        scratch_subtitle.unlink(missing_ok=True)
+                    scratch_subtitle_paths.clear()
                 subtitle_track_metadata = [
                     {
                         "artifact_id": item.id,
@@ -11584,17 +11633,20 @@ class WorkflowHandlers:
             else:
                 # Preserve the historical behavior for SRT/audio-only sessions:
                 # a media export falls back to managed standalone artifacts.
+                # Each track is finalized directly into its export destination:
+                # one physical file, registered once.
+                subtitle_dir.mkdir(parents=True, exist_ok=True)
                 for index, item in enumerate(selected_subtitles, start=1):
                     progress(
                         0.35 + 0.3 * ((index - 1) / max(1, len(selected_subtitles))),
                         f"Writing standalone subtitle {index} of {len(selected_subtitles)}",
                     )
-                    _artifact, item_path = self._resolve_input(item.id)
                     track_name, language, title, _default = track_details(item)
+                    _subtitle_record, subtitle_path = self._resolve_input(item.id)
                     destination = self.artifacts.next_available_path(
-                        output_dir / f"{export_name}_{track_name}.srt"
+                        subtitle_dir / f"{export_name}_{track_name}.srt"
                     )
-                    shutil.copy2(item_path, destination)
+                    finalize_srt_file(subtitle_path, destination, settings)
                     produced.append(
                         self.artifacts.register(
                             destination,
@@ -11608,7 +11660,8 @@ class WorkflowHandlers:
                                 "title": title,
                                 "source_role": (item.metadata_json or {}).get(
                                     "source_role"
-                                ),
+                                )
+                                or item.role,
                             },
                         )
                     )
@@ -11621,8 +11674,9 @@ class WorkflowHandlers:
                     _source_record, source_audio_path = self._resolve_input(
                         upload_audio.id
                     )
+                    audio_dir.mkdir(parents=True, exist_ok=True)
                     destination = self.artifacts.next_available_path(
-                        output_dir / f"{export_name}{source_audio_path.suffix.lower()}"
+                        audio_dir / f"{export_name}{source_audio_path.suffix.lower()}"
                     )
                     shutil.copy2(source_audio_path, destination)
                     produced.append(
@@ -11644,8 +11698,9 @@ class WorkflowHandlers:
                         output_format = str(settings.get("format") or "wav").lower()
                         if output_format not in {"wav", "mp3", "opus", "flac"}:
                             output_format = "wav"
+                        audio_dir.mkdir(parents=True, exist_ok=True)
                         destination = self.artifacts.next_available_path(
-                            output_dir / f"{export_name}_mixed.{output_format}"
+                            audio_dir / f"{export_name}_mixed.{output_format}"
                         )
                         ffmpeg_executable = str(
                             os.environ.get("PANDRATOR_FFMPEG_EXE")
@@ -11672,8 +11727,9 @@ class WorkflowHandlers:
                         role = "export_mixed_audio"
                     else:
                         progress(0.7, "Copying generated speech audio")
+                        audio_dir.mkdir(parents=True, exist_ok=True)
                         destination = self.artifacts.next_available_path(
-                            output_dir / f"{export_name}{item_path.suffix.lower()}"
+                            audio_dir / f"{export_name}{item_path.suffix.lower()}"
                         )
                         shutil.copy2(item_path, destination)
                         parents = [dubbing_audio.id]
