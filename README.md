@@ -14,10 +14,10 @@ Run speech and transcription models on your own computer, connect a cloud
 provider, or let your AI assistant help through MCP. Start with one workflow
 and add more when you need them.
 
-[![Download for Windows (.exe)](https://img.shields.io/badge/Download_for_Windows-.exe-2563eb?style=for-the-badge)](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.9.3/PandratorManager-0.9.23-windows-x86_64.exe)
-[![Download for Linux (.AppImage)](https://img.shields.io/badge/Download_for_Linux-.AppImage-168572?style=for-the-badge)](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.9.3/PandratorManager-0.9.23-x86_64.AppImage)
+[![Download for Windows (.exe)](https://img.shields.io/badge/Download_for_Windows-.exe-2563eb?style=for-the-badge)](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.9.4/PandratorManager-0.9.24-windows-x86_64.exe)
+[![Download for Linux (.AppImage)](https://img.shields.io/badge/Download_for_Linux-.AppImage-168572?style=for-the-badge)](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.9.4/PandratorManager-0.9.24-x86_64.AppImage)
 
-Windows 10/11 and Linux desktop · x86-64 · Pandrator 0.9.3 / Manager 0.9.23
+Windows 10/11 and Linux desktop · x86-64 · Pandrator 0.9.4 / Manager 0.9.24
 
 [All downloads & release notes](https://github.com/lukaszliniewicz/Pandrator/releases/latest)
 · [Installation help](docs/getting-started/installation.md)

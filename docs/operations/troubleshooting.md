@@ -32,12 +32,12 @@ runs independently. Exact commands are in the
 Manager 0.9.23 and earlier can select the wrong Windows account when shell tools
 set `LOGNAME`, `USER`, or `LNAME`. The resulting permissions can cause an
 access-denied error while hashing a copied launcher or reopening the workspace's
-`bin` directory. The source fix for issue #116 identifies the account through the
+`bin` directory. Manager 0.9.24 fixes issue #116 by identifying the account through the
 Manager process's Windows access token, then replaces the protected path's access
 list with full control for that account. It does not trust any username environment
 variable, grant access to Everyone, change ownership, or request elevation.
 
-Use a Manager build that includes this fix. An older published executable is not
+Download Manager 0.9.24 or newer. An older published executable is not
 updated merely by updating the Pandrator application package. Existing inaccessible
 paths may still stop startup before the protection helper can run. Preserve the
 workspace and its `data` directory; do not delete sessions or recursively reset
