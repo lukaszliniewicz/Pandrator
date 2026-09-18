@@ -10577,6 +10577,7 @@ class WorkflowHandlers:
             build_replace_video_audio_command,
             build_video_tail_extension_command,
             build_video_transcode_command,
+            build_web_optimized_remux_command,
             normalize_video_resolution,
         )
         from pandrator.logic.dubbing_handler import resolve_ffmpeg_for_burned_subtitles
@@ -11429,11 +11430,77 @@ class WorkflowHandlers:
                             0.65,
                             "Transcoding media with selectable subtitles"
                             if user_video_transcode
-                            else "Rendering media with selectable subtitles",
+                            else "Rendering web-optimized media with selectable subtitles",
                         )
-                        subprocess.run(
-                            command, check=True, capture_output=True, text=True
-                        )
+                        try:
+                            subprocess.run(
+                                command, check=True, capture_output=True, text=True
+                            )
+                        except subprocess.CalledProcessError as remux_error:
+                            if user_video_transcode:
+                                raise
+                            if video_encoder not in ffmpeg_video_encoder_ids(
+                                ffmpeg_executable
+                            ):
+                                detail = (
+                                    str(remux_error.stderr or remux_error.stdout or "")
+                                    .strip()
+                                    .splitlines()
+                                )
+                                reason = (
+                                    detail[-1]
+                                    if detail
+                                    else "FFmpeg could not stream-copy the source into MP4."
+                                )
+                                raise RuntimeError(
+                                    "Selectable-subtitle MP4 remuxing failed and the selected "
+                                    f"{video_encoder} fallback encoder is unavailable: {reason}"
+                                ) from remux_error
+                            progress(
+                                0.68,
+                                "Stream-copy subtitle mux was unavailable; transcoding a web-compatible MP4",
+                            )
+                            command = build_multi_soft_subtitle_command(
+                                str(working_video),
+                                tracks,
+                                str(render_destination),
+                                ffmpeg_executable=ffmpeg_executable,
+                                transcode_video=True,
+                                video_encoder=video_encoder,
+                                video_resolution="source",
+                                video_quality=settings.get("burn_video_quality", 18),
+                                video_speed=str(
+                                    settings.get("burn_video_speed") or "balanced"
+                                ),
+                                audio_codec="aac",
+                                audio_bitrate=video_audio_bitrate,
+                            )
+                            try:
+                                subprocess.run(
+                                    command,
+                                    check=True,
+                                    capture_output=True,
+                                    text=True,
+                                )
+                            except subprocess.CalledProcessError as transcode_error:
+                                detail = (
+                                    str(
+                                        transcode_error.stderr
+                                        or transcode_error.stdout
+                                        or ""
+                                    )
+                                    .strip()
+                                    .splitlines()
+                                )
+                                reason = (
+                                    detail[-1]
+                                    if detail
+                                    else "FFmpeg returned a non-zero exit status."
+                                )
+                                raise RuntimeError(
+                                    f"Selectable-subtitle fallback with {video_encoder} failed: {reason}"
+                                ) from transcode_error
+                            video_transcode = True
                     elif subtitle_mode == "burned" and selected_subtitles:
                         subtitle_paths = [
                             finalized_subtitle_paths[item.id]
@@ -11553,11 +11620,90 @@ class WorkflowHandlers:
                         if tail_extension_ms > 0:
                             progress(
                                 0.65,
-                                f"Copying media output with frozen tail (+{tail_extension_ms} ms)",
+                                f"Optimizing frozen-tail media for web playback (+{tail_extension_ms} ms)",
                             )
                         else:
-                            progress(0.65, "Copying prepared media output")
-                        shutil.copy2(working_video, render_destination)
+                            progress(
+                                0.65,
+                                "Optimizing media for web playback without video transcoding",
+                            )
+                        command = build_web_optimized_remux_command(
+                            str(working_video),
+                            str(render_destination),
+                            ffmpeg_executable=ffmpeg_executable,
+                            audio_codec=render_audio_codec,
+                            audio_bitrate=video_audio_bitrate,
+                        )
+                        try:
+                            subprocess.run(
+                                command, check=True, capture_output=True, text=True
+                            )
+                        except subprocess.CalledProcessError as remux_error:
+                            # A source codec/container combination may not be
+                            # legal inside MP4 even though stream-copy is the
+                            # preferred web-optimization path. Fall back to a
+                            # standards-friendly transcode only when remuxing
+                            # cannot produce the export.
+                            if video_encoder not in ffmpeg_video_encoder_ids(
+                                ffmpeg_executable
+                            ):
+                                detail = (
+                                    str(remux_error.stderr or remux_error.stdout or "")
+                                    .strip()
+                                    .splitlines()
+                                )
+                                reason = (
+                                    detail[-1]
+                                    if detail
+                                    else "FFmpeg could not stream-copy the source into MP4."
+                                )
+                                raise RuntimeError(
+                                    "Web-optimized MP4 remuxing failed and the selected "
+                                    f"{video_encoder} fallback encoder is unavailable: {reason}"
+                                ) from remux_error
+                            progress(
+                                0.68,
+                                "Stream-copy remux was unavailable; transcoding a web-compatible MP4",
+                            )
+                            command = build_video_transcode_command(
+                                str(working_video),
+                                str(render_destination),
+                                ffmpeg_executable=ffmpeg_executable,
+                                video_encoder=video_encoder,
+                                video_resolution="source",
+                                video_quality=settings.get("burn_video_quality", 18),
+                                video_speed=str(
+                                    settings.get("burn_video_speed") or "balanced"
+                                ),
+                                audio_codec="aac",
+                                audio_bitrate=video_audio_bitrate,
+                            )
+                            try:
+                                subprocess.run(
+                                    command,
+                                    check=True,
+                                    capture_output=True,
+                                    text=True,
+                                )
+                            except subprocess.CalledProcessError as transcode_error:
+                                detail = (
+                                    str(
+                                        transcode_error.stderr
+                                        or transcode_error.stdout
+                                        or ""
+                                    )
+                                    .strip()
+                                    .splitlines()
+                                )
+                                reason = (
+                                    detail[-1]
+                                    if detail
+                                    else "FFmpeg returned a non-zero exit status."
+                                )
+                                raise RuntimeError(
+                                    f"Web-compatible video fallback with {video_encoder} failed: {reason}"
+                                ) from transcode_error
+                            video_transcode = True
                     os.replace(render_destination, destination)
                     if tail_extension_ms > 0:
                         progress(

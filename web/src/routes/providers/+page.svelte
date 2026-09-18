@@ -7,16 +7,18 @@
   import SttServiceManager from '$lib/SttServiceManager.svelte';
   const initialTab = page.url.searchParams.get('tab');
   let tab = $state<'llm' | 'speech' | 'credentials'>(
-    ['tts', 'local', 'speech'].includes(String(initialTab))
-      ? 'speech'
-      : initialTab === 'credentials'
-        ? 'credentials'
-        : 'llm'
+    initialTab === 'credentials'
+      ? 'credentials'
+      : initialTab === 'llm'
+        ? 'llm'
+        : 'speech'
   );
   let speechTab = $state<'local' | 'external'>(
-    initialTab === 'local' || page.url.searchParams.get('speech') === 'local'
-      ? 'local'
-      : 'external'
+    initialTab === 'tts' ||
+      initialTab === 'external' ||
+      page.url.searchParams.get('speech') === 'external'
+      ? 'external'
+      : 'local'
   );
   let externalSpeechTab = $state<'tts' | 'stt'>(
     page.url.searchParams.get('service') === 'stt' ? 'stt' : 'tts'

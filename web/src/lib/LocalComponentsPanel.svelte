@@ -65,6 +65,7 @@
     state: 'absent' | 'present' | 'degraded' | 'unknown' | 'unsupported';
     installed_version?: string | null;
     installed_revision?: string | null;
+    installed_model_ids?: string[] | null;
     resolved?: {
       compute?: string;
       quantization?: string | null;
@@ -266,9 +267,12 @@
     const supported = new Set(
       (component.definition.models ?? []).map((model) => model.id)
     );
+    const inspected = component.inspection.installed_model_ids;
     const raw =
-      component.desired?.options?.models ??
-      component.inspection.resolved?.options?.models;
+      Array.isArray(inspected) && inspected.length
+        ? inspected
+        : (component.desired?.options?.models ??
+          component.inspection.resolved?.options?.models);
     const configured = Array.isArray(raw)
       ? raw.map(String).filter((modelId) => supported.has(modelId))
       : [];
@@ -283,6 +287,30 @@
 
   const selectedModels = (component: Component) =>
     selectedModelIds[component.definition.id] ?? configuredModelIds(component);
+
+  const modelChanges = (component: Component) => {
+    const installed = new Set(configuredModelIds(component));
+    const selected = new Set(selectedModels(component));
+    const models = component.definition.models ?? [];
+    const added = models.filter(
+      (model) => selected.has(model.id) && !installed.has(model.id)
+    );
+    const removed = models.filter(
+      (model) => installed.has(model.id) && !selected.has(model.id)
+    );
+    return {
+      added,
+      removed,
+      addedBytes: added.reduce(
+        (total, model) => total + Number(model.estimated_download_bytes || 0),
+        0
+      ),
+      removedBytes: removed.reduce(
+        (total, model) => total + Number(model.estimated_download_bytes || 0),
+        0
+      )
+    };
+  };
 
   function toggleModel(component: Component, modelId: string) {
     const selected = new Set(selectedModels(component));
@@ -1104,6 +1132,47 @@
                           Install only what you expect to use. You can add or
                           remove packages later without changing the backend.
                         </p>
+                        {#if modelChanges(component).added.length || modelChanges(component).removed.length}
+                          <div
+                            class="mt-3 rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-xs"
+                          >
+                            {#if modelChanges(component).added.length}
+                              <div>
+                                <strong>Add:</strong>
+                                {modelChanges(component)
+                                  .added.map((model) => model.label)
+                                  .join(', ')}
+                                {#if modelChanges(component).addedBytes}
+                                  <span class="muted">
+                                    · {formatBytes(
+                                      modelChanges(component).addedBytes
+                                    )}
+                                    download
+                                  </span>
+                                {/if}
+                              </div>
+                            {/if}
+                            {#if modelChanges(component).removed.length}
+                              <div
+                                class:mt-1={modelChanges(component).added
+                                  .length}
+                              >
+                                <strong>Remove:</strong>
+                                {modelChanges(component)
+                                  .removed.map((model) => model.label)
+                                  .join(', ')}
+                                {#if modelChanges(component).removedBytes}
+                                  <span class="muted">
+                                    · {formatBytes(
+                                      modelChanges(component).removedBytes
+                                    )}
+                                    from the active model set
+                                  </span>
+                                {/if}
+                              </div>
+                            {/if}
+                          </div>
+                        {/if}
                         <div class="mt-3 grid gap-2">
                           {#each component.definition.models as model}
                             <label
@@ -1196,7 +1265,11 @@
                         >
                           <RefreshCw size={13} />
                           {configurationChanged(component)
-                            ? 'Apply configuration'
+                            ? component.definition.id === 'audio_cpp' &&
+                              (modelChanges(component).added.length ||
+                                modelChanges(component).removed.length)
+                              ? 'Apply model changes'
+                              : 'Apply configuration'
                             : 'Check/update'}
                         </button>
                       {/if}

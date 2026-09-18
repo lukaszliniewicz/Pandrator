@@ -561,9 +561,22 @@ class AudioCppComponentDriver(MarkerComponentDriver):
         desired: DesiredComponentState,
         inspection: ComponentInspection,
     ) -> tuple[TaskSpec, ...]:
-        del inspection
         resolved = self.resolve(context, definition, desired)
         assets, effective = resolve_assets(context, desired.compute, definition)
+        selected_models = list(resolved.options["models"])
+        installed_models = set(inspection.installed_model_ids or ())
+        has_verified_install = (
+            inspection.state in {ComponentState.PRESENT, ComponentState.DEGRADED}
+            and inspection.installed_model_ids is not None
+        )
+        if not has_verified_install:
+            installed_models.clear()
+        added_models = [
+            model_id for model_id in selected_models if model_id not in installed_models
+        ]
+        removed_models = [
+            model_id for model_id in installed_models if model_id not in set(selected_models)
+        ]
         stage = self._task(
             definition,
             "stage",
@@ -583,21 +596,42 @@ class AudioCppComponentDriver(MarkerComponentDriver):
                 "version": assets[0].version,
                 "requested_compute": desired.compute.value,
                 "effective_compute": effective.value,
-                "models": list(resolved.options["models"]),
+                "models": selected_models,
+                "model_changes": {
+                    "add": added_models,
+                    "remove": removed_models,
+                    "retain": [
+                        model_id
+                        for model_id in selected_models
+                        if model_id in installed_models
+                    ],
+                },
                 "offline": bool(desired.options.get("offline")),
                 "resolved": resolved.model_dump(mode="json"),
             },
             expected_outputs=definition.owned_paths,
         )
         model_sizes = {
-            model.id: int(model.estimated_download_bytes or 0) for model in definition.models
+            model.id: int(model.estimated_download_bytes or 0)
+            for model in definition.models
         }
-        selected_model_bytes = sum(model_sizes[model_id] for model_id in resolved.options["models"])
-        runtime_allowance = 1024 * 1024 * 1024
+        added_model_bytes = sum(model_sizes[model_id] for model_id in added_models)
+        previous_compute = (
+            inspection.resolved.compute
+            if has_verified_install and inspection.resolved is not None
+            else None
+        )
+        runtime_refresh = (
+            not has_verified_install
+            or previous_compute != resolved.compute
+            or AUDIO_CPP_VERSION not in str(inspection.installed_revision or "")
+        )
+        runtime_allowance = 1024 * 1024 * 1024 if runtime_refresh else 0
         stage = stage.model_copy(
             update={
-                "estimated_download_bytes": selected_model_bytes + runtime_allowance,
-                "estimated_disk_bytes": int(selected_model_bytes * 1.25) + runtime_allowance,
+                "estimated_download_bytes": added_model_bytes + runtime_allowance,
+                "estimated_disk_bytes": int(added_model_bytes * 1.25)
+                + runtime_allowance,
             }
         )
         verify = self._task(

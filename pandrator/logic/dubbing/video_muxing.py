@@ -231,6 +231,45 @@ def build_video_transcode_command(
         output_path,
     ]
 
+def build_web_optimized_remux_command(
+    video_path: str,
+    output_path: str,
+    *,
+    ffmpeg_executable: str = "ffmpeg",
+    audio_codec: str = "copy",
+    audio_bitrate: str = "192k",
+) -> list[str]:
+    """Build a web-friendly MP4 remux without re-encoding the video stream.
+
+    FFmpeg rewrites the MP4 container and moves the moov atom to the front via
+    +faststart. Video stays bit-for-bit stream copied; audio is also copied
+    unless the caller explicitly asks for AAC.
+    """
+
+    normalized_audio_codec = str(audio_codec or "copy").strip().lower()
+    if normalized_audio_codec not in {"copy", "aac"}:
+        raise ValueError("Web remux audio codec must be copy or aac.")
+    command = [
+        ffmpeg_executable,
+        "-y",
+        "-i",
+        video_path,
+        "-map",
+        "0:v:0",
+        "-map",
+        "0:a?",
+        "-map_metadata",
+        "0",
+        "-c:v",
+        "copy",
+        "-c:a",
+        normalized_audio_codec,
+    ]
+    if normalized_audio_codec == "aac":
+        command.extend(["-b:a", str(audio_bitrate or "192k")])
+    command.extend(["-movflags", "+faststart", output_path])
+    return command
+
 
 def _format_filter_time(milliseconds: int) -> str:
     """Format an integer millisecond boundary for an FFmpeg filter."""
@@ -417,6 +456,8 @@ def build_add_subtitles_command(
         f"title={subtitle_title}",
         "-metadata:s:s:0",
         f"handler_name={subtitle_title}",
+        "-movflags",
+        "+faststart",
         temp_output_path,
     ]
 
@@ -455,6 +496,7 @@ def build_replace_video_audio_command(
     ]
     if str(audio_codec or "aac").strip().lower() == "aac":
         command.extend(["-b:a", str(audio_bitrate or "192k")])
+    command.extend(["-movflags", "+faststart"])
     if shortest:
         command.extend(["-shortest", temp_output_path])
     else:
@@ -569,7 +611,12 @@ def build_multi_soft_subtitle_command(
     if transcode_video:
         command.extend(transcode_arguments)
     else:
-        command.extend(["-c:v", "copy", "-c:a", "copy"])
+        normalized_audio_codec = str(audio_codec or "copy").strip().lower()
+        if normalized_audio_codec not in {"copy", "aac"}:
+            raise ValueError("Soft-subtitle remux audio codec must be copy or aac.")
+        command.extend(["-c:v", "copy", "-c:a", normalized_audio_codec])
+        if normalized_audio_codec == "aac":
+            command.extend(["-b:a", str(audio_bitrate or "192k")])
     command.extend(["-c:s", "mov_text"])
     for index, track in enumerate(subtitle_tracks):
         language = ffmpeg_subtitle_language_code(str(track.get("language") or "und"))
@@ -587,5 +634,5 @@ def build_multi_soft_subtitle_command(
                 disposition,
             ]
         )
-    command.append(output_path)
+    command.extend(["-movflags", "+faststart", output_path])
     return command

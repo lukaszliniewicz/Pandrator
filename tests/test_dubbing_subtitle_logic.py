@@ -405,6 +405,7 @@ Alice: hello
         self.assertIn("title=Polish", command)
         self.assertIn("handler_name=Polish", command)
         self.assertIn("language=pol", command)
+        self.assertIn("+faststart", command)
         self.assertEqual(command[-1], "out.mp4")
 
     def test_build_burned_subtitle_command_escapes_filter_path(self):
@@ -501,7 +502,32 @@ Alice: hello
         self.assertEqual(command[command.index("-c:a") + 1], "aac")
         self.assertEqual(command[command.index("-b:a") + 1], "128k")
         self.assertIn("-shortest", command)
+        self.assertIn("+faststart", command)
         self.assertEqual(command[-1], "out.mp4")
+
+    def test_web_optimized_remux_copies_video_and_moves_mp4_metadata_forward(self):
+        command = video_muxing.build_web_optimized_remux_command(
+            "input.mov",
+            "output.mp4",
+        )
+
+        self.assertEqual("copy", command[command.index("-c:v") + 1])
+        self.assertEqual("copy", command[command.index("-c:a") + 1])
+        self.assertIn("+faststart", command)
+        self.assertEqual("output.mp4", command[-1])
+
+    def test_web_optimized_remux_can_encode_only_audio_to_aac(self):
+        command = video_muxing.build_web_optimized_remux_command(
+            "input.mov",
+            "output.mp4",
+            audio_codec="aac",
+            audio_bitrate="160k",
+        )
+
+        self.assertEqual("copy", command[command.index("-c:v") + 1])
+        self.assertEqual("aac", command[command.index("-c:a") + 1])
+        self.assertEqual("160k", command[command.index("-b:a") + 1])
+        self.assertIn("+faststart", command)
 
     def test_video_transcode_controls_work_without_burned_subtitles(self):
         command = video_muxing.build_video_transcode_command(
@@ -545,6 +571,7 @@ Alice: hello
             command[command.index("-vf") + 1],
         )
         self.assertIn("mov_text", command)
+        self.assertIn("+faststart", command)
 
 
 if __name__ == "__main__":

@@ -69,7 +69,8 @@
   } = $props();
 
   const formatBytes = (value: number) => {
-    if (!value) return 'No estimate';
+    if (!Number.isFinite(value) || value < 0) return 'No estimate';
+    if (value === 0) return '0 B';
     const units = ['B', 'KB', 'MB', 'GB', 'TB'];
     let amount = value;
     let unit = 0;
@@ -110,13 +111,21 @@
     <div class="modal-scroll p-5 sm:p-7">
       <div class="grid gap-3 sm:grid-cols-2">
         <div class="rounded-xl border border-[var(--line)] p-3">
-          <div class="muted text-xs">Download estimate</div>
+          <div class="muted text-xs">
+            {plan.kind === 'update'
+              ? 'Additional download'
+              : 'Download estimate'}
+          </div>
           <strong class="mt-1 block text-sm"
             >{formatBytes(plan.estimated_download_bytes)}</strong
           >
         </div>
         <div class="rounded-xl border border-[var(--line)] p-3">
-          <div class="muted text-xs">Disk estimate</div>
+          <div class="muted text-xs">
+            {plan.kind === 'update'
+              ? 'Additional disk required'
+              : 'Disk estimate'}
+          </div>
           <strong class="mt-1 block text-sm"
             >{formatBytes(plan.estimated_disk_bytes)}</strong
           >

@@ -29,6 +29,7 @@ from pandrator_manager.components.slots import (
 from pandrator_manager.context import CancellationToken, ManagerContext, WorkspaceLayout
 from pandrator_manager.errors import ManagerError
 from pandrator_manager.models import (
+    ComponentState,
     ComputeVariant,
     DesiredComponentState,
     OperationKind,
@@ -218,6 +219,123 @@ class AudioCppManagerTests(unittest.TestCase):
         self.assertEqual("cpu", stage.inputs["effective_compute"])
         self.assertLess(stage.estimated_download_bytes, 4 * 1024**3)
         self.assertNotIn("runtime:pixi", {task.id for task in plan.tasks})
+
+    def test_update_estimates_only_added_models_and_records_combined_changes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            application = create_application(directory)
+            registry = builtin_registry()
+            definition = registry.definition("audio_cpp")
+            driver = registry.driver("audio_cpp")
+            old_desired = DesiredComponentState(
+                compute=ComputeVariant.CPU,
+                options={
+                    "models": [
+                        "qwen3_tts_1_7b_base_q8_0",
+                        "voxcpm2_q8_0",
+                    ]
+                },
+            )
+            inspection = driver.inspect(
+                application.context,
+                definition,
+                old_desired,
+            ).model_copy(
+                update={
+                    "state": ComponentState.PRESENT,
+                    "installed_model_ids": (
+                        "qwen3_tts_1_7b_base_q8_0",
+                        "voxcpm2_q8_0",
+                    ),
+                    "installed_revision": f"audio-cpp-{AUDIO_CPP_VERSION}-cpu-existing",
+                }
+            )
+            new_desired = DesiredComponentState(
+                compute=ComputeVariant.CPU,
+                options={
+                    "models": [
+                        "voxcpm2_q8_0",
+                        "breeze_tts_2_q8_0",
+                    ]
+                },
+            )
+
+            tasks = driver.plan_update(
+                application.context,
+                definition,
+                new_desired,
+                inspection,
+            )
+
+        stage = next(task for task in tasks if task.kind == "stage_audio_cpp")
+        breeze = next(
+            model
+            for model in PRESENTATIONS["audio_cpp"].models
+            if model.id == "breeze_tts_2_q8_0"
+        )
+        expected_bytes = int(breeze.estimated_download_bytes or 0)
+        self.assertEqual(expected_bytes, stage.estimated_download_bytes)
+        self.assertEqual(int(expected_bytes * 1.25), stage.estimated_disk_bytes)
+        self.assertEqual(
+            {
+                "add": ["breeze_tts_2_q8_0"],
+                "remove": ["qwen3_tts_1_7b_base_q8_0"],
+                "retain": ["voxcpm2_q8_0"],
+            },
+            stage.inputs["model_changes"],
+        )
+
+    def test_update_removing_model_requires_no_additional_model_storage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            application = create_application(directory)
+            registry = builtin_registry()
+            definition = registry.definition("audio_cpp")
+            driver = registry.driver("audio_cpp")
+            old_desired = DesiredComponentState(
+                compute=ComputeVariant.CPU,
+                options={
+                    "models": [
+                        "qwen3_tts_1_7b_base_q8_0",
+                        "voxcpm2_q8_0",
+                    ]
+                },
+            )
+            inspection = driver.inspect(
+                application.context,
+                definition,
+                old_desired,
+            ).model_copy(
+                update={
+                    "state": ComponentState.PRESENT,
+                    "installed_model_ids": (
+                        "qwen3_tts_1_7b_base_q8_0",
+                        "voxcpm2_q8_0",
+                    ),
+                    "installed_revision": f"audio-cpp-{AUDIO_CPP_VERSION}-cpu-existing",
+                }
+            )
+            new_desired = DesiredComponentState(
+                compute=ComputeVariant.CPU,
+                options={"models": ["qwen3_tts_1_7b_base_q8_0"]},
+            )
+
+            tasks = driver.plan_update(
+                application.context,
+                definition,
+                new_desired,
+                inspection,
+            )
+
+        stage = next(task for task in tasks if task.kind == "stage_audio_cpp")
+        self.assertEqual(0, stage.estimated_download_bytes)
+        self.assertEqual(0, stage.estimated_disk_bytes)
+        self.assertEqual(
+            {
+                "add": [],
+                "remove": ["voxcpm2_q8_0"],
+                "retain": ["qwen3_tts_1_7b_base_q8_0"],
+            },
+            stage.inputs["model_changes"],
+        )
 
     def test_offline_plan_fails_before_model_manager_can_use_network(self):
         with tempfile.TemporaryDirectory() as directory:
