@@ -718,6 +718,9 @@ class FilesystemTaskHandler:
         staged_server = target / server_name
         if execution.context.system.casefold() != "windows":
             staged_server.chmod(staged_server.stat().st_mode | 0o755)
+            staged_cli = target / "audiocpp_cli"
+            if staged_cli.is_file():
+                staged_cli.chmod(staged_cli.stat().st_mode | 0o755)
 
         models_root = target / "models"
         python_candidate = runtime_python(execution.context.layout)

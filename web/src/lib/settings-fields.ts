@@ -75,12 +75,19 @@ const CHOICES: Record<string, SettingOption[]> = {
     option('azure_mai_transcribe_1_5', 'Azure Speech · MAI-Transcribe-1.5')
   ],
   caption_alignment_method: [
-    option('ctc', 'Local CTC forced alignment · recommended'),
-    option('ctc_asr_fallback', 'Local CTC, then ASR below threshold'),
+    option('ctc', 'Local forced alignment · recommended'),
+    option('ctc_asr_fallback', 'Local alignment, then ASR below threshold'),
     option('asr', 'ASR lexical projection · legacy')
   ],
+  moss_ctc_aligner_model: [
+    option('auto', 'Automatic · select by source language'),
+    option('canary-ctc-aligner', 'Canary CTC · European languages'),
+    option('qwen3-forced-aligner', 'Qwen3 · Japanese and 10 other languages')
+  ],
   caption_alignment_ctc_model: [
-    option('auto', 'Canary CTC aligner · managed model')
+    option('auto', 'Automatic · select by source language'),
+    option('canary-ctc-aligner', 'Canary CTC · European languages'),
+    option('qwen3-forced-aligner', 'Qwen3 · Japanese and 10 other languages')
   ],
   stt_transcribe_style: [
     option('readability', 'Readable transcript'),
@@ -974,11 +981,11 @@ export function settingLabel(key: string): string {
     moss_max_chunk_seconds: 'Maximum MOSS context (seconds)',
     moss_chunk_overlap_seconds: 'MOSS chunk overlap (seconds)',
     moss_vad_enabled: 'Use VAD before MOSS diarization',
-    moss_ctc_alignment_enabled: 'Align each MOSS turn to words with CTC',
-    moss_ctc_aligner_model: 'MOSS CTC aligner model',
+    moss_ctc_alignment_enabled: 'Align each MOSS turn to timed units',
+    moss_ctc_aligner_model: 'MOSS forced aligner',
     moss_ctc_padding_seconds: 'MOSS turn CTC padding (seconds)',
     caption_alignment_method: 'Attached-caption alignment method',
-    caption_alignment_ctc_model: 'Caption CTC aligner model',
+    caption_alignment_ctc_model: 'Caption forced aligner',
     caption_alignment_padding_ms: 'Cue audio padding (ms)',
     caption_alignment_batch_seconds: 'Maximum local-context window (seconds)',
     caption_alignment_min_confidence: 'Minimum timing-quality score',

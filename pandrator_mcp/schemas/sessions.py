@@ -53,6 +53,8 @@ _FORBIDDEN_SETTING_KEYS = frozenset(
         "path",
         "port",
         "private_key",
+        "qwen_aligner_executable",
+        "qwen_aligner_cache_dir",
         "proxy",
         "proxy_origin",
         "secret",

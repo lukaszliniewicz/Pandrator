@@ -2,6 +2,13 @@
 
 Reviewed on 18 September 2026 against Pandrator 0.9.4. The focus is Japanese batch translation, subtitles and voiceover, with Chinese and Korean regression coverage.
 
+## Alignment follow-up
+
+Qwen3 forced alignment was subsequently added for Japanese, Chinese, Korean and
+Cantonese automatic routing, with an explicit choice for its other supported
+languages. See [Qwen forced alignment](../guides/qwen-forced-alignment.md).
+The original Canary-only limitations below describe the initial CJK review.
+
 ## Subtitle defaults
 
 Automatic language limits use the actual subtitle track language, not the voiceover target for every track. New/default-valued configurations use these source-preserving caption presets:

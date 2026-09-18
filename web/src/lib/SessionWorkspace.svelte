@@ -303,6 +303,7 @@
     'ctc'
   );
   let captionAlignmentCtcModel = $state('auto');
+  let mossCtcAlignerModel = $state('auto');
   let captionAlignmentPaddingMs = $state(2000);
   let captionAlignmentBatchSeconds = $state(30);
   let captionAlignmentMinConfidence = $state(0.5);
@@ -1133,6 +1134,7 @@
     mossChunkOverlap = Number(saved.moss_chunk_overlap_seconds ?? 0);
     mossVadEnabled = Boolean(saved.moss_vad_enabled ?? false);
     mossCtcAlignmentEnabled = Boolean(saved.moss_ctc_alignment_enabled ?? true);
+    mossCtcAlignerModel = String(saved.moss_ctc_aligner_model ?? 'auto');
     mossCtcPaddingSeconds = Number(saved.moss_ctc_padding_seconds ?? 0.5);
     vadEnabled = Boolean(saved.crispasr_vad_enabled ?? true);
     vadModel = String(saved.crispasr_vad_model ?? 'silero');
@@ -2575,7 +2577,7 @@
         moss_chunk_overlap_seconds: mossChunkOverlap,
         moss_vad_enabled: mossVadEnabled,
         moss_ctc_alignment_enabled: mossCtcAlignmentEnabled,
-        moss_ctc_aligner_model: 'auto',
+        moss_ctc_aligner_model: mossCtcAlignerModel,
         moss_ctc_padding_seconds: mossCtcPaddingSeconds,
         crispasr_vad_enabled: vadEnabled,
         crispasr_vad_model: vadModel,
@@ -3675,20 +3677,27 @@
                     following-caption context; only that target cue's timing is
                     kept. VAD checks word placement, and CTC blank tails are
                     capped by the shifted caption duration. Rejected cues retain
-                    their original timing.
+                    their original timing. Automatic uses Qwen3 for Japanese,
+                    Chinese, Korean and Cantonese; otherwise Canary. Qwen3
+                    requires audio.cpp and downloads a verified 1.13 GB model
+                    once. Audio and text stay local.
                   </p>
                   <div class="mt-3 grid gap-3 sm:grid-cols-2">
                     <label class="text-xs font-semibold"
                       ><ParameterLabel
                         section="stt"
                         name="caption_alignment_ctc_model"
-                        label="CTC aligner"
+                        label="Forced aligner"
                         compact
                       /><select
                         bind:value={captionAlignmentCtcModel}
                         class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
                         ><option value="auto"
-                          >Canary CTC aligner · managed model</option
+                          >Automatic · source language</option
+                        ><option value="canary-ctc-aligner"
+                          >Canary CTC · European languages</option
+                        ><option value="qwen3-forced-aligner"
+                          >Qwen3 · Japanese + 10 languages</option
                         ></select
                       ></label
                     ><label class="text-xs font-semibold"
@@ -4077,8 +4086,9 @@
                     </div>
                     <p class="muted mt-1 text-xs leading-relaxed">
                       MOSS detects the language and speaker changes. Each turn
-                      is then aligned separately with Canary CTC and a small
-                      acoustic margin, avoiding long-recording alignment drift.
+                      is then aligned separately with the selected forced
+                      aligner and a small acoustic margin, avoiding
+                      long-recording alignment drift.
                     </p>
                     <div class="mt-3 grid gap-3 sm:grid-cols-2">
                       <label
@@ -4091,14 +4101,31 @@
                         <ParameterLabel
                           section="stt"
                           name="moss_ctc_alignment_enabled"
-                          label="Word-level CTC alignment"
+                          label="Forced alignment"
                           compact
                         /></label
                       ><label class="text-xs font-semibold"
+                        >Forced aligner
+                        <select
+                          bind:value={mossCtcAlignerModel}
+                          disabled={!mossCtcAlignmentEnabled}
+                          class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                        >
+                          <option value="auto"
+                            >Automatic · source language</option
+                          >
+                          <option value="canary-ctc-aligner"
+                            >Canary CTC · European languages</option
+                          >
+                          <option value="qwen3-forced-aligner"
+                            >Qwen3 · Japanese + 10 languages</option
+                          >
+                        </select>
+                      </label><label class="text-xs font-semibold"
                         ><ParameterLabel
                           section="stt"
                           name="moss_ctc_padding_seconds"
-                          label="CTC padding (s)"
+                          label="Alignment padding (s)"
                           compact
                         /><input
                           type="number"

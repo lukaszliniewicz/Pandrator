@@ -135,7 +135,9 @@
       ![
         'asr_lexical_projection',
         'ctc_cue_alignment',
-        'ctc_with_asr_fallback'
+        'ctc_with_asr_fallback',
+        'qwen3_forced_alignment',
+        'qwen3_with_asr_fallback'
       ].includes(method)
     )
       return null;
@@ -173,11 +175,15 @@
     return {
       method,
       methodLabel:
-        method === 'ctc_cue_alignment'
-          ? 'Cue-local CTC'
-          : method === 'ctc_with_asr_fallback'
-            ? 'Cue-local CTC + ASR fallback'
-            : 'ASR lexical projection',
+        method === 'qwen3_forced_alignment'
+          ? 'Qwen3 forced alignment'
+          : method === 'qwen3_with_asr_fallback'
+            ? 'Qwen3 + ASR fallback'
+            : method === 'ctc_cue_alignment'
+              ? 'Cue-local CTC'
+              : method === 'ctc_with_asr_fallback'
+                ? 'Cue-local CTC + ASR fallback'
+                : 'ASR lexical projection',
       coverage,
       eligibleCoverage,
       quality,

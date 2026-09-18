@@ -22,6 +22,7 @@ from ..cancellable_process import ProcessCancelled, run_cancellable
 from .stt_languages import PARAKEET_V3_LANGUAGE_CODES, validate_stt_language
 from .languages import normalize_language_code
 from .text_units import infer_cjk_language, join_fragments
+from . import qwen_alignment
 
 CRISPASR_VERSION = "0.8.32"
 CRISPASR_EXECUTABLE_ENV = "CRISPASR_EXECUTABLE"
@@ -384,6 +385,8 @@ def _prefetch_windows_moss_aligner(
     if engine != STT_ENGINE_MOSS or not moss_ctc_alignment_enabled(settings) or ctc_language_problem(settings, model_key="moss_ctc_aligner_model"):
         return None
 
+    if qwen_alignment.uses_qwen(settings, model_key="moss_ctc_aligner_model"):
+        return None
     configured = str(_setting(settings, "moss_ctc_aligner_model", "auto")).strip() or "auto"
     if configured.lower() in {
         "auto",
@@ -690,6 +693,9 @@ def ctc_language_problem(
     https://huggingface.co/cstr/canary-ctc-aligner-GGUF
     The translation target is deliberately not used as the audio language.
     """
+    from . import qwen_alignment
+    if qwen_alignment.uses_qwen(settings, text, model_key=model_key):
+        return qwen_alignment.language_problem(settings, text)
     configured = str(_setting(settings, model_key, "auto") or "auto").strip()
     name = Path(configured).name.lower()
     if name not in {"auto", "canary-ctc-aligner"} and not name.startswith("canary-ctc-aligner-"):
@@ -870,6 +876,15 @@ def run_ctc_alignment(
     problem = ctc_language_problem(settings, Path(text_path).read_text(encoding="utf-8-sig"))
     if problem:
         raise CrispASRError(problem)
+    from . import qwen_alignment
+    if qwen_alignment.uses_qwen(settings, Path(text_path).read_text(encoding="utf-8-sig")):
+        try:
+            return qwen_alignment.run_alignment(
+                audio_path, text_path, output_path, settings,
+                cancel_event=cancel_event, run_func=run_func,
+            )
+        except qwen_alignment.QwenAlignmentError as error:
+            raise CrispASRError(str(error)) from error
     prefetched = _prefetch_windows_ctc_aligner(settings)
     command = build_ctc_alignment_command(
         audio_path,
@@ -918,6 +933,12 @@ def _align_moss_segments(
     segments = payload.get("transcription")
     if not isinstance(segments, list):
         raise CrispASRError("CrispASR MOSS JSON did not contain a transcription array.")
+
+    moss_text = join_fragments(item.get("text", "") for item in segments if isinstance(item, dict))
+    if qwen_alignment.uses_qwen(settings, moss_text, model_key="moss_ctc_aligner_model"):
+        qwen_alignment.align_moss_turns(audio_path, payload, settings, cancel_event=cancel_event, run_func=run_func)
+        metadata_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        return
 
     padding = max(0.0, min(2.0, float(_setting(settings, "moss_ctc_padding_seconds", 0.5))))
     try:
@@ -1106,9 +1127,11 @@ def transcribe(
             + str(stderr or "").strip()
         )
     align_moss_words = engine == STT_ENGINE_MOSS and moss_ctc_alignment_enabled(settings)
+    qwen_moss = False
     if align_moss_words:
         moss_payload = json.loads(json_generated.read_text(encoding="utf-8"))
         moss_text = join_fragments(segment.get("text", "") for segment in moss_payload.get("transcription", []) if isinstance(segment, dict))
+        qwen_moss = qwen_alignment.uses_qwen(settings, moss_text, model_key="moss_ctc_aligner_model")
         problem = ctc_language_problem(settings, moss_text, model_key="moss_ctc_aligner_model")
         if problem:
             align_moss_words = False
@@ -1127,8 +1150,8 @@ def transcribe(
         )
     _validate_word_timestamps(
         json_generated,
-        require_words=engine != STT_ENGINE_MOSS or align_moss_words,
-        require_words_per_segment=align_moss_words,
+        require_words=engine != STT_ENGINE_MOSS or (align_moss_words and not qwen_moss),
+        require_words_per_segment=align_moss_words and not qwen_moss,
     )
 
     srt_path = session_path / f"{output_name}.srt"

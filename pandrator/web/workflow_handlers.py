@@ -3372,7 +3372,7 @@ class WorkflowHandlers:
         """Align authoritative attached captions without whole-recording ASR."""
 
         from pandrator.logic.cancellable_process import ProcessCancelled
-        from pandrator.logic.dubbing import crispasr
+        from pandrator.logic.dubbing import crispasr, qwen_alignment
         from pandrator.logic.dubbing.caption_alignment import (
             CaptionAlignmentError,
             align_caption_cues,
@@ -3490,7 +3490,7 @@ class WorkflowHandlers:
                 cues,
                 options,
                 vad_spans=vad_spans,
-                ctc_runner=ctc_runner,
+                ctc_runner=None if qwen_alignment.uses_qwen(options, " ".join(cue.text for cue in cues)) else ctc_runner,
                 cancel_event=cancel_event,
                 progress=lambda value, detail: progress(0.24 + 0.52 * value, detail),
             )
@@ -3502,7 +3502,6 @@ class WorkflowHandlers:
         diagnostics = alignment.diagnostics
         diagnostics.vad_model = str(options.get("crispasr_vad_model") or "silero")
         diagnostics.vad_options = vad_options
-        diagnostics.ctc_engine = "crispasr"
 
         raw_asr_srt_artifact = None
         raw_asr_words_artifact = None
@@ -3590,7 +3589,7 @@ class WorkflowHandlers:
             diagnostics.fallback_engine = fallback_result.engine
             diagnostics.fallback_filled_cue_count = replaced
             diagnostics.fallback_filled_token_count = replaced_tokens
-            diagnostics.method = "ctc_with_asr_fallback"
+            diagnostics.method = "qwen3_with_asr_fallback" if diagnostics.ctc_engine == "audio.cpp" else "ctc_with_asr_fallback"
             diagnostics.timing_quality_basis = (
                 f"{diagnostics.timing_quality_basis};"
                 "asr_lexical_projection_for_ctc_rejections"
@@ -3599,12 +3598,15 @@ class WorkflowHandlers:
                 float(cue.timing_confidence or 0) for cue in aligned_cues
             ) / max(1, len(aligned_cues))
             diagnostics.accepted_cue_count = sum(bool(cue.words) for cue in aligned_cues)
-            diagnostics.accepted_token_count = sum(len(cue.words) for cue in aligned_cues)
+            diagnostics.accepted_token_count = sum(
+                len(cue.text.split()) if diagnostics.ctc_engine == "audio.cpp" else len(cue.words)
+                for cue in aligned_cues if cue.words
+            )
             diagnostics.alignment_coverage = diagnostics.accepted_token_count / max(1, diagnostics.all_token_count)
             diagnostics.eligible_alignment_coverage = diagnostics.accepted_token_count / max(1, diagnostics.eligible_token_count)
 
         diagnostics.cue_count = len(aligned_cues)
-        diagnostics.word_count = diagnostics.accepted_token_count
+        diagnostics.word_count = sum(len(cue.words) for cue in aligned_cues)
         final_failed_ids = {cue.id for cue in aligned_cues if not cue.words}
         diagnostics.failed_cue_ids = {
             cue_id: reasons

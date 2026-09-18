@@ -95,6 +95,7 @@ class PlanMediaEditWorkflowInput(ToolInput):
         "auto",
         "canary-ctc-aligner",
         "canary-ctc-aligner-q4_k.gguf",
+        "qwen3-forced-aligner",
     ] = "auto"
     caption_alignment_padding_ms: int = Field(default=2_000, ge=250, le=5_000)
     caption_alignment_batch_seconds: int = Field(default=30, ge=5, le=60)

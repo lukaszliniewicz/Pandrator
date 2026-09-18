@@ -23,6 +23,7 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_build_release_packages.py",
         "tests/test_caption_alignment.py",
         "tests/test_cjk_text_pipeline.py",
+        "tests/test_qwen_forced_alignment.py",
         "tests/test_dependency_manifests.py",
         "tests/test_dubbing_artifacts.py",
         "tests/test_dubbing_boundary_correction.py",

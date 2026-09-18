@@ -656,9 +656,10 @@ def build_server(runtime: McpRuntime):
                 "auto",
                 "canary-ctc-aligner",
                 "canary-ctc-aligner-q4_k.gguf",
+                "qwen3-forced-aligner",
             ],
             Field(
-                description="Managed CrispASR align-only CTC model selector; auto is recommended.",
+                description="Forced aligner: auto selects Qwen for Japanese/Chinese/Korean/Cantonese and Canary otherwise. Qwen uses audio.cpp and a verified 1.13 GB model cache.",
             ),
         ] = "auto",
         caption_alignment_padding_ms: Annotated[int, Field(ge=250, le=5_000)] = 2_000,

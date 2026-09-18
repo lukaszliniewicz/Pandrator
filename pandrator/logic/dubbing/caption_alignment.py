@@ -21,7 +21,7 @@ from typing import Any
 
 from ..cancellable_process import ProcessCancelled
 from ..media_edit import MediaCue, MediaWord
-from . import crispasr
+from . import crispasr, qwen_alignment
 
 
 class CaptionAlignmentError(RuntimeError):
@@ -58,6 +58,7 @@ class AlignmentDiagnostics:
     endpoint_strategy: str = "ctc_onsets_with_shifted_caption_duration_cap"
     timing_quality_basis: str = "vad_midpoint_support_and_temporal_checks"
     ctc_request_count: int = 0
+    model_session_count: int = 0
     first_pass_batch_count: int = 0
     overlap_cluster_count: int = 0
     oversized_cluster_count: int = 0
@@ -94,6 +95,9 @@ class AlignmentDiagnostics:
             "alignment_endpoint_strategy": self.endpoint_strategy,
             "timing_quality_basis": self.timing_quality_basis,
             "ctc_request_count": self.ctc_request_count,
+            "model_session_count": self.model_session_count,
+            "alignment_engine": self.ctc_engine,
+            "alignment_model": self.ctc_model,
             "first_pass_batch_count": self.first_pass_batch_count,
             "overlap_cluster_count": self.overlap_cluster_count,
             "oversized_cluster_count": self.oversized_cluster_count,
@@ -505,10 +509,18 @@ def validate_cue_words(
     vad_enabled: bool = False,
     min_confidence: float = 0.5,
     duration_ms: int | None = None,
+    qwen_units: bool = False,
 ) -> tuple[MediaCue, str | None, float]:
     """Validate one cue and assign authoritative surfaces and timing quality."""
 
-    surfaces = token_surfaces(cue.text)
+    if qwen_units:
+        try:
+            words = qwen_alignment.restore_surfaces(cue.text, words)
+        except qwen_alignment.QwenAlignmentError:
+            return replace(cue, words=(), timing_confidence=0.0, timing_source="caption"), "wrong_surface", 0.0
+        surfaces = tuple(word["word"] for word in words)
+    else:
+        surfaces = token_surfaces(cue.text)
     if len(words) != len(surfaces):
         return replace(cue, words=(), timing_confidence=0.0, timing_source="caption"), "wrong_count", 0.0
     local_start, local_end = max(0, cue.start_ms - padding_ms), cue.end_ms + padding_ms
@@ -545,7 +557,7 @@ def validate_cue_words(
         or parsed[-1].end_ms - parsed[-1].start_ms > 2500
     )
     aligned_duration_cap = cue.end_ms + (parsed[0].start_ms - cue.start_ms)
-    if terminal_tail_is_pathological and parsed[-1].end_ms > aligned_duration_cap:
+    if not qwen_units and terminal_tail_is_pathological and parsed[-1].end_ms > aligned_duration_cap:
         if aligned_duration_cap <= parsed[-1].start_ms:
             return replace(cue, words=(), timing_confidence=0.0, timing_source="caption"), "caption_duration_conflict", 0.0
         parsed[-1] = replace(parsed[-1], end_ms=aligned_duration_cap)
@@ -580,7 +592,7 @@ def validate_cue_words(
         end_ms=parsed[-1].end_ms,
         words=tuple(replace(word, confidence=quality) for word in parsed),
         timing_confidence=quality,
-        timing_source="ctc_alignment",
+        timing_source="qwen3_alignment" if qwen_units else "ctc_alignment",
     )
     return accepted, None, quality
 
@@ -602,6 +614,7 @@ def map_ctc_words_to_cues(
     min_confidence: float,
     duration_ms: int | None = None,
     failure_reasons: dict[str, str] | None = None,
+    qwen_units: bool = False,
 ) -> tuple[MediaCue, ...]:
     """Map one bounded CTC output sequentially to cue token counts."""
 
@@ -609,6 +622,17 @@ def map_ctc_words_to_cues(
     cursor = 0
     for cue in cues:
         count = len(token_surfaces(cue.text))
+        if qwen_units:
+            expected = token_key(cue.text)
+            observed = ""
+            count = 0
+            while cursor + count < len(raw_words) and len(observed) < len(expected):
+                observed += token_key(raw_words[cursor + count]["word"])
+                count += 1
+                if not expected.startswith(observed):
+                    raise CaptionAlignmentError("Qwen units crossed a caption boundary or changed its text")
+            if observed != expected:
+                raise CaptionAlignmentError("Qwen output omitted caption content")
         segment = []
         for raw in raw_words[cursor : cursor + count]:
             segment.append(
@@ -627,6 +651,7 @@ def map_ctc_words_to_cues(
             vad_enabled=vad_enabled,
             min_confidence=min_confidence,
             duration_ms=duration_ms,
+            qwen_units=qwen_units,
         )
         if reason and failure_reasons is not None:
             failure_reasons[cue.id] = reason
@@ -663,6 +688,12 @@ def align_caption_cues(
     """Run one bounded CTC alignment request per independently timed cue."""
 
     options = normalize_alignment_settings(settings)
+    source_text = " ".join(cue.text for cue in cues)
+    qwen = qwen_alignment.uses_qwen(options, source_text)
+    if qwen:
+        # Freeze script inference once for this track, not independently for
+        # each potentially Han-only cue in a Japanese recording.
+        options = {**options, "original_language": qwen_alignment.source_language(options, source_text)}
     duration_ms = validate_normalized_wav(normalized_wav)
     clusters, outside = build_overlap_clusters(cues, duration_ms)
     batches = build_alignment_batches(
@@ -707,6 +738,11 @@ def align_caption_cues(
             )
         },
     )
+    if qwen:
+        diagnostics.method = "qwen3_forced_alignment"
+        diagnostics.ctc_engine = "audio.cpp"
+        diagnostics.ctc_model = qwen_alignment.MODEL_ID
+        diagnostics.endpoint_strategy = "qwen_native_spans_with_temporal_validation"
     accepted_by_id: dict[str, MediaCue] = {cue.id: replace(cue, words=(), timing_confidence=0.0, timing_source="caption") for cue in cues}
     for cue in outside:
         _record_failure(diagnostics, cue.id, "outside_media")
@@ -726,6 +762,15 @@ def align_caption_cues(
     with tempfile.TemporaryDirectory(prefix="pandrator-ctc-") as temporary:
         root = Path(temporary)
 
+        prepared_results: dict[str, Any] = {}
+
+        def prepare(batch: AlignmentBatch, stem: str):
+            clip, text, output = (root / f"{stem}{suffix}" for suffix in (".wav", ".txt", ".json"))
+            if not clip.is_file():
+                _write_wave_clip(Path(normalized_wav), clip, batch.start_ms, batch.end_ms)
+                text.write_text(" ".join(cue.text for cue in batch.cues), encoding="utf-8")
+            return clip, text, output
+
         def execute(
             batch: AlignmentBatch,
             stem: str,
@@ -735,26 +780,16 @@ def align_caption_cues(
                 target = next(cue for cue in batch.cues if cue.id == batch.target_cue_id)
                 _record_failure(diagnostics, target.id, problem)
                 return replace(target, words=(), timing_confidence=0.0, timing_source="caption")
-            clip = root / f"{stem}.wav"
-            text = root / f"{stem}.txt"
-            output = root / f"{stem}.json"
-            _write_wave_clip(
-                Path(normalized_wav),
-                clip,
-                batch.start_ms,
-                batch.end_ms,
-            )
-            text.write_text(
-                " ".join(
-                    token
-                    for cue in batch.cues
-                    for token in token_surfaces(cue.text)
-                ),
-                encoding="utf-8",
-            )
+            clip, text, output = prepare(batch, stem)
             try:
                 diagnostics.ctc_request_count += 1
-                raw = runner(clip, text, str(output), options, cancel_event)
+                if str(output) in prepared_results:
+                    raw = prepared_results[str(output)]
+                    if isinstance(raw, Exception):
+                        raise raw
+                else:
+                    diagnostics.model_session_count += 1
+                    raw = runner(clip, text, str(output), options, cancel_event)
                 failure_reasons: dict[str, str] = {}
                 mapped = map_ctc_words_to_cues(
                     batch.cues,
@@ -766,6 +801,7 @@ def align_caption_cues(
                     min_confidence=options["caption_alignment_min_confidence"],
                     duration_ms=duration_ms,
                     failure_reasons=failure_reasons,
+                    qwen_units=qwen,
                 )
                 candidate = next(
                     cue for cue in mapped if cue.id == batch.target_cue_id
@@ -778,6 +814,7 @@ def align_caption_cues(
             except (
                 CaptionAlignmentError,
                 crispasr.CrispASRError,
+                qwen_alignment.QwenAlignmentError,
                 OSError,
                 ValueError,
                 TypeError,
@@ -799,21 +836,46 @@ def align_caption_cues(
                 )
 
         for index, batch in enumerate(batches, start=1):
+            if qwen and ctc_runner is None and (index - 1) % qwen_alignment.MAX_BATCH_REQUESTS == 0:
+                group = batches[index - 1:index - 1 + qwen_alignment.MAX_BATCH_REQUESTS]
+                if progress:
+                    progress((index - 1) / max(1, len(batches)),
+                             f"Qwen3: preparing model (1.13 GB download on first use) and aligning cues {index}-{index + len(group) - 1}/{len(batches)}")
+                requests = [prepare(item, f"batch-{number:04d}")
+                            for number, item in enumerate(group, start=index)]
+                prepared_results.clear()
+                try:
+                    diagnostics.model_session_count += 1
+                    results = qwen_alignment.run_batch(requests, options, cancel_event=cancel_event)
+                except ProcessCancelled:
+                    raise
+                except (qwen_alignment.QwenAlignmentError, OSError, ValueError) as error:
+                    results = [error] * len(requests)
+                prepared_results.update((str(request[2]), result) for request, result in zip(requests, results))
             if cancel_event is not None and cancel_event.is_set():
                 raise ProcessCancelled("Caption alignment was canceled.")
             if progress:
                 progress(index / max(1, len(batches)), f"Aligning cue {index}/{len(batches)}")
-            candidate = execute(batch, f"batch-{index:04d}")
+            try:
+                candidate = execute(batch, f"batch-{index:04d}")
+            finally:
+                # A long recording must not retain every overlapping WAV until
+                # the whole job ends. Only the current bounded group is staged.
+                for suffix in (".wav", ".txt", ".json"):
+                    (root / f"batch-{index:04d}{suffix}").unlink(missing_ok=True)
             if cancel_event is not None and cancel_event.is_set():
                 raise ProcessCancelled("Caption alignment was canceled.")
             accepted_by_id[batch.target_cue_id] = candidate
 
     diagnostics.accepted_cue_count = sum(bool(cue.words) for cue in accepted_by_id.values())
-    diagnostics.accepted_token_count = sum(len(cue.words) for cue in accepted_by_id.values())
+    diagnostics.accepted_token_count = sum(
+        len(token_surfaces(cue.text)) if qwen else len(cue.words)
+        for cue in accepted_by_id.values() if cue.words
+    )
     diagnostics.alignment_coverage = diagnostics.accepted_token_count / max(1, diagnostics.all_token_count)
     diagnostics.eligible_alignment_coverage = diagnostics.accepted_token_count / max(1, diagnostics.eligible_token_count)
     diagnostics.alignment_confidence = sum(float(cue.timing_confidence or 0) for cue in accepted_by_id.values()) / max(1, len(cues))
-    diagnostics.word_count = diagnostics.accepted_token_count
+    diagnostics.word_count = sum(len(cue.words) for cue in accepted_by_id.values())
     final_failed_ids = {
         cue.id for cue in accepted_by_id.values() if not cue.words
     }

@@ -198,17 +198,25 @@
         )
       )
     );
-    const ctc =
-      method === 'ctc_cue_alignment' || method === 'ctc_with_asr_fallback';
+    const ctc = [
+      'ctc_cue_alignment',
+      'ctc_with_asr_fallback',
+      'qwen3_forced_alignment',
+      'qwen3_with_asr_fallback'
+    ].includes(method);
     return {
       methodLabel:
-        method === 'ctc_cue_alignment'
-          ? 'Cue-local CTC'
-          : method === 'ctc_with_asr_fallback'
-            ? 'Cue-local CTC + ASR fallback'
-            : method === 'asr_lexical_projection'
-              ? 'ASR lexical projection'
-              : 'Caption alignment',
+        method === 'qwen3_forced_alignment'
+          ? 'Qwen3 forced alignment'
+          : method === 'qwen3_with_asr_fallback'
+            ? 'Qwen3 + ASR fallback'
+            : method === 'ctc_cue_alignment'
+              ? 'Cue-local CTC'
+              : method === 'ctc_with_asr_fallback'
+                ? 'Cue-local CTC + ASR fallback'
+                : method === 'asr_lexical_projection'
+                  ? 'ASR lexical projection'
+                  : 'Caption alignment',
       coverage,
       eligibleCoverage,
       quality,

@@ -85,8 +85,14 @@ transcript source) and otherwise use ASR. In caption mode, the planner applies
 the selected CTC, CTC-with-ASR-fallback, or ASR alignment settings. An attached
 transcript remains authoritative: explicitly requesting ASR while captions are
 attached is a blocking state, not permission to overwrite those captions.
-The default `caption_alignment_ctc_model=auto` uses Pandrator's managed Canary
-CTC aligner and does not load a whole-recording ASR model.
+The default `caption_alignment_ctc_model=auto` selects Qwen3 for Japanese, Chinese,
+Korean and Cantonese and Canary CTC for other supported languages. Explicit
+`qwen3-forced-aligner` also supports English, French, German, Italian, Portuguese,
+Russian and Spanish. Qwen3 is non-autoregressive, not CTC; historical setting keys
+remain compatible. It uses the installed audio.cpp CLI and a pinned, SHA-256-verified
+1.13 GB model cached on first use. Audio and transcripts stay local. Up to eight
+bounded audio/transcript pairs share a model load. Rejected cues retain original
+timing. Select the source/audio language, not the translation target.
 
 The passive proposal is never auto-approved. First call
 `pandrator_list_media_edit_cuts` with the returned session and revision, then

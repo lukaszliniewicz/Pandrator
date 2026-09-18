@@ -179,7 +179,7 @@ def test_deepl_cjk_target_scripts(language, expected):
 @pytest.mark.parametrize("language,text", [("ja", "日本語です。"), ("zh-Hant", "信仰自由。"), ("ko", "한국어 자막입니다.")])
 def test_canary_incompatibility_is_explicit(language, text):
     from pandrator.logic.dubbing.crispasr import ctc_language_problem
-    problem = ctc_language_problem({"stt_language": language}, text)
+    problem = ctc_language_problem({"stt_language": language, "caption_alignment_ctc_model": "canary-ctc-aligner"}, text)
     assert problem and "unsupported_ctc_language" in problem
     assert ctc_language_problem({"stt_language": "en", "target_language": "ja"}, "English source.") is None
     assert ctc_language_problem({"stt_language": language, "caption_alignment_ctc_model": "/custom/aligner.gguf"}, text) is None
@@ -198,7 +198,7 @@ def test_japanese_caption_does_not_call_incompatible_ctc_runner(tmp_path):
         wav.writeframes(b"\0\0" * 16000 * 5)
     original = MediaCue("ja-cue", 1000, 4000, "日本語の字幕です。")
     runner = Mock(side_effect=AssertionError("Unsupported model must not be called"))
-    result = align_caption_cues(audio, (original,), {"stt_language": "auto"}, ctc_runner=runner)
+    result = align_caption_cues(audio, (original,), {"stt_language": "auto", "caption_alignment_ctc_model": "canary-ctc-aligner"}, ctc_runner=runner)
     runner.assert_not_called()
     assert result.cues[0].text == original.text
     assert (result.cues[0].start_ms, result.cues[0].end_ms) == (1000, 4000)

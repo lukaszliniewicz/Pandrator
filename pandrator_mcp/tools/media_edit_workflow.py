@@ -142,8 +142,8 @@ def _alignment_matches(
     timing_source = str(metadata.get("timing_source") or "").strip().lower()
     if method == "ctc":
         method_matches = (
-            method_value in {"ctc", "ctc_alignment", "ctc_cue_alignment"}
-            or timing_source == "ctc_alignment"
+            method_value in {"ctc", "ctc_alignment", "ctc_cue_alignment", "qwen3_forced_alignment"}
+            or timing_source in {"ctc_alignment", "qwen3_alignment"}
         )
     elif method == "ctc_asr_fallback":
         # A fallback-enabled run keeps the ordinary CTC method when every
@@ -156,8 +156,10 @@ def _alignment_matches(
                 "ctc_alignment",
                 "ctc_cue_alignment",
                 "ctc_with_asr_fallback",
+                "qwen3_forced_alignment",
+                "qwen3_with_asr_fallback",
             }
-            or timing_source == "ctc_alignment"
+            or timing_source in {"ctc_alignment", "qwen3_alignment"}
         )
     else:
         return (

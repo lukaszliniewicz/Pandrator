@@ -542,6 +542,8 @@ def probe_stable_capabilities(paths: DataPaths) -> dict[str, Any]:
             ),
             "language_detection": True,
         }
+    from pandrator.logic.dubbing import qwen_alignment
+
     stt = {
         "crispasr": crispasr.installed,
         "version": crispasr.version,
@@ -550,6 +552,7 @@ def probe_stable_capabilities(paths: DataPaths) -> dict[str, Any]:
         "default_engine": default_engine,
         "default_model_quantization": default_quantization,
         "models": model_capabilities,
+        "forced_aligners": [qwen_alignment.capabilities()],
     }
     services = {
         "xtts": _exists(paths, "xtts2_api/run.bat", "xtts2_api/pixi.toml"),

@@ -55,6 +55,7 @@ def _write_audio_cpp_archive(
         )
     with zipfile.ZipFile(archive, "w") as output:
         output.writestr(server_name, "#!/bin/sh\n")
+        output.writestr(server_name.replace("server", "cli"), "#!/bin/sh\n")
         output.writestr("tools/model_manager_v2.py", "#!/usr/bin/env python3\n")
         for family, packages in packages_by_family.items():
             output.writestr(
@@ -387,6 +388,7 @@ class AudioCppManagerTests(unittest.TestCase):
             )
             with zipfile.ZipFile(archive, "w") as output:
                 output.writestr(server_name, "#!/bin/sh\n")
+                output.writestr(server_name.replace("server", "cli"), "#!/bin/sh\n")
                 output.writestr("tools/model_manager_v2.py", "#!/usr/bin/env python3\n")
                 output.writestr(
                     "model_specs/qwen3_tts.json",
@@ -462,6 +464,10 @@ class AudioCppManagerTests(unittest.TestCase):
                     result["revision"],
                 )
                 target = Path(result["staged_path"])
+                cli = target / server_name.replace("server", "cli")
+                self.assertTrue(cli.is_file())
+                if application.context.system.casefold() != "windows":
+                    self.assertTrue(cli.stat().st_mode & 0o111)
                 config = json.loads(
                     (target / "server.json").read_text(encoding="utf-8")
                 )
@@ -816,6 +822,7 @@ class AudioCppManagerTests(unittest.TestCase):
             )
             with zipfile.ZipFile(archive, "w") as output:
                 output.writestr(server_name, "#!/bin/sh\n")
+                output.writestr(server_name.replace("server", "cli"), "#!/bin/sh\n")
                 output.writestr("tools/model_manager_v2.py", "#!/usr/bin/env python3\n")
                 output.writestr(
                     "model_specs/qwen3_tts.json",

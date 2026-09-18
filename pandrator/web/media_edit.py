@@ -455,24 +455,34 @@ class MediaEditService:
                 word_keys.append(key[0][1])
                 previous_start = word.start_ms
 
-            surfaces: list[str] = []
-            token_index = 0
-            for key in word_keys:
-                match_index = next(
-                    (
-                        index
-                        for index in range(token_index, len(cue_tokens))
-                        if cue_tokens[index][1] == key
-                    ),
-                    None,
-                )
-                if match_index is None:
+            segment_metadata = dict(getattr(segment, "metadata", {}) or {})
+            if segment_metadata.get("timing_source") == "qwen3_alignment":
+                from pandrator.logic.dubbing.qwen_alignment import restore_surfaces, QwenAlignmentError
+                try:
+                    restored = restore_surfaces(cue.text, [{"word": word.text} for word in words])
+                except QwenAlignmentError:
                     return None
-                surfaces.append(cue_tokens[match_index][0])
-                token_index = match_index + 1
-            lexical_coverage = len(surfaces) / max(1, len(cue_tokens))
-            if len(cue_tokens) > 1 and lexical_coverage <= 0.5:
-                return None
+                surfaces = [item["word"] for item in restored]
+                lexical_coverage = 1.0
+            else:
+                surfaces: list[str] = []
+                token_index = 0
+                for key in word_keys:
+                    match_index = next(
+                        (
+                            index
+                            for index in range(token_index, len(cue_tokens))
+                            if cue_tokens[index][1] == key
+                        ),
+                        None,
+                    )
+                    if match_index is None:
+                        return None
+                    surfaces.append(cue_tokens[match_index][0])
+                    token_index = match_index + 1
+                lexical_coverage = len(surfaces) / max(1, len(cue_tokens))
+                if len(cue_tokens) > 1 and lexical_coverage <= 0.5:
+                    return None
             aligned_words = tuple(
                 replace(word, text=surface)
                 for word, surface in zip(words, surfaces, strict=True)
@@ -490,7 +500,7 @@ class MediaEditService:
             stored_timing_source = str(
                 segment_metadata.get("timing_source") or "asr_alignment"
             )
-            if stored_timing_source not in {"asr_alignment", "ctc_alignment"}:
+            if stored_timing_source not in {"asr_alignment", "ctc_alignment", "qwen3_alignment"}:
                 stored_timing_source = "asr_alignment"
             consumed.append(
                 replace(
@@ -513,11 +523,11 @@ class MediaEditService:
             total += token_count
             confidence = cue.timing_confidence
             if (
-                cue.timing_source in {"asr_alignment", "ctc_alignment"}
+                cue.timing_source in {"asr_alignment", "ctc_alignment", "qwen3_alignment"}
                 and cue.words
                 and confidence is not None
             ):
-                if cue.timing_source == "ctc_alignment":
+                if cue.timing_source in {"ctc_alignment", "qwen3_alignment"}:
                     # Forced alignment returns one validated timing for every
                     # authoritative caption token.  Its confidence field is a
                     # VAD/temporal quality score, not lexical coverage.
@@ -994,7 +1004,7 @@ class MediaEditService:
         word_keys: set[tuple[str, int, int, float | None]] = set()
         for cue in cues:
             if (
-                cue.timing_source not in {"asr_alignment", "ctc_alignment"}
+                cue.timing_source not in {"asr_alignment", "ctc_alignment", "qwen3_alignment"}
                 or cue.timing_confidence is None
                 or cue.timing_confidence < 0.5
             ):
@@ -1009,7 +1019,7 @@ class MediaEditService:
             cue: MediaCue, boundary_ms: int, *, side: Literal["start", "end"]
         ) -> BoundaryEvidence:
             if (
-                cue.timing_source in {"asr_alignment", "ctc_alignment"}
+                cue.timing_source in {"asr_alignment", "ctc_alignment", "qwen3_alignment"}
                 and cue.timing_confidence is not None
                 and cue.timing_confidence >= 0.5
                 and cue.words
@@ -1541,7 +1551,7 @@ class MediaEditService:
         reliable_words: list[tuple[str, MediaWord]] = []
         for cue in intersecting:
             if (
-                cue.timing_source in {"asr_alignment", "ctc_alignment"}
+                cue.timing_source in {"asr_alignment", "ctc_alignment", "qwen3_alignment"}
                 and cue.timing_confidence is not None
                 and cue.timing_confidence >= 0.5
             ):
