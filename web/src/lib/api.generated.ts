@@ -4,119 +4,7 @@
  */
 
 export interface paths {
-    "/api/v1/health": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["getHealth"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/system/identity": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["getSystemIdentity"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/parameter-definitions": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["getParameterDefinitions"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/capabilities": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["getCapabilities"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/sessions": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["listSessions"];
-        put?: never;
-        post: operations["createSession"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/sessions/{sessionId}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["getSession"];
-        put?: never;
-        post?: never;
-        delete: operations["trashSession"];
-        options?: never;
-        head?: never;
-        patch: operations["updateSession"];
-        trace?: never;
-    };
-    "/api/v1/sessions/{sessionId}/media-edit": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["getMediaEdit"];
-        put: operations["updateMediaEdit"];
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/sessions/{sessionId}/media-edit/prepare": {
+    "/api/v1/agent-runs/{runId}/accept": {
         parameters: {
             query?: never;
             header?: never;
@@ -125,21 +13,37 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        post: operations["prepareMediaEdit"];
+        post: operations["acceptAgentRun"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/v1/sessions/{sessionId}/media-edit/cuts": {
+    "/api/v1/agent-runs/{runId}/resume": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get: operations["listMediaEditCuts"];
+        get?: never;
+        put?: never;
+        post: operations["resumeAgentRun"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/agent-runs/{runId}/steps": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listAgentSteps"];
         put?: never;
         post?: never;
         delete?: never;
@@ -148,7 +52,151 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/sessions/{sessionId}/media-edit/boundary": {
+    "/api/v1/artifacts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listArtifacts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/artifacts/{artifactId}/audio-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getArtifactAudioPreview"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/artifacts/{artifactId}/content": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getArtifactContent"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/artifacts/{artifactId}/context": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getArtifactContext"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/artifacts/{artifactId}/optimization-review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["saveOptimizationReview"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/artifacts/{artifactId}/pdf": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["inspectPdf"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/artifacts/{artifactId}/waveform": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getArtifactWaveform"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/audit/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listAuditEvents"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/automation-clients": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listAutomationClients"];
+        put?: never;
+        post: operations["registerAutomationClient"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/automation-clients/{clientId}": {
         parameters: {
             query?: never;
             header?: never;
@@ -158,279 +206,7 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch: operations["refineMediaEditBoundary"];
-        trace?: never;
-    };
-    "/api/v1/sessions/{sessionId}/media-edit/propose": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["proposeMediaEdit"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/sessions/{sessionId}/media-edit/render": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["renderMediaEdit"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/sessions/{sessionId}/forks": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["forkSession"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/jobs": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["listJobs"];
-        put?: never;
-        post: operations["createJob"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/work": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["listWork"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/work/{jobId}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["getWork"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/work/{jobId}/events": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["listWorkEvents"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/work/{jobId}/cancel": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["cancelWork"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/events": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["streamEvents"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/events/snapshot": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["getEventSnapshot"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/auth/status": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["getAuthStatus"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/auth/bootstrap": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["exchangeBootstrapToken"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/auth/manager-browser-bootstrap": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["createManagerBrowserBootstrapGrant"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/auth/manager-bootstrap": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["createManagerBootstrapGrant"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/auth/login": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["login"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/auth/logout": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["logout"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/auth/tokens": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["listApiTokens"];
-        put?: never;
-        post: operations["createApiToken"];
-        delete?: never;
+        delete: operations["revokeAutomationClient"];
         options?: never;
         head?: never;
         patch?: never;
@@ -469,16 +245,112 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/auth/automation-clients": {
+    "/api/v1/auth/bootstrap": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get: operations["listAutomationClients"];
+        get?: never;
         put?: never;
-        post: operations["registerAutomationClient"];
+        post: operations["exchangeBootstrapToken"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/login": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["login"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/logout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["logout"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/manager-bootstrap": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["createManagerBootstrapGrant"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/manager-browser-bootstrap": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["createManagerBrowserBootstrapGrant"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getAuthStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/tokens": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listApiTokens"];
+        put?: never;
+        post: operations["createApiToken"];
         delete?: never;
         options?: never;
         head?: never;
@@ -502,7 +374,215 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/auth/automation-clients/{clientId}": {
+    "/api/v1/capabilities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getCapabilities"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/credential-backends": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listCredentialBackends"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/credentials": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listCredentials"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/credentials/{credentialId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put: operations["putCredential"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/defaults/{section}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getGlobalDefaults"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/dispatch-batches/{batchId}/release": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["releaseDispatchBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/dispatch-batches/{batchId}/renew": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["renewDispatchBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/dispatch-batches/{batchId}/submit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["submitDispatchBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/dispatch-runs/{runId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getDispatchRun"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/dispatch-runs/{runId}/claim": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["claimDispatchBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/document-revisions/{revisionId}/words": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listTimedWords"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["streamEvents"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/events/snapshot": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getEventSnapshot"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/generation-runs/{runId}": {
         parameters: {
             query?: never;
             header?: never;
@@ -512,45 +592,13 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
-        delete: operations["revokeAutomationClient"];
+        delete: operations["deleteGenerationRun"];
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/v1/audit/events": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["listAuditEvents"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/settings/{settingKey}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["getSetting"];
-        put: operations["putSetting"];
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/uploads": {
+    "/api/v1/generation-runs/{runId}/cancel": {
         parameters: {
             query?: never;
             header?: never;
@@ -559,14 +607,14 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        post: operations["uploadSource"];
+        post: operations["cancelGenerationRun"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/v1/sessions/{sessionId}/sources/url": {
+    "/api/v1/generation-runs/{runId}/pause": {
         parameters: {
             query?: never;
             header?: never;
@@ -575,14 +623,14 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        post: operations["downloadSourceUrl"];
+        post: operations["pauseGenerationRun"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/v1/sessions/{sessionId}/sources/reuse": {
+    "/api/v1/generation-runs/{runId}/resume": {
         parameters: {
             query?: never;
             header?: never;
@@ -591,30 +639,14 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        post: operations["reuseSource"];
+        post: operations["resumeGenerationRun"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/v1/artifacts": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["listArtifacts"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/sessions/{sessionId}/outputs/{artifactId}": {
+    "/api/v1/generation-segments/{segmentId}": {
         parameters: {
             query?: never;
             header?: never;
@@ -624,61 +656,13 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
-        delete: operations["deleteOutputArtifact"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/artifacts/{artifactId}/content": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["getArtifactContent"];
-        put?: never;
-        post?: never;
         delete?: never;
         options?: never;
         head?: never;
-        patch?: never;
+        patch: operations["updateGenerationSegment"];
         trace?: never;
     };
-    "/api/v1/artifacts/{artifactId}/pdf": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["inspectPdf"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/sessions/{sessionId}/workflow": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["getWorkflow"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/sessions/{sessionId}/workflow-plans": {
+    "/api/v1/generation-segments/{segmentId}/takes/{takeId}/select": {
         parameters: {
             query?: never;
             header?: never;
@@ -687,21 +671,21 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        post: operations["createWorkflowPlan"];
+        post: operations["selectGenerationTake"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/v1/workflow-plans/{planId}": {
+    "/api/v1/health": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get: operations["getWorkflowPlan"];
+        get: operations["getHealth"];
         put?: never;
         post?: never;
         delete?: never;
@@ -710,7 +694,39 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/workflow-plans/{planId}/execute": {
+    "/api/v1/jobs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listJobs"];
+        put?: never;
+        post: operations["createJob"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/jobs/{jobId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getJob"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/jobs/{jobId}/cancel": {
         parameters: {
             query?: never;
             header?: never;
@@ -719,14 +735,78 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        post: operations["executeWorkflowPlan"];
+        post: operations["cancelJob"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/v1/sessions/{sessionId}/stages/{stageKey}/run": {
+    "/api/v1/jobs/{jobId}/logs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getJobLogs"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/manager/components": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listManagerComponents"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/manager/doctor": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getManagerDoctorReport"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/manager/legacy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getManagerLegacyImportReport"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/manager/legacy/import": {
         parameters: {
             query?: never;
             header?: never;
@@ -735,21 +815,21 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        post: operations["runWorkflowStage"];
+        post: operations["importManagerLegacyWorkspace"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/v1/sessions/{sessionId}/stages/{stageKey}/artifacts": {
+    "/api/v1/manager/logs": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get: operations["listStageArtifacts"];
+        get: operations["getManagerLogs"];
         put?: never;
         post?: never;
         delete?: never;
@@ -758,7 +838,311 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/sessions/{sessionId}/stages/{stageKey}/artifacts/{artifactId}": {
+    "/api/v1/manager/operations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listManagerOperations"];
+        put?: never;
+        post: operations["submitManagerOperation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/manager/operations/{operationId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getManagerOperation"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/manager/operations/{operationId}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["cancelManagerOperation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/manager/operations/{operationId}/tasks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listManagerOperationTasks"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/manager/plans": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["createManagerPlan"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/manager/releases": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listManagerReleases"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/manager/releases/plans": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["createManagerReleasePlan"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/manager/runtime/{action}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["controlManagerRuntime"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/manager/services": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listManagerServices"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/manager/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getManagerStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/manager/uninstall/plans": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["createManagerUninstallPlan"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/media-edit-dispatch-batches/{batchId}/release": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["releaseMediaEditDispatchBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/media-edit-dispatch-batches/{batchId}/renew": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["renewMediaEditDispatchBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/media-edit-dispatch-batches/{batchId}/submit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["submitMediaEditDispatchBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/media-edit-dispatch-runs/{runId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getMediaEditDispatchRun"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/media-edit-dispatch-runs/{runId}/claim": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["claimMediaEditDispatchBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/parameter-definitions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getParameterDefinitions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/parity": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getParityRegistry"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/pronunciations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listPronunciations"];
+        put?: never;
+        post: operations["createPronunciation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/pronunciations/{entryId}": {
         parameters: {
             query?: never;
             header?: never;
@@ -768,218 +1152,10 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
-        delete: operations["trashStageArtifact"];
+        delete: operations["deletePronunciation"];
         options?: never;
         head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/sessions/{sessionId}/stages/{stageKey}/impact": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["getStageRerunImpact"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/sessions/{sessionId}/stages/{stageKey}/settings-mismatches": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["getStageSettingsMismatches"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/sessions/{sessionId}/stages/{stageKey}/selection": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put: operations["selectStageArtifact"];
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/sessions/{sessionId}/subtitles": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["getSubtitleComparison"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/sessions/{sessionId}/subtitles/{stage}/review": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["saveSubtitleReview"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/sessions/{sessionId}/subtitles/catalog": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["listSubtitleReviewArtifacts"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/sessions/{sessionId}/subtitles/review": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["getExactSubtitleReview"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/sessions/{sessionId}/subtitle-evidence": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["listSubtitleEvidence"];
-        put?: never;
-        post: operations["requestSubtitleEvidence"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/subtitle-evidence/{evidenceId}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["getSubtitleEvidence"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/sessions/{sessionId}/subtitle-evidence/{evidenceId}/resolve": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["resolveSubtitleEvidence"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/sessions/{sessionId}/pdf/apply": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["applyPdfEdits"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/sessions/{sessionId}/bundle": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["exportSessionBundle"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/session-bundles/import": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["importSessionBundle"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
+        patch: operations["updatePronunciation"];
         trace?: never;
     };
     "/api/v1/providers": {
@@ -1062,6 +1238,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/providers/{providerId}/models/{modelId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["deleteProviderModel"];
+        options?: never;
+        head?: never;
+        patch: operations["updateProviderModel"];
+        trace?: never;
+    };
     "/api/v1/providers/{providerId}/test": {
         parameters: {
             query?: never;
@@ -1078,7 +1270,103 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/providers/{providerId}/models/{modelId}": {
+    "/api/v1/rvc/convert": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["convertWithRvc"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/rvc/models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listRvcModels"];
+        put?: never;
+        post: operations["uploadRvcModel"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/services/stt": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listSttServices"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/services/tts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listTtsServices"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/services/tts/discover": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["discoverTtsService"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/services/tts/xtts/models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listXttsModels"];
+        put?: never;
+        post: operations["uploadXttsModel"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/services/tts/xtts/models/{modelId}": {
         parameters: {
             query?: never;
             header?: never;
@@ -1088,10 +1376,1666 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
-        delete: operations["deleteProviderModel"];
+        delete: operations["deleteXttsModel"];
         options?: never;
         head?: never;
-        patch: operations["updateProviderModel"];
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/services/tts/{serviceId}/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["previewTtsVoice"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/session-bundles/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["importSessionBundle"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listSessions"];
+        put?: never;
+        post: operations["createSession"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getSession"];
+        put?: never;
+        post?: never;
+        delete: operations["trashSession"];
+        options?: never;
+        head?: never;
+        patch: operations["updateSession"];
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/agent-runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listAgentRuns"];
+        put?: never;
+        post: operations["createAgentRun"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/bundle": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["exportSessionBundle"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/dispatch-runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listDispatchRuns"];
+        put?: never;
+        post: operations["createDispatchRun"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/documents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listSessionDocuments"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/forks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["forkSession"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/generation-plan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["createGenerationPlan"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/generation-plan/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List manual plan changes and one entry per automatic repair batch */
+        get: operations["listGroupedSpeechPlanHistory"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/generation-plan/prepare": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["prepareSpeechPlan"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/generation-plan/repair-batches/{batchId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Inspect the individual checkpoints of an automatic repair batch */
+        get: operations["getSpeechPlanRepairBatch"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/generation-plan/repair-batches/{batchId}/undo": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Restore the verified pre-repair state as one new plan revision without rewriting historical audio */
+        post: operations["undoSpeechPlanRepairBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/generation-plan/review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["reviewSpeechPlan"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/generation-plan/revisions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listSpeechPlanRevisions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/generation-plan/select": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["selectSpeechPlan"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/generation-plan/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getSpeechPlanStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/generation-plan/topology": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["reviseGenerationPlanTopology"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/generation-plan/topology/batch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["reviseGenerationPlanTopologyBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/generation-runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listGenerationRuns"];
+        put?: never;
+        post: operations["startGenerationRun"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/generation-runs/latest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getLatestGenerationRun"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/generation-segments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listGenerationSegments"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch: operations["updateGenerationSegments"];
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/media-edit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getMediaEdit"];
+        put: operations["updateMediaEdit"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/media-edit-dispatch-runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listMediaEditDispatchRuns"];
+        put?: never;
+        post: operations["createMediaEditDispatchRun"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/media-edit/boundary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch: operations["refineMediaEditBoundary"];
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/media-edit/cuts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listMediaEditCuts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/media-edit/prepare": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["prepareMediaEdit"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/media-edit/propose": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["proposeMediaEdit"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/media-edit/render": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["renderMediaEdit"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/outcome-plan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getOutcomePlan"];
+        put: operations["putOutcomePlan"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/output-assemblies": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["createOutputAssembly"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/output-assemblies/latest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getLatestOutputAssembly"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/output-mix-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["createOutputMixPreview"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/outputs/{artifactId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["deleteOutputArtifact"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/pdf/apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["applyPdfEdits"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/reindex": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["reindexSession"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["restoreSession"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/settings/resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["resolveSessionSettings"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/settings/{section}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getSessionSettings"];
+        put: operations["putSessionSettings"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/source-cleaning-dispatch-runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listSourceCleaningDispatchRuns"];
+        put?: never;
+        post: operations["createSourceCleaningDispatchRun"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/sources": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listSessionSources"];
+        put?: never;
+        post: operations["attachSessionSource"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/sources/adopt-subtitles": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["adoptSubtitleSource"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/sources/align-subtitles": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["alignSubtitleSource"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/sources/change": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["changeSessionSource"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/sources/change-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["previewSessionSourceChange"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/sources/cleanup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["cleanupResetSourceFiles"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/sources/confirm-timing": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["confirmRecordingTiming"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/sources/reuse": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["reuseSource"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/sources/start-new-session": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["startNewSourceSession"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/sources/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getSessionSourceStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/sources/subtitle-status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["subtitleSourceStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/sources/url": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["downloadSourceUrl"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/sources/{artifactId}/passages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getSourcePassages"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/sources/{artifactId}/passages/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["previewSourcePassages"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/sources/{artifactId}/passages/rebuild": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["rebuildSourcePassages"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/sources/{attachmentId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["detachSessionSource"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/speech-optimization-dispatch-runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listSpeechOptimizationDispatchRuns"];
+        put?: never;
+        post: operations["createSpeechOptimizationDispatchRun"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/stages/{stageKey}/artifacts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listStageArtifacts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/stages/{stageKey}/artifacts/{artifactId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["trashStageArtifact"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/stages/{stageKey}/impact": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getStageRerunImpact"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/stages/{stageKey}/run": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["runWorkflowStage"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/stages/{stageKey}/selection": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put: operations["selectStageArtifact"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/stages/{stageKey}/settings-mismatches": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getStageSettingsMismatches"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/subtitle-evidence": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listSubtitleEvidence"];
+        put?: never;
+        post: operations["requestSubtitleEvidence"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/subtitle-evidence/{evidenceId}/resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["resolveSubtitleEvidence"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/subtitles": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getSubtitleComparison"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/subtitles/catalog": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listSubtitleReviewArtifacts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/subtitles/review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getExactSubtitleReview"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/subtitles/{stage}/review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["saveSubtitleReview"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/workflow": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getWorkflow"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/workflow-plans": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["createWorkflowPlan"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/settings/{settingKey}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getSetting"];
+        put: operations["putSetting"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/source-cleaning-dispatch-batches/{batchId}/inspect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["inspectSourceCleaningDispatchExtraction"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/source-cleaning-dispatch-batches/{batchId}/release": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["releaseSourceCleaningDispatchBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/source-cleaning-dispatch-batches/{batchId}/renew": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["renewSourceCleaningDispatchBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/source-cleaning-dispatch-batches/{batchId}/submit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["submitSourceCleaningDispatchBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/source-cleaning-dispatch-runs/{runId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getSourceCleaningDispatchRun"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/source-cleaning-dispatch-runs/{runId}/claim": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["claimSourceCleaningDispatchBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sources": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listSourceAssets"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sources/{sourceAssetId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["trashSourceAsset"];
+        options?: never;
+        head?: never;
+        patch: operations["updateSourceAsset"];
+        trace?: never;
+    };
+    "/api/v1/sources/{sourceAssetId}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["restoreSourceAsset"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/speech-optimization-dispatch-batches/{batchId}/release": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["releaseSpeechOptimizationDispatchBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/speech-optimization-dispatch-batches/{batchId}/renew": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["renewSpeechOptimizationDispatchBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/speech-optimization-dispatch-batches/{batchId}/submit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["submitSpeechOptimizationDispatchBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/speech-optimization-dispatch-runs/{runId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getSpeechOptimizationDispatchRun"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/speech-optimization-dispatch-runs/{runId}/claim": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["claimSpeechOptimizationDispatchBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/subtitle-evidence/{evidenceId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getSubtitleEvidence"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/system/identity": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getSystemIdentity"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/training": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listTrainingRuns"];
+        put?: never;
+        post: operations["createTrainingRun"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/training/{trainingId}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["cancelTrainingRun"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/training/{trainingId}/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["retryTrainingRun"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/transcriptions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Create a resumable temporary upload with JSON metadata, or submit file + JSON options in one multipart request. No permanent session or source is created. Media is limited to 256 MiB and two hours. Results expire one hour after completion. Idempotency retries reuse the same operation. */
+        post: operations["createQuickTranscription"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/transcriptions/{transcriptionId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getQuickTranscription"];
+        put?: never;
+        post?: never;
+        /** @description Delete temporary data. Running work is canceled first; deletion completes after the worker releases it. */
+        delete: operations["deleteQuickTranscription"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/transcriptions/{transcriptionId}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["cancelQuickTranscription"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/transcriptions/{transcriptionId}/chunks/{index}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** @description Upload the next 8 MiB chunk (or final remainder). Repeating an index with identical bytes is safe; different bytes conflict. */
+        put: operations["uploadQuickTranscriptionChunk"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/transcriptions/{transcriptionId}/result": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Download the full selected format, or supply offset/limit to get a JSON envelope containing a page of UTF-8-decoded text. Concatenate pages; JSON pages contain serialized JSON text. */
+        get: operations["getQuickTranscriptionResult"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/transcriptions/{transcriptionId}/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Verify the source checksum and enqueue once. Repeated starts return the same job. */
+        post: operations["startQuickTranscription"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/uploads": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["uploadSource"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/uploads/init": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["initializeChunkUpload"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/uploads/{uploadId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getChunkUpload"];
+        put?: never;
+        post?: never;
+        delete: operations["cancelChunkUpload"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/uploads/{uploadId}/chunks/{index}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put: operations["putUploadChunk"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/uploads/{uploadId}/complete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["completeChunkUpload"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/v1/voices": {
@@ -1124,6 +3068,22 @@ export interface paths {
         options?: never;
         head?: never;
         patch: operations["updateVoice"];
+        trace?: never;
+    };
+    "/api/v1/voices/{voiceId}/providers/{serviceId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["publishVoiceToProvider"];
+        delete: operations["removeVoiceFromProvider"];
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/v1/voices/{voiceId}/samples": {
@@ -1222,110 +3182,14 @@ export interface paths {
         patch: operations["reviewVoiceSampleTranscript"];
         trace?: never;
     };
-    "/api/v1/voices/{voiceId}/providers/{serviceId}": {
+    "/api/v1/work": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get?: never;
-        put?: never;
-        post: operations["publishVoiceToProvider"];
-        delete: operations["removeVoiceFromProvider"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/rvc/models": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["listRvcModels"];
-        put?: never;
-        post: operations["uploadRvcModel"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/rvc/convert": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["convertWithRvc"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/training": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["listTrainingRuns"];
-        put?: never;
-        post: operations["createTrainingRun"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/training/{trainingId}/cancel": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["cancelTrainingRun"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/training/{trainingId}/retry": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["retryTrainingRun"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/jobs/{jobId}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["getJob"];
+        get: operations["listWork"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1334,14 +3198,14 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/jobs/{jobId}/logs": {
+    "/api/v1/work/{jobId}": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get: operations["getJobLogs"];
+        get: operations["getWork"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1350,7 +3214,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/jobs/{jobId}/cancel": {
+    "/api/v1/work/{jobId}/cancel": {
         parameters: {
             query?: never;
             header?: never;
@@ -1359,37 +3223,21 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        post: operations["cancelJob"];
+        post: operations["cancelWork"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/v1/sessions/{sessionId}/dispatch-runs": {
+    "/api/v1/work/{jobId}/events": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get: operations["listDispatchRuns"];
-        put?: never;
-        post: operations["createDispatchRun"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/dispatch-runs/{runId}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["getDispatchRun"];
+        get: operations["listWorkEvents"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1398,94 +3246,14 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/dispatch-runs/{runId}/claim": {
+    "/api/v1/workflow-plans/{planId}": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get?: never;
-        put?: never;
-        post: operations["claimDispatchBatch"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/dispatch-batches/{batchId}/renew": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["renewDispatchBatch"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/dispatch-batches/{batchId}/release": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["releaseDispatchBatch"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/dispatch-batches/{batchId}/submit": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["submitDispatchBatch"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/sessions/{sessionId}/source-cleaning-dispatch-runs": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["listSourceCleaningDispatchRuns"];
-        put?: never;
-        post: operations["createSourceCleaningDispatchRun"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/source-cleaning-dispatch-runs/{runId}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["getSourceCleaningDispatchRun"];
+        get: operations["getWorkflowPlan"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1494,7 +3262,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/source-cleaning-dispatch-runs/{runId}/claim": {
+    "/api/v1/workflow-plans/{planId}/execute": {
         parameters: {
             query?: never;
             header?: never;
@@ -1503,1775 +3271,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        post: operations["claimSourceCleaningDispatchBatch"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/source-cleaning-dispatch-batches/{batchId}/renew": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["renewSourceCleaningDispatchBatch"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/source-cleaning-dispatch-batches/{batchId}/release": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["releaseSourceCleaningDispatchBatch"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/source-cleaning-dispatch-batches/{batchId}/inspect": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["inspectSourceCleaningDispatchExtraction"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/source-cleaning-dispatch-batches/{batchId}/submit": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["submitSourceCleaningDispatchBatch"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/sessions/{sessionId}/speech-optimization-dispatch-runs": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["listSpeechOptimizationDispatchRuns"];
-        put?: never;
-        post: operations["createSpeechOptimizationDispatchRun"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/speech-optimization-dispatch-runs/{runId}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["getSpeechOptimizationDispatchRun"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/speech-optimization-dispatch-runs/{runId}/claim": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["claimSpeechOptimizationDispatchBatch"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/speech-optimization-dispatch-batches/{batchId}/renew": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["renewSpeechOptimizationDispatchBatch"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/speech-optimization-dispatch-batches/{batchId}/release": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["releaseSpeechOptimizationDispatchBatch"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/speech-optimization-dispatch-batches/{batchId}/submit": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["submitSpeechOptimizationDispatchBatch"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/sessions/{sessionId}/media-edit-dispatch-runs": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["listMediaEditDispatchRuns"];
-        put?: never;
-        post: operations["createMediaEditDispatchRun"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/media-edit-dispatch-runs/{runId}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["getMediaEditDispatchRun"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/media-edit-dispatch-runs/{runId}/claim": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["claimMediaEditDispatchBatch"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/media-edit-dispatch-batches/{batchId}/renew": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["renewMediaEditDispatchBatch"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/media-edit-dispatch-batches/{batchId}/release": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["releaseMediaEditDispatchBatch"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/media-edit-dispatch-batches/{batchId}/submit": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["submitMediaEditDispatchBatch"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/parity": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["getParityRegistry"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/defaults/{section}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["getGlobalDefaults"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/services/tts": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["listTtsServices"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/services/stt": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["listSttServices"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/services/tts/xtts/models": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["listXttsModels"];
-        put?: never;
-        post: operations["uploadXttsModel"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/services/tts/xtts/models/{modelId}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        delete: operations["deleteXttsModel"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/services/tts/discover": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["discoverTtsService"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/services/tts/{serviceId}/preview": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["previewTtsVoice"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/manager/status": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["getManagerStatus"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/manager/components": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["listManagerComponents"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/manager/doctor": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["getManagerDoctorReport"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/manager/legacy": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["getManagerLegacyImportReport"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/manager/legacy/import": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["importManagerLegacyWorkspace"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/manager/services": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["listManagerServices"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/manager/releases": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["listManagerReleases"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/manager/releases/plans": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["createManagerReleasePlan"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/manager/uninstall/plans": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["createManagerUninstallPlan"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/manager/plans": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["createManagerPlan"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/manager/operations": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["listManagerOperations"];
-        put?: never;
-        post: operations["submitManagerOperation"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/manager/operations/{operationId}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["getManagerOperation"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/manager/operations/{operationId}/tasks": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["listManagerOperationTasks"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/manager/operations/{operationId}/cancel": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["cancelManagerOperation"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/manager/runtime/{action}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["controlManagerRuntime"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/manager/logs": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["getManagerLogs"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/credential-backends": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["listCredentialBackends"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/credentials": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["listCredentials"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/credentials/{credentialId}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put: operations["putCredential"];
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/pronunciations": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["listPronunciations"];
-        put?: never;
-        post: operations["createPronunciation"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/pronunciations/{entryId}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        delete: operations["deletePronunciation"];
-        options?: never;
-        head?: never;
-        patch: operations["updatePronunciation"];
-        trace?: never;
-    };
-    "/api/v1/sessions/{sessionId}/settings/{section}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["getSessionSettings"];
-        put: operations["putSessionSettings"];
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/sessions/{sessionId}/settings/resolve": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["resolveSessionSettings"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/sessions/{sessionId}/outcome-plan": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["getOutcomePlan"];
-        put: operations["putOutcomePlan"];
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/sources": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["listSourceAssets"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/sources/{sourceAssetId}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        delete: operations["trashSourceAsset"];
-        options?: never;
-        head?: never;
-        patch: operations["updateSourceAsset"];
-        trace?: never;
-    };
-    "/api/v1/sources/{sourceAssetId}/restore": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["restoreSourceAsset"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/sessions/{sessionId}/sources": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["listSessionSources"];
-        put?: never;
-        post: operations["attachSessionSource"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/sessions/{sessionId}/sources/{attachmentId}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        delete: operations["detachSessionSource"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/sessions/{sessionId}/documents": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["listSessionDocuments"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/document-revisions/{revisionId}/words": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["listTimedWords"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/artifacts/{artifactId}/waveform": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["getArtifactWaveform"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/artifacts/{artifactId}/audio-preview": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["getArtifactAudioPreview"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/artifacts/{artifactId}/context": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["getArtifactContext"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/artifacts/{artifactId}/optimization-review": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["saveOptimizationReview"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/sessions/{sessionId}/generation-plan": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["createGenerationPlan"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/sessions/{sessionId}/generation-plan/topology": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["reviseGenerationPlanTopology"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/sessions/{sessionId}/generation-segments": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["listGenerationSegments"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch: operations["updateGenerationSegments"];
-        trace?: never;
-    };
-    "/api/v1/generation-segments/{segmentId}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch: operations["updateGenerationSegment"];
-        trace?: never;
-    };
-    "/api/v1/generation-segments/{segmentId}/takes/{takeId}/select": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["selectGenerationTake"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/sessions/{sessionId}/generation-runs/latest": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["getLatestGenerationRun"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/sessions/{sessionId}/generation-runs": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["listGenerationRuns"];
-        put?: never;
-        post: operations["startGenerationRun"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/generation-runs/{runId}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        delete: operations["deleteGenerationRun"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/generation-runs/{runId}/pause": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["pauseGenerationRun"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/generation-runs/{runId}/resume": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["resumeGenerationRun"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/generation-runs/{runId}/cancel": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["cancelGenerationRun"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/sessions/{sessionId}/output-assemblies/latest": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["getLatestOutputAssembly"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/sessions/{sessionId}/output-assemblies": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["createOutputAssembly"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/sessions/{sessionId}/output-mix-preview": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["createOutputMixPreview"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/sessions/{sessionId}/agent-runs": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["listAgentRuns"];
-        put?: never;
-        post: operations["createAgentRun"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/agent-runs/{runId}/steps": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["listAgentSteps"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/agent-runs/{runId}/resume": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["resumeAgentRun"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/agent-runs/{runId}/accept": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["acceptAgentRun"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/uploads/init": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["initializeChunkUpload"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/uploads/{uploadId}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["getChunkUpload"];
-        put?: never;
-        post?: never;
-        delete: operations["cancelChunkUpload"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/uploads/{uploadId}/chunks/{index}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put: operations["putUploadChunk"];
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/uploads/{uploadId}/complete": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["completeChunkUpload"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/sessions/{sessionId}/restore": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["restoreSession"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/sessions/{sessionId}/reindex": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["reindexSession"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/transcriptions": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** @description Create a resumable temporary upload with JSON metadata, or submit file + JSON options in one multipart request. No permanent session or source is created. Media is limited to 256 MiB and two hours. Results expire one hour after completion. Idempotency retries reuse the same operation. */
-        post: operations["createQuickTranscription"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/transcriptions/{transcriptionId}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["getQuickTranscription"];
-        put?: never;
-        post?: never;
-        /** @description Delete temporary data. Running work is canceled first; deletion completes after the worker releases it. */
-        delete: operations["deleteQuickTranscription"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/transcriptions/{transcriptionId}/chunks/{index}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        /** @description Upload the next 8 MiB chunk (or final remainder). Repeating an index with identical bytes is safe; different bytes conflict. */
-        put: operations["uploadQuickTranscriptionChunk"];
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/transcriptions/{transcriptionId}/start": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** @description Verify the source checksum and enqueue once. Repeated starts return the same job. */
-        post: operations["startQuickTranscription"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/transcriptions/{transcriptionId}/cancel": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["cancelQuickTranscription"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/transcriptions/{transcriptionId}/result": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** @description Download the full selected format, or supply offset/limit to get a JSON envelope containing a page of UTF-8-decoded text. Concatenate pages; JSON pages contain serialized JSON text. */
-        get: operations["getQuickTranscriptionResult"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/sessions/{sessionId}/generation-plan/history": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List manual plan changes and one entry per automatic repair batch */
-        get: operations["listGroupedSpeechPlanHistory"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/sessions/{sessionId}/generation-plan/repair-batches/{batchId}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Inspect the individual checkpoints of an automatic repair batch */
-        get: operations["getSpeechPlanRepairBatch"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/sessions/{sessionId}/generation-plan/repair-batches/{batchId}/undo": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Restore the verified pre-repair state as one new plan revision without rewriting historical audio */
-        post: operations["undoSpeechPlanRepairBatch"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/sessions/{sessionId}/sources/status": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["getSessionSourceStatus"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/sessions/{sessionId}/sources/change-preview": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["previewSessionSourceChange"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/sessions/{sessionId}/sources/change": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["changeSessionSource"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/sessions/{sessionId}/sources/start-new-session": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["startNewSourceSession"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/sessions/{sessionId}/sources/cleanup": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["cleanupResetSourceFiles"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/sessions/{sessionId}/sources/confirm-timing": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["confirmRecordingTiming"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/sessions/{sessionId}/generation-plan/status": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["getSpeechPlanStatus"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/sessions/{sessionId}/generation-plan/prepare": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["prepareSpeechPlan"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/sessions/{sessionId}/generation-plan/select": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["selectSpeechPlan"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/sessions/{sessionId}/generation-plan/review": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["reviewSpeechPlan"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/sessions/{sessionId}/sources/subtitle-status": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["subtitleSourceStatus"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/sessions/{sessionId}/sources/adopt-subtitles": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["adoptSubtitleSource"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/sessions/{sessionId}/sources/align-subtitles": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["alignSubtitleSource"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/sessions/{sessionId}/generation-plan/revisions": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["listSpeechPlanRevisions"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/sessions/{sessionId}/generation-plan/topology/batch": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["reviseGenerationPlanTopologyBatch"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/sessions/{sessionId}/sources/{artifactId}/passages": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["getSourcePassages"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/sessions/{sessionId}/sources/{artifactId}/passages/preview": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["previewSourcePassages"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/sessions/{sessionId}/sources/{artifactId}/passages/rebuild": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["rebuildSourcePassages"];
+        post: operations["executeWorkflowPlan"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3282,149 +3282,56 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
-        /** ErrorBody */
-        ErrorBody: {
-            /** Code */
-            code: string;
-            /** Message */
-            message: string;
-            /**
-             * Details
-             * @default null
-             */
-            details?: unknown;
-            /** Request Id */
-            request_id: string;
-        };
-        /** SessionCreate */
-        SessionCreate: {
-            /** Name */
-            name: string;
-            /**
-             * Workflow Kind
-             * @default audiobook
-             * @enum {string}
-             */
-            workflow_kind?: "audiobook" | "subtitles" | "voiceover" | "media_edit";
-            /**
-             * Source Language
-             * @default auto
-             */
-            source_language?: string;
-            /**
-             * Target Language
-             * @default null
-             */
-            target_language?: string | null;
-            /**
-             * Workflow Preset
-             * @default custom
-             */
-            workflow_preset?: string;
-            /** Included Stages */
-            included_stages?: string[];
-            /**
-             * Overwrite Session Id
-             * @default null
-             */
-            overwrite_session_id?: string | null;
-        };
-        /** SessionUpdate */
-        SessionUpdate: {
-            /**
-             * Name
-             * @default null
-             */
-            name?: string | null;
-            /**
-             * Workflow Kind
-             * @default null
-             */
-            workflow_kind?: ("audiobook" | "subtitles" | "voiceover" | "media_edit") | null;
-            /**
-             * Source Language
-             * @default null
-             */
-            source_language?: string | null;
-            /**
-             * Target Language
-             * @default null
-             */
-            target_language?: string | null;
-            /**
-             * Workflow Preset
-             * @default null
-             */
-            workflow_preset?: string | null;
-            /**
-             * Included Stages
-             * @default null
-             */
-            included_stages?: string[] | null;
-            /**
-             * Status
-             * @default null
-             */
-            status?: string | null;
-        };
-        /** SessionForkRequest */
-        SessionForkRequest: {
-            /** Checkpoint Artifact Id */
-            checkpoint_artifact_id: string;
-            /**
-             * Name
-             * @default null
-             */
-            name?: string | null;
-        };
-        /** JobCreate */
-        JobCreate: {
-            /** Kind */
-            kind: string;
-            /**
-             * Session Id
-             * @default null
-             */
-            session_id?: string | null;
-            /** Payload */
-            payload?: {
+        /** AgentRunCreateRequest */
+        AgentRunCreateRequest: {
+            /** Settings */
+            settings?: {
                 [key: string]: unknown;
             };
+            /** Source Artifact Id */
+            source_artifact_id: string;
+        };
+        /**
+         * ApplicationIdentityDocument
+         * @description Versioned identity response pinned by remote MCP target profiles.
+         */
+        ApplicationIdentityDocument: {
             /**
-             * Max Attempts
-             * @default 1
+             * Api Version
+             * @default v1
              */
-            max_attempts?: number;
-        };
-        /** LoginRequest */
-        LoginRequest: {
-            /** Password */
-            password: string;
-        };
-        /** BootstrapRequest */
-        BootstrapRequest: {
-            /** Token */
-            token: string;
-        };
-        /** ManagerBootstrapRequest */
-        ManagerBootstrapRequest: {
-            /** Scopes */
-            scopes?: ("app.read" | "app.write" | "app.run" | "app.cancel" | "app.credentials.read" | "app.credentials.write" | "manager.read" | "manager.runtime" | "manager.mutate" | "app.admin")[];
-        };
-        /** TokenCreateRequest */
-        TokenCreateRequest: {
+            api_version?: string;
             /**
-             * Label
-             * @default CLI token
+             * Application Version
+             * @default 0.9.3
              */
-            label?: string;
-            /** Scopes */
-            scopes: ("app.read" | "app.write" | "app.run" | "app.cancel" | "app.credentials.read" | "app.credentials.write" | "manager.read" | "manager.runtime" | "manager.mutate" | "app.admin")[];
+            application_version?: string;
+            /** Canonical Origin */
+            canonical_origin: string;
+            /** Instance Id */
+            instance_id: string;
+            /** Managed */
+            managed: boolean;
             /**
-             * Expires In Days
+             * Manager Instance Id
              * @default null
              */
-            expires_in_days?: number | null;
+            manager_instance_id?: string | null;
+            /**
+             * Protocol Version
+             * @default v1
+             */
+            protocol_version?: string;
+            /**
+             * Schema Version
+             * @default 1
+             */
+            schema_version?: string;
+            /**
+             * Service
+             * @default pandrator
+             */
+            service?: string;
         };
         /** AutomationClientCreateRequest */
         AutomationClientCreateRequest: {
@@ -3437,153 +3344,55 @@ export interface components {
             /** Scopes */
             scopes: ("app.read" | "app.write" | "app.run" | "app.cancel" | "app.credentials.read" | "app.credentials.write" | "manager.read" | "manager.runtime" | "manager.mutate" | "app.admin")[];
         };
-        /** WorkflowPlanCreateRequest */
-        WorkflowPlanCreateRequest: {
+        /** BootstrapRequest */
+        BootstrapRequest: {
+            /** Token */
+            token: string;
+        };
+        /** BundleExportRequest */
+        BundleExportRequest: {
             /**
-             * Target Stage
-             * @default generate_audio
-             */
-            target_stage?: string;
-            /** Overrides */
-            overrides?: {
-                [key: string]: unknown;
-            };
-            /**
-             * Continuation
+             * Include Sources
              * @default true
              */
-            continuation?: boolean;
-            /**
-             * Expires In Minutes
-             * @default 30
-             */
-            expires_in_minutes?: number;
+            include_sources?: boolean;
         };
-        /** WorkflowPlanExecuteRequest */
-        WorkflowPlanExecuteRequest: {
-            /** Plan Digest */
-            plan_digest: string;
-            /** Accepted Confirmations */
-            accepted_confirmations?: string[];
+        /** BundleImportRequest */
+        BundleImportRequest: {
+            /**
+             * Name
+             * @default null
+             */
+            name?: string | null;
+            /** Source Artifact Id */
+            source_artifact_id: string;
         };
-        /** ProviderCreate */
-        ProviderCreate: {
+        /** ChunkUploadInitialize */
+        ChunkUploadInitialize: {
             /**
-             * Kind
-             * @default llm
+             * Chunk Size
+             * @default 8388608
              */
-            kind?: string;
-            /** Provider Key */
-            provider_key: string;
-            /** Label */
-            label: string;
+            chunk_size?: number;
+            /** Filename */
+            filename: string;
             /**
-             * Enabled
-             * @default true
-             */
-            enabled?: boolean;
-            /**
-             * Base Url
+             * Mime Type
              * @default null
              */
-            base_url?: string | null;
+            mime_type?: string | null;
             /**
-             * Secret Ref
+             * Session Id
              * @default null
              */
-            secret_ref?: string | null;
+            session_id?: string | null;
             /**
-             * Api Key
+             * Sha256
              * @default null
              */
-            api_key?: string | null;
-            /**
-             * Credential Backend
-             * @default null
-             */
-            credential_backend?: ("database" | "environment" | "keyring" | "file") | null;
-            /**
-             * Credential Reference
-             * @default null
-             */
-            credential_reference?: string | null;
-            /**
-             * Delete Previous Credential
-             * @default false
-             */
-            delete_previous_credential?: boolean;
-            /** Options */
-            options?: {
-                [key: string]: unknown;
-            };
-        };
-        /** ProviderUpdate */
-        ProviderUpdate: {
-            /**
-             * Provider Key
-             * @default null
-             */
-            provider_key?: string | null;
-            /**
-             * Label
-             * @default null
-             */
-            label?: string | null;
-            /**
-             * Enabled
-             * @default null
-             */
-            enabled?: boolean | null;
-            /**
-             * Base Url
-             * @default null
-             */
-            base_url?: string | null;
-            /**
-             * Secret Ref
-             * @default null
-             */
-            secret_ref?: string | null;
-            /**
-             * Api Key
-             * @default null
-             */
-            api_key?: string | null;
-            /**
-             * Clear Api Key
-             * @default false
-             */
-            clear_api_key?: boolean;
-            /**
-             * Credential Backend
-             * @default null
-             */
-            credential_backend?: ("database" | "environment" | "keyring" | "file") | null;
-            /**
-             * Credential Reference
-             * @default null
-             */
-            credential_reference?: string | null;
-            /**
-             * Delete Previous Credential
-             * @default false
-             */
-            delete_previous_credential?: boolean;
-            /**
-             * Options
-             * @default null
-             */
-            options?: {
-                [key: string]: unknown;
-            } | null;
-        };
-        /** ProviderTestRequest */
-        ProviderTestRequest: {
-            /**
-             * Model Id
-             * @default null
-             */
-            model_id?: string | null;
+            sha256?: string | null;
+            /** Size Bytes */
+            size_bytes: number;
         };
         /** CredentialUpdate */
         CredentialUpdate: {
@@ -3613,800 +3422,532 @@ export interface components {
              */
             delete_previous_credential?: boolean;
         };
-        /** PronunciationCreate */
-        PronunciationCreate: {
-            /** Source Form */
-            source_form: string;
-            /** Phonetic */
-            phonetic: string;
+        /** DispatchBatchClaimRequest */
+        DispatchBatchClaimRequest: {
             /**
-             * Language
-             * @default und
+             * Lease Seconds
+             * @default 900
              */
-            language?: string;
+            lease_seconds?: number;
+        };
+        /** DispatchBatchClaimResponse */
+        DispatchBatchClaimResponse: {
+            batch: components["schemas"]["DispatchClaimedBatch"];
+            /** Batch Id */
+            batch_id: string;
+            /** Batch Ordinal */
+            batch_ordinal: number;
+            /** Batch Status */
+            batch_status: string;
+            delegation: components["schemas"]["DispatchDelegationContext"];
+            /** Lease Expires At */
+            lease_expires_at: string | null;
+            /** Lease Token */
+            lease_token: string;
+            /** Run Id */
+            run_id: string;
+            /** Run Status */
+            run_status: string;
             /**
-             * Backend
-             * @default *
-             */
-            backend?: string;
-            /**
-             * Scope
-             * @default global
-             * @enum {string}
-             */
-            scope?: "global" | "session";
-            /**
-             * Session Id
-             * @default null
-             */
-            session_id?: string | null;
-            /**
-             * Status
-             * @default reviewed
-             * @enum {string}
-             */
-            status?: "proposed" | "reviewed" | "disabled";
-            /**
-             * Alphabet
-             * @default respelling
+             * Schema Version
+             * @default 1
              * @constant
              */
-            alphabet?: "respelling";
-            /**
-             * Notes
-             * @default null
-             */
-            notes?: string | null;
-            /** Metadata */
-            metadata?: {
-                [key: string]: unknown;
-            };
+            schema_version?: "1";
+            /** Status */
+            status: string;
+            task: components["schemas"]["DispatchTaskContract"];
         };
-        /** PronunciationUpdate */
-        PronunciationUpdate: {
-            /**
-             * Source Form
-             * @default null
-             */
-            source_form?: string | null;
-            /**
-             * Phonetic
-             * @default null
-             */
-            phonetic?: string | null;
-            /**
-             * Language
-             * @default null
-             */
-            language?: string | null;
-            /**
-             * Backend
-             * @default null
-             */
-            backend?: string | null;
-            /**
-             * Scope
-             * @default null
-             */
-            scope?: ("global" | "session") | null;
-            /**
-             * Session Id
-             * @default null
-             */
-            session_id?: string | null;
-            /**
-             * Status
-             * @default null
-             */
-            status?: ("proposed" | "reviewed" | "disabled") | null;
-            /**
-             * Alphabet
-             * @default null
-             */
-            alphabet?: "respelling" | null;
-            /**
-             * Notes
-             * @default null
-             */
-            notes?: string | null;
-            /**
-             * Metadata
-             * @default null
-             */
-            metadata?: {
-                [key: string]: unknown;
-            } | null;
+        /** DispatchBatchReleaseRequest */
+        DispatchBatchReleaseRequest: {
+            /** Lease Token */
+            lease_token: string;
         };
-        /** ModelCreate */
-        ModelCreate: {
-            /** Model Id */
-            model_id: string;
+        /** DispatchBatchRenewRequest */
+        DispatchBatchRenewRequest: {
             /**
-             * Is Active
-             * @default false
+             * Lease Seconds
+             * @default 900
              */
-            is_active?: boolean;
-            /**
-             * Is Default
-             * @default false
-             */
-            is_default?: boolean;
-            /**
-             * Default Temperature
-             * @default null
-             */
-            default_temperature?: number | null;
-            /**
-             * Default Reasoning Effort
-             * @default null
-             */
-            default_reasoning_effort?: string | null;
-            /**
-             * Input Cost Per Million
-             * @default null
-             */
-            input_cost_per_million?: number | null;
-            /**
-             * Cached Input Cost Per Million
-             * @default null
-             */
-            cached_input_cost_per_million?: number | null;
-            /**
-             * Output Cost Per Million
-             * @default null
-             */
-            output_cost_per_million?: number | null;
-            /**
-             * Context Window Tokens
-             * @default 262144
-             */
-            context_window_tokens?: number;
-            /**
-             * Max Output Tokens
-             * @default null
-             */
-            max_output_tokens?: number | null;
-            /** Input Modalities */
-            input_modalities?: ("text" | "image" | "audio" | "video" | "pdf")[];
-            /** Output Modalities */
-            output_modalities?: ("text" | "image" | "audio")[];
-            /** Options */
-            options?: {
-                [key: string]: unknown;
-            };
+            lease_seconds?: number;
+            /** Lease Token */
+            lease_token: string;
         };
-        /** ModelUpdate */
-        ModelUpdate: {
+        /** DispatchBatchSubmitRequest */
+        DispatchBatchSubmitRequest: {
+            context_delta?: components["schemas"]["DispatchContextDelta"];
+            /** Lease Token */
+            lease_token: string;
             /**
-             * Model Id
+             * Response Text
              * @default null
              */
-            model_id?: string | null;
+            response_text?: string | null;
             /**
-             * Is Active
+             * Result
              * @default null
              */
-            is_active?: boolean | null;
-            /**
-             * Is Default
-             * @default null
-             */
-            is_default?: boolean | null;
-            /**
-             * Default Temperature
-             * @default null
-             */
-            default_temperature?: number | null;
-            /**
-             * Default Reasoning Effort
-             * @default null
-             */
-            default_reasoning_effort?: string | null;
-            /**
-             * Input Cost Per Million
-             * @default null
-             */
-            input_cost_per_million?: number | null;
-            /**
-             * Cached Input Cost Per Million
-             * @default null
-             */
-            cached_input_cost_per_million?: number | null;
-            /**
-             * Output Cost Per Million
-             * @default null
-             */
-            output_cost_per_million?: number | null;
-            /**
-             * Context Window Tokens
-             * @default null
-             */
-            context_window_tokens?: number | null;
-            /**
-             * Max Output Tokens
-             * @default null
-             */
-            max_output_tokens?: number | null;
-            /**
-             * Input Modalities
-             * @default null
-             */
-            input_modalities?: ("text" | "image" | "audio" | "video" | "pdf")[] | null;
-            /**
-             * Output Modalities
-             * @default null
-             */
-            output_modalities?: ("text" | "image" | "audio")[] | null;
-            /**
-             * Options
-             * @default null
-             */
-            options?: {
-                [key: string]: unknown;
-            } | null;
+            result?: (components["schemas"]["DispatchCorrectionResult"] | components["schemas"]["DispatchTranslationResult"]) | null;
         };
-        /** PdfRectInput */
-        PdfRectInput: {
-            /** X0 */
-            x0: number;
-            /** Y0 */
-            y0: number;
-            /** X1 */
-            x1: number;
-            /** Y1 */
-            y1: number;
-        };
-        /** PdfCropInput */
-        PdfCropInput: {
-            /** Original Page */
-            original_page: number;
-            rect: components["schemas"]["PdfRectInput"];
-        };
-        /** PdfWhiteoutInput */
-        PdfWhiteoutInput: {
-            /** Original Page */
-            original_page: number;
-            rect: components["schemas"]["PdfRectInput"];
-            /** Color */
-            color?: number[];
-        };
-        /** PdfEditRequest */
-        PdfEditRequest: {
-            /** Source Artifact Id */
-            source_artifact_id: string;
+        /** DispatchBatchSubmitResponse */
+        DispatchBatchSubmitResponse: {
+            /** Accepted */
+            accepted: boolean;
+            /** Batch Count */
+            batch_count: number;
+            /** Batch Id */
+            batch_id: string;
+            /** Batch Status */
+            batch_status: string;
+            /** Completed Batch Count */
+            completed_batch_count: number;
+            /** Completed Batches */
+            completed_batches: number;
             /**
-             * First Page Side
-             * @default right
+             * Error Code
+             * @default null
+             */
+            error_code?: string | null;
+            /**
+             * Error Message
+             * @default null
+             */
+            error_message?: string | null;
+            /**
+             * Final Artifact Id
+             * @default null
+             */
+            final_artifact_id?: string | null;
+            /** Finalized */
+            finalized: boolean;
+            /**
+             * Output Role
              * @enum {string}
              */
-            first_page_side?: "left" | "right";
-            /** Crops */
-            crops?: components["schemas"]["PdfCropInput"][];
-            /** Whiteouts */
-            whiteouts?: components["schemas"]["PdfWhiteoutInput"][];
-            /** Deleted Pages */
-            deleted_pages?: number[];
+            output_role: "correction" | "translation";
+            /** Remaining Batches */
+            remaining_batches: number;
+            /**
+             * Result Artifact Id
+             * @default null
+             */
+            result_artifact_id?: string | null;
+            /**
+             * Result Revision Id
+             * @default null
+             */
+            result_revision_id?: string | null;
+            /** Run Id */
+            run_id: string;
+            /** Run Status */
+            run_status: string;
+            /** Status */
+            status: string;
+            /** Total Batches */
+            total_batches: number;
         };
-        /** SubtitleSegmentInput */
-        SubtitleSegmentInput: {
-            /** Start Ms */
-            start_ms: number;
-            /** End Ms */
-            end_ms: number;
-            /** Text */
-            text: string;
+        /** DispatchBoundaryContext */
+        DispatchBoundaryContext: {
+            /** Following Source */
+            following_source: components["schemas"]["DispatchBoundaryCue"][];
+            /** Previous Output */
+            previous_output: components["schemas"]["DispatchBoundaryCue"][];
+            /** Previous Source */
+            previous_source: components["schemas"]["DispatchBoundaryCue"][];
+        };
+        /** DispatchBoundaryCue */
+        DispatchBoundaryCue: {
             /**
              * Speaker
              * @default null
              */
             speaker?: string | null;
+            /** Text */
+            text: string;
+        };
+        /** DispatchClaimedBatch */
+        DispatchClaimedBatch: {
+            context: components["schemas"]["DispatchBoundaryContext"];
+            /** Cue Count */
+            cue_count: number;
+            /** Cues */
+            cues: components["schemas"]["DispatchCue"][];
             /**
-             * Review State
-             * @default clear
+             * Id Namespace
              * @enum {string}
              */
-            review_state?: "clear" | "uncertain";
+            id_namespace: "source_revision_cue" | "logical_passage";
+            /** Source Revision Id */
+            source_revision_id: string;
+            /** Valid Cue Ids */
+            valid_cue_ids: number[];
+        };
+        /**
+         * DispatchContextCapsule
+         * @description Shared, parent-supplied or accumulated context for delegated batches.
+         */
+        DispatchContextCapsule: {
+            /** Decisions */
+            decisions?: string[];
+            /** Entities */
+            entities?: {
+                [key: string]: string;
+            };
+            /** Notes */
+            notes?: string[];
             /**
-             * Review Note
+             * Overview
              * @default
              */
-            review_note?: string;
+            overview?: string;
+            /** Style Rules */
+            style_rules?: string[];
+            /** Terminology */
+            terminology?: {
+                [key: string]: string;
+            };
+        };
+        /**
+         * DispatchContextDelta
+         * @description Bounded knowledge learned while processing one delegated batch.
+         */
+        DispatchContextDelta: {
+            /** Decisions */
+            decisions?: string[];
+            /** Entities */
+            entities?: {
+                [key: string]: string;
+            };
+            /** Notes */
+            notes?: string[];
+            /** Style Rules */
+            style_rules?: string[];
+            /** Terminology */
+            terminology?: {
+                [key: string]: string;
+            };
+        };
+        /** DispatchCorrectionOperation */
+        DispatchCorrectionOperation: {
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "edit" | "delete" | "merge" | "split";
+            /** Cue Ids */
+            cue_ids: number[];
+            /** Speakers */
+            speakers?: string[];
+            /** Texts */
+            texts?: string[];
+        };
+        /** DispatchCorrectionResult */
+        DispatchCorrectionResult: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "correction";
+            /** Operations */
+            operations?: components["schemas"]["DispatchCorrectionOperation"][];
+            /** Uncertainties */
+            uncertainties?: components["schemas"]["DispatchCorrectionUncertainty"][];
+        };
+        /** DispatchCorrectionUncertainty */
+        DispatchCorrectionUncertainty: {
+            /** Cue Id */
+            cue_id: number;
             /** Evidence Ids */
             evidence_ids?: string[];
-            /** Uncertain Source Cue Ids */
-            uncertain_source_cue_ids?: number[];
+            /** Reason */
+            reason: string;
         };
-        /** SubtitleReviewRequest */
-        SubtitleReviewRequest: {
+        /** DispatchCue */
+        DispatchCue: {
+            /** Cue Id */
+            cue_id: number;
+            /**
+             * Evidence Cue Ids
+             * @default null
+             */
+            evidence_cue_ids?: number[] | null;
+            /**
+             * Speaker
+             * @default null
+             */
+            speaker?: string | null;
+            /** Text */
+            text: string;
+            /** @default null */
+            timing?: components["schemas"]["DispatchCueTiming"] | null;
+            /**
+             * Timing Basis
+             * @default null
+             */
+            timing_basis?: string | null;
+        };
+        /** DispatchCueTiming */
+        DispatchCueTiming: {
+            /**
+             * End Ms
+             * @default null
+             */
+            end_ms?: number | null;
+            /**
+             * Gap From Previous Ms
+             * @default null
+             */
+            gap_from_previous_ms?: number | null;
+            /**
+             * Overlap With Previous Ms
+             * @default null
+             */
+            overlap_with_previous_ms?: number | null;
+            /**
+             * Start Ms
+             * @default null
+             */
+            start_ms?: number | null;
+        };
+        /** DispatchDelegationContext */
+        DispatchDelegationContext: {
+            context_capsule: components["schemas"]["DispatchContextCapsule"];
+            /**
+             * Execution Mode
+             * @enum {string}
+             */
+            execution_mode: "serial" | "parallel";
+            /** Max Parallel Batches */
+            max_parallel_batches: number;
+            /** Wave Batch Count */
+            wave_batch_count: number;
+            /** Wave Number */
+            wave_number: number;
+        };
+        /** DispatchRunCreateRequest */
+        DispatchRunCreateRequest: {
+            /**
+             * Char Limit
+             * @default 6000
+             */
+            char_limit?: number;
+            /**
+             * Context After
+             * @default 2
+             */
+            context_after?: number;
+            /**
+             * Context Before
+             * @default 8
+             */
+            context_before?: number;
+            context_capsule?: components["schemas"]["DispatchContextCapsule"];
+            /**
+             * Correction Style
+             * @default publishable
+             * @enum {string}
+             */
+            correction_style?: "publishable" | "faithful";
+            /**
+             * Execution Mode
+             * @default serial
+             * @enum {string}
+             */
+            execution_mode?: "serial" | "parallel";
+            /** Glossary */
+            glossary?: {
+                [key: string]: string;
+            };
+            /**
+             * Include Timing Context
+             * @deprecated
+             * @description Deprecated compatibility input. False maps to timing_context_mode=none; true maps to full.
+             * @default null
+             */
+            include_timing_context?: boolean | null;
+            /**
+             * Instructions
+             * @default
+             */
+            instructions?: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "correction" | "translation";
+            /**
+             * Max Parallel Batches
+             * @default 1
+             */
+            max_parallel_batches?: number;
+            /**
+             * Max Segments Per Batch
+             * @default 40
+             */
+            max_segments_per_batch?: number;
+            /**
+             * No Remove Subtitles
+             * @default false
+             */
+            no_remove_subtitles?: boolean;
             /**
              * Source Artifact Id
              * @default null
              */
             source_artifact_id?: string | null;
-            /** Expected Revision */
-            expected_revision: number;
-            /** Segments */
-            segments: components["schemas"]["SubtitleSegmentInput"][];
-        };
-        /** SubtitleEvidenceCreateRequest */
-        SubtitleEvidenceCreateRequest: {
-            /** Source Artifact Id */
-            source_artifact_id: string;
-            /** Cue Id */
-            cue_id: number;
-            /** Reason */
-            reason: string;
-            /** Routes */
-            routes: ("whisper" | "moss" | "azure_mai_transcribe_2" | "audio_llm")[];
-            /** Audio Model Ids */
-            audio_model_ids?: string[];
             /**
-             * Padding Before Ms
+             * Source Language
+             * @default null
+             */
+            source_language?: string | null;
+            /**
+             * Substantial Gap Ms
              * @default 2000
              */
-            padding_before_ms?: number;
+            substantial_gap_ms?: number;
             /**
-             * Padding After Ms
-             * @default 2000
+             * Target Language
+             * @default null
              */
-            padding_after_ms?: number;
-        };
-        /** SubtitleEvidenceResolveRequest */
-        SubtitleEvidenceResolveRequest: {
+            target_language?: string | null;
             /**
-             * Action
+             * Timing Context Mode
+             * @default full
              * @enum {string}
              */
-            action: "accepted" | "edited" | "deleted" | "uncertain" | "dismissed";
+            timing_context_mode?: "full" | "overlap_only" | "none";
+        } & ({
+            /** @constant */
+            execution_mode?: "serial";
+            /** @constant */
+            max_parallel_batches?: 1;
+        } | {
+            /** @constant */
+            execution_mode: "parallel";
+            max_parallel_batches: unknown;
+        });
+        /** DispatchTaskContract */
+        DispatchTaskContract: {
             /**
-             * Candidate Id
-             * @default null
-             */
-            candidate_id?: string | null;
-            /**
-             * Text
-             * @default null
-             */
-            text?: string | null;
-            /**
-             * Note
-             * @default
-             */
-            note?: string;
-        };
-        /** VoiceCreate */
-        VoiceCreate: {
-            /** Name */
-            name: string;
-            /**
-             * Language
-             * @default null
-             */
-            language?: string | null;
-            /**
-             * Description
-             * @default null
-             */
-            description?: string | null;
-        };
-        /** VoiceUpdate */
-        VoiceUpdate: {
-            /**
-             * Name
-             * @default null
-             */
-            name?: string | null;
-            /**
-             * Language
-             * @default null
-             */
-            language?: string | null;
-            /**
-             * Description
-             * @default null
-             */
-            description?: string | null;
-        };
-        /** VoiceTranscriptReview */
-        VoiceTranscriptReview: {
-            /** Transcript */
-            transcript: string;
-            /**
-             * Language
-             * @default null
-             */
-            language?: string | null;
-            /**
-             * Expected Voice Revision
-             * @default null
-             */
-            expected_voice_revision?: number | null;
-        };
-        /** VoiceDesignedSampleCreate */
-        VoiceDesignedSampleCreate: {
-            /** Artifact Id */
-            artifact_id: string;
-            /** Transcript */
-            transcript: string;
-            /**
-             * Language
-             * @default null
-             */
-            language?: string | null;
-            /** Expected Voice Revision */
-            expected_voice_revision: number;
-        };
-        /** TtsVoicePreviewRequest */
-        TtsVoicePreviewRequest: {
-            /** Text */
-            text: string;
-            /**
-             * Model
-             * @default
-             */
-            model?: string;
-            /**
-             * Voice
-             * @default
-             */
-            voice?: string;
-            /**
-             * Language
-             * @default
-             */
-            language?: string;
-            /**
-             * Generation Prompt
-             * @default null
-             */
-            generation_prompt?: string | null;
-            /**
-             * Seed
-             * @default null
-             */
-            seed?: number | null;
-        };
-        /** ManagerDesiredComponentState */
-        ManagerDesiredComponentState: {
-            /**
-             * Present
-             * @default true
-             */
-            present?: boolean;
-            /**
-             * Compute
-             * @default auto
+             * Correction Style
              * @enum {string}
              */
-            compute?: "auto" | "cpu" | "cuda" | "vulkan" | "metal" | "rocm" | "wgpu";
-            /**
-             * Quantization
-             * @default null
-             */
-            quantization?: string | null;
-            /** Options */
-            options?: {
-                [key: string]: unknown;
+            correction_style: "publishable" | "faithful";
+            /** Glossary */
+            glossary: {
+                [key: string]: string;
             };
-        };
-        /** ManagerPlanRequest */
-        ManagerPlanRequest: {
+            /** Instructions */
+            instructions: string;
             /**
              * Kind
              * @enum {string}
              */
-            kind: "install" | "update" | "repair" | "remove" | "uninstall" | "start" | "stop" | "restart" | "import";
-            /** Desired */
-            desired: {
-                [key: string]: components["schemas"]["ManagerDesiredComponentState"];
-            };
+            kind: "correction" | "translation";
+            /** Known Speakers */
+            known_speakers: string[];
+            /** No Remove Subtitles */
+            no_remove_subtitles: boolean;
             /**
-             * Expected Revision
-             * @default null
-             */
-            expected_revision?: number | null;
-        };
-        /**
-         * ManagerReleasePlanRequest
-         * @description Signed product release envelope forwarded without adding trust inputs.
-         */
-        ManagerReleasePlanRequest: {
-            /** Manifest */
-            manifest: {
-                [key: string]: unknown;
-            };
-            /**
-             * Expected Revision
-             * @default null
-             */
-            expected_revision?: number | null;
-            /**
-             * Offline
-             * @default false
-             */
-            offline?: boolean;
-            /**
-             * Start After Activation
-             * @default true
-             */
-            start_after_activation?: boolean;
-        };
-        /** ManagerUninstallPlanRequest */
-        ManagerUninstallPlanRequest: {
-            /**
-             * Expected Revision
-             * @default null
-             */
-            expected_revision?: number | null;
-            /**
-             * Purge Data
-             * @default false
-             */
-            purge_data?: boolean;
-            /**
-             * Export Data
-             * @default null
-             */
-            export_data?: string | null;
-        };
-        /** ManagerLegacyImportRequest */
-        ManagerLegacyImportRequest: {
-            /** Source Digest */
-            source_digest: string;
-            /**
-             * Confirmed
-             * @default true
-             */
-            confirmed?: boolean;
-        };
-        /** ManagerOperationRequest */
-        ManagerOperationRequest: {
-            /** Plan Id */
-            plan_id: string;
-            /** Plan Digest */
-            plan_digest: string;
-            /** Accepted Confirmations */
-            accepted_confirmations?: string[];
-        };
-        /** ManagerRuntimeRequest */
-        ManagerRuntimeRequest: {
-            /** Service Ids */
-            service_ids?: string[];
-        };
-        /** RvcModelUploadRequest */
-        RvcModelUploadRequest: {
-            /** Pth Artifact Id */
-            pth_artifact_id: string;
-            /** Index Artifact Id */
-            index_artifact_id: string;
-        };
-        /** RvcConvertRequest */
-        RvcConvertRequest: {
-            /** Source Artifact Id */
-            source_artifact_id: string;
-            /**
-             * Session Id
-             * @default null
-             */
-            session_id?: string | null;
-            /** Settings */
-            settings?: {
-                [key: string]: unknown;
-            };
-        };
-        /** TrainingCreateRequest */
-        TrainingCreateRequest: {
-            /** Model Name */
-            model_name: string;
-            /** Source Artifact Id */
-            source_artifact_id: string;
-            /**
-             * Source Text Artifact Id
-             * @default null
-             */
-            source_text_artifact_id?: string | null;
-            /**
-             * Voice Id
-             * @default null
-             */
-            voice_id?: string | null;
-            /** Settings */
-            settings?: {
-                [key: string]: unknown;
-            };
-        };
-        /** SettingUpdate */
-        SettingUpdate: {
-            /** Value */
-            value: unknown;
-        };
-        /** BundleExportRequest */
-        BundleExportRequest: {
-            /**
-             * Include Sources
-             * @default true
-             */
-            include_sources?: boolean;
-        };
-        /** BundleImportRequest */
-        BundleImportRequest: {
-            /** Source Artifact Id */
-            source_artifact_id: string;
-            /**
-             * Name
-             * @default null
-             */
-            name?: string | null;
-        };
-        /** SourceUrlRequest */
-        SourceUrlRequest: {
-            /** Url */
-            url: string;
-        };
-        /** SourceReuseRequest */
-        SourceReuseRequest: {
-            /** Artifact Id */
-            artifact_id: string;
-        };
-        /** SessionSettingsUpdate */
-        SessionSettingsUpdate: {
-            /** Value */
-            value?: {
-                [key: string]: unknown;
-            };
-        };
-        /** OutcomePlanUpdate */
-        OutcomePlanUpdate: {
-            /** Value */
-            value: {
-                [key: string]: unknown;
-            };
-        };
-        /** SourceAttachRequest */
-        SourceAttachRequest: {
-            /** Source Asset Id */
-            source_asset_id: string;
-            /**
-             * Role
-             * @default primary
-             */
-            role?: string;
-        };
-        /** SubtitleAlignRequest */
-        SubtitleAlignRequest: {
-            /**
-             * Method
-             * @default ctc
+             * Output Role
              * @enum {string}
              */
-            method?: "ctc" | "ctc_asr_fallback";
-            /** Expected Revision */
-            expected_revision: number;
-        };
-        /** SourcePassagePreviewRequest */
-        SourcePassagePreviewRequest: {
-            /** Source Passages */
-            source_passages?: {
+            output_role: "correction" | "translation";
+            /**
+             * Quality Policy
+             * @default null
+             */
+            quality_policy?: {
+                [key: string]: unknown;
+            } | null;
+            /** Result Contract */
+            result_contract: {
                 [key: string]: unknown;
             };
+            /** Session Id */
+            session_id: string;
+            /** Source Artifact Id */
+            source_artifact_id: string;
+            /** Source Language */
+            source_language: string;
+            /**
+             * Substantial Gap Ms
+             * @default null
+             */
+            substantial_gap_ms?: number | null;
+            /**
+             * Target Language
+             * @default null
+             */
+            target_language?: string | null;
+            /**
+             * Timing Context Mode
+             * @enum {string}
+             */
+            timing_context_mode: "full" | "overlap_only" | "none";
         };
-        /** SourcePassageRebuildRequest */
-        SourcePassageRebuildRequest: {
-            /** Expected Source Revision Id */
-            expected_source_revision_id: string;
-            /** Expected Source Content Hash */
-            expected_source_content_hash: string;
-            /** Expected Settings Revision */
-            expected_settings_revision: number;
-            /** Expected Settings Hash */
-            expected_settings_hash: string;
-            /** Source Passages */
-            source_passages?: {
-                [key: string]: unknown;
+        /** DispatchTranslationItem */
+        DispatchTranslationItem: {
+            /**
+             * Cue Id
+             * @default null
+             */
+            cue_id?: number | null;
+            /**
+             * Cue Ids
+             * @default null
+             */
+            cue_ids?: number[] | null;
+            /**
+             * Speaker
+             * @default null
+             */
+            speaker?: string | null;
+            /** Text */
+            text: string;
+        };
+        /** DispatchTranslationResult */
+        DispatchTranslationResult: {
+            /** Glossary Updates */
+            glossary_updates?: {
+                [key: string]: string;
             };
-        };
-        /** GenerationSegmentSelector */
-        GenerationSegmentSelector: {
             /**
-             * Segment Id
-             * @default null
-             */
-            segment_id?: string | null;
-            /**
-             * Source Cue Ids
-             * @default null
-             */
-            source_cue_ids?: (string | number)[] | null;
-            /**
-             * Ordinal
-             * @default null
-             */
-            ordinal?: number | null;
-            /**
-             * Result Ref
-             * @default null
-             */
-            result_ref?: string | null;
-        };
-        /** GenerationSplitBoundary */
-        GenerationSplitBoundary: {
-            /**
-             * Cursor
-             * @default null
-             */
-            cursor?: number | null;
-            /**
-             * Before Text
-             * @default null
-             */
-            before_text?: string | null;
-            /**
-             * After Text
-             * @default null
-             */
-            after_text?: string | null;
-            /**
-             * Before Source Cue Id
-             * @default null
-             */
-            before_source_cue_id?: string | number | null;
-            /**
-             * After Source Cue Id
-             * @default null
-             */
-            after_source_cue_id?: string | number | null;
-            /**
-             * After Sentence
-             * @default null
-             */
-            after_sentence?: number | null;
-        };
-        /** GenerationTopologyEdit */
-        GenerationTopologyEdit: {
-            /**
-             * Action
+             * @description discriminator enum property added by openapi-typescript
              * @enum {string}
              */
-            action: "split" | "merge";
+            kind: "translation";
+            /** Translations */
+            translations: components["schemas"]["DispatchTranslationItem"][];
+        };
+        /** ErrorBody */
+        ErrorBody: {
+            /** Code */
+            code: string;
             /**
-             * Label
+             * Details
              * @default null
              */
-            label?: string | null;
+            details?: unknown;
+            /** Message */
+            message: string;
+            /** Request Id */
+            request_id: string;
+        };
+        /** EventBounds */
+        EventBounds: {
+            /** Latest */
+            latest: number;
+            /** Oldest */
+            oldest: number;
+            /** Retained After */
+            retained_after: number;
             /**
-             * Segment Id
-             * @default null
+             * Schema Version
+             * @default 1
+             * @constant
              */
-            segment_id?: string | null;
-            /** @default null */
-            segment?: components["schemas"]["GenerationSegmentSelector"] | null;
-            /**
-             * Cursor
-             * @default null
-             */
-            cursor?: number | null;
-            /** @default null */
-            boundary?: components["schemas"]["GenerationSplitBoundary"] | null;
-            /**
-             * Text Layer
-             * @default display
-             * @enum {string}
-             */
-            text_layer?: "display" | "speech";
-            /**
-             * Left Segment Id
-             * @default null
-             */
-            left_segment_id?: string | null;
-            /**
-             * Right Segment Id
-             * @default null
-             */
-            right_segment_id?: string | null;
-            /** @default null */
-            left?: components["schemas"]["GenerationSegmentSelector"] | null;
-            /** @default null */
-            right?: components["schemas"]["GenerationSegmentSelector"] | null;
+            schema_version?: "1";
         };
         /** GenerationPlanBatchRequest */
         GenerationPlanBatchRequest: {
@@ -4415,139 +3956,93 @@ export interface components {
             /** Operations */
             operations: components["schemas"]["GenerationTopologyEdit"][];
         };
-        /** SourceUpdateRequest */
-        SourceUpdateRequest: {
-            /** Display Name */
-            display_name: string;
-        };
-        /** MediaEditPrepareRequest */
-        MediaEditPrepareRequest: {
+        /** GenerationPlanCreate */
+        GenerationPlanCreate: {
+            /** Segments */
+            segments: components["schemas"]["GenerationSegmentCreate"][];
+            /** Settings */
+            settings?: {
+                [key: string]: unknown;
+            };
             /**
-             * Force
-             * @default false
-             */
-            force?: boolean;
-        };
-        /** MediaEditProposeRequest */
-        MediaEditProposeRequest: {
-            /** Revision */
-            revision: number;
-            /** Instructions */
-            instructions: string;
-            /**
-             * Model
+             * Source Revision Id
              * @default null
              */
-            model?: string | null;
+            source_revision_id?: string | null;
         };
-        /** MediaEditRenderRequest */
-        MediaEditRenderRequest: {
-            /** Revision */
-            revision: number;
+        /**
+         * GenerationPlanTopologyRequest
+         * @description One of the three immutable, typed generation-plan topology edits.
+         */
+        GenerationPlanTopologyRequest: {
             /**
-             * Subtitles Only
-             * @default false
-             */
-            subtitles_only?: boolean;
-        };
-        /** MediaEditKeepRange */
-        MediaEditKeepRange: {
-            /**
-             * Id
-             * @default null
-             */
-            id?: string | null;
-            /** Start Ms */
-            start_ms: number;
-            /** End Ms */
-            end_ms: number;
-            /**
-             * Label
-             * @default null
-             */
-            label?: string | null;
-        };
-        /** MediaEditUpdateRequest */
-        MediaEditUpdateRequest: {
-            /** Keep Ranges */
-            keep_ranges: components["schemas"]["MediaEditKeepRange"][];
-            /**
-             * Instructions
-             * @default null
-             */
-            instructions?: string | null;
-            /**
-             * Reviewed
-             * @default null
-             */
-            reviewed?: boolean | null;
-        };
-        /** MediaEditBoundaryRequest */
-        MediaEditBoundaryRequest: {
-            /** Cut Index */
-            cut_index: number;
-            /**
-             * Edge
+             * Action
              * @enum {string}
              */
-            edge: "start" | "end";
+            action: "split" | "merge" | "restore";
             /**
-             * Position Ms
+             * Cursor
              * @default null
              */
-            position_ms?: number | null;
+            cursor?: number | null;
+            /** Expected Revision Id */
+            expected_revision_id: string;
             /**
-             * Delta Ms
+             * Left Segment Id
              * @default null
              */
-            delta_ms?: number | null;
+            left_segment_id?: string | null;
+            /**
+             * Passage Boundary Id
+             * @default null
+             */
+            passage_boundary_id?: string | null;
+            /**
+             * Right Segment Id
+             * @default null
+             */
+            right_segment_id?: string | null;
+            /**
+             * Segment Id
+             * @default null
+             */
+            segment_id?: string | null;
+            /**
+             * Target Revision Id
+             * @default null
+             */
+            target_revision_id?: string | null;
+            /**
+             * Text Layer
+             * @default null
+             */
+            text_layer?: ("display" | "speech") | null;
         };
-        /** StageSelectionUpdate */
-        StageSelectionUpdate: {
-            /**
-             * Artifact Id
-             * @default null
-             */
-            artifact_id?: string | null;
+        /** GenerationSegmentBatchUpdate */
+        GenerationSegmentBatchUpdate: {
+            /** Updates */
+            updates: components["schemas"]["GenerationSegmentBatchUpdateItem"][];
         };
-        /** ChunkUploadInitialize */
-        ChunkUploadInitialize: {
-            /** Filename */
-            filename: string;
-            /** Size Bytes */
-            size_bytes: number;
-            /**
-             * Mime Type
-             * @default null
-             */
-            mime_type?: string | null;
-            /**
-             * Session Id
-             * @default null
-             */
-            session_id?: string | null;
-            /**
-             * Sha256
-             * @default null
-             */
-            sha256?: string | null;
-            /**
-             * Chunk Size
-             * @default 8388608
-             */
-            chunk_size?: number;
+        /** GenerationSegmentBatchUpdateItem */
+        GenerationSegmentBatchUpdateItem: {
+            changes: components["schemas"]["GenerationSegmentUpdate"];
+            /** Id */
+            id: string;
+            /** Revision */
+            revision: number;
         };
         /** GenerationSegmentCreate */
         GenerationSegmentCreate: {
-            /** Text */
-            text: string;
-            /** Source Segment Ids */
-            source_segment_ids?: (string | number)[];
             /**
              * Alignment Group
              * @default null
              */
             alignment_group?: string | null;
+            /**
+             * Language
+             * @default null
+             */
+            language?: string | null;
             /**
              * Node Kind
              * @default paragraph
@@ -4560,181 +4055,141 @@ export interface components {
              */
             paragraph_break_after?: boolean;
             /**
+             * Silence After Ms
+             * @default 0
+             */
+            silence_after_ms?: number;
+            /** Source Segment Ids */
+            source_segment_ids?: (string | number)[];
+            /**
              * Speaker
              * @default null
              */
             speaker?: string | null;
-            /**
-             * Voice Id
-             * @default null
-             */
-            voice_id?: string | null;
+            /** Text */
+            text: string;
             /**
              * Voice
              * @default null
              */
             voice?: string | null;
             /**
-             * Language
+             * Voice Id
              * @default null
              */
-            language?: string | null;
-            /**
-             * Silence After Ms
-             * @default 0
-             */
-            silence_after_ms?: number;
+            voice_id?: string | null;
         };
-        /** GenerationPlanCreate */
-        GenerationPlanCreate: {
+        /** GenerationSegmentSelector */
+        GenerationSegmentSelector: {
             /**
-             * Source Revision Id
+             * Ordinal
              * @default null
              */
-            source_revision_id?: string | null;
-            /** Segments */
-            segments: components["schemas"]["GenerationSegmentCreate"][];
-            /** Settings */
-            settings?: {
-                [key: string]: unknown;
-            };
-        };
-        /**
-         * GenerationPlanTopologyRequest
-         * @description One of the three immutable, typed generation-plan topology edits.
-         */
-        GenerationPlanTopologyRequest: {
-            /** Expected Revision Id */
-            expected_revision_id: string;
+            ordinal?: number | null;
             /**
-             * Action
-             * @enum {string}
+             * Result Ref
+             * @default null
              */
-            action: "split" | "merge" | "restore";
+            result_ref?: string | null;
             /**
              * Segment Id
              * @default null
              */
             segment_id?: string | null;
             /**
-             * Cursor
+             * Source Cue Ids
              * @default null
              */
-            cursor?: number | null;
-            /**
-             * Text Layer
-             * @default null
-             */
-            text_layer?: ("display" | "speech") | null;
-            /**
-             * Passage Boundary Id
-             * @default null
-             */
-            passage_boundary_id?: string | null;
-            /**
-             * Left Segment Id
-             * @default null
-             */
-            left_segment_id?: string | null;
-            /**
-             * Right Segment Id
-             * @default null
-             */
-            right_segment_id?: string | null;
-            /**
-             * Target Revision Id
-             * @default null
-             */
-            target_revision_id?: string | null;
+            source_cue_ids?: (string | number)[] | null;
         };
         /** GenerationSegmentUpdate */
         GenerationSegmentUpdate: {
-            /**
-             * Text
-             * @default null
-             */
-            text?: string | null;
-            /**
-             * Optimized Text
-             * @default null
-             */
-            optimized_text?: string | null;
-            /**
-             * Node Kind
-             * @default null
-             */
-            node_kind?: ("paragraph" | "heading" | "chapter_marker" | "subtitle_cue") | null;
-            /**
-             * Paragraph Break After
-             * @default null
-             */
-            paragraph_break_after?: boolean | null;
-            /**
-             * Voice Id
-             * @default null
-             */
-            voice_id?: string | null;
-            /**
-             * Voice
-             * @default null
-             */
-            voice?: string | null;
             /**
              * Language
              * @default null
              */
             language?: string | null;
             /**
-             * Silence After Ms
-             * @default null
-             */
-            silence_after_ms?: number | null;
-            /**
              * Marked
              * @default null
              */
             marked?: boolean | null;
             /**
+             * Node Kind
+             * @default null
+             */
+            node_kind?: ("paragraph" | "heading" | "chapter_marker" | "subtitle_cue") | null;
+            /**
+             * Optimized Text
+             * @default null
+             */
+            optimized_text?: string | null;
+            /**
+             * Paragraph Break After
+             * @default null
+             */
+            paragraph_break_after?: boolean | null;
+            /**
              * Removed
              * @default null
              */
             removed?: boolean | null;
+            /**
+             * Silence After Ms
+             * @default null
+             */
+            silence_after_ms?: number | null;
+            /**
+             * Text
+             * @default null
+             */
+            text?: string | null;
+            /**
+             * Voice
+             * @default null
+             */
+            voice?: string | null;
+            /**
+             * Voice Id
+             * @default null
+             */
+            voice_id?: string | null;
         };
-        /** GenerationSegmentBatchUpdateItem */
-        GenerationSegmentBatchUpdateItem: {
-            /** Id */
-            id: string;
-            /** Revision */
-            revision: number;
-            changes: components["schemas"]["GenerationSegmentUpdate"];
-        };
-        /** GenerationSegmentBatchUpdate */
-        GenerationSegmentBatchUpdate: {
-            /** Updates */
-            updates: components["schemas"]["GenerationSegmentBatchUpdateItem"][];
+        /** GenerationSplitBoundary */
+        GenerationSplitBoundary: {
+            /**
+             * After Sentence
+             * @default null
+             */
+            after_sentence?: number | null;
+            /**
+             * After Source Cue Id
+             * @default null
+             */
+            after_source_cue_id?: string | number | null;
+            /**
+             * After Text
+             * @default null
+             */
+            after_text?: string | null;
+            /**
+             * Before Source Cue Id
+             * @default null
+             */
+            before_source_cue_id?: string | number | null;
+            /**
+             * Before Text
+             * @default null
+             */
+            before_text?: string | null;
+            /**
+             * Cursor
+             * @default null
+             */
+            cursor?: number | null;
         };
         /** GenerationStartRequest */
         GenerationStartRequest: {
-            /**
-             * Speech Plan Revision Id
-             * @default null
-             */
-            speech_plan_revision_id?: string | null;
-            /**
-             * Stale Only
-             * @default false
-             */
-            stale_only?: boolean;
-            /** Run Override */
-            run_override?: {
-                [key: string]: unknown;
-            };
-            /** Selected Segment Override */
-            selected_segment_override?: {
-                [key: string]: unknown;
-            };
-            /** Segment Ids */
-            segment_ids?: string[];
             /**
              * Generation Run Id
              * @default null
@@ -4746,6 +4201,612 @@ export interface components {
              * @enum {string}
              */
             operation?: "generate" | "regenerate" | "rvc";
+            /** Run Override */
+            run_override?: {
+                [key: string]: unknown;
+            };
+            /** Segment Ids */
+            segment_ids?: string[];
+            /** Selected Segment Override */
+            selected_segment_override?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Speech Plan Revision Id
+             * @default null
+             */
+            speech_plan_revision_id?: string | null;
+            /**
+             * Stale Only
+             * @default false
+             */
+            stale_only?: boolean;
+        };
+        /** GenerationTopologyEdit */
+        GenerationTopologyEdit: {
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "split" | "merge";
+            /** @default null */
+            boundary?: components["schemas"]["GenerationSplitBoundary"] | null;
+            /**
+             * Cursor
+             * @default null
+             */
+            cursor?: number | null;
+            /**
+             * Label
+             * @default null
+             */
+            label?: string | null;
+            /** @default null */
+            left?: components["schemas"]["GenerationSegmentSelector"] | null;
+            /**
+             * Left Segment Id
+             * @default null
+             */
+            left_segment_id?: string | null;
+            /** @default null */
+            right?: components["schemas"]["GenerationSegmentSelector"] | null;
+            /**
+             * Right Segment Id
+             * @default null
+             */
+            right_segment_id?: string | null;
+            /** @default null */
+            segment?: components["schemas"]["GenerationSegmentSelector"] | null;
+            /**
+             * Segment Id
+             * @default null
+             */
+            segment_id?: string | null;
+            /**
+             * Text Layer
+             * @default display
+             * @enum {string}
+             */
+            text_layer?: "display" | "speech";
+        };
+        /** JobCreate */
+        JobCreate: {
+            /** Kind */
+            kind: string;
+            /**
+             * Max Attempts
+             * @default 1
+             */
+            max_attempts?: number;
+            /** Payload */
+            payload?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Session Id
+             * @default null
+             */
+            session_id?: string | null;
+        };
+        /** LoginRequest */
+        LoginRequest: {
+            /** Password */
+            password: string;
+        };
+        /** ManagerBootstrapRequest */
+        ManagerBootstrapRequest: {
+            /** Scopes */
+            scopes?: ("app.read" | "app.write" | "app.run" | "app.cancel" | "app.credentials.read" | "app.credentials.write" | "manager.read" | "manager.runtime" | "manager.mutate" | "app.admin")[];
+        };
+        /** ManagerDesiredComponentState */
+        ManagerDesiredComponentState: {
+            /**
+             * Compute
+             * @default auto
+             * @enum {string}
+             */
+            compute?: "auto" | "cpu" | "cuda" | "vulkan" | "metal" | "rocm" | "wgpu";
+            /** Options */
+            options?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Present
+             * @default true
+             */
+            present?: boolean;
+            /**
+             * Quantization
+             * @default null
+             */
+            quantization?: string | null;
+        };
+        /** ManagerLegacyImportRequest */
+        ManagerLegacyImportRequest: {
+            /**
+             * Confirmed
+             * @default true
+             */
+            confirmed?: boolean;
+            /** Source Digest */
+            source_digest: string;
+        };
+        /** ManagerOperationRequest */
+        ManagerOperationRequest: {
+            /** Accepted Confirmations */
+            accepted_confirmations?: string[];
+            /** Plan Digest */
+            plan_digest: string;
+            /** Plan Id */
+            plan_id: string;
+        };
+        /** ManagerPlanRequest */
+        ManagerPlanRequest: {
+            /** Desired */
+            desired: {
+                [key: string]: components["schemas"]["ManagerDesiredComponentState"];
+            };
+            /**
+             * Expected Revision
+             * @default null
+             */
+            expected_revision?: number | null;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "install" | "update" | "repair" | "remove" | "uninstall" | "start" | "stop" | "restart" | "import";
+        };
+        /**
+         * ManagerReleasePlanRequest
+         * @description Signed product release envelope forwarded without adding trust inputs.
+         */
+        ManagerReleasePlanRequest: {
+            /**
+             * Expected Revision
+             * @default null
+             */
+            expected_revision?: number | null;
+            /** Manifest */
+            manifest: {
+                [key: string]: unknown;
+            };
+            /**
+             * Offline
+             * @default false
+             */
+            offline?: boolean;
+            /**
+             * Start After Activation
+             * @default true
+             */
+            start_after_activation?: boolean;
+        };
+        /** ManagerRuntimeRequest */
+        ManagerRuntimeRequest: {
+            /** Service Ids */
+            service_ids?: string[];
+        };
+        /** ManagerUninstallPlanRequest */
+        ManagerUninstallPlanRequest: {
+            /**
+             * Expected Revision
+             * @default null
+             */
+            expected_revision?: number | null;
+            /**
+             * Export Data
+             * @default null
+             */
+            export_data?: string | null;
+            /**
+             * Purge Data
+             * @default false
+             */
+            purge_data?: boolean;
+        };
+        /** MediaEditBoundaryRequest */
+        MediaEditBoundaryRequest: {
+            /** Cut Index */
+            cut_index: number;
+            /**
+             * Delta Ms
+             * @default null
+             */
+            delta_ms?: number | null;
+            /**
+             * Edge
+             * @enum {string}
+             */
+            edge: "start" | "end";
+            /**
+             * Position Ms
+             * @default null
+             */
+            position_ms?: number | null;
+        };
+        /** MediaEditDispatchBatch */
+        MediaEditDispatchBatch: {
+            /** Artifact Ids */
+            artifact_ids: {
+                [key: string]: string | null;
+            };
+            /** Cue Count */
+            cue_count: number;
+            /** Cues */
+            cues: components["schemas"]["MediaEditDispatchCue"][];
+            /** Duration Ms */
+            duration_ms: number;
+            /** Evidence */
+            evidence: {
+                [key: string]: unknown;
+            };
+            /** Keep Ranges */
+            keep_ranges: components["schemas"]["MediaEditKeepRange"][];
+            /** Valid Cue Ids */
+            valid_cue_ids: string[];
+        };
+        /** MediaEditDispatchBatchClaimResponse */
+        MediaEditDispatchBatchClaimResponse: {
+            batch: components["schemas"]["MediaEditDispatchBatch"];
+            /** Batch Id */
+            batch_id: string;
+            /** Batch Ordinal */
+            batch_ordinal: number;
+            /** Batch Status */
+            batch_status: string;
+            /** Lease Expires At */
+            lease_expires_at: string | null;
+            /** Lease Token */
+            lease_token: string;
+            /** Run Id */
+            run_id: string;
+            /** Run Status */
+            run_status: string;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version?: "1";
+            /** Source Revision */
+            source_revision: {
+                [key: string]: unknown;
+            };
+            /** Status */
+            status: string;
+            task: components["schemas"]["MediaEditDispatchTaskContract"];
+        };
+        /** MediaEditDispatchBatchSubmitRequest */
+        MediaEditDispatchBatchSubmitRequest: {
+            /** Lease Token */
+            lease_token: string;
+            result: components["schemas"]["MediaEditDispatchResult"];
+        };
+        /** MediaEditDispatchBatchSubmitResponse */
+        MediaEditDispatchBatchSubmitResponse: {
+            /** Accepted */
+            accepted: boolean;
+            /** Batch Count */
+            batch_count: number;
+            /** Batch Id */
+            batch_id: string;
+            /** Batch Status */
+            batch_status: string;
+            /** Completed Batch Count */
+            completed_batch_count: number;
+            /** Completed Batches */
+            completed_batches: number;
+            /**
+             * Error Code
+             * @default null
+             */
+            error_code?: string | null;
+            /**
+             * Error Message
+             * @default null
+             */
+            error_message?: string | null;
+            /** Finalized */
+            finalized: boolean;
+            /**
+             * Kind
+             * @constant
+             */
+            kind: "media_edit";
+            /** Remaining Batches */
+            remaining_batches: number;
+            /**
+             * Result Revision
+             * @default null
+             */
+            result_revision?: number | null;
+            /**
+             * Result Revision Id
+             * @default null
+             */
+            result_revision_id?: string | null;
+            /** Run Id */
+            run_id: string;
+            /** Run Status */
+            run_status: string;
+            /** Session Id */
+            session_id: string;
+            /** Source Revision Number */
+            source_revision_number: number;
+            /** Status */
+            status: string;
+            /** Total Batches */
+            total_batches: number;
+        };
+        /** MediaEditDispatchCue */
+        MediaEditDispatchCue: {
+            /** End Ms */
+            end_ms: number;
+            /** Id */
+            id: string;
+            /**
+             * Speaker
+             * @default null
+             */
+            speaker?: string | null;
+            /** Start Ms */
+            start_ms: number;
+            /** Text */
+            text: string;
+            /**
+             * Timing Confidence
+             * @default null
+             */
+            timing_confidence?: number | null;
+            /** Timing Source */
+            timing_source: string;
+        };
+        /** MediaEditDispatchCut */
+        MediaEditDispatchCut: {
+            /**
+             * End At Media End
+             * @default false
+             */
+            end_at_media_end?: boolean;
+            /**
+             * End Cue Id
+             * @default null
+             */
+            end_cue_id?: string | null;
+            /** Reason */
+            reason: string;
+            /**
+             * Start At Media Start
+             * @default false
+             */
+            start_at_media_start?: boolean;
+            /**
+             * Start Cue Id
+             * @default null
+             */
+            start_cue_id?: string | null;
+        };
+        /** MediaEditDispatchResult */
+        MediaEditDispatchResult: {
+            /** Cuts */
+            cuts: components["schemas"]["MediaEditDispatchCut"][];
+            /**
+             * Kind
+             * @constant
+             */
+            kind: "media_edit";
+        };
+        /** MediaEditDispatchRunCreateRequest */
+        MediaEditDispatchRunCreateRequest: {
+            /** Instructions */
+            instructions: string;
+            /** Revision */
+            revision: number;
+        };
+        /** MediaEditDispatchTaskContract */
+        MediaEditDispatchTaskContract: {
+            /** Instructions */
+            instructions: string;
+            /**
+             * Kind
+             * @constant
+             */
+            kind: "media_edit";
+            /** Result Contract */
+            result_contract: {
+                [key: string]: unknown;
+            };
+        };
+        /** MediaEditKeepRange */
+        MediaEditKeepRange: {
+            /** End Ms */
+            end_ms: number;
+            /**
+             * Id
+             * @default null
+             */
+            id?: string | null;
+            /**
+             * Label
+             * @default null
+             */
+            label?: string | null;
+            /** Start Ms */
+            start_ms: number;
+        };
+        /** MediaEditPrepareRequest */
+        MediaEditPrepareRequest: {
+            /**
+             * Force
+             * @default false
+             */
+            force?: boolean;
+        };
+        /** MediaEditProposeRequest */
+        MediaEditProposeRequest: {
+            /** Instructions */
+            instructions: string;
+            /**
+             * Model
+             * @default null
+             */
+            model?: string | null;
+            /** Revision */
+            revision: number;
+        };
+        /** MediaEditRenderRequest */
+        MediaEditRenderRequest: {
+            /** Revision */
+            revision: number;
+            /**
+             * Subtitles Only
+             * @default false
+             */
+            subtitles_only?: boolean;
+        };
+        /** MediaEditUpdateRequest */
+        MediaEditUpdateRequest: {
+            /**
+             * Instructions
+             * @default null
+             */
+            instructions?: string | null;
+            /** Keep Ranges */
+            keep_ranges: components["schemas"]["MediaEditKeepRange"][];
+            /**
+             * Reviewed
+             * @default null
+             */
+            reviewed?: boolean | null;
+        };
+        /** ModelCreate */
+        ModelCreate: {
+            /**
+             * Cached Input Cost Per Million
+             * @default null
+             */
+            cached_input_cost_per_million?: number | null;
+            /**
+             * Context Window Tokens
+             * @default 262144
+             */
+            context_window_tokens?: number;
+            /**
+             * Default Reasoning Effort
+             * @default null
+             */
+            default_reasoning_effort?: string | null;
+            /**
+             * Default Temperature
+             * @default null
+             */
+            default_temperature?: number | null;
+            /**
+             * Input Cost Per Million
+             * @default null
+             */
+            input_cost_per_million?: number | null;
+            /** Input Modalities */
+            input_modalities?: ("text" | "image" | "audio" | "video" | "pdf")[];
+            /**
+             * Is Active
+             * @default false
+             */
+            is_active?: boolean;
+            /**
+             * Is Default
+             * @default false
+             */
+            is_default?: boolean;
+            /**
+             * Max Output Tokens
+             * @default null
+             */
+            max_output_tokens?: number | null;
+            /** Model Id */
+            model_id: string;
+            /** Options */
+            options?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Output Cost Per Million
+             * @default null
+             */
+            output_cost_per_million?: number | null;
+            /** Output Modalities */
+            output_modalities?: ("text" | "image" | "audio")[];
+        };
+        /** ModelUpdate */
+        ModelUpdate: {
+            /**
+             * Cached Input Cost Per Million
+             * @default null
+             */
+            cached_input_cost_per_million?: number | null;
+            /**
+             * Context Window Tokens
+             * @default null
+             */
+            context_window_tokens?: number | null;
+            /**
+             * Default Reasoning Effort
+             * @default null
+             */
+            default_reasoning_effort?: string | null;
+            /**
+             * Default Temperature
+             * @default null
+             */
+            default_temperature?: number | null;
+            /**
+             * Input Cost Per Million
+             * @default null
+             */
+            input_cost_per_million?: number | null;
+            /**
+             * Input Modalities
+             * @default null
+             */
+            input_modalities?: ("text" | "image" | "audio" | "video" | "pdf")[] | null;
+            /**
+             * Is Active
+             * @default null
+             */
+            is_active?: boolean | null;
+            /**
+             * Is Default
+             * @default null
+             */
+            is_default?: boolean | null;
+            /**
+             * Max Output Tokens
+             * @default null
+             */
+            max_output_tokens?: number | null;
+            /**
+             * Model Id
+             * @default null
+             */
+            model_id?: string | null;
+            /**
+             * Options
+             * @default null
+             */
+            options?: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Output Cost Per Million
+             * @default null
+             */
+            output_cost_per_million?: number | null;
+            /**
+             * Output Modalities
+             * @default null
+             */
+            output_modalities?: ("text" | "image" | "audio")[] | null;
         };
         /** OptimizationReviewItem */
         OptimizationReviewItem: {
@@ -4758,6 +4819,13 @@ export interface components {
         OptimizationReviewRequest: {
             /** Items */
             items: components["schemas"]["OptimizationReviewItem"][];
+        };
+        /** OutcomePlanUpdate */
+        OutcomePlanUpdate: {
+            /** Value */
+            value: {
+                [key: string]: unknown;
+            };
         };
         /** OutputAssemblyCreateRequest */
         OutputAssemblyCreateRequest: {
@@ -4773,18 +4841,29 @@ export interface components {
         };
         /** OutputMixPreviewRequest */
         OutputMixPreviewRequest: {
-            /** Generation Run Id */
-            generation_run_id: string;
-            /**
-             * Start Seconds
-             * @default null
-             */
-            start_seconds?: number | null;
             /**
              * Duration Seconds
              * @default 12
              */
             duration_seconds?: number;
+            /** Generation Run Id */
+            generation_run_id: string;
+            /**
+             * Mix Attack Ms
+             * @default 25
+             */
+            mix_attack_ms?: number;
+            /**
+             * Mix Ducking
+             * @default strong
+             * @enum {string}
+             */
+            mix_ducking?: "off" | "gentle" | "balanced" | "strong" | "very_strong";
+            /**
+             * Mix Release Ms
+             * @default 350
+             */
+            mix_release_ms?: number;
             /**
              * Mix Source Gain Db
              * @default 0
@@ -4801,797 +4880,538 @@ export interface components {
              */
             mix_voice_lufs?: number;
             /**
-             * Mix Ducking
-             * @default strong
-             * @enum {string}
+             * Start Seconds
+             * @default null
              */
-            mix_ducking?: "off" | "gentle" | "balanced" | "strong" | "very_strong";
-            /**
-             * Mix Attack Ms
-             * @default 25
-             */
-            mix_attack_ms?: number;
-            /**
-             * Mix Release Ms
-             * @default 350
-             */
-            mix_release_ms?: number;
+            start_seconds?: number | null;
         };
-        /** TtsEndpointDiscoveryRequest */
-        TtsEndpointDiscoveryRequest: {
-            /** Base Url */
-            base_url: string;
-            /**
-             * Service Id
-             * @default null
-             */
-            service_id?: string | null;
-            /**
-             * Api Key
-             * @default null
-             */
-            api_key?: string | null;
+        ParameterDefinition: {
+            applicability?: string;
+            caveat?: string;
+            choices?: unknown[];
+            default: unknown;
+            description: string;
+            label: string;
+            maximum?: number;
+            minimum?: number;
+            name: string;
+            section: string;
+            unit?: string;
+            /** @enum {string} */
+            value_type: "boolean" | "integer" | "number" | "string" | "object" | "array";
         };
-        /** AgentRunCreateRequest */
-        AgentRunCreateRequest: {
-            /** Source Artifact Id */
-            source_artifact_id: string;
-            /** Settings */
-            settings?: {
-                [key: string]: unknown;
-            };
-        };
-        /**
-         * DispatchContextCapsule
-         * @description Shared, parent-supplied or accumulated context for delegated batches.
-         */
-        DispatchContextCapsule: {
-            /** Terminology */
-            terminology?: {
-                [key: string]: string;
-            };
-            /** Entities */
-            entities?: {
-                [key: string]: string;
-            };
-            /** Style Rules */
-            style_rules?: string[];
-            /** Decisions */
-            decisions?: string[];
-            /** Notes */
-            notes?: string[];
+        ParameterDefinitionsResponse: {
+            available_sections: string[];
+            items: components["schemas"]["ParameterDefinition"][];
+            matched_count: number;
+            returned_count: number;
             /**
-             * Overview
-             * @default
-             */
-            overview?: string;
-        };
-        /** DispatchRunCreateRequest */
-        DispatchRunCreateRequest: {
-            /**
-             * Execution Mode
-             * @default serial
-             * @enum {string}
-             */
-            execution_mode?: "serial" | "parallel";
-            /**
-             * Max Parallel Batches
-             * @default 1
-             */
-            max_parallel_batches?: number;
-            context_capsule?: components["schemas"]["DispatchContextCapsule"];
-            /**
-             * Kind
-             * @enum {string}
-             */
-            kind: "correction" | "translation";
-            /**
-             * Source Artifact Id
-             * @default null
-             */
-            source_artifact_id?: string | null;
-            /**
-             * Source Language
-             * @default null
-             */
-            source_language?: string | null;
-            /**
-             * Target Language
-             * @default null
-             */
-            target_language?: string | null;
-            /**
-             * Instructions
-             * @default
-             */
-            instructions?: string;
-            /**
-             * Char Limit
-             * @default 6000
-             */
-            char_limit?: number;
-            /**
-             * Max Segments Per Batch
-             * @default 40
-             */
-            max_segments_per_batch?: number;
-            /**
-             * No Remove Subtitles
-             * @default false
-             */
-            no_remove_subtitles?: boolean;
-            /**
-             * Correction Style
-             * @default publishable
-             * @enum {string}
-             */
-            correction_style?: "publishable" | "faithful";
-            /**
-             * Context Before
-             * @default 8
-             */
-            context_before?: number;
-            /**
-             * Context After
-             * @default 2
-             */
-            context_after?: number;
-            /**
-             * Timing Context Mode
-             * @default full
-             * @enum {string}
-             */
-            timing_context_mode?: "full" | "overlap_only" | "none";
-            /**
-             * Include Timing Context
-             * @deprecated
-             * @description Deprecated compatibility input. False maps to timing_context_mode=none; true maps to full.
-             * @default null
-             */
-            include_timing_context?: boolean | null;
-            /**
-             * Substantial Gap Ms
-             * @default 2000
-             */
-            substantial_gap_ms?: number;
-            /** Glossary */
-            glossary?: {
-                [key: string]: string;
-            };
-        } & ({
-            /** @constant */
-            execution_mode?: "serial";
-            /** @constant */
-            max_parallel_batches?: 1;
-        } | {
-            /** @constant */
-            execution_mode: "parallel";
-            max_parallel_batches: unknown;
-        });
-        /** DispatchBatchClaimRequest */
-        DispatchBatchClaimRequest: {
-            /**
-             * Lease Seconds
-             * @default 900
-             */
-            lease_seconds?: number;
-        };
-        /** DispatchBatchRenewRequest */
-        DispatchBatchRenewRequest: {
-            /** Lease Token */
-            lease_token: string;
-            /**
-             * Lease Seconds
-             * @default 900
-             */
-            lease_seconds?: number;
-        };
-        /** DispatchBatchReleaseRequest */
-        DispatchBatchReleaseRequest: {
-            /** Lease Token */
-            lease_token: string;
-        };
-        /** DispatchCorrectionOperation */
-        DispatchCorrectionOperation: {
-            /**
-             * Action
-             * @enum {string}
-             */
-            action: "edit" | "delete" | "merge" | "split";
-            /** Cue Ids */
-            cue_ids: number[];
-            /** Texts */
-            texts?: string[];
-            /** Speakers */
-            speakers?: string[];
-        };
-        /** DispatchCorrectionUncertainty */
-        DispatchCorrectionUncertainty: {
-            /** Cue Id */
-            cue_id: number;
-            /** Reason */
-            reason: string;
-            /** Evidence Ids */
-            evidence_ids?: string[];
-        };
-        /** DispatchCorrectionResult */
-        DispatchCorrectionResult: {
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            kind: "correction";
-            /** Operations */
-            operations?: components["schemas"]["DispatchCorrectionOperation"][];
-            /** Uncertainties */
-            uncertainties?: components["schemas"]["DispatchCorrectionUncertainty"][];
-        };
-        /** DispatchTranslationItem */
-        DispatchTranslationItem: {
-            /**
-             * Cue Id
-             * @default null
-             */
-            cue_id?: number | null;
-            /**
-             * Cue Ids
-             * @default null
-             */
-            cue_ids?: number[] | null;
-            /** Text */
-            text: string;
-            /**
-             * Speaker
-             * @default null
-             */
-            speaker?: string | null;
-        };
-        /** DispatchTranslationResult */
-        DispatchTranslationResult: {
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            kind: "translation";
-            /** Translations */
-            translations: components["schemas"]["DispatchTranslationItem"][];
-            /** Glossary Updates */
-            glossary_updates?: {
-                [key: string]: string;
-            };
-        };
-        /**
-         * DispatchContextDelta
-         * @description Bounded knowledge learned while processing one delegated batch.
-         */
-        DispatchContextDelta: {
-            /** Terminology */
-            terminology?: {
-                [key: string]: string;
-            };
-            /** Entities */
-            entities?: {
-                [key: string]: string;
-            };
-            /** Style Rules */
-            style_rules?: string[];
-            /** Decisions */
-            decisions?: string[];
-            /** Notes */
-            notes?: string[];
-        };
-        /** DispatchBatchSubmitRequest */
-        DispatchBatchSubmitRequest: {
-            /** Lease Token */
-            lease_token: string;
-            /**
-             * Result
-             * @default null
-             */
-            result?: (components["schemas"]["DispatchCorrectionResult"] | components["schemas"]["DispatchTranslationResult"]) | null;
-            /**
-             * Response Text
-             * @default null
-             */
-            response_text?: string | null;
-            context_delta?: components["schemas"]["DispatchContextDelta"];
-        };
-        /** DispatchCueTiming */
-        DispatchCueTiming: {
-            /**
-             * Start Ms
-             * @default null
-             */
-            start_ms?: number | null;
-            /**
-             * End Ms
-             * @default null
-             */
-            end_ms?: number | null;
-            /**
-             * Gap From Previous Ms
-             * @default null
-             */
-            gap_from_previous_ms?: number | null;
-            /**
-             * Overlap With Previous Ms
-             * @default null
-             */
-            overlap_with_previous_ms?: number | null;
-        };
-        /** DispatchCue */
-        DispatchCue: {
-            /** Cue Id */
-            cue_id: number;
-            /** Text */
-            text: string;
-            /**
-             * Speaker
-             * @default null
-             */
-            speaker?: string | null;
-            /** @default null */
-            timing?: components["schemas"]["DispatchCueTiming"] | null;
-            /**
-             * Evidence Cue Ids
-             * @default null
-             */
-            evidence_cue_ids?: number[] | null;
-            /**
-             * Timing Basis
-             * @default null
-             */
-            timing_basis?: string | null;
-        };
-        /** DispatchBoundaryCue */
-        DispatchBoundaryCue: {
-            /** Text */
-            text: string;
-            /**
-             * Speaker
-             * @default null
-             */
-            speaker?: string | null;
-        };
-        /** DispatchBoundaryContext */
-        DispatchBoundaryContext: {
-            /** Previous Output */
-            previous_output: components["schemas"]["DispatchBoundaryCue"][];
-            /** Previous Source */
-            previous_source: components["schemas"]["DispatchBoundaryCue"][];
-            /** Following Source */
-            following_source: components["schemas"]["DispatchBoundaryCue"][];
-        };
-        /** DispatchClaimedBatch */
-        DispatchClaimedBatch: {
-            /**
-             * Id Namespace
-             * @enum {string}
-             */
-            id_namespace: "source_revision_cue" | "logical_passage";
-            /** Source Revision Id */
-            source_revision_id: string;
-            /** Cue Count */
-            cue_count: number;
-            /** Valid Cue Ids */
-            valid_cue_ids: number[];
-            /** Cues */
-            cues: components["schemas"]["DispatchCue"][];
-            context: components["schemas"]["DispatchBoundaryContext"];
-        };
-        /** DispatchTaskContract */
-        DispatchTaskContract: {
-            /** Session Id */
-            session_id: string;
-            /**
-             * Kind
-             * @enum {string}
-             */
-            kind: "correction" | "translation";
-            /**
-             * Output Role
-             * @enum {string}
-             */
-            output_role: "correction" | "translation";
-            /** Source Artifact Id */
-            source_artifact_id: string;
-            /** Source Language */
-            source_language: string;
-            /**
-             * Target Language
-             * @default null
-             */
-            target_language?: string | null;
-            /** Instructions */
-            instructions: string;
-            /** Result Contract */
-            result_contract: {
-                [key: string]: unknown;
-            };
-            /** No Remove Subtitles */
-            no_remove_subtitles: boolean;
-            /**
-             * Correction Style
-             * @enum {string}
-             */
-            correction_style: "publishable" | "faithful";
-            /** Known Speakers */
-            known_speakers: string[];
-            /** Glossary */
-            glossary: {
-                [key: string]: string;
-            };
-            /**
-             * Timing Context Mode
-             * @enum {string}
-             */
-            timing_context_mode: "full" | "overlap_only" | "none";
-            /**
-             * Substantial Gap Ms
-             * @default null
-             */
-            substantial_gap_ms?: number | null;
-            /**
-             * Quality Policy
-             * @default null
-             */
-            quality_policy?: {
-                [key: string]: unknown;
-            } | null;
-        };
-        /** DispatchDelegationContext */
-        DispatchDelegationContext: {
-            /**
-             * Execution Mode
-             * @enum {string}
-             */
-            execution_mode: "serial" | "parallel";
-            /** Max Parallel Batches */
-            max_parallel_batches: number;
-            /** Wave Number */
-            wave_number: number;
-            /** Wave Batch Count */
-            wave_batch_count: number;
-            context_capsule: components["schemas"]["DispatchContextCapsule"];
-        };
-        /** DispatchBatchClaimResponse */
-        DispatchBatchClaimResponse: {
-            /**
-             * Schema Version
              * @default 1
              * @constant
              */
-            schema_version?: "1";
-            /** Run Id */
-            run_id: string;
-            /** Batch Id */
-            batch_id: string;
-            /** Batch Ordinal */
-            batch_ordinal: number;
-            /** Status */
-            status: string;
-            /** Run Status */
-            run_status: string;
-            /** Batch Status */
-            batch_status: string;
-            task: components["schemas"]["DispatchTaskContract"];
-            batch: components["schemas"]["DispatchClaimedBatch"];
-            delegation: components["schemas"]["DispatchDelegationContext"];
-            /** Lease Token */
-            lease_token: string;
-            /** Lease Expires At */
-            lease_expires_at: string | null;
+            schema_version: 1;
+            truncated: boolean;
         };
-        /** DispatchBatchSubmitResponse */
-        DispatchBatchSubmitResponse: {
-            /** Run Id */
-            run_id: string;
-            /** Batch Id */
-            batch_id: string;
+        /** PdfCropInput */
+        PdfCropInput: {
+            /** Original Page */
+            original_page: number;
+            rect: components["schemas"]["PdfRectInput"];
+        };
+        /** PdfEditRequest */
+        PdfEditRequest: {
+            /** Crops */
+            crops?: components["schemas"]["PdfCropInput"][];
+            /** Deleted Pages */
+            deleted_pages?: number[];
             /**
-             * Output Role
+             * First Page Side
+             * @default right
              * @enum {string}
              */
-            output_role: "correction" | "translation";
-            /** Status */
-            status: string;
-            /** Run Status */
-            run_status: string;
-            /** Batch Status */
-            batch_status: string;
-            /** Accepted */
-            accepted: boolean;
-            /** Completed Batch Count */
-            completed_batch_count: number;
-            /** Completed Batches */
-            completed_batches: number;
-            /** Batch Count */
-            batch_count: number;
-            /** Total Batches */
-            total_batches: number;
-            /** Remaining Batches */
-            remaining_batches: number;
-            /**
-             * Result Artifact Id
-             * @default null
-             */
-            result_artifact_id?: string | null;
-            /**
-             * Final Artifact Id
-             * @default null
-             */
-            final_artifact_id?: string | null;
-            /** Finalized */
-            finalized: boolean;
-            /**
-             * Result Revision Id
-             * @default null
-             */
-            result_revision_id?: string | null;
-            /**
-             * Error Code
-             * @default null
-             */
-            error_code?: string | null;
-            /**
-             * Error Message
-             * @default null
-             */
-            error_message?: string | null;
+            first_page_side?: "left" | "right";
+            /** Source Artifact Id */
+            source_artifact_id: string;
+            /** Whiteouts */
+            whiteouts?: components["schemas"]["PdfWhiteoutInput"][];
         };
-        /** SpeechOptimizationDispatchRunCreateRequest */
-        SpeechOptimizationDispatchRunCreateRequest: {
+        /** PdfRectInput */
+        PdfRectInput: {
+            /** X0 */
+            x0: number;
+            /** X1 */
+            x1: number;
+            /** Y0 */
+            y0: number;
+            /** Y1 */
+            y1: number;
+        };
+        /** PdfWhiteoutInput */
+        PdfWhiteoutInput: {
+            /** Color */
+            color?: number[];
+            /** Original Page */
+            original_page: number;
+            rect: components["schemas"]["PdfRectInput"];
+        };
+        /** PronunciationCreate */
+        PronunciationCreate: {
             /**
-             * Execution Mode
-             * @default serial
+             * Alphabet
+             * @default respelling
+             * @constant
+             */
+            alphabet?: "respelling";
+            /**
+             * Backend
+             * @default *
+             */
+            backend?: string;
+            /**
+             * Language
+             * @default und
+             */
+            language?: string;
+            /** Metadata */
+            metadata?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Notes
+             * @default null
+             */
+            notes?: string | null;
+            /** Phonetic */
+            phonetic: string;
+            /**
+             * Scope
+             * @default global
              * @enum {string}
              */
-            execution_mode?: "serial" | "parallel";
+            scope?: "global" | "session";
             /**
-             * Max Parallel Batches
-             * @default 1
-             */
-            max_parallel_batches?: number;
-            context_capsule?: components["schemas"]["DispatchContextCapsule"];
-            /**
-             * Source Artifact Id
+             * Session Id
              * @default null
              */
-            source_artifact_id?: string | null;
+            session_id?: string | null;
+            /** Source Form */
+            source_form: string;
+            /**
+             * Status
+             * @default reviewed
+             * @enum {string}
+             */
+            status?: "proposed" | "reviewed" | "disabled";
+        };
+        /** PronunciationUpdate */
+        PronunciationUpdate: {
+            /**
+             * Alphabet
+             * @default null
+             */
+            alphabet?: "respelling" | null;
+            /**
+             * Backend
+             * @default null
+             */
+            backend?: string | null;
             /**
              * Language
              * @default null
              */
             language?: string | null;
             /**
-             * Voice Language
+             * Metadata
              * @default null
              */
-            voice_language?: string | null;
+            metadata?: {
+                [key: string]: unknown;
+            } | null;
             /**
-             * Tts Service
+             * Notes
              * @default null
              */
-            tts_service?: string | null;
+            notes?: string | null;
             /**
-             * Instructions
-             * @default
+             * Phonetic
+             * @default null
              */
-            instructions?: string;
+            phonetic?: string | null;
             /**
-             * Char Limit
-             * @description Target source characters per transport batch. A single source unit is never split and may exceed this value. This is not a model-token or iteration budget.
-             * @default 20000
+             * Scope
+             * @default null
              */
-            char_limit?: number;
+            scope?: ("global" | "session") | null;
             /**
-             * Max Units Per Batch
-             * @default 100
+             * Session Id
+             * @default null
              */
-            max_units_per_batch?: number;
+            session_id?: string | null;
             /**
-             * Context Before
-             * @default 4
+             * Source Form
+             * @default null
              */
-            context_before?: number;
+            source_form?: string | null;
             /**
-             * Context After
-             * @default 2
+             * Status
+             * @default null
              */
-            context_after?: number;
+            status?: ("proposed" | "reviewed" | "disabled") | null;
+        };
+        /** ProviderCreate */
+        ProviderCreate: {
             /**
-             * Include Timing
+             * Api Key
+             * @default null
+             */
+            api_key?: string | null;
+            /**
+             * Base Url
+             * @default null
+             */
+            base_url?: string | null;
+            /**
+             * Credential Backend
+             * @default null
+             */
+            credential_backend?: ("database" | "environment" | "keyring" | "file") | null;
+            /**
+             * Credential Reference
+             * @default null
+             */
+            credential_reference?: string | null;
+            /**
+             * Delete Previous Credential
+             * @default false
+             */
+            delete_previous_credential?: boolean;
+            /**
+             * Enabled
              * @default true
              */
-            include_timing?: boolean;
-        } & ({
-            /** @constant */
-            execution_mode?: "serial";
-            /** @constant */
-            max_parallel_batches?: 1;
-        } | {
-            /** @constant */
-            execution_mode: "parallel";
-            max_parallel_batches: unknown;
-        });
-        /** SpeechOptimizationDispatchItem */
-        SpeechOptimizationDispatchItem: {
-            /** Unit Id */
-            unit_id: number;
-            /** Text */
-            text: string;
-        };
-        /** SpeechOptimizationDispatchResult */
-        SpeechOptimizationDispatchResult: {
+            enabled?: boolean;
             /**
              * Kind
-             * @constant
+             * @default llm
              */
-            kind: "speech_optimization";
-            /** Items */
-            items: components["schemas"]["SpeechOptimizationDispatchItem"][];
-        };
-        /** SpeechOptimizationDispatchBatchSubmitRequest */
-        SpeechOptimizationDispatchBatchSubmitRequest: {
-            /** Lease Token */
-            lease_token: string;
-            result: components["schemas"]["SpeechOptimizationDispatchResult"];
-            context_delta?: components["schemas"]["DispatchContextDelta"];
-        };
-        /** SpeechOptimizationDispatchUnitTiming */
-        SpeechOptimizationDispatchUnitTiming: {
-            /** Start Ms */
-            start_ms: number;
-            /** End Ms */
-            end_ms: number;
-            /** Duration Ms */
-            duration_ms: number;
-        };
-        /** SpeechOptimizationDispatchUnit */
-        SpeechOptimizationDispatchUnit: {
-            /** Unit Id */
-            unit_id: number;
-            /** Text */
-            text: string;
-            /** Language */
-            language: string;
+            kind?: string;
+            /** Label */
+            label: string;
+            /** Options */
+            options?: {
+                [key: string]: unknown;
+            };
+            /** Provider Key */
+            provider_key: string;
             /**
-             * Speaker
+             * Secret Ref
              * @default null
              */
-            speaker?: string | null;
-            /** @default null */
-            timing?: components["schemas"]["SpeechOptimizationDispatchUnitTiming"] | null;
+            secret_ref?: string | null;
         };
-        /** SpeechOptimizationDispatchBoundaryUnit */
-        SpeechOptimizationDispatchBoundaryUnit: {
-            /** Text */
-            text: string;
-            /** Language */
-            language: string;
+        /** ProviderTestRequest */
+        ProviderTestRequest: {
             /**
-             * Speaker
+             * Model Id
              * @default null
              */
-            speaker?: string | null;
+            model_id?: string | null;
         };
-        /** SpeechOptimizationDispatchContext */
-        SpeechOptimizationDispatchContext: {
-            /** Previous Output */
-            previous_output: components["schemas"]["SpeechOptimizationDispatchBoundaryUnit"][];
-            /** Previous Source */
-            previous_source: components["schemas"]["SpeechOptimizationDispatchBoundaryUnit"][];
-            /** Following Source */
-            following_source: components["schemas"]["SpeechOptimizationDispatchBoundaryUnit"][];
-        };
-        /** SpeechOptimizationDispatchClaimedBatch */
-        SpeechOptimizationDispatchClaimedBatch: {
+        /** ProviderUpdate */
+        ProviderUpdate: {
             /**
-             * Id Namespace
-             * @constant
-             */
-            id_namespace: "speech_optimization_unit";
-            /** Unit Count */
-            unit_count: number;
-            /** Valid Unit Ids */
-            valid_unit_ids: number[];
-            /** Units */
-            units: components["schemas"]["SpeechOptimizationDispatchUnit"][];
-            context: components["schemas"]["SpeechOptimizationDispatchContext"];
-        };
-        /** SpeechOptimizationDispatchTaskContract */
-        SpeechOptimizationDispatchTaskContract: {
-            /**
-             * Kind
-             * @constant
-             */
-            kind: "speech_optimization";
-            /**
-             * Output Role
-             * @constant
-             */
-            output_role: "tts_optimized";
-            /** Language */
-            language: string;
-            /**
-             * Voice Language
+             * Api Key
              * @default null
              */
-            voice_language?: string | null;
+            api_key?: string | null;
             /**
-             * Tts Service
+             * Base Url
              * @default null
              */
-            tts_service?: string | null;
-            /** Instructions */
-            instructions: string;
-            /** Result Contract */
-            result_contract: {
+            base_url?: string | null;
+            /**
+             * Clear Api Key
+             * @default false
+             */
+            clear_api_key?: boolean;
+            /**
+             * Credential Backend
+             * @default null
+             */
+            credential_backend?: ("database" | "environment" | "keyring" | "file") | null;
+            /**
+             * Credential Reference
+             * @default null
+             */
+            credential_reference?: string | null;
+            /**
+             * Delete Previous Credential
+             * @default false
+             */
+            delete_previous_credential?: boolean;
+            /**
+             * Enabled
+             * @default null
+             */
+            enabled?: boolean | null;
+            /**
+             * Label
+             * @default null
+             */
+            label?: string | null;
+            /**
+             * Options
+             * @default null
+             */
+            options?: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Provider Key
+             * @default null
+             */
+            provider_key?: string | null;
+            /**
+             * Secret Ref
+             * @default null
+             */
+            secret_ref?: string | null;
+        };
+        /** RecordingTimingRequest */
+        RecordingTimingRequest: {
+            /** Expected Revision */
+            expected_revision: number;
+            /** Media Artifact Id */
+            media_artifact_id: string;
+        };
+        /** RepairBatchUndoRequest */
+        RepairBatchUndoRequest: {
+            /** Expected Revision Id */
+            expected_revision_id: string;
+            /** Expected State Hash */
+            expected_state_hash: string;
+        };
+        /** RvcConvertRequest */
+        RvcConvertRequest: {
+            /**
+             * Session Id
+             * @default null
+             */
+            session_id?: string | null;
+            /** Settings */
+            settings?: {
+                [key: string]: unknown;
+            };
+            /** Source Artifact Id */
+            source_artifact_id: string;
+        };
+        /** RvcModelUploadRequest */
+        RvcModelUploadRequest: {
+            /** Index Artifact Id */
+            index_artifact_id: string;
+            /** Pth Artifact Id */
+            pth_artifact_id: string;
+        };
+        /** SessionCreate */
+        SessionCreate: {
+            /** Included Stages */
+            included_stages?: string[];
+            /** Name */
+            name: string;
+            /**
+             * Overwrite Session Id
+             * @default null
+             */
+            overwrite_session_id?: string | null;
+            /**
+             * Source Language
+             * @default auto
+             */
+            source_language?: string;
+            /**
+             * Target Language
+             * @default null
+             */
+            target_language?: string | null;
+            /**
+             * Workflow Kind
+             * @default audiobook
+             * @enum {string}
+             */
+            workflow_kind?: "audiobook" | "subtitles" | "voiceover" | "media_edit";
+            /**
+             * Workflow Preset
+             * @default custom
+             */
+            workflow_preset?: string;
+        };
+        /** SessionForkRequest */
+        SessionForkRequest: {
+            /** Checkpoint Artifact Id */
+            checkpoint_artifact_id: string;
+            /**
+             * Name
+             * @default null
+             */
+            name?: string | null;
+        };
+        /** SessionSettingsUpdate */
+        SessionSettingsUpdate: {
+            /** Value */
+            value?: {
                 [key: string]: unknown;
             };
         };
-        /** SpeechOptimizationDispatchBatchClaimResponse */
-        SpeechOptimizationDispatchBatchClaimResponse: {
+        /** SessionUpdate */
+        SessionUpdate: {
+            /**
+             * Included Stages
+             * @default null
+             */
+            included_stages?: string[] | null;
+            /**
+             * Name
+             * @default null
+             */
+            name?: string | null;
+            /**
+             * Source Language
+             * @default null
+             */
+            source_language?: string | null;
+            /**
+             * Status
+             * @default null
+             */
+            status?: string | null;
+            /**
+             * Target Language
+             * @default null
+             */
+            target_language?: string | null;
+            /**
+             * Workflow Kind
+             * @default null
+             */
+            workflow_kind?: ("audiobook" | "subtitles" | "voiceover" | "media_edit") | null;
+            /**
+             * Workflow Preset
+             * @default null
+             */
+            workflow_preset?: string | null;
+        };
+        /** SettingUpdate */
+        SettingUpdate: {
+            /** Value */
+            value: unknown;
+        };
+        /** SourceAttachRequest */
+        SourceAttachRequest: {
+            /**
+             * Role
+             * @default primary
+             */
+            role?: string;
+            /** Source Asset Id */
+            source_asset_id: string;
+        };
+        /** SourceChangePreviewRequest */
+        SourceChangePreviewRequest: {
+            /**
+             * New Source Asset Id
+             * @default null
+             */
+            new_source_asset_id?: string | null;
+            /**
+             * Role
+             * @default primary
+             * @enum {string}
+             */
+            role?: "primary" | "media";
+        };
+        /** SourceChangeRequest */
+        SourceChangeRequest: {
+            /** Expected Revision */
+            expected_revision: number;
+            /** Impact Token */
+            impact_token: string;
+            /**
+             * New Source Asset Id
+             * @default null
+             */
+            new_source_asset_id?: string | null;
+            /**
+             * Role
+             * @default primary
+             * @enum {string}
+             */
+            role?: "primary" | "media";
+        };
+        /** SourceCleaningDispatchBatchClaimResponse */
+        SourceCleaningDispatchBatchClaimResponse: {
+            /** Batch */
+            batch: {
+                [key: string]: unknown;
+            };
+            /** Batch Id */
+            batch_id: string;
+            /** Batch Ordinal */
+            batch_ordinal: number;
+            /** Batch Status */
+            batch_status: string;
+            /** Lease Expires At */
+            lease_expires_at: string | null;
+            /** Lease Token */
+            lease_token: string;
+            /** Run Id */
+            run_id: string;
+            /** Run Status */
+            run_status: string;
             /**
              * Schema Version
              * @default 1
              * @constant
              */
             schema_version?: "1";
-            /** Run Id */
-            run_id: string;
-            /** Batch Id */
-            batch_id: string;
-            /** Batch Ordinal */
-            batch_ordinal: number;
             /** Status */
             status: string;
-            /** Run Status */
-            run_status: string;
-            /** Batch Status */
-            batch_status: string;
-            task: components["schemas"]["SpeechOptimizationDispatchTaskContract"];
-            batch: components["schemas"]["SpeechOptimizationDispatchClaimedBatch"];
-            delegation: components["schemas"]["DispatchDelegationContext"];
+            /** Task */
+            task: {
+                [key: string]: unknown;
+            };
+        };
+        /** SourceCleaningDispatchBatchSubmitRequest */
+        SourceCleaningDispatchBatchSubmitRequest: {
             /** Lease Token */
             lease_token: string;
-            /** Lease Expires At */
-            lease_expires_at: string | null;
+            result: components["schemas"]["SourceCleaningDispatchResult"];
         };
-        /** SpeechOptimizationDispatchBatchSubmitResponse */
-        SpeechOptimizationDispatchBatchSubmitResponse: {
-            /** Run Id */
-            run_id: string;
-            /** Batch Id */
-            batch_id: string;
-            /**
-             * Output Role
-             * @constant
-             */
-            output_role: "tts_optimized";
-            /** Status */
-            status: string;
-            /** Run Status */
-            run_status: string;
-            /** Batch Status */
-            batch_status: string;
+        /** SourceCleaningDispatchBatchSubmitResponse */
+        SourceCleaningDispatchBatchSubmitResponse: {
             /** Accepted */
             accepted: boolean;
+            /** Accepted Operation Count */
+            accepted_operation_count: number;
+            /** Batch Count */
+            batch_count: number;
+            /** Batch Id */
+            batch_id: string;
+            /** Batch Status */
+            batch_status: string;
             /** Completed Batch Count */
             completed_batch_count: number;
             /** Completed Batches */
             completed_batches: number;
-            /** Batch Count */
-            batch_count: number;
-            /** Total Batches */
-            total_batches: number;
-            /** Remaining Batches */
-            remaining_batches: number;
             /**
-             * Result Artifact Id
+             * Error Code
              * @default null
              */
-            result_artifact_id?: string | null;
+            error_code?: string | null;
+            /**
+             * Error Message
+             * @default null
+             */
+            error_message?: string | null;
             /**
              * Final Artifact Id
              * @default null
@@ -5600,267 +5420,33 @@ export interface components {
             /** Finalized */
             finalized: boolean;
             /**
-             * Result Revision Id
-             * @default null
-             */
-            result_revision_id?: string | null;
-            /**
-             * Error Code
-             * @default null
-             */
-            error_code?: string | null;
-            /**
-             * Error Message
-             * @default null
-             */
-            error_message?: string | null;
-        };
-        /** MediaEditDispatchRunCreateRequest */
-        MediaEditDispatchRunCreateRequest: {
-            /** Revision */
-            revision: number;
-            /** Instructions */
-            instructions: string;
-        };
-        /** MediaEditDispatchCut */
-        MediaEditDispatchCut: {
-            /**
-             * Start Cue Id
-             * @default null
-             */
-            start_cue_id?: string | null;
-            /**
-             * Start At Media Start
-             * @default false
-             */
-            start_at_media_start?: boolean;
-            /**
-             * End Cue Id
-             * @default null
-             */
-            end_cue_id?: string | null;
-            /**
-             * End At Media End
-             * @default false
-             */
-            end_at_media_end?: boolean;
-            /** Reason */
-            reason: string;
-        };
-        /** MediaEditDispatchResult */
-        MediaEditDispatchResult: {
-            /**
-             * Kind
+             * Output Role
              * @constant
              */
-            kind: "media_edit";
-            /** Cuts */
-            cuts: components["schemas"]["MediaEditDispatchCut"][];
-        };
-        /** MediaEditDispatchBatchSubmitRequest */
-        MediaEditDispatchBatchSubmitRequest: {
-            /** Lease Token */
-            lease_token: string;
-            result: components["schemas"]["MediaEditDispatchResult"];
-        };
-        /** MediaEditDispatchCue */
-        MediaEditDispatchCue: {
-            /** Id */
-            id: string;
-            /** Start Ms */
-            start_ms: number;
-            /** End Ms */
-            end_ms: number;
-            /** Text */
-            text: string;
-            /**
-             * Speaker
-             * @default null
-             */
-            speaker?: string | null;
-            /** Timing Source */
-            timing_source: string;
-            /**
-             * Timing Confidence
-             * @default null
-             */
-            timing_confidence?: number | null;
-        };
-        /** MediaEditDispatchBatch */
-        MediaEditDispatchBatch: {
-            /** Duration Ms */
-            duration_ms: number;
-            /** Keep Ranges */
-            keep_ranges: components["schemas"]["MediaEditKeepRange"][];
-            /** Cues */
-            cues: components["schemas"]["MediaEditDispatchCue"][];
-            /** Cue Count */
-            cue_count: number;
-            /** Valid Cue Ids */
-            valid_cue_ids: string[];
-            /** Evidence */
-            evidence: {
-                [key: string]: unknown;
-            };
-            /** Artifact Ids */
-            artifact_ids: {
-                [key: string]: string | null;
-            };
-        };
-        /** MediaEditDispatchTaskContract */
-        MediaEditDispatchTaskContract: {
-            /**
-             * Kind
-             * @constant
-             */
-            kind: "media_edit";
-            /** Instructions */
-            instructions: string;
-            /** Result Contract */
-            result_contract: {
-                [key: string]: unknown;
-            };
-        };
-        /** MediaEditDispatchBatchClaimResponse */
-        MediaEditDispatchBatchClaimResponse: {
-            /**
-             * Schema Version
-             * @default 1
-             * @constant
-             */
-            schema_version?: "1";
-            /** Run Id */
-            run_id: string;
-            /** Batch Id */
-            batch_id: string;
-            /** Batch Ordinal */
-            batch_ordinal: number;
-            /** Status */
-            status: string;
-            /** Run Status */
-            run_status: string;
-            /** Batch Status */
-            batch_status: string;
-            /** Source Revision */
-            source_revision: {
-                [key: string]: unknown;
-            };
-            task: components["schemas"]["MediaEditDispatchTaskContract"];
-            batch: components["schemas"]["MediaEditDispatchBatch"];
-            /** Lease Token */
-            lease_token: string;
-            /** Lease Expires At */
-            lease_expires_at: string | null;
-        };
-        /** MediaEditDispatchBatchSubmitResponse */
-        MediaEditDispatchBatchSubmitResponse: {
-            /** Run Id */
-            run_id: string;
-            /** Batch Id */
-            batch_id: string;
-            /** Session Id */
-            session_id: string;
-            /**
-             * Kind
-             * @constant
-             */
-            kind: "media_edit";
-            /** Status */
-            status: string;
-            /** Run Status */
-            run_status: string;
-            /** Batch Status */
-            batch_status: string;
-            /** Accepted */
-            accepted: boolean;
-            /** Completed Batch Count */
-            completed_batch_count: number;
-            /** Completed Batches */
-            completed_batches: number;
-            /** Batch Count */
-            batch_count: number;
-            /** Total Batches */
-            total_batches: number;
+            output_role: "clean_text";
+            /** Rejected Proposal Count */
+            rejected_proposal_count: number;
             /** Remaining Batches */
             remaining_batches: number;
-            /** Finalized */
-            finalized: boolean;
-            /** Source Revision Number */
-            source_revision_number: number;
+            /** Requires Review */
+            requires_review: boolean;
             /**
-             * Result Revision Id
+             * Result Artifact Id
              * @default null
              */
-            result_revision_id?: string | null;
-            /**
-             * Result Revision
-             * @default null
-             */
-            result_revision?: number | null;
-            /**
-             * Error Code
-             * @default null
-             */
-            error_code?: string | null;
-            /**
-             * Error Message
-             * @default null
-             */
-            error_message?: string | null;
-        };
-        /** SourceCleaningDispatchRunCreateRequest */
-        SourceCleaningDispatchRunCreateRequest: {
-            /**
-             * Source Artifact Id
-             * @default null
-             */
-            source_artifact_id?: string | null;
-            /**
-             * Instructions
-             * @default
-             */
-            instructions?: string;
-            /**
-             * Evidence Limit
-             * @description Maximum evidence items exposed in each phase packet. This is a transport bound, not a model-token or iteration budget.
-             * @default 500
-             */
-            evidence_limit?: number;
-            /**
-             * Remove Footnotes
-             * @default null
-             */
-            remove_footnotes?: boolean | null;
-            /**
-             * Filter Citations
-             * @default null
-             */
-            filter_citations?: boolean | null;
-            /**
-             * Pdf Ocr Mode
-             * @default null
-             */
-            pdf_ocr_mode?: ("auto" | "off" | "force") | null;
-            /**
-             * Pdf Ocr Language
-             * @default null
-             */
-            pdf_ocr_language?: string | null;
-            /**
-             * Pdf Ocr Dpi
-             * @default null
-             */
-            pdf_ocr_dpi?: number | null;
-            /**
-             * Pdf Remove Toc
-             * @default null
-             */
-            pdf_remove_toc?: boolean | null;
-            /**
-             * Pdf Remove Repeated Marginals
-             * @default null
-             */
-            pdf_remove_repeated_marginals?: boolean | null;
+            result_artifact_id?: string | null;
+            /** Run Id */
+            run_id: string;
+            /** Run Status */
+            run_status: string;
+            /** Status */
+            status: string;
+            /** Total Batches */
+            total_batches: number;
+            /** Validation */
+            validation: {
+                [key: string]: unknown;
+            };
         };
         /** SourceCleaningDispatchDecision */
         SourceCleaningDispatchDecision: {
@@ -5872,71 +5458,8 @@ export interface components {
              */
             verdict: "accept" | "reject";
         };
-        /** SourceCleaningDispatchOperation */
-        SourceCleaningDispatchOperation: {
-            /**
-             * Op
-             * @enum {string}
-             */
-            op: "set_metadata" | "delete_blocks" | "mark_chapter" | "unmark_chapter" | "replace_block";
-            /** Metadata */
-            metadata?: {
-                [key: string]: string;
-            };
-            /** Block Ids */
-            block_ids?: string[];
-            /**
-             * Block Id
-             * @default null
-             */
-            block_id?: string | null;
-            /**
-             * Title
-             * @default null
-             */
-            title?: string | null;
-            /**
-             * Replacement
-             * @default
-             */
-            replacement?: string;
-            /**
-             * Reason
-             * @default
-             */
-            reason?: string;
-        };
-        /** SourceCleaningDispatchResult */
-        SourceCleaningDispatchResult: {
-            /**
-             * Kind
-             * @constant
-             */
-            kind: "source_cleaning";
-            /**
-             * Phase
-             * @enum {string}
-             */
-            phase: "metadata" | "navigation" | "boilerplate" | "repeated_elements" | "chapter_marking" | "text_repair";
-            /** Decisions */
-            decisions?: components["schemas"]["SourceCleaningDispatchDecision"][];
-            /** Operations */
-            operations?: components["schemas"]["SourceCleaningDispatchOperation"][];
-            /**
-             * Summary
-             * @default
-             */
-            summary?: string;
-            /**
-             * Confidence
-             * @default 0
-             */
-            confidence?: number;
-        };
         /** SourceCleaningDispatchInspectionRequest */
         SourceCleaningDispatchInspectionRequest: {
-            /** Lease Token */
-            lease_token: string;
             /**
              * Action
              * @enum {string}
@@ -5946,6 +5469,8 @@ export interface components {
             arguments?: {
                 [key: string]: unknown;
             };
+            /** Lease Token */
+            lease_token: string;
             /**
              * View
              * @default working
@@ -5955,130 +5480,241 @@ export interface components {
         };
         /** SourceCleaningDispatchInspectionResponse */
         SourceCleaningDispatchInspectionResponse: {
+            /** Action */
+            action: string;
+            /** Baseline Only Block Ids */
+            baseline_only_block_ids: string[];
+            /** Batch Id */
+            batch_id: string;
+            /** Inspection Id */
+            inspection_id: string;
+            /** Lease Expires At */
+            lease_expires_at: string | null;
+            /** Observation */
+            observation: unknown;
+            /** Phase */
+            phase: string;
+            /** Promoted Block Ids */
+            promoted_block_ids: string[];
+            /** Run Id */
+            run_id: string;
             /**
              * Schema Version
              * @default 1
              * @constant
              */
             schema_version?: "1";
-            /** Run Id */
-            run_id: string;
-            /** Batch Id */
-            batch_id: string;
-            /** Phase */
-            phase: string;
-            /** Inspection Id */
-            inspection_id: string;
+            /** Source Only Block Ids */
+            source_only_block_ids: string[];
+            /** Valid Block Id Count */
+            valid_block_id_count: number;
             /**
              * View
              * @enum {string}
              */
             view: "working" | "baseline" | "source";
-            /** Action */
-            action: string;
-            /** Observation */
-            observation: unknown;
-            /** Promoted Block Ids */
-            promoted_block_ids: string[];
-            /** Baseline Only Block Ids */
-            baseline_only_block_ids: string[];
-            /** Source Only Block Ids */
-            source_only_block_ids: string[];
-            /** Valid Block Id Count */
-            valid_block_id_count: number;
+        };
+        /** SourceCleaningDispatchOperation */
+        SourceCleaningDispatchOperation: {
+            /**
+             * Block Id
+             * @default null
+             */
+            block_id?: string | null;
+            /** Block Ids */
+            block_ids?: string[];
+            /** Metadata */
+            metadata?: {
+                [key: string]: string;
+            };
+            /**
+             * Op
+             * @enum {string}
+             */
+            op: "set_metadata" | "delete_blocks" | "mark_chapter" | "unmark_chapter" | "replace_block";
+            /**
+             * Reason
+             * @default
+             */
+            reason?: string;
+            /**
+             * Replacement
+             * @default
+             */
+            replacement?: string;
+            /**
+             * Title
+             * @default null
+             */
+            title?: string | null;
+        };
+        /** SourceCleaningDispatchResult */
+        SourceCleaningDispatchResult: {
+            /**
+             * Confidence
+             * @default 0
+             */
+            confidence?: number;
+            /** Decisions */
+            decisions?: components["schemas"]["SourceCleaningDispatchDecision"][];
+            /**
+             * Kind
+             * @constant
+             */
+            kind: "source_cleaning";
+            /** Operations */
+            operations?: components["schemas"]["SourceCleaningDispatchOperation"][];
+            /**
+             * Phase
+             * @enum {string}
+             */
+            phase: "metadata" | "navigation" | "boilerplate" | "repeated_elements" | "chapter_marking" | "text_repair";
+            /**
+             * Summary
+             * @default
+             */
+            summary?: string;
+        };
+        /** SourceCleaningDispatchRunCreateRequest */
+        SourceCleaningDispatchRunCreateRequest: {
+            /**
+             * Evidence Limit
+             * @description Maximum evidence items exposed in each phase packet. This is a transport bound, not a model-token or iteration budget.
+             * @default 500
+             */
+            evidence_limit?: number;
+            /**
+             * Filter Citations
+             * @default null
+             */
+            filter_citations?: boolean | null;
+            /**
+             * Instructions
+             * @default
+             */
+            instructions?: string;
+            /**
+             * Pdf Ocr Dpi
+             * @default null
+             */
+            pdf_ocr_dpi?: number | null;
+            /**
+             * Pdf Ocr Language
+             * @default null
+             */
+            pdf_ocr_language?: string | null;
+            /**
+             * Pdf Ocr Mode
+             * @default null
+             */
+            pdf_ocr_mode?: ("auto" | "off" | "force") | null;
+            /**
+             * Pdf Remove Repeated Marginals
+             * @default null
+             */
+            pdf_remove_repeated_marginals?: boolean | null;
+            /**
+             * Pdf Remove Toc
+             * @default null
+             */
+            pdf_remove_toc?: boolean | null;
+            /**
+             * Remove Footnotes
+             * @default null
+             */
+            remove_footnotes?: boolean | null;
+            /**
+             * Source Artifact Id
+             * @default null
+             */
+            source_artifact_id?: string | null;
+        };
+        /** SourcePassagePreviewRequest */
+        SourcePassagePreviewRequest: {
+            /** Source Passages */
+            source_passages?: {
+                [key: string]: unknown;
+            };
+        };
+        /** SourcePassageRebuildRequest */
+        SourcePassageRebuildRequest: {
+            /** Expected Settings Hash */
+            expected_settings_hash: string;
+            /** Expected Settings Revision */
+            expected_settings_revision: number;
+            /** Expected Source Content Hash */
+            expected_source_content_hash: string;
+            /** Expected Source Revision Id */
+            expected_source_revision_id: string;
+            /** Source Passages */
+            source_passages?: {
+                [key: string]: unknown;
+            };
+        };
+        /** SourceReuseRequest */
+        SourceReuseRequest: {
+            /** Artifact Id */
+            artifact_id: string;
+        };
+        /** SourceUpdateRequest */
+        SourceUpdateRequest: {
+            /** Display Name */
+            display_name: string;
+        };
+        /** SourceUrlRequest */
+        SourceUrlRequest: {
+            /** Url */
+            url: string;
+        };
+        /** SpeechOptimizationDispatchBatchClaimResponse */
+        SpeechOptimizationDispatchBatchClaimResponse: {
+            batch: components["schemas"]["SpeechOptimizationDispatchClaimedBatch"];
+            /** Batch Id */
+            batch_id: string;
+            /** Batch Ordinal */
+            batch_ordinal: number;
+            /** Batch Status */
+            batch_status: string;
+            delegation: components["schemas"]["DispatchDelegationContext"];
             /** Lease Expires At */
             lease_expires_at: string | null;
-        };
-        /** SourceCleaningDispatchBatchSubmitRequest */
-        SourceCleaningDispatchBatchSubmitRequest: {
             /** Lease Token */
             lease_token: string;
-            result: components["schemas"]["SourceCleaningDispatchResult"];
-        };
-        /** SourceCleaningDispatchBatchClaimResponse */
-        SourceCleaningDispatchBatchClaimResponse: {
+            /** Run Id */
+            run_id: string;
+            /** Run Status */
+            run_status: string;
             /**
              * Schema Version
              * @default 1
              * @constant
              */
             schema_version?: "1";
-            /** Run Id */
-            run_id: string;
-            /** Batch Id */
-            batch_id: string;
-            /** Batch Ordinal */
-            batch_ordinal: number;
             /** Status */
             status: string;
-            /** Run Status */
-            run_status: string;
-            /** Batch Status */
-            batch_status: string;
-            /** Task */
-            task: {
-                [key: string]: unknown;
-            };
-            /** Batch */
-            batch: {
-                [key: string]: unknown;
-            };
+            task: components["schemas"]["SpeechOptimizationDispatchTaskContract"];
+        };
+        /** SpeechOptimizationDispatchBatchSubmitRequest */
+        SpeechOptimizationDispatchBatchSubmitRequest: {
+            context_delta?: components["schemas"]["DispatchContextDelta"];
             /** Lease Token */
             lease_token: string;
-            /** Lease Expires At */
-            lease_expires_at: string | null;
+            result: components["schemas"]["SpeechOptimizationDispatchResult"];
         };
-        /** SourceCleaningDispatchBatchSubmitResponse */
-        SourceCleaningDispatchBatchSubmitResponse: {
-            /** Run Id */
-            run_id: string;
-            /** Batch Id */
-            batch_id: string;
-            /**
-             * Output Role
-             * @constant
-             */
-            output_role: "clean_text";
-            /** Status */
-            status: string;
-            /** Run Status */
-            run_status: string;
-            /** Batch Status */
-            batch_status: string;
+        /** SpeechOptimizationDispatchBatchSubmitResponse */
+        SpeechOptimizationDispatchBatchSubmitResponse: {
             /** Accepted */
             accepted: boolean;
+            /** Batch Count */
+            batch_count: number;
+            /** Batch Id */
+            batch_id: string;
+            /** Batch Status */
+            batch_status: string;
             /** Completed Batch Count */
             completed_batch_count: number;
             /** Completed Batches */
             completed_batches: number;
-            /** Batch Count */
-            batch_count: number;
-            /** Total Batches */
-            total_batches: number;
-            /** Remaining Batches */
-            remaining_batches: number;
-            /** Accepted Operation Count */
-            accepted_operation_count: number;
-            /** Rejected Proposal Count */
-            rejected_proposal_count: number;
-            /**
-             * Result Artifact Id
-             * @default null
-             */
-            result_artifact_id?: string | null;
-            /**
-             * Final Artifact Id
-             * @default null
-             */
-            final_artifact_id?: string | null;
-            /** Finalized */
-            finalized: boolean;
-            /** Requires Review */
-            requires_review: boolean;
-            /** Validation */
-            validation: {
-                [key: string]: unknown;
-            };
             /**
              * Error Code
              * @default null
@@ -6089,138 +5725,618 @@ export interface components {
              * @default null
              */
             error_message?: string | null;
-        };
-        /** RecordingTimingRequest */
-        RecordingTimingRequest: {
-            /** Expected Revision */
-            expected_revision: number;
-            /** Media Artifact Id */
-            media_artifact_id: string;
-        };
-        /** SourceChangePreviewRequest */
-        SourceChangePreviewRequest: {
             /**
-             * Role
-             * @default primary
-             * @enum {string}
-             */
-            role?: "primary" | "media";
-            /**
-             * New Source Asset Id
+             * Final Artifact Id
              * @default null
              */
-            new_source_asset_id?: string | null;
-        };
-        /** SourceChangeRequest */
-        SourceChangeRequest: {
+            final_artifact_id?: string | null;
+            /** Finalized */
+            finalized: boolean;
             /**
-             * Role
-             * @default primary
-             * @enum {string}
+             * Output Role
+             * @constant
              */
-            role?: "primary" | "media";
+            output_role: "tts_optimized";
+            /** Remaining Batches */
+            remaining_batches: number;
             /**
-             * New Source Asset Id
+             * Result Artifact Id
              * @default null
              */
-            new_source_asset_id?: string | null;
-            /** Expected Revision */
-            expected_revision: number;
-            /** Impact Token */
-            impact_token: string;
+            result_artifact_id?: string | null;
+            /**
+             * Result Revision Id
+             * @default null
+             */
+            result_revision_id?: string | null;
+            /** Run Id */
+            run_id: string;
+            /** Run Status */
+            run_status: string;
+            /** Status */
+            status: string;
+            /** Total Batches */
+            total_batches: number;
+        };
+        /** SpeechOptimizationDispatchBoundaryUnit */
+        SpeechOptimizationDispatchBoundaryUnit: {
+            /** Language */
+            language: string;
+            /**
+             * Speaker
+             * @default null
+             */
+            speaker?: string | null;
+            /** Text */
+            text: string;
+        };
+        /** SpeechOptimizationDispatchClaimedBatch */
+        SpeechOptimizationDispatchClaimedBatch: {
+            context: components["schemas"]["SpeechOptimizationDispatchContext"];
+            /**
+             * Id Namespace
+             * @constant
+             */
+            id_namespace: "speech_optimization_unit";
+            /** Unit Count */
+            unit_count: number;
+            /** Units */
+            units: components["schemas"]["SpeechOptimizationDispatchUnit"][];
+            /** Valid Unit Ids */
+            valid_unit_ids: number[];
+        };
+        /** SpeechOptimizationDispatchContext */
+        SpeechOptimizationDispatchContext: {
+            /** Following Source */
+            following_source: components["schemas"]["SpeechOptimizationDispatchBoundaryUnit"][];
+            /** Previous Output */
+            previous_output: components["schemas"]["SpeechOptimizationDispatchBoundaryUnit"][];
+            /** Previous Source */
+            previous_source: components["schemas"]["SpeechOptimizationDispatchBoundaryUnit"][];
+        };
+        /** SpeechOptimizationDispatchItem */
+        SpeechOptimizationDispatchItem: {
+            /** Text */
+            text: string;
+            /** Unit Id */
+            unit_id: number;
+        };
+        /** SpeechOptimizationDispatchResult */
+        SpeechOptimizationDispatchResult: {
+            /** Items */
+            items: components["schemas"]["SpeechOptimizationDispatchItem"][];
+            /**
+             * Kind
+             * @constant
+             */
+            kind: "speech_optimization";
+        };
+        /** SpeechOptimizationDispatchRunCreateRequest */
+        SpeechOptimizationDispatchRunCreateRequest: {
+            /**
+             * Char Limit
+             * @description Target source characters per transport batch. A single source unit is never split and may exceed this value. This is not a model-token or iteration budget.
+             * @default 20000
+             */
+            char_limit?: number;
+            /**
+             * Context After
+             * @default 2
+             */
+            context_after?: number;
+            /**
+             * Context Before
+             * @default 4
+             */
+            context_before?: number;
+            context_capsule?: components["schemas"]["DispatchContextCapsule"];
+            /**
+             * Execution Mode
+             * @default serial
+             * @enum {string}
+             */
+            execution_mode?: "serial" | "parallel";
+            /**
+             * Include Timing
+             * @default true
+             */
+            include_timing?: boolean;
+            /**
+             * Instructions
+             * @default
+             */
+            instructions?: string;
+            /**
+             * Language
+             * @default null
+             */
+            language?: string | null;
+            /**
+             * Max Parallel Batches
+             * @default 1
+             */
+            max_parallel_batches?: number;
+            /**
+             * Max Units Per Batch
+             * @default 100
+             */
+            max_units_per_batch?: number;
+            /**
+             * Source Artifact Id
+             * @default null
+             */
+            source_artifact_id?: string | null;
+            /**
+             * Tts Service
+             * @default null
+             */
+            tts_service?: string | null;
+            /**
+             * Voice Language
+             * @default null
+             */
+            voice_language?: string | null;
+        } & ({
+            /** @constant */
+            execution_mode?: "serial";
+            /** @constant */
+            max_parallel_batches?: 1;
+        } | {
+            /** @constant */
+            execution_mode: "parallel";
+            max_parallel_batches: unknown;
+        });
+        /** SpeechOptimizationDispatchTaskContract */
+        SpeechOptimizationDispatchTaskContract: {
+            /** Instructions */
+            instructions: string;
+            /**
+             * Kind
+             * @constant
+             */
+            kind: "speech_optimization";
+            /** Language */
+            language: string;
+            /**
+             * Output Role
+             * @constant
+             */
+            output_role: "tts_optimized";
+            /** Result Contract */
+            result_contract: {
+                [key: string]: unknown;
+            };
+            /**
+             * Tts Service
+             * @default null
+             */
+            tts_service?: string | null;
+            /**
+             * Voice Language
+             * @default null
+             */
+            voice_language?: string | null;
+        };
+        /** SpeechOptimizationDispatchUnit */
+        SpeechOptimizationDispatchUnit: {
+            /** Language */
+            language: string;
+            /**
+             * Speaker
+             * @default null
+             */
+            speaker?: string | null;
+            /** Text */
+            text: string;
+            /** @default null */
+            timing?: components["schemas"]["SpeechOptimizationDispatchUnitTiming"] | null;
+            /** Unit Id */
+            unit_id: number;
+        };
+        /** SpeechOptimizationDispatchUnitTiming */
+        SpeechOptimizationDispatchUnitTiming: {
+            /** Duration Ms */
+            duration_ms: number;
+            /** End Ms */
+            end_ms: number;
+            /** Start Ms */
+            start_ms: number;
         };
         /** SpeechPlanPrepareRequest */
         SpeechPlanPrepareRequest: {
-            /** Expected Revision */
-            expected_revision: number;
             /**
              * Expected Plan Revision Id
              * @default null
              */
             expected_plan_revision_id?: string | null;
+            /** Expected Revision */
+            expected_revision: number;
             /** Source Artifact Id */
             source_artifact_id: string;
         };
-        /** SpeechPlanSelectRequest */
-        SpeechPlanSelectRequest: {
+        /** SpeechPlanReviewRequest */
+        SpeechPlanReviewRequest: {
+            /** Content Signature */
+            content_signature: string;
             /** Revision Id */
             revision_id: string;
+        };
+        /** SpeechPlanSelectRequest */
+        SpeechPlanSelectRequest: {
             /**
              * Expected Plan Revision Id
              * @default null
              */
             expected_plan_revision_id?: string | null;
-        };
-        /** SpeechPlanReviewRequest */
-        SpeechPlanReviewRequest: {
             /** Revision Id */
             revision_id: string;
-            /** Content Signature */
-            content_signature: string;
         };
-        /**
-         * ApplicationIdentityDocument
-         * @description Versioned identity response pinned by remote MCP target profiles.
-         */
-        ApplicationIdentityDocument: {
+        /** StageSelectionUpdate */
+        StageSelectionUpdate: {
             /**
-             * Schema Version
-             * @default 1
-             */
-            schema_version?: string;
-            /**
-             * Service
-             * @default pandrator
-             */
-            service?: string;
-            /** Instance Id */
-            instance_id: string;
-            /**
-             * Application Version
-             * @default 0.9.2
-             */
-            application_version?: string;
-            /**
-             * Api Version
-             * @default v1
-             */
-            api_version?: string;
-            /**
-             * Protocol Version
-             * @default v1
-             */
-            protocol_version?: string;
-            /** Canonical Origin */
-            canonical_origin: string;
-            /** Managed */
-            managed: boolean;
-            /**
-             * Manager Instance Id
+             * Artifact Id
              * @default null
              */
-            manager_instance_id?: string | null;
+            artifact_id?: string | null;
         };
-        /** RepairBatchUndoRequest */
-        RepairBatchUndoRequest: {
-            /** Expected Revision Id */
-            expected_revision_id: string;
-            /** Expected State Hash */
-            expected_state_hash: string;
-        };
-        /** EventBounds */
-        EventBounds: {
+        /** SubtitleAlignRequest */
+        SubtitleAlignRequest: {
+            /** Expected Revision */
+            expected_revision: number;
             /**
-             * Schema Version
-             * @default 1
-             * @constant
+             * Method
+             * @default ctc
+             * @enum {string}
              */
-            schema_version?: "1";
-            /** Oldest */
-            oldest: number;
-            /** Latest */
-            latest: number;
-            /** Retained After */
-            retained_after: number;
+            method?: "ctc" | "ctc_asr_fallback";
+        };
+        /** SubtitleEvidenceCreateRequest */
+        SubtitleEvidenceCreateRequest: {
+            /** Audio Model Ids */
+            audio_model_ids?: string[];
+            /** Cue Id */
+            cue_id: number;
+            /**
+             * Padding After Ms
+             * @default 2000
+             */
+            padding_after_ms?: number;
+            /**
+             * Padding Before Ms
+             * @default 2000
+             */
+            padding_before_ms?: number;
+            /** Reason */
+            reason: string;
+            /** Routes */
+            routes: ("whisper" | "moss" | "azure_mai_transcribe_2" | "audio_llm")[];
+            /** Source Artifact Id */
+            source_artifact_id: string;
+        };
+        /** SubtitleEvidenceResolveRequest */
+        SubtitleEvidenceResolveRequest: {
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "accepted" | "edited" | "deleted" | "uncertain" | "dismissed";
+            /**
+             * Candidate Id
+             * @default null
+             */
+            candidate_id?: string | null;
+            /**
+             * Note
+             * @default
+             */
+            note?: string;
+            /**
+             * Text
+             * @default null
+             */
+            text?: string | null;
+        };
+        /** SubtitleReviewRequest */
+        SubtitleReviewRequest: {
+            /** Expected Revision */
+            expected_revision: number;
+            /** Segments */
+            segments: components["schemas"]["SubtitleSegmentInput"][];
+            /**
+             * Source Artifact Id
+             * @default null
+             */
+            source_artifact_id?: string | null;
+        };
+        /** SubtitleSegmentInput */
+        SubtitleSegmentInput: {
+            /** End Ms */
+            end_ms: number;
+            /** Evidence Ids */
+            evidence_ids?: string[];
+            /**
+             * Review Note
+             * @default
+             */
+            review_note?: string;
+            /**
+             * Review State
+             * @default clear
+             * @enum {string}
+             */
+            review_state?: "clear" | "uncertain";
+            /**
+             * Speaker
+             * @default null
+             */
+            speaker?: string | null;
+            /** Start Ms */
+            start_ms: number;
+            /** Text */
+            text: string;
+            /** Uncertain Source Cue Ids */
+            uncertain_source_cue_ids?: number[];
+        };
+        /** TokenCreateRequest */
+        TokenCreateRequest: {
+            /**
+             * Expires In Days
+             * @default null
+             */
+            expires_in_days?: number | null;
+            /**
+             * Label
+             * @default CLI token
+             */
+            label?: string;
+            /** Scopes */
+            scopes: ("app.read" | "app.write" | "app.run" | "app.cancel" | "app.credentials.read" | "app.credentials.write" | "manager.read" | "manager.runtime" | "manager.mutate" | "app.admin")[];
+        };
+        /** TrainingCreateRequest */
+        TrainingCreateRequest: {
+            /** Model Name */
+            model_name: string;
+            /** Settings */
+            settings?: {
+                [key: string]: unknown;
+            };
+            /** Source Artifact Id */
+            source_artifact_id: string;
+            /**
+             * Source Text Artifact Id
+             * @default null
+             */
+            source_text_artifact_id?: string | null;
+            /**
+             * Voice Id
+             * @default null
+             */
+            voice_id?: string | null;
+        };
+        /** TranscriptionCreate */
+        TranscriptionCreate: {
+            /**
+             * Compute Backend
+             * @default null
+             */
+            compute_backend?: ("auto" | "cpu" | "cuda" | "vulkan" | "metal") | null;
+            /**
+             * Engine
+             * @default null
+             */
+            engine?: string | null;
+            /** Filename */
+            filename: string;
+            /**
+             * Format
+             * @default txt
+             * @enum {string}
+             */
+            format?: "txt" | "srt" | "json";
+            /**
+             * Language
+             * @default null
+             */
+            language?: string | null;
+            /**
+             * Model Quantization
+             * @default null
+             */
+            model_quantization?: string | null;
+            /** Sha256 */
+            sha256: string;
+            /** Size Bytes */
+            size_bytes: number;
+        };
+        /** TranscriptionResult */
+        TranscriptionResult: {
+            /** Content */
+            content: string | {
+                [key: string]: unknown;
+            };
+            /**
+             * Format
+             * @enum {string}
+             */
+            format: "txt" | "srt" | "json";
+            /** Mime Type */
+            mime_type: string;
+            /** Size Bytes */
+            size_bytes: number;
+        };
+        /** TranscriptionResultPage */
+        TranscriptionResultPage: {
+            /** Content */
+            content: string;
+            /**
+             * Format
+             * @enum {string}
+             */
+            format: "txt" | "srt" | "json";
+            /** Next Offset */
+            next_offset: number | null;
+            /** Offset */
+            offset: number;
+            /** Total Chars */
+            total_chars: number;
+        };
+        /** TranscriptionSnapshot */
+        TranscriptionSnapshot: {
+            /** Chunk Size */
+            chunk_size: number;
+            /**
+             * Error
+             * @default null
+             */
+            error?: {
+                [key: string]: string;
+            } | null;
+            /** Expires At */
+            expires_at: string;
+            /**
+             * Format
+             * @enum {string}
+             */
+            format: "txt" | "srt" | "json";
+            /** Id */
+            id: string;
+            /** Inline Result */
+            inline_result: boolean;
+            /** Job Id */
+            job_id: string | null;
+            /** Next Chunk Index */
+            next_chunk_index: number;
+            /** Progress */
+            progress: number;
+            /** Progress Detail */
+            progress_detail: string | null;
+            /** @default null */
+            result?: components["schemas"]["TranscriptionResult"] | null;
+            /** Result Available */
+            result_available: boolean;
+            /** Result Url */
+            result_url: string;
+            /** Size Bytes */
+            size_bytes: number;
+            /** Status */
+            status: string;
+            /** Uploaded Bytes */
+            uploaded_bytes: number;
+        };
+        /** TranscriptionWait */
+        TranscriptionWait: {
+            /**
+             * Wait Seconds
+             * @default 0
+             */
+            wait_seconds?: number;
+        };
+        /** TtsEndpointDiscoveryRequest */
+        TtsEndpointDiscoveryRequest: {
+            /**
+             * Api Key
+             * @default null
+             */
+            api_key?: string | null;
+            /** Base Url */
+            base_url: string;
+            /**
+             * Service Id
+             * @default null
+             */
+            service_id?: string | null;
+        };
+        /** TtsVoicePreviewRequest */
+        TtsVoicePreviewRequest: {
+            /**
+             * Generation Prompt
+             * @default null
+             */
+            generation_prompt?: string | null;
+            /**
+             * Language
+             * @default
+             */
+            language?: string;
+            /**
+             * Model
+             * @default
+             */
+            model?: string;
+            /**
+             * Seed
+             * @default null
+             */
+            seed?: number | null;
+            /** Text */
+            text: string;
+            /**
+             * Voice
+             * @default
+             */
+            voice?: string;
+        };
+        /** VoiceCreate */
+        VoiceCreate: {
+            /**
+             * Description
+             * @default null
+             */
+            description?: string | null;
+            /**
+             * Language
+             * @default null
+             */
+            language?: string | null;
+            /** Name */
+            name: string;
+        };
+        /** VoiceDesignedSampleCreate */
+        VoiceDesignedSampleCreate: {
+            /** Artifact Id */
+            artifact_id: string;
+            /** Expected Voice Revision */
+            expected_voice_revision: number;
+            /**
+             * Language
+             * @default null
+             */
+            language?: string | null;
+            /** Transcript */
+            transcript: string;
+        };
+        /** VoiceTranscriptReview */
+        VoiceTranscriptReview: {
+            /**
+             * Expected Voice Revision
+             * @default null
+             */
+            expected_voice_revision?: number | null;
+            /**
+             * Language
+             * @default null
+             */
+            language?: string | null;
+            /** Transcript */
+            transcript: string;
+        };
+        /** VoiceUpdate */
+        VoiceUpdate: {
+            /**
+             * Description
+             * @default null
+             */
+            description?: string | null;
+            /**
+             * Language
+             * @default null
+             */
+            language?: string | null;
+            /**
+             * Name
+             * @default null
+             */
+            name?: string | null;
         };
         /** WorkError */
         WorkError: {
@@ -6235,95 +6351,80 @@ export interface components {
         /** WorkEvent */
         WorkEvent: {
             /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Data */
+            data?: {
+                [key: string]: unknown;
+            };
+            /** Event Type */
+            event_type: string;
+            /** Id */
+            id: number;
+            /**
              * Schema Version
              * @default 1
              * @constant
              */
             schema_version?: "1";
-            /** Id */
-            id: number;
             /**
              * Work Id
              * @default null
              */
             work_id?: string | null;
-            /** Event Type */
-            event_type: string;
-            /** Data */
-            data?: {
-                [key: string]: unknown;
-            };
-            /**
-             * Created At
-             * Format: date-time
-             */
-            created_at: string;
         };
         /** WorkEventPage */
         WorkEventPage: {
-            /**
-             * Schema Version
-             * @default 1
-             * @constant
-             */
-            schema_version?: "1";
             /** Items */
             items: components["schemas"]["WorkEvent"][];
             /** Next Cursor */
             next_cursor: number;
             /** Retained After */
             retained_after: number;
-        };
-        /**
-         * WorkView
-         * @description Stable public work projection; raw job inputs are intentionally absent.
-         */
-        WorkView: {
             /**
              * Schema Version
              * @default 1
              * @constant
              */
             schema_version?: "1";
+        };
+        /**
+         * WorkView
+         * @description Stable public work projection; raw job inputs are intentionally absent.
+         */
+        WorkView: {
+            /** Cancellable */
+            cancellable: boolean;
             /**
-             * Type
-             * @default job
-             * @constant
-             */
-            type?: "job";
-            /** Id */
-            id: string;
-            /** Kind */
-            kind: string;
-            /**
-             * Session Id
+             * Created At
              * @default null
              */
-            session_id?: string | null;
-            /**
-             * Workflow Run Id
-             * @default null
-             */
-            workflow_run_id?: string | null;
-            /**
-             * State
-             * @enum {string}
-             */
-            state: "queued" | "running" | "waiting" | "succeeded" | "failed" | "cancelled";
-            /**
-             * Progress
-             * @default null
-             */
-            progress?: number | null;
+            created_at?: string | null;
             /**
              * Detail
              * @default null
              */
             detail?: string | null;
-            /** Cancellable */
-            cancellable: boolean;
+            /** @default null */
+            error?: components["schemas"]["WorkError"] | null;
+            /**
+             * Finished At
+             * @default null
+             */
+            finished_at?: string | null;
+            /** Id */
+            id: string;
+            /** Kind */
+            kind: string;
             /** Poll After Ms */
             poll_after_ms: number;
+            /**
+             * Progress
+             * @default null
+             */
+            progress?: number | null;
             /**
              * Result Summary
              * @default null
@@ -6331,186 +6432,85 @@ export interface components {
             result_summary?: {
                 [key: string]: unknown;
             } | null;
-            /** @default null */
-            error?: components["schemas"]["WorkError"] | null;
             /**
-             * Created At
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version?: "1";
+            /**
+             * Session Id
              * @default null
              */
-            created_at?: string | null;
+            session_id?: string | null;
             /**
              * Started At
              * @default null
              */
             started_at?: string | null;
             /**
-             * Finished At
-             * @default null
+             * State
+             * @enum {string}
              */
-            finished_at?: string | null;
+            state: "queued" | "running" | "waiting" | "succeeded" | "failed" | "cancelled";
+            /**
+             * Type
+             * @default job
+             * @constant
+             */
+            type?: "job";
             /**
              * Updated At
              * @default null
              */
             updated_at?: string | null;
+            /**
+             * Workflow Run Id
+             * @default null
+             */
+            workflow_run_id?: string | null;
         };
-        /** TranscriptionCreate */
-        TranscriptionCreate: {
-            /** Filename */
-            filename: string;
-            /** Size Bytes */
-            size_bytes: number;
-            /** Sha256 */
-            sha256: string;
+        /** WorkflowPlanCreateRequest */
+        WorkflowPlanCreateRequest: {
             /**
-             * Format
-             * @default txt
-             * @enum {string}
+             * Continuation
+             * @default true
              */
-            format?: "txt" | "srt" | "json";
+            continuation?: boolean;
             /**
-             * Language
-             * @default null
+             * Expires In Minutes
+             * @default 30
              */
-            language?: string | null;
-            /**
-             * Engine
-             * @default null
-             */
-            engine?: string | null;
-            /**
-             * Model Quantization
-             * @default null
-             */
-            model_quantization?: string | null;
-            /**
-             * Compute Backend
-             * @default null
-             */
-            compute_backend?: ("auto" | "cpu" | "cuda" | "vulkan" | "metal") | null;
-        };
-        /** TranscriptionWait */
-        TranscriptionWait: {
-            /**
-             * Wait Seconds
-             * @default 0
-             */
-            wait_seconds?: number;
-        };
-        /** TranscriptionResult */
-        TranscriptionResult: {
-            /**
-             * Format
-             * @enum {string}
-             */
-            format: "txt" | "srt" | "json";
-            /** Mime Type */
-            mime_type: string;
-            /** Content */
-            content: string | {
+            expires_in_minutes?: number;
+            /** Overrides */
+            overrides?: {
                 [key: string]: unknown;
             };
-            /** Size Bytes */
-            size_bytes: number;
+            /**
+             * Target Stage
+             * @default generate_audio
+             */
+            target_stage?: string;
         };
-        /** TranscriptionSnapshot */
-        TranscriptionSnapshot: {
-            /** Id */
-            id: string;
-            /** Job Id */
-            job_id: string | null;
-            /** Status */
-            status: string;
-            /** Progress */
-            progress: number;
-            /** Progress Detail */
-            progress_detail: string | null;
-            /** Expires At */
-            expires_at: string;
-            /**
-             * Format
-             * @enum {string}
-             */
-            format: "txt" | "srt" | "json";
-            /** Chunk Size */
-            chunk_size: number;
-            /** Next Chunk Index */
-            next_chunk_index: number;
-            /** Uploaded Bytes */
-            uploaded_bytes: number;
-            /** Size Bytes */
-            size_bytes: number;
-            /** Result Available */
-            result_available: boolean;
-            /** Inline Result */
-            inline_result: boolean;
-            /** Result Url */
-            result_url: string;
-            /** @default null */
-            result?: components["schemas"]["TranscriptionResult"] | null;
-            /**
-             * Error
-             * @default null
-             */
-            error?: {
-                [key: string]: string;
-            } | null;
-        };
-        /** TranscriptionResultPage */
-        TranscriptionResultPage: {
-            /**
-             * Format
-             * @enum {string}
-             */
-            format: "txt" | "srt" | "json";
-            /** Content */
-            content: string;
-            /** Offset */
-            offset: number;
-            /** Total Chars */
-            total_chars: number;
-            /** Next Offset */
-            next_offset: number | null;
+        /** WorkflowPlanExecuteRequest */
+        WorkflowPlanExecuteRequest: {
+            /** Accepted Confirmations */
+            accepted_confirmations?: string[];
+            /** Plan Digest */
+            plan_digest: string;
         };
         XttsModel: {
-            id: string;
-            object: string;
+            bundle_complete: boolean;
             created?: number;
-            owned_by: string;
+            id: string;
             is_default: boolean;
             is_local: boolean;
+            lifecycle_supported: boolean;
+            object: string;
+            owned_by: string;
+            relative_path?: string | null;
             removable: boolean;
             source: string;
-            relative_path?: string | null;
-            bundle_complete: boolean;
-            lifecycle_supported: boolean;
-        };
-        ParameterDefinition: {
-            section: string;
-            name: string;
-            label: string;
-            description: string;
-            default: unknown;
-            /** @enum {string} */
-            value_type: "boolean" | "integer" | "number" | "string" | "object" | "array";
-            unit?: string;
-            minimum?: number;
-            maximum?: number;
-            choices?: unknown[];
-            applicability?: string;
-            caveat?: string;
-        };
-        ParameterDefinitionsResponse: {
-            /**
-             * @default 1
-             * @constant
-             */
-            schema_version: 1;
-            items: components["schemas"]["ParameterDefinition"][];
-            matched_count: number;
-            returned_count: number;
-            truncated: boolean;
-            available_sections: string[];
         };
     };
     responses: never;
@@ -6521,16 +6521,18 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
-    getHealth: {
+    acceptAgentRun: {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                runId: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Healthy */
+            /** @description Cleaning result accepted */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -6539,7 +6541,47 @@ export interface operations {
             };
         };
     };
-    getSystemIdentity: {
+    resumeAgentRun: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Resume an interrupted agentic operation from its durable checkpoint */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listAgentSteps: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Auditable agent phase summaries */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listArtifacts: {
         parameters: {
             query?: never;
             header?: never;
@@ -6548,60 +6590,120 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Stable authenticated application identity */
+            /** @description Artifacts */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content: {
-                    "application/json": components["schemas"]["ApplicationIdentityDocument"];
-                };
+                content?: never;
             };
         };
     };
-    getParameterDefinitions: {
+    getArtifactAudioPreview: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                artifactId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Browser-safe source audio preview */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Preview queued or running */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getArtifactContent: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                artifactId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Range-capable artifact content */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getArtifactContext: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                artifactId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Artifact lineage context for comparison */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    saveOptimizationReview: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                artifactId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OptimizationReviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Reviewed speech optimization artifact */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    inspectPdf: {
         parameters: {
             query?: {
-                section?: string[];
-                name?: string[];
-                workflow_kind?: "audiobook" | "subtitles" | "voiceover" | "media_edit";
-                query?: string;
-                limit?: number;
+                first_page_side?: "left" | "right";
             };
             header?: never;
-            path?: never;
+            path: {
+                artifactId: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Filtered parameter definitions */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ParameterDefinitionsResponse"];
-                };
-            };
-            /** @description Invalid parameter filters */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    getCapabilities: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Runtime capabilities */
+            /** @description PDF geometry */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -6610,16 +6712,18 @@ export interface operations {
             };
         };
     };
-    listSessions: {
+    getArtifactWaveform: {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                artifactId: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Sessions */
+            /** @description Waveform peaks or queued generation */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -6628,22 +6732,56 @@ export interface operations {
             };
         };
     };
-    createSession: {
+    listAuditEvents: {
         parameters: {
             query?: never;
-            header: {
-                "Idempotency-Key": string;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Bounded content-free audit events */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
+        };
+    };
+    listAutomationClients: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Automation clients */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    registerAutomationClient: {
+        parameters: {
+            query?: never;
+            header?: never;
             path?: never;
             cookie?: never;
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["SessionCreate"];
+                "application/json": components["schemas"]["AutomationClientCreateRequest"];
             };
         };
         responses: {
-            /** @description Created */
+            /** @description Registered */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -6652,669 +6790,19 @@ export interface operations {
             };
         };
     };
-    getSession: {
+    revokeAutomationClient: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                sessionId: string;
+                clientId: string;
             };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Session */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    trashSession: {
-        parameters: {
-            query?: never;
-            header: {
-                "If-Match": string;
-            };
-            path: {
-                sessionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Session moved to trash */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Revision conflict */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    updateSession: {
-        parameters: {
-            query?: never;
-            header: {
-                "If-Match": string;
-                "Idempotency-Key": string;
-            };
-            path: {
-                sessionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SessionUpdate"];
-            };
-        };
-        responses: {
-            /** @description Updated */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Revision conflict */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    getMediaEdit: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                sessionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Media-edit state */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    updateMediaEdit: {
-        parameters: {
-            query?: never;
-            header: {
-                "If-Match": string;
-                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
-                "Idempotency-Key"?: string;
-            };
-            path: {
-                sessionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["MediaEditUpdateRequest"];
-            };
-        };
-        responses: {
-            /** @description Updated media-edit revision */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Revision conflict */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Revision precondition required */
-            428: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    prepareMediaEdit: {
-        parameters: {
-            query?: never;
-            header?: {
-                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
-                "Idempotency-Key"?: string;
-            };
-            path: {
-                sessionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["MediaEditPrepareRequest"];
-            };
-        };
-        responses: {
-            /** @description Existing media-edit revision */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Prepared media-edit revision */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    listMediaEditCuts: {
-        parameters: {
-            query?: {
-                revision?: number;
-                cut_index?: number;
-                edge?: "start" | "end";
-                context_ms?: number;
-                cue_limit?: number;
-            };
-            header?: never;
-            path: {
-                sessionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Bounded media-edit cuts or boundary evidence */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Invalid cut or boundary query */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    refineMediaEditBoundary: {
-        parameters: {
-            query?: never;
-            header: {
-                "If-Match": string;
-                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
-                "Idempotency-Key"?: string;
-            };
-            path: {
-                sessionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["MediaEditBoundaryRequest"];
-            };
-        };
-        responses: {
-            /** @description Boundary refinement result */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Revision conflict */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Invalid boundary refinement */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Revision precondition required */
-            428: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    proposeMediaEdit: {
-        parameters: {
-            query?: never;
-            header?: {
-                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
-                "Idempotency-Key"?: string;
-            };
-            path: {
-                sessionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["MediaEditProposeRequest"];
-            };
-        };
-        responses: {
-            /** @description Proposal job queued */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    renderMediaEdit: {
-        parameters: {
-            query?: never;
-            header?: {
-                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
-                "Idempotency-Key"?: string;
-            };
-            path: {
-                sessionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["MediaEditRenderRequest"];
-            };
-        };
-        responses: {
-            /** @description Render job queued */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    forkSession: {
-        parameters: {
-            query?: never;
-            header: {
-                "Idempotency-Key": string;
-            };
-            path: {
-                sessionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SessionForkRequest"];
-            };
-        };
-        responses: {
-            /** @description Independent session fork created */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Unsupported checkpoint */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    listJobs: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Jobs */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    createJob: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["JobCreate"];
-            };
-        };
-        responses: {
-            /** @description Queued */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    listWork: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Payload-free durable work projections */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    getWork: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                jobId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Payload-free durable work projection */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["WorkView"];
-                };
-            };
-        };
-    };
-    listWorkEvents: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                jobId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Bounded redacted work events */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["WorkEventPage"];
-                };
-            };
-        };
-    };
-    cancelWork: {
-        parameters: {
-            query?: never;
-            header: {
-                "Idempotency-Key": string;
-            };
-            path: {
-                jobId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Cancellation requested */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["WorkView"];
-                };
-            };
-        };
-    };
-    streamEvents: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description SSE job events */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    getEventSnapshot: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Initial event-stream resource snapshot and cursor */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    getAuthStatus: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Authentication status */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    exchangeBootstrapToken: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["BootstrapRequest"];
-            };
-        };
-        responses: {
-            /** @description Authenticated */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    createManagerBrowserBootstrapGrant: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Full-authority one-use browser bootstrap grant */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    createManagerBootstrapGrant: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ManagerBootstrapRequest"];
-            };
-        };
-        responses: {
-            /** @description Scoped one-use automation bootstrap grant */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    login: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["LoginRequest"];
-            };
-        };
-        responses: {
-            /** @description Authenticated */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    logout: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Signed out */
+            /** @description Revoked */
             204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    listApiTokens: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Tokens */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    createApiToken: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["TokenCreateRequest"];
-            };
-        };
-        responses: {
-            /** @description Created */
-            201: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7365,25 +6853,7 @@ export interface operations {
             };
         };
     };
-    listAutomationClients: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Automation clients */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    registerAutomationClient: {
+    exchangeBootstrapToken: {
         parameters: {
             query?: never;
             header?: never;
@@ -7392,11 +6862,149 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["AutomationClientCreateRequest"];
+                "application/json": components["schemas"]["BootstrapRequest"];
             };
         };
         responses: {
-            /** @description Registered */
+            /** @description Authenticated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    login: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LoginRequest"];
+            };
+        };
+        responses: {
+            /** @description Authenticated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    logout: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Signed out */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createManagerBootstrapGrant: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ManagerBootstrapRequest"];
+            };
+        };
+        responses: {
+            /** @description Scoped one-use automation bootstrap grant */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createManagerBrowserBootstrapGrant: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Full-authority one-use browser bootstrap grant */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getAuthStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Authentication status */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listApiTokens: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Tokens */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createApiToken: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TokenCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Created */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -7441,18 +7049,313 @@ export interface operations {
             };
         };
     };
-    revokeAutomationClient: {
+    getCapabilities: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Runtime capabilities */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listCredentialBackends: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Credential storage capabilities and guidance */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listCredentials: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Write-only auxiliary credential status */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    putCredential: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                clientId: string;
+                credentialId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CredentialUpdate"];
+            };
+        };
+        responses: {
+            /** @description Auxiliary credential saved */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getGlobalDefaults: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                section: string;
             };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Revoked */
+            /** @description Built-in and configured global defaults */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    releaseDispatchBatch: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                batchId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DispatchBatchReleaseRequest"];
+            };
+        };
+        responses: {
+            /** @description Batch returned to ready */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    renewDispatchBatch: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                batchId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DispatchBatchRenewRequest"];
+            };
+        };
+        responses: {
+            /** @description Lease renewed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    submitDispatchBatch: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
+                "Idempotency-Key": string;
+            };
+            path: {
+                batchId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DispatchBatchSubmitRequest"];
+            };
+        };
+        responses: {
+            /** @description Batch accepted */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DispatchBatchSubmitResponse"];
+                };
+            };
+            /** @description Batch accepted; finalization continues */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DispatchBatchSubmitResponse"];
+                };
+            };
+        };
+    };
+    getDispatchRun: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Dispatch run metadata */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    claimDispatchBatch: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
+                "Idempotency-Key": string;
+            };
+            path: {
+                runId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DispatchBatchClaimRequest"];
+            };
+        };
+        responses: {
+            /** @description Claimed subtitle batch */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DispatchBatchClaimResponse"];
+                };
+            };
+        };
+    };
+    listTimedWords: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                revisionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Immutable timed words */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    streamEvents: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description SSE job events */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getEventSnapshot: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Initial event-stream resource snapshot and cursor */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    deleteGenerationRun: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Generation run deleted */
             204: {
                 headers: {
                     [name: string]: unknown;
@@ -7461,7 +7364,118 @@ export interface operations {
             };
         };
     };
-    listAuditEvents: {
+    cancelGenerationRun: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Cancellation requested */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    pauseGenerationRun: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Safe pause requested */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    resumeGenerationRun: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Generation resumed */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    updateGenerationSegment: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                segmentId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GenerationSegmentUpdate"];
+            };
+        };
+        responses: {
+            /** @description Generation segment updated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    selectGenerationTake: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                segmentId: string;
+                takeId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Active audio take selected */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getHealth: {
         parameters: {
             query?: never;
             header?: never;
@@ -7470,7 +7484,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Bounded content-free audit events */
+            /** @description Healthy */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -7479,58 +7493,7 @@ export interface operations {
             };
         };
     };
-    getSetting: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                settingKey: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Setting */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    putSetting: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                settingKey: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SettingUpdate"];
-            };
-        };
-        responses: {
-            /** @description Saved */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Revision conflict */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    uploadSource: {
+    listJobs: {
         parameters: {
             query?: never;
             header?: never;
@@ -7539,8 +7502,8 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Uploaded */
-            201: {
+            /** @description Jobs */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7548,18 +7511,16 @@ export interface operations {
             };
         };
     };
-    downloadSourceUrl: {
+    createJob: {
         parameters: {
             query?: never;
             header?: never;
-            path: {
-                sessionId: string;
-            };
+            path?: never;
             cookie?: never;
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["SourceUrlRequest"];
+                "application/json": components["schemas"]["JobCreate"];
             };
         };
         responses: {
@@ -7572,23 +7533,19 @@ export interface operations {
             };
         };
     };
-    reuseSource: {
+    getJob: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                sessionId: string;
+                jobId: string;
             };
             cookie?: never;
         };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SourceReuseRequest"];
-            };
-        };
+        requestBody?: never;
         responses: {
-            /** @description Queued */
-            202: {
+            /** @description Job */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7596,7 +7553,47 @@ export interface operations {
             };
         };
     };
-    listArtifacts: {
+    cancelJob: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                jobId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Cancellation requested */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getJobLogs: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                jobId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Durable job event and log timeline */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listManagerComponents: {
         parameters: {
             query?: never;
             header?: never;
@@ -7605,7 +7602,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Artifacts */
+            /** @description Manager component inventory */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -7614,27 +7611,17 @@ export interface operations {
             };
         };
     };
-    deleteOutputArtifact: {
+    getManagerDoctorReport: {
         parameters: {
             query?: never;
             header?: never;
-            path: {
-                sessionId: string;
-                artifactId: string;
-            };
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Output removed */
+            /** @description Non-mutating host diagnostics */
             200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Artifact is not a removable output */
-            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7642,18 +7629,16 @@ export interface operations {
             };
         };
     };
-    getArtifactContent: {
+    getManagerLegacyImportReport: {
         parameters: {
             query?: never;
             header?: never;
-            path: {
-                artifactId: string;
-            };
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Range-capable artifact content */
+            /** @description Read-only legacy workspace inspection */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -7662,64 +7647,160 @@ export interface operations {
             };
         };
     };
-    inspectPdf: {
-        parameters: {
-            query?: {
-                first_page_side?: "left" | "right";
-            };
-            header?: never;
-            path: {
-                artifactId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description PDF geometry */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    getWorkflow: {
+    importManagerLegacyWorkspace: {
         parameters: {
             query?: never;
             header?: never;
-            path: {
-                sessionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Workflow snapshot */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    createWorkflowPlan: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                sessionId: string;
-            };
+            path?: never;
             cookie?: never;
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["WorkflowPlanCreateRequest"];
+                "application/json": components["schemas"]["ManagerLegacyImportRequest"];
             };
         };
         responses: {
-            /** @description Immutable workflow execution preview */
+            /** @description Import the exact reviewed legacy workspace */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getManagerLogs: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Bounded managed-service log tail */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listManagerOperations: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Durable manager operations */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    submitManagerOperation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ManagerOperationRequest"];
+            };
+        };
+        responses: {
+            /** @description Manager operation accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getManagerOperation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                operationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Durable manager operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    cancelManagerOperation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                operationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Safe cancellation requested */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listManagerOperationTasks: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                operationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Durable manager operation tasks */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createManagerPlan: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ManagerPlanRequest"];
+            };
+        };
+        responses: {
+            /** @description Immutable manager plan */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -7728,18 +7809,16 @@ export interface operations {
             };
         };
     };
-    getWorkflowPlan: {
+    listManagerReleases: {
         parameters: {
             query?: never;
             header?: never;
-            path: {
-                planId: string;
-            };
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Immutable workflow execution preview */
+            /** @description Accepted product releases and activation slots */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -7748,59 +7827,215 @@ export interface operations {
             };
         };
     };
-    executeWorkflowPlan: {
+    createManagerReleasePlan: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ManagerReleasePlanRequest"];
+            };
+        };
+        responses: {
+            /** @description Immutable signed product release plan */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    controlManagerRuntime: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                action: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ManagerRuntimeRequest"];
+            };
+        };
+        responses: {
+            /** @description Managed runtime action completed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listManagerServices: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Manager service inventory */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getManagerStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Local manager availability and status */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createManagerUninstallPlan: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ManagerUninstallPlanRequest"];
+            };
+        };
+        responses: {
+            /** @description Immutable whole-product uninstall plan */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    releaseMediaEditDispatchBatch: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                batchId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DispatchBatchReleaseRequest"];
+            };
+        };
+        responses: {
+            /** @description Batch returned to ready */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    renewMediaEditDispatchBatch: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                batchId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DispatchBatchRenewRequest"];
+            };
+        };
+        responses: {
+            /** @description Lease renewed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    submitMediaEditDispatchBatch: {
         parameters: {
             query?: never;
             header: {
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
                 "Idempotency-Key": string;
             };
             path: {
-                planId: string;
+                batchId: string;
             };
             cookie?: never;
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["WorkflowPlanExecuteRequest"];
+                "application/json": components["schemas"]["MediaEditDispatchBatchSubmitRequest"];
             };
         };
         responses: {
-            /** @description Exact plan consumed and queued */
+            /** @description Media-edit batch accepted */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MediaEditDispatchBatchSubmitResponse"];
+                };
+            };
+            /** @description Batch accepted; finalization continues */
             202: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
-            };
-            /** @description Plan stale, consumed, expired, or confirmation missing */
-            409: {
-                headers: {
-                    [name: string]: unknown;
+                content: {
+                    "application/json": components["schemas"]["MediaEditDispatchBatchSubmitResponse"];
                 };
-                content?: never;
             };
         };
     };
-    runWorkflowStage: {
+    getMediaEditDispatchRun: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                sessionId: string;
-                stageKey: string;
+                runId: string;
             };
             cookie?: never;
         };
-        requestBody: {
-            content: {
-                "application/json": {
-                    [key: string]: unknown;
-                };
-            };
-        };
+        requestBody?: never;
         responses: {
-            /** @description Queued */
-            202: {
+            /** @description Media-edit dispatch run metadata */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7808,230 +8043,60 @@ export interface operations {
             };
         };
     };
-    listStageArtifacts: {
+    claimMediaEditDispatchBatch: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
+                "Idempotency-Key": string;
+            };
+            path: {
+                runId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DispatchBatchClaimRequest"];
+            };
+        };
+        responses: {
+            /** @description Claimed media-edit batch */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MediaEditDispatchBatchClaimResponse"];
+                };
+            };
+        };
+    };
+    getParameterDefinitions: {
         parameters: {
             query?: {
+                section?: string[];
+                name?: string[];
+                workflow_kind?: "audiobook" | "subtitles" | "voiceover" | "media_edit";
+                query?: string;
                 limit?: number;
-                /** @description Return versions older than this exclusive version cursor. */
-                before_version?: number;
             };
             header?: never;
-            path: {
-                sessionId: string;
-                stageKey: string;
-            };
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Stage artifact history page */
+            /** @description Filtered parameter definitions */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
-            };
-        };
-    };
-    trashStageArtifact: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                sessionId: string;
-                stageKey: string;
-                artifactId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Historical stage result moved to trash */
-            200: {
-                headers: {
-                    [name: string]: unknown;
+                content: {
+                    "application/json": components["schemas"]["ParameterDefinitionsResponse"];
                 };
-                content?: never;
             };
-            /** @description Artifact is selected or still has derived results */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    getStageRerunImpact: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                sessionId: string;
-                stageKey: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Rerun lineage impact */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    getStageSettingsMismatches: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                sessionId: string;
-                stageKey: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Prerequisite settings changed since the stored artifacts were created */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    selectStageArtifact: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                sessionId: string;
-                stageKey: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["StageSelectionUpdate"];
-            };
-        };
-        responses: {
-            /** @description Stage selection updated */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Revision conflict */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    getSubtitleComparison: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                sessionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Aligned subtitle revisions */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    saveSubtitleReview: {
-        parameters: {
-            query?: never;
-            header?: {
-                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
-                "Idempotency-Key"?: string;
-            };
-            path: {
-                sessionId: string;
-                stage: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SubtitleReviewRequest"];
-            };
-        };
-        responses: {
-            /** @description Reviewed revision */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Revision conflict */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    listSubtitleReviewArtifacts: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                sessionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Reviewable subtitle artifact catalog */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    getExactSubtitleReview: {
-        parameters: {
-            query: {
-                artifact_id: string[];
-            };
-            header?: never;
-            path: {
-                sessionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Exact immutable subtitle revisions aligned for review */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Invalid artifact selection */
+            /** @description Invalid parameter filters */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -8040,20 +8105,16 @@ export interface operations {
             };
         };
     };
-    listSubtitleEvidence: {
+    getParityRegistry: {
         parameters: {
-            query?: {
-                source_artifact_id?: string;
-            };
+            query?: never;
             header?: never;
-            path: {
-                sessionId: string;
-            };
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Bounded subtitle evidence requests */
+            /** @description Qt-to-web parity registry */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -8062,151 +8123,25 @@ export interface operations {
             };
         };
     };
-    requestSubtitleEvidence: {
-        parameters: {
-            query?: never;
-            header?: {
-                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
-                "Idempotency-Key"?: string;
-            };
-            path: {
-                sessionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SubtitleEvidenceCreateRequest"];
-            };
-        };
-        responses: {
-            /** @description Subtitle evidence request queued */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Invalid cue, route, or audio model */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    getSubtitleEvidence: {
+    listPronunciations: {
         parameters: {
             query?: never;
             header?: never;
-            path: {
-                evidenceId: string;
-            };
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Subtitle evidence candidates and provenance */
+            /** @description Reviewable pronunciation library */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description Evidence request not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
         };
     };
-    resolveSubtitleEvidence: {
-        parameters: {
-            query?: never;
-            header?: {
-                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
-                "Idempotency-Key"?: string;
-            };
-            path: {
-                sessionId: string;
-                evidenceId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SubtitleEvidenceResolveRequest"];
-            };
-        };
-        responses: {
-            /** @description Subtitle evidence resolution stored */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Evidence state conflict */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    applyPdfEdits: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                sessionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["PdfEditRequest"];
-            };
-        };
-        responses: {
-            /** @description Queued */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    exportSessionBundle: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                sessionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["BundleExportRequest"];
-            };
-        };
-        responses: {
-            /** @description Queued */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    importSessionBundle: {
+    createPronunciation: {
         parameters: {
             query?: never;
             header?: never;
@@ -8215,12 +8150,56 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["BundleImportRequest"];
+                "application/json": components["schemas"]["PronunciationCreate"];
             };
         };
         responses: {
-            /** @description Queued */
-            202: {
+            /** @description Pronunciation created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    deletePronunciation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                entryId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Pronunciation deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    updatePronunciation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                entryId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PronunciationUpdate"];
+            };
+        };
+        responses: {
+            /** @description Pronunciation updated */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8408,37 +8387,6 @@ export interface operations {
             };
         };
     };
-    testProvider: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                providerId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ProviderTestRequest"];
-            };
-        };
-        responses: {
-            /** @description Provider ready */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Provider test failed */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
     deleteProviderModel: {
         parameters: {
             query?: never;
@@ -8492,6 +8440,3779 @@ export interface operations {
             };
             /** @description Revision conflict */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    testProvider: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                providerId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProviderTestRequest"];
+            };
+        };
+        responses: {
+            /** @description Provider ready */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Provider test failed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    convertWithRvc: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RvcConvertRequest"];
+            };
+        };
+        responses: {
+            /** @description Queued */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listRvcModels: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description RVC readiness and models */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    uploadRvcModel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RvcModelUploadRequest"];
+            };
+        };
+        responses: {
+            /** @description Queued */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listSttServices: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Cloud STT profiles and configured connections */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listTtsServices: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description TTS readiness and catalogues */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    discoverTtsService: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TtsEndpointDiscoveryRequest"];
+            };
+        };
+        responses: {
+            /** @description Discovered endpoint */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listXttsModels: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description XTTS models and lifecycle metadata */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        compatibility?: string | null;
+                        data: components["schemas"]["XttsModel"][];
+                        lifecycle_supported: boolean;
+                        object: string;
+                        wrapper?: {
+                            [key: string]: string;
+                        } | null;
+                    };
+                };
+            };
+        };
+    };
+    uploadXttsModel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": {
+                    files: string[];
+                    model_id: string;
+                };
+            };
+        };
+        responses: {
+            /** @description XTTS model uploaded and installed */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        bytes: number;
+                        id: string;
+                        object: string;
+                        owned_by: string;
+                    };
+                };
+            };
+        };
+    };
+    deleteXttsModel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                modelId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description XTTS model removed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        deleted: boolean;
+                        evicted: boolean;
+                        id: string;
+                        object: string;
+                    };
+                };
+            };
+        };
+    };
+    previewTtsVoice: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                serviceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TtsVoicePreviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Voice preview queued */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    importSessionBundle: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BundleImportRequest"];
+            };
+        };
+        responses: {
+            /** @description Queued */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listSessions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Sessions */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createSession: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SessionCreate"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getSession: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Session */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    trashSession: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": string;
+            };
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Session moved to trash */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    updateSession: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": string;
+                "Idempotency-Key": string;
+            };
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SessionUpdate"];
+            };
+        };
+        responses: {
+            /** @description Updated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listAgentRuns: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Auditable agent runs */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createAgentRun: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AgentRunCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Agentic cleaning queued */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    exportSessionBundle: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BundleExportRequest"];
+            };
+        };
+        responses: {
+            /** @description Queued */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listDispatchRuns: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Dispatch run metadata */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createDispatchRun: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DispatchRunCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Dispatch run created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listSessionDocuments: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Document and subtitle revisions */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    forkSession: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SessionForkRequest"];
+            };
+        };
+        responses: {
+            /** @description Independent session fork created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unsupported checkpoint */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createGenerationPlan: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GenerationPlanCreate"];
+            };
+        };
+        responses: {
+            /** @description Generation plan created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listGroupedSpeechPlanHistory: {
+        parameters: {
+            query?: {
+                limit?: number;
+                before_revision_number?: number;
+            };
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Bounded history with actual revision identifiers; preview never changes the active plan. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Session or repair batch not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid pagination parameters. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    prepareSpeechPlan: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SpeechPlanPrepareRequest"];
+            };
+        };
+        responses: {
+            /** @description Current state or completed action */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Session or revision not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Changed revision, active work, or idempotency conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid action */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getSpeechPlanRepairBatch: {
+        parameters: {
+            query?: {
+                limit?: number;
+                before_revision_number?: number;
+            };
+            header?: never;
+            path: {
+                sessionId: string;
+                batchId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Bounded history with actual revision identifiers; preview never changes the active plan. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Session or repair batch not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid pagination parameters. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    undoSpeechPlanRepairBatch: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Replay-safe key scoped to the session, batch, and guarded undo payload. */
+                "Idempotency-Key": string;
+            };
+            path: {
+                sessionId: string;
+                batchId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RepairBatchUndoRequest"];
+            };
+        };
+        responses: {
+            /** @description New restore revision; original and repaired checkpoints and audio are retained. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description A valid idempotency key is required. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Session or repair batch not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The plan, selected audio, or repair state changed; work is active; or a historical batch lacks a verified snapshot. Nothing is restored. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid or incomplete guard fields. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    reviewSpeechPlan: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SpeechPlanReviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Current state or completed action */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Session or revision not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Changed revision, active work, or idempotency conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid action */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listSpeechPlanRevisions: {
+        parameters: {
+            query?: {
+                limit?: number;
+                before_revision_number?: number;
+            };
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description listSpeechPlanRevisions */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    selectSpeechPlan: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SpeechPlanSelectRequest"];
+            };
+        };
+        responses: {
+            /** @description Current state or completed action */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Session or revision not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Changed revision, active work, or idempotency conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid action */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getSpeechPlanStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current state or completed action */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Session or revision not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Changed revision, active work, or idempotency conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid action */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    reviseGenerationPlanTopology: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+                "If-Match": string;
+            };
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GenerationPlanTopologyRequest"];
+            };
+        };
+        responses: {
+            /** @description Create an immutable generation-plan topology revision */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    reviseGenerationPlanTopologyBatch: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": string;
+                "Idempotency-Key": string;
+            };
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GenerationPlanBatchRequest"];
+            };
+        };
+        responses: {
+            /** @description reviseGenerationPlanTopologyBatch */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listGenerationRuns: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Named generation runs */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    startGenerationRun: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GenerationStartRequest"];
+            };
+        };
+        responses: {
+            /** @description Generation queued */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getLatestGenerationRun: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Latest generation run */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listGenerationSegments: {
+        parameters: {
+            query?: {
+                /** @description Return the plan revision bound to this generation run. */
+                generation_run_id?: string;
+                /** @description Literal search across the complete selected speech plan. Matching items include original-text UTF-16 search_matches offsets. */
+                q?: string;
+                match_case?: boolean;
+                whole_word?: boolean;
+                /** @description Spoken text uses optimized_text when present, otherwise text. */
+                text_field?: "text" | "spoken";
+                /** @description Filter nonremoved speech blocks by boundary-risk flags. */
+                boundary_flags?: boolean;
+                plan_revision_id?: string;
+                view?: string;
+                fields?: string;
+                cursor?: number;
+                limit?: number;
+                end_ordinal?: number;
+                around_ordinal?: number;
+                source_cue_id?: string;
+                radius?: number;
+            };
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Cursor-paginated generation segments */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    updateGenerationSegments: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GenerationSegmentBatchUpdate"];
+            };
+        };
+        responses: {
+            /** @description Generation segments updated atomically */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getMediaEdit: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Media-edit state */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    updateMediaEdit: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": string;
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MediaEditUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Updated media-edit revision */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision precondition required */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listMediaEditDispatchRuns: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Media-edit dispatch run metadata */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createMediaEditDispatchRun: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MediaEditDispatchRunCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Passive media-edit run created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    refineMediaEditBoundary: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": string;
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MediaEditBoundaryRequest"];
+            };
+        };
+        responses: {
+            /** @description Boundary refinement result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid boundary refinement */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision precondition required */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listMediaEditCuts: {
+        parameters: {
+            query?: {
+                revision?: number;
+                cut_index?: number;
+                edge?: "start" | "end";
+                context_ms?: number;
+                cue_limit?: number;
+            };
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Bounded media-edit cuts or boundary evidence */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid cut or boundary query */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    prepareMediaEdit: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MediaEditPrepareRequest"];
+            };
+        };
+        responses: {
+            /** @description Existing media-edit revision */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Prepared media-edit revision */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    proposeMediaEdit: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MediaEditProposeRequest"];
+            };
+        };
+        responses: {
+            /** @description Proposal job queued */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    renderMediaEdit: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MediaEditRenderRequest"];
+            };
+        };
+        responses: {
+            /** @description Render job queued */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getOutcomePlan: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Revisioned outcome plan */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    putOutcomePlan: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OutcomePlanUpdate"];
+            };
+        };
+        responses: {
+            /** @description Outcome plan saved */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createOutputAssembly: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OutputAssemblyCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Output assembly queued */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getLatestOutputAssembly: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Latest output assembly */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createOutputMixPreview: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OutputMixPreviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Soundtrack mix preview queued */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    deleteOutputArtifact: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+                artifactId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Output removed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Artifact is not a removable output */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    applyPdfEdits: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PdfEditRequest"];
+            };
+        };
+        responses: {
+            /** @description Queued */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    reindexSession: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Reconciliation report */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    restoreSession: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Session restored */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    resolveSessionSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Immutable effective settings snapshot */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getSessionSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+                section: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Effective settings and inheritance */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    putSessionSettings: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+                "If-Match": string;
+            };
+            path: {
+                sessionId: string;
+                section: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SessionSettingsUpdate"];
+            };
+        };
+        responses: {
+            /** @description Session override saved */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listSourceCleaningDispatchRuns: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Source-cleaning dispatch run metadata */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createSourceCleaningDispatchRun: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SourceCleaningDispatchRunCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Deterministic PDF/EPUB preparation queued */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listSessionSources: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Session source attachments */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    attachSessionSource: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+                "If-Match": string;
+            };
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SourceAttachRequest"];
+            };
+        };
+        responses: {
+            /** @description Source attached */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    adoptSubtitleSource: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SourceAttachRequest"];
+            };
+        };
+        responses: {
+            /** @description adoptSubtitleSource */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    alignSubtitleSource: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SubtitleAlignRequest"];
+            };
+        };
+        responses: {
+            /** @description alignSubtitleSource */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    changeSessionSource: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SourceChangeRequest"];
+            };
+        };
+        responses: {
+            /** @description Current state or completed action */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Session or revision not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Changed revision, active work, or idempotency conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid action */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    previewSessionSourceChange: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SourceChangePreviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Current state or completed action */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Session or revision not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Changed revision, active work, or idempotency conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid action */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    cleanupResetSourceFiles: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current state or completed action */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Session or revision not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Changed revision, active work, or idempotency conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid action */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    confirmRecordingTiming: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecordingTimingRequest"];
+            };
+        };
+        responses: {
+            /** @description Current state or completed action */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Session or revision not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Changed revision, active work, or idempotency conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid action */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    reuseSource: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SourceReuseRequest"];
+            };
+        };
+        responses: {
+            /** @description Queued */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    startNewSourceSession: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SourceChangeRequest"];
+            };
+        };
+        responses: {
+            /** @description Current state or completed action */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Session or revision not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Changed revision, active work, or idempotency conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid action */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getSessionSourceStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current state or completed action */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Session or revision not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Changed revision, active work, or idempotency conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid action */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    subtitleSourceStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description subtitleSourceStatus */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    downloadSourceUrl: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SourceUrlRequest"];
+            };
+        };
+        responses: {
+            /** @description Queued */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getSourcePassages: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+                artifactId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description getSourcePassages */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    previewSourcePassages: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+                artifactId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SourcePassagePreviewRequest"];
+            };
+        };
+        responses: {
+            /** @description previewSourcePassages */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    rebuildSourcePassages: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                sessionId: string;
+                artifactId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SourcePassageRebuildRequest"];
+            };
+        };
+        responses: {
+            /** @description rebuildSourcePassages */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    detachSessionSource: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+                attachmentId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Source detached */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listSpeechOptimizationDispatchRuns: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Speech-optimization dispatch run metadata */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createSpeechOptimizationDispatchRun: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SpeechOptimizationDispatchRunCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Passive speech-optimization run created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listStageArtifacts: {
+        parameters: {
+            query?: {
+                limit?: number;
+                /** @description Return versions older than this exclusive version cursor. */
+                before_version?: number;
+            };
+            header?: never;
+            path: {
+                sessionId: string;
+                stageKey: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Stage artifact history page */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    trashStageArtifact: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+                stageKey: string;
+                artifactId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Historical stage result moved to trash */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Artifact is selected or still has derived results */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getStageRerunImpact: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+                stageKey: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Rerun lineage impact */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    runWorkflowStage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+                stageKey: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    [key: string]: unknown;
+                };
+            };
+        };
+        responses: {
+            /** @description Queued */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    selectStageArtifact: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+                stageKey: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StageSelectionUpdate"];
+            };
+        };
+        responses: {
+            /** @description Stage selection updated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getStageSettingsMismatches: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+                stageKey: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Prerequisite settings changed since the stored artifacts were created */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listSubtitleEvidence: {
+        parameters: {
+            query?: {
+                source_artifact_id?: string;
+            };
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Bounded subtitle evidence requests */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    requestSubtitleEvidence: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SubtitleEvidenceCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Subtitle evidence request queued */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid cue, route, or audio model */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    resolveSubtitleEvidence: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                sessionId: string;
+                evidenceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SubtitleEvidenceResolveRequest"];
+            };
+        };
+        responses: {
+            /** @description Subtitle evidence resolution stored */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Evidence state conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getSubtitleComparison: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Aligned subtitle revisions */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listSubtitleReviewArtifacts: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Reviewable subtitle artifact catalog */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getExactSubtitleReview: {
+        parameters: {
+            query: {
+                artifact_id: string[];
+            };
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Exact immutable subtitle revisions aligned for review */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid artifact selection */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    saveSubtitleReview: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                sessionId: string;
+                stage: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SubtitleReviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Reviewed revision */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getWorkflow: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Workflow snapshot */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createWorkflowPlan: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkflowPlanCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Immutable workflow execution preview */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getSetting: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                settingKey: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Setting */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    putSetting: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                settingKey: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SettingUpdate"];
+            };
+        };
+        responses: {
+            /** @description Saved */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    inspectSourceCleaningDispatchExtraction: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
+                "Idempotency-Key": string;
+            };
+            path: {
+                batchId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SourceCleaningDispatchInspectionRequest"];
+            };
+        };
+        responses: {
+            /** @description Extraction inspection result and promoted evidence scope */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourceCleaningDispatchInspectionResponse"];
+                };
+            };
+        };
+    };
+    releaseSourceCleaningDispatchBatch: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                batchId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DispatchBatchReleaseRequest"];
+            };
+        };
+        responses: {
+            /** @description Phase returned to ready */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    renewSourceCleaningDispatchBatch: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                batchId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DispatchBatchRenewRequest"];
+            };
+        };
+        responses: {
+            /** @description Lease renewed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    submitSourceCleaningDispatchBatch: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
+                "Idempotency-Key": string;
+            };
+            path: {
+                batchId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SourceCleaningDispatchBatchSubmitRequest"];
+            };
+        };
+        responses: {
+            /** @description Phase accepted */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourceCleaningDispatchBatchSubmitResponse"];
+                };
+            };
+            /** @description Phase accepted; finalization continues */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourceCleaningDispatchBatchSubmitResponse"];
+                };
+            };
+        };
+    };
+    getSourceCleaningDispatchRun: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Source-cleaning dispatch run metadata */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    claimSourceCleaningDispatchBatch: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
+                "Idempotency-Key": string;
+            };
+            path: {
+                runId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DispatchBatchClaimRequest"];
+            };
+        };
+        responses: {
+            /** @description Claimed source-cleaning phase packet */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourceCleaningDispatchBatchClaimResponse"];
+                };
+            };
+        };
+    };
+    listSourceAssets: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Reusable source library */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    trashSourceAsset: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sourceAssetId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Source asset moved to trash */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    updateSourceAsset: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sourceAssetId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SourceUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Source asset updated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    restoreSourceAsset: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sourceAssetId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Source asset restored */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    releaseSpeechOptimizationDispatchBatch: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                batchId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DispatchBatchReleaseRequest"];
+            };
+        };
+        responses: {
+            /** @description Batch returned to ready */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    renewSpeechOptimizationDispatchBatch: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                batchId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DispatchBatchRenewRequest"];
+            };
+        };
+        responses: {
+            /** @description Lease renewed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    submitSpeechOptimizationDispatchBatch: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
+                "Idempotency-Key": string;
+            };
+            path: {
+                batchId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SpeechOptimizationDispatchBatchSubmitRequest"];
+            };
+        };
+        responses: {
+            /** @description Speech-text batch accepted */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SpeechOptimizationDispatchBatchSubmitResponse"];
+                };
+            };
+            /** @description Batch accepted; finalization continues */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SpeechOptimizationDispatchBatchSubmitResponse"];
+                };
+            };
+        };
+    };
+    getSpeechOptimizationDispatchRun: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Speech-optimization dispatch run metadata */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    claimSpeechOptimizationDispatchBatch: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
+                "Idempotency-Key": string;
+            };
+            path: {
+                runId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DispatchBatchClaimRequest"];
+            };
+        };
+        responses: {
+            /** @description Claimed speech-text optimization batch */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SpeechOptimizationDispatchBatchClaimResponse"];
+                };
+            };
+        };
+    };
+    getSubtitleEvidence: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                evidenceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Subtitle evidence candidates and provenance */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Evidence request not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getSystemIdentity: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Stable authenticated application identity */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApplicationIdentityDocument"];
+                };
+            };
+        };
+    };
+    listTrainingRuns: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Training runs */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createTrainingRun: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TrainingCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Queued */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    cancelTrainingRun: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                trainingId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Cancellation requested */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    retryTrainingRun: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                trainingId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Retry queued */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createQuickTranscription: {
+        parameters: {
+            query?: {
+                wait_seconds?: number;
+                response?: "json" | "raw";
+            };
+            header: {
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TranscriptionCreate"];
+                "multipart/form-data": {
+                    /** Format: binary */
+                    file: string;
+                    /** @description JSON object with format, language, engine, model_quantization, compute_backend overrides. */
+                    options?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Completed transcript (raw mode) or status envelope */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                    "application/x-subrip": string;
+                    "text/plain": string;
+                };
+            };
+            /** @description Temporary transcription status and a bounded inline result when complete */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TranscriptionSnapshot"];
+                };
+            };
+            /** @description Temporary transcription status and a bounded inline result when complete */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TranscriptionSnapshot"];
+                };
+            };
+            /** @description Not found or owned by another principal */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Temporary data expired or was deleted */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getQuickTranscription: {
+        parameters: {
+            query?: {
+                wait_seconds?: number;
+                format?: "txt" | "srt" | "json";
+            };
+            header?: never;
+            path: {
+                transcriptionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Temporary transcription status and a bounded inline result when complete */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TranscriptionSnapshot"];
+                };
+            };
+            /** @description Temporary transcription status and a bounded inline result when complete */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TranscriptionSnapshot"];
+                };
+            };
+            /** @description Not found or owned by another principal */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Temporary data expired or was deleted */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    deleteQuickTranscription: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                transcriptionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Temporary transcription status and a bounded inline result when complete */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TranscriptionSnapshot"];
+                };
+            };
+            /** @description Temporary transcription status and a bounded inline result when complete */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TranscriptionSnapshot"];
+                };
+            };
+            /** @description Not found or owned by another principal */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Temporary data expired or was deleted */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    cancelQuickTranscription: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                transcriptionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Temporary transcription status and a bounded inline result when complete */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TranscriptionSnapshot"];
+                };
+            };
+            /** @description Temporary transcription status and a bounded inline result when complete */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TranscriptionSnapshot"];
+                };
+            };
+            /** @description Not found or owned by another principal */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Temporary data expired or was deleted */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    uploadQuickTranscriptionChunk: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                transcriptionId: string;
+                index: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/octet-stream": string;
+            };
+        };
+        responses: {
+            /** @description Temporary transcription status and a bounded inline result when complete */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TranscriptionSnapshot"];
+                };
+            };
+            /** @description Temporary transcription status and a bounded inline result when complete */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TranscriptionSnapshot"];
+                };
+            };
+            /** @description Not found or owned by another principal */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Temporary data expired or was deleted */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getQuickTranscriptionResult: {
+        parameters: {
+            query?: {
+                format?: "txt" | "srt" | "json";
+                offset?: number;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                transcriptionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Complete transcript or paginated result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TranscriptionResultPage"] | Record<string, never>;
+                    "application/x-subrip": string;
+                    "text/plain": string;
+                };
+            };
+            /** @description Result not ready */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Result expired */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    startQuickTranscription: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                transcriptionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["TranscriptionWait"];
+            };
+        };
+        responses: {
+            /** @description Temporary transcription status and a bounded inline result when complete */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TranscriptionSnapshot"];
+                };
+            };
+            /** @description Temporary transcription status and a bounded inline result when complete */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TranscriptionSnapshot"];
+                };
+            };
+            /** @description Not found or owned by another principal */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Temporary data expired or was deleted */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    uploadSource: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Uploaded */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    initializeChunkUpload: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChunkUploadInitialize"];
+            };
+        };
+        responses: {
+            /** @description Chunk upload initialized */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getChunkUpload: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                uploadId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Chunk upload status */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    cancelChunkUpload: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                uploadId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Chunk upload canceled */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    putUploadChunk: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                uploadId: string;
+                index: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Chunk accepted */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    completeChunkUpload: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                uploadId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Upload promoted */
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8594,6 +12315,66 @@ export interface operations {
             };
             /** @description Revision conflict */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    publishVoiceToProvider: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": string;
+            };
+            path: {
+                voiceId: string;
+                serviceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Provider upload queued */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    removeVoiceFromProvider: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": string;
+            };
+            path: {
+                voiceId: string;
+                serviceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Provider deletion queued */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision conflict or unowned legacy registration */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Provider deletion unsupported */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8780,67 +12561,7 @@ export interface operations {
             };
         };
     };
-    publishVoiceToProvider: {
-        parameters: {
-            query?: never;
-            header: {
-                "If-Match": string;
-            };
-            path: {
-                voiceId: string;
-                serviceId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Provider upload queued */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    removeVoiceFromProvider: {
-        parameters: {
-            query?: never;
-            header: {
-                "If-Match": string;
-            };
-            path: {
-                voiceId: string;
-                serviceId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Provider deletion queued */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Revision conflict or unowned legacy registration */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Provider deletion unsupported */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    listRvcModels: {
+    listWork: {
         parameters: {
             query?: never;
             header?: never;
@@ -8849,7 +12570,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description RVC readiness and models */
+            /** @description Payload-free durable work projections */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -8858,131 +12579,7 @@ export interface operations {
             };
         };
     };
-    uploadRvcModel: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["RvcModelUploadRequest"];
-            };
-        };
-        responses: {
-            /** @description Queued */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    convertWithRvc: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["RvcConvertRequest"];
-            };
-        };
-        responses: {
-            /** @description Queued */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    listTrainingRuns: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Training runs */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    createTrainingRun: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["TrainingCreateRequest"];
-            };
-        };
-        responses: {
-            /** @description Queued */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    cancelTrainingRun: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                trainingId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Cancellation requested */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    retryTrainingRun: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                trainingId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Retry queued */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    getJob: {
+    getWork: {
         parameters: {
             query?: never;
             header?: never;
@@ -8993,39 +12590,23 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Job */
+            /** @description Payload-free durable work projection */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
-            };
-        };
-    };
-    getJobLogs: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                jobId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Durable job event and log timeline */
-            200: {
-                headers: {
-                    [name: string]: unknown;
+                content: {
+                    "application/json": components["schemas"]["WorkView"];
                 };
-                content?: never;
             };
         };
     };
-    cancelJob: {
+    cancelWork: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
             path: {
                 jobId: string;
             };
@@ -9038,210 +12619,46 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["WorkView"];
+                };
             };
         };
     };
-    listDispatchRuns: {
+    listWorkEvents: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                sessionId: string;
+                jobId: string;
             };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Dispatch run metadata */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    createDispatchRun: {
-        parameters: {
-            query?: never;
-            header?: {
-                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
-                "Idempotency-Key"?: string;
-            };
-            path: {
-                sessionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["DispatchRunCreateRequest"];
-            };
-        };
-        responses: {
-            /** @description Dispatch run created */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    getDispatchRun: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                runId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Dispatch run metadata */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    claimDispatchBatch: {
-        parameters: {
-            query?: never;
-            header: {
-                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
-                "Idempotency-Key": string;
-            };
-            path: {
-                runId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["DispatchBatchClaimRequest"];
-            };
-        };
-        responses: {
-            /** @description Claimed subtitle batch */
+            /** @description Bounded redacted work events */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["DispatchBatchClaimResponse"];
+                    "application/json": components["schemas"]["WorkEventPage"];
                 };
             };
         };
     };
-    renewDispatchBatch: {
-        parameters: {
-            query?: never;
-            header?: {
-                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
-                "Idempotency-Key"?: string;
-            };
-            path: {
-                batchId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["DispatchBatchRenewRequest"];
-            };
-        };
-        responses: {
-            /** @description Lease renewed */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    releaseDispatchBatch: {
-        parameters: {
-            query?: never;
-            header?: {
-                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
-                "Idempotency-Key"?: string;
-            };
-            path: {
-                batchId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["DispatchBatchReleaseRequest"];
-            };
-        };
-        responses: {
-            /** @description Batch returned to ready */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    submitDispatchBatch: {
-        parameters: {
-            query?: never;
-            header: {
-                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
-                "Idempotency-Key": string;
-            };
-            path: {
-                batchId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["DispatchBatchSubmitRequest"];
-            };
-        };
-        responses: {
-            /** @description Batch accepted */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DispatchBatchSubmitResponse"];
-                };
-            };
-            /** @description Batch accepted; finalization continues */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DispatchBatchSubmitResponse"];
-                };
-            };
-        };
-    };
-    listSourceCleaningDispatchRuns: {
+    getWorkflowPlan: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                sessionId: string;
+                planId: string;
             };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Source-cleaning dispatch run metadata */
+            /** @description Immutable workflow execution preview */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -9250,3449 +12667,32 @@ export interface operations {
             };
         };
     };
-    createSourceCleaningDispatchRun: {
-        parameters: {
-            query?: never;
-            header?: {
-                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
-                "Idempotency-Key"?: string;
-            };
-            path: {
-                sessionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SourceCleaningDispatchRunCreateRequest"];
-            };
-        };
-        responses: {
-            /** @description Deterministic PDF/EPUB preparation queued */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    getSourceCleaningDispatchRun: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                runId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Source-cleaning dispatch run metadata */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    claimSourceCleaningDispatchBatch: {
-        parameters: {
-            query?: never;
-            header: {
-                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
-                "Idempotency-Key": string;
-            };
-            path: {
-                runId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["DispatchBatchClaimRequest"];
-            };
-        };
-        responses: {
-            /** @description Claimed source-cleaning phase packet */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SourceCleaningDispatchBatchClaimResponse"];
-                };
-            };
-        };
-    };
-    renewSourceCleaningDispatchBatch: {
-        parameters: {
-            query?: never;
-            header?: {
-                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
-                "Idempotency-Key"?: string;
-            };
-            path: {
-                batchId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["DispatchBatchRenewRequest"];
-            };
-        };
-        responses: {
-            /** @description Lease renewed */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    releaseSourceCleaningDispatchBatch: {
-        parameters: {
-            query?: never;
-            header?: {
-                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
-                "Idempotency-Key"?: string;
-            };
-            path: {
-                batchId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["DispatchBatchReleaseRequest"];
-            };
-        };
-        responses: {
-            /** @description Phase returned to ready */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    inspectSourceCleaningDispatchExtraction: {
-        parameters: {
-            query?: never;
-            header: {
-                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
-                "Idempotency-Key": string;
-            };
-            path: {
-                batchId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SourceCleaningDispatchInspectionRequest"];
-            };
-        };
-        responses: {
-            /** @description Extraction inspection result and promoted evidence scope */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SourceCleaningDispatchInspectionResponse"];
-                };
-            };
-        };
-    };
-    submitSourceCleaningDispatchBatch: {
-        parameters: {
-            query?: never;
-            header: {
-                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
-                "Idempotency-Key": string;
-            };
-            path: {
-                batchId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SourceCleaningDispatchBatchSubmitRequest"];
-            };
-        };
-        responses: {
-            /** @description Phase accepted */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SourceCleaningDispatchBatchSubmitResponse"];
-                };
-            };
-            /** @description Phase accepted; finalization continues */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SourceCleaningDispatchBatchSubmitResponse"];
-                };
-            };
-        };
-    };
-    listSpeechOptimizationDispatchRuns: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                sessionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Speech-optimization dispatch run metadata */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    createSpeechOptimizationDispatchRun: {
-        parameters: {
-            query?: never;
-            header?: {
-                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
-                "Idempotency-Key"?: string;
-            };
-            path: {
-                sessionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SpeechOptimizationDispatchRunCreateRequest"];
-            };
-        };
-        responses: {
-            /** @description Passive speech-optimization run created */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    getSpeechOptimizationDispatchRun: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                runId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Speech-optimization dispatch run metadata */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    claimSpeechOptimizationDispatchBatch: {
-        parameters: {
-            query?: never;
-            header: {
-                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
-                "Idempotency-Key": string;
-            };
-            path: {
-                runId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["DispatchBatchClaimRequest"];
-            };
-        };
-        responses: {
-            /** @description Claimed speech-text optimization batch */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SpeechOptimizationDispatchBatchClaimResponse"];
-                };
-            };
-        };
-    };
-    renewSpeechOptimizationDispatchBatch: {
-        parameters: {
-            query?: never;
-            header?: {
-                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
-                "Idempotency-Key"?: string;
-            };
-            path: {
-                batchId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["DispatchBatchRenewRequest"];
-            };
-        };
-        responses: {
-            /** @description Lease renewed */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    releaseSpeechOptimizationDispatchBatch: {
-        parameters: {
-            query?: never;
-            header?: {
-                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
-                "Idempotency-Key"?: string;
-            };
-            path: {
-                batchId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["DispatchBatchReleaseRequest"];
-            };
-        };
-        responses: {
-            /** @description Batch returned to ready */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    submitSpeechOptimizationDispatchBatch: {
-        parameters: {
-            query?: never;
-            header: {
-                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
-                "Idempotency-Key": string;
-            };
-            path: {
-                batchId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SpeechOptimizationDispatchBatchSubmitRequest"];
-            };
-        };
-        responses: {
-            /** @description Speech-text batch accepted */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SpeechOptimizationDispatchBatchSubmitResponse"];
-                };
-            };
-            /** @description Batch accepted; finalization continues */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SpeechOptimizationDispatchBatchSubmitResponse"];
-                };
-            };
-        };
-    };
-    listMediaEditDispatchRuns: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                sessionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Media-edit dispatch run metadata */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    createMediaEditDispatchRun: {
-        parameters: {
-            query?: never;
-            header?: {
-                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
-                "Idempotency-Key"?: string;
-            };
-            path: {
-                sessionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["MediaEditDispatchRunCreateRequest"];
-            };
-        };
-        responses: {
-            /** @description Passive media-edit run created */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    getMediaEditDispatchRun: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                runId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Media-edit dispatch run metadata */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    claimMediaEditDispatchBatch: {
-        parameters: {
-            query?: never;
-            header: {
-                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
-                "Idempotency-Key": string;
-            };
-            path: {
-                runId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["DispatchBatchClaimRequest"];
-            };
-        };
-        responses: {
-            /** @description Claimed media-edit batch */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MediaEditDispatchBatchClaimResponse"];
-                };
-            };
-        };
-    };
-    renewMediaEditDispatchBatch: {
-        parameters: {
-            query?: never;
-            header?: {
-                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
-                "Idempotency-Key"?: string;
-            };
-            path: {
-                batchId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["DispatchBatchRenewRequest"];
-            };
-        };
-        responses: {
-            /** @description Lease renewed */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    releaseMediaEditDispatchBatch: {
-        parameters: {
-            query?: never;
-            header?: {
-                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
-                "Idempotency-Key"?: string;
-            };
-            path: {
-                batchId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["DispatchBatchReleaseRequest"];
-            };
-        };
-        responses: {
-            /** @description Batch returned to ready */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    submitMediaEditDispatchBatch: {
-        parameters: {
-            query?: never;
-            header: {
-                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
-                "Idempotency-Key": string;
-            };
-            path: {
-                batchId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["MediaEditDispatchBatchSubmitRequest"];
-            };
-        };
-        responses: {
-            /** @description Media-edit batch accepted */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MediaEditDispatchBatchSubmitResponse"];
-                };
-            };
-            /** @description Batch accepted; finalization continues */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MediaEditDispatchBatchSubmitResponse"];
-                };
-            };
-        };
-    };
-    getParityRegistry: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Qt-to-web parity registry */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    getGlobalDefaults: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                section: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Built-in and configured global defaults */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    listTtsServices: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description TTS readiness and catalogues */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    listSttServices: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Cloud STT profiles and configured connections */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    listXttsModels: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description XTTS models and lifecycle metadata */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        object: string;
-                        data: components["schemas"]["XttsModel"][];
-                        lifecycle_supported: boolean;
-                        compatibility?: string | null;
-                        wrapper?: {
-                            [key: string]: string;
-                        } | null;
-                    };
-                };
-            };
-        };
-    };
-    uploadXttsModel: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "multipart/form-data": {
-                    model_id: string;
-                    files: string[];
-                };
-            };
-        };
-        responses: {
-            /** @description XTTS model uploaded and installed */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        id: string;
-                        object: string;
-                        owned_by: string;
-                        bytes: number;
-                    };
-                };
-            };
-        };
-    };
-    deleteXttsModel: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                modelId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description XTTS model removed */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        id: string;
-                        object: string;
-                        deleted: boolean;
-                        evicted: boolean;
-                    };
-                };
-            };
-        };
-    };
-    discoverTtsService: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["TtsEndpointDiscoveryRequest"];
-            };
-        };
-        responses: {
-            /** @description Discovered endpoint */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    previewTtsVoice: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                serviceId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["TtsVoicePreviewRequest"];
-            };
-        };
-        responses: {
-            /** @description Voice preview queued */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    getManagerStatus: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Local manager availability and status */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    listManagerComponents: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Manager component inventory */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    getManagerDoctorReport: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Non-mutating host diagnostics */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    getManagerLegacyImportReport: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Read-only legacy workspace inspection */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    importManagerLegacyWorkspace: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ManagerLegacyImportRequest"];
-            };
-        };
-        responses: {
-            /** @description Import the exact reviewed legacy workspace */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    listManagerServices: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Manager service inventory */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    listManagerReleases: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Accepted product releases and activation slots */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    createManagerReleasePlan: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ManagerReleasePlanRequest"];
-            };
-        };
-        responses: {
-            /** @description Immutable signed product release plan */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    createManagerUninstallPlan: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ManagerUninstallPlanRequest"];
-            };
-        };
-        responses: {
-            /** @description Immutable whole-product uninstall plan */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    createManagerPlan: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ManagerPlanRequest"];
-            };
-        };
-        responses: {
-            /** @description Immutable manager plan */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    listManagerOperations: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Durable manager operations */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    submitManagerOperation: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ManagerOperationRequest"];
-            };
-        };
-        responses: {
-            /** @description Manager operation accepted */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    getManagerOperation: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                operationId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Durable manager operation */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    listManagerOperationTasks: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                operationId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Durable manager operation tasks */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    cancelManagerOperation: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                operationId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Safe cancellation requested */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    controlManagerRuntime: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                action: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ManagerRuntimeRequest"];
-            };
-        };
-        responses: {
-            /** @description Managed runtime action completed */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    getManagerLogs: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Bounded managed-service log tail */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    listCredentialBackends: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Credential storage capabilities and guidance */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    listCredentials: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Write-only auxiliary credential status */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    putCredential: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                credentialId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CredentialUpdate"];
-            };
-        };
-        responses: {
-            /** @description Auxiliary credential saved */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    listPronunciations: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Reviewable pronunciation library */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    createPronunciation: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["PronunciationCreate"];
-            };
-        };
-        responses: {
-            /** @description Pronunciation created */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    deletePronunciation: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                entryId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Pronunciation deleted */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    updatePronunciation: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                entryId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["PronunciationUpdate"];
-            };
-        };
-        responses: {
-            /** @description Pronunciation updated */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    getSessionSettings: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                sessionId: string;
-                section: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Effective settings and inheritance */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    putSessionSettings: {
+    executeWorkflowPlan: {
         parameters: {
             query?: never;
             header: {
                 "Idempotency-Key": string;
-                "If-Match": string;
             };
             path: {
-                sessionId: string;
-                section: string;
+                planId: string;
             };
             cookie?: never;
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["SessionSettingsUpdate"];
+                "application/json": components["schemas"]["WorkflowPlanExecuteRequest"];
             };
         };
         responses: {
-            /** @description Session override saved */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    resolveSessionSettings: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                sessionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Immutable effective settings snapshot */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    getOutcomePlan: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                sessionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Revisioned outcome plan */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    putOutcomePlan: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                sessionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["OutcomePlanUpdate"];
-            };
-        };
-        responses: {
-            /** @description Outcome plan saved */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    listSourceAssets: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Reusable source library */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    trashSourceAsset: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                sourceAssetId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Source asset moved to trash */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    updateSourceAsset: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                sourceAssetId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SourceUpdateRequest"];
-            };
-        };
-        responses: {
-            /** @description Source asset updated */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    restoreSourceAsset: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                sourceAssetId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Source asset restored */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    listSessionSources: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                sessionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Session source attachments */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    attachSessionSource: {
-        parameters: {
-            query?: never;
-            header: {
-                "Idempotency-Key": string;
-                "If-Match": string;
-            };
-            path: {
-                sessionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SourceAttachRequest"];
-            };
-        };
-        responses: {
-            /** @description Source attached */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    detachSessionSource: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                sessionId: string;
-                attachmentId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Source detached */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    listSessionDocuments: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                sessionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Document and subtitle revisions */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    listTimedWords: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                revisionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Immutable timed words */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    getArtifactWaveform: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                artifactId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Waveform peaks or queued generation */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    getArtifactAudioPreview: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                artifactId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Browser-safe source audio preview */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Preview queued or running */
+            /** @description Exact plan consumed and queued */
             202: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-        };
-    };
-    getArtifactContext: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                artifactId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Artifact lineage context for comparison */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    saveOptimizationReview: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                artifactId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["OptimizationReviewRequest"];
-            };
-        };
-        responses: {
-            /** @description Reviewed speech optimization artifact */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    createGenerationPlan: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                sessionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["GenerationPlanCreate"];
-            };
-        };
-        responses: {
-            /** @description Generation plan created */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    reviseGenerationPlanTopology: {
-        parameters: {
-            query?: never;
-            header: {
-                "Idempotency-Key": string;
-                "If-Match": string;
-            };
-            path: {
-                sessionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["GenerationPlanTopologyRequest"];
-            };
-        };
-        responses: {
-            /** @description Create an immutable generation-plan topology revision */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    listGenerationSegments: {
-        parameters: {
-            query?: {
-                /** @description Return the plan revision bound to this generation run. */
-                generation_run_id?: string;
-                /** @description Literal search across the complete selected speech plan. Matching items include original-text UTF-16 search_matches offsets. */
-                q?: string;
-                match_case?: boolean;
-                whole_word?: boolean;
-                /** @description Spoken text uses optimized_text when present, otherwise text. */
-                text_field?: "text" | "spoken";
-                /** @description Filter nonremoved speech blocks by boundary-risk flags. */
-                boundary_flags?: boolean;
-                plan_revision_id?: string;
-                view?: string;
-                fields?: string;
-                cursor?: number;
-                limit?: number;
-                end_ordinal?: number;
-                around_ordinal?: number;
-                source_cue_id?: string;
-                radius?: number;
-            };
-            header?: never;
-            path: {
-                sessionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Cursor-paginated generation segments */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    updateGenerationSegments: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                sessionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["GenerationSegmentBatchUpdate"];
-            };
-        };
-        responses: {
-            /** @description Generation segments updated atomically */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    updateGenerationSegment: {
-        parameters: {
-            query?: never;
-            header?: {
-                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
-                "Idempotency-Key"?: string;
-            };
-            path: {
-                segmentId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["GenerationSegmentUpdate"];
-            };
-        };
-        responses: {
-            /** @description Generation segment updated */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    selectGenerationTake: {
-        parameters: {
-            query?: never;
-            header?: {
-                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
-                "Idempotency-Key"?: string;
-            };
-            path: {
-                segmentId: string;
-                takeId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Active audio take selected */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    getLatestGenerationRun: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                sessionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Latest generation run */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    listGenerationRuns: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                sessionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Named generation runs */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    startGenerationRun: {
-        parameters: {
-            query?: never;
-            header?: {
-                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
-                "Idempotency-Key"?: string;
-            };
-            path: {
-                sessionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["GenerationStartRequest"];
-            };
-        };
-        responses: {
-            /** @description Generation queued */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    deleteGenerationRun: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                runId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Generation run deleted */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    pauseGenerationRun: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                runId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Safe pause requested */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    resumeGenerationRun: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                runId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Generation resumed */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    cancelGenerationRun: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                runId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Cancellation requested */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    getLatestOutputAssembly: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                sessionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Latest output assembly */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    createOutputAssembly: {
-        parameters: {
-            query?: never;
-            header?: {
-                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
-                "Idempotency-Key"?: string;
-            };
-            path: {
-                sessionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["OutputAssemblyCreateRequest"];
-            };
-        };
-        responses: {
-            /** @description Output assembly queued */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    createOutputMixPreview: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                sessionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["OutputMixPreviewRequest"];
-            };
-        };
-        responses: {
-            /** @description Soundtrack mix preview queued */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    listAgentRuns: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                sessionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Auditable agent runs */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    createAgentRun: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                sessionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["AgentRunCreateRequest"];
-            };
-        };
-        responses: {
-            /** @description Agentic cleaning queued */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    listAgentSteps: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                runId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Auditable agent phase summaries */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    resumeAgentRun: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                runId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Resume an interrupted agentic operation from its durable checkpoint */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    acceptAgentRun: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                runId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Cleaning result accepted */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    initializeChunkUpload: {
-        parameters: {
-            query?: never;
-            header: {
-                "If-Match": string;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ChunkUploadInitialize"];
-            };
-        };
-        responses: {
-            /** @description Chunk upload initialized */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    getChunkUpload: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                uploadId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Chunk upload status */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    cancelChunkUpload: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                uploadId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Chunk upload canceled */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    putUploadChunk: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                uploadId: string;
-                index: number;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Chunk accepted */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    completeChunkUpload: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                uploadId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Upload promoted */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    restoreSession: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                sessionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Session restored */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    reindexSession: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                sessionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Reconciliation report */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    createQuickTranscription: {
-        parameters: {
-            query?: {
-                wait_seconds?: number;
-                response?: "json" | "raw";
-            };
-            header: {
-                "Idempotency-Key": string;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["TranscriptionCreate"];
-                "multipart/form-data": {
-                    /** Format: binary */
-                    file: string;
-                    /** @description JSON object with format, language, engine, model_quantization, compute_backend overrides. */
-                    options?: string;
-                };
-            };
-        };
-        responses: {
-            /** @description Completed transcript (raw mode) or status envelope */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": Record<string, never>;
-                    "text/plain": string;
-                    "application/x-subrip": string;
-                };
-            };
-            /** @description Temporary transcription status and a bounded inline result when complete */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["TranscriptionSnapshot"];
-                };
-            };
-            /** @description Temporary transcription status and a bounded inline result when complete */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["TranscriptionSnapshot"];
-                };
-            };
-            /** @description Not found or owned by another principal */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Temporary data expired or was deleted */
-            410: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    getQuickTranscription: {
-        parameters: {
-            query?: {
-                wait_seconds?: number;
-                format?: "txt" | "srt" | "json";
-            };
-            header?: never;
-            path: {
-                transcriptionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Temporary transcription status and a bounded inline result when complete */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["TranscriptionSnapshot"];
-                };
-            };
-            /** @description Temporary transcription status and a bounded inline result when complete */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["TranscriptionSnapshot"];
-                };
-            };
-            /** @description Not found or owned by another principal */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Temporary data expired or was deleted */
-            410: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    deleteQuickTranscription: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                transcriptionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Temporary transcription status and a bounded inline result when complete */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["TranscriptionSnapshot"];
-                };
-            };
-            /** @description Temporary transcription status and a bounded inline result when complete */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["TranscriptionSnapshot"];
-                };
-            };
-            /** @description Not found or owned by another principal */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Temporary data expired or was deleted */
-            410: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    uploadQuickTranscriptionChunk: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                transcriptionId: string;
-                index: number;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/octet-stream": string;
-            };
-        };
-        responses: {
-            /** @description Temporary transcription status and a bounded inline result when complete */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["TranscriptionSnapshot"];
-                };
-            };
-            /** @description Temporary transcription status and a bounded inline result when complete */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["TranscriptionSnapshot"];
-                };
-            };
-            /** @description Not found or owned by another principal */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Temporary data expired or was deleted */
-            410: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    startQuickTranscription: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                transcriptionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: {
-            content: {
-                "application/json": components["schemas"]["TranscriptionWait"];
-            };
-        };
-        responses: {
-            /** @description Temporary transcription status and a bounded inline result when complete */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["TranscriptionSnapshot"];
-                };
-            };
-            /** @description Temporary transcription status and a bounded inline result when complete */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["TranscriptionSnapshot"];
-                };
-            };
-            /** @description Not found or owned by another principal */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Temporary data expired or was deleted */
-            410: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    cancelQuickTranscription: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                transcriptionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Temporary transcription status and a bounded inline result when complete */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["TranscriptionSnapshot"];
-                };
-            };
-            /** @description Temporary transcription status and a bounded inline result when complete */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["TranscriptionSnapshot"];
-                };
-            };
-            /** @description Not found or owned by another principal */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Temporary data expired or was deleted */
-            410: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    getQuickTranscriptionResult: {
-        parameters: {
-            query?: {
-                format?: "txt" | "srt" | "json";
-                offset?: number;
-                limit?: number;
-            };
-            header?: never;
-            path: {
-                transcriptionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Complete transcript or paginated result */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "text/plain": string;
-                    "application/x-subrip": string;
-                    "application/json": components["schemas"]["TranscriptionResultPage"] | Record<string, never>;
-                };
-            };
-            /** @description Result not ready */
+            /** @description Plan stale, consumed, expired, or confirmation missing */
             409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Result expired */
-            410: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    listGroupedSpeechPlanHistory: {
-        parameters: {
-            query?: {
-                limit?: number;
-                before_revision_number?: number;
-            };
-            header?: never;
-            path: {
-                sessionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Bounded history with actual revision identifiers; preview never changes the active plan. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Session or repair batch not found. */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Invalid pagination parameters. */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    getSpeechPlanRepairBatch: {
-        parameters: {
-            query?: {
-                limit?: number;
-                before_revision_number?: number;
-            };
-            header?: never;
-            path: {
-                sessionId: string;
-                batchId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Bounded history with actual revision identifiers; preview never changes the active plan. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Session or repair batch not found. */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Invalid pagination parameters. */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    undoSpeechPlanRepairBatch: {
-        parameters: {
-            query?: never;
-            header: {
-                /** @description Replay-safe key scoped to the session, batch, and guarded undo payload. */
-                "Idempotency-Key": string;
-            };
-            path: {
-                sessionId: string;
-                batchId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["RepairBatchUndoRequest"];
-            };
-        };
-        responses: {
-            /** @description New restore revision; original and repaired checkpoints and audio are retained. */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description A valid idempotency key is required. */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Session or repair batch not found. */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description The plan, selected audio, or repair state changed; work is active; or a historical batch lacks a verified snapshot. Nothing is restored. */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Invalid or incomplete guard fields. */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    getSessionSourceStatus: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                sessionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Current state or completed action */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
-                };
-            };
-            /** @description Session or revision not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Changed revision, active work, or idempotency conflict */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Invalid action */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    previewSessionSourceChange: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                sessionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SourceChangePreviewRequest"];
-            };
-        };
-        responses: {
-            /** @description Current state or completed action */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
-                };
-            };
-            /** @description Session or revision not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Changed revision, active work, or idempotency conflict */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Invalid action */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    changeSessionSource: {
-        parameters: {
-            query?: never;
-            header: {
-                "Idempotency-Key": string;
-            };
-            path: {
-                sessionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SourceChangeRequest"];
-            };
-        };
-        responses: {
-            /** @description Current state or completed action */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
-                };
-            };
-            /** @description Session or revision not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Changed revision, active work, or idempotency conflict */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Invalid action */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    startNewSourceSession: {
-        parameters: {
-            query?: never;
-            header: {
-                "Idempotency-Key": string;
-            };
-            path: {
-                sessionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SourceChangeRequest"];
-            };
-        };
-        responses: {
-            /** @description Current state or completed action */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
-                };
-            };
-            /** @description Session or revision not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Changed revision, active work, or idempotency conflict */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Invalid action */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    cleanupResetSourceFiles: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                sessionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Current state or completed action */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
-                };
-            };
-            /** @description Session or revision not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Changed revision, active work, or idempotency conflict */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Invalid action */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    confirmRecordingTiming: {
-        parameters: {
-            query?: never;
-            header: {
-                "Idempotency-Key": string;
-            };
-            path: {
-                sessionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["RecordingTimingRequest"];
-            };
-        };
-        responses: {
-            /** @description Current state or completed action */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
-                };
-            };
-            /** @description Session or revision not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Changed revision, active work, or idempotency conflict */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Invalid action */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    getSpeechPlanStatus: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                sessionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Current state or completed action */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
-                };
-            };
-            /** @description Session or revision not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Changed revision, active work, or idempotency conflict */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Invalid action */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    prepareSpeechPlan: {
-        parameters: {
-            query?: never;
-            header: {
-                "Idempotency-Key": string;
-            };
-            path: {
-                sessionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SpeechPlanPrepareRequest"];
-            };
-        };
-        responses: {
-            /** @description Current state or completed action */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
-                };
-            };
-            /** @description Session or revision not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Changed revision, active work, or idempotency conflict */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Invalid action */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    selectSpeechPlan: {
-        parameters: {
-            query?: never;
-            header: {
-                "Idempotency-Key": string;
-            };
-            path: {
-                sessionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SpeechPlanSelectRequest"];
-            };
-        };
-        responses: {
-            /** @description Current state or completed action */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
-                };
-            };
-            /** @description Session or revision not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Changed revision, active work, or idempotency conflict */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Invalid action */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    reviewSpeechPlan: {
-        parameters: {
-            query?: never;
-            header: {
-                "Idempotency-Key": string;
-            };
-            path: {
-                sessionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SpeechPlanReviewRequest"];
-            };
-        };
-        responses: {
-            /** @description Current state or completed action */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
-                };
-            };
-            /** @description Session or revision not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Changed revision, active work, or idempotency conflict */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Invalid action */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    subtitleSourceStatus: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                sessionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description subtitleSourceStatus */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    adoptSubtitleSource: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                sessionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SourceAttachRequest"];
-            };
-        };
-        responses: {
-            /** @description adoptSubtitleSource */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    alignSubtitleSource: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                sessionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SubtitleAlignRequest"];
-            };
-        };
-        responses: {
-            /** @description alignSubtitleSource */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    listSpeechPlanRevisions: {
-        parameters: {
-            query?: {
-                limit?: number;
-                before_revision_number?: number;
-            };
-            header?: never;
-            path: {
-                sessionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description listSpeechPlanRevisions */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    reviseGenerationPlanTopologyBatch: {
-        parameters: {
-            query?: never;
-            header: {
-                "If-Match": string;
-                "Idempotency-Key": string;
-            };
-            path: {
-                sessionId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["GenerationPlanBatchRequest"];
-            };
-        };
-        responses: {
-            /** @description reviseGenerationPlanTopologyBatch */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    getSourcePassages: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                sessionId: string;
-                artifactId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description getSourcePassages */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    previewSourcePassages: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                sessionId: string;
-                artifactId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SourcePassagePreviewRequest"];
-            };
-        };
-        responses: {
-            /** @description previewSourcePassages */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    rebuildSourcePassages: {
-        parameters: {
-            query?: never;
-            header?: {
-                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
-                "Idempotency-Key"?: string;
-            };
-            path: {
-                sessionId: string;
-                artifactId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SourcePassageRebuildRequest"];
-            };
-        };
-        responses: {
-            /** @description rebuildSourcePassages */
-            201: {
                 headers: {
                     [name: string]: unknown;
                 };

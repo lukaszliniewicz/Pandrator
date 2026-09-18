@@ -38,6 +38,7 @@ interfaces live in the [Pandrator Manager guide](../pandrator_manager/README.md)
 - [Document ingestion and narration pipeline](reference/document-ingestion.md)
 - [Subtitle-to-speech pipeline and parameters](reference/subtitle-pipeline.md)
 - [Speech-text optimization and dispatch](reference/speech-optimization.md)
+- [Voiceover repair history and undo](guides/repair-history.md)
 
 The document reference covers upload lineage, PDF layout/OCR, EPUB structure,
 cleanup, narration preparation, and generation segments. The subtitle reference

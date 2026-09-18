@@ -1215,6 +1215,7 @@ class WebWorkflowHandlerTests(unittest.TestCase):
         self.assertNotEqual(changed_merge_id, third_id)
 
     def test_subtitle_plan_threshold_is_monotonic_and_preserves_speaker(self):
+        # Explicitly exercise legacy threshold-based merging; passage mode preserves boundaries.
         source_path = self.session_dir / "speaker-safe.srt"
         source_path.write_text(
             """1
@@ -1243,14 +1244,14 @@ class WebWorkflowHandlerTests(unittest.TestCase):
             self.session.id,
             source,
             source_path,
-            {"speech_block_merge_threshold": 100},
+            {"speech_block_generation_mode": "legacy", "speech_block_merge_threshold": 100},
             "en",
         )
         second_revision = self.handlers._materialize_subtitle_generation_plan(
             self.session.id,
             source,
             source_path,
-            {"speech_block_merge_threshold": 200},
+            {"speech_block_generation_mode": "legacy", "speech_block_merge_threshold": 200},
             "en",
         )
 
@@ -1279,6 +1280,7 @@ class WebWorkflowHandlerTests(unittest.TestCase):
         ])
 
     def test_reviewed_subtitle_speech_uses_the_same_merged_partition(self):
+        # Explicitly exercise legacy threshold-based merging; passage mode preserves boundaries.
         display_path = self.session_dir / "display.srt"
         display_path.write_text(
             """1
@@ -1334,7 +1336,7 @@ Hello.
             self.session.id,
             speech,
             speech_path,
-            {"speech_block_merge_threshold": 200},
+            {"speech_block_generation_mode": "legacy", "speech_block_merge_threshold": 200},
             "en",
         )
 
@@ -1506,6 +1508,7 @@ A single reviewed cue.
         self.assertTrue(all(len(segment.optimized_text) <= 25 for segment in segments))
 
     def test_full_new_run_rematerializes_plan_with_current_merge_threshold(self):
+        # Explicitly exercise legacy threshold-based merging; passage mode preserves boundaries.
         with self.database.session() as session:
             session.get(SessionRecord, self.session.id).workflow_kind = "voiceover"
         source_path = self.session_dir / "rerun-threshold.srt"
@@ -1531,7 +1534,7 @@ A single reviewed cue.
             self.session.id,
             source,
             source_path,
-            {"speech_block_merge_threshold": 100},
+            {"speech_block_generation_mode": "legacy", "speech_block_merge_threshold": 100},
             "en",
         )
         settings = WorkspaceSettingsService(self.database)
@@ -1539,7 +1542,7 @@ A single reviewed cue.
             self.session.id,
             "tts",
             0,
-            {"speech_block_merge_threshold": 200},
+            {"speech_block_generation_mode": "legacy", "speech_block_merge_threshold": 200},
         )
         generation = GenerationService(
             self.database,
@@ -3465,6 +3468,7 @@ A single reviewed cue.
                 "merge_threshold": 425,
                 "continuation_threshold_ms": 3000,
                 "max_internal_gap_ms": 4000,
+                "generation_mode": "passage",
             },
         )
 

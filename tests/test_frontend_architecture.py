@@ -73,16 +73,39 @@ def test_legacy_catch_all_api_client_cannot_return():
     assert not re.search(r"export async function api\b", source(API_CORE))
 
 
+def uses_window_custom_events(text):
+    # Native layout events coordinate popovers; they do not invalidate app data.
+    # Keep custom dispatch, custom listeners, and dynamic event names forbidden.
+    if re.search(r"\bnew\s+CustomEvent\s*\(|\bwindow\s*\.\s*dispatchEvent\s*\(", text):
+        return True
+    remaining = re.sub(
+        r"window\s*\.\s*addEventListener\s*\(\s*(['\"])(?:scroll|resize)\1",
+        "",
+        text,
+    )
+    return re.search(r"\bwindow\s*\.\s*addEventListener\s*\(", remaining) is not None
+
+
+def test_window_event_rule_allows_only_native_layout_listeners():
+    assert not uses_window_custom_events("window.addEventListener('scroll', hide, true)")
+    assert not uses_window_custom_events('window.addEventListener("resize", hide)')
+    assert not uses_window_custom_events("window . addEventListener ( 'resize', hide)")
+    for text in (
+        "window.addEventListener('session-changed', reload)",
+        "window.addEventListener(eventName, reload)",
+        "window.addEventListener('scroll-extra', reload)",
+        "window . dispatchEvent (event)",
+        "new CustomEvent ('session-changed')",
+    ):
+        assert uses_window_custom_events(text), text
+
+
 def test_application_invalidation_does_not_use_window_custom_events():
-    offenders = []
-    for path in frontend_sources():
-        text = source(path)
-        if (
-            "new CustomEvent(" in text
-            or "window.dispatchEvent(" in text
-            or "window.addEventListener(" in text
-        ):
-            offenders.append(path.relative_to(ROOT).as_posix())
+    offenders = [
+        path.relative_to(ROOT).as_posix()
+        for path in frontend_sources()
+        if uses_window_custom_events(source(path))
+    ]
     assert offenders == []
 
 

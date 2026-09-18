@@ -31,7 +31,7 @@ class SubtitleFinalizationTests(unittest.TestCase):
     def test_default_is_two_lines_and_more_permissive_than_netflix_42(self):
         config = SubtitleFinalizationConfig()
         self.assertEqual(config.max_lines, 2)
-        self.assertEqual(config.max_chars_per_line, 48)
+        self.assertEqual(config.max_chars_per_line, 60)
 
     def test_balanced_wrap_prefers_punctuation_and_never_exceeds_two_lines(self):
         text = "This is the first complete phrase, and this is the second part of the meeting update."

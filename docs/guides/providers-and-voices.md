@@ -73,11 +73,16 @@ starting generation.
 
 ## audio.cpp runtime versions
 
-The Manager pins audio.cpp **0.7.4** for Linux CPU/Vulkan and Windows
+The Manager pins audio.cpp **0.8.1** for Linux CPU/Vulkan/CUDA and Windows
 CPU/Vulkan/CUDA, with SHA-256-verified upstream archives. Linux CPU and Vulkan
-use the portable builds. The existing Pandrator Linux CUDA archive remains
-explicitly pinned to **0.7.2** until a new CUDA build is published; its installed
-version must not be reported as 0.7.4. The CUDA workflow is manual-only.
+use the portable builds. Windows CUDA uses the 12.4 binary plus its bundled
+cudart runtime archive. Linux CUDA uses the upstream
+`audio-v0.8.1-bin-ubuntu-x64-cuda12.8-colab.tar.gz` binary best-effort: the
+colab tag means it was built for Colab (CUDA 12.8), it ships without a bundled
+runtime. It needs a compatible NVIDIA driver and system CUDA 12 libraries
+(including cuBLAS and cuFFT), NCCL 2, and OpenSSL 3. It has not been tested on
+local NVIDIA hardware. Use Vulkan when those dependencies are unavailable. Staging refuses
+an unexpected archive layout instead of installing a broken slot.
 
 Updating the runtime does not replace selected models, voices, or generation
 settings. Model package revisions and digests remain independently pinned.

@@ -9,12 +9,9 @@ from ..context import ManagerContext
 from ..models import ComputeVariant
 from .host import compute_choices, normalized_architecture, resolve_auto_compute
 
-AUDIO_CPP_VERSION = "0.8.0"
+AUDIO_CPP_VERSION = "0.8.1"
 AUDIO_CPP_RELEASE_BASE = (
     f"https://github.com/0xShug0/audio.cpp/releases/download/v{AUDIO_CPP_VERSION}"
-)
-PANDRATOR_AUDIO_CPP_RELEASE_BASE = (
-    "https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.8.18"
 )
 AUDIO_CPP_MODEL_REPOSITORY = "audio-cpp/audio.cpp-gguf"
 AUDIO_CPP_MODEL_REVISION = "dc6fecccc2b0c6bdda0a8b2f38fa61394fee0b9c"
@@ -181,59 +178,62 @@ MODEL_PACKAGES: dict[str, AudioCppModelPackage] = {
 }
 
 # Public alias matching the naming used by the other native driver.
-# Digests: upstream v0.8.0 release assets, published 2026-09-15 (release 389456794).
-# Portable Linux builds avoid requiring the release runner's CPU instruction set.
+# Digests: upstream v0.8.1 release assets, published 2026-09-17. Portable Linux
+# builds avoid requiring the release runner's CPU instruction set. Windows CUDA
+# stays on the 12.4 binary/runtime pair for driver compatibility; upstream also
+# publishes a 13.3 pair which Pandrator does not pin.
 ASSETS: dict[tuple[str, str, ComputeVariant], tuple[AudioCppAsset, ...]] = {
     ("linux", "x86_64", ComputeVariant.CPU): (
         AudioCppAsset(
-            "audio-v0.8.0-bin-ubuntu-x64-cpu-portable.tar.gz",
-            "273678101638072dfec69e6c01c75a050ce5d69554e5d6376062e67d99ae95a4",
+            "audio-v0.8.1-bin-ubuntu-x64-cpu-portable.tar.gz",
+            "90e8d538338cc209875a18c940529302805563e54738489da1d684c6e0de12d0",
             ComputeVariant.CPU,
         ),
     ),
     ("linux", "x86_64", ComputeVariant.VULKAN): (
         AudioCppAsset(
-            "audio-v0.8.0-bin-ubuntu-x64-vulkan-portable.tar.gz",
-            "2566b1c5d5fa9cebebf7d77ae7e955aa07c45052dd3f3a3ab635a1f3a27c2823",
+            "audio-v0.8.1-bin-ubuntu-x64-vulkan-portable.tar.gz",
+            "63f778ef4c863ece0bca85b97c78e9629bd561724b1aa5330a9d47806608bbfa",
             ComputeVariant.VULKAN,
         ),
     ),
-    # No new Linux CUDA build is published by Pandrator yet. Keep the verified
-    # 0.7.2 package available, with its true version, rather than claim 0.8.0.
+    # Best-effort Linux CUDA: upstream publishes only the
+    # cuda12.8-colab-tagged binary for 0.8.1, with no bundled cudart archive
+    # (unlike Windows). It needs a compatible CUDA 12 runtime/driver plus NCCL 2 and has not
+    # been tested on local NVIDIA hardware. Staging fails closed when the
+    # archive layout differs from the expected archive-root files.
     ("linux", "x86_64", ComputeVariant.CUDA): (
         AudioCppAsset(
-            "audio.cpp-v0.7.2-linux-x86_64-cuda12.tar.gz",
-            "fb0f082a1226f38bc0a2ab1373891012243959d6a497df904a1498cbadcbc378",
+            "audio-v0.8.1-bin-ubuntu-x64-cuda12.8-colab.tar.gz",
+            "f969811783f206b6d1f6566c020211ab9df7b6bb96c6eded6ad7a58deb725025",
             ComputeVariant.CUDA,
             kind="cuda_binary",
-            release_base=PANDRATOR_AUDIO_CPP_RELEASE_BASE,
-            version="0.7.2",
         ),
     ),
     ("windows", "x86_64", ComputeVariant.CPU): (
         AudioCppAsset(
-            "audio-v0.8.0-bin-windows-x64-cpu-portable.zip",
-            "7c562e5008ec39be3758554d08ef3abfa890ecdc1218c57b130ea8a2bbbf7b68",
+            "audio-v0.8.1-bin-windows-x64-cpu-portable.zip",
+            "fc6a20cc881b0882569d0eca060235a1904863b96b531f79145ce00acf8f8bfd",
             ComputeVariant.CPU,
         ),
     ),
     ("windows", "x86_64", ComputeVariant.VULKAN): (
         AudioCppAsset(
-            "audio-v0.8.0-bin-windows-x64-vulkan.zip",
-            "76ead7b2c9d268e2b1a17168815b491de784b817da40f7eb7415140b580da717",
+            "audio-v0.8.1-bin-windows-x64-vulkan.zip",
+            "c787971e025ba8ef900f0482a2cc36a049367081fe89f4841aae521a0b49de32",
             ComputeVariant.VULKAN,
         ),
     ),
     ("windows", "x86_64", ComputeVariant.CUDA): (
         AudioCppAsset(
-            "audio-v0.8.0-bin-windows-x64-cuda12.4.zip",
-            "54cec128eb0df4b74a06737e39868c5fe1bd551231dce1f96b9ab61b2dbc6b53",
+            "audio-v0.8.1-bin-windows-x64-cuda12.4.zip",
+            "28bbe8ac62a06c5d9d42ba3066b051f433dc9a8f456c544e03e87202f0fa8c52",
             ComputeVariant.CUDA,
             kind="cuda_binary",
         ),
         AudioCppAsset(
-            "audio-v0.8.0-cudart-windows-x64-cuda12.4.zip",
-            "8ded289fada63d9357557429362791c05e7ca94ac5890a66e8f763752388016e",
+            "audio-v0.8.1-cudart-windows-x64-cuda12.4.zip",
+            "025faacfdc3dec215ee07cb9be7d1ef2016402723f3721a30500ceee02cc4701",
             ComputeVariant.CUDA,
             kind="cuda_runtime",
         ),

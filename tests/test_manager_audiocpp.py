@@ -15,7 +15,7 @@ from pandrator_manager.components.audiocpp import (
     AUDIO_CPP_PORT,
     AUDIO_CPP_VERSION,
     MODEL_PACKAGES,
-    PANDRATOR_AUDIO_CPP_RELEASE_BASE,
+    AUDIO_CPP_RELEASE_BASE,
     SUPPORTED_MODEL_IDS,
     resolve_assets,
     server_config,
@@ -164,7 +164,7 @@ class AudioCppManagerTests(unittest.TestCase):
         self.assertEqual("breeze_tts", breeze["family"])
         self.assertEqual("tts", breeze["task"])
 
-    def test_linux_cuda_resolves_to_the_pandrator_pinned_archive(self):
+    def test_linux_cuda_resolves_to_the_upstream_colab_asset_best_effort(self):
         with tempfile.TemporaryDirectory() as directory:
             context = ManagerContext(
                 layout=WorkspaceLayout.from_value(directory),
@@ -178,14 +178,15 @@ class AudioCppManagerTests(unittest.TestCase):
         self.assertEqual(ComputeVariant.CUDA, effective)
         self.assertEqual(1, len(assets))
         self.assertEqual("cuda_binary", assets[0].kind)
-        self.assertEqual("audio.cpp-v0.7.2-linux-x86_64-cuda12.tar.gz", assets[0].name)
+        self.assertEqual("audio-v0.8.1-bin-ubuntu-x64-cuda12.8-colab.tar.gz", assets[0].name)
         self.assertEqual(
-            "fb0f082a1226f38bc0a2ab1373891012243959d6a497df904a1498cbadcbc378",
+            "f969811783f206b6d1f6566c020211ab9df7b6bb96c6eded6ad7a58deb725025",
             assets[0].sha256,
         )
-        self.assertEqual(PANDRATOR_AUDIO_CPP_RELEASE_BASE, assets[0].release_base)
+        self.assertEqual("0.8.1", assets[0].version)
+        self.assertEqual(AUDIO_CPP_RELEASE_BASE, assets[0].release_base)
         self.assertEqual(
-            f"{PANDRATOR_AUDIO_CPP_RELEASE_BASE}/{assets[0].name}", assets[0].url
+            f"{assets[0].release_base}/{assets[0].name}", assets[0].url
         )
 
     def test_plan_requires_model_selection(self):
