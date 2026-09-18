@@ -27,6 +27,30 @@ If the local application is unavailable, the Manager recovery interface still
 runs independently. Exact commands are in the
 [Manager guide](../../pandrator_manager/README.md).
 
+## Windows permission errors during Manager setup
+
+Manager 0.9.23 and earlier can select the wrong Windows account when shell tools
+set `LOGNAME`, `USER`, or `LNAME`. The resulting permissions can cause an
+access-denied error while hashing a copied launcher or reopening the workspace's
+`bin` directory. The source fix for issue #116 identifies the account through the
+Manager process's Windows access token, then replaces the protected path's access
+list with full control for that account. It does not trust any username environment
+variable, grant access to Everyone, change ownership, or request elevation.
+
+Use a Manager build that includes this fix. An older published executable is not
+updated merely by updating the Pandrator application package. Existing inaccessible
+paths may still stop startup before the protection helper can run. Preserve the
+workspace and its `data` directory; do not delete sessions or recursively reset
+permissions over the workspace, user profile, or drive.
+
+For an affected installation, record `whoami /user` and the ACL of the exact path
+shown in the error. In PowerShell, use `$env:USERNAME` rather than `%USERNAME%`.
+Request targeted permission recovery for the confirmed Manager-owned path, or test
+the fixed Manager in a new empty workspace. Recovery must use the intended Windows
+account; launching as a different administrator would protect files for that
+administrator instead. Explicit permissions on already-protected descendants are
+not silently rewritten by repairing a parent directory.
+
 ## A local service is unavailable
 
 - Confirm that the component is installed for the selected compute variant.

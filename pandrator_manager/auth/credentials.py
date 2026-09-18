@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 import base64
-import getpass
 import hashlib
 import hmac
 import json
 import os
 import secrets
-import subprocess
 import tempfile
 import threading
 import time
@@ -28,30 +26,17 @@ def protect_path(path: Path, *, directory: bool = False) -> None:
         path.chmod(0o700 if directory else 0o600)
         return
 
-    # Newly-created files inherit the user's profile DACL. Remove broader
-    # inheritance explicitly and grant the current account full control.
-    account = getpass.getuser()
-    result = subprocess.run(
-        [
-            "icacls",
-            str(path),
-            "/inheritance:r",
-            "/grant:r",
-            f"{account}:(OI)(CI)F" if directory else f"{account}:F",
-        ],
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        shell=False,
-        creationflags=subprocess.CREATE_NO_WINDOW,
-        timeout=30,
-    )
-    if result.returncode != 0:
+    from .windows_acl import protect_windows_path
+
+    try:
+        protect_windows_path(path, directory=directory)
+    except OSError as error:
         raise RuntimeError(
-            f"Could not protect manager state path {path}: "
-            f"{result.stderr.strip() or result.stdout.strip()}"
-        )
+            f"Could not protect manager state path {path}: {error}. "
+            "Windows permissions must allow the account running Manager to "
+            "update this path. Previously damaged permissions may need "
+            "targeted recovery; no broad access was granted."
+        ) from error
 
 
 def _atomic_secret(path: Path, secret: str) -> None:

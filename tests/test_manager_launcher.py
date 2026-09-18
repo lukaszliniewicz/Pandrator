@@ -78,6 +78,22 @@ class StableLauncherTests(unittest.TestCase):
         if os.name != "nt":
             self.assertTrue(os.access(runtime.executable, os.X_OK))
 
+    @unittest.skipUnless(os.name == "nt", "Real Windows launcher permissions")
+    def test_install_and_retry_ignore_conflicting_username_environment(self):
+        # Regression for #116: protection used to remove our own access before
+        # the copied executable was reopened for its digest verification.
+        with mock.patch.dict(os.environ, {
+            "LOGNAME": "SYSTEM", "USER": "Administrator", "LNAME": "Guest",
+            "USERNAME": "NotTheProcessUser", "USERDOMAIN": "NotTheDomain",
+        }):
+            first = install_stable_launcher(self.layout, source=self.source)
+            second = install_stable_launcher(self.layout, source=self.source)
+            self.assertEqual(first.sha256, second.sha256)
+            self.assertEqual(self.source.read_bytes(), second.executable.read_bytes())
+            self.assertEqual(second, installed_launcher(self.layout, strict=True))
+            metadata = json.loads(launcher_metadata_path(self.layout).read_text(encoding="utf-8"))
+            self.assertEqual(second.sha256, metadata["sha256"])
+
     def test_help_lists_only_public_launcher_commands(self):
         help_text = _parser().format_help()
 

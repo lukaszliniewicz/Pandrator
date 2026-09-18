@@ -70,6 +70,7 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_audiocpp_model_reuse.py",
         "tests/test_audiocpp_release_assets.py",
         "tests/test_manager_audiocpp.py",
+        "tests/test_manager_windows_acl.py",
         "tests/test_manager_automation.py",
         "tests/test_manager_build.py",
         "tests/test_manager_control_plane.py",
