@@ -32,7 +32,7 @@ LANGUAGE_REGISTRY = {
     },
     "de": {
         "citation_indicators": r"ebd\.?|vgl\.?|siehe|s\.a\.?|ibid",
-        "page_volume_terms": {"s", "seite", "seiten", "bd", "bde", "band", "kap", "kapitel", "u\.a"},
+        "page_volume_terms": {"s", "seite", "seiten", "bd", "bde", "band", "kap", "kapitel", "u\\.a"},
         "exclude_words": {"ebd", "vgl", "siehe", "ibid", "s", "seite", "seiten", "bd", "bde", "band", "kap", "kapitel"},
         "chapter_patterns": r"kapitel|kap|teil|abschnitt|buch|band|bd|prolog|epilog|vorwort|nachwort",
         "footnote_anchors": r"anm|anmerkung|fussnote|fußnote",
@@ -59,7 +59,7 @@ LANGUAGE_REGISTRY = {
         "chapter_patterns": r"capítulo|cap|sección|seccion|parte|libro|prólogo|epílogo|introducción|tomo|t",
         "footnote_anchors": r"nota|ref",
         "verbs": {"es", "son", "era", "eran", "ser", "sido", "haber", "ha", "han", "había", "habían", "hacer", "hace"},
-        "connectors": {"porque", "aunque", "ya\s+que", "sin\s+embargo", "por\s+lo\s+tanto", "pero", "que", "quien", "el\s+cual"},
+        "connectors": {"porque", "aunque", "ya\\s+que", "sin\\s+embargo", "por\\s+lo\\s+tanto", "pero", "que", "quien", "el\\s+cual"},
         "max_true_lower_ratio": 0.50,
         "is_cased": True
     },
@@ -70,7 +70,7 @@ LANGUAGE_REGISTRY = {
         "chapter_patterns": r"capitolo|cap|sezione|parte|libro|prologo|epilogo|introduzione|tomo|t",
         "footnote_anchors": r"nota|ref",
         "verbs": {"è", "sono", "era", "erano", "essere", "stato", "avere", "ha", "hanno", "aveva", "avevano", "fare"},
-        "connectors": {"perché", "anche\s+se", "poiché", "tuttavia", "quindi", "ma", "che", "cui", "il\s+quale"},
+        "connectors": {"perché", "anche\\s+se", "poiché", "tuttavia", "quindi", "ma", "che", "cui", "il\\s+quale"},
         "max_true_lower_ratio": 0.50,
         "is_cased": True
     },
@@ -81,7 +81,7 @@ LANGUAGE_REGISTRY = {
         "chapter_patterns": r"chapitre|chap|partie|livre|tome|t|volume|vol|prologue|épilogue|préface|avant-propos",
         "footnote_anchors": r"note|ref",
         "verbs": {"est", "sont", "était", "étaient", "être", "été", "avoir", "a", "ont", "avait", "avaient", "faire"},
-        "connectors": {"parce\s+que", "bien\s+que", "puisque", "pourtant", "donc", "mais", "qui", "que", "dont", "lequel"},
+        "connectors": {"parce\\s+que", "bien\\s+que", "puisque", "pourtant", "donc", "mais", "qui", "que", "dont", "lequel"},
         "max_true_lower_ratio": 0.50,
         "is_cased": True
     },
@@ -92,7 +92,7 @@ LANGUAGE_REGISTRY = {
         "chapter_patterns": r"capítulo|cap|secção|seção|parte|libro|livro|prólogo|epílogo|introdução|tomo|t",
         "footnote_anchors": r"nota|ref",
         "verbs": {"é", "são", "era", "eram", "ser", "sido", "haber", "há", "hão", "havia", "haviam", "ter", "tem"},
-        "connectors": {"porque", "embora", "já\s+que", "no\s+entanto", "portanto", "mas", "que", "quem", "o\s+qual"},
+        "connectors": {"porque", "embora", "já\\s+que", "no\\s+entanto", "portanto", "mas", "que", "quem", "o\\s+qual"},
         "max_true_lower_ratio": 0.50,
         "is_cased": True
     },
@@ -114,7 +114,7 @@ LANGUAGE_REGISTRY = {
         "chapter_patterns": r"глава|гл|часть|ч|книга|кн|том|т|пролог|эпилог|введение|предисловие",
         "footnote_anchors": r"prim|primech|primechanie|сноска|прим",
         "verbs": {"является", "являются", "был", "была", "было", "были", "есть", "имеет", "имеют"},
-        "connectors": {"потому\s+что", "хотя", "так\s+как", "однако", "поэтому", "но", "который", "которая", "которое", "что"},
+        "connectors": {"потому\\s+что", "хотя", "так\\s+как", "однако", "поэтому", "но", "который", "которая", "которое", "что"},
         "max_true_lower_ratio": 0.50,
         "is_cased": True
     },
