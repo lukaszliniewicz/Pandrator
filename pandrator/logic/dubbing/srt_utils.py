@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from .text_units import clean_text, join_fragments
+from .languages import normalize_language_code
+
 from .natural_boundaries import classify_boundary
 from .pause_policy import DEFAULT_CONTINUATION_GAP_MS, may_bridge_unfinished_pause
 
@@ -241,8 +244,8 @@ def srt_to_vtt(srt_content: str) -> str:
 def concatenate_subtitle_text(srt_content: str) -> str:
     """Join cue text into a readable plain-text transcript."""
 
-    cues = [re.sub(r"\s+", " ", segment.text).strip() for segment in parse_srt(srt_content)]
-    return " ".join(cue for cue in cues if cue) + ("\n" if cues else "")
+    cues = [clean_text(segment.text) for segment in parse_srt(srt_content)]
+    return join_fragments(cue for cue in cues if cue) + ("\n" if cues else "")
 
 
 def renumber_subtitles(srt_content: str) -> str:
@@ -418,22 +421,14 @@ def create_translation_blocks(
     gap is also a preferred batch boundary; this does not alter cue timing or
     subtitle composition.
     """
-    normalized_language = str(source_language or "").strip().lower()
-    if normalized_language in {"chinese", "japanese", "ja", "zh", "zh-cn", "zh-tw"}:
+    normalized_language = normalize_language_code(source_language, default="")
+    if normalized_language.split("-")[0] in {"ja", "zh", "ko"}:
         char_limit = max(1, char_limit // 2)
 
     if max_subtitles_per_block is not None:
         max_subtitles_per_block = max(1, int(max_subtitles_per_block))
     if substantial_gap_ms is not None:
         substantial_gap_ms = max(0, int(substantial_gap_ms))
-
-    endings: tuple[str, ...]
-    if normalized_language in {"japanese", "ja"}:
-        endings = ("\u3002", "\uff01", "\uff1f", "\u304b", "\u306d", "\u3088", "\u308f")
-    elif normalized_language in {"chinese", "zh", "zh-cn", "zh-tw"}:
-        endings = ("\u3002", "\uff01", "\uff1f", "\u2026")
-    else:
-        endings = (".", "!", "?")
 
     def is_sentence_ending(text: str) -> bool:
         return classify_boundary(str(text or ""), "", language_code=source_language) == 0

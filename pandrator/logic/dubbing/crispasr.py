@@ -19,7 +19,9 @@ from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 from ..cancellable_process import ProcessCancelled, run_cancellable
-from .stt_languages import validate_stt_language
+from .stt_languages import PARAKEET_V3_LANGUAGE_CODES, validate_stt_language
+from .languages import normalize_language_code
+from .text_units import infer_cjk_language, join_fragments
 
 CRISPASR_VERSION = "0.8.32"
 CRISPASR_EXECUTABLE_ENV = "CRISPASR_EXECUTABLE"
@@ -379,7 +381,7 @@ def _prefetch_windows_moss_aligner(
     opener: Callable[..., Any] = urlopen,
 ) -> Path | None:
     engine = normalize_engine(settings.get("stt_engine") or settings.get("stt_backend"))
-    if engine != STT_ENGINE_MOSS or not moss_ctc_alignment_enabled(settings):
+    if engine != STT_ENGINE_MOSS or not moss_ctc_alignment_enabled(settings) or ctc_language_problem(settings, model_key="moss_ctc_aligner_model"):
         return None
 
     configured = str(_setting(settings, "moss_ctc_aligner_model", "auto")).strip() or "auto"
@@ -679,6 +681,35 @@ def build_moss_alignment_command(
     return command
 
 
+def ctc_language_problem(
+    settings: dict[str, Any], text: str = "", *, model_key: str = "caption_alignment_ctc_model",
+) -> str | None:
+    """Reject known-incompatible default aligners without guessing custom coverage.
+
+    Canary's 25-language Granary coverage matches Parakeet v3, not Whisper:
+    https://huggingface.co/cstr/canary-ctc-aligner-GGUF
+    The translation target is deliberately not used as the audio language.
+    """
+    configured = str(_setting(settings, model_key, "auto") or "auto").strip()
+    name = Path(configured).name.lower()
+    if name not in {"auto", "canary-ctc-aligner"} and not name.startswith("canary-ctc-aligner-"):
+        return None
+    code = ""
+    for key in ("original_language", "source_language", "stt_language", "whisper_language"):
+        candidate = normalize_language_code(str(settings.get(key) or ""), default="")
+        if candidate not in {"", "auto", "und", "unknown"}:
+            code = candidate.split("-")[0]
+            break
+    code = code or infer_cjk_language(text)
+    if code and code not in PARAKEET_V3_LANGUAGE_CODES:
+        return (
+            f"unsupported_ctc_language:{code}: The bundled Canary CTC aligner does not support "
+            f"{code}. Original caption/native turn timings are retained; choose a supported "
+            "ASR timing workflow or an explicitly compatible custom aligner."
+        )
+    return None
+
+
 def build_ctc_alignment_command(
     audio_path: str | os.PathLike[str],
     text_path: str | os.PathLike[str],
@@ -700,6 +731,8 @@ def build_ctc_alignment_command(
         configured = str(
             _setting(settings, "caption_alignment_ctc_model", "auto")
         ).strip() or "auto"
+        if configured.lower() not in {"auto", "canary-ctc-aligner", DEFAULT_CTC_ALIGNER_ARTIFACT.filename} and not Path(configured).is_file():
+            raise CrispASRError(f"Unknown CTC aligner {configured!r}; use auto or an existing compatible model path. No fallback model was selected.")
         aligner = (
             configured
             if configured.lower() in {
@@ -834,6 +867,9 @@ def run_ctc_alignment(
 
     if cancel_event is not None and cancel_event.is_set():
         raise ProcessCancelled("CTC alignment was canceled.")
+    problem = ctc_language_problem(settings, Path(text_path).read_text(encoding="utf-8-sig"))
+    if problem:
+        raise CrispASRError(problem)
     prefetched = _prefetch_windows_ctc_aligner(settings)
     command = build_ctc_alignment_command(
         audio_path,
@@ -1070,6 +1106,15 @@ def transcribe(
             + str(stderr or "").strip()
         )
     align_moss_words = engine == STT_ENGINE_MOSS and moss_ctc_alignment_enabled(settings)
+    if align_moss_words:
+        moss_payload = json.loads(json_generated.read_text(encoding="utf-8"))
+        moss_text = join_fragments(segment.get("text", "") for segment in moss_payload.get("transcription", []) if isinstance(segment, dict))
+        problem = ctc_language_problem(settings, moss_text, model_key="moss_ctc_aligner_model")
+        if problem:
+            align_moss_words = False
+            logger.warning(problem)
+            moss_payload["pandrator_ctc_alignment"] = {"status": "skipped", "reason": problem, "timing_source": "native_turn"}
+            json_generated.write_text(json.dumps(moss_payload, ensure_ascii=False, indent=2), encoding="utf-8")
     if align_moss_words:
         _align_moss_segments(
             audio_path,

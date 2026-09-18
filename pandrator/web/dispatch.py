@@ -2074,7 +2074,7 @@ class DispatchRunService:
                 output_language, (timing_reference or {}).get("language"),
             )
             values = _finalize_dispatch_values(
-                values, finalization_settings, timing_words=timing_words,
+                values, {**finalization_settings, "subtitle_language": output_language}, timing_words=timing_words,
                 match_source_words=match_words,
             )
             if timing_reference:

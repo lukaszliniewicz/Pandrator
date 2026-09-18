@@ -184,6 +184,7 @@ class CrispASRTranscriptionTests(unittest.TestCase):
             aligner = cache_dir / "canary-ctc-aligner-q4_k.gguf"
             aligner.write_bytes(b"cached-aligner")
             output = Path(temp_dir) / "alignment.json"
+            (Path(temp_dir) / "cue.txt").write_text("Hello world.", encoding="utf-8")
 
             crispasr.run_ctc_alignment(
                 Path(temp_dir) / "cue.wav",

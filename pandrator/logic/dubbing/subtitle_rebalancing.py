@@ -7,6 +7,8 @@ time, so a successful rebalance cannot cascade through an entire transcript.
 
 from __future__ import annotations
 
+from .text_units import clean_text, join_fragments
+
 import unicodedata
 from dataclasses import dataclass
 from difflib import SequenceMatcher
@@ -64,7 +66,7 @@ _FUNCTION_WORDS = {
 
 
 def _clean_text(value: Any) -> str:
-    return " ".join(str(value or "").split())
+    return clean_text(value)
 
 
 def _visible_length(value: str) -> int:
@@ -403,10 +405,10 @@ def _score_partition_fast(
 ) -> int:
     """Score a partition without relying on tuple lookup for duplicate ranges."""
 
-    score = sum(_cue_score(" ".join(tokens[start:end])) for start, end in ranges)
+    score = sum(_cue_score(join_fragments(tokens[start:end])) for start, end in ranges)
     for previous, following in zip(ranges, ranges[1:]):
         left_text = tokens[previous[1] - 1]
-        right_text = " ".join(tokens[following[0] : following[1]])
+        right_text = join_fragments(tokens[following[0] : following[1]])
         score += _boundary_score(left_text)
         score += _stranded_fragment(left_text, right_text)
     return score
@@ -435,12 +437,12 @@ def _candidate_range(
     source_silences: list[tuple[int, int]],
     window_end: int,
 ) -> _Range | None:
-    text = " ".join(tokens[start:end])
-    if not text or len(text) > config.max_event_chars:
+    text = join_fragments(tokens[start:end])
+    if not text or config.character_count(text) > config.max_event_chars:
         return None
     wrapped = wrap_subtitle_text(text, config)
     if len(wrapped.splitlines()) > config.max_lines or any(
-        len(line) > config.max_chars_per_line for line in wrapped.splitlines()
+        config.character_count(line) > config.max_chars_per_line for line in wrapped.splitlines()
     ):
         return None
     start_ms = token_times[start].start_ms
@@ -458,7 +460,7 @@ def _candidate_range(
     else:
         allowed_end = window_end
     reading_ms = ceil(
-        _visible_length(text) * 1000 / max(0.001, config.max_chars_per_second)
+        config.character_count(text) * 1000 / max(0.001, config.max_chars_per_second)
     )
     required_ms = max(1, int(config.min_duration_ms), reading_ms)
     extension_limit = min(
@@ -470,7 +472,7 @@ def _candidate_range(
         return None
     if end_ms - start_ms > config.max_duration_ms:
         return None
-    cps = _visible_length(text) * 1000 / (end_ms - start_ms)
+    cps = config.character_count(text) * 1000 / (end_ms - start_ms)
     if cps > config.max_chars_per_second + 0.1:
         return None
     if any(

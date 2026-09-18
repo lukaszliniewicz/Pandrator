@@ -1640,7 +1640,10 @@ class WorkflowService:
         # Resolve persisted defaults before the run is enqueued.  The resulting
         # snapshot is immutable job input: later settings edits affect only
         # future runs, and Run Now values still take highest precedence.
-        from .workspace import WorkspaceSettingsService, adapt_runtime_settings
+        from .workspace import (
+            WorkspaceSettingsService, adapt_runtime_settings,
+            normalize_subtitle_limit_override,
+        )
 
         section_map: dict[str, tuple[str, ...]] = {
             "transcribe": ("stt", "subtitles"),
@@ -1672,7 +1675,7 @@ class WorkflowService:
             if stage_key == "generate_audio"
             else list(section_map.get(stage_key, ()))
         )
-        run_values = dict(settings or {})
+        run_values = normalize_subtitle_limit_override(dict(settings or {}), runtime=True)
         # The server owns this immutable snapshot. Never accept a caller-supplied
         # contract and accidentally make it authoritative.
         run_values.pop("export_contract", None)
@@ -1731,7 +1734,9 @@ class WorkflowService:
             )
             resolved_stage_settings[key] = {
                 **stage_value,
-                **(supplied if isinstance(supplied, dict) else {}),
+                **normalize_subtitle_limit_override(
+                    supplied if isinstance(supplied, dict) else {}, runtime=True,
+                ),
             }
             if key == "generate_audio":
                 resolved_stage_settings[key] = adapt_runtime_settings(

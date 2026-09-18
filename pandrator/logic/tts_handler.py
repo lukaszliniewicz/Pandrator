@@ -329,7 +329,11 @@ KOKORO_TTS_VOICES = [
 
 
 def normalize_kokoro_language_code(language_value: str | None) -> str:
-    normalized = str(language_value or "").strip().lower()
+    from .dubbing.languages import normalize_language_code
+    normalized = str(language_value or "").strip().lower().replace("_", "-")
+    canonical = normalize_language_code(normalized, default="")
+    if canonical.split("-")[0] in {"ja", "zh", "ko"}:
+        normalized = "zh-cn" if canonical.startswith("zh") else canonical
     if not normalized:
         return ""
 
@@ -5875,7 +5879,12 @@ def _audio_cpp_model_metadata(model: str, endpoint: dict) -> dict[str, object]:
 
 
 def _audio_cpp_language(model: str, language: object, endpoint: dict | None = None) -> str:
+    from .dubbing.languages import normalize_language_code
     normalized = str(language or "").strip().lower().replace("_", "-")
+    canonical = normalize_language_code(normalized, default="")
+    native_dialect = normalized in {tag.lower().replace("_", "-") for tag in _AUDIO_CPP_FIRERED_DIALECTS}
+    if canonical.split("-")[0] in {"ja", "zh", "ko"} and not native_dialect:
+        normalized = canonical
     if not normalized or normalized in {"auto", "unknown", "und"}:
         return ""
     iso = normalized.split("-", 1)[0]

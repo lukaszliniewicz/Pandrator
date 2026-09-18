@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-import re
+import regex as unicode_regex
+from pandrator.logic.dubbing.text_units import pronunciation_pattern
 import unicodedata
 from typing import Any
 
@@ -15,8 +16,8 @@ from .models import PronunciationEntry, SessionRecord, utcnow
 _COMBINING_MARK_CATEGORIES = frozenset({"Mc", "Me", "Mn"})
 _DISALLOWED_INVISIBLE_CATEGORIES = frozenset({"Cc", "Cf"})
 _RESPELLING_ERROR = (
-    "Pronunciation must use lowercase Unicode letters, internal hyphens, "
-    "and single spaces (for example, ee-mah-oh-kah)."
+    "Pronunciation must use lowercase Unicode letters "
+    "or kana/Hangul readings, internal hyphens and single spaces (for example, ee-mah-oh-kah or いまおか)."
 )
 VALID_SCOPES = {"global", "session"}
 VALID_STATUSES = {"proposed", "reviewed", "disabled"}
@@ -42,10 +43,10 @@ def validate_respelling(value: object) -> str:
 
     A respelling consists of non-empty components separated by single ASCII
     spaces.  Each component contains lowercase Unicode letters (category
-    ``Ll``), optional internal ASCII hyphens, and combining marks (``Mn``,
+    ``Ll``) or kana/Hangul readings, optional internal ASCII hyphens, and combining marks (``Mn``,
     ``Mc``, or ``Me``) only after a lowercase letter.  NFKC canonicalizes
     compatible/decomposed forms where Unicode defines such a form; all other
-    categories—including uppercase/titlecase/uncased letters, digits,
+    categories, including uppercase/titlecase letters, unpronounced Han forms, digits,
     punctuation, symbols, controls, format characters, and non-ASCII
     whitespace—are rejected.
     """
@@ -68,7 +69,7 @@ def validate_respelling(value: object) -> str:
             previous_was_letter = False
             for character in syllable:
                 category = unicodedata.category(character)
-                if category == "Ll":
+                if category == "Ll" or unicode_regex.fullmatch(r"[\p{Hiragana}\p{Katakana}\p{Hangul}ー]", character):
                     previous_was_letter = True
                 elif category in _COMBINING_MARK_CATEGORIES and previous_was_letter:
                     continue
@@ -94,14 +95,11 @@ def _bounded_pattern(term: str) -> str:
     words = normalized.split(" ") if normalized else []
     if not words:
         return r"(?!)"
-    escaped = r"\s+".join(re.escape(word) for word in words)
-    prefix = r"(?<!\w)" if words[0][0].isalnum() else ""
-    suffix = r"(?!\w)" if words[-1][-1].isalnum() else ""
-    return prefix + escaped + suffix
+    return pronunciation_pattern(normalized, flexible_whitespace=True)
 
 
 def _bounded_contains(text: str, term: str) -> bool:
-    return re.search(_bounded_pattern(term), text, flags=re.IGNORECASE) is not None
+    return unicode_regex.search(_bounded_pattern(term), text, flags=unicode_regex.IGNORECASE) is not None
 
 
 def apply_reviewed_pronunciations(
@@ -131,8 +129,8 @@ def apply_reviewed_pronunciations(
             # Database-created entries are validated, but an imported or old
             # payload must never make synthesis fail unexpectedly.
             continue
-        for match in re.finditer(
-            _bounded_pattern(source_form), text, flags=re.IGNORECASE
+        for match in unicode_regex.finditer(
+            _bounded_pattern(source_form), text, flags=unicode_regex.IGNORECASE
         ):
             candidates.append((match.start(), match.end(), rank, replacement))
 

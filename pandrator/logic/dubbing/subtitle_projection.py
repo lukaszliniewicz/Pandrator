@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .text_units import join_fragments
+
 from math import ceil
 from typing import Any
 
@@ -24,7 +26,7 @@ def project_subtitle_display(
     only when needed for readability or contradictory same-speaker overlaps.
     Speaker changes, substantial pauses and review metadata remain boundaries.
     """
-    config = SubtitleFinalizationConfig.from_settings(settings)
+    config = SubtitleFinalizationConfig.from_settings(settings, text=join_fragments(item.get("text", "") for item in values))
     if not values:
         return []
     groups = [
@@ -61,7 +63,7 @@ def project_subtitle_display(
         speeds = []
         for item in items:
             duration = int(item["end_ms"]) - int(item["start_ms"])
-            chars = len(" ".join(str(item["text"]).split()))
+            chars = config.character_count(str(item["text"]))
             needed = max(
                 config.min_duration_ms, ceil(chars * 1000 / config.max_chars_per_second)
             )
@@ -127,7 +129,7 @@ def project_subtitle_display(
             joined = {
                 **a,
                 "end_ms": max(int(a["end_ms"]), int(b["end_ms"])),
-                "text": " ".join((str(a["text"]), str(b["text"]))).strip(),
+                "text": join_fragments((a["text"], b["text"])),
             }
             after = quality(render(joined))
             if gap < 0 or after < before:

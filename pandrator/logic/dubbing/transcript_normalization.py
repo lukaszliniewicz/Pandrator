@@ -8,6 +8,8 @@ each engine's wire format.
 
 from __future__ import annotations
 
+from .text_units import join_fragments
+
 import json
 import re
 from dataclasses import dataclass, field
@@ -274,7 +276,7 @@ def _segment(
         span = words[0].start_ms, max(word.end_ms for word in words)
     text = str(item.get("text") or "").strip()
     if not text and words:
-        text = " ".join(word.text for word in words).strip()
+        text = join_fragments(word.text for word in words)
     if not span or not text:
         return None
     excluded = {
@@ -420,7 +422,7 @@ def _parse_moss_ctc(payload: list[dict[str, Any]]) -> NormalizedTranscript:
         speakers = [word.speaker for word in ordered if word.speaker]
         segments.append(
             TimedSegment(
-                text=" ".join(word.text for word in ordered),
+                text=join_fragments(word.text for word in ordered),
                 start_ms=ordered[0].start_ms,
                 end_ms=max(word.end_ms for word in ordered),
                 speaker=speakers[0] if speakers else "",

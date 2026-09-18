@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .text_units import join_fragments
+
 from .pause_policy import logical_pause_instructions, validate_logical_merge_pauses
 
 import hashlib
@@ -559,7 +561,7 @@ def apply_correction_operations(
         new_start = min(float(subtitle["start"]) for subtitle in valid_subtitles)
         new_end = max(float(subtitle["end"]) for subtitle in valid_subtitles)
         if not texts:
-            texts = [" ".join(str(subtitle["text"]) for subtitle in valid_subtitles)]
+            texts = [join_fragments(subtitle["text"] for subtitle in valid_subtitles)]
 
         default_speaker = speakers[0] if speakers else ""
         known_by_casefold = {

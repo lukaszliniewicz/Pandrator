@@ -682,7 +682,7 @@ def align_caption_cues(
         overlap_cluster_count=len(clusters),
         oversized_cluster_count=0,
         oversized_cue_count=len(oversized_cues),
-        ctc_request_count=len(batches),
+        ctc_request_count=0,
         first_pass_batch_count=len(batches),
         outside_media_count=len(outside),
         cue_count=len(cues),
@@ -730,6 +730,11 @@ def align_caption_cues(
             batch: AlignmentBatch,
             stem: str,
         ) -> MediaCue:
+            problem = crispasr.ctc_language_problem(options, "".join(cue.text for cue in batch.cues))
+            if problem:
+                target = next(cue for cue in batch.cues if cue.id == batch.target_cue_id)
+                _record_failure(diagnostics, target.id, problem)
+                return replace(target, words=(), timing_confidence=0.0, timing_source="caption")
             clip = root / f"{stem}.wav"
             text = root / f"{stem}.txt"
             output = root / f"{stem}.json"
@@ -748,6 +753,7 @@ def align_caption_cues(
                 encoding="utf-8",
             )
             try:
+                diagnostics.ctc_request_count += 1
                 raw = runner(clip, text, str(output), options, cancel_event)
                 failure_reasons: dict[str, str] = {}
                 mapped = map_ctc_words_to_cues(

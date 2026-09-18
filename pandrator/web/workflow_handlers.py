@@ -2607,7 +2607,7 @@ class WorkflowHandlers:
             )
         display = project_subtitle_display(
             rows,
-            dict(settings.get("_logical_passage_display") or {}),
+            {**dict(settings.get("_logical_passage_display") or {}), "subtitle_language": language},
             timing_words=words,
             match_source_words=same_timing_language(
                 language, (reference or {}).get("language")
@@ -11075,7 +11075,7 @@ class WorkflowHandlers:
                         # conversion, write, or registration fails.
                         scratch = _finalize_track_scratch(track_name)
                         try:
-                            finalize_srt_file(subtitle_path, scratch, settings)
+                            finalize_srt_file(subtitle_path, scratch, {**settings, "subtitle_language": track_details(item)[1]})
                             if export_mode == "text":
                                 destination = self.artifacts.next_available_path(
                                     subtitle_dir / f"{export_name}_{track_name}.txt"
@@ -11125,7 +11125,7 @@ class WorkflowHandlers:
                         destination = self.artifacts.next_available_path(
                             subtitle_dir / f"{export_name}_{track_name}.srt"
                         )
-                        finalize_srt_file(subtitle_path, destination, settings)
+                        finalize_srt_file(subtitle_path, destination, {**settings, "subtitle_language": language})
                         kind = subtitle_format
                         role = f"export_subtitle_{track_name}"
                         produced.append(
@@ -11354,7 +11354,7 @@ class WorkflowHandlers:
                             item.id
                         )
                         scratch = _finalize_track_scratch(track_name)
-                        finalize_srt_file(subtitle_path, scratch, settings)
+                        finalize_srt_file(subtitle_path, scratch, {**settings, "subtitle_language": track_details(item)[1]})
                         finalized_subtitle_paths[item.id] = scratch
                     if subtitle_mode == "soft" and selected_subtitles:
                         tracks = []
@@ -11792,7 +11792,7 @@ class WorkflowHandlers:
                     destination = self.artifacts.next_available_path(
                         subtitle_dir / f"{export_name}_{track_name}.srt"
                     )
-                    finalize_srt_file(subtitle_path, destination, settings)
+                    finalize_srt_file(subtitle_path, destination, {**settings, "subtitle_language": language})
                     produced.append(
                         self.artifacts.register(
                             destination,

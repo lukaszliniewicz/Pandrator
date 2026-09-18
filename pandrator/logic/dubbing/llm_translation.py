@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .languages import normalize_language_code
+
 from .pause_policy import logical_pause_instructions, validate_logical_merge_pauses
 
 import hashlib
@@ -157,6 +159,9 @@ def get_deepl_language_code(language: str) -> str:
     normalized = str(language or "").strip()
     if not normalized:
         return ""
+    code = normalize_language_code(normalized, default="")
+    if code in {"ja", "ko", "zh-cn", "zh-tw"}:
+        return {"ja": "JA", "ko": "KO", "zh-cn": "ZH-HANS", "zh-tw": "ZH-HANT"}[code]
     return DEEPL_LANGUAGE_MAP.get(
         normalized.lower(), normalized.upper() if len(normalized) <= 5 else normalized
     )

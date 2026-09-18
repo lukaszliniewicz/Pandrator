@@ -23,6 +23,12 @@ LANGUAGE_CODE_ALIASES = {
     "finnish": "fi",
     "greek": "el",
     "japanese": "ja",
+    "日本語": "ja",
+    "chinese (traditional)": "zh-tw",
+    "chinese (simplified)": "zh-cn",
+    "traditional chinese": "zh-tw",
+    "simplified chinese": "zh-cn",
+    "한국어": "ko",
     "hungarian": "hu",
     "korean": "ko",
     "hindi": "hi",
@@ -75,6 +81,10 @@ FFMPEG_SUBTITLE_LANGUAGE_CODES = {
 LANGUAGE_DISPLAY_NAMES = {
     code: name.title() for name, code in LANGUAGE_CODE_ALIASES.items()
 }
+LANGUAGE_DISPLAY_NAMES.update({
+    "ja": "Japanese", "ko": "Korean", "zh": "Chinese",
+    "zh-cn": "Chinese (Simplified)", "zh-tw": "Chinese (Traditional)",
+})
 
 
 def normalize_language_code(language: str, default: str = "en") -> str:
@@ -84,15 +94,29 @@ def normalize_language_code(language: str, default: str = "en") -> str:
         return default
     if normalized in LANGUAGE_CODE_ALIASES:
         return LANGUAGE_CODE_ALIASES[normalized]
+    iso_aliases = {"jpn": "ja", "kor": "ko", "zho": "zh", "chi": "zh", "cmn": "zh"}
+    normalized = iso_aliases.get(normalized, normalized)
+    parts = normalized.split("-")
+    base = iso_aliases.get(parts[0], parts[0])
+    if base in {"ja", "ko"}:
+        return base
+    if base == "zh":
+        if "hant" in parts or any(part in {"tw", "hk", "mo"} for part in parts):
+            return "zh-tw"
+        if "hans" in parts or any(part in {"cn", "sg"} for part in parts):
+            return "zh-cn"
+        return "zh"
     if normalized in FFMPEG_SUBTITLE_LANGUAGE_CODES:
         return normalized
+    if base in FFMPEG_SUBTITLE_LANGUAGE_CODES and len(parts) > 1:
+        return normalized if len(normalized) <= 5 else base
     return normalized if len(normalized) <= 5 else default
 
 
 def ffmpeg_subtitle_language_code(language: str, default: str = "eng") -> str:
     """Return an ISO-639-style three-letter code suitable for FFmpeg metadata."""
     normalized = normalize_language_code(language, default="en")
-    return FFMPEG_SUBTITLE_LANGUAGE_CODES.get(normalized, default)
+    return FFMPEG_SUBTITLE_LANGUAGE_CODES.get(normalized, FFMPEG_SUBTITLE_LANGUAGE_CODES.get(normalized.split("-")[0], default))
 
 
 def subtitle_language_title(language: str, default: str = "Subtitles") -> str:

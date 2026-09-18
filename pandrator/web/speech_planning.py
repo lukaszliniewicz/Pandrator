@@ -7,6 +7,11 @@ import difflib
 import hashlib
 import json
 import re
+import unicodedata
+import regex as unicode_regex
+
+from pandrator.logic.dubbing.languages import normalize_language_code
+from pandrator.logic.dubbing.text_units import clean_text, contains_cjk, fragment_separator, pronunciation_pattern
 import shutil
 import subprocess
 from collections.abc import Callable
@@ -27,12 +32,12 @@ WORD_RE = re.compile(
     r"[^\W\d_]+(?:[’'][^\W\d_]+)*(?:-[^\W\d_]+)*",
     flags=re.UNICODE,
 )
-TOKEN_RE = re.compile(
+TOKEN_RE = unicode_regex.compile(
     r"\{\{[KPN]\d+\}\}|"
     r"[^\W\d_]+(?:[’'][^\W\d_]+)*(?:-[^\W\d_]+)*|"
     r"\d+(?:[.,:/]\d+)*|"
-    r"[^\s]",
-    flags=re.UNICODE,
+    r"(?!\s)\X",
+    flags=unicode_regex.UNICODE,
 )
 ROMAN_RE = re.compile(r"\b[IVXLCDM]{2,}\b")
 ALL_CAPS_RE = re.compile(r"\b[A-Z]{2,8}\b")
@@ -137,21 +142,26 @@ COMMON_TITLECASE_WORDS = frozenset(
 )
 
 
-SPEECH_PROMPT_REVISION = 3
+SPEECH_PROMPT_REVISION = 4
 POLISH_PRONUNCIATION_GUIDANCE = """For Polish-target speech, evaluate pronunciation candidates using Polish grapheme-to-phoneme behavior. An i after a consonant can soften or palatalize that consonant. If the target pronunciation keeps a consonant hard, choose an orthographic form that preserves the hardness, often y or another context-appropriate vowel. Do not apply this mechanically: judge the complete pronunciation, the surrounding sounds, and Polish inflection."""
 
 
 def _language_base(language: object) -> str:
     """Return a normalized base language for prompt-specific guidance."""
-    normalized = str(language or "").strip().casefold().replace("_", "-")
+    normalized = normalize_language_code(str(language or ""), default="")
     return normalized.split("-", 1)[0]
 
 
 def speech_pronunciation_guidance(language: object) -> str:
     """Return language-specific pronunciation guidance for speech planning."""
-    if _language_base(language) == "pl":
+    base = _language_base(language)
+    if base == "pl":
         return POLISH_PRONUNCIATION_GUIDANCE
-    return ""
+    return {
+        "ja": "For Japanese speech, preserve kana/kanji and use Japanese readings, not English phonetic romanization. Use reviewed or unambiguous name readings only; mark uncertain kanji-name readings uncertain. Preserve dakuten, small kana and iteration marks. Apply Japanese counters and dates without changing meaning.",
+        "zh": "For Chinese speech, preserve the supplied Simplified or Traditional script. Do not convert the whole text to pinyin or English phonetics. Preserve uncertain names and polyphonic characters unless a reviewed or contextually unambiguous reading is supplied.",
+        "ko": "For Korean speech, preserve Hangul syllables and normal word spacing. Do not romanize native text or impose English phonetics. Use Korean readings only when unambiguous or reviewed; preserve uncertain names.",
+    }.get(base, "")
 
 
 def _valid_respelling(value: object) -> bool:
@@ -168,7 +178,7 @@ You receive one display sentence, its deterministic normalization result, stable
 reviewed pronunciations, and unresolved candidate spans.
 
 Decide every unresolved span exactly once. Required spans cannot use keep. Actions:
-- pronounce: normalized lowercase Unicode-letter respellings with internal hyphens
+- pronounce: lowercase Unicode-letter respellings or native kana/Hangul readings, with optional internal hyphens
 - verbalize: complete words that should be spoken
 - spell_letters: letters separated by spaces
 - keep: written text is already suitable
@@ -194,7 +204,7 @@ appear in your template exactly the same number of times and with identical spel
 replace or invent placeholders; the host substitutes them later.
 
 Decide every unresolved span exactly once. Required spans cannot use keep. Actions:
-- pronounce: normalized lowercase Unicode-letter respellings with internal hyphens
+- pronounce: lowercase Unicode-letter respellings or native kana/Hangul readings, with optional internal hyphens
 - verbalize: complete words to speak
 - spell_letters: letters separated by spaces
 - keep: retain the written text
@@ -231,14 +241,12 @@ class SpeechPlanBatchResult:
 
 def _comparison_key(value: object) -> str:
     return "".join(
-        character for character in str(value or "").casefold() if character.isalnum()
+        character for character in unicodedata.normalize("NFC", str(value or "")).casefold() if character.isalnum()
     )
 
 
-def _bounded_pattern(value: str) -> re.Pattern[str]:
-    prefix = r"(?<!\w)" if value and value[0].isalnum() else ""
-    suffix = r"(?!\w)" if value and value[-1].isalnum() else ""
-    return re.compile(prefix + re.escape(value) + suffix, flags=re.IGNORECASE)
+def _bounded_pattern(value: str) -> unicode_regex.Pattern:
+    return unicode_regex.compile(pronunciation_pattern(value), flags=unicode_regex.IGNORECASE)
 
 
 def tokenize(text: str) -> list[dict[str, Any]]:
@@ -503,12 +511,18 @@ def _extract_json(value: object) -> tuple[dict[str, Any] | None, str]:
 
 
 def _lexical_tokens(text: str) -> list[str]:
-    return [
-        token.casefold()
-        for token in TOKEN_RE.findall(str(text or ""))
-        if PLACEHOLDER_RE.fullmatch(token)
-        or any(character.isalnum() for character in token)
-    ]
+    tokens: list[str] = []
+    for token in TOKEN_RE.findall(unicodedata.normalize("NFC", str(text or ""))):
+        if PLACEHOLDER_RE.fullmatch(token):
+            tokens.append(token.casefold())
+        elif contains_cjk(token):
+            # Retention units, never speech cuts: changing one kana should not
+            # make an otherwise intact unspaced paragraph 100% different.
+            tokens.extend(cluster.casefold() for cluster in unicode_regex.findall(r"\X", token)
+                          if any(character.isalnum() for character in cluster))
+        elif any(character.isalnum() for character in token):
+            tokens.append(token.casefold())
+    return tokens
 
 
 def validate_plan(
@@ -728,7 +742,7 @@ def compile_plan(
         )
         for placeholder, replacement in replacements.items():
             speech = speech.replace(placeholder, replacement)
-        return " ".join(speech.split())
+        return clean_text(speech)
 
     replacements: list[dict[str, Any]] = []
     for item in known:
@@ -773,11 +787,11 @@ def compile_plan(
         left = speech[start - 1] if start else ""
         right = speech[end] if end < len(speech) else ""
         if left.isalnum() and spoken and spoken[0].isalnum():
-            spoken = " " + spoken
+            spoken = fragment_separator(left, spoken) + spoken
         if right.isalnum() and spoken and spoken[-1].isalnum():
-            spoken += " "
+            spoken += fragment_separator(spoken, right)
         speech = speech[:start] + spoken + speech[end:]
-    return " ".join(speech.split())
+    return clean_text(speech)
 
 
 def _prompt_payload(
@@ -834,7 +848,7 @@ def _batch_prompt_payload(
     mode: str,
     known_pronunciations: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    display_text = " ".join(str(text or "").split())
+    display_text = clean_text(text)
     candidates, known = detect_candidates(
         display_text,
         language=language,
@@ -1036,7 +1050,7 @@ def plan_speech_text(
     completion_func: Callable[..., Any] | None = None,
 ) -> SpeechPlanResult:
     """Create one validated plan; flexible mode falls back to the guarded protocol."""
-    display_text = " ".join(str(text or "").split())
+    display_text = clean_text(text)
     deterministic_text = display_text
     case_id = hashlib.sha256(
         f"{language}\0{voice_language}\0{display_text}".encode()
@@ -1198,7 +1212,7 @@ def plan_speech_text(
                 + str(item["spoken"])
                 + compiled[int(item["end"]) :]
             )
-        compiled = " ".join(compiled.split())
+        compiled = clean_text(compiled)
         decisions = []
         discoveries = []
         prosody = []

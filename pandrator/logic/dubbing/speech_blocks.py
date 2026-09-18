@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .text_units import clean_text, fragment_separator
+
 import json
 import logging
 import os
@@ -192,7 +194,7 @@ def _split_subtitle_text(
 ) -> list[str]:
     # SRT line breaks are presentation metadata, not pauses or literal input
     # for a speech engine.  Keep speech-block text canonical and single-line.
-    text = re.sub(r"\s+", " ", str(text or "")).strip()
+    text = clean_text(text)
     if not text:
         return []
     if len(text) <= max_chars:
@@ -234,7 +236,7 @@ def _split_subtitle_text(
 def _canonical_cue_text(value: object) -> tuple[str, str]:
     """Return canonical spoken text plus any inline speaker label."""
 
-    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    text = clean_text(value)
     speaker_match = _SPEAKER_PREFIX_RE.match(text)
     if speaker_match is None:
         return text, ""
@@ -310,8 +312,8 @@ def _should_merge_parts(
     # pack another complete thought into it merely because characters fit.
     if "hesitation_bridged" in {*previous.risk_flags, *current.risk_flags}:
         return False
-    display_length = len(previous.text) + len(current.text) + 1
-    speech_length = len(previous.optimized_text) + len(current.optimized_text) + 1
+    display_length = len(previous.text) + len(current.text) + len(fragment_separator(previous.text, current.text))
+    speech_length = len(previous.optimized_text) + len(current.optimized_text) + len(fragment_separator(previous.optimized_text, current.optimized_text))
     if max(display_length, speech_length) > max_chars:
         return False
 
@@ -483,7 +485,7 @@ def _join_variant(
     current_text: str,
     current_spans: list[tuple[int, int, int]],
 ) -> tuple[str, list[tuple[int, int, int]]]:
-    separator = " " if previous_text and current_text else ""
+    separator = fragment_separator(previous_text, current_text)
     offset = len(previous_text) + len(separator)
     return (
         f"{previous_text}{separator}{current_text}".strip(),

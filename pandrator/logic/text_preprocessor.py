@@ -9,6 +9,9 @@ import concurrent.futures
 from num2words import num2words
 from . import nemo_normalizer
 from . import sentence_segmenter
+from .dubbing.languages import normalize_language_code
+from .dubbing.natural_boundaries import natural_split_candidates
+from .dubbing.text_units import clean_text, contains_cjk, join_fragments, strip_latin_diacritics
 
 CHUNK_SIZE = 20000
 CHAPTER_MARKER = "[[Chapter]]"
@@ -421,7 +424,7 @@ def _process_chunk(chunk: str, settings: dict) -> list[dict]:
     pdf_preprocessed = settings.get('pdf_preprocessed', False)
     source_file = settings.get('source_file', '')
     disable_paragraph_detection = settings.get('disable_paragraph_detection', False)
-    language = settings.get('language', 'en')
+    language = normalize_language_code(settings.get('language', 'en'))
     max_sentence_length = settings.get('max_sentence_length', 160)
     enable_sentence_splitting = settings.get('enable_sentence_splitting', True)
     enable_sentence_appending = settings.get('enable_sentence_appending', True)
@@ -442,13 +445,16 @@ def _process_chunk(chunk: str, settings: dict) -> list[dict]:
         elif source_file.endswith(".pdf"):
             chunk = preprocess_text_pdf(chunk)
         else:
-            chunk = re.sub(r'(?<!\n)\n(?!\n)', ' ', chunk)
+            chunk = '\n\n'.join(clean_text(paragraph) for paragraph in re.split(r'\n{2,}', chunk))
 
     chunk = re.sub(r'\t', ' ', chunk)
 
     if remove_diacritics:
-        chunk = ''.join(char for char in chunk if not unicodedata.combining(char))
-        chunk = unidecode(chunk)
+        if contains_cjk(chunk):
+            chunk = strip_latin_diacritics(chunk)
+        else:
+            chunk = ''.join(char for char in chunk if not unicodedata.combining(char))
+            chunk = unidecode(chunk)
 
     if remove_quotation_marks:
         chunk = strip_quotation_marks(chunk)
@@ -602,11 +608,17 @@ def _split_with_sentence_splitter(text: str, language: str) -> list[str]:
         raise
 
 def split_into_sentences(text, language, tts_service):
-    normalized_language = str(language or "").strip().lower()
-
+    normalized_language = normalize_language_code(language)
     wtpsplit_sentences = sentence_segmenter.split_text(text)
     if wtpsplit_sentences is not None:
         return wtpsplit_sentences
+
+    # Native punctuation is language-specific, not provider-specific. This
+    # also covers audio.cpp/Qwen/Fish providers and offline Sat fallback.
+    if normalized_language.startswith("zh"):
+        return split_chinese_sentences(text)
+    if normalized_language == "ja":
+        return hasami.segment_sentences(text)
 
     if tts_service in {"XTTS", "Voxtral", "Kokoro", "Magpie", "OpenAI", "Google Gemini", "Gemini", "Custom", "OpenAI-Compatible"}:
         if normalized_language in {"zh", "zh-cn"}:
@@ -632,9 +644,10 @@ def split_into_sentences(text, language, tts_service):
     return _split_with_sentence_splitter(text, "en")
 
 def split_chinese_sentences(text):
-    end_punctuation = '。！？…'
-    segments = re.split(f'([{end_punctuation}])', text)
-    return [''.join(segments[i:i+2]).strip() for i in range(0, len(segments), 2) if segments[i]]
+    positions = sorted({offset for offset, kind in natural_split_candidates(text, "zh") if kind == "sentence"})
+    boundaries = [0, *positions, len(text)]
+    return [text[start:end].strip() for start, end in zip(boundaries, boundaries[1:]) if text[start:end].strip()]
+
 
 def calculate_similarity(str1, str2):
     return difflib.SequenceMatcher(None, str1, str2).ratio()
@@ -665,6 +678,12 @@ def split_long_sentences(sentence_dict, max_sentence_length, language: str):
     return [first_part_dict, second_part_dict]
 
 def find_best_split_index(sentence, language, max_sentence_length):
+    code = normalize_language_code(language)
+    if code.split("-")[0] in {"ja", "zh", "ko"} or contains_cjk(sentence):
+        target = min(len(sentence) // 2, max_sentence_length)
+        candidates = [offset for offset, _kind in natural_split_candidates(sentence, code)
+                      if 4 <= offset <= max_sentence_length and len(sentence[offset:].strip()) >= 4]
+        return min(candidates, key=lambda offset: abs(offset - target)) if candidates else None
     punctuation_marks = (
         ["\uff0c", "\uff1b", "\uff1a", "\u3002", "\uff01", "\uff1f"]
         if language == "zh-cn"
@@ -711,6 +730,12 @@ def split_long_sentences_2(sentence_dict, max_sentence_length, language: str):
 
     best_split_index = find_best_split_index(sentence, language, max_sentence_length)
     if best_split_index is None:
+        if contains_cjk(sentence):
+            raise ValueError(
+                f"CJK narration exceeds the {max_sentence_length}-character speech limit "
+                "without a natural sentence or clause boundary. Add suitable punctuation "
+                "or increase max_sentence_length; subtitle character wrapping is not a safe speech split."
+            )
         potential_split = sentence.rfind(' ', 0, max_sentence_length)
         best_split_index = potential_split + 1 if potential_split > 0 else max_sentence_length
 
@@ -758,7 +783,7 @@ def append_short_sentences(sentence_dicts, max_sentence_length):
             if appended_sentences: # Check if there's a previous sentence to append to
                 prev_sentence_dict = appended_sentences[-1]
                 if prev_sentence_dict.get("chapter") != "yes" and prev_sentence_dict.get("paragraph") != "yes":
-                    combined_text = prev_sentence_dict["original_sentence"] + ' ' + current_sentence_dict["original_sentence"]
+                    combined_text = join_fragments((prev_sentence_dict["original_sentence"], current_sentence_dict["original_sentence"]))
                     if len(combined_text) <= max_sentence_length:
                         # Update the previous sentence and mark it as a paragraph
                         prev_sentence_dict["original_sentence"] = combined_text
@@ -779,7 +804,7 @@ def append_short_sentences(sentence_dicts, max_sentence_length):
             prev_sentence_dict = appended_sentences[-1]
             if (prev_sentence_dict.get("chapter") != "yes" and
                 prev_sentence_dict.get("paragraph") != "yes"):
-                combined_text = prev_sentence_dict["original_sentence"] + ' ' + current_sentence_dict["original_sentence"]
+                combined_text = join_fragments((prev_sentence_dict["original_sentence"], current_sentence_dict["original_sentence"]))
                 if len(combined_text) <= max_sentence_length:
                     prev_sentence_dict["original_sentence"] = combined_text
                     prev_sentence_dict["sentence_continues_after"] = bool(

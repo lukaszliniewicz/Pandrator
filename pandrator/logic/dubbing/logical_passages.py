@@ -8,6 +8,8 @@ it retains the complete cue window.
 
 from __future__ import annotations
 
+from .text_units import join_fragments
+
 import heapq
 import hashlib
 
@@ -141,7 +143,7 @@ def _cue_timing(row: dict[str, Any]) -> tuple[int, int]:
 
 
 def _join_text(parts: list[str]) -> str:
-    return _normalize_text(" ".join(parts))
+    return join_fragments(parts)
 
 
 def _sentence_boundary(token_text: str) -> bool:

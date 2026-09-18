@@ -146,6 +146,7 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "diarization_enabled": False,
     },
     "subtitles": {
+        "language_defaults": True,
         "max_lines": 2,
         "max_chars_per_line": 60,
         "max_cps": 20.0,
@@ -402,6 +403,7 @@ RUNTIME_SETTING_ALIASES: dict[str, dict[str, str]] = {
         "fade_out_ms": "fade_out_duration",
     },
     "subtitles": {
+        "language_defaults": "subtitle_language_defaults",
         "max_lines": "subtitle_max_lines",
         "max_chars_per_line": "subtitle_max_chars_per_line",
         "max_cps": "subtitle_max_cps",
@@ -439,6 +441,25 @@ RUNTIME_SETTING_ALIASES: dict[str, dict[str, str]] = {
         "substantial_gap_ms": "timing_context_gap_ms",
     },
 }
+
+
+def normalize_subtitle_limit_override(
+    values: dict[str, Any], *, runtime: bool = False,
+) -> dict[str, Any]:
+    """Explicit per-run limits beat inherited presets, unless auto is requested.
+
+    Apply only to raw overrides, never to an already merged settings snapshot.
+    Old clients do not know the new language-defaults switch.
+    """
+    result = dict(values)
+    prefix = "subtitle_" if runtime else ""
+    flag = prefix + "language_defaults"
+    if flag not in result and any(
+        result.get(prefix + key) not in (None, "")
+        for key in ("max_chars_per_line", "max_cps")
+    ):
+        result[flag] = False
+    return result
 
 
 def adapt_runtime_settings(section: str, values: dict[str, Any]) -> dict[str, Any]:
@@ -957,6 +978,16 @@ class WorkspaceSettingsService:
             session_context,
             normalize_tts_voice_aliases(override_value) if section == "tts" else override_value,
         )
+        if section == "subtitles":
+            # Old saved custom limits are deliberate; default-valued legacy
+            # snapshots may adopt automatic language profiles without a DB rewrite.
+            explicit = {**global_value, **override_value}
+            if "language_defaults" not in explicit and any(
+                key in explicit and explicit[key] is not None
+                and explicit[key] != BUILTIN_DEFAULTS["subtitles"][key]
+                for key in ("max_chars_per_line", "max_cps")
+            ):
+                effective["language_defaults"] = False
         if section == "output" and session_record.workflow_kind == "subtitles":
             if str(effective.get("export_mode") or "").lower() not in {
                 "subtitles",
@@ -1181,7 +1212,11 @@ class WorkspaceSettingsService:
         override = run_override or {}
         snapshots = {section: self.get(session_id, section) for section in requested}
         resolved = {
-            section: _merge(snapshots[section]["effective"], override.get(section, {}))
+            section: _merge(
+                snapshots[section]["effective"],
+                normalize_subtitle_limit_override(override.get(section, {}))
+                if section == "subtitles" else override.get(section, {}),
+            )
             for section in requested
         }
         if "tts" in resolved:

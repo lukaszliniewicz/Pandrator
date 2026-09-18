@@ -76,10 +76,11 @@ class SettingsApiTests(unittest.TestCase):
         self.assertEqual(DEFAULT_FIRST_PROMPT, payload["first_prompt"])
         self.assertEqual(DEFAULT_SECOND_PROMPT, payload["second_prompt"])
         self.assertEqual(DEFAULT_THIRD_PROMPT, payload["third_prompt"])
-        self.assertIn("Spell out abbreviations and titles", DEFAULT_PROMPT)
-        self.assertIn("Convert Roman numerals to English words", DEFAULT_PROMPT)
-        self.assertIn("OCR artifacts", DEFAULT_SECOND_PROMPT)
-        self.assertIn("FOREIGN, NON-ENGLISH", DEFAULT_THIRD_PROMPT)
+        self.assertIn("own declared language", DEFAULT_PROMPT)
+        self.assertIn("Do not translate, romanize", DEFAULT_PROMPT)
+        self.assertIn("Roman numerals into natural spoken forms in that same language", DEFAULT_PROMPT)
+        self.assertIn("OCR mistakes", DEFAULT_SECOND_PROMPT)
+        self.assertIn("Keep ordinary native-language words", DEFAULT_THIRD_PROMPT)
 
     def test_generation_prompt_has_an_empty_tts_default(self):
         payload = self.client.get("/api/v1/defaults/tts").get_json()["builtin"]

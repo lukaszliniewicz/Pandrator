@@ -7,6 +7,8 @@ reading and export.
 
 from __future__ import annotations
 
+from bisect import bisect_right
+
 import logging
 import re
 from dataclasses import dataclass, replace
@@ -19,6 +21,11 @@ from typing import Any
 
 from .. import sentence_segmenter
 from .models import SubtitleSegment
+from .languages import normalize_language_code
+from .text_units import (
+    clean_text, contains_cjk, display_length, infer_cjk_language,
+    join_fragments, subtitle_units, fragment_separator,
+)
 from .srt_utils import compose_srt, parse_srt
 from .transcript_normalization import (
     NormalizedTranscript,
@@ -65,20 +72,38 @@ class SubtitleFinalizationConfig:
     phrase_gap_ms: int = 900
     hard_gap_ms: int = 1500
     sentence_boundary_threshold: float = 0.25
+    language: str = ""
+
+    def character_count(self, text: str) -> float:
+        return display_length(
+            clean_text(text),
+            cjk=self.language.split("-")[0] in {"ja", "zh", "ko"} or contains_cjk(text),
+        )
 
     @classmethod
-    def from_settings(cls, settings: dict[str, Any] | None) -> SubtitleFinalizationConfig:
+    def from_settings(
+        cls, settings: dict[str, Any] | None, *, language: str = "", text: str = "",
+    ) -> SubtitleFinalizationConfig:
         values = dict(settings or {})
+        supplied_language = language or values.get("subtitle_language") or values.get("target_language") or values.get("language") or values.get("stt_language")
+        code = normalize_language_code(str(supplied_language or ""), default="")
+        if code in {"", "auto", "und", "unknown"}:
+            code = infer_cjk_language(text)
+        # Source-preserving caption presets, not delivery-format certification.
+        # Japanese translation-only delivery can use custom 13 chars / 4 CPS.
+        chars, cps = {"ja": (16, 7.0), "zh": (16, 9.0), "ko": (16, 12.0)}.get(code.split("-")[0], (60, 20.0))
+        automatic = values.get("subtitle_language_defaults", values.get("language_defaults")) is True
         def value(name: str, default: Any) -> Any:
             configured = values.get(name)
             return default if configured is None or configured == "" else configured
 
         return cls(
-            max_chars_per_line=max(20, min(100, int(value("subtitle_max_chars_per_line", 60)))),
+            language=code,
+            max_chars_per_line=max(8, min(100, int(chars if automatic else value("subtitle_max_chars_per_line", chars)))),
             max_lines=max(1, min(3, int(value("subtitle_max_lines", 2)))),
             min_duration_ms=max(250, min(3000, int(value("subtitle_min_duration_ms", 833)))),
             max_duration_ms=max(1000, min(15000, int(value("subtitle_max_duration_ms", 7000)))),
-            max_chars_per_second=max(5.0, min(40.0, float(value("subtitle_max_cps", 20.0)))),
+            max_chars_per_second=max(1.0, min(40.0, float(cps if automatic else value("subtitle_max_cps", cps)))),
             min_gap_ms=max(0, min(500, int(value("subtitle_min_gap_ms", 80)))),
             phrase_gap_ms=max(100, min(3000, int(value("subtitle_phrase_gap_ms", 900)))),
             hard_gap_ms=max(250, min(5000, int(value("subtitle_hard_gap_ms", 1500)))),
@@ -143,20 +168,11 @@ class _BoundaryEvidence:
 
 
 def _clean_text(text: str) -> str:
-    return _SPACE_RE.sub(" ", str(text or "").replace("\n", " ")).strip()
+    return clean_text(text)
 
 
 def _join_tokens(tokens: list[str]) -> str:
-    text = ""
-    for raw in tokens:
-        token = _clean_text(raw)
-        if not token:
-            continue
-        if not text or token[0] in _NO_SPACE_BEFORE or text[-1] in _NO_SPACE_AFTER or token.startswith(("'", "’")):
-            text += token
-        else:
-            text += " " + token
-    return text.strip()
+    return join_fragments(tokens)
 
 
 def _line_break_score(words: list[str], index: int) -> tuple[float, int]:
@@ -174,10 +190,46 @@ def _line_break_score(words: list[str], index: int) -> tuple[float, int]:
     return score, index
 
 
+def _layout_units(text: str, config: SubtitleFinalizationConfig) -> list[str]:
+    units = subtitle_units(text)
+    if any(config.character_count(unit.strip()) > config.max_chars_per_line for unit in units):
+        units = subtitle_units(text, split_hangul=True)
+    return units
+
+
+def _wrap_cjk_text(text: str, config: SubtitleFinalizationConfig) -> str:
+    units = _layout_units(text, config)
+    join = lambda items: "".join(items).strip(" \t\r\n")
+    if config.max_lines == 2:
+        candidates = []
+        for index in range(1, len(units)):
+            left, right = join(units[:index]), join(units[index:])
+            a, b = config.character_count(left), config.character_count(right)
+            if a <= config.max_chars_per_line and b <= config.max_chars_per_line:
+                punctuation_bonus = 2 if left.endswith(tuple(_SENTENCE_END_CHARS | _CLAUSE_PUNCTUATION)) else 0
+                candidates.append((abs(a - b) + (1 if a > b else 0) - punctuation_bonus, index, left, right))
+        if candidates:
+            _score, _index, left, right = min(candidates)
+            return left + "\n" + right
+    lines: list[str] = []
+    current = ""
+    for unit in units:
+        if current and config.character_count((current + unit).strip()) > config.max_chars_per_line and len(lines) < config.max_lines - 1:
+            lines.append(current.rstrip(" \t"))
+            current = unit.lstrip(" \t")
+        else:
+            current += unit
+    if current:
+        lines.append(current.rstrip(" \t"))
+    return "\n".join(lines)
+
+
 def wrap_subtitle_text(text: str, config: SubtitleFinalizationConfig) -> str:
     cleaned = _clean_text(text)
-    if len(cleaned) <= config.max_chars_per_line or config.max_lines == 1:
+    if config.character_count(cleaned) <= config.max_chars_per_line or config.max_lines == 1:
         return cleaned
+    if contains_cjk(cleaned) or config.language.split("-")[0] in {"ja", "zh", "ko"}:
+        return _wrap_cjk_text(cleaned, config)
     words = cleaned.split()
     if config.max_lines == 2:
         candidates = [
@@ -212,7 +264,7 @@ def wrap_subtitle_text(text: str, config: SubtitleFinalizationConfig) -> str:
 def _fits_layout(text: str, config: SubtitleFinalizationConfig) -> bool:
     lines = wrap_subtitle_text(text, config).splitlines()
     return len(lines) <= config.max_lines and all(
-        len(line) <= config.max_chars_per_line for line in lines
+        config.character_count(line) <= config.max_chars_per_line for line in lines
     )
 
 
@@ -222,7 +274,11 @@ def _split_words_to_capacity(
     *,
     min_chunks: int = 1,
 ) -> list[str]:
-    words = _clean_text(text).split()
+    cleaned = _clean_text(text)
+    cjk = contains_cjk(cleaned) or config.language.split("-")[0] in {"ja", "zh", "ko"}
+    words = _layout_units(cleaned, config) if cjk else cleaned.split()
+    def join_words(parts: list[str]) -> str:
+        return ("" if cjk else " ").join(parts).strip(" \t\r\n")
     if not words:
         return []
 
@@ -231,11 +287,31 @@ def _split_words_to_capacity(
     prefix_lengths = [0]
     for index, word in enumerate(words):
         prefix_lengths.append(
-            prefix_lengths[-1] + len(word) + (1 if index else 0)
+            prefix_lengths[-1] + (display_length(word, cjk=True) if cjk else len(word) + (1 if index else 0))
         )
 
-    def range_length(start: int, end: int) -> int:
+    trailing_widths = [display_length(word, cjk=True) - display_length(word.rstrip(" \t"), cjk=True) for word in words] if cjk else []
+    max_trailing_width = max(trailing_widths, default=0)
+
+    def range_length(start: int, end: int) -> float:
+        if cjk:
+            return prefix_lengths[end] - prefix_lengths[start] - trailing_widths[end - 1]
         return prefix_lengths[end] - prefix_lengths[start] - (1 if start else 0)
+
+    def cjk_range_fits(start: int, end: int) -> bool:
+        # Units are already grapheme/kinsoku-safe. A numeric greedy line fit
+        # avoids re-tokenizing/re-wrapping every overlapping candidate range.
+        cursor = start
+        for _line in range(config.max_lines):
+            boundary = bisect_right(prefix_lengths, prefix_lengths[cursor] + config.max_chars_per_line + max_trailing_width, cursor + 1, end + 1) - 1
+            while boundary > cursor and range_length(cursor, boundary) > config.max_chars_per_line:
+                boundary -= 1
+            if boundary <= cursor:
+                return False
+            if boundary == end:
+                return True
+            cursor = boundary
+        return False
 
     # Store only feasible contiguous ranges.  Ranges are bounded by the
     # event capacity, so this stays tractable even for large batches.
@@ -243,17 +319,16 @@ def _split_words_to_capacity(
     for start in range(word_count):
         for end in range(start + 1, word_count + 1):
             length = range_length(start, end)
-            candidate = " ".join(words[start:end])
-            if end == start + 1 and (
-                length > config.max_event_chars or not _fits_layout(candidate, config)
-            ):
+            candidate = "" if cjk else join_words(words[start:end])
+            fits = cjk_range_fits(start, end) if cjk else _fits_layout(candidate, config)
+            if end == start + 1 and (length > config.max_event_chars or not fits):
                 # A single overlong token is irreducible.  Retain it as a
                 # bounded no-text-loss fallback rather than dropping it.
                 feasible_starts[end].append(start)
                 continue
             if length > config.max_event_chars:
                 break
-            if _fits_layout(candidate, config):
+            if fits:
                 feasible_starts[end].append(start)
 
     minimum_counts = [word_count + 1] * (word_count + 1)
@@ -272,12 +347,37 @@ def _split_words_to_capacity(
     def punctuation_preference(boundary: int) -> int:
         if boundary >= word_count:
             return 0
-        word = words[boundary - 1]
+        word = words[boundary - 1].rstrip()
         if word.endswith(tuple(_SENTENCE_END_CHARS)):
             return 3
         if word.endswith(tuple(_CLAUSE_PUNCTUATION)):
             return 1
         return 0
+
+    if cjk:
+        # A suffix feasibility table permits balanced, punctuation-aware
+        # packing without the quadratic cue-count dimension of the word DP.
+        feasible_ends: list[list[int]] = [[] for _ in words]
+        for end, starts in enumerate(feasible_starts):
+            for start in starts:
+                feasible_ends[start].append(end)
+        suffix_minimum = [word_count + 1] * (word_count + 1)
+        suffix_minimum[word_count] = 0
+        for start in range(word_count - 1, -1, -1):
+            suffix_minimum[start] = 1 + min(suffix_minimum[end] for end in feasible_ends[start])
+        chunks: list[str] = []
+        cursor = 0
+        while cursor < word_count:
+            remaining = target_count - len(chunks)
+            preferred_length = range_length(cursor, word_count) / remaining
+            options = [end for end in feasible_ends[cursor]
+                       if suffix_minimum[end] <= remaining - 1 <= word_count - end]
+            boundary = min(options, key=lambda end: (
+                abs(range_length(cursor, end) - preferred_length) - 0.75 * punctuation_preference(end), end,
+            ))
+            chunks.append(join_words(words[cursor:boundary]))
+            cursor = boundary
+        return chunks
 
     total_length = prefix_lengths[-1] - (target_count - 1)
     dynamic: list[dict[int, tuple[int, int, tuple[int, ...]]]] = [
@@ -312,7 +412,7 @@ def _split_words_to_capacity(
         return words
     boundaries = (0, *solution[2])
     return [
-        " ".join(words[start:end])
+        join_words(words[start:end])
         for start, end in pairwise(boundaries)
     ]
 
@@ -327,7 +427,7 @@ def _split_segment(segment: SubtitleSegment, config: SubtitleFinalizationConfig)
     max_duration_ms = max(1, int(config.max_duration_ms))
     duration_chunks = min(
         max(1, ceil(span_ms / max_duration_ms)),
-        len(text.split()),
+        len(_layout_units(text, config)) if contains_cjk(text) else len(text.split()),
     )
     chunks = _split_words_to_capacity(
         text,
@@ -342,7 +442,7 @@ def _split_segment(segment: SubtitleSegment, config: SubtitleFinalizationConfig)
     min_duration_ms = max(1, int(config.min_duration_ms))
     reading_durations = [
         ceil(
-            len(_clean_text(chunk))
+            config.character_count(chunk)
             / max(float(config.max_chars_per_second), 0.001)
             * 1000
         )
@@ -378,7 +478,7 @@ def _split_segment(segment: SubtitleSegment, config: SubtitleFinalizationConfig)
             durations = list(floors)
         remaining = max(0, total_ms - sum(durations))
         capacities = [max(0, max_duration_ms - duration) for duration in durations]
-        weights = [max(1, len(_clean_text(chunk))) for chunk in chunks]
+        weights = [max(1, ceil(config.character_count(chunk) * 2)) for chunk in chunks]
         while remaining and any(capacities):
             active = [index for index, capacity in enumerate(capacities) if capacity]
             weight_total = sum(weights[index] for index in active)
@@ -448,7 +548,7 @@ def _adjust_durations(
     adjusted: list[SubtitleSegment] = []
     for index, cue in enumerate(segments):
         next_start = segments[index + 1].start_ms if index + 1 < len(segments) else None
-        visible_chars = len(_clean_text(cue.text))
+        visible_chars = config.character_count(cue.text)
         reading_duration = round((visible_chars / config.max_chars_per_second) * 1000)
         desired_duration = max(config.min_duration_ms, reading_duration)
         maximum_end = cue.start_ms + config.max_duration_ms
@@ -494,7 +594,9 @@ def finalize_segments(segments: list[SubtitleSegment], config: SubtitleFinalizat
 
 
 def finalize_srt_content(content: str, settings: dict[str, Any] | None = None) -> str:
-    return compose_srt(finalize_segments(parse_srt(content), SubtitleFinalizationConfig.from_settings(settings)))
+    segments = parse_srt(content)
+    config = SubtitleFinalizationConfig.from_settings(settings, text=join_fragments(cue.text for cue in segments))
+    return compose_srt(finalize_segments(segments, config))
 
 
 def finalize_srt_file(
@@ -517,7 +619,9 @@ def _sanitize_timed_words(words: list[_TimedWord]) -> list[_TimedWord]:
     Some ASR backends attach the whole following silence to the preceding word.
     Keeping such a span (we have observed 16-second single words) defeats both
     maximum cue duration and silence detection.  The median-based cap is
-    deliberately conservative. A following word from the same speaker may
+    deliberately conservative. Unspaced CJK phrase-sized tokens retain their
+    native envelope: they are not a single Western lexical word. A following
+    word from the same speaker may
     bound the span; a different speaker can legitimately talk over it.
     """
 
@@ -534,7 +638,8 @@ def _sanitize_timed_words(words: list[_TimedWord]) -> list[_TimedWord]:
         # Durations within the same range used to estimate normal speech are
         # already plausible. Only cap outliers, not ordinary sustained words.
         end = word.end_ms
-        if end - start > 2000:
+        coarse_cjk_phrase = contains_cjk(word.text) and display_length(word.text) >= 8
+        if end - start > 2000 and not coarse_cjk_phrase:
             end = start + word_duration_cap
         if (
             next_start is not None
@@ -733,14 +838,7 @@ def _source_text_and_spans(words: list[_TimedWord]) -> tuple[str, list[_TimedWor
         token = _clean_text(word.text)
         if not token:
             continue
-        separator = ""
-        if (
-            text
-            and token[0] not in _NO_SPACE_BEFORE
-            and text[-1] not in _NO_SPACE_AFTER
-            and not token.startswith(("'", "\u2019"))
-        ):
-            separator = " "
+        separator = fragment_separator(text, token)
         text += separator
         start = len(text)
         text += token
@@ -908,7 +1006,7 @@ def _cue_cost(
     evidence: list[_BoundaryEvidence],
     config: SubtitleFinalizationConfig,
 ) -> float:
-    visible_chars = len(_clean_text(text))
+    visible_chars = config.character_count(text)
     raw_duration = max(100, words[end - 1].end_ms - words[start].start_ms)
     if end < len(words):
         available_duration = max(
@@ -924,14 +1022,16 @@ def _cue_cost(
     # intentionally steep because the most visible failure mode is a dangling
     # article or sentence tail that could have remained with its neighbours.
     cost = 30.0
-    if visible_chars < 10:
-        cost += 130.0 + (10 - visible_chars) * 5.0
-    elif visible_chars < 20:
-        cost += 20.0 + (20 - visible_chars) * 1.5
-    elif visible_chars < 28:
-        cost += (28 - visible_chars) * 1.2
+    short_scale = min(1.0, config.max_chars_per_line / 60.0)
+    scoring_chars = visible_chars / short_scale
+    if scoring_chars < 10:
+        cost += 130.0 + (10 - scoring_chars) * 5.0
+    elif scoring_chars < 20:
+        cost += 20.0 + (20 - scoring_chars) * 1.5
+    elif scoring_chars < 28:
+        cost += (28 - scoring_chars) * 1.2
 
-    target_chars = min(68, max(36, round(config.max_event_chars * 0.72)))
+    target_chars = min(68 * short_scale, max(36 * short_scale, round(config.max_event_chars * 0.72)))
     if visible_chars > target_chars:
         cost += (visible_chars - target_chars) * 0.35
     if raw_duration < config.min_duration_ms:
@@ -992,7 +1092,7 @@ def _compose_semantic_cues(
                 break
             if (
                 not pathological_single_word
-                and (len(text) > config.max_event_chars or not _fits_layout(text, config))
+                and (config.character_count(text) > config.max_event_chars or not _fits_layout(text, config))
             ):
                 break
 
@@ -1031,7 +1131,7 @@ def _compose_semantic_cues(
             SubtitleSegment(
                 index=index,
                 start_ms=words[start].start_ms,
-                end_ms=min(words[end - 1].end_ms, words[start].start_ms + config.max_duration_ms),
+                end_ms=words[end - 1].end_ms,
                 text=_cue_plain_text(words[start:end]),
                 speaker=words[start].speaker,
             ),
@@ -1066,7 +1166,7 @@ def _coalesce_semantic_cues(
         gap_ms = cue.cue.start_ms - previous.cue.end_ms
         combined_text = _join_tokens([previous.cue.text, cue.cue.text])
         combined_duration = cue.cue.end_ms - previous.cue.start_ms
-        combined_cps = len(_clean_text(combined_text)) / max(
+        combined_cps = config.character_count(combined_text) / max(
             0.1, combined_duration / 1000.0
         )
         can_merge = (
@@ -1112,7 +1212,7 @@ def compose_transcript_segments_with_ownership(
         if isinstance(metadata_path_or_normalized_transcript, (str, Path))
         else normalize_transcript(metadata_path_or_normalized_transcript)
     )
-    config = SubtitleFinalizationConfig.from_settings(settings)
+    config = SubtitleFinalizationConfig.from_settings(settings, language=transcript.language or "auto", text=join_fragments(segment.text for segment in transcript.segments))
     output: list[_ComposedCue] = []
     timed_run: list[tuple[int, TimedSegment]] = []
 
@@ -1153,7 +1253,19 @@ def compose_transcript_segments_with_ownership(
         if words:
             source_text, words = _source_text_and_spans(words)
             semantic_cues = _compose_semantic_cues(words, source_text, config)
-            output.extend(_coalesce_semantic_cues(semantic_cues, config))
+            for item in _coalesce_semantic_cues(semantic_cues, config):
+                if contains_cjk(item.cue.text) and (
+                    not _fits_layout(item.cue.text, config)
+                    or item.cue.end_ms - item.cue.start_ms > config.max_duration_ms
+                ):
+                    # Some ASR engines call a whole unspaced sentence a word.
+                    # Split display timing only; retain the original acoustic
+                    # word and give it one canonical owner, never fake subwords.
+                    pieces = _split_segment(item.cue, config)
+                    output.extend(_ComposedCue(piece, item.word_ordinals if index == 0 else ())
+                                  for index, piece in enumerate(pieces))
+                else:
+                    output.append(item)
         timed_run = []
 
     for segment_index, segment in enumerate(transcript.segments):

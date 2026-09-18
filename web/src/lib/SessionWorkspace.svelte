@@ -330,6 +330,7 @@
   let vadMinSilence = $state(800);
   let vadMaxSpeech = $state(300);
   let vadSpeechPad = $state(30);
+  let subtitleLanguageDefaults = $state(true);
   let subtitleChars = $state(60);
   let subtitleLines = $state(2);
   let subtitleMinDuration = $state(833);
@@ -1140,16 +1141,55 @@
     vadMinSilence = Number(saved.crispasr_vad_min_silence_ms ?? 800);
     vadMaxSpeech = Number(saved.crispasr_vad_max_speech_seconds ?? 300);
     vadSpeechPad = Number(saved.crispasr_vad_speech_pad_ms ?? 30);
-    subtitleChars = Number(saved.subtitle_max_chars_per_line ?? 60);
-    subtitleLines = Number(saved.subtitle_max_lines ?? 2);
-    subtitleMinDuration = Number(saved.subtitle_min_duration_ms ?? 833);
-    subtitleMaxDuration = Number(saved.subtitle_max_duration_ms ?? 7000);
-    subtitleCps = Number(saved.subtitle_max_cps ?? 20);
-    subtitleMinGap = Number(saved.subtitle_min_gap_ms ?? 80);
-    subtitlePhraseGap = Number(saved.subtitle_phrase_gap_ms ?? 900);
-    subtitleHardGap = Number(saved.subtitle_hard_gap_ms ?? 1500);
+    let subtitleSettings: Record<string, unknown> = {};
+    try {
+      subtitleSettings = (await sessionApi.settings(session.id, 'subtitles'))
+        .effective;
+    } catch {
+      /* Stage snapshots still work when the settings request fails. */
+    }
+    const legacyCustomSubtitleLimits =
+      saved.subtitle_language_defaults == null &&
+      ((saved.subtitle_max_chars_per_line != null &&
+        Number(saved.subtitle_max_chars_per_line) !== 60) ||
+        (saved.subtitle_max_cps != null &&
+          Number(saved.subtitle_max_cps) !== 20));
+    subtitleLanguageDefaults = Boolean(
+      saved.subtitle_language_defaults ??
+      (legacyCustomSubtitleLimits
+        ? false
+        : (subtitleSettings.language_defaults ?? true))
+    );
+    subtitleChars = Number(
+      saved.subtitle_max_chars_per_line ??
+        subtitleSettings.max_chars_per_line ??
+        60
+    );
+    subtitleLines = Number(
+      saved.subtitle_max_lines ?? subtitleSettings.max_lines ?? 2
+    );
+    subtitleMinDuration = Number(
+      saved.subtitle_min_duration_ms ?? subtitleSettings.min_duration_ms ?? 833
+    );
+    subtitleMaxDuration = Number(
+      saved.subtitle_max_duration_ms ?? subtitleSettings.max_duration_ms ?? 7000
+    );
+    subtitleCps = Number(
+      saved.subtitle_max_cps ?? subtitleSettings.max_cps ?? 20
+    );
+    subtitleMinGap = Number(
+      saved.subtitle_min_gap_ms ?? subtitleSettings.min_gap_ms ?? 80
+    );
+    subtitlePhraseGap = Number(
+      saved.subtitle_phrase_gap_ms ?? subtitleSettings.phrase_gap_ms ?? 900
+    );
+    subtitleHardGap = Number(
+      saved.subtitle_hard_gap_ms ?? subtitleSettings.hard_gap_ms ?? 1500
+    );
     subtitleSentenceBoundaryThreshold = Number(
-      saved.subtitle_sentence_boundary_threshold ?? 0.25
+      saved.subtitle_sentence_boundary_threshold ??
+        subtitleSettings.sentence_boundary_threshold ??
+        0.25
     );
     try {
       const passages = await sessionApi.settings(
@@ -2370,6 +2410,7 @@
         {
           section: 'subtitles',
           value: {
+            language_defaults: subtitleLanguageDefaults,
             max_chars_per_line: subtitleChars,
             max_lines: subtitleLines,
             min_duration_ms: subtitleMinDuration,
@@ -2543,6 +2584,7 @@
         crispasr_vad_min_silence_ms: vadMinSilence,
         crispasr_vad_max_speech_seconds: vadMaxSpeech,
         crispasr_vad_speech_pad_ms: vadSpeechPad,
+        subtitle_language_defaults: subtitleLanguageDefaults,
         subtitle_max_chars_per_line: subtitleChars,
         subtitle_max_lines: subtitleLines,
         subtitle_min_duration_ms: subtitleMinDuration,
@@ -2674,6 +2716,7 @@
         subtitle_mode: subtitleMode,
         subtitle_selection: subtitleSelection,
         audio_mode: audioMode,
+        subtitle_language_defaults: subtitleLanguageDefaults,
         subtitle_max_chars_per_line: subtitleChars,
         subtitle_max_lines: subtitleLines,
         subtitle_min_duration_ms: subtitleMinDuration,
@@ -4355,21 +4398,43 @@
                 cues while preserving speakers, hard pauses, reading speed, and
                 the configured display capacity.
               </p>
+              <label class="mt-3 flex items-center gap-2 text-xs font-semibold">
+                <input
+                  type="checkbox"
+                  bind:checked={subtitleLanguageDefaults}
+                />
+                Automatic limits for each subtitle language
+              </label>
+              {#if subtitleLanguageDefaults}
+                <p class="muted mt-2 text-xs">
+                  Japanese: 16 full-width units/line, 7/second. Chinese: 16 and
+                  9. Korean: 16 and 12. Other languages: 60 and 20. Half-width
+                  CJK characters count as half a unit. Source and translated
+                  tracks use their own language; speech-block limits are
+                  independent.
+                </p>
+              {:else}
+                <p class="muted mt-2 text-xs">
+                  Custom limits below apply to all selected tracks. Japanese 13
+                  units/line and 4/second are also supported.
+                </p>
+              {/if}
               <div class="mt-3 grid grid-cols-2 gap-3">
-                <label class="text-xs font-semibold"
-                  ><ParameterLabel
-                    section="subtitles"
-                    name="max_chars_per_line"
-                    label="Characters / line"
-                    compact
-                  /><input
-                    type="number"
-                    min="20"
-                    max="100"
-                    bind:value={subtitleChars}
-                    class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
-                  /></label
-                ><label class="text-xs font-semibold"
+                {#if !subtitleLanguageDefaults}<label
+                    class="text-xs font-semibold"
+                    ><ParameterLabel
+                      section="subtitles"
+                      name="max_chars_per_line"
+                      label="Characters / line"
+                      compact
+                    /><input
+                      type="number"
+                      min="8"
+                      max="100"
+                      bind:value={subtitleChars}
+                      class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                    /></label
+                  >{/if}<label class="text-xs font-semibold"
                   ><ParameterLabel
                     section="subtitles"
                     name="max_lines"
@@ -4406,21 +4471,22 @@
                     bind:value={subtitleMaxDuration}
                     class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
                   /></label
-                ><label class="text-xs font-semibold"
-                  ><ParameterLabel
-                    section="subtitles"
-                    name="max_cps"
-                    label="Characters / second"
-                    compact
-                  /><input
-                    type="number"
-                    min="5"
-                    max="40"
-                    step="0.5"
-                    bind:value={subtitleCps}
-                    class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
-                  /></label
-                ><label class="text-xs font-semibold"
+                >{#if !subtitleLanguageDefaults}<label
+                    class="text-xs font-semibold"
+                    ><ParameterLabel
+                      section="subtitles"
+                      name="max_cps"
+                      label="Characters / second"
+                      compact
+                    /><input
+                      type="number"
+                      min="1"
+                      max="40"
+                      step="0.5"
+                      bind:value={subtitleCps}
+                      class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                    /></label
+                  >{/if}<label class="text-xs font-semibold"
                   ><ParameterLabel
                     section="subtitles"
                     name="min_gap_ms"
@@ -5559,21 +5625,43 @@
                 Applied only to derived export subtitles; source and reviewed
                 revisions remain unchanged.
               </p>
+              <label class="mt-3 flex items-center gap-2 text-xs font-semibold">
+                <input
+                  type="checkbox"
+                  bind:checked={subtitleLanguageDefaults}
+                />
+                Automatic limits for each subtitle language
+              </label>
+              {#if subtitleLanguageDefaults}
+                <p class="muted mt-2 text-xs">
+                  Japanese: 16 full-width units/line, 7/second. Chinese: 16 and
+                  9. Korean: 16 and 12. Other languages: 60 and 20. Half-width
+                  CJK characters count as half a unit. Source and translated
+                  tracks use their own language; speech-block limits are
+                  independent.
+                </p>
+              {:else}
+                <p class="muted mt-2 text-xs">
+                  Custom limits below apply to all selected tracks. Japanese 13
+                  units/line and 4/second are also supported.
+                </p>
+              {/if}
               <div class="mt-3 grid grid-cols-2 gap-3">
-                <label class="text-xs font-semibold"
-                  ><ParameterLabel
-                    section="subtitles"
-                    name="max_chars_per_line"
-                    label="Characters / line"
-                    compact
-                  /><input
-                    type="number"
-                    min="20"
-                    max="100"
-                    bind:value={subtitleChars}
-                    class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
-                  /></label
-                ><label class="text-xs font-semibold"
+                {#if !subtitleLanguageDefaults}<label
+                    class="text-xs font-semibold"
+                    ><ParameterLabel
+                      section="subtitles"
+                      name="max_chars_per_line"
+                      label="Characters / line"
+                      compact
+                    /><input
+                      type="number"
+                      min="8"
+                      max="100"
+                      bind:value={subtitleChars}
+                      class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                    /></label
+                  >{/if}<label class="text-xs font-semibold"
                   ><ParameterLabel
                     section="subtitles"
                     name="max_lines"
@@ -5610,21 +5698,22 @@
                     bind:value={subtitleMaxDuration}
                     class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
                   /></label
-                ><label class="text-xs font-semibold"
-                  ><ParameterLabel
-                    section="subtitles"
-                    name="max_cps"
-                    label="Characters / second"
-                    compact
-                  /><input
-                    type="number"
-                    min="5"
-                    max="40"
-                    step="0.5"
-                    bind:value={subtitleCps}
-                    class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
-                  /></label
-                ><label class="text-xs font-semibold"
+                >{#if !subtitleLanguageDefaults}<label
+                    class="text-xs font-semibold"
+                    ><ParameterLabel
+                      section="subtitles"
+                      name="max_cps"
+                      label="Characters / second"
+                      compact
+                    /><input
+                      type="number"
+                      min="1"
+                      max="40"
+                      step="0.5"
+                      bind:value={subtitleCps}
+                      class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+                    /></label
+                  >{/if}<label class="text-xs font-semibold"
                   ><ParameterLabel
                     section="subtitles"
                     name="min_gap_ms"

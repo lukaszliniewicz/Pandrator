@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pandrator.logic.dubbing.text_units import clean_text
+
 import hashlib
 import json
 import re
@@ -19,27 +21,33 @@ from pandrator.logic.llm_handler import (
 UnitCompletedCallback = Callable[[str, dict[str, Any]], None]
 
 
-# Restored from the Qt application's LLM defaults. The legacy prompts' plain-text
-# response clauses are intentionally left to the structured JSON system prompt below.
-DEFAULT_PROMPT = """Your task is to preprocess and clean each supplied text item to optimize it for text-to-speech (TTS) synthesis.
-
-Please perform the following adjustments:
-1. Spell out abbreviations and titles (e.g., Prof. to Professor, Dr. to Doctor, et. al. to et alia, etc. to et cetera).
-2. Convert Roman numerals to English words (e.g., Section III to Section Three, Chapter V to Chapter Five).
-3. Correct any punctuation errors, misspelled words, or OCR artifacts (e.g., remove out-of-place page numbers).
-4. Spell difficult foreign, non-English words phonetically so that an English TTS voice can pronounce them naturally.
-
-Don't change anything else. Return each complete processed text item, leaving it unchanged if no adjustments are necessary.
+# Language-neutral defaults. Display text and reviewed spellings remain authoritative.
+DEFAULT_PROMPT = """Prepare each supplied text item for speech in its own declared language.
+Expand unambiguous abbreviations, titles, numbers and Roman numerals into natural spoken forms in that same language. Correct clear punctuation/OCR mistakes without removing meaningful content.
+Preserve Japanese kana/kanji, Chinese script variants and Korean Hangul and word spacing. Do not translate, romanize, or rewrite text for an English voice by default. Apply pronunciation respellings only when explicitly requested or supplied as reviewed readings; preserve uncertain names.
+Return every complete item without changing its meaning, language, order or identity. Leave an item unchanged when no safe adjustment is needed.
 """
 
-DEFAULT_FIRST_PROMPT = """Your task is to spell out abbreviations and titles and convert Roman numerals to English words in each supplied text item. For example: Prof. to Professor, Dr. to Doctor, et. al. to et alia, etc. to et cetera, Section III to Section Three, Chapter V to Chapter Five and so on. Don't change ANYTHING ELSE. If no adjustments are necessary, leave the text item unchanged.
+DEFAULT_FIRST_PROMPT = """Expand unambiguous abbreviations, titles, numbers and Roman numerals into natural spoken forms in each item's own declared language. Preserve meaning, names, writing system and all other wording. English examples do not imply English output for other languages. Leave uncertain forms unchanged.
 """
 
-DEFAULT_SECOND_PROMPT = """Your task is to analyze each supplied text item carefully and correct punctuation. Also, correct any misspelled words and possible OCR artifacts based on context. If there is a number that looks out of place because it could have been a page number captured by OCR and doesn't fit in the context, remove it. Don't change ANYTHING ELSE, including when no changes are necessary.
+DEFAULT_SECOND_PROMPT = """Correct clear punctuation, spelling and OCR mistakes in each supplied text item using its own language's conventions. Do not change meaning, translate, romanize, or remove meaningful numbers. Preserve uncertain wording and all text not requiring correction.
 """
 
-DEFAULT_THIRD_PROMPT = """Your task is to spell difficult FOREIGN, NON-ENGLISH words phonetically. Don't alter ANYTHING ELSE in each supplied text item: English words remain the same. Example: Jiyu means freedom in Japanese becomes jeeyou means freedom in Japanese; jiyu is spelled phonetically as a Japanese word, and the rest is not changed.
+DEFAULT_THIRD_PROMPT = """Apply only explicitly requested or reviewed pronunciation readings suitable for the declared voice language. Keep ordinary native-language words and the original writing system. Do not invent readings of Japanese or Chinese names, and do not impose English phonetic spellings. Leave text unchanged where no approved pronunciation adjustment is supplied.
 """
+
+# Exact fingerprints of shipped pre-CJK defaults. Custom prompts are untouched.
+_LEGACY_BUILTIN_PROMPTS = {
+    "328cac65bce9008ba83fbbf3f4f37eb8be653d8419d1b2f4826a73ee85b2e723": DEFAULT_PROMPT,
+    "060b0a87b204b654b0dbd157d76d2694eb02b57c2fb2c8dfd54ef0b3af045a20": DEFAULT_FIRST_PROMPT,
+    "f93eb56f55a4814565b1308a0674adff1f49202894242a987a7b26a26a7a0487": DEFAULT_SECOND_PROMPT,
+    "51a2261d881c31b59c1f87fabb6d5ded4f75927b362d5103f81ddf0b69e7e590": DEFAULT_THIRD_PROMPT,
+}
+
+
+def _normalize_builtin_prompt(value: str) -> str:
+    return _LEGACY_BUILTIN_PROMPTS.get(hashlib.sha256(value.strip().encode("utf-8")).hexdigest(), value)
 
 
 @dataclass(slots=True)
@@ -138,7 +146,7 @@ def _clean_response(value: str) -> str:
     text = re.sub(r"^```(?:text)?\s*|\s*```$", "", text, flags=re.IGNORECASE).strip()
     if len(text) >= 2 and text[0] == text[-1] and text[0] in {'"', "'"}:
         text = text[1:-1].strip()
-    return " ".join(text.split())
+    return clean_text(text)
 
 
 def _parse_batch_response(value: str, expected_indexes: list[int]) -> dict[int, str]:
@@ -186,13 +194,13 @@ def _parse_batch_response(value: str, expected_indexes: list[int]) -> dict[int, 
 def prompt_sequence(settings: dict[str, Any]) -> list[str]:
     if bool(settings.get("llm_multi_stage")):
         prompts = [
-            str(settings.get(key) or "").strip()
+            _normalize_builtin_prompt(str(settings.get(key) or "").strip())
             for key in ("first_prompt", "second_prompt", "third_prompt")
         ]
         prompts = [prompt for prompt in prompts if prompt]
         if prompts:
             return prompts
-    return [str(settings.get("combined_prompt") or "").strip() or DEFAULT_PROMPT]
+    return [_normalize_builtin_prompt(str(settings.get("combined_prompt") or "").strip() or DEFAULT_PROMPT)]
 
 
 def optimize_texts(
@@ -309,7 +317,12 @@ def optimize_texts(
                 report_completed_request(len(batch))
                 continue
             request_payload = {
-                "items": [{"index": index, "text": current[index]} for index in indexes]
+                "items": [
+                    {"index": index, "text": current[index],
+                     "language": str(languages[index] if languages and index < len(languages)
+                                     else settings.get("language") or settings.get("target_language") or "auto")}
+                    for index in indexes
+                ]
             }
             last_error: RuntimeError | None = None
             unit_usage = OptimizationUsage()

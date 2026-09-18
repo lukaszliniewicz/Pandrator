@@ -199,9 +199,10 @@ _DESCRIPTIONS: dict[str, dict[str, str]] = {
         "diarization_enabled": "Requests speaker diarization from local non-MOSS CrispASR engines; MOSS already supplies native speaker turns and Azure MAI-Transcribe-1.5 rejects diarization.",
     },
     "subtitles": {
+        "language_defaults": "Uses the actual subtitle track language: Japanese 16 full-width units/line and 7/second, Chinese 16 and 9, Korean 16 and 12, other languages 60 and 20. Disable for custom line/reading limits. CJK half-width graphemes count as 0.5; speech engine caps are independent.",
         "max_lines": "Limits each finalized subtitle cue to this many display lines; the subtitle compositor bounds the value to one through three lines.",
-        "max_chars_per_line": "Limits the visible characters on each finalized subtitle line; wrapping and cue splitting use a compositor range of 20 through 100 characters.",
-        "max_cps": "Sets the maximum reading rate used when sizing finalized subtitle cue durations, measured in visible characters per second; the compositor bounds it to 5 through 40.",
+        "max_chars_per_line": "Limits the visible characters on each finalized subtitle line; wrapping and cue splitting use a compositor range of 8 through 100 display units. CJK full-width graphemes count as 1, half-width as 0.5.",
+        "max_cps": "Sets the maximum reading rate used when sizing finalized subtitle cue durations, measured in visible characters per second; the compositor bounds it to 1 through 40, allowing a custom Japanese 4-unit reading rate.",
         "min_duration_ms": "Sets the shortest display duration for a finalized subtitle cue in milliseconds, subject to available neighboring timing; the compositor bounds it to 250 through 3000 milliseconds.",
         "max_duration_ms": "Sets the longest display duration for a finalized subtitle cue in milliseconds before text is split or timing is capped; the compositor bounds it to 1000 through 15000 milliseconds.",
         "min_gap_ms": "Requests a minimum silent gap between finalized subtitle cues in milliseconds; when source timing is too tight, the compositor preserves ordering rather than inventing room.",
@@ -556,8 +557,8 @@ _METADATA: dict[str, dict[str, dict[str, object]]] = {
     },
     "subtitles": {
         "max_lines": {"minimum": 1, "maximum": 3},
-        "max_chars_per_line": {"minimum": 20, "maximum": 100, "unit": "characters"},
-        "max_cps": {"minimum": 5, "maximum": 40, "unit": "characters per second"},
+        "max_chars_per_line": {"minimum": 8, "maximum": 100, "unit": "characters"},
+        "max_cps": {"minimum": 1, "maximum": 40, "unit": "characters per second"},
         "min_duration_ms": {"minimum": 250, "maximum": 3000, "unit": "milliseconds"},
         "max_duration_ms": {"minimum": 1000, "maximum": 15000, "unit": "milliseconds"},
         "min_gap_ms": {"minimum": 0, "maximum": 500, "unit": "milliseconds"},
