@@ -1593,7 +1593,9 @@ class WorkflowService:
                     "model_id": " · ".join(models),
                     "created_at": created_at.isoformat() if created_at else None,
                 }
-            source_readiness = subtitle_source_status_in_session(session, session_id)
+            source_readiness = subtitle_source_status_in_session(
+                session, session_id, primary=primary_source
+            )
             if source_readiness["adoption_required"]:
                 for stage in stages:
                     if stage["key"] in {"correct", "translate", "optimize_document", "generate_audio"} and stage["status"] == "ready":

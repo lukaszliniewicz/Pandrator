@@ -177,7 +177,12 @@ def resolve_primary_source(
     )
 
 
-def resolve_media_source(db_session: Session, session_id: str) -> PrimarySourceResolution:
+def resolve_media_source(
+    db_session: Session,
+    session_id: str,
+    *,
+    primary: PrimarySourceResolution | None = None,
+) -> PrimarySourceResolution:
     """Resolve the independently attached media target, then a media primary.
 
     A subtitle primary remains authoritative text when a recording is attached.
@@ -193,7 +198,8 @@ def resolve_media_source(db_session: Session, session_id: str) -> PrimarySourceR
         .order_by(SessionSource.updated_at.desc(), SessionSource.id.desc()).limit(1)
     ).first()
     if row is None:
-        return resolve_primary_source(db_session, session_id)
+        # Reuse a resolution from this transaction, never a cross-request cache.
+        return primary if primary is not None else resolve_primary_source(db_session, session_id)
     attachment, asset, artifact = row
     name = str(asset.display_name or _artifact_name(artifact))
     kind = str(asset.kind or artifact.kind or "")

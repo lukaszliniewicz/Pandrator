@@ -836,9 +836,23 @@ class SubtitleReviewTests(unittest.TestCase):
             event.remove(self.database.engine, "before_cursor_execute", count_selects)
 
         self.assertEqual("Version 0.", payload["columns"][0]["segments"][0]["text"])
-        # Exact source-media provenance adds fixed lineage and primary-source
-        # reads while remaining independent of subtitle history length.
-        self.assertLessEqual(select_count, 6)
+        baseline_count = select_count
+        for index in range(48):
+            self._artifact(
+                f"larger-history-{index}.srt", "correction",
+                f"1\n00:00:00,000 --> 00:00:02,000\nLater {index}.\n",
+            )
+        select_count = 0
+        event.listen(self.database.engine, "before_cursor_execute", count_selects)
+        try:
+            repeated = self.service.review(self.session.id, [artifacts[0].id])
+        finally:
+            event.remove(self.database.engine, "before_cursor_execute", count_selects)
+        self.assertEqual(payload, repeated)
+        self.assertEqual(baseline_count, select_count)
+        # Exact lineage, an independently attached recording, and primary-source
+        # fallback are fixed queries, independent of subtitle history length.
+        self.assertLessEqual(select_count, 7)
 
 
 if __name__ == "__main__":

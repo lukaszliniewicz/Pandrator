@@ -21,6 +21,8 @@ from .models import (
     SessionRecord,
 )
 
+from .source_resolution import PrimarySourceResolution
+
 _SUBTITLE_KINDS = {"srt", "vtt"}
 _VTT_TIMESTAMP = re.compile(r"^(?:(\d{2,}):)?(\d{2}):(\d{2})[.,](\d{3})$")
 
@@ -191,15 +193,20 @@ def adopt_subtitle_source_in_session(
     }
 
 
-def subtitle_source_status_in_session(session: Session, session_id: str) -> dict[str, Any]:
+def subtitle_source_status_in_session(
+    session: Session,
+    session_id: str,
+    *,
+    primary: "PrimarySourceResolution | None" = None,
+) -> dict[str, Any]:
     """Read-only subtitle-first readiness, shared by the UI and MCP planner."""
     from .source_resolution import resolve_media_source, resolve_primary_source
 
     record = session.get(SessionRecord, session_id)
     if record is None:
         raise KeyError(session_id)
-    primary = resolve_primary_source(session, session_id)
-    media = resolve_media_source(session, session_id)
+    primary = primary if primary is not None else resolve_primary_source(session, session_id)
+    media = resolve_media_source(session, session_id, primary=primary)
     supported = primary.profile == "subtitles" and (
         str(primary.kind).lower().lstrip(".") in _SUBTITLE_KINDS
         or primary.name.lower().endswith((".srt", ".vtt"))

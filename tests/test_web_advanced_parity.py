@@ -623,6 +623,12 @@ class SourceAwareWorkflowTests(unittest.TestCase):
                 record = SessionService(database).create("Review first", workflow_kind="voiceover")
                 source_path = paths.uploads / "captions.srt"; source_path.write_text("1\n00:00:00,000 --> 00:00:01,000\nHello\n", encoding="utf-8")
                 upload = ArtifactService(database, paths).register(source_path, kind="srt", role="upload", session_id=record.id, metadata={"original_filename":"captions.srt"})
+                # Subtitle-first sessions register the immutable timed source before work.
+                from pandrator.web.subtitle_sources import adopt_subtitle_source_in_session
+                with database.session() as session:
+                    adopt_subtitle_source_in_session(
+                        session, ArtifactService(database, paths), record.id, upload.id
+                    )
                 outcomes = OutcomePlanService(database)
                 current = outcomes.get(record.id)
                 value = current["value"]

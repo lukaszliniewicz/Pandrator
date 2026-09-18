@@ -572,7 +572,12 @@ class SpeechOptimizationDispatchWebTests(unittest.TestCase):
         self.extension["source_library"].attach(record.id, asset.id)
 
         run = self._create_run(record.id)
-        self.assertEqual(source.id, run["source_artifact_id"])
+        # Attaching subtitles now registers a session-local timed derivative.
+        # Dispatch pins that revision, retaining its original library provenance.
+        adopted, _ = self.extension["artifacts"].resolve(run["source_artifact_id"])
+        self.assertEqual(record.id, adopted.session_id)
+        self.assertEqual("transcription", adopted.role)
+        self.assertEqual(source.id, adopted.metadata_json["imported_source_artifact_id"])
         claimed = self._claim(run["id"], 1)
         final = self._submit(
             claimed,

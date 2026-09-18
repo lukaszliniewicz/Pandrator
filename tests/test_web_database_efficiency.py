@@ -16,6 +16,8 @@ from pandrator.web.database import (
     sqlite_url,
     upgrade_database,
 )
+from pandrator.web.artifacts import ArtifactService
+from pandrator.web.subtitle_sources import adopt_subtitle_source_in_session
 from pandrator.web.jobs import JobQueue
 from pandrator.web.models import (
     Artifact,
@@ -80,11 +82,12 @@ class WebDatabaseEfficiencyTests(unittest.TestCase):
         # Artifact-to-job lineage and grouped usage totals are separate bounded
         # queries; the absolute budget reflects that established split while
         # the equality above guards the important history-scaling invariant.
-        self.assertLessEqual(large["select_count"], 11)
+        # The independently attached media source needs one additional bounded lookup.
+        self.assertLessEqual(large["select_count"], 12)
         self.assertLessEqual(large["orm_objects_loaded"], 50)
         self.assertLess(large["response_json_bytes"], 25_000)
 
-    def test_external_attached_translation_source_keeps_attached_origin(self):
+    def test_external_attached_subtitle_origin_and_adopted_generation_revision(self):
         with tempfile.TemporaryDirectory() as directory:
             paths = DataPaths.from_value(directory).ensure()
             upgrade_database(paths.database)
@@ -94,13 +97,15 @@ class WebDatabaseEfficiencyTests(unittest.TestCase):
                     "Attached translation source",
                     workflow_kind="voiceover",
                 )
+                source_path = paths.uploads / "attached-source.srt"
+                source_path.write_text("1\n00:00:00,000 --> 00:00:01,000\nHello.\n", encoding="utf-8")
                 with database.session() as session:
-                    source = Artifact(
+                    source = ArtifactService(database, paths).register_in_session(
+                        session, source_path,
                         session_id=None,
                         kind="srt",
                         role="upload",
-                        relative_path="library/attached-source.srt",
-                        metadata_json={
+                        metadata={
                             "original_filename": "attached-source.srt",
                         },
                     )
@@ -144,6 +149,19 @@ class WebDatabaseEfficiencyTests(unittest.TestCase):
                 }
                 outcomes.update(record.id, current["revision"], value)
 
+                # Before registration the UI still identifies the attached
+                # source, but correctly blocks work without a timed revision.
+                before = WorkflowService(database, JobQueue(database)).snapshot(record.id)
+                before_stages = {stage["key"]: stage for stage in before["stages"]}
+                self.assertEqual("unavailable", before_stages["translate"]["status"])
+                self.assertTrue(before["subtitle_source"]["adoption_required"])
+                attached = before_stages["generate_audio"]["resolved_input"]
+                self.assertEqual(source.id, attached["artifact_id"])
+                self.assertEqual("attached", attached["origin"])
+                with database.session() as session:
+                    adopted = adopt_subtitle_source_in_session(
+                        session, ArtifactService(database, paths), record.id, source.id
+                    )
                 stages = WorkflowService(database, JobQueue(database)).snapshot(
                     record.id
                 )["stages"]
@@ -151,14 +169,14 @@ class WebDatabaseEfficiencyTests(unittest.TestCase):
                 self.assertEqual("ready", by_key["translate"]["status"])
                 self.assertEqual(
                     {
-                        "artifact_id": source.id,
-                        "role": "upload",
-                        "stage_key": "source",
+                        "artifact_id": adopted["artifact_id"],
+                        "role": "transcription",
+                        "stage_key": "transcribe",
                         "version": None,
-                        "label": "Current attached source",
-                        "origin": "attached",
-                        "selection_stage": "source",
-                        "selected_artifact_id": source.id,
+                        "label": "Transcription",
+                        "origin": "stage",
+                        "selection_stage": "transcribe",
+                        "selected_artifact_id": adopted["artifact_id"],
                     },
                     by_key["generate_audio"]["resolved_input"],
                 )
