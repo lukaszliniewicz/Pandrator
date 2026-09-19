@@ -870,6 +870,41 @@ class GenerationRun(Base):
     )
 
 
+class PerformancePlan(Base):
+    """Reviewable performance sidecar; adopted content is never edited in place."""
+
+    __tablename__ = "performance_plans"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False, index=True)
+    plan_revision_id: Mapped[str] = mapped_column(ForeignKey("generation_plan_revisions.id", ondelete="CASCADE"), nullable=False, index=True)
+    base_signature: Mapped[str] = mapped_column(String(128), nullable=False)
+    settings_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    units_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False, default=list)
+    manual_annotations_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="draft", index=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    job_id: Mapped[str | None] = mapped_column(String(36))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    adopted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class PerformanceBatch(Base):
+    """Leased immutable input batches with idempotent, checkpointed results."""
+
+    __tablename__ = "performance_batches"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    performance_plan_id: Mapped[str] = mapped_column(ForeignKey("performance_plans.id", ondelete="CASCADE"), nullable=False, index=True)
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    segment_ids_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending", index=True)
+    lease_token: Mapped[str | None] = mapped_column(String(64))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    annotations_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    response_hash: Mapped[str | None] = mapped_column(String(128))
+    usage_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    __table_args__ = (UniqueConstraint("performance_plan_id", "ordinal", name="uq_performance_batch_ordinal"),)
+
+
 class GenerationSegment(Base):
     __tablename__ = "generation_segments"
 

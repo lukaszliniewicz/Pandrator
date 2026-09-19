@@ -20,6 +20,36 @@
         "title": "AgentRunCreateRequest",
         "type": "object"
       },
+      "Anchor": {
+        "additionalProperties": false,
+        "properties": {
+          "occurrence": {
+            "anyOf": [
+              {
+                "maximum": 10000,
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Occurrence"
+          },
+          "quote": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Quote",
+            "type": "string"
+          }
+        },
+        "required": [
+          "quote"
+        ],
+        "title": "Anchor",
+        "type": "object"
+      },
       "ApplicationIdentityDocument": {
         "additionalProperties": false,
         "description": "Versioned identity response pinned by remote MCP target profiles.",
@@ -316,6 +346,59 @@
           }
         },
         "title": "CredentialUpdate",
+        "type": "object"
+      },
+      "Delivery": {
+        "additionalProperties": false,
+        "properties": {
+          "cadence": {
+            "default": "",
+            "enum": [
+              "",
+              "continuing",
+              "concluding",
+              "questioning",
+              "contrast"
+            ],
+            "title": "Cadence",
+            "type": "string"
+          },
+          "emotion": {
+            "default": "",
+            "maxLength": 80,
+            "title": "Emotion",
+            "type": "string"
+          },
+          "emphasis": {
+            "default": "",
+            "enum": [
+              "",
+              "light",
+              "moderate",
+              "strong"
+            ],
+            "title": "Emphasis",
+            "type": "string"
+          },
+          "instruction": {
+            "default": "",
+            "maxLength": 1200,
+            "title": "Instruction",
+            "type": "string"
+          },
+          "pace": {
+            "default": "",
+            "enum": [
+              "",
+              "natural",
+              "slower",
+              "brisk"
+            ],
+            "title": "Pace",
+            "type": "string"
+          }
+        },
+        "title": "Delivery",
         "type": "object"
       },
       "DispatchBatchClaimRequest": {
@@ -4219,6 +4302,403 @@
         "title": "PdfWhiteoutInput",
         "type": "object"
       },
+      "PerformanceAdoptRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "accept_unanalysed": {
+            "default": false,
+            "title": "Accept Unanalysed",
+            "type": "boolean"
+          },
+          "enable": {
+            "default": true,
+            "title": "Enable",
+            "type": "boolean"
+          },
+          "expected_version": {
+            "minimum": 1,
+            "title": "Expected Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "expected_version"
+        ],
+        "title": "PerformanceAdoptRequest",
+        "type": "object"
+      },
+      "PerformanceAnnotation": {
+        "additionalProperties": false,
+        "properties": {
+          "confidence": {
+            "default": "medium",
+            "enum": [
+              "low",
+              "medium",
+              "high"
+            ],
+            "title": "Confidence",
+            "type": "string"
+          },
+          "decision": {
+            "default": "none",
+            "enum": [
+              "none",
+              "steer"
+            ],
+            "title": "Decision",
+            "type": "string"
+          },
+          "delivery": {
+            "$ref": "#/components/schemas/Delivery"
+          },
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/VocalEvent"
+            },
+            "maxItems": 16,
+            "title": "Events",
+            "type": "array"
+          },
+          "locked": {
+            "default": false,
+            "title": "Locked",
+            "type": "boolean"
+          },
+          "reason": {
+            "default": "",
+            "maxLength": 1600,
+            "title": "Reason",
+            "type": "string"
+          },
+          "schema": {
+            "const": "pandrator.performance/v1",
+            "default": "pandrator.performance/v1",
+            "title": "Schema",
+            "type": "string"
+          },
+          "spans": {
+            "items": {
+              "$ref": "#/components/schemas/PerformanceSpan"
+            },
+            "maxItems": 32,
+            "title": "Spans",
+            "type": "array"
+          }
+        },
+        "title": "PerformanceAnnotation",
+        "type": "object"
+      },
+      "PerformanceEditRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_version": {
+            "minimum": 1,
+            "title": "Expected Version",
+            "type": "integer"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PerformanceItem"
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Items",
+            "type": "array"
+          },
+          "unlock_locked": {
+            "default": false,
+            "title": "Unlock Locked",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "expected_version",
+          "items"
+        ],
+        "title": "PerformanceEditRequest",
+        "type": "object"
+      },
+      "PerformanceItem": {
+        "additionalProperties": false,
+        "properties": {
+          "annotation": {
+            "$ref": "#/components/schemas/PerformanceAnnotation"
+          },
+          "segment_id": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Segment Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "segment_id",
+          "annotation"
+        ],
+        "title": "PerformanceItem",
+        "type": "object"
+      },
+      "PerformanceLeaseRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "lease_seconds": {
+            "default": 900,
+            "maximum": 3600,
+            "minimum": 30,
+            "title": "Lease Seconds",
+            "type": "integer"
+          }
+        },
+        "title": "PerformanceLeaseRequest",
+        "type": "object"
+      },
+      "PerformancePlanCreateRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "allow_vocalizations": {
+            "default": false,
+            "title": "Allow Vocalizations",
+            "type": "boolean"
+          },
+          "batch_size": {
+            "default": 12,
+            "maximum": 32,
+            "minimum": 1,
+            "title": "Batch Size",
+            "type": "integer"
+          },
+          "context_after": {
+            "default": 1,
+            "maximum": 20,
+            "minimum": 0,
+            "title": "Context After",
+            "type": "integer"
+          },
+          "context_before": {
+            "default": 2,
+            "maximum": 20,
+            "minimum": 0,
+            "title": "Context Before",
+            "type": "integer"
+          },
+          "context_max_chars": {
+            "default": 4000,
+            "maximum": 16000,
+            "minimum": 0,
+            "title": "Context Max Chars",
+            "type": "integer"
+          },
+          "copy_from_id": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Copy From Id"
+          },
+          "expected_plan_revision_id": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Expected Plan Revision Id",
+            "type": "string"
+          },
+          "instructions": {
+            "default": "",
+            "maxLength": 6000,
+            "title": "Instructions",
+            "type": "string"
+          },
+          "mode": {
+            "default": "manual",
+            "enum": [
+              "manual",
+              "passive",
+              "llm"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "model_name": {
+            "default": "",
+            "maxLength": 255,
+            "title": "Model Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_plan_revision_id"
+        ],
+        "title": "PerformancePlanCreateRequest",
+        "type": "object"
+      },
+      "PerformancePreviewRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "allow_vocalizations": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Allow Vocalizations"
+          },
+          "annotation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PerformanceAnnotation"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "context_mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "off",
+                  "before",
+                  "both"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Context Mode"
+          },
+          "generation_prompt": {
+            "anyOf": [
+              {
+                "maxLength": 4000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Generation Prompt"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Model"
+          },
+          "segment_id": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Segment Id",
+            "type": "string"
+          },
+          "service": {
+            "anyOf": [
+              {
+                "maxLength": 160,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Service"
+          }
+        },
+        "required": [
+          "segment_id"
+        ],
+        "title": "PerformancePreviewRequest",
+        "type": "object"
+      },
+      "PerformanceRenewRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "lease_seconds": {
+            "default": 900,
+            "maximum": 3600,
+            "minimum": 30,
+            "title": "Lease Seconds",
+            "type": "integer"
+          },
+          "lease_token": {
+            "maxLength": 64,
+            "minLength": 16,
+            "title": "Lease Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "lease_token"
+        ],
+        "title": "PerformanceRenewRequest",
+        "type": "object"
+      },
+      "PerformanceSpan": {
+        "additionalProperties": false,
+        "properties": {
+          "anchor": {
+            "$ref": "#/components/schemas/Anchor"
+          },
+          "delivery": {
+            "$ref": "#/components/schemas/Delivery"
+          }
+        },
+        "required": [
+          "anchor",
+          "delivery"
+        ],
+        "title": "PerformanceSpan",
+        "type": "object"
+      },
+      "PerformanceSubmitRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PerformanceItem"
+            },
+            "maxItems": 32,
+            "minItems": 1,
+            "title": "Items",
+            "type": "array"
+          },
+          "lease_token": {
+            "maxLength": 64,
+            "minLength": 16,
+            "title": "Lease Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "items",
+          "lease_token"
+        ],
+        "title": "PerformanceSubmitRequest",
+        "type": "object"
+      },
       "PronunciationCreate": {
         "additionalProperties": false,
         "properties": {
@@ -7501,6 +7981,65 @@
           "text"
         ],
         "title": "TtsVoicePreviewRequest",
+        "type": "object"
+      },
+      "VocalEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "anchor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Anchor"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "duration_ms": {
+            "anyOf": [
+              {
+                "maximum": 5000,
+                "minimum": 50,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Duration Ms"
+          },
+          "kind": {
+            "enum": [
+              "pause",
+              "laugh",
+              "chuckle",
+              "sigh",
+              "inhale",
+              "exhale",
+              "cough",
+              "gasp",
+              "clear_throat"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "position": {
+            "default": "before",
+            "enum": [
+              "before",
+              "after"
+            ],
+            "title": "Position",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "title": "VocalEvent",
         "type": "object"
       },
       "VoiceCreate": {
@@ -12829,6 +13368,975 @@
             "description": "Queued"
           }
         }
+      }
+    },
+    "/api/v1/sessions/{sessionId}/performance-plans": {
+      "get": {
+        "description": "Performance metadata never rewrites accepted speech text or creates audio. Adoption affects future synthesis only. Leased batches contain read-only semantic context.",
+        "operationId": "listPerformancePlans",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "offset",
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "plan_revision_id",
+            "schema": {
+              "maxLength": 80,
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Validated performance state or compiled request; never audio."
+          },
+          "400": {
+            "description": "A valid idempotency key is required for writes."
+          },
+          "401": {
+            "description": "Authentication required."
+          },
+          "403": {
+            "description": "The authenticated actor lacks the required scope."
+          },
+          "404": {
+            "description": "The requested session, performance plan or batch does not exist."
+          },
+          "409": {
+            "description": "Stale source/version, invalid lease, active work, or immutable adopted plan."
+          },
+          "422": {
+            "description": "Invalid performance annotation, anchor or request."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ],
+        "summary": "listPerformancePlans"
+      },
+      "post": {
+        "description": "Performance metadata never rewrites accepted speech text or creates audio. Adoption affects future synthesis only. Leased batches contain read-only semantic context.",
+        "operationId": "createPerformancePlan",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PerformancePlanCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Validated performance state or compiled request; never audio."
+          },
+          "400": {
+            "description": "A valid idempotency key is required for writes."
+          },
+          "401": {
+            "description": "Authentication required."
+          },
+          "403": {
+            "description": "The authenticated actor lacks the required scope."
+          },
+          "404": {
+            "description": "The requested session, performance plan or batch does not exist."
+          },
+          "409": {
+            "description": "Stale source/version, invalid lease, active work, or immutable adopted plan."
+          },
+          "422": {
+            "description": "Invalid performance annotation, anchor or request."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.run"
+            ]
+          }
+        ],
+        "summary": "createPerformancePlan"
+      }
+    },
+    "/api/v1/sessions/{sessionId}/performance-plans/{planId}": {
+      "get": {
+        "description": "Performance metadata never rewrites accepted speech text or creates audio. Adoption affects future synthesis only. Leased batches contain read-only semantic context.",
+        "operationId": "getPerformancePlan",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "offset",
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "planId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Validated performance state or compiled request; never audio."
+          },
+          "400": {
+            "description": "A valid idempotency key is required for writes."
+          },
+          "401": {
+            "description": "Authentication required."
+          },
+          "403": {
+            "description": "The authenticated actor lacks the required scope."
+          },
+          "404": {
+            "description": "The requested session, performance plan or batch does not exist."
+          },
+          "409": {
+            "description": "Stale source/version, invalid lease, active work, or immutable adopted plan."
+          },
+          "422": {
+            "description": "Invalid performance annotation, anchor or request."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ],
+        "summary": "getPerformancePlan"
+      },
+      "patch": {
+        "description": "Performance metadata never rewrites accepted speech text or creates audio. Adoption affects future synthesis only. Leased batches contain read-only semantic context.",
+        "operationId": "editPerformancePlan",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "planId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PerformanceEditRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Validated performance state or compiled request; never audio."
+          },
+          "400": {
+            "description": "A valid idempotency key is required for writes."
+          },
+          "401": {
+            "description": "Authentication required."
+          },
+          "403": {
+            "description": "The authenticated actor lacks the required scope."
+          },
+          "404": {
+            "description": "The requested session, performance plan or batch does not exist."
+          },
+          "409": {
+            "description": "Stale source/version, invalid lease, active work, or immutable adopted plan."
+          },
+          "422": {
+            "description": "Invalid performance annotation, anchor or request."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
+            ]
+          }
+        ],
+        "summary": "editPerformancePlan"
+      }
+    },
+    "/api/v1/sessions/{sessionId}/performance-plans/{planId}/adopt": {
+      "post": {
+        "description": "Performance metadata never rewrites accepted speech text or creates audio. Adoption affects future synthesis only. Leased batches contain read-only semantic context.",
+        "operationId": "adoptPerformancePlan",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "planId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PerformanceAdoptRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Validated performance state or compiled request; never audio."
+          },
+          "400": {
+            "description": "A valid idempotency key is required for writes."
+          },
+          "401": {
+            "description": "Authentication required."
+          },
+          "403": {
+            "description": "The authenticated actor lacks the required scope."
+          },
+          "404": {
+            "description": "The requested session, performance plan or batch does not exist."
+          },
+          "409": {
+            "description": "Stale source/version, invalid lease, active work, or immutable adopted plan."
+          },
+          "422": {
+            "description": "Invalid performance annotation, anchor or request."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
+            ]
+          }
+        ],
+        "summary": "adoptPerformancePlan"
+      }
+    },
+    "/api/v1/sessions/{sessionId}/performance-plans/{planId}/analyse": {
+      "post": {
+        "description": "Performance metadata never rewrites accepted speech text or creates audio. Adoption affects future synthesis only. Leased batches contain read-only semantic context.",
+        "operationId": "analysePerformancePlan",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "planId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Validated performance state or compiled request; never audio."
+          },
+          "400": {
+            "description": "A valid idempotency key is required for writes."
+          },
+          "401": {
+            "description": "Authentication required."
+          },
+          "403": {
+            "description": "The authenticated actor lacks the required scope."
+          },
+          "404": {
+            "description": "The requested session, performance plan or batch does not exist."
+          },
+          "409": {
+            "description": "Stale source/version, invalid lease, active work, or immutable adopted plan."
+          },
+          "422": {
+            "description": "Invalid performance annotation, anchor or request."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.run"
+            ]
+          }
+        ],
+        "summary": "analysePerformancePlan"
+      }
+    },
+    "/api/v1/sessions/{sessionId}/performance-plans/{planId}/batches/{batchId}/release": {
+      "post": {
+        "description": "Performance metadata never rewrites accepted speech text or creates audio. Adoption affects future synthesis only. Leased batches contain read-only semantic context.",
+        "operationId": "releasePerformanceBatch",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "planId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "batchId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PerformanceRenewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Validated performance state or compiled request; never audio."
+          },
+          "400": {
+            "description": "A valid idempotency key is required for writes."
+          },
+          "401": {
+            "description": "Authentication required."
+          },
+          "403": {
+            "description": "The authenticated actor lacks the required scope."
+          },
+          "404": {
+            "description": "The requested session, performance plan or batch does not exist."
+          },
+          "409": {
+            "description": "Stale source/version, invalid lease, active work, or immutable adopted plan."
+          },
+          "422": {
+            "description": "Invalid performance annotation, anchor or request."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.run"
+            ]
+          }
+        ],
+        "summary": "releasePerformanceBatch"
+      }
+    },
+    "/api/v1/sessions/{sessionId}/performance-plans/{planId}/batches/{batchId}/renew": {
+      "post": {
+        "description": "Performance metadata never rewrites accepted speech text or creates audio. Adoption affects future synthesis only. Leased batches contain read-only semantic context.",
+        "operationId": "renewPerformanceBatch",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "planId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "batchId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PerformanceRenewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Validated performance state or compiled request; never audio."
+          },
+          "400": {
+            "description": "A valid idempotency key is required for writes."
+          },
+          "401": {
+            "description": "Authentication required."
+          },
+          "403": {
+            "description": "The authenticated actor lacks the required scope."
+          },
+          "404": {
+            "description": "The requested session, performance plan or batch does not exist."
+          },
+          "409": {
+            "description": "Stale source/version, invalid lease, active work, or immutable adopted plan."
+          },
+          "422": {
+            "description": "Invalid performance annotation, anchor or request."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.run"
+            ]
+          }
+        ],
+        "summary": "renewPerformanceBatch"
+      }
+    },
+    "/api/v1/sessions/{sessionId}/performance-plans/{planId}/batches/{batchId}/submit": {
+      "post": {
+        "description": "Performance metadata never rewrites accepted speech text or creates audio. Adoption affects future synthesis only. Leased batches contain read-only semantic context.",
+        "operationId": "submitPerformanceBatch",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "planId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "batchId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PerformanceSubmitRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Validated performance state or compiled request; never audio."
+          },
+          "400": {
+            "description": "A valid idempotency key is required for writes."
+          },
+          "401": {
+            "description": "Authentication required."
+          },
+          "403": {
+            "description": "The authenticated actor lacks the required scope."
+          },
+          "404": {
+            "description": "The requested session, performance plan or batch does not exist."
+          },
+          "409": {
+            "description": "Stale source/version, invalid lease, active work, or immutable adopted plan."
+          },
+          "422": {
+            "description": "Invalid performance annotation, anchor or request."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.run"
+            ]
+          }
+        ],
+        "summary": "submitPerformanceBatch"
+      }
+    },
+    "/api/v1/sessions/{sessionId}/performance-plans/{planId}/claim": {
+      "post": {
+        "description": "Performance metadata never rewrites accepted speech text or creates audio. Adoption affects future synthesis only. Leased batches contain read-only semantic context.",
+        "operationId": "claimPerformanceBatch",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "planId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PerformanceLeaseRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Validated performance state or compiled request; never audio."
+          },
+          "400": {
+            "description": "A valid idempotency key is required for writes."
+          },
+          "401": {
+            "description": "Authentication required."
+          },
+          "403": {
+            "description": "The authenticated actor lacks the required scope."
+          },
+          "404": {
+            "description": "The requested session, performance plan or batch does not exist."
+          },
+          "409": {
+            "description": "Stale source/version, invalid lease, active work, or immutable adopted plan."
+          },
+          "422": {
+            "description": "Invalid performance annotation, anchor or request."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.run"
+            ]
+          }
+        ],
+        "summary": "claimPerformanceBatch"
+      }
+    },
+    "/api/v1/sessions/{sessionId}/performance-plans/{planId}/preview": {
+      "post": {
+        "description": "Performance metadata never rewrites accepted speech text or creates audio. Adoption affects future synthesis only. Leased batches contain read-only semantic context.",
+        "operationId": "previewPerformancePlan",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "planId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PerformancePreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Validated performance state or compiled request; never audio."
+          },
+          "400": {
+            "description": "A valid idempotency key is required for writes."
+          },
+          "401": {
+            "description": "Authentication required."
+          },
+          "403": {
+            "description": "The authenticated actor lacks the required scope."
+          },
+          "404": {
+            "description": "The requested session, performance plan or batch does not exist."
+          },
+          "409": {
+            "description": "Stale source/version, invalid lease, active work, or immutable adopted plan."
+          },
+          "422": {
+            "description": "Invalid performance annotation, anchor or request."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ],
+        "summary": "previewPerformancePlan"
       }
     },
     "/api/v1/sessions/{sessionId}/reindex": {

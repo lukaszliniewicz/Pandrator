@@ -1224,6 +1224,10 @@ def get_service_configs(tts_settings) -> list[dict[str, object]]:
         if service_id in services
     ]
     first_class.extend(get_provider_configs(tts_settings))
+    from .speech_performance import decorate_service_capabilities
+
+    for service in first_class:
+        decorate_service_capabilities(service)
     return first_class
 
 
@@ -5572,10 +5576,10 @@ def _build_fishs2_payload(text: str, tts_settings: dict) -> dict:
         "speed": prosody.get("speed", 1.0),
     }
     payload.update(fishs2_options)
+    from .speech_performance import compile_for_provider
 
-    instructions = str(tts_settings.get("openai_audio_instructions") or "").strip()
-    if instructions:
-        payload["instructions"] = instructions
+    compiled = compile_for_provider(text, {**tts_settings, "xtts_model": model}, {"id": "fishs2"})
+    payload["input"] = compiled.input
 
     return payload
 
@@ -5739,20 +5743,21 @@ def _build_openai_compatible_audio_payload(
     legacy_instructions = str(
         tts_settings.get("openai_audio_instructions") or ""
     ).strip()
-    generation_prompt = str(tts_settings.get("generation_prompt") or "").strip()
     if _is_xtts_target(model_name, endpoint):
         payload["instructions"] = _build_xtts_instructions_payload(
             tts_settings,
             legacy_instructions,
         )
-    elif provider == OPENAI_PROVIDER and model_name in OPENAI_GENERATION_PROMPT_MODELS:
-        instructions = generation_prompt or legacy_instructions
-        if instructions:
-            payload["instructions"] = instructions
-    elif provider == GEMINI_PROVIDER:
-        instructions = generation_prompt or legacy_instructions
-        if instructions:
-            payload["input"] = _build_guided_speech_prompt(text, instructions)
+    else:
+        from .speech_performance import compile_for_provider
+
+        compiled = compile_for_provider(
+            text, {**tts_settings, "xtts_model": model_name},
+            {**endpoint, "provider": provider},
+        )
+        payload["input"] = compiled.input
+        if compiled.instructions:
+            payload["instructions"] = compiled.instructions
 
     return payload
 
@@ -5988,15 +5993,14 @@ def _build_audio_cpp_audio_payload(
     if language:
         payload["language"] = language
 
-    instructions = str(
-        tts_settings.get("generation_prompt")
-        or tts_settings.get("openai_audio_instructions")
-        or ""
-    ).strip()
-    if is_design and not instructions:
-        raise ValueError("audio.cpp VoiceDesign models require instructions.")
-    if instructions:
-        payload["instructions"] = instructions
+    from .speech_performance import compile_for_provider
+
+    compiled = compile_for_provider(text, {**tts_settings, "xtts_model": model}, {**endpoint, "adapter": "audio_cpp"})
+    payload["input"] = compiled.input
+    if is_design and not str(tts_settings.get("generation_prompt") or tts_settings.get("openai_audio_instructions") or "").strip():
+        raise ValueError("audio.cpp VoiceDesign models require instructions: provide a stable voice description in the general direction field.")
+    if compiled.instructions:
+        payload["instructions"] = compiled.instructions
 
     reference_text = str(tts_settings.get("audio_cpp_reference_text") or "").strip()
     if reference_text and not is_prebuilt and not is_design and family != "pocket_tts":
@@ -6127,19 +6131,19 @@ def _build_audio_cpp_audio_payload(
         )
     if linked_reference and family == "qwen3_tts" and not is_design:
         options["x_vector_only_mode"] = not bool(reference_text)
+    # Compiler-owned transport safeguards take precedence over raw tuning.
+    # In particular, Fish's generated bracket controls require tag-aware splits.
+    options.update(compiled.request_options)
     if options:
         payload["options"] = options
     return payload
 
 
 def _build_guided_speech_prompt(text: str, generation_prompt: str) -> str:
-    """Combine Gemini performance direction and transcript without making it ambiguous."""
-    return (
-        "Perform the transcript below as speech. Follow the speaking directions, "
-        "but do not read or mention the directions or labels aloud.\n\n"
-        f"Speaking directions:\n{generation_prompt.strip()}\n\n"
-        f"Transcript:\n{text}"
-    )
+    """Backward-compatible entry point for Gemini's shared prompt composer."""
+    from .speech_performance import guided_speech_prompt
+
+    return guided_speech_prompt(text, generation_prompt)
 
 
 def _litellm_response_to_requests_response(litellm_response) -> requests.Response:
@@ -6431,12 +6435,11 @@ def _request_vertex_ai_audio(text: str, tts_settings: dict) -> requests.Response
         f"{quote(project_id, safe='')}/locations/{quote(location, safe='')}/"
         f"publishers/google/models/{quote(model, safe='')}:generateContent"
     )
-    generation_prompt = str(tts_settings.get("generation_prompt") or "").strip()
-    prompt_text = (
-        _build_guided_speech_prompt(text, generation_prompt)
-        if generation_prompt
-        else text
-    )
+    from .speech_performance import compile_for_provider
+
+    prompt_text = compile_for_provider(
+        text, {**tts_settings, "xtts_model": model}, {"provider": "vertex_ai"}
+    ).input
     payload = {
         "contents": [{"role": "user", "parts": [{"text": prompt_text}]}],
         "generationConfig": {
@@ -6554,6 +6557,12 @@ def _request_chatterbox_audio(
         "speed": _coerce_float(tts_settings.get("speed"), 1.0),
         "language": normalize_chatterbox_language_code(tts_settings.get("language")),
     }
+
+    from .speech_performance import compile_for_provider
+
+    payload["input"] = compile_for_provider(
+        text, {**tts_settings, "xtts_model": model}, {"id": "chatterbox"}
+    ).input
 
     # Pass optional advanced parameters
     payload["temperature"] = _coerce_float(
@@ -6777,11 +6786,12 @@ def _build_kobold_qwen_payload(text: str, tts_settings: dict) -> dict[str, objec
         "speed": _coerce_float(tts_settings.get("speed"), 1.0),
         "response_format": "wav",
     }
-    generation_prompt = str(tts_settings.get("generation_prompt") or "").strip()
-    if generation_prompt and normalized_model in {
-        item.lower() for item in KOBOLD_QWEN_GENERATION_PROMPT_MODELS
-    }:
-        payload["instructions"] = generation_prompt
+    from .speech_performance import compile_for_provider
+
+    compiled = compile_for_provider(text, {**tts_settings, "xtts_model": model}, {"id": "kobold_qwen"})
+    payload["input"] = compiled.input
+    if compiled.instructions:
+        payload["instructions"] = compiled.instructions
     return payload
 
 

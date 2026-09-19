@@ -394,7 +394,8 @@ class TTSHandlerTests(unittest.TestCase):
             services["kobold_qwen"][tts_handler.GENERATION_PROMPT_MODELS_FIELD],
         )
         self.assertEqual(
-            list(tts_provider_profiles.AUDIO_CPP_VOICE_DESIGN_MODELS),
+            ["qwen3_tts_1_7b_customvoice_q8_0", "qwen3_tts_1_7b_voicedesign_q8_0",
+             "fish_audio_s2_pro_q8_0", "breeze_tts_2_q8_0"],
             services["audio_cpp"][tts_handler.GENERATION_PROMPT_MODELS_FIELD],
         )
 
@@ -650,7 +651,7 @@ class TTSHandlerTests(unittest.TestCase):
                 "response_format": "wav",
                 "speed": 1.5,
                 "language": "pl",
-                "instructions": "Warm and measured delivery.",
+                # This Chatterbox route cannot consume natural-language directions.
                 "reference_text": "Reference transcript.",
             },
             post.call_args.kwargs["json"],

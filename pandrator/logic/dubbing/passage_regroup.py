@@ -249,6 +249,16 @@ def select_second_pass(
     ):
         return None
     tts = snapshot.get("tts") or {}
+    directed = {
+        **dict(snapshot.get("audio") or {}),
+        **dict(tts),
+        **dict((snapshot.get("selected_segment_override") or {}).get("tts") or {}),
+    }
+    if directed.get("performance_enabled") or directed.get("tts_context_mode", "off") != "off":
+        # Performance spans and semantic windows are bound to adopted block IDs.
+        # Do not silently rewrite topology after synthesis and reuse stale context.
+        # Explicit block repair remains available, followed by a new review/run.
+        return None
     try:
         mode = normalize_generation_mode(tts.get("speech_block_generation_mode"))
     except ValueError:

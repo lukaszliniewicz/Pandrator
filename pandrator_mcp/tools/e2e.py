@@ -534,6 +534,7 @@ def _safe_tts_service(
     if detail == "full":
         for key in (
             "model_catalog",
+            "expressive_capabilities",
             "model_voice_modes",
             "voices",
             "default_voices",

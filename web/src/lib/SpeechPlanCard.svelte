@@ -9,6 +9,7 @@
   } from '@lucide/svelte';
   import type { Snippet } from 'svelte';
   import SpeechPlanPicker from './SpeechPlanPicker.svelte';
+  import PerformancePanel from './PerformancePanel.svelte';
   import AudioReuseNotice from './AudioReuseNotice.svelte';
   import { openSpeechPlanEditor, type SpeechPlanState } from './session-flow';
   let {
@@ -19,7 +20,8 @@
     onprepare,
     onselect,
     onreview,
-    onsettings
+    onsettings,
+    onperformancechange
   }: {
     inputControls?: Snippet;
     sessionId: string;
@@ -29,6 +31,7 @@
     onselect: (id: string) => Promise<unknown>;
     onreview: () => Promise<unknown>;
     onsettings: () => void;
+    onperformancechange?: () => void;
   } = $props();
   const selected = $derived(
     plan?.items.find((item) => item.id === plan.selected_revision_id)
@@ -126,5 +129,15 @@
       the speech-text stage before this review; generation uses the selected
       plan’s wording.
     </p>
+    {#if selected}
+      {#key `${sessionId}:${selected.id}`}
+        <PerformancePanel
+          {sessionId}
+          revisionId={selected.id}
+          {busy}
+          onchanged={onperformancechange}
+        />
+      {/key}
+    {/if}
   </div>
 </section>

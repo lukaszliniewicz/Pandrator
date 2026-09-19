@@ -27,19 +27,18 @@ from .e2e import (
     TtsCatalogInput,
 )
 from .generation import (
+    AdoptSubtitleSourceInput,
     AssembleGenerationRunInput,
+    GenerateSpeechPlanInput,
     ListGenerationSegmentsInput,
     ListSpeechPlanRevisionsInput,
     PrepareSpeechPlanInput,
-    ReviewSpeechPlanInput,
-    SpeechPlanStatusInput,
-    ReviseSpeechBlockPlanBatchInput,
-    GenerateSpeechPlanInput,
-    AdoptSubtitleSourceInput,
-
     RegenerateSegmentsInput,
+    ReviewSpeechPlanInput,
+    ReviseSpeechBlockPlanBatchInput,
     ReviseSpeechBlockPlanInput,
     SelectTakeInput,
+    SpeechPlanStatusInput,
     UpdateGenerationSegmentInput,
 )
 from .guidance import GUIDE_TOPICS, ExplainSystemInput, GuideTopic
@@ -73,6 +72,20 @@ from .media_edit_dispatch import (
     SubmitMediaEditDispatchBatchInput,
 )
 from .media_edit_workflow import MediaEditSourceReference, PlanMediaEditWorkflowInput
+from .performance import (
+    PERFORMANCE_INPUT_MODELS,
+    AdoptPerformancePlanInput,
+    AnalysePerformancePlanInput,
+    ClaimPerformanceBatchInput,
+    CreatePerformancePlanInput,
+    EditPerformancePlanInput,
+    GetPerformancePlanInput,
+    ListPerformancePlansInput,
+    PreviewPerformancePlanInput,
+    ReleasePerformanceBatchInput,
+    RenewPerformanceBatchInput,
+    SubmitPerformanceBatchInput,
+)
 from .recommendations import RecommendNextStepsInput
 from .sessions import (
     AttachExistingSourceInput,
@@ -146,6 +159,7 @@ from .workflow import (
 )
 
 TOOL_INPUT_MODELS = (
+    *PERFORMANCE_INPUT_MODELS,
     ExplainSystemInput,
     RecommendNextStepsInput,
     TargetStatusInput,
@@ -250,6 +264,10 @@ TOOL_INPUT_MODELS = (
 )
 
 __all__ = [
+    "AdoptPerformancePlanInput", "AnalysePerformancePlanInput", "ClaimPerformanceBatchInput",
+    "CreatePerformancePlanInput", "EditPerformancePlanInput", "GetPerformancePlanInput",
+    "ListPerformancePlansInput", "PreviewPerformancePlanInput", "ReleasePerformanceBatchInput",
+    "RenewPerformanceBatchInput", "SubmitPerformanceBatchInput",
     "AssembleGenerationRunInput",
     "AttachExistingSourceInput",
     "BrowseLocalSourcesInput",

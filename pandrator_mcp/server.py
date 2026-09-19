@@ -70,9 +70,6 @@ from .schemas import (
     ListSourcesInput,
     ListSpeechOptimizationDispatchRunsInput,
     ListSpeechPlanRevisionsInput,
-    PrepareSpeechPlanInput,
-    ReviewSpeechPlanInput,
-    SpeechPlanStatusInput,
     ListWorkInput,
     ManagerDesiredComponentInput,
     MediaEditDispatchResultInput,
@@ -85,6 +82,7 @@ from .schemas import (
     PlanOrchestratedWorkflowInput,
     PlanWorkflowInput,
     PrepareMediaEditArguments,
+    PrepareSpeechPlanInput,
     PreviewSubtitlesInput,
     ProposeMediaEditArguments,
     ProviderStatusInput,
@@ -103,11 +101,13 @@ from .schemas import (
     ReplaceSubtitleTextInput,
     RequestSubtitleEvidenceInput,
     ResolveSubtitleEvidenceInput,
+    ReviewSpeechPlanInput,
     ReviseSpeechBlockPlanBatchInput,
     ReviseSpeechBlockPlanInput,
     SelectTakeInput,
     SourceCleaningDispatchResultInput,
     SpeechOptimizationDispatchResultInput,
+    SpeechPlanStatusInput,
     SubmitDispatchBatchInput,
     SubmitMediaEditDispatchBatchInput,
     SubmitSourceCleaningDispatchBatchInput,
@@ -182,9 +182,6 @@ from .tools import (
     list_sources,
     list_speech_optimization_dispatch_runs,
     list_speech_plan_revisions,
-    speech_plan_status,
-    prepare_speech_plan,
-    review_speech_plan,
     list_work,
     manager_doctor,
     manager_status,
@@ -195,6 +192,7 @@ from .tools import (
     plan_orchestrated_workflow,
     plan_workflow,
     prepare_media_edit,
+    prepare_speech_plan,
     preview_subtitles,
     propose_media_edit,
     provider_status,
@@ -213,9 +211,11 @@ from .tools import (
     replace_subtitle_text,
     request_subtitle_evidence,
     resolve_subtitle_evidence,
+    review_speech_plan,
     revise_speech_block_plan,
     revise_speech_block_plan_batch,
     select_take,
+    speech_plan_status,
     submit_dispatch_batch,
     submit_media_edit_dispatch_batch,
     submit_source_cleaning_dispatch_batch,
@@ -374,6 +374,11 @@ def build_server(runtime: McpRuntime):
         idempotent_hint=True,
         open_world_hint=False,
     )
+
+    from .tools.performance import register_performance_tools
+
+    register_performance_tools(server, runtime, _call_with_validated_input,
+                               read_only=read_only, write_action=write_action)
 
     @server.tool(
         name="pandrator_explain_system",

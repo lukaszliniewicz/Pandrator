@@ -48,6 +48,32 @@ link. Changing provider clears stale aliases, reference settings, and old
 engine options; it does not convert old model IDs or uploaded voices. Existing
 takes and installed engines are retained.
 
+## Expressive capabilities and context
+
+Request `pandrator_get_tts_catalog` with full detail to inspect each model's
+`expressive_capabilities`. Instruction support is model/variant/backend-specific:
+voice design is not the same as directing a fixed voice. The catalogue distinguishes
+separate instructions, inline directions, span approximations, known event
+spellings and prompt-separated semantic context. Unknown routes must not inherit
+capabilities merely because another model in the family supports them.
+
+Pandrator compiles `pandrator.performance/v1` annotations into Fish S2 inline
+controls, capable Qwen/OpenAI instruction fields, Gemini's labelled prompt, and
+supported event-only formats. Never put native provider tags into the stored
+transcript. Preview an actual block with `pandrator_preview_performance_plan` to
+see applied, approximate, unsupported and disabled controls without synthesizing.
+"Applied" is not a guarantee of acoustic compliance. Non-pause vocalizations are
+opt-in and default off.
+
+Gemini's `generation_prompt` can be combined with `tts_context_mode=before` or
+`both`; `performance_context_before`, `performance_context_after` and
+`performance_context_max_chars` bound the read-only context. Other-speaker text
+is labelled semantic evidence, not a new voice reference. For backends lacking
+unspoken text context, use a contextual performance plan to derive supported
+utterance directions instead. Qwen Base/cloning is not instruction-capable on
+the reviewed route. Do not substitute previous generated audio for semantic
+context automatically.
+
 Credentials belong in Pandrator's credential store or an approved MCP
 credential backend. Never paste a provider key into a tool argument, target
 profile, prompt, log, or source artifact.

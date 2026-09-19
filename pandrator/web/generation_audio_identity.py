@@ -84,6 +84,12 @@ def _material_settings(snapshot: dict[str, Any]) -> dict[str, Any]:
             "audio_cpp_reference_text",
             "selected_segment_override",
             "use_existing_speech_plans",
+            "performance_enabled",
+            "performance_allow_vocalizations",
+            "performance_context_before",
+            "performance_context_after",
+            "performance_context_max_chars",
+            "tts_context_mode",
             "secret_ref",
             "api_key_env",
         }
@@ -178,6 +184,9 @@ class AudioIdentityContext:
         from .workspace import adapt_runtime_settings
 
         self.session = session
+        self.snapshot = snapshot
+        self.performance_states: dict[str, tuple[dict[str, Any], dict[str, dict[str, str]]]] = {}
+        self.effective_settings_cache: dict[tuple[str, str, str], dict[str, Any]] = {}
         # The SQLite database and managed artifacts share the DataPaths root.
         self.paths = DataPaths(Path(str(session.get_bind().engine.url.database)).parent)
         self.settings = {
@@ -249,6 +258,51 @@ class AudioIdentityContext:
                     self.voices.setdefault(_voice_key(name), []).append(identity)
         self.cache: dict[tuple[str, str, str], dict[str, Any]] = {}
 
+    def _with_performance(
+        self, segment: GenerationSegment, identity: dict[str, Any], settings: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Only effective directions/context invalidate a previously rendered take.
+
+        History inspection must still work when a newly edited plan has no
+        compatible performance sidecar. Such audio is non-reusable; the actual
+        generation boundary independently rejects the missing/stale snapshot.
+        """
+        directed = settings.get("performance_enabled") or str(settings.get("tts_context_mode") or "off") != "off"
+        general = str(settings.get("generation_prompt") or settings.get("openai_audio_instructions") or "").strip()
+        if not directed and not general:
+            return identity
+        from pandrator.logic.speech_performance import compile_performance
+        from .speech_plan_workspace import (
+            freeze_generation_performance_snapshot, frozen_semantic_contexts,
+            segment_performance_settings,
+        )
+
+        revision_id = segment.plan_revision_id
+        try:
+            if revision_id not in self.performance_states:
+                pinned = self.snapshot
+                frozen_revision = (pinned.get("performance_snapshot") or pinned.get("semantic_context_snapshot") or {}).get("plan_revision_id")
+                if not frozen_revision or frozen_revision != revision_id:
+                    pinned = deepcopy(self.snapshot)
+                    freeze_generation_performance_snapshot(self.session, revision_id, pinned)
+                self.performance_states[revision_id] = (pinned, frozen_semantic_contexts(pinned))
+            pinned, contexts = self.performance_states[revision_id]
+            if pinned.get("_performance_error"):
+                raise ValueError(pinned["_performance_error"])
+            text = segment.optimized_text or segment.text
+            prepared = segment_performance_settings(settings, pinned, segment.id, text, contexts=contexts)
+            compiled = compile_performance(text, prepared)
+            baseline_settings = dict(settings)
+            for key in ("_performance", "_semantic_context", "generation_prompt", "openai_audio_instructions"):
+                baseline_settings.pop(key, None)
+            baseline = compile_performance(text, baseline_settings)
+        except ValueError as error:
+            self.performance_states[revision_id] = ({"_performance_error": str(error)}, {})
+            return {**identity, "performance_request_hash": "unavailable", "performance_error": str(error)}
+        if compiled.fingerprint == baseline.fingerprint:
+            return identity
+        return {**identity, "performance_request_hash": compiled.fingerprint}
+
     def for_segment(self, segment: GenerationSegment) -> dict[str, Any]:
         language = str(segment.language or "").strip()
         if language.casefold() in {"auto", "und", "unknown"}:
@@ -256,7 +310,7 @@ class AudioIdentityContext:
         voice = str(segment.voice or "").strip()
         key = (language, voice, segment.voice_id or "")
         if key in self.cache:
-            return self.cache[key]
+            return self._with_performance(segment, self.cache[key], self.effective_settings_cache[key])
         settings = deepcopy(self.settings)
         if language:
             settings.update(language=language, target_language=language)
@@ -328,7 +382,8 @@ class AudioIdentityContext:
             "voice_reference_hash": _hash(sorted({_hash(item) for item in references})),
         }
         self.cache[key] = identity
-        return identity
+        self.effective_settings_cache[key] = settings
+        return self._with_performance(segment, identity, settings)
 
 
 def take_reuse_reason(
@@ -348,6 +403,8 @@ def take_reuse_reason(
         return "generation_settings_changed"
     if actual.get("voice_reference_hash") != expected["voice_reference_hash"]:
         return "voice_reference_changed"
+    if actual.get("performance_request_hash") != expected.get("performance_request_hash"):
+        return "performance_changed"
     return "reusable"
 
 

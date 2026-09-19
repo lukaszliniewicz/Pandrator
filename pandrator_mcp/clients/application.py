@@ -1098,6 +1098,34 @@ class ApplicationClient:
             idempotency_key=idempotency_key,
         )
 
+    def performance_plan_request(self, action: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        """Bounded, allowlisted performance API; no arbitrary paths or endpoints."""
+        methods = {"list": "GET", "get": "GET", "create": "POST", "edit": "PATCH",
+                   "adopt": "POST", "preview": "POST", "analyse": "POST", "claim": "POST",
+                   "submit": "POST", "renew": "POST", "release": "POST"}
+        if action not in methods:
+            raise ValueError("Unknown performance-plan action.")
+        values = dict(arguments)
+        session_id = str(values.pop("session_id"))
+        plan_id = values.pop("plan_id", None)
+        batch_id = values.pop("batch_id", None)
+        key = values.pop("idempotency_key", None)
+        path = f"/api/v1/sessions/{quote(session_id, safe='')}/performance-plans"
+        if action not in {"list", "create"}:
+            if not plan_id:
+                raise ValueError("This action requires a performance plan ID.")
+            path += f"/{quote(str(plan_id), safe='')}"
+        if action in {"submit", "renew", "release"}:
+            if not batch_id:
+                raise ValueError("This action requires a performance batch ID.")
+            path += f"/batches/{quote(str(batch_id), safe='')}/{action}"
+        elif action not in {"list", "get", "create", "edit"}:
+            path += f"/{action}"
+        if methods[action] == "GET":
+            return self._request_json(path, parameters={name: value for name, value in values.items() if value is not None})
+        return self._request_json(path, method=methods[action], body=values,
+                                  idempotency_key=key, maximum_body_bytes=512 * 1024)
+
     def list_speech_optimization_dispatch_runs(
         self,
         session_id: str,

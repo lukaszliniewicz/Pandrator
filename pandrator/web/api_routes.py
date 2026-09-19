@@ -773,6 +773,9 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     register_dispatch_routes(app, context)
     register_source_cleaning_dispatch_routes(app, context)
     register_speech_optimization_dispatch_routes(app, context)
+    from .performance_routes import register_performance_routes
+
+    register_performance_routes(app, context)
     register_quick_transcription_routes(app, context)
 
     @app.get("/api/v1/health")

@@ -43,8 +43,13 @@ def freeze_speech_snapshot(
     session, revision_id: str, snapshot: dict[str, Any], *, explicit: bool = False
 ) -> None:
     revision = session.get(m.GenerationPlanRevision, revision_id)
+    performance_frozen = bool(
+        revision is not None
+        and freeze_generation_performance_snapshot(session, revision_id, snapshot)
+    )
     if revision is not None and (
-        explicit or session.get(m.SpeechPlanReview, revision_id) or (revision.settings_json or {}).get("_prepared_for_review")
+        explicit or performance_frozen or session.get(m.SpeechPlanReview, revision_id)
+        or (revision.settings_json or {}).get("_prepared_for_review")
     ):
         snapshot["speech_plan_frozen"] = True
         snapshot["speech_plan_signature"] = plan_signature(session, revision_id)
@@ -124,6 +129,156 @@ def prepare_segment_edit_targets(
         old: session.get(m.GenerationSegment, result["lineage"][old][0])
         for old in segments
     }
+
+
+def performance_runtime_settings(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Use run-local alternate settings with the same precedence as synthesis."""
+    settings = {**dict(snapshot.get("audio") or {}), **dict(snapshot.get("tts") or {})}
+    override = snapshot.get("selected_segment_override") or {}
+    settings.update(dict(override.get("tts") or {}))
+    return settings
+
+
+def semantic_context_units(session, revision_id: str) -> list[dict[str, Any]]:
+    """Read the full accepted plan, even for single-block regeneration."""
+    return [
+        {
+            "id": item.id, "text": item.text, "speaker": item.speaker or "",
+            "language": item.language or "", "node_kind": item.node_kind,
+            "section_id": str((item.speech_block_provenance_json or {}).get("section_id") or ""),
+        }
+        for item in session.scalars(
+            select(m.GenerationSegment)
+            .where(m.GenerationSegment.plan_revision_id == revision_id, m.GenerationSegment.removed.is_(False))
+            .order_by(m.GenerationSegment.ordinal)
+        )
+    ]
+
+
+def semantic_context_window(units: list[dict[str, Any]], settings: dict[str, Any], *, target_ids: set[str] | None = None) -> dict[str, dict[str, str]]:
+    """Bounded context without audio conditioning or whitespace tokenization."""
+    sizes = {}
+    for name, default, maximum in (("before", 2, 20), ("after", 1, 20), ("max_chars", 4000, 16000)):
+        value = settings.get(f"performance_context_{name}", default)
+        if value is None:
+            value = default
+        if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= maximum:
+            raise ValueError(f"Context {name} must be an integer between 0 and {maximum}.")
+        sizes[name] = value
+    mode = str(settings.get("tts_context_mode") or "both")
+    if mode not in {"off", "before", "both"}:
+        raise ValueError("tts_context_mode must be off, before, or both.")
+    if mode == "off":
+        return {}
+    if mode == "before":
+        sizes["after"] = 0
+    section_kinds = {"heading", "title", "chapter", "chapter_title", "section", "section_title"}
+
+    def boundary(left, right):
+        return (
+            (left.get("language") and right.get("language") and left["language"] != right["language"])
+            or (left.get("section_id") and right.get("section_id") and left["section_id"] != right["section_id"])
+            or str(left.get("node_kind") or "").lower() in section_kinds
+            or str(right.get("node_kind") or "").lower() in section_kinds
+        )
+
+    def context_text(other, current):
+        text = str(other.get("text") or "")
+        if other.get("speaker") and other.get("speaker") != current.get("speaker"):
+            # This is semantic evidence, not a voice reference. A short answer
+            # may need another speaker's question to make sense.
+            return f"[Other speaker: {str(other['speaker'])[:160]}] {text}"
+        return text
+
+    result = {}
+    for index, unit in enumerate(units):
+        if target_ids is not None and str(unit["id"]) not in target_ids:
+            continue
+        before, after = [], []
+        for offset in range(1, sizes["before"] + 1):
+            previous = index - offset
+            if previous < 0 or boundary(units[previous], units[previous + 1]):
+                break
+            before.append(context_text(units[previous], unit))
+        for offset in range(1, sizes["after"] + 1):
+            following = index + offset
+            if following >= len(units) or boundary(units[following - 1], units[following]):
+                break
+            after.append(context_text(units[following], unit))
+        previous_text = "\n".join(reversed(before))
+        following_text = "\n".join(after)
+        limit = sizes["max_chars"]
+        if len(previous_text) + len(following_text) > limit:
+            before_budget = min(len(previous_text), limit // 2)
+            after_budget = min(len(following_text), limit - before_budget)
+            before_budget = min(len(previous_text), limit - after_budget)
+            previous_text = previous_text[-before_budget:] if before_budget else ""
+            following_text = following_text[:after_budget] if after_budget else ""
+        result[str(unit["id"])] = {"before": previous_text, "after": following_text}
+    return result
+
+
+def frozen_semantic_contexts(snapshot: dict[str, Any]) -> dict[str, dict[str, str]]:
+    raw = snapshot.get("semantic_context_snapshot") or {}
+    if not raw:
+        return {}
+    if raw.get("schema_version") != 1:
+        raise ValueError("Unsupported semantic context snapshot. Start a new generation run.")
+    return semantic_context_window(raw.get("units") or [], dict(raw.get("settings") or {}))
+
+
+def freeze_generation_performance_snapshot(session, revision_id: str, snapshot: dict[str, Any]) -> bool:
+    """Bind a new run to current adoption and immutable semantic source text.
+
+    Resume/retry consumes the existing run snapshot rather than reselecting it.
+    The text is stored once, not repeated for every context window in a book.
+    """
+    settings = performance_runtime_settings(snapshot)
+    mode = str(settings.get("tts_context_mode") or "off")
+    if mode not in {"off", "before", "both"}:
+        raise ValueError("tts_context_mode must be off, before, or both.")
+    snapshot.pop("performance_snapshot", None)
+    snapshot.pop("semantic_context_snapshot", None)
+    if settings.get("performance_enabled"):
+        from .performance_plans import freeze_performance_snapshot
+
+        freeze_performance_snapshot(session, revision_id, snapshot)
+    if mode != "off":
+        context_settings = {
+            key: settings[key]
+            for key in ("tts_context_mode", "performance_context_before", "performance_context_after", "performance_context_max_chars")
+            if key in settings
+        }
+        semantic_context_window([], context_settings)
+        snapshot["semantic_context_snapshot"] = {
+            "schema_version": 1, "plan_revision_id": revision_id,
+            "settings": context_settings,
+            "units": semantic_context_units(session, revision_id),
+        }
+    return bool(settings.get("performance_enabled")) or mode != "off"
+
+
+def segment_performance_settings(
+    settings: dict[str, Any], snapshot: dict[str, Any], segment_id: str, text: str,
+    *, contexts: dict[str, dict[str, str]] | None = None,
+) -> dict[str, Any]:
+    """Supply request-only metadata without changing spoken or alignment text."""
+    from copy import deepcopy
+
+    result = dict(settings)
+    result.pop("_performance", None)
+    result.pop("_semantic_context", None)
+    if bool(settings.get("performance_enabled")):
+        from .performance_plans import performance_for_segment
+
+        annotation = performance_for_segment(snapshot, segment_id, text)
+        if annotation is not None:
+            result["_performance"] = deepcopy(annotation)
+    if str(settings.get("tts_context_mode") or "off") != "off":
+        lookup = contexts if contexts is not None else frozen_semantic_contexts(snapshot)
+        if segment_id in lookup:
+            result["_semantic_context"] = dict(lookup[segment_id])
+    return result
 
 
 def selected_text(services, session_id: str) -> dict[str, Any] | None:

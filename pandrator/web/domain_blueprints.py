@@ -78,6 +78,7 @@ def route_domain(rule: str) -> str:
         marker in rule
         for marker in (
             "/generation-plan",
+            "/performance-plans",
             "/generation-runs",
             "/generation-segments",
             "/output-assemblies",

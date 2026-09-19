@@ -509,6 +509,10 @@
             <span class="mt-1 block text-xs text-[var(--warning)]"
               >Audio settings changed</span
             >
+          {:else if item.audio_reuse_reason === 'performance_changed'}
+            <span class="mt-1 block text-xs text-[var(--warning)]"
+              >Speech direction or context changed</span
+            >
           {:else if item.audio_reuse_reason === 'audio_identity_unknown'}
             <span class="mt-1 block text-xs text-[var(--warning)]"
               >Older audio · regenerate to reuse</span

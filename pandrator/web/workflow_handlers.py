@@ -2933,6 +2933,12 @@ class WorkflowHandlers:
             return str(record.get("kind") or "commercial").lower() != "local"
         return bool(provider and provider not in {"ollama", "local"})
 
+    def run_performance_analysis(self, payload, progress, cancel_event):
+        """Analyse immutable speech blocks into a reviewable pSSML sidecar."""
+        from .performance_plans import run_analysis
+
+        return run_analysis(self, payload, progress, cancel_event)
+
     def _record_usage(
         self,
         session_id: str,
@@ -7807,18 +7813,36 @@ class WorkflowHandlers:
             str(record.get("text") or record.get("original_sentence") or "").strip()
             for record in records
         ]
-        optimization_share = 0.25 if bool(settings.get("llm_tts_optimization")) else 0.0
-        optimized_texts, optimization_model = self._optimize_generation_texts(
-            session_id,
-            generation_segment_ids,
-            source_texts,
-            settings,
-            cancel_event,
-            lambda value, detail=None: progress(
-                float(value) * optimization_share, detail
-            ),
-            job_id=job_id,
+        from .speech_plan_workspace import (
+            freeze_speech_snapshot, frozen_semantic_contexts, segment_performance_settings,
         )
+
+        performance_snapshot = {"tts": dict(settings)}
+        with self.database.session() as session:
+            freeze_speech_snapshot(session, revision_id, performance_snapshot)
+        performance_contexts = frozen_semantic_contexts(performance_snapshot)
+        if performance_snapshot.get("speech_plan_frozen"):
+            settings = {**settings, **dict(performance_snapshot.get("text") or {})}
+        optimization_share = 0.25 if bool(settings.get("llm_tts_optimization")) else 0.0
+        if performance_snapshot.get("speech_plan_frozen"):
+            # Even a disabled LLM optimizer can apply newly reviewed dictionary
+            # substitutions. A frozen plan must use its accepted spoken layer
+            # verbatim instead, just like the resumable generation runner.
+            with self.database.session() as session:
+                accepted = {
+                    item.id: item.optimized_text or item.text
+                    for item in session.scalars(select(GenerationSegment).where(
+                        GenerationSegment.plan_revision_id == revision_id))
+                }
+            optimized_texts = [accepted[key] for key in generation_segment_ids]
+            optimization_model = ""
+            optimization_share = 0.0
+        else:
+            optimized_texts, optimization_model = self._optimize_generation_texts(
+                session_id, generation_segment_ids, source_texts, settings, cancel_event,
+                lambda value, detail=None: progress(float(value) * optimization_share, detail),
+                job_id=job_id,
+            )
         verified_qwen_voices: set[str] = set()
         tts_urls = self._tts_urls(settings)
         batch_results = None
@@ -7856,6 +7880,10 @@ class WorkflowHandlers:
                     base_url=tts_urls["kobold_qwen_base_url"],
                     verified=verified_qwen_voices,
                     cancel_event=cancel_event,
+                )
+                segment_tts_settings = segment_performance_settings(
+                    segment_tts_settings, performance_snapshot, generation_segment_id,
+                    synthesized_text, contexts=performance_contexts,
                 )
                 batch_contexts[generation_segment_id] = {
                     "settings": segment_tts_settings,
@@ -7922,6 +7950,11 @@ class WorkflowHandlers:
                     verified=verified_qwen_voices,
                     cancel_event=cancel_event,
                 )
+
+            segment_tts_settings = segment_performance_settings(
+                segment_tts_settings, performance_snapshot, generation_segment_id,
+                synthesized_text, contexts=performance_contexts,
+            )
 
             def synthesize_one(
                 *,
@@ -8741,6 +8774,9 @@ class WorkflowHandlers:
         # particular, a first-class service's explicit base URL must reach the
         # legacy synthesis boundary instead of the source provider's URL.
         tts_urls = self._tts_urls(selected_tts_runtime or tts_settings)
+        from .speech_plan_workspace import frozen_semantic_contexts, segment_performance_settings
+
+        performance_contexts = frozen_semantic_contexts(settings_snapshot)
         if operation != "rvc":
             # The selected-only setting set may switch provider.  Do not reuse
             # the source provider's streaming/batching capabilities for it.
@@ -8788,6 +8824,10 @@ class WorkflowHandlers:
                     synthesized_text = optimized_by_id.get(
                         segment_id,
                         str(seed["text"]),
+                    )
+                    segment_tts_settings = segment_performance_settings(
+                        segment_tts_settings, settings_snapshot, segment_id, synthesized_text,
+                        contexts=performance_contexts,
                     )
                     batch_contexts[segment_id] = {
                         "text": str(seed["text"]),
@@ -8957,6 +8997,10 @@ class WorkflowHandlers:
                             segment_tts_settings,
                             language=segment_language,
                             voice=segment_voice,
+                        )
+                        segment_tts_settings = segment_performance_settings(
+                            segment_tts_settings, settings_snapshot, segment_id, synthesized_text,
+                            contexts=performance_contexts,
                         )
                         segment_tts_settings = self.prepare_audio_cpp_voice_reference(
                             segment_tts_settings

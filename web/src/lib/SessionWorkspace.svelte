@@ -3206,6 +3206,7 @@
             onselect={(id) => planAction('select', id)}
             onreview={() => planAction('review')}
             onsettings={() => (planSettingsOpen = true)}
+            onperformancechange={() => void load()}
           >
             {#snippet inputControls()}{@render stageInput(
                 'speech_plan'

@@ -54,3 +54,28 @@ to inspect provenance, alignment groups, and the active plan revision. Apply
 only typed immutable topology edits with
 `pandrator_revise_speech_block_plan` (split, merge, or restore), then follow
 its next action to re-list the new revision.
+
+## Optional contextual performance
+
+After selecting the accepted speech plan, `pandrator_create_performance_plan`
+adds a separate pSSML delivery draft, not another text rewrite. Use `mode=passive`
+to claim/submit bounded performance batches in the MCP host, `mode=llm` for a
+queued configured-provider job, or `mode=manual` for explicit annotation edits.
+The planner sees surrounding semantic text and should intervene sparsely. It
+must not merge, split, rewrite or add spoken content. For narration, supply a
+stable narrator description and optional scene/chapter guidance rather than
+assigning an independent emotion to every sentence.
+
+Inspect `pandrator_get_performance_plan` and
+`pandrator_preview_performance_plan` before adopting the saved version with
+`pandrator_adopt_performance_plan`. Phrase anchors target the exact accepted
+spoken text, including pronunciation changes. Manual locks survive reanalysis;
+adopted plans require an editable copy before changing them. Analysis does not
+adopt itself or start speech synthesis. The separate pronunciation optimisation
+option remains independent.
+
+General direction and Gemini before/after text context also work without this
+pass. Generation freezes the adopted annotations and context. Vocalizations are
+off by default; no previous generated audio is used as an implicit voice prompt.
+Explicit block changes require fresh performance review. Automatic split/regroup
+passes are disabled while performance or semantic context is enabled.

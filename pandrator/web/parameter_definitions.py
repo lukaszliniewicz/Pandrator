@@ -309,7 +309,13 @@ _DESCRIPTIONS: dict[str, dict[str, str]] = {
         "chatterbox_norm_loudness": "Requests Chatterbox output loudness normalization; only Chatterbox consumes this switch.",
         "openai_audio_endpoint": "Selects a configured OpenAI-compatible or custom audio endpoint by its stored identifier; endpoint URLs and credentials remain in provider configuration rather than this registry.",
         "openai_audio_instructions": "Provides optional provider instructions for OpenAI-compatible, Gemini-compatible, or custom audio adapters; the active adapter determines whether and how they affect synthesis.",
-        "generation_prompt": "Provides speaking directions for adapters that support guided speech, such as Gemini, Qwen, and compatible TTS services; it is distinct from transcript text and may be ignored by other providers.",
+        "generation_prompt": "Provides general narrator or delivery directions separately from the spoken transcript. Expressive capabilities determine how the selected model receives them; voice design remains model-specific.",
+        "performance_enabled": "Applies an adopted, reviewed performance sidecar to the selected speech plan without rewriting its words or changing its segment boundaries. Analysis is a separate optional action.",
+        "performance_allow_vocalizations": "Allows explicitly requested vocal events such as a laugh or sigh in performance annotations. Off by default; unsupported events are reported, not added to transcript text.",
+        "tts_context_mode": "Supplies read-only preceding or preceding-and-following target-language text to context-capable TTS prompts. Only the current utterance is synthesized; this does not enable acoustic continuation.",
+        "performance_context_before": "Maximum preceding accepted segments used as semantic context, bounded by speaker and section boundaries. Zero disables preceding context.",
+        "performance_context_after": "Maximum following accepted segments used as semantic context. Zero disables following context; these words are never part of the spoken transcript.",
+        "performance_context_max_chars": "Maximum combined characters of semantic context per utterance. Context is pinned when generation is queued so retries and selected-block regeneration are reproducible.",
         "speech_block_min_chars": "Sets the preferred minimum characters for local Pandrator speech-block segmentation before TTS; it does not change the visible subtitle cues.",
         "speech_block_max_chars": "Sets the maximum characters in a local Pandrator speech block sent toward TTS; it does not impose a display-subtitle line limit. Text that cannot be split at a natural boundary within this cap raises an actionable planning error instead of being cut mid-word.",
         "speech_block_merge_threshold": "Sets the largest source pause across which Pandrator's deterministic speech planner may pack compatible same-speaker utterances when their combined display and speech text fits the character cap. It is not sent to a model and does not change subtitle cues.",
@@ -791,6 +797,28 @@ _METADATA: dict[str, dict[str, dict[str, object]]] = {
         },
         "generation_prompt": {
             "applicability": "Providers whose adapter supports guided speech."
+        },
+        "performance_enabled": {
+            "applicability": "Adopted speech plans for audiobook narration and subtitle-timed voiceovers.",
+            "caveat": "Does not run an LLM automatically or alter accepted text. Adopt a performance plan first."
+        },
+        "performance_allow_vocalizations": {
+            "applicability": "Explicit non-lexical performance events on supporting model variants.",
+            "caveat": "Off by default; inferred emotions never authorize invented vocalizations."
+        },
+        "tts_context_mode": {
+            "choices": ["off", "before", "both"],
+            "applicability": "Prompt-based semantic context on supported TTS routes, including Gemini.",
+            "caveat": "Prompt-mediated context is not a guaranteed hidden input channel. Review output for leakage."
+        },
+        "performance_context_before": {
+            "minimum": 0, "maximum": 20, "unit": "segments"
+        },
+        "performance_context_after": {
+            "minimum": 0, "maximum": 20, "unit": "segments"
+        },
+        "performance_context_max_chars": {
+            "minimum": 0, "maximum": 16000, "unit": "characters"
         },
         "speech_block_min_chars": {
             "minimum": 1,

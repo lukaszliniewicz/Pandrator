@@ -1961,6 +1961,194 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{sessionId}/performance-plans": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * listPerformancePlans
+         * @description Performance metadata never rewrites accepted speech text or creates audio. Adoption affects future synthesis only. Leased batches contain read-only semantic context.
+         */
+        get: operations["listPerformancePlans"];
+        put?: never;
+        /**
+         * createPerformancePlan
+         * @description Performance metadata never rewrites accepted speech text or creates audio. Adoption affects future synthesis only. Leased batches contain read-only semantic context.
+         */
+        post: operations["createPerformancePlan"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/performance-plans/{planId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * getPerformancePlan
+         * @description Performance metadata never rewrites accepted speech text or creates audio. Adoption affects future synthesis only. Leased batches contain read-only semantic context.
+         */
+        get: operations["getPerformancePlan"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * editPerformancePlan
+         * @description Performance metadata never rewrites accepted speech text or creates audio. Adoption affects future synthesis only. Leased batches contain read-only semantic context.
+         */
+        patch: operations["editPerformancePlan"];
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/performance-plans/{planId}/adopt": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * adoptPerformancePlan
+         * @description Performance metadata never rewrites accepted speech text or creates audio. Adoption affects future synthesis only. Leased batches contain read-only semantic context.
+         */
+        post: operations["adoptPerformancePlan"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/performance-plans/{planId}/analyse": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * analysePerformancePlan
+         * @description Performance metadata never rewrites accepted speech text or creates audio. Adoption affects future synthesis only. Leased batches contain read-only semantic context.
+         */
+        post: operations["analysePerformancePlan"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/performance-plans/{planId}/batches/{batchId}/release": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * releasePerformanceBatch
+         * @description Performance metadata never rewrites accepted speech text or creates audio. Adoption affects future synthesis only. Leased batches contain read-only semantic context.
+         */
+        post: operations["releasePerformanceBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/performance-plans/{planId}/batches/{batchId}/renew": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * renewPerformanceBatch
+         * @description Performance metadata never rewrites accepted speech text or creates audio. Adoption affects future synthesis only. Leased batches contain read-only semantic context.
+         */
+        post: operations["renewPerformanceBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/performance-plans/{planId}/batches/{batchId}/submit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * submitPerformanceBatch
+         * @description Performance metadata never rewrites accepted speech text or creates audio. Adoption affects future synthesis only. Leased batches contain read-only semantic context.
+         */
+        post: operations["submitPerformanceBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/performance-plans/{planId}/claim": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * claimPerformanceBatch
+         * @description Performance metadata never rewrites accepted speech text or creates audio. Adoption affects future synthesis only. Leased batches contain read-only semantic context.
+         */
+        post: operations["claimPerformanceBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/performance-plans/{planId}/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * previewPerformancePlan
+         * @description Performance metadata never rewrites accepted speech text or creates audio. Adoption affects future synthesis only. Leased batches contain read-only semantic context.
+         */
+        post: operations["previewPerformancePlan"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{sessionId}/reindex": {
         parameters: {
             query?: never;
@@ -3291,6 +3479,16 @@ export interface components {
             /** Source Artifact Id */
             source_artifact_id: string;
         };
+        /** Anchor */
+        Anchor: {
+            /**
+             * Occurrence
+             * @default null
+             */
+            occurrence?: number | null;
+            /** Quote */
+            quote: string;
+        };
         /**
          * ApplicationIdentityDocument
          * @description Versioned identity response pinned by remote MCP target profiles.
@@ -3421,6 +3619,37 @@ export interface components {
              * @default false
              */
             delete_previous_credential?: boolean;
+        };
+        /** Delivery */
+        Delivery: {
+            /**
+             * Cadence
+             * @default
+             * @enum {string}
+             */
+            cadence?: "" | "continuing" | "concluding" | "questioning" | "contrast";
+            /**
+             * Emotion
+             * @default
+             */
+            emotion?: string;
+            /**
+             * Emphasis
+             * @default
+             * @enum {string}
+             */
+            emphasis?: "" | "light" | "moderate" | "strong";
+            /**
+             * Instruction
+             * @default
+             */
+            instruction?: string;
+            /**
+             * Pace
+             * @default
+             * @enum {string}
+             */
+            pace?: "" | "natural" | "slower" | "brisk";
         };
         /** DispatchBatchClaimRequest */
         DispatchBatchClaimRequest: {
@@ -4954,6 +5183,188 @@ export interface components {
             original_page: number;
             rect: components["schemas"]["PdfRectInput"];
         };
+        /** PerformanceAdoptRequest */
+        PerformanceAdoptRequest: {
+            /**
+             * Accept Unanalysed
+             * @default false
+             */
+            accept_unanalysed?: boolean;
+            /**
+             * Enable
+             * @default true
+             */
+            enable?: boolean;
+            /** Expected Version */
+            expected_version: number;
+        };
+        /** PerformanceAnnotation */
+        PerformanceAnnotation: {
+            /**
+             * Confidence
+             * @default medium
+             * @enum {string}
+             */
+            confidence?: "low" | "medium" | "high";
+            /**
+             * Decision
+             * @default none
+             * @enum {string}
+             */
+            decision?: "none" | "steer";
+            delivery?: components["schemas"]["Delivery"];
+            /** Events */
+            events?: components["schemas"]["VocalEvent"][];
+            /**
+             * Locked
+             * @default false
+             */
+            locked?: boolean;
+            /**
+             * Reason
+             * @default
+             */
+            reason?: string;
+            /**
+             * Schema
+             * @default pandrator.performance/v1
+             * @constant
+             */
+            schema?: "pandrator.performance/v1";
+            /** Spans */
+            spans?: components["schemas"]["PerformanceSpan"][];
+        };
+        /** PerformanceEditRequest */
+        PerformanceEditRequest: {
+            /** Expected Version */
+            expected_version: number;
+            /** Items */
+            items: components["schemas"]["PerformanceItem"][];
+            /**
+             * Unlock Locked
+             * @default false
+             */
+            unlock_locked?: boolean;
+        };
+        /** PerformanceItem */
+        PerformanceItem: {
+            annotation: components["schemas"]["PerformanceAnnotation"];
+            /** Segment Id */
+            segment_id: string;
+        };
+        /** PerformanceLeaseRequest */
+        PerformanceLeaseRequest: {
+            /**
+             * Lease Seconds
+             * @default 900
+             */
+            lease_seconds?: number;
+        };
+        /** PerformancePlanCreateRequest */
+        PerformancePlanCreateRequest: {
+            /**
+             * Allow Vocalizations
+             * @default false
+             */
+            allow_vocalizations?: boolean;
+            /**
+             * Batch Size
+             * @default 12
+             */
+            batch_size?: number;
+            /**
+             * Context After
+             * @default 1
+             */
+            context_after?: number;
+            /**
+             * Context Before
+             * @default 2
+             */
+            context_before?: number;
+            /**
+             * Context Max Chars
+             * @default 4000
+             */
+            context_max_chars?: number;
+            /**
+             * Copy From Id
+             * @default null
+             */
+            copy_from_id?: string | null;
+            /** Expected Plan Revision Id */
+            expected_plan_revision_id: string;
+            /**
+             * Instructions
+             * @default
+             */
+            instructions?: string;
+            /**
+             * Mode
+             * @default manual
+             * @enum {string}
+             */
+            mode?: "manual" | "passive" | "llm";
+            /**
+             * Model Name
+             * @default
+             */
+            model_name?: string;
+        };
+        /** PerformancePreviewRequest */
+        PerformancePreviewRequest: {
+            /**
+             * Allow Vocalizations
+             * @default null
+             */
+            allow_vocalizations?: boolean | null;
+            /** @default null */
+            annotation?: components["schemas"]["PerformanceAnnotation"] | null;
+            /**
+             * Context Mode
+             * @default null
+             */
+            context_mode?: ("off" | "before" | "both") | null;
+            /**
+             * Generation Prompt
+             * @default null
+             */
+            generation_prompt?: string | null;
+            /**
+             * Model
+             * @default null
+             */
+            model?: string | null;
+            /** Segment Id */
+            segment_id: string;
+            /**
+             * Service
+             * @default null
+             */
+            service?: string | null;
+        };
+        /** PerformanceRenewRequest */
+        PerformanceRenewRequest: {
+            /**
+             * Lease Seconds
+             * @default 900
+             */
+            lease_seconds?: number;
+            /** Lease Token */
+            lease_token: string;
+        };
+        /** PerformanceSpan */
+        PerformanceSpan: {
+            anchor: components["schemas"]["Anchor"];
+            delivery: components["schemas"]["Delivery"];
+        };
+        /** PerformanceSubmitRequest */
+        PerformanceSubmitRequest: {
+            /** Items */
+            items: components["schemas"]["PerformanceItem"][];
+            /** Lease Token */
+            lease_token: string;
+        };
         /** PronunciationCreate */
         PronunciationCreate: {
             /**
@@ -6275,6 +6686,27 @@ export interface components {
              * @default
              */
             voice?: string;
+        };
+        /** VocalEvent */
+        VocalEvent: {
+            /** @default null */
+            anchor?: components["schemas"]["Anchor"] | null;
+            /**
+             * Duration Ms
+             * @default null
+             */
+            duration_ms?: number | null;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "pause" | "laugh" | "chuckle" | "sigh" | "inhale" | "exhale" | "cough" | "gasp" | "clear_throat";
+            /**
+             * Position
+             * @default before
+             * @enum {string}
+             */
+            position?: "before" | "after";
         };
         /** VoiceCreate */
         VoiceCreate: {
@@ -10024,6 +10456,799 @@ export interface operations {
         responses: {
             /** @description Queued */
             202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listPerformancePlans: {
+        parameters: {
+            query?: {
+                offset?: number;
+                limit?: number;
+                plan_revision_id?: string;
+            };
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Validated performance state or compiled request; never audio. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description A valid idempotency key is required for writes. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The authenticated actor lacks the required scope. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The requested session, performance plan or batch does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Stale source/version, invalid lease, active work, or immutable adopted plan. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid performance annotation, anchor or request. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createPerformancePlan: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PerformancePlanCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Validated performance state or compiled request; never audio. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description A valid idempotency key is required for writes. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The authenticated actor lacks the required scope. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The requested session, performance plan or batch does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Stale source/version, invalid lease, active work, or immutable adopted plan. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid performance annotation, anchor or request. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getPerformancePlan: {
+        parameters: {
+            query?: {
+                offset?: number;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                sessionId: string;
+                planId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Validated performance state or compiled request; never audio. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description A valid idempotency key is required for writes. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The authenticated actor lacks the required scope. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The requested session, performance plan or batch does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Stale source/version, invalid lease, active work, or immutable adopted plan. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid performance annotation, anchor or request. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    editPerformancePlan: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                sessionId: string;
+                planId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PerformanceEditRequest"];
+            };
+        };
+        responses: {
+            /** @description Validated performance state or compiled request; never audio. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description A valid idempotency key is required for writes. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The authenticated actor lacks the required scope. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The requested session, performance plan or batch does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Stale source/version, invalid lease, active work, or immutable adopted plan. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid performance annotation, anchor or request. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    adoptPerformancePlan: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                sessionId: string;
+                planId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PerformanceAdoptRequest"];
+            };
+        };
+        responses: {
+            /** @description Validated performance state or compiled request; never audio. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description A valid idempotency key is required for writes. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The authenticated actor lacks the required scope. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The requested session, performance plan or batch does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Stale source/version, invalid lease, active work, or immutable adopted plan. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid performance annotation, anchor or request. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    analysePerformancePlan: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                sessionId: string;
+                planId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Validated performance state or compiled request; never audio. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description A valid idempotency key is required for writes. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The authenticated actor lacks the required scope. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The requested session, performance plan or batch does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Stale source/version, invalid lease, active work, or immutable adopted plan. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid performance annotation, anchor or request. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    releasePerformanceBatch: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                sessionId: string;
+                planId: string;
+                batchId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PerformanceRenewRequest"];
+            };
+        };
+        responses: {
+            /** @description Validated performance state or compiled request; never audio. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description A valid idempotency key is required for writes. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The authenticated actor lacks the required scope. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The requested session, performance plan or batch does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Stale source/version, invalid lease, active work, or immutable adopted plan. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid performance annotation, anchor or request. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    renewPerformanceBatch: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                sessionId: string;
+                planId: string;
+                batchId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PerformanceRenewRequest"];
+            };
+        };
+        responses: {
+            /** @description Validated performance state or compiled request; never audio. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description A valid idempotency key is required for writes. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The authenticated actor lacks the required scope. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The requested session, performance plan or batch does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Stale source/version, invalid lease, active work, or immutable adopted plan. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid performance annotation, anchor or request. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    submitPerformanceBatch: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                sessionId: string;
+                planId: string;
+                batchId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PerformanceSubmitRequest"];
+            };
+        };
+        responses: {
+            /** @description Validated performance state or compiled request; never audio. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description A valid idempotency key is required for writes. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The authenticated actor lacks the required scope. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The requested session, performance plan or batch does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Stale source/version, invalid lease, active work, or immutable adopted plan. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid performance annotation, anchor or request. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    claimPerformanceBatch: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                sessionId: string;
+                planId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PerformanceLeaseRequest"];
+            };
+        };
+        responses: {
+            /** @description Validated performance state or compiled request; never audio. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description A valid idempotency key is required for writes. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The authenticated actor lacks the required scope. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The requested session, performance plan or batch does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Stale source/version, invalid lease, active work, or immutable adopted plan. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid performance annotation, anchor or request. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    previewPerformancePlan: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+                planId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PerformancePreviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Validated performance state or compiled request; never audio. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description A valid idempotency key is required for writes. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The authenticated actor lacks the required scope. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The requested session, performance plan or batch does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Stale source/version, invalid lease, active work, or immutable adopted plan. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid performance annotation, anchor or request. */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

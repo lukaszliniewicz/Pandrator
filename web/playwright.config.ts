@@ -29,6 +29,8 @@ export default defineConfig({
       name: 'chromium',
       use: {
         ...devices['Desktop Chrome'],
+        // Use an installed browser for local checks without downloading a bundle.
+        channel: process.env.PANDRATOR_E2E_CHROME_CHANNEL,
         permissions: ['microphone'],
         launchOptions: {
           args: [

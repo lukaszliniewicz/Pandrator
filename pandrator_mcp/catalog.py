@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
+from .performance_actions import PERFORMANCE_ACTIONS, performance_api_path
+
 
 class RiskClass(StrEnum):
     READ = "read"
@@ -49,6 +51,9 @@ class ActionCatalog:
 
 ACTION_CATALOG = ActionCatalog(
     (
+        *(ActionSpec(name, title, model, RiskClass(risk), scope, operation, method,
+                     performance_api_path(suffix), True, requires_idempotency=risk != "read")
+          for _action, name, title, model, risk, scope, operation, method, suffix in PERFORMANCE_ACTIONS),
         ActionSpec(
             "pandrator_explain_system",
             "Explain Pandrator",

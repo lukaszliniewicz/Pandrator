@@ -1407,10 +1407,16 @@ class TtsProviderRegistry:
     ) -> dict[str, Any]:
         service_id = self._service_adapter_id(service)
         try:
-            return self.get(service_id).enrich_catalog(
-                service,
-                api_key=api_key,
-            )
+            changes = self.get(service_id).enrich_catalog(service, api_key=api_key)
+            from pandrator.logic.speech_performance import decorate_service_capabilities
+
+            effective = {**service, **changes}
+            decorate_service_capabilities(effective)
+            changes.update({
+                "expressive_capabilities": effective["expressive_capabilities"],
+                "generation_prompt_models": effective["generation_prompt_models"],
+            })
+            return changes
         except TtsProviderError:
             raise
         except ValueError as error:

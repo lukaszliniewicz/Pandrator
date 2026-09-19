@@ -57,7 +57,18 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                 )
                 names = sorted(tool.name for tool in listed.tools)
                 self.assertEqual(
-                    [
+                    sorted([
+                        "pandrator_adopt_performance_plan",
+                        "pandrator_analyse_performance_plan",
+                        "pandrator_claim_performance_batch",
+                        "pandrator_create_performance_plan",
+                        "pandrator_edit_performance_plan",
+                        "pandrator_get_performance_plan",
+                        "pandrator_list_performance_plans",
+                        "pandrator_preview_performance_plan",
+                        "pandrator_release_performance_batch",
+                        "pandrator_renew_performance_batch",
+                        "pandrator_submit_performance_batch",
                         "pandrator_adopt_subtitle_source",
                         "pandrator_assemble_generation_run",
                         "pandrator_attach_existing_source",
@@ -159,7 +170,7 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                         "pandrator_update_media_edit",
                         "pandrator_update_session",
                         "pandrator_update_session_settings",
-                    ],
+                    ]),
                     names,
                 )
                 self.assertEqual(
@@ -231,6 +242,7 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                         "auto",
                         "canary-ctc-aligner",
                         "canary-ctc-aligner-q4_k.gguf",
+                        "qwen3-forced-aligner",
                     ],
                     media_edit_schema["properties"]["caption_alignment_ctc_model"][
                         "enum"
